@@ -68,7 +68,7 @@ use unica_workspace::compile_transaction::{
     CommitFailure, CommitFailureKind, CompileTransaction, RegistrationStatus,
 };
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 thread_local! {
     static ROLE_EDIT_BEFORE_NATIVE_GUARD_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
         const { std::cell::RefCell::new(None) };
@@ -81,7 +81,7 @@ thread_local! {
     };
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn with_role_edit_before_native_guard_hook<T>(
     hook: impl FnOnce() + 'static,
     action: impl FnOnce() -> T,
@@ -100,7 +100,7 @@ fn with_role_edit_before_native_guard_hook<T>(
     action()
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn run_role_edit_before_native_guard_hook() {
     ROLE_EDIT_BEFORE_NATIVE_GUARD_HOOK.with(|slot| {
         if let Some(hook) = slot.borrow_mut().take() {
@@ -109,7 +109,7 @@ fn run_role_edit_before_native_guard_hook() {
     });
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn with_role_edit_before_publish_hook<T>(
     hook: impl FnOnce() + 'static,
     action: impl FnOnce() -> T,
@@ -127,7 +127,7 @@ fn with_role_edit_before_publish_hook<T>(
     action()
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn run_role_edit_before_publish_hook() {
     ROLE_EDIT_BEFORE_PUBLISH_HOOK.with(|slot| {
         if let Some(hook) = slot.borrow_mut().take() {
@@ -136,7 +136,7 @@ fn run_role_edit_before_publish_hook() {
     });
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn with_role_edit_after_rights_reread_hook<T>(
     hook: impl FnOnce() + 'static,
     action: impl FnOnce() -> T,
@@ -155,7 +155,7 @@ fn with_role_edit_after_rights_reread_hook<T>(
     action()
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn run_role_edit_after_rights_reread_hook() {
     ROLE_EDIT_AFTER_RIGHTS_REREAD_HOOK.with(|slot| {
         if let Some(hook) = slot.borrow_mut().take() {
@@ -164,7 +164,7 @@ fn run_role_edit_after_rights_reread_hook() {
     });
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn with_role_edit_post_validation_failure<T>(action: impl FnOnce() -> T) -> T {
     struct Reset(bool);
     impl Drop for Reset {
@@ -571,7 +571,7 @@ fn edit_with_data(
     let mut events = Vec::new();
     let mut recorded_cache = None;
     if !preview && data.changed {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         run_role_edit_before_native_guard_hook();
         match publish_role_edit(&target, &postimage, context) {
             Ok(publication) => {
@@ -799,7 +799,7 @@ fn publish_role_edit(
         return Err(("concurrent_modification", None));
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     run_role_edit_after_rights_reread_hook();
 
     let mut transaction = CompileTransaction::new();
@@ -855,10 +855,10 @@ fn publish_role_edit(
     let descriptor = target.descriptor_path.clone();
     let rights = target.rights_path.clone();
     let role_name = role_name.to_string();
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     run_role_edit_before_publish_hook();
     let report = transaction.commit_with_classified_post_validation(|| {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         if ROLE_EDIT_POST_VALIDATION_FAILURE.with(|slot| slot.get()) {
             return Err(CommitFailure::provider(
                 "injected role.edit post-validation failure",
@@ -942,7 +942,7 @@ fn prove_role_rights_path(
 }
 
 #[cfg(test)]
-pub(crate) mod role_edit_contract_tests {
+pub(crate) mod medium_role_edit_contract_tests {
     use super::*;
     use unica_roles_designer::test_support::{operation, rights_xml, validate_every_role_value};
     use unica_workspace::single_file_publisher::{with_publish_failpoints, PublishCheckpoint};
@@ -1596,7 +1596,7 @@ pub(crate) mod role_edit_contract_tests {
 }
 
 #[cfg(test)]
-pub(super) mod role_info_typed_result_tests {
+pub(super) mod medium_role_info_typed_result_tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -1820,7 +1820,7 @@ pub(super) mod role_info_typed_result_tests {
 }
 
 #[cfg(test)]
-pub(crate) mod role_validate_contract_tests {
+pub(crate) mod medium_role_validate_contract_tests {
     use super::*;
 
     fn temp_root(name: &str) -> PathBuf {

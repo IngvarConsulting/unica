@@ -1,6 +1,5 @@
 ---
 id: INV.PERF.SERVICE-READINESS-WITHOUT-SOURCE-SCAN
-check: []
 gap: https://github.com/IngvarConsulting/unica/issues/968
 ---
 

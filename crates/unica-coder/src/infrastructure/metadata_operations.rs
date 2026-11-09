@@ -14,10 +14,10 @@ use unica_source_contract::workspace::WorkspaceContext;
 use unica_work_control::cancellation::CancellationToken;
 use unica_work_control::provider_deadline::ProviderDeadline;
 
-pub(crate) struct MetadataOperations;
+pub struct MetadataOperations;
 
 impl MetadataOperations {
-    pub(crate) fn read_local(
+    pub fn read_local(
         request: &unica_metadata::request::MetaInfoRequest,
         context: &WorkspaceContext,
         cancellation: &CancellationToken,
@@ -121,7 +121,7 @@ impl MetadataOperations {
         }
     }
 
-    pub(crate) fn validate(
+    pub fn validate(
         subject: &unica_metadata::validation_subject::MetadataValidationSubject,
         context: &WorkspaceContext,
         _cancellation: &CancellationToken,
@@ -153,7 +153,7 @@ impl MetadataOperations {
         .validate_complete_read(subject, context)
     }
 
-    pub(crate) fn prepare_mutation(
+    pub fn prepare_mutation(
         request: &unica_metadata::request::MetadataRequest,
         context: &WorkspaceContext,
         cancellation: &CancellationToken,
@@ -216,7 +216,7 @@ fn capability_unavailable(message: &str) -> unica_metadata::request::MetaFailure
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
+pub(crate) mod medium_tests {
     use super::*;
 
     use crate::application::ports::{
@@ -473,48 +473,31 @@ pub(crate) mod tests {
     }
 
     impl Fixture {
+        /// Пустая конфигурация 8.3.27 со справочником `Catalog.Editable`.
         fn new(label: &str) -> Self {
+            Self::from_snapshot(label, "metadata-editable")
+        }
+
+        /// Набор из снимка `crates/unica-coder/tests/fixtures/<snapshot>`:
+        /// результат однажды выполненных добавлений писателем, байт в байт.
+        fn from_snapshot(label: &str, snapshot: &str) -> Self {
             let root = std::env::temp_dir().join(format!(
                 "unica-meta-edit-typed-{label}-{}-{}",
                 std::process::id(),
                 uuid::Uuid::new_v4()
             ));
-            fs::create_dir_all(&root).unwrap();
+            crate::infrastructure::test_fixtures::copy_tree(
+                &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/fixtures")
+                    .join(snapshot),
+                &root,
+            );
             let context = WorkspaceContext {
                 cwd: root.clone(),
                 workspace_root: root.clone(),
                 cache_root: root.join(".build/unica"),
                 workspace_epoch: 0,
             };
-            crate::infrastructure::test_fixtures::copy_empty_configuration(&root);
-            fs::write(
-                root.join("v8project.yaml"),
-                concat!(
-                    "format: DESIGNER\n",
-                    "source-set:\n",
-                    "  - name: main\n",
-                    "    type: CONFIGURATION\n",
-                    "    path: src\n",
-                ),
-            )
-            .unwrap();
-            let cancellation = CancellationToken::new();
-            MetadataOperations::prepare_mutation(
-                &unica_metadata::request::MetadataRequest::Add(
-                    unica_metadata::request::MetaAddRequest {
-                        source_set: "main".into(),
-                        kind: MetadataKind::Catalog,
-                        name: "Editable".into(),
-                        operations: Vec::new(),
-                        dry_run: false,
-                    },
-                ),
-                &context,
-                &cancellation,
-            )
-            .unwrap()
-            .publish(&cancellation)
-            .unwrap();
             Self {
                 descriptor: root.join("src/Catalogs/Editable.xml"),
                 owner: root.join("src/Configuration.xml"),
@@ -970,10 +953,11 @@ pub(crate) mod tests {
         }
     }
 
-    /// #1381: платформа 8.3.27 выгружает заимствованные форму и макеты
+    /// Платформа 8.3.27 выгружает заимствованные форму и макеты
     /// заимствованной обработки без `Form.xml` и `Template.xml`. Валидатор
     /// описания принимает такой след, только когда заимствование доказывают
     /// оба описания — владельца и ребёнка, и рядом нет лишних каталогов.
+    /// rule: INV.SOURCE.BORROWED-OBJECT-INHERITED-CONTENT
     #[test]
     fn borrowed_children_of_a_borrowed_owner_validate_without_payload() {
         let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -2137,11 +2121,10 @@ pub(crate) mod tests {
         }))
     }
 
-    /// ADR-0072: the typed operation materializes the exact facet the retired
-    /// `help.add` produced — the same generators pin Help.xml and the page,
-    /// and the owner's form gains the IncludeHelpInContents flip.
+    /// `addHelp` writes Help.xml and the language page from the help
+    /// generators, and the owner's form gains the IncludeHelpInContents flip.
     #[test]
-    fn typed_add_help_matches_the_retired_help_add_files() {
+    fn typed_add_help_writes_the_help_files_and_flips_the_form_flag() {
         let fixture = Fixture::new("add-help-parity");
         add_help_owner(&fixture, "Typed");
         let application = fixture_application(&fixture);
@@ -2260,7 +2243,7 @@ pub(crate) mod tests {
             .contains("IncludeHelpInContents"));
     }
 
-    /// ADR-0072 / #375: `meta.edit add templates` покрывает все пять видов
+    /// ADR-0072: `meta.edit add templates` покрывает все пять видов
     /// макета, которые принимал снимаемый `template.add`; вид по умолчанию —
     /// прежний SpreadsheetDocument, неизвестный вид отклоняется до записи.
     #[test]
@@ -2459,7 +2442,7 @@ pub(crate) mod tests {
             let mixed = mixed_eol_source(&original, first, remaining);
             let _cwd =
                 unica_workspace::test_support::ProcessCwdGuard::enter(&fixture.root).unwrap();
-            let application = UnicaApplication::new();
+            let application = crate::composition::testing::application();
             let mut observations = Vec::new();
 
             for dry_run in [true, false] {
@@ -3157,9 +3140,8 @@ pub(crate) mod tests {
     }
 
     fn ordinary_form_read_fixture() -> Fixture {
-        let fixture = Fixture::new("ordinary-form-read");
-        fixture.publish_form_add("Ordinary");
-        fixture.publish_form_add("ManagedSibling");
+        // Управляемые формы `Ordinary` и `ManagedSibling`, добавленные писателем.
+        let fixture = Fixture::from_snapshot("ordinary-form-read", "metadata-editable-forms");
         let forms = fixture.root.join("src/Catalogs/Editable/Forms");
         let descriptor = forms.join("Ordinary.xml");
         let text = fs::read_to_string(&descriptor).unwrap();
@@ -3829,7 +3811,7 @@ pub(crate) mod tests {
         let object_root = fixture.root.join("src/Catalogs/Editable");
         let template_content = object_root.join("Templates/Print/Ext/Template.xml");
         assert!(object_root.join("Templates/Print.xml").is_file());
-        // #1325: ibcmd 8.3.27 зацикливается на импорте владельца, в
+        // Ibcmd 8.3.27 зацикливается на импорте владельца, в
         // `ChildObjects` которого макет описан целиком; платформа ждёт там
         // только имя, а описание — в `Templates/<Имя>.xml`.
         let owner = fs::read_to_string(&fixture.descriptor).unwrap();
@@ -3943,7 +3925,7 @@ pub(crate) mod tests {
         assert!(!object_root.join("Commands").exists());
     }
 
-    /// #1325: выгрузка платформы регистрирует макет во владельце только
+    /// Выгрузка платформы регистрирует макет во владельце только
     /// именем. Правка и удаление такого макета работают с его отдельным
     /// описанием и сохраняют регистрацию по имени; нетронутые байты описания
     /// (BOM, объявления корня) остаются прежними.
@@ -4031,7 +4013,7 @@ pub(crate) mod tests {
         assert!(!child_descriptor.exists());
     }
 
-    /// #1325: исходники, порождённые прежними версиями Unica, описывают макет
+    /// Исходники, порождённые прежними версиями Unica, описывают макет
     /// во владельце целиком. Правка такого владельца не ломается и не
     /// переписывает чужую регистрацию; новые макеты рядом с ним регистрируются
     /// по имени, как в выгрузке платформы.
@@ -4137,7 +4119,7 @@ pub(crate) mod tests {
         names
     }
 
-    /// #1325: соседа для позиции ищут и среди макетов, зарегистрированных во
+    /// Соседа для позиции ищут и среди макетов, зарегистрированных во
     /// владельце только именем, — при добавлении и при перемещении.
     #[test]
     fn typed_template_position_resolves_name_registered_siblings() {
@@ -4168,7 +4150,7 @@ pub(crate) mod tests {
         assert!(!owner.contains("<Template uuid="), "{owner}");
     }
 
-    /// #1325: перемещение макета ищет якорь среди макетов, зарегистрированных
+    /// Перемещение макета ищет якорь среди макетов, зарегистрированных
     /// во владельце только именем.
     #[test]
     fn typed_template_update_position_resolves_name_registered_anchor() {
@@ -4203,7 +4185,7 @@ pub(crate) mod tests {
         assert!(!owner.contains("<Template uuid="), "{owner}");
     }
 
-    /// #1325: повтор имени макета, зарегистрированного ссылкой, отклоняется
+    /// Повтор имени макета, зарегистрированного ссылкой, отклоняется
     /// как `already_exists` до публикации — при добавлении, переименовании и
     /// в другом регистре.
     #[test]

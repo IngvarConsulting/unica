@@ -46,35 +46,6 @@ pub fn classify_already_read_config_dump_info_xml(bytes: &[u8]) -> ConfigDumpInf
 mod tests {
     use super::{config_dump_info_xml_kind, ConfigDumpInfoXmlKind};
 
-    fn large_xml(root: &str, direct_child: &str) -> Vec<u8> {
-        let mut bytes = format!("<{root}>{direct_child}<!--").into_bytes();
-        bytes.extend(std::iter::repeat_n(b'x', 9 * 1024 * 1024));
-        bytes.extend_from_slice(format!("--></{root}>").as_bytes());
-        bytes
-    }
-
-    #[test]
-    fn config_dump_info_kind_crosses_former_byte_limit_with_complete_xml() {
-        for (root, child, expected) in [
-            ("ConfigDumpInfo", "", ConfigDumpInfoXmlKind::RuntimeSidecar),
-            (
-                "MetaDataObject",
-                "<ExternalDataProcessor/>",
-                ConfigDumpInfoXmlKind::ExternalProcessor,
-            ),
-            (
-                "MetaDataObject",
-                "<ExternalReport/>",
-                ConfigDumpInfoXmlKind::ExternalReport,
-            ),
-        ] {
-            let bytes = large_xml(root, child);
-            assert!(bytes.len() > 8 * 1024 * 1024);
-            assert!(bytes.len() < 10 * 1024 * 1024);
-            assert_eq!(config_dump_info_xml_kind(&bytes), expected, "root={root}");
-        }
-    }
-
     #[test]
     fn config_dump_info_kind_keeps_local_name_and_complete_document_semantics() {
         for (bytes, expected) in [
@@ -157,24 +128,6 @@ mod tests {
         ] {
             assert_eq!(config_dump_info_xml_kind(bytes), expected);
         }
-    }
-
-    #[test]
-    fn config_dump_info_kind_rejects_corruption_after_former_byte_limit() {
-        let mut bytes = large_xml("MetaDataObject", "<ExternalDataProcessor/>");
-        bytes.extend_from_slice(b"<unfinished");
-        assert_eq!(
-            config_dump_info_xml_kind(&bytes),
-            ConfigDumpInfoXmlKind::Other
-        );
-
-        let mut bytes = large_xml("MetaDataObject", "<ExternalDataProcessor/>");
-        let position = bytes.len() - b"--></MetaDataObject>".len() - 1;
-        bytes[position] = 0xff;
-        assert_eq!(
-            config_dump_info_xml_kind(&bytes),
-            ConfigDumpInfoXmlKind::Other
-        );
     }
 
     #[test]

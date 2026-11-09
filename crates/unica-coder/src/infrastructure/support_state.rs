@@ -18,11 +18,11 @@ use unica_metadata::support_state::{
 use unica_metadata_designer::support::{support_root_uuid_from_bytes, SupportState};
 use unica_source_contract::workspace::WorkspaceContext;
 
-pub(crate) trait SupportStateReaderFactory: Send + Sync {
+pub trait SupportStateReaderFactory: Send + Sync {
     fn create<'a>(&'a self, context: &'a WorkspaceContext) -> Box<dyn SupportStateReader + 'a>;
 }
 
-pub(crate) struct WorkspaceSupportStateReaderFactory;
+pub struct WorkspaceSupportStateReaderFactory;
 
 impl SupportStateReaderFactory for WorkspaceSupportStateReaderFactory {
     fn create<'a>(&'a self, context: &'a WorkspaceContext) -> Box<dyn SupportStateReader + 'a> {
@@ -296,7 +296,7 @@ impl SupportStateReader for WorkspaceSupportStateReader<'_> {
 }
 
 #[cfg(test)]
-mod tests {
+mod medium_tests {
     use super::*;
     use std::fs;
     use std::path::PathBuf;
@@ -392,6 +392,7 @@ mod tests {
         let _ = fs::remove_dir_all(&context.workspace_root);
     }
 
+    /// rule: INV.APP.SUPPORT-STATE
     #[test]
     fn support_state_reader_rejects_edt_instead_of_claiming_not_supported() {
         let context = fixture("edt", "EDT", "CONFIGURATION");
@@ -410,6 +411,7 @@ mod tests {
         cleanup(&context);
     }
 
+    /// rule: INV.APP.SUPPORT-STATE
     #[test]
     fn platform_xml_configuration_support_distinguishes_absent_unreadable_and_invalid_marker() {
         let context = fixture("marker-matrix", "DESIGNER", "CONFIGURATION");
@@ -436,6 +438,7 @@ mod tests {
         cleanup(&context);
     }
 
+    /// rule: INV.APP.SUPPORT-STATE
     #[test]
     fn platform_xml_support_reader_rejects_marker_below_linked_ext_directory() {
         let context = fixture("linked-ext", "DESIGNER", "CONFIGURATION");
@@ -465,6 +468,7 @@ mod tests {
         cleanup(&context);
     }
 
+    /// rule: INV.APP.SUPPORT-STATE
     #[test]
     fn platform_xml_object_support_uses_the_resolved_descriptor_uuid() {
         let context = fixture("object-rule", "DESIGNER", "CONFIGURATION");

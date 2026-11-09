@@ -899,7 +899,7 @@ XML-элемент: `<Catalog>`. Категория InternalInfo: CatalogObject,
 <CodeLength>11</CodeLength>
 <CodeType>String</CodeType>                          <!-- String | Number -->
 <CodeAllowedLength>Variable</CodeAllowedLength>      <!-- Variable | Fixed -->
-<CodeSeries>WholeCatalog</CodeSeries>                <!-- WholeCatalog | WithinOwnerSubordination | WithinParent -->
+<CodeSeries>WholeCatalog</CodeSeries>                <!-- WholeCatalog | WithinOwnerSubordination | WithinSubordination -->
 <DescriptionLength>150</DescriptionLength>
 <CheckUnique>true</CheckUnique>
 <Autonumbering>true</Autonumbering>
@@ -918,7 +918,7 @@ XML-элемент: `<Catalog>`. Категория InternalInfo: CatalogObject,
 **Прочее:**
 
 ```xml
-<EditType>InDialog</EditType>               <!-- InDialog | InList | Both -->
+<EditType>InDialog</EditType>               <!-- InDialog | InList | BothWays -->
 <QuickChoice>true</QuickChoice>
 <ChoiceMode>BothWays</ChoiceMode>            <!-- BothWays -->
 <PredefinedDataUpdate>Auto</PredefinedDataUpdate>  <!-- Auto | AutoUpdate | DontAutoUpdate -->

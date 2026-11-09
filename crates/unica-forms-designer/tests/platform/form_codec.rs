@@ -262,9 +262,10 @@ fn form_info_projects_direct_command_action_as_execute_binding() {
     assert_eq!(action.call_type, None);
 }
 
-/// #1385: a form is registered in the platform slot of forms, which
+/// A form is registered in the platform slot of forms, which
 /// depends on the owner kind: a catalog writes its forms after its tabular
 /// sections, a document before them; templates and commands follow.
+/// rule: INV.SOURCE.CHILD-OBJECTS-PLATFORM-ORDER
 #[test]
 fn form_registration_takes_the_platform_slot_of_its_owner_kind() {
     fn owner(kind: &str, children: &[&str]) -> String {
@@ -339,6 +340,32 @@ fn form_registration_takes_the_platform_slot_of_its_owner_kind() {
     ] {
         let updated = register_form_in_object_text(&owner(kind, existing), "New");
         assert_eq!(children(&updated), expected, "{kind} {existing:?}");
+        // A prefixed owner gets the same registration with its own prefix.
+        let prefixed_owner = prefixed(&owner(kind, existing));
+        let updated_prefixed = register_form_in_object_text(&prefixed_owner, "New");
+        assert_eq!(updated_prefixed, prefixed(&updated), "{kind} {existing:?}");
+        assert_eq!(
+            register_form_in_object_text(&updated_prefixed, "New"),
+            updated_prefixed
+        );
+    }
+    /// Every element of these synthetic owners is an MDClasses element.
+    fn prefixed(xml: &str) -> String {
+        let mut text = String::new();
+        let mut rest = xml;
+        while let Some(at) = rest.find('<') {
+            text.push_str(&rest[..=at]);
+            rest = &rest[at + 1..];
+            if rest.starts_with('/') {
+                text.push('/');
+                rest = &rest[1..];
+            }
+            if rest.starts_with(|ch: char| ch.is_ascii_alphabetic()) {
+                text.push_str("md:");
+            }
+        }
+        text.push_str(rest);
+        text.replacen("xmlns=", "xmlns:md=", 1)
     }
 }
 
@@ -659,7 +686,7 @@ fn form_compile_writes_command_properties_in_platform_order() {
 }
 
 /// Each command key `command.add` publishes is written exactly as an
-/// 8.3.27 dump writes it (#1439). Every expected block repeats, with
+/// 8.3.27 dump writes it. Every expected block repeats, with
 /// neutral names and texts, the shape of a `<Command>` from a platform
 /// dump that carries only the keys under test: tabs, element order,
 /// multilingual ToolTip, Shortcut text, Picture with `xr:Ref` and
@@ -792,7 +819,7 @@ fn form_compile_writes_the_same_command_block_as_form_command_add() {
 }
 
 /// The button value set is not the command one: 8.3.27 does not load
-/// `PictureAndText` on a form command (#1436), so compile writes nothing.
+/// `PictureAndText` on a form command, so compile writes nothing.
 #[test]
 fn form_compile_refuses_button_representation_on_command() {
     for invalid in ["PictureAndText", "None", "Compact"] {
@@ -2877,7 +2904,7 @@ fn text_document_binding_uses_the_qname_namespace_and_requires_a_path() {
 }
 
 #[test]
-fn retired_form_compiler_does_not_accept_text_document_field() {
+fn form_compiler_refuses_text_doc_as_an_unknown_element_key() {
     let error = form_compile_xml(
         &json!({
             "attributes":[{"name":"Protocol","type":"d5p1:TextDocument"}],
@@ -2886,7 +2913,10 @@ fn retired_form_compiler_does_not_accept_text_document_field() {
         "2.20",
     )
     .unwrap_err();
-    assert!(error.contains("only by item.add"), "{error}");
+    assert!(
+        error.contains("unknown element key `textDoc`") && !error.contains("item.add"),
+        "{error}"
+    );
 }
 
 #[test]
@@ -2942,9 +2972,9 @@ fn html_document_field_matches_platform_fixture_and_preserves_requested_properti
         .filter(|node| node.is_element())
         .map(|node| node.tag_name().name())
         .collect::<Vec<_>>();
-    // Канон ревью #1389 задаёт общий порядок HTML- и TextDocumentField.
+    // Канон задаёт общий порядок HTML- и TextDocumentField.
     // Положение SkipOnInput после ReadOnly подтверждено живым кругом
-    // 8.3.27.2074 при ревью #1389; выгрузка HTML ниже сверяет значения
+    // 8.3.27.2074 при сверке; выгрузка HTML ниже сверяет значения
     // DataPath, SkipOnInput, TitleLocation и companions.
     assert_eq!(
         child_names,
@@ -3208,7 +3238,7 @@ const DUMP_SHAPED_REFRESH_COMMAND: &str = concat!(
 );
 
 /// A form edit takes the line endings of the form: a CRLF export stays CRLF,
-/// an LF or mixed form keeps them as they were (#1996).
+/// an LF or mixed form keeps them as they were.
 #[test]
 fn form_edit_inserts_lines_with_the_form_line_ending() {
     let form = |newline: &str| {
@@ -3248,6 +3278,78 @@ fn form_edit_inserts_lines_with_the_form_line_ending() {
         has_bare_lf(&edited) && edited.contains("\r\n"),
         "{edited:?}"
     );
+}
+
+#[test]
+fn column_group_add_rejects_nonfields_for_direct_and_sibling_placement() {
+    for placement in [json!({"into":"Columns"}), json!({"after":"Existing"})] {
+        for element in [
+            json!({"button":"Added","command":"Run"}),
+            json!({"group":"Added"}),
+            json!({"label":"Added"}),
+        ] {
+            let before = format!(
+                r#"<Form xmlns="{FORM_LOGFORM_NS}"><ChildItems><Table name="Rows" id="1"><ChildItems><ColumnGroup name="Columns" id="2"><ChildItems><InputField name="Existing" id="3"/></ChildItems></ColumnGroup></ChildItems></Table></ChildItems></Form>"#
+            );
+            let mut xml = before.clone();
+            let mut definition = placement.clone();
+            definition["elements"] = json!([element]);
+            let result = form_edit_apply_definition(
+                &mut xml,
+                &definition,
+                std::path::Path::new("Main/Form.xml"),
+                0,
+                Some("ru"),
+            );
+            let error = match result {
+                Err(error) => error,
+                Ok(_) => panic!("accepted {definition}"),
+            };
+            assert!(error.contains("column group holds only fields"), "{error}");
+            assert_eq!(xml, before);
+        }
+    }
+}
+
+#[test]
+fn column_group_add_accepts_supported_fields_and_preserves_their_container() {
+    for (element, tag) in [
+        (json!({"input":"Added"}), "InputField"),
+        (json!({"labelField":"Added"}), "LabelField"),
+        (json!({"check":"Added"}), "CheckBoxField"),
+        (json!({"html":"Added"}), "HTMLDocumentField"),
+        (
+            json!({"textDoc":"Added","path":"Text"}),
+            "TextDocumentField",
+        ),
+    ] {
+        let mut xml = format!(
+            r#"<Form xmlns="{FORM_LOGFORM_NS}" xmlns:v8="http://v8.1c.ru/8.1/data/core"><ChildItems><Table name="Rows" id="1"><ChildItems><ColumnGroup name="Columns" id="2"/></ChildItems></Table></ChildItems><Attributes><Attribute name="Text" id="1"><Type><v8:Type xmlns:txt="http://v8.1c.ru/8.1/data/txtedt">txt:TextDocument</v8:Type></Type></Attribute></Attributes></Form>"#
+        );
+        form_edit_apply_definition(
+            &mut xml,
+            &json!({"into":"Columns","elements":[element]}),
+            std::path::Path::new("Main/Form.xml"),
+            0,
+            Some("ru"),
+        )
+        .unwrap();
+        let doc = Document::parse(&xml).unwrap();
+        let added = doc
+            .descendants()
+            .find(|node| node.attribute("name") == Some("Added"))
+            .unwrap();
+        assert_eq!(added.tag_name().name(), tag);
+        assert_eq!(
+            added
+                .parent_element()
+                .unwrap()
+                .parent_element()
+                .unwrap()
+                .attribute("name"),
+            Some("Columns")
+        );
+    }
 }
 
 #[test]

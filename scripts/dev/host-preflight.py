@@ -26,9 +26,15 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 GIB = 1024 ** 3
-# A working copy with a Cargo build directory takes 5-12 GB.
-COPY_MIN_GIB = 5
-COPY_COMFORT_GIB = 12
+# A working copy with its Cargo build directory takes 25-50 GB once the
+# workspace tests have been built.
+COPY_MIN_GIB = 25
+COPY_COMFORT_GIB = 50
+# Below this much free space a single test build can fill the disk.
+LOW_FREE_GIB = 50
+# Line tables keep file and line numbers in panics and backtraces but drop
+# variable debug info, the bulk of a dev build directory.
+DEV_DEBUG = "line-tables-only"
 # One parallel Rust build per 4 logical cores: on a 2-core host three builds
 # starved each other.
 CORES_PER_BUILD = 4
@@ -95,6 +101,24 @@ class Host:
             return sorted(child for child in path.iterdir() if child.is_dir())
         except OSError:
             return []
+
+    def dir_size(self, path: Path) -> int:
+        total = 0
+        stack = [str(path)]
+        while stack:
+            try:
+                entries = list(os.scandir(stack.pop()))
+            except OSError:
+                continue
+            for entry in entries:
+                try:
+                    if entry.is_dir(follow_symlinks=False):
+                        stack.append(entry.path)
+                    else:
+                        total += entry.stat(follow_symlinks=False).st_size
+                except OSError:
+                    continue
+        return total
 
     def cpu_count(self) -> int:
         return os.cpu_count() or 1
@@ -267,7 +291,7 @@ def check_utf8(host: Host) -> Check:
 
 
 def nextest_pin(host: Host, repo: Path) -> Optional[str]:
-    workflow = host.read_text(repo / ".github" / "workflows" / "unica-plugin-release.yml") or ""
+    workflow = host.read_text(repo / ".github" / "actions" / "install-nextest" / "action.yml") or ""
     match = re.search(r"cargo-nextest@([0-9][0-9.]*)", workflow)
     return match.group(1) if match else None
 
@@ -350,6 +374,50 @@ def check_c_toolchain(host: Host) -> Check:
     return Check("C toolchain", MISSING, "cc not found in PATH", ["sudo apt install build-essential"])
 
 
+def default_build_root(host: Host) -> Path:
+    """Where conveyor workers keep their Cargo build directories."""
+    if host.system == "Windows":
+        return Path(r"C:\cargo-target")
+    return Path(host.env.get("HOME", "~")) / "cargo-target"
+
+
+def check_dev_debug(host: Host) -> Check:
+    value = host.env.get("CARGO_PROFILE_DEV_DEBUG")
+    if value == DEV_DEBUG:
+        return Check("dev debuginfo", OK, f"CARGO_PROFILE_DEV_DEBUG={DEV_DEBUG}", required=False)
+    fix = by_os(
+        host.system,
+        f"setx CARGO_PROFILE_DEV_DEBUG {DEV_DEBUG}   (then open a new shell and restart Claude/Codex)",
+        f"echo 'export CARGO_PROFILE_DEV_DEBUG={DEV_DEBUG}' >> \"$HOME/.zshrc\"",
+        f"echo 'export CARGO_PROFILE_DEV_DEBUG={DEV_DEBUG}' >> \"$HOME/.bashrc\"",
+    )
+    shown = f"is {value}" if value else "is not set"
+    return Check(
+        "dev debuginfo", WARN,
+        f"CARGO_PROFILE_DEV_DEBUG {shown}: full debug info makes each build directory several times larger",
+        [fix], required=False,
+    )
+
+
+def check_build_dirs(host: Host, root: Path) -> Check:
+    """Size of every build directory, so the largest stale one is easy to spot."""
+    dirs = host.child_dirs(root)
+    if not dirs:
+        return Check("build dirs", OK, f"none under {root}", required=False)
+    sizes = sorted(((host.dir_size(path), path.name) for path in dirs), reverse=True)
+    total = sum(size for size, _ in sizes)
+    listed = ", ".join(f"{name} {size / GIB:.1f} GB" for size, name in sizes)
+    detail = f"{total / GIB:.1f} GB under {root}: {listed}"
+    if host.free_bytes(root) >= LOW_FREE_GIB * GIB:
+        return Check("build dirs", OK, detail, required=False)
+    return Check(
+        "build dirs", WARN, detail,
+        ["py -3.12 scripts/dev/prune-build-caches.py" if host.system == "Windows"
+         else "python3.12 scripts/dev/prune-build-caches.py"],
+        required=False,
+    )
+
+
 def check_capacity(host: Host, repo: Path, copies: int) -> Check:
     """How many working copies may build Rust at the same time."""
     cores = host.cpu_count()
@@ -382,7 +450,9 @@ def check_disk(host: Host, repo: Path, copies: int, msvc_missing: bool) -> Check
     )
     if msvc_missing:
         detail += f" plus about {MSVC_BUILD_TOOLS_GIB} GB for MSVC Build Tools"
-    if free >= need * GIB:
+    if free < LOW_FREE_GIB * GIB:
+        detail += f"; below {LOW_FREE_GIB} GB a single test build can fill the disk"
+    if free >= need * GIB and free >= LOW_FREE_GIB * GIB:
         return Check("disk", OK, detail)
     status = WARN if free >= minimum * GIB else MISSING
     return Check("disk", status, detail, ["free space or start fewer working copies"])
@@ -418,7 +488,9 @@ def check_platform(host: Host, repo: Path, extra_roots: Sequence[str]) -> Check:
     return Check("1C platform", WARN, f"no {executable} under " + ", ".join(roots), fix, required=False)
 
 
-def run_checks(host: Host, repo: Path, copies: int, platform_roots: Sequence[str]) -> List[Check]:
+def run_checks(
+    host: Host, repo: Path, copies: int, platform_roots: Sequence[str], build_root: Optional[Path] = None,
+) -> List[Check]:
     checks: List[Check] = []
     checks += check_git(host)
     checks += check_gh(host)
@@ -430,6 +502,8 @@ def run_checks(host: Host, repo: Path, copies: int, platform_roots: Sequence[str
     msvc_missing = host.system == "Windows" and c_toolchain.status != OK
     checks.append(check_disk(host, repo, copies, msvc_missing))
     checks.append(check_capacity(host, repo, copies))
+    checks.append(check_dev_debug(host))
+    checks.append(check_build_dirs(host, build_root or default_build_root(host)))
     checks.append(check_platform(host, repo, platform_roots))
     return checks
 
@@ -456,6 +530,7 @@ def main(argv: Optional[Sequence[str]] = None, host: Optional[Host] = None, repo
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--copies", type=int, default=1, help="working copies with builds planned on this disk")
     parser.add_argument("--platform-root", action="append", default=[], help="extra 1C install root to search")
+    parser.add_argument("--build-root", type=Path, help="directory holding the Cargo build directories")
     parser.add_argument("--json", action="store_true", help="print machine-readable results")
     args = parser.parse_args(argv)
     # Names, paths and tool output may be non-ASCII; a cp1251 or ASCII console
@@ -464,7 +539,7 @@ def main(argv: Optional[Sequence[str]] = None, host: Optional[Host] = None, repo
     if reconfigure:
         reconfigure(errors="backslashreplace")
     host = host or Host()
-    checks = run_checks(host, repo, max(args.copies, 1), args.platform_root)
+    checks = run_checks(host, repo, max(args.copies, 1), args.platform_root, args.build_root)
     if args.json:
         print(json.dumps({"system": host.system, "ready": is_ready(checks),
                           "checks": [asdict(check) for check in checks]}, indent=2))

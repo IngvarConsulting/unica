@@ -20,13 +20,46 @@ use unica_refusal::{RefusalCode, RefusalDetail};
 
 use serde_json::Value;
 
+// resource-limit: navigation.result-store-ttl-ms
+// class: retention
+// unit: ms
+// scope: cache
+// value: 900000
+// resource: Срок хранения отложенного результата в хранилище результатов процесса.
+// status: unproven
+// origin: #537
+// problem: неизвестно
+// on-reach: Запись удаляется; чтение ссылки отказывает result_expired.
 pub const DEFAULT_TTL: Duration = Duration::from_secs(15 * 60);
+// resource-limit: navigation.result-store-entries
+// class: retention
+// unit: count
+// scope: cache
+// value: 32
+// resource: Число записей хранилища отложенных результатов.
+// status: unproven
+// origin: #537
+// problem: неизвестно
+// on-reach: Вытесняется запись, дольше всех не читавшаяся; её ссылка затем отказывает как недоступная.
 pub const DEFAULT_MAX_ENTRIES: usize = 32;
+// resource-limit: navigation.result-store-bytes
+// class: retention
+// unit: bytes
+// scope: cache
+// value: 67108864
+// resource: Суммарный объём отложенных результатов прежнего хранилища ResultStore в памяти.
+// status: unproven
+// origin: 27a108daf (#537); в коде помечено «Temporary and unproven… see #1119»
+// problem: неизвестно
+// on-reach: вытесняются давно не читавшиеся записи хранилища результатов
 pub const DEFAULT_MAX_TOTAL_BYTES: usize = 64 * 1024 * 1024;
 // Temporary and unproven retained-state budget; see #1119. This does not
 // bound process RSS or transient source reads, JSON clones and index growth.
+// resource-limit-excluded: точный размер формата курсора, вычисляет формат, ничего не ограничивает
 const VIEW_CURSOR_PAYLOAD_BYTES: usize = 17;
+// resource-limit-excluded: точный размер формата курсора, вычисляет формат, ничего не ограничивает
 const VIEW_CURSOR_CIPHERTEXT_BYTES: usize = VIEW_CURSOR_PAYLOAD_BYTES + 16;
+// resource-limit-excluded: точный размер формата курсора, вычисляет формат, ничего не ограничивает
 const VIEW_CURSOR_TOKEN_BYTES: usize = 4 + 2 * VIEW_CURSOR_CIPHERTEXT_BYTES;
 const VIEW_CURSOR_AAD: &[u8] = b"unica.view.cursor.vc2";
 
@@ -372,8 +405,11 @@ pub struct SearchCursorBinding {
     pub page_limit: usize,
 }
 
+// resource-limit-excluded: точный размер формата курсора, вычисляет формат, ничего не ограничивает
 const SEARCH_CURSOR_PAYLOAD_BYTES: usize = 106;
+// resource-limit-excluded: точный размер формата курсора, вычисляет формат, ничего не ограничивает
 const SEARCH_CURSOR_CIPHERTEXT_BYTES: usize = SEARCH_CURSOR_PAYLOAD_BYTES + 16;
+// resource-limit-excluded: точный размер формата курсора, вычисляет формат, ничего не ограничивает
 const SEARCH_CURSOR_TOKEN_BYTES: usize = 4 + 2 * SEARCH_CURSOR_CIPHERTEXT_BYTES;
 const SEARCH_CURSOR_AAD: &[u8] = b"unica.search.cursor.sc2";
 /// A keyed continuation (`sc3.`) carries the rank of the last item shown
@@ -386,6 +422,17 @@ const SEARCH_CURSOR_KEYED_AAD: &[u8] = b"unica.search.cursor.sc3";
 const SEARCH_CURSOR_RESUME_AAD: &[u8] = b"unica.search.cursor.sc4";
 /// The longest resume path a cursor carries: a source-set name and one
 /// relative path, far below what a file system names.
+// resource-limit: search.cursor-resume-path-bytes
+// class: format
+// unit: bytes
+// scope: record
+// value: 65536
+// resource: Длина пути файла (имя набора и путь от его корня), который несёт курсор буквального поиска для возобновления выдачи.
+// status: unproven
+// origin: #1119 PR-B: курсор обхода без Git называет файл возобновления
+// problem: Длина токена курсора растёт с путём; предел отсекает подделанный или ошибочный токен до расшифровки, а не настоящие пути исходников 1С.
+// on-reach: Курсор не выдаётся: отказ provider_failed «search continuation offset is not representable»; токен длиннее предела отклоняется как invalid_cursor.
+// issue: #1119
 const SEARCH_RESUME_PATH_MAX_BYTES: usize = 64 * 1024;
 
 /// Where a paged text search resumes: the file it re-enters, how many of
@@ -1695,7 +1742,7 @@ fn unix_ms_in(ttl: Duration) -> u64 {
 }
 
 #[cfg(test)]
-mod tests {
+mod medium_tests {
     use super::*;
     use serde_json::json;
 
@@ -1982,6 +2029,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.APP.SEARCH-CURSOR-OWNER
     #[test]
     fn live_search_keeps_all_300_independent_chains_and_their_replay() {
         let store = SearchCursorStore::default();
@@ -2008,6 +2056,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.APP.SEARCH-CURSOR-OWNER
     #[test]
     fn live_search_keeps_the_exact_question_past_eight_mib() {
         let store = SearchCursorStore::default();
@@ -2056,6 +2105,7 @@ mod tests {
         assert_eq!(store.read(&token, &binding).unwrap().offset, 20);
     }
 
+    /// rule: INV.APP.SEARCH-CURSOR-OWNER
     #[test]
     fn search_cursor_lifetime_is_the_actual_owner_without_retained_entries() {
         let store = SearchCursorStore::default();
@@ -2097,6 +2147,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.APP.SEARCH-CURSOR-OWNER
     #[test]
     fn search_authentication_rejects_every_changed_token_byte_and_noncanonical_encoding() {
         let store = SearchCursorStore::default();
@@ -2163,6 +2214,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.APP.LITERAL-SEARCH
     #[test]
     fn search_next_answer_rebinds_only_the_answer_and_replays_its_token() {
         let store = SearchCursorStore::default();
@@ -2230,6 +2282,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.APP.SEARCH-CURSOR-OWNER
     #[test]
     fn search_every_question_field_precedes_answer_fingerprint_validation() {
         let store = SearchCursorStore::default();
@@ -2270,6 +2323,7 @@ mod tests {
         assert_eq!(store.read(&token, &binding).unwrap().offset, 20);
     }
 
+    /// rule: INV.APP.SEARCH-CURSOR-OWNER
     #[test]
     fn search_failed_key_entropy_publishes_nothing_and_retry_uses_a_real_key() {
         fn partial_failure(bytes: &mut [u8]) -> Result<(), SearchCursorError> {
@@ -2299,6 +2353,7 @@ mod tests {
         assert_eq!(store.read(&token, &binding).unwrap().offset, 20);
     }
 
+    /// rule: INV.APP.SEARCH-CURSOR-OWNER
     #[test]
     fn search_failed_chain_entropy_preserves_the_existing_owner_and_tokens() {
         fn failure(_: &mut [u8]) -> Result<(), SearchCursorError> {
@@ -2361,6 +2416,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.APP.SEARCH-CURSOR-OWNER
     #[test]
     fn search_concurrent_chains_and_successor_replay_share_one_immutable_owner() {
         let store = Arc::new(SearchCursorStore::default());
@@ -2492,6 +2548,7 @@ mod tests {
         assert_eq!(cipher.decrypt([&aad], &expected).unwrap(), plain);
     }
 
+    /// rule: INV.APP.DEFERRED-READ
     #[test]
     fn opaque_view_cursor_retry_is_idempotent_and_bound_to_the_complete_question() {
         let store = ViewCursorStore::default();
@@ -2545,6 +2602,7 @@ mod tests {
         assert_eq!(store.insert_next(&replay, 1, &token).unwrap(), successor);
     }
 
+    /// rule: INV.APP.VIEW-CURSOR-CAPACITY
     #[test]
     fn new_snapshot_pressure_preserves_every_promised_chain() {
         let store = ViewCursorStore::new(4_096);
@@ -2599,6 +2657,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.APP.VIEW-CURSOR-CAPACITY
     #[test]
     fn snapshot_admission_reserves_room_for_the_next_cursor() {
         let binding = view_binding("main:Document.Заказ.Module.Object.Body", "rev-1");
@@ -2660,6 +2719,7 @@ mod tests {
         assert_eq!((samples[1].1, samples[1].2), (true, true));
     }
 
+    /// rule: INV.APP.VIEW-CURSOR-CAPACITY
     #[test]
     fn many_small_items_are_charged_for_retained_heap_not_only_json() {
         let binding = view_binding("main:Document.Заказ.Module.Object.Body", "rev-1");
@@ -2981,6 +3041,7 @@ mod tests {
         assert_eq!(store.retained_usage_for_test(), usage);
     }
 
+    /// rule: INV.APP.VIEW-CURSOR-CAPACITY
     #[test]
     fn concurrent_new_admissions_reserve_one_atomic_cumulative_budget() {
         let binding = view_binding("main:CommonModule.Owner.Method", "rev-1");
@@ -3202,6 +3263,8 @@ mod tests {
         );
     }
 
+    /// rule: INV.APP.DEFERRED-READ
+    /// rule: INV.APP.VIEW-CURSOR-CAPACITY
     #[test]
     fn every_promised_page_survives_a_chain_longer_than_128_pages() {
         let store = ViewCursorStore::default();

@@ -1,0 +1,27 @@
+{
+  "area": "Свойства объектов",
+  "task": "Изменить сразу два свойства одним вызовом (превью)",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "пакет",
+                "DescriptionLength": 150
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S048"
+}

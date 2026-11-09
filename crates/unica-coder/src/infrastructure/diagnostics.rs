@@ -38,7 +38,7 @@ use url::Url;
 /// root every other resource is located like any diagnostic: a logical target,
 /// or an unaddressable path with its proven owner when there is one. A module
 /// keeps only its own file; other resources stay explicitly unproved.
-pub(crate) struct CanonicalDiagnosticMapping {
+pub struct CanonicalDiagnosticMapping {
     context: DiagnosticContext,
     /// The file a module target was proved by; `None` for an object or root.
     module_relative: Option<PathBuf>,
@@ -74,12 +74,12 @@ impl CanonicalDiagnosticMapping {
         })
     }
 
-    pub(crate) fn target(&self) -> &unica_address::source_target::ResolvedTarget {
+    pub fn target(&self) -> &unica_address::source_target::ResolvedTarget {
         &self.context.target
     }
 
     /// The analysis scope of a module target; an object or root has none.
-    pub(crate) fn module_scope(&self) -> Option<unica_diagnostics::model::DiagnosticModuleScope> {
+    pub fn module_scope(&self) -> Option<unica_diagnostics::model::DiagnosticModuleScope> {
         self.module_relative.as_ref().map(|relative| {
             unica_diagnostics::model::DiagnosticModuleScope {
                 source_set: self.context.target.source_set.clone(),
@@ -1122,6 +1122,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.SAFETY.DIAGNOSTIC-LOCATION-BOUNDARY
     #[test]
     fn diagnostic_location_distinguishes_unaddressable_owner_and_unproven_owner() {
         let fixture = Fixture::platform_xml();
@@ -1186,6 +1187,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.APP.DIAGNOSTIC-FOCUS
     #[test]
     fn diagnostic_location_preserves_exact_metadata_focus_and_weakens_unknown_elements() {
         let fixture = Fixture::platform_xml();
@@ -1307,6 +1309,7 @@ mod tests {
         ));
     }
 
+    /// rule: INV.SAFETY.DIAGNOSTIC-LOCATION-BOUNDARY
     #[test]
     fn diagnostics_windows_normalizes_separators_unicode_file_uri_and_dot_segments() {
         let fixture = Fixture::platform_xml();
@@ -1345,6 +1348,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.SAFETY.DIAGNOSTIC-LOCATION-BOUNDARY
     #[test]
     fn diagnostic_location_rejects_escape_without_leaking_the_raw_handle() {
         let fixture = Fixture::platform_xml();
@@ -1402,6 +1406,7 @@ mod tests {
         ));
     }
 
+    /// rule: INV.APP.DIAGNOSTIC-FOCUS
     #[test]
     fn canonical_diagnostic_location_maps_root_object_module_and_nested_form_module() {
         let fixture = Fixture::platform_xml();
@@ -1487,6 +1492,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.SAFETY.DIAGNOSTIC-LOCATION-BOUNDARY
     #[test]
     fn canonical_diagnostic_location_distinguishes_unaddressable_owner_and_unproven_owner() {
         let fixture = Fixture::platform_xml();
@@ -1584,6 +1590,7 @@ mod tests {
         ));
     }
 
+    /// rule: INV.APP.DIAGNOSTIC-FOCUS
     #[test]
     fn canonical_diagnostic_location_preserves_exact_metadata_focus_and_weakens_unknown_elements() {
         let fixture = Fixture::platform_xml();
@@ -1685,6 +1692,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.SAFETY.DIAGNOSTIC-LOCATION-BOUNDARY
     #[test]
     fn canonical_diagnostic_location_reports_unsupported_source_format_without_a_physical_path() {
         let fixture = Fixture::platform_xml();

@@ -191,6 +191,7 @@ impl Downloader for FakeDownloader {
     }
 }
 
+/// rule: INV.PKG.VERIFIED-ATOMIC-INSTALL
 #[test]
 fn valid_archive_is_published_with_a_ready_marker() {
     let runtime = b"unica-runtime";
@@ -209,6 +210,7 @@ fn valid_archive_is_published_with_a_ready_marker() {
     fs::remove_dir_all(cache).expect("remove temp directory");
 }
 
+/// rule: INV.PKG.VERIFIED-ATOMIC-INSTALL
 #[test]
 fn ready_marker_waits_for_the_complete_runtime_file_closure() {
     let runtime = b"unica-runtime";
@@ -280,6 +282,7 @@ fn ready_marker_waits_for_the_complete_runtime_file_closure() {
     }
 }
 
+/// rule: INV.PKG.CORRUPT-ARCHIVE-NOT-READY
 #[test]
 fn corrupt_archive_never_publishes_a_ready_runtime() {
     let runtime = b"unica-runtime";
@@ -298,6 +301,7 @@ fn corrupt_archive_never_publishes_a_ready_runtime() {
     fs::remove_dir_all(cache).expect("remove temp directory");
 }
 
+/// rule: INV.PKG.VERIFIED-ATOMIC-INSTALL
 #[test]
 fn traversal_archive_is_rejected_before_publication() {
     let runtime = b"unica-runtime";
@@ -325,6 +329,7 @@ fn traversal_archive_is_rejected_before_publication() {
     fs::remove_dir_all(cache).expect("remove temp directory");
 }
 
+/// rule: INV.PKG.VERIFIED-ATOMIC-INSTALL
 #[test]
 fn install_closure_rejects_unsafe_or_drifted_archives_without_ready() {
     let runtime = b"unica-runtime";
@@ -381,6 +386,7 @@ fn install_closure_rejects_unsafe_or_drifted_archives_without_ready() {
     }
 }
 
+/// rule: INV.PKG.CONCURRENT-INSTALL-ONCE
 #[test]
 fn concurrent_installers_download_and_publish_once() {
     let runtime = b"unica-runtime";
@@ -412,18 +418,19 @@ fn concurrent_installers_download_and_publish_once() {
     fs::remove_dir_all(cache).expect("remove temp directory");
 }
 
+/// rule: INV.PKG.CORE-FIRST-ACQUISITION
 #[test]
 fn the_core_installs_without_any_engine_present() {
     // Движок объявлен в манифесте, но установка ядра не должна его загружать.
     let runtime = b"unica-runtime";
     let archive = tar_gz(&[("bin/linux-x64/unica", runtime)]);
-    let engine = b"rlm-bsl-index";
-    let engine_archive = tar_gz(&[("bin/linux-x64/rlm-bsl-index", engine)]);
+    let engine = b"archive-tool-index";
+    let engine_archive = tar_gz(&[("bin/linux-x64/archive-tool-index", engine)]);
     let manifest = manifest_with_engine(&archive, runtime, &engine_archive, engine);
     let cache = temp_dir("core-alone");
     let downloader = Arc::new(AssetDownloader::new(vec![
         ("unica-runtime-linux-x64.tar.gz", archive),
-        ("rlm-tools-bsl-linux-x64.tar.gz", engine_archive),
+        ("archive-tools-linux-x64.tar.gz", engine_archive),
     ]));
 
     let installed = RuntimeInstaller::new(cache.clone(), "0.7.0", downloader.clone())
@@ -434,7 +441,7 @@ fn the_core_installs_without_any_engine_present() {
     let file_count = fs::read_dir(installed.root.join("bin/linux-x64"))
         .expect("read runtime root")
         .count();
-    let engine_present = cache.join("rlm-tools-bsl").exists();
+    let engine_present = cache.join("archive-tools").exists();
     fs::remove_dir_all(&cache).ok();
 
     assert!(entrypoint_present, "ядро должно быть на месте");
@@ -449,6 +456,7 @@ fn the_core_installs_without_any_engine_present() {
     );
 }
 
+/// rule: INV.PKG.ARTIFACT-CACHE-IDENTITY
 #[test]
 fn the_install_path_is_keyed_by_version_and_archive_identity() {
     let runtime = b"unica-runtime";
@@ -474,6 +482,7 @@ fn the_install_path_is_keyed_by_version_and_archive_identity() {
     fs::remove_dir_all(&cache).ok();
 }
 
+/// rule: INV.PKG.ARTIFACT-CACHE-IDENTITY
 #[test]
 fn rebuilt_artifact_with_the_same_version_gets_a_distinct_immutable_root() {
     // Toolchain build tags may advance without changing the upstream semantic
@@ -524,9 +533,10 @@ fn rebuilt_artifact_with_the_same_version_gets_a_distinct_immutable_root() {
     fs::remove_dir_all(&cache).ok();
 }
 
+/// rule: INV.PKG.ARTIFACT-CACHE-IDENTITY
 #[test]
 fn a_plugin_release_does_not_refetch_an_unchanged_artifact() {
-    // Ровно тот случай из #585: обновление плагина объявляло холодным весь кеш.
+    // Обновление плагина объявляло холодным весь кеш.
     let runtime = b"unica-runtime";
     let archive = tar_gz(&[("bin/linux-x64/unica", runtime)]);
     let cache = temp_dir("unchanged");
@@ -559,6 +569,7 @@ fn seed_installation(cache: &Path, artifact: &str, version: &str, host: HostTarg
     root
 }
 
+/// rule: INV.PKG.RUNTIME-CACHE-RETENTION
 #[test]
 fn collecting_keeps_the_newest_versions_of_each_artifact() {
     let cache = temp_dir("collect-keeps");
@@ -567,7 +578,7 @@ fn collecting_keeps_the_newest_versions_of_each_artifact() {
         ("1.1.0", 100, 200),
         ("1.2.0", 200, 300),
     ] {
-        let root = seed_installation(&cache, "rlm-tools-bsl", version, HostTarget::LinuxX64);
+        let root = seed_installation(&cache, "archive-tools", version, HostTarget::LinuxX64);
         // Время готовности намеренно не совпадает с порядком имён и каталогов.
         for (path, seconds) in [
             (root.join(".ready.json"), ready_seconds),
@@ -594,15 +605,16 @@ fn collecting_keeps_the_newest_versions_of_each_artifact() {
 
     let kept = |artifact: &str, version: &str| cache.join(artifact).join(version).is_dir();
     assert!(
-        !kept("rlm-tools-bsl", "1.1.0"),
+        !kept("archive-tools", "1.1.0"),
         "самая старая версия удаляется"
     );
-    assert!(kept("rlm-tools-bsl", "1.0.0"));
-    assert!(kept("rlm-tools-bsl", "1.2.0"));
+    assert!(kept("archive-tools", "1.0.0"));
+    assert!(kept("archive-tools", "1.2.0"));
     assert_eq!(fs::read(installed.entrypoint).unwrap(), runtime);
     fs::remove_dir_all(&cache).ok();
 }
 
+/// rule: INV.PKG.RUNTIME-CACHE-RETENTION
 #[test]
 fn collecting_failure_does_not_fail_a_successful_installation() {
     struct CacheGuard(PathBuf);
@@ -613,14 +625,14 @@ fn collecting_failure_does_not_fail_a_successful_installation() {
     }
     let cache = CacheGuard(temp_dir("collect-failure"));
     for version in ["1.0.0", "1.1.0", "1.2.0"] {
-        seed_installation(&cache.0, "rlm-tools-bsl", version, HostTarget::LinuxX64);
+        seed_installation(&cache.0, "archive-tools", version, HostTarget::LinuxX64);
         // A directory cannot be opened as a writable delivery-lock file.
         // Block every candidate so the failure does not depend on mtime order.
         fs::create_dir_all(
             cache
                 .0
                 .join(".locks")
-                .join(format!("rlm-tools-bsl-{version}-linux-x64.lock")),
+                .join(format!("archive-tools-{version}-linux-x64.lock")),
         )
         .expect("block obsolete engine lock");
     }
@@ -641,28 +653,30 @@ fn collecting_failure_does_not_fail_a_successful_installation() {
         .expect_err("the same collection fault must still be present after installation");
 }
 
+/// rule: INV.PKG.RUNTIME-CACHE-RETENTION
 #[test]
 fn collecting_does_not_remove_a_version_owned_by_an_active_delivery_lock() {
     let cache = temp_dir("collect-active-lock");
     for version in ["1.0.0", "1.1.0"] {
-        seed_installation(&cache, "rlm-tools-bsl", version, HostTarget::LinuxX64);
+        seed_installation(&cache, "archive-tools", version, HostTarget::LinuxX64);
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
     let locks = cache.join(".locks");
     fs::create_dir_all(&locks).expect("locks");
-    let active = fs::File::create(locks.join("rlm-tools-bsl-1.0.0-linux-x64.lock"))
+    let active = fs::File::create(locks.join("archive-tools-1.0.0-linux-x64.lock"))
         .expect("active delivery lock");
     active.lock_exclusive().expect("hold active delivery lock");
 
     RuntimeInstaller::collect(&cache, 1).expect("collect around active delivery");
 
     assert!(
-        cache.join("rlm-tools-bsl/1.0.0/linux-x64").is_dir(),
+        cache.join("archive-tools/1.0.0/linux-x64").is_dir(),
         "garbage collection must not delete bytes owned by another lock holder"
     );
     fs::remove_dir_all(&cache).ok();
 }
 
+/// rule: INV.PKG.RUNTIME-CACHE-RETENTION
 #[test]
 fn collecting_leaves_an_artifact_that_is_within_the_limit() {
     let cache = temp_dir("collect-within");
@@ -674,6 +688,7 @@ fn collecting_leaves_an_artifact_that_is_within_the_limit() {
     fs::remove_dir_all(&cache).ok();
 }
 
+/// rule: INV.PKG.RUNTIME-CACHE-SERVICE-DATA
 #[test]
 fn collecting_does_not_touch_the_lock_and_transaction_areas() {
     // Служебные каталоги кеша артефактами не являются, и удалять их — потерять
@@ -758,15 +773,15 @@ fn manifest_with_engine(
     let target = |name: &str| {
         serde_json::json!({
             "asset": {
-                "name": format!("rlm-tools-bsl-{name}.tar.gz"),
+                "name": format!("archive-tools-{name}.tar.gz"),
                 "url": format!(
-                    "https://github.com/IngvarConsulting/unica-toolchain/releases/download/rlm-tools-bsl-v1.33.0-build.3/rlm-tools-bsl-{name}.tar.gz"
+                    "https://github.com/IngvarConsulting/unica-toolchain/releases/download/archive-tools-v1.33.0-build.3/archive-tools-{name}.tar.gz"
                 ),
                 "mediaType": "application/gzip",
                 "sha256": engine_hash
             },
             "files": [{
-                "path": format!("bin/{name}/rlm-bsl-index"),
+                "path": format!("bin/{name}/archive-tool-index"),
                 "sha256": file_hash,
                 "executable": true
             }]
@@ -782,7 +797,7 @@ fn manifest_with_engine(
         }
     });
     manifest.artifacts.insert(
-        "rlm-tools-bsl".to_owned(),
+        "archive-tools".to_owned(),
         serde_json::from_value(engine).expect("engine fixture"),
     );
     manifest
@@ -935,6 +950,7 @@ fn partials(cache: &Path, artifact: &str) -> Vec<String> {
     names
 }
 
+/// rule: INV.PKG.RESUMABLE-DOWNLOAD
 #[test]
 fn an_interrupted_download_resumes_in_the_next_session() {
     let runtime = b"unica-runtime-that-is-long-enough-to-cut-in-half";
@@ -965,6 +981,7 @@ fn an_interrupted_download_resumes_in_the_next_session() {
     fs::remove_dir_all(&cache).ok();
 }
 
+/// rule: INV.PKG.RESUMABLE-DOWNLOAD
 #[test]
 fn a_partial_that_hashes_wrong_is_dropped_instead_of_resumed_forever() {
     // Докачивать не те байты значит вечно не сходиться по сумме.
@@ -1060,24 +1077,26 @@ fn a_partial_owned_by_another_delivery_lock_is_not_deleted() {
     fs::remove_dir_all(&cache).ok();
 }
 
+/// rule: INV.PKG.ARTIFACT-CACHE-IDENTITY
+/// rule: INV.PKG.CORE-FIRST-ACQUISITION
 #[test]
 fn an_engine_is_installed_on_demand_under_its_own_version() {
     let core = b"unica-runtime";
     let core_archive = tar_gz(&[("bin/linux-x64/unica", core)]);
-    let engine = b"rlm-bsl-index";
-    let engine_archive = tar_gz(&[("bin/linux-x64/rlm-bsl-index", engine)]);
+    let engine = b"archive-tool-index";
+    let engine_archive = tar_gz(&[("bin/linux-x64/archive-tool-index", engine)]);
     let engine_delivery = format!("1.33.0--{}", sha256(&engine_archive));
     let manifest = manifest_with_engine(&core_archive, core, &engine_archive, engine);
     let cache = temp_dir("engine");
     let downloader = Arc::new(AssetDownloader::new(vec![
         ("unica-runtime-linux-x64.tar.gz", core_archive),
-        ("rlm-tools-bsl-linux-x64.tar.gz", engine_archive),
+        ("archive-tools-linux-x64.tar.gz", engine_archive),
     ]));
 
     let root = RuntimeInstaller::new(cache.clone(), "0.7.0", downloader.clone())
         .ensure_artifact(
             &manifest,
-            "rlm-tools-bsl",
+            "archive-tools",
             HostTarget::LinuxX64,
             &SilentDownload,
         )
@@ -1085,13 +1104,13 @@ fn an_engine_is_installed_on_demand_under_its_own_version() {
 
     assert_eq!(
         root.strip_prefix(&cache).expect("установка внутри кеша"),
-        Path::new("rlm-tools-bsl")
+        Path::new("archive-tools")
             .join(engine_delivery)
             .join("linux-x64"),
         "путь движка содержит его версию и сумму поставки"
     );
     assert_eq!(
-        fs::read(root.join("bin/linux-x64/rlm-bsl-index")).unwrap(),
+        fs::read(root.join("bin/linux-x64/archive-tool-index")).unwrap(),
         engine
     );
     assert_eq!(
@@ -1102,12 +1121,13 @@ fn an_engine_is_installed_on_demand_under_its_own_version() {
     fs::remove_dir_all(&cache).ok();
 }
 
+/// rule: INV.PKG.CONCURRENT-INSTALL-ONCE
 #[test]
 fn two_sessions_acquire_one_engine_once() {
     let core = b"unica-runtime";
     let core_archive = tar_gz(&[("bin/linux-x64/unica", core)]);
-    let engine = b"rlm-bsl-index";
-    let engine_archive = tar_gz(&[("bin/linux-x64/rlm-bsl-index", engine)]);
+    let engine = b"archive-tool-index";
+    let engine_archive = tar_gz(&[("bin/linux-x64/archive-tool-index", engine)]);
     let manifest = Arc::new(manifest_with_engine(
         &core_archive,
         core,
@@ -1117,7 +1137,7 @@ fn two_sessions_acquire_one_engine_once() {
     let cache = temp_dir("engine-concurrent");
     let downloader = Arc::new(AssetDownloader::new(vec![
         ("unica-runtime-linux-x64.tar.gz", core_archive),
-        ("rlm-tools-bsl-linux-x64.tar.gz", engine_archive),
+        ("archive-tools-linux-x64.tar.gz", engine_archive),
     ]));
     let installer = Arc::new(RuntimeInstaller::new(
         cache.clone(),
@@ -1132,7 +1152,7 @@ fn two_sessions_acquire_one_engine_once() {
             thread::spawn(move || {
                 installer.ensure_artifact(
                     &manifest,
-                    "rlm-tools-bsl",
+                    "archive-tools",
                     HostTarget::LinuxX64,
                     &SilentDownload,
                 )
@@ -1296,6 +1316,7 @@ impl Downloader for PeekingDownloader {
     }
 }
 
+/// rule: INV.PKG.INSTALL-ATTEMPT-LOG
 #[test]
 fn an_attempt_is_already_open_while_the_download_runs() {
     // Запись открывается до стадии, а не после неё: у убитого процесса второго
@@ -1322,6 +1343,7 @@ fn an_attempt_is_already_open_while_the_download_runs() {
     fs::remove_dir_all(&cache).ok();
 }
 
+/// rule: INV.PKG.INSTALL-ATTEMPT-LOG
 #[test]
 fn a_finished_install_leaves_nothing_unfinished() {
     let runtime = b"unica-runtime";
@@ -1344,6 +1366,7 @@ fn a_finished_install_leaves_nothing_unfinished() {
     fs::remove_dir_all(&cache).ok();
 }
 
+/// rule: INV.PKG.INSTALL-ATTEMPT-LOG
 #[test]
 fn a_failure_the_bootstrap_reported_is_not_repeated_by_the_next_session() {
     // О замеченном отказе сказано кодом выхода и потоком ошибок. Показывать его
@@ -1401,8 +1424,8 @@ fn an_engine_delivery_reports_its_progress_to_the_caller() {
     // донести наблюдателя до загрузчика, а не потерять его по дороге.
     let core = b"unica-runtime";
     let core_archive = tar_gz(&[("bin/linux-x64/unica", core)]);
-    let engine = b"rlm-bsl-index";
-    let engine_archive = tar_gz(&[("bin/linux-x64/rlm-bsl-index", engine)]);
+    let engine = b"archive-tool-index";
+    let engine_archive = tar_gz(&[("bin/linux-x64/archive-tool-index", engine)]);
     let manifest = manifest_with_engine(&core_archive, core, &engine_archive, engine);
     let cache = temp_dir("engine-progress");
     let watched = WatchedDelivery::default();
@@ -1414,7 +1437,7 @@ fn an_engine_delivery_reports_its_progress_to_the_caller() {
             bytes: engine_archive.clone(),
         }),
     )
-    .ensure_artifact(&manifest, "rlm-tools-bsl", HostTarget::LinuxX64, &watched)
+    .ensure_artifact(&manifest, "archive-tools", HostTarget::LinuxX64, &watched)
     .expect("движок ставится");
 
     assert_eq!(
@@ -1467,6 +1490,7 @@ fn manifest_with_file_artifact(
     manifest
 }
 
+/// rule: INV.PKG.ARTIFACT-DELIVERY-FORM
 #[test]
 fn an_artifact_delivered_as_one_file_is_installed_without_unpacking() {
     // Переупаковать голый бинарь в архив ради единой формы значит вернуть ту
@@ -1497,6 +1521,7 @@ fn an_artifact_delivered_as_one_file_is_installed_without_unpacking() {
     fs::remove_dir_all(&cache).ok();
 }
 
+/// rule: INV.PKG.ARTIFACT-DELIVERY-FORM
 #[test]
 fn a_file_artifact_whose_bytes_are_wrong_is_refused_like_any_other() {
     let core = b"unica-runtime";
@@ -1521,6 +1546,7 @@ fn a_file_artifact_whose_bytes_are_wrong_is_refused_like_any_other() {
     fs::remove_dir_all(&cache).ok();
 }
 
+/// rule: INV.PKG.CACHE-PREFETCH
 #[test]
 fn prefetch_delivers_every_artifact_the_target_needs() {
     // Образ собирают один раз и гоняют без сети. Довезти ядро и оставить движки
@@ -1528,15 +1554,15 @@ fn prefetch_delivers_every_artifact_the_target_needs() {
     // работает: сеть там кончилась ещё на сборке.
     let core = b"unica-runtime";
     let core_archive = tar_gz(&[("bin/linux-x64/unica", core)]);
-    let engine = b"rlm-bsl-index";
-    let engine_archive = tar_gz(&[("bin/linux-x64/rlm-bsl-index", engine)]);
+    let engine = b"archive-tool-index";
+    let engine_archive = tar_gz(&[("bin/linux-x64/archive-tool-index", engine)]);
     let core_delivery = format!("0.7.0--{}", sha256(&core_archive));
     let engine_delivery = format!("1.33.0--{}", sha256(&engine_archive));
     let manifest = manifest_with_engine(&core_archive, core, &engine_archive, engine);
     let cache = temp_dir("prefetch");
     let downloader = Arc::new(AssetDownloader::new(vec![
         ("unica-runtime-linux-x64.tar.gz", core_archive),
-        ("rlm-tools-bsl-linux-x64.tar.gz", engine_archive),
+        ("archive-tools-linux-x64.tar.gz", engine_archive),
     ]));
     let installer = RuntimeInstaller::new(cache.clone(), "0.7.0", downloader.clone());
 
@@ -1549,7 +1575,7 @@ fn prefetch_delivers_every_artifact_the_target_needs() {
             .iter()
             .map(|item| (item.artifact.as_str(), item.version.as_str()))
             .collect::<Vec<_>>(),
-        vec![("rlm-tools-bsl", "1.33.0"), ("unica", "0.7.0")],
+        vec![("archive-tools", "1.33.0"), ("unica", "0.7.0")],
         "названы все артефакты цели, а не только ядро"
     );
     assert!(cache
@@ -1558,27 +1584,28 @@ fn prefetch_delivers_every_artifact_the_target_needs() {
         .join("linux-x64/bin/linux-x64/unica")
         .is_file());
     assert!(cache
-        .join("rlm-tools-bsl")
+        .join("archive-tools")
         .join(engine_delivery)
-        .join("linux-x64/bin/linux-x64/rlm-bsl-index")
+        .join("linux-x64/bin/linux-x64/archive-tool-index")
         .is_file());
     assert_eq!(downloader.calls(), 2);
     fs::remove_dir_all(&cache).ok();
 }
 
+/// rule: INV.PKG.CACHE-PREFETCH
 #[test]
 fn a_warm_cache_makes_prefetch_download_nothing() {
     // Слой образа пересобирают чаще, чем меняются артефакты. Повторная загрузка
     // тех же байтов стоила бы полного времени сборки на каждой пересборке.
     let core = b"unica-runtime";
     let core_archive = tar_gz(&[("bin/linux-x64/unica", core)]);
-    let engine = b"rlm-bsl-index";
-    let engine_archive = tar_gz(&[("bin/linux-x64/rlm-bsl-index", engine)]);
+    let engine = b"archive-tool-index";
+    let engine_archive = tar_gz(&[("bin/linux-x64/archive-tool-index", engine)]);
     let manifest = manifest_with_engine(&core_archive, core, &engine_archive, engine);
     let cache = temp_dir("prefetch-warm");
     let downloader = Arc::new(AssetDownloader::new(vec![
         ("unica-runtime-linux-x64.tar.gz", core_archive),
-        ("rlm-tools-bsl-linux-x64.tar.gz", engine_archive),
+        ("archive-tools-linux-x64.tar.gz", engine_archive),
     ]));
     let installer = RuntimeInstaller::new(cache.clone(), "0.7.0", downloader.clone());
     installer
@@ -1595,6 +1622,7 @@ fn a_warm_cache_makes_prefetch_download_nothing() {
     fs::remove_dir_all(&cache).ok();
 }
 
+/// rule: INV.PKG.CACHE-PREFETCH
 #[test]
 fn an_invalid_ready_marker_makes_prefetch_report_a_download() {
     let runtime = b"unica-runtime";
@@ -1770,6 +1798,7 @@ fn install_zip_artifact(
     (cache, result)
 }
 
+/// rule: INV.PKG.ARTIFACT-DELIVERY-FORM
 #[test]
 fn a_publisher_zip_installs_every_declared_file() {
     let archive = zip_bytes(&[
@@ -1789,6 +1818,8 @@ fn a_publisher_zip_installs_every_declared_file() {
     fs::remove_dir_all(&cache).ok();
 }
 
+/// rule: INV.PKG.ARTIFACT-DELIVERY-FORM
+/// rule: INV.PKG.VERIFIED-ATOMIC-INSTALL
 #[test]
 fn a_publisher_zip_is_refused_when_unsafe_or_drifted() {
     let complete = |extra: &[(&str, &[u8])]| {

@@ -1,0 +1,27 @@
+{
+  "area": "Создание и удаление объектов",
+  "task": "Создать отчёт Продажи за период",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "object.create",
+            "args": {
+              "values": {
+                "kind": "Report",
+                "name": "ПродажиЗаПериод"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S108"
+}

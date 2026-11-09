@@ -1,0 +1,82 @@
+{
+  "id": "S366",
+  "name": "dcs-late-refusal-publishes-nothing",
+  "issue": 1310,
+  "area": "СКД",
+  "task": "Поздняя ошибка удаления используемого источника отменяет ранее подготовленное поле; XML остаётся побайтно прежним, token не выдаётся",
+  "workspace": "tests/fixtures/acceptance/workspace-dcs",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F05Report.Template.F05Schema"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before": {
+          "file": "src/cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F05Report.Template.F05Schema",
+        "ops": [
+          {
+            "op": "field.add",
+            "args": {
+              "at": "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data",
+              "items": [
+                {
+                  "dataPath": "MustNotAppear"
+                }
+              ]
+            }
+          },
+          {
+            "op": "dataSource.remove",
+            "args": {
+              "at": "cf:Report.F05Report.Template.F05Schema.DataSource.LocalSource"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: dataSource is still referenced by a dataset",
+      "assertions": [
+        {
+          "pointer": "/diagnostics",
+          "eq": [
+            {
+              "code": "bad_value",
+              "outcome": "fixCall",
+              "message": "dataSource is still referenced by a dataset"
+            }
+          ]
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.before"
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/schema}field/{http://v8.1c.ru/8.1/data-composition-system/schema}dataPath",
+          "eq": [
+            "Category",
+            "Amount"
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -265,6 +265,107 @@ fn indexed(key: IndexKey, corpora: &InstallationCorpora) -> Arc<InstallationInde
     index
 }
 
+/// Вид члена глобального контекста платформы.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GlobalContextMemberKind {
+    Method,
+    Property,
+}
+
+/// Член глобального контекста по справке установки: русское и английское
+/// имя и сигнатура метода.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GlobalContextMember {
+    pub kind: GlobalContextMemberKind,
+    pub name_ru: String,
+    pub name_en: Option<String>,
+    pub signature_ru: Option<String>,
+    pub signature_en: Option<String>,
+    /// Parameter names of the first syntax variant, as the page writes
+    /// them (`Значение`); empty for a property or a method without any.
+    pub parameters: Vec<String>,
+}
+
+/// Методы и свойства глобального контекста установки `root`. Читаются из
+/// того же индекса синтакс-помощника, что и поиск, поэтому вторая выборка
+/// той же установки не перечитывает контейнеры.
+pub fn global_context_members(root: &Path) -> Result<Vec<GlobalContextMember>, String> {
+    let corpora =
+        discover(root, "ru").map_err(|error| format!("установка не разобрана: {error:?}"))?;
+    let index = indexed(IndexKey::for_corpora(root, &corpora), &corpora);
+    let syntax = &index.corpora[0];
+    let mut members = syntax
+        .pages
+        .iter()
+        .filter_map(|page| {
+            let rest = page.path.strip_prefix("objects/Global context/")?;
+            let kind = if rest.starts_with("methods/") {
+                GlobalContextMemberKind::Method
+            } else if rest.starts_with("properties/") {
+                GlobalContextMemberKind::Property
+            } else {
+                return None;
+            };
+            let (name_ru, name_en) = global_context_names(&page.title)?;
+            let parameters = syntax_parameters(&page.snippet, &name_ru);
+            Some(GlobalContextMember {
+                parameters,
+                kind,
+                name_ru,
+                name_en,
+                signature_ru: page.signature.as_ref().and_then(|value| value.ru.clone()),
+                signature_en: page.signature.as_ref().and_then(|value| value.en.clone()),
+            })
+        })
+        .collect::<Vec<_>>();
+    members.sort_by(|a, b| a.name_ru.cmp(&b.name_ru));
+    members.dedup_by(|a, b| a.name_ru == b.name_ru && a.kind == b.kind);
+    Ok(members)
+}
+
+/// Параметры из `Синтаксис: Сообщить(<ТекстСообщения>, <Статус>)` начала
+/// страницы. Угловые скобки в тексте страницы экранированы.
+fn syntax_parameters(text: &str, name: &str) -> Vec<String> {
+    let text = text.replace("&lt;", "<").replace("&gt;", ">");
+    let Some(syntax) = text
+        .split_once("Синтаксис:")
+        .map(|(_, rest)| rest.trim_start())
+        .and_then(|rest| rest.strip_prefix(name))
+        .and_then(|rest| rest.strip_prefix('('))
+        .and_then(|rest| rest.split_once(')'))
+        .map(|(arguments, _)| arguments.to_owned())
+    else {
+        return Vec::new();
+    };
+    syntax
+        .split(',')
+        .map(|argument| {
+            argument
+                .trim()
+                .trim_start_matches('<')
+                .trim_end_matches('>')
+                .to_owned()
+        })
+        .filter(|argument| !argument.is_empty())
+        .collect()
+}
+
+/// `Глобальный контекст.СтрНайти (Global context.StrFind)` — имена члена;
+/// английский заголовок без русского даёт английское имя за русское.
+fn global_context_names(title: &str) -> Option<(String, Option<String>)> {
+    let (first, rest) = match title.split_once(" (") {
+        Some((first, rest)) => (first, Some(rest.trim_end_matches(')'))),
+        None => (title, None),
+    };
+    let member = |text: &str| {
+        text.rsplit_once('.')
+            .map(|(_, name)| name.trim().to_owned())
+    };
+    let name = member(first)?;
+    let english = rest.and_then(member).filter(|english| *english != name);
+    Some((name, english))
+}
+
 /// Сигнатура на локали КОРПУСА, а не запроса. `.st` хранит обе локали, поэтому
 /// выбор — вопрос предпочтения, а не наличия: одна идёт первой, вторая остаётся
 /// запасной, чтобы вопрос про член платформы не остался вовсе без сигнатуры.
@@ -809,7 +910,7 @@ mod tests {
 
     /// Лексический поиск: естественная формулировка — другой порядок слов и
     /// падежи — находит страницу метода. До правки находилась только точная
-    /// подстрока целого запроса (#415).
+    /// подстрока целого запроса.
     #[test]
     fn natural_word_order_and_morphology_find_the_page() {
         let corpus = corpus_from_pages(
@@ -881,7 +982,7 @@ mod tests {
 
     /// Английский многословный запрос находит двуязычный заголовок: до
     /// правки «ValueTable GroupBy» не совпадал с «ValueTable.GroupBy» —
-    /// разделитель точка, а не пробел (#415).
+    /// разделитель точка, а не пробел.
     #[test]
     fn an_english_two_word_query_finds_the_bilingual_title() {
         let corpus = corpus_from_pages(
@@ -1539,6 +1640,7 @@ mod tests {
     /// поэтому вторую половину ключа не различают. Здесь установка одна и та
     /// же, а язык между вызовами меняется, и ответ обязан меняться вместе с
     /// ним: индексы разных языков не должны смешиваться.
+    /// rule: INV.APP.DOCUMENTATION-CONTAINER-FINGERPRINT
     #[test]
     fn a_second_language_on_the_same_installation_does_not_answer_from_the_first_ones_index() {
         // Слот индекса общий на процесс — тесты, которые его пишут, идут по одному.
@@ -1574,6 +1676,7 @@ mod tests {
     /// хотя на диске не менялось ничего. Наблюдаемо через порчу контейнеров:
     /// второй запрос, разрешающийся в ту же локаль, обязан ответить из
     /// индекса, а перестройка увидела бы испорченный файл.
+    /// rule: INV.APP.DOCUMENTATION-CONTAINER-FINGERPRINT
     #[test]
     fn two_requests_resolving_to_the_same_locale_share_one_index() {
         // Слот индекса общий на процесс — тесты, которые его пишут, идут по одному.
@@ -1694,6 +1797,7 @@ mod tests {
     /// правки полный `read_corpus` спотыкался о соседа, контейнер попадал в
     /// «неразобравшиеся», и страница объявлялась недоступной — а заодно
     /// каждый вызов платил 4.4 секунды за разбор всех 25 тысяч страниц.
+    /// rule: INV.APP.DOCUMENTATION-DIRECT-PAGE
     #[test]
     fn get_reads_only_the_requested_entry_and_survives_a_corrupted_sibling() {
         let _serial = index_test_lock();
@@ -1803,6 +1907,7 @@ mod tests {
     /// совпадает, и подменённый контейнер никто не перечитывал. Отпечаток
     /// выбранных контейнеров (длина и время изменения) входит в ключ, поэтому
     /// подмена файла на диске обязана перестроить индекс.
+    /// rule: INV.APP.DOCUMENTATION-CONTAINER-FINGERPRINT
     #[test]
     fn a_replaced_container_is_reindexed_instead_of_answering_stale_help() {
         // Слот индекса общий на процесс — тесты, которые его пишут, идут по одному.
@@ -1863,6 +1968,7 @@ mod tests {
     /// длины с возвращённым временем изменения: отпечаток не меняется, заново
     /// прочитать файл осмысленно уже нельзя, и ответ из индекса отличим от
     /// перестройки.
+    /// rule: INV.APP.DOCUMENTATION-CONTAINER-FINGERPRINT
     #[test]
     fn a_second_call_answers_from_the_index_instead_of_rereading_the_installation() {
         // Слот индекса общий на процесс — тесты, которые его пишут, идут по одному.
@@ -1907,5 +2013,60 @@ mod tests {
             syntax.status
         );
         assert_eq!(syntax.hits.len(), 1, "попадание приходит из индекса");
+    }
+}
+
+#[cfg(test)]
+mod global_context_tests {
+    use super::global_context_names;
+
+    #[test]
+    fn member_names_come_from_both_halves_of_the_title() {
+        assert_eq!(
+            global_context_names("Глобальный контекст.СтрНайти (Global context.StrFind)"),
+            Some(("СтрНайти".to_owned(), Some("StrFind".to_owned())))
+        );
+        assert_eq!(
+            global_context_names("Global context.Message"),
+            Some(("Message".to_owned(), None))
+        );
+        assert_eq!(global_context_names("Без точки"), None);
+    }
+
+    #[test]
+    fn parameters_come_from_the_syntax_line() {
+        let text = "Глобальный контекст.Сообщить Доступен, начиная с версии 8.0. Синтаксис: Сообщить(&lt;ТекстСообщения&gt;, &lt;Статус&gt;) Параметры: &lt;ТекстСообщения&gt;";
+        assert_eq!(
+            super::syntax_parameters(text, "Сообщить"),
+            ["ТекстСообщения", "Статус"]
+        );
+        assert!(super::syntax_parameters("Синтаксис: ТекущаяДата()", "ТекущаяДата").is_empty());
+        assert!(super::syntax_parameters("без синтаксиса", "Ф").is_empty());
+    }
+}
+
+#[cfg(test)]
+mod global_context_installation {
+    /// Point `UNICA_PLATFORM_ROOT` at an installed platform version.
+    #[test]
+    #[ignore = "needs an installed platform in UNICA_PLATFORM_ROOT"]
+    fn an_installation_lists_its_global_context() {
+        let Some(root) = std::env::var_os("UNICA_PLATFORM_ROOT") else {
+            return;
+        };
+        let started = std::time::Instant::now();
+        let members = super::global_context_members(std::path::Path::new(&root)).unwrap();
+        println!("{} members in {:?}", members.len(), started.elapsed());
+        let filled = members
+            .iter()
+            .find(|member| member.name_ru == "ЗначениеЗаполнено")
+            .unwrap();
+        assert_eq!(filled.parameters, ["Значение"]);
+        for name in ["Сообщить", "ТекущаяДата", "НСтр", "Справочники"]
+        {
+            let member = members.iter().find(|member| member.name_ru == name);
+            println!("{name}: {member:?}");
+            assert!(member.is_some(), "{name}");
+        }
     }
 }

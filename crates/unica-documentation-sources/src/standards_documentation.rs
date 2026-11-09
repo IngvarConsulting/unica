@@ -60,11 +60,31 @@ pub struct V8StdDocumentationProvider {
 /// Продовый срок жизни кеша поиска стандартов — как у kb-кешей: часы держат
 /// цену повторных запросов сессии около нуля, а протухание не переживает
 /// процесс. На диск не пишется ничего.
+// resource-limit: docs.v8std-search-cache-ttl
+// class: retention
+// unit: ms
+// scope: cache
+// value: 21600000
+// resource: Срок жизни записи кеша поиска по стандартам v8std в памяти процесса.
+// status: unproven
+// origin: #416
+// problem: повторные запросы сессии не идут в сеть, а протухание не переживает процесс
+// on-reach: запись истекает и вычищается, следующий запрос идёт в сеть
 pub const V8STD_SEARCH_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(6 * 60 * 60);
 
 /// Предел числа записей кеша поиска: поток уникальных запросов долгоживущего
 /// процесса не раздувает память — при переполнении вытесняется запись с
 /// ближайшим сроком, истёкшие вычищаются при каждой записи.
+// resource-limit: docs.v8std-search-cache-entries
+// class: retention
+// unit: count
+// scope: cache
+// value: 128
+// resource: Число записей кеша поиска по стандартам v8std в памяти процесса.
+// status: unproven
+// origin: #416
+// problem: поток уникальных запросов долгоживущего процесса не раздувает память
+// on-reach: вытесняется запись с ближайшим сроком
 pub(crate) const V8STD_SEARCH_CACHE_CAP: usize = 128;
 
 /// Ключ кеша поиска: endpoint, нормализованный запрос, лимит.
@@ -734,6 +754,8 @@ mod tests {
         .to_string()
     }
 
+    /// rule: INV.APP.DOCUMENTATION-SEARCH-PAGES
+    /// rule: INV.APP.DOCUMENTATION-STANDARDS-CACHE
     #[test]
     fn v8std_search_reads_past_fifty_and_replays_the_complete_ranked_stream() {
         let results: Vec<Value> = (1..=51)
@@ -839,6 +861,7 @@ mod tests {
         assert_eq!(arguments[1]["limit"], 50);
     }
 
+    /// rule: INV.APP.DOCUMENTATION-NETWORK-READ-BOUNDARIES
     #[test]
     fn v8std_later_page_failure_or_cancellation_never_publishes_a_partial_stream() {
         let first_results: Vec<Value> = (1..=50)
@@ -986,6 +1009,7 @@ mod tests {
         assert_eq!(http.arguments.lock().unwrap().len(), 2);
     }
 
+    /// rule: INV.APP.DOCUMENTATION-SEARCH-PAGES
     #[test]
     fn old_v8std_without_cursor_marks_a_full_window_incomplete() {
         let results: Vec<Value> = (1..=50)
@@ -1020,6 +1044,7 @@ mod tests {
 
     /// Повторный одинаковый запрос сессии отвечается кешем процесса, без
     /// второго обращения к серверу.
+    /// rule: INV.APP.DOCUMENTATION-STANDARDS-CACHE
     #[test]
     fn a_repeated_search_answers_from_the_process_cache() {
         let (provider, http) = provider(NetworkAccess::Allow, Ok(LIVE_BODY.to_string()));
@@ -1035,6 +1060,7 @@ mod tests {
     }
 
     /// Протухшая запись кеша перечитывается: TTL — не вечность.
+    /// rule: INV.APP.DOCUMENTATION-STANDARDS-CACHE
     #[test]
     fn an_expired_search_cache_entry_is_refetched() {
         let (mut provider, http) = provider(NetworkAccess::Allow, Ok(LIVE_BODY.to_string()));
@@ -1050,6 +1076,7 @@ mod tests {
 
     /// Запрет политики не читает кеш: `policy-denied` означает «обращение
     /// запрещено», включая уже полученные данные.
+    /// rule: INV.APP.DOCUMENTATION-DENIED-CACHE
     #[test]
     fn policy_deny_does_not_answer_from_the_search_cache() {
         let (mut provider, http) = provider(NetworkAccess::Allow, Ok(LIVE_BODY.to_string()));
@@ -1081,7 +1108,8 @@ mod tests {
 
     /// Кеш ограничен по числу записей и вычищает истёкшие при записи:
     /// у долгоживущего процесса поток уникальных запросов не раздувает
-    /// память безгранично (ревью PR #416).
+    /// память безгранично.
+    /// rule: INV.APP.DOCUMENTATION-STANDARDS-CACHE
     #[test]
     fn the_search_cache_is_bounded_and_purges_expired_entries() {
         let (bounded_provider, _http) = provider(NetworkAccess::Allow, Ok(LIVE_BODY.to_string()));
@@ -1115,6 +1143,7 @@ mod tests {
     /// Запрос нормализуется по пробелам до отправки: сервер видит один
     /// канонический текст, и кеш не плодит записи на каждую расстановку
     /// пробелов.
+    /// rule: INV.APP.DOCUMENTATION-STANDARDS-CACHE
     #[test]
     fn the_query_is_normalized_before_the_server_call() {
         let (provider, http) = provider(NetworkAccess::Allow, Ok(LIVE_BODY.to_string()));
@@ -1136,6 +1165,7 @@ mod tests {
 
     /// Запрет политики — отказ ДО транспорта: сам смысл `policy-denied` в том,
     /// что пользователь запретил обращение, а не в том, что оно не удалось.
+    /// rule: INV.APP.DOCUMENTATION-NETWORK-READ-BOUNDARIES
     #[test]
     fn v8std_denied_by_policy_answers_policy_denied_without_touching_the_network() {
         let (provider, http) = provider(NetworkAccess::Deny, Ok(LIVE_BODY.to_string()));
@@ -1202,6 +1232,7 @@ mod tests {
 
     /// Отмена вызова MCP приоритетна и для сервера стандартов: отменённый
     /// вызов не трогает сеть и отвечает диагностикой, а не результатом.
+    /// rule: INV.APP.DOCUMENTATION-NETWORK-READ-BOUNDARIES
     #[test]
     fn v8std_cancellation_stops_before_the_network_for_search_and_get() {
         let (mut cancelled, http) = provider(NetworkAccess::Allow, Ok(LIVE_BODY.to_string()));
@@ -1312,6 +1343,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.APP.DOCUMENTATION-NETWORK-READ-BOUNDARIES
     #[test]
     fn v8std_get_not_found_and_policy_deny_are_owner_failures() {
         let not_found = r#"{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"{\"found\": false, \"candidates\": []}"}]}}"#;
@@ -1357,6 +1389,7 @@ mod tests {
     /// Порядок слоёв цепочки endpoint: файл политики (локальный оверлей уже
     /// сведён внутри неё) старше окружения, окружение старше встроенного
     /// умолчания.
+    /// rule: INV.APP.DOCUMENTATION-NETWORK-POLICY
     #[test]
     fn resolve_standards_endpoint_prefers_config_then_env_then_builtin() {
         let dir = tempfile::tempdir().expect("каталог");
@@ -1407,6 +1440,7 @@ mod tests {
 
     /// Корень, которого нет в хранилище ОС: секция называет вероятную
     /// причину — перехват TLS — и что исправить.
+    /// rule: INV.PKG.NETWORK-TRUST-AND-PROXY
     #[test]
     fn v8std_over_a_root_the_os_does_not_trust_names_interception() {
         use unica_network::test_support::{TestRoot, TlsStand};
@@ -1464,6 +1498,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.PKG.NETWORK-PROXY-ROUTING
     #[test]
     fn v8std_requests_go_through_https_proxy_and_bypass_it_by_no_proxy() {
         use unica_network::test_support::{ConnectProxy, TestRoot, TlsStand};

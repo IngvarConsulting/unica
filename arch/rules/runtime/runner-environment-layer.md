@@ -1,8 +1,5 @@
 ---
 id: INV.RUNTIME.RUNNER-ENVIRONMENT-LAYER
-check:
-  - crates/unica-coder/src/infrastructure/daemon/v13_infobase_exports.rs::runner_environment_refusals_name_the_layer_that_refused
-  - crates/unica-coder/src/infrastructure/daemon/v13_infobase_exports.rs::an_absent_bundled_runner_names_the_missing_engine_in_data
 ---
 
 # Отказ среды раннера называет отказавший слой

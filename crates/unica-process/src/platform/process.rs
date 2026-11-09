@@ -17,8 +17,38 @@ use std::thread;
 use std::time::{Duration, Instant};
 use unica_work_control::cancellation::{cancelled_error, CancellationToken};
 
+// resource-limit: process.poll-interval
+// class: step
+// unit: ms
+// scope: process
+// value: 25
+// resource: Интервал опроса состояния дерева дочерних процессов.
+// status: unproven
+// origin: коммит 5a75ae9f1 (feat: add bounded managed child process)
+// problem: неизвестно
+// on-reach: после паузы состояние проверяется снова до срока
 const PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(25);
+// resource-limit: process.termination-wait-limit
+// class: deadline
+// unit: ms
+// scope: process
+// value: 500
+// resource: Ожидание завершения дочернего процесса после сигнала остановки.
+// status: unproven
+// origin: коммит 5a75ae9f1 (feat: add bounded managed child process)
+// problem: неизвестно
+// on-reach: процесс остаётся неподобранным, вывод собирается со статусом «termination pending»
 const TERMINATION_WAIT_LIMIT: Duration = Duration::from_millis(500);
+// resource-limit: process.reader-wait-limit
+// class: deadline
+// unit: ms
+// scope: process
+// value: 500
+// resource: Ожидание потока чтения stdout или stderr после завершения процесса.
+// status: unproven
+// origin: коммит 5a75ae9f1 (feat: add bounded managed child process)
+// problem: неизвестно
+// on-reach: тихо: захват потока считается пустым; построчное чтение возвращает Pending
 const READER_WAIT_LIMIT: Duration = Duration::from_millis(500);
 pub const STREAM_LINE_TOO_LONG_ERROR: &str = "line exceeds configured byte limit";
 pub const STREAM_RECORD_UNTERMINATED_ERROR: &str = "output ends inside a record";
@@ -144,7 +174,27 @@ fn wait_at_job_attach_gate_for_test(process: &Command) {
         }
     }
 }
+// resource-limit: process.stdout-capture-bytes
+// class: retention
+// unit: bytes
+// scope: process
+// value: 1048576
+// resource: Объём захватываемого stdout дочернего процесса по умолчанию.
+// status: unproven
+// origin: коммит 2e4e3d7f1 (fix: bound managed process tree output)
+// problem: неизвестно
+// on-reach: сохраняется хвост, флаг stdout_truncated, вызов неуспешен с пометкой «stdout capture truncated; result is not parseable»
 pub const STDOUT_CAPTURE_LIMIT: usize = 1024 * 1024;
+// resource-limit: process.stderr-capture-bytes
+// class: retention
+// unit: bytes
+// scope: process
+// value: 262144
+// resource: Объём захватываемого stderr дочернего процесса по умолчанию.
+// status: unproven
+// origin: коммит 2e4e3d7f1 (fix: bound managed process tree output)
+// problem: неизвестно
+// on-reach: сохраняется хвост, флаг stderr_truncated и пометка «earlier stderr diagnostics omitted»
 pub const STDERR_CAPTURE_LIMIT: usize = 256 * 1024;
 
 #[derive(Debug)]
@@ -962,6 +1012,16 @@ pub enum ProcessLineReply {
     Stop,
 }
 
+// resource-limit: process.stdin-reply-bytes
+// class: format
+// unit: bytes
+// scope: line
+// value: 4096
+// resource: Размер одной строки ответа в stdin дочернего процесса.
+// status: unproven
+// origin: #1734
+// problem: неизвестно
+// on-reach: ответ отвергается: «process stdin reply must be one LF-terminated UTF-8 line of at most 4096 bytes»
 const STREAM_REPLY_LIMIT: usize = 4096;
 
 /// Only the pipe writer runs off-thread. ManagedChild remains the sole owner
@@ -3371,6 +3431,17 @@ enum StreamFraming {
 }
 
 /// One read of a byte stream: a step of the stream, not a bound of its size.
+// resource-limit: process.byte-stream-chunk-bytes
+// class: step
+// unit: bytes
+// scope: process
+// value: 65536
+// resource: Размер одного чтения потока байтов stdout, который отдаётся потребителю целиком, например сканеру EOL большого staged-блоба.
+// status: unproven
+// origin: #1119
+// problem: неизвестно
+// on-reach: кусок передаётся потребителю и читается следующий; общий объём потока не ограничивается
+// issue: #1119
 const BYTE_STREAM_CHUNK_BYTES: usize = 64 * 1024;
 
 fn start_chunk_reader<R>(pipe: Option<R>) -> Option<Receiver<LineMessage>>
@@ -3824,7 +3895,7 @@ fn retain_tail(captured: &mut CapturedOutput, chunk: &[u8], limit: usize) {
 }
 
 #[cfg(test)]
-mod tests {
+mod medium_tests {
     #[cfg(windows)]
     use super::{assert_windows_runtime_process_tree_semantics_for_test, ProcessTree};
     use super::{
@@ -3973,9 +4044,10 @@ mod tests {
         }
     }
 
-    /// Ревью #549: незапуском программы называется только отказ ОС создать
+    /// Незапуском программы называется только отказ ОС создать
     /// процесс. Отсутствующий рабочий каталог программу не пробовал, хотя ОС
     /// ответила бы на него той же ошибкой, что на отсутствующий файл.
+    /// rule: INV.WIRE.MISSING-ENGINE-REFUSAL
     #[test]
     fn only_a_refused_launch_is_a_launch_failure() {
         let root = tempfile::tempdir().unwrap();
@@ -4029,7 +4101,7 @@ mod tests {
                 let mut child = Command::new(std::env::current_exe().unwrap())
                     .args([
                         "--exact",
-                        "platform::process::tests::managed_child_test_helper",
+                        "platform::process::medium_tests::managed_child_test_helper",
                         "--ignored",
                         "--nocapture",
                     ])
@@ -4187,7 +4259,7 @@ mod tests {
                 let mut child = Command::new(std::env::current_exe().unwrap())
                     .args([
                         "--exact",
-                        "platform::process::tests::managed_child_test_helper",
+                        "platform::process::medium_tests::managed_child_test_helper",
                         "--ignored",
                         "--nocapture",
                     ])
@@ -4213,7 +4285,7 @@ mod tests {
                 let child = Command::new(std::env::current_exe().unwrap())
                     .args([
                         "--exact",
-                        "platform::process::tests::managed_child_test_helper",
+                        "platform::process::medium_tests::managed_child_test_helper",
                         "--ignored",
                         "--nocapture",
                     ])
@@ -4245,7 +4317,7 @@ mod tests {
                     Command::new(std::env::current_exe().unwrap())
                         .args([
                             "--exact",
-                            "platform::process::tests::managed_child_test_helper",
+                            "platform::process::medium_tests::managed_child_test_helper",
                             "--ignored",
                             "--nocapture",
                         ])
@@ -4290,7 +4362,7 @@ mod tests {
                 let grandchild = Command::new(std::env::current_exe().unwrap())
                     .args([
                         "--exact",
-                        "platform::process::tests::managed_child_test_helper",
+                        "platform::process::medium_tests::managed_child_test_helper",
                         "--ignored",
                         "--nocapture",
                     ])
@@ -4310,7 +4382,7 @@ mod tests {
                 let grandchild = Command::new(std::env::current_exe().unwrap())
                     .args([
                         "--exact",
-                        "platform::process::tests::managed_child_test_helper",
+                        "platform::process::medium_tests::managed_child_test_helper",
                         "--ignored",
                         "--nocapture",
                     ])
@@ -4337,7 +4409,7 @@ mod tests {
                 command
                     .args([
                         "--exact",
-                        "platform::process::tests::managed_child_test_helper",
+                        "platform::process::medium_tests::managed_child_test_helper",
                         "--ignored",
                         "--nocapture",
                     ])
@@ -4383,7 +4455,7 @@ mod tests {
                 let child = Command::new(std::env::current_exe().unwrap())
                     .args([
                         "--exact",
-                        "platform::process::tests::managed_child_test_helper",
+                        "platform::process::medium_tests::managed_child_test_helper",
                         "--ignored",
                         "--nocapture",
                     ])
@@ -4629,7 +4701,7 @@ mod tests {
             program: std::env::current_exe().unwrap(),
             args: vec![
                 "--exact".into(),
-                "platform::process::tests::managed_child_test_helper".into(),
+                "platform::process::medium_tests::managed_child_test_helper".into(),
                 "--ignored".into(),
                 "--nocapture".into(),
             ],
@@ -4668,7 +4740,7 @@ mod tests {
             program: std::env::current_exe().map_err(|error| error.to_string())?,
             args: vec![
                 "--exact".into(),
-                "platform::process::tests::managed_child_test_helper".into(),
+                "platform::process::medium_tests::managed_child_test_helper".into(),
                 "--ignored".into(),
                 "--nocapture".into(),
             ],
@@ -4692,7 +4764,7 @@ mod tests {
                 program: std::env::current_exe().map_err(|error| error.to_string())?,
                 args: vec![
                     "--exact".into(),
-                    "platform::process::tests::managed_child_test_helper".into(),
+                    "platform::process::medium_tests::managed_child_test_helper".into(),
                     "--ignored".into(),
                     "--nocapture".into(),
                 ],
@@ -4737,7 +4809,7 @@ mod tests {
         command
             .args([
                 "--exact",
-                "platform::process::tests::managed_child_test_helper",
+                "platform::process::medium_tests::managed_child_test_helper",
                 "--ignored",
                 "--nocapture",
             ])
@@ -4941,7 +5013,7 @@ mod tests {
             let status = Command::new(std::env::current_exe().unwrap())
                 .args([
                     "--exact",
-                    "platform::process::tests::linux_runtime_descendant_probe_distinguishes_zombie_from_live_process",
+                    "platform::process::medium_tests::linux_runtime_descendant_probe_distinguishes_zombie_from_live_process",
                     "--nocapture",
                 ])
                 .env(HARNESS_ENV, "1")
@@ -5061,7 +5133,7 @@ mod tests {
         command
             .args([
                 "--exact",
-                "platform::process::tests::managed_child_test_helper",
+                "platform::process::medium_tests::managed_child_test_helper",
                 "--ignored",
                 "--nocapture",
             ])
@@ -5263,6 +5335,7 @@ mod tests {
         .unwrap();
     }
 
+    /// rule: INV.APP.RUNTIME-RESOURCE-TREE
     #[cfg(unix)]
     #[test]
     pub(super) fn runtime_sentinel_preserves_a_meaningful_inherited_fd198() {
@@ -5273,7 +5346,7 @@ mod tests {
             let status = Command::new(std::env::current_exe().unwrap())
                 .args([
                     "--exact",
-                    "platform::process::tests::runtime_sentinel_preserves_a_meaningful_inherited_fd198",
+                    "platform::process::medium_tests::runtime_sentinel_preserves_a_meaningful_inherited_fd198",
                     "--nocapture",
                 ])
                 .env(RUNTIME_SENTINEL_FD198_HARNESS_ENV, "1")
@@ -5332,7 +5405,7 @@ mod tests {
         command
             .args([
                 "--exact",
-                "platform::process::tests::runtime_preexisting_fd198_helper",
+                "platform::process::medium_tests::runtime_preexisting_fd198_helper",
                 "--ignored",
                 "--nocapture",
             ])
@@ -5514,7 +5587,7 @@ mod tests {
                 descendant
                     .args([
                         "--exact",
-                        "platform::process::tests::runtime_runner_style_sentinel_helper",
+                        "platform::process::medium_tests::runtime_runner_style_sentinel_helper",
                         "--ignored",
                         "--nocapture",
                     ])
@@ -5562,7 +5635,7 @@ mod tests {
         command
             .args([
                 "--exact",
-                "platform::process::tests::runtime_runner_style_sentinel_helper",
+                "platform::process::medium_tests::runtime_runner_style_sentinel_helper",
                 "--ignored",
                 "--nocapture",
             ])
@@ -5610,6 +5683,7 @@ mod tests {
         let _ = std::fs::remove_file(pid_file);
     }
 
+    /// rule: INV.APP.RUNTIME-RESOURCE-TREE
     #[cfg(windows)]
     #[test]
     fn windows_runtime_tree_proves_a_child_that_finished_before_first_poll() {
@@ -5628,7 +5702,7 @@ mod tests {
         command
             .args([
                 "--exact",
-                "platform::process::tests::managed_child_test_helper",
+                "platform::process::medium_tests::managed_child_test_helper",
                 "--ignored",
                 "--nocapture",
             ])
@@ -5676,6 +5750,7 @@ mod tests {
             .expect("release the completed runtime fixture");
     }
 
+    /// rule: INV.APP.RUNTIME-RESOURCE-TREE
     #[cfg(windows)]
     #[test]
     fn windows_runtime_terminal_waits_for_the_descendant_process_signal() {
@@ -5692,7 +5767,7 @@ mod tests {
             command
                 .args([
                     "--exact",
-                    "platform::process::tests::managed_child_test_helper",
+                    "platform::process::medium_tests::managed_child_test_helper",
                     "--ignored",
                     "--nocapture",
                 ])
@@ -5858,7 +5933,7 @@ mod tests {
         let mut child = Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
-                "platform::process::tests::managed_child_test_helper",
+                "platform::process::medium_tests::managed_child_test_helper",
                 "--ignored",
                 "--nocapture",
             ])
@@ -5917,7 +5992,7 @@ mod tests {
             program: std::env::current_exe().unwrap(),
             args: vec![
                 "--exact".into(),
-                "platform::process::tests::managed_child_test_helper".into(),
+                "platform::process::medium_tests::managed_child_test_helper".into(),
                 "--ignored".into(),
                 "--nocapture".into(),
             ],
@@ -5942,7 +6017,7 @@ mod tests {
             program: std::env::current_exe().unwrap(),
             args: vec![
                 "--exact".into(),
-                "platform::process::tests::managed_child_test_helper".into(),
+                "platform::process::medium_tests::managed_child_test_helper".into(),
                 "--ignored".into(),
                 "--nocapture".into(),
             ],
@@ -6304,7 +6379,7 @@ mod tests {
             program: std::env::current_exe().unwrap(),
             args: vec![
                 "--exact".into(),
-                "platform::process::tests::managed_child_test_helper".into(),
+                "platform::process::medium_tests::managed_child_test_helper".into(),
                 "--ignored".into(),
                 "--nocapture".into(),
             ],
@@ -6342,7 +6417,7 @@ mod tests {
             program: std::env::current_exe().unwrap(),
             args: vec![
                 "--exact".into(),
-                "platform::process::tests::managed_child_test_helper".into(),
+                "platform::process::medium_tests::managed_child_test_helper".into(),
                 "--ignored".into(),
                 "--nocapture".into(),
             ],
@@ -6367,6 +6442,7 @@ mod tests {
         assert_eq!(managed.state, ChildState::Reaped);
     }
 
+    /// rule: INV.RUNTIME.RUNNER-MUTATION-CANCELLATION
     #[test]
     fn protected_process_finishes_after_cancellation_on_every_host() {
         let start = HelperStart::new();
@@ -6384,7 +6460,7 @@ mod tests {
             program: std::env::current_exe().unwrap(),
             args: vec![
                 "--exact".into(),
-                "platform::process::tests::managed_child_test_helper".into(),
+                "platform::process::medium_tests::managed_child_test_helper".into(),
                 "--ignored".into(),
                 "--nocapture".into(),
             ],
@@ -6413,7 +6489,7 @@ mod tests {
             program: std::env::current_exe().unwrap(),
             args: vec![
                 "--exact".into(),
-                "platform::process::tests::managed_child_test_helper".into(),
+                "platform::process::medium_tests::managed_child_test_helper".into(),
                 "--ignored".into(),
                 "--nocapture".into(),
             ],
@@ -6456,7 +6532,7 @@ mod tests {
             program: std::env::current_exe().unwrap(),
             args: vec![
                 "--exact".into(),
-                "platform::process::tests::managed_child_test_helper".into(),
+                "platform::process::medium_tests::managed_child_test_helper".into(),
                 "--ignored".into(),
                 "--nocapture".into(),
             ],
@@ -6515,7 +6591,7 @@ mod tests {
                 Command::new(std::env::current_exe().unwrap())
                     .args([
                         "--exact",
-                        "platform::process::tests::managed_child_test_helper",
+                        "platform::process::medium_tests::managed_child_test_helper",
                         "--ignored",
                         "--nocapture",
                     ])
@@ -6532,7 +6608,7 @@ mod tests {
                 program: std::env::current_exe().unwrap(),
                 args: vec![
                     "--exact".into(),
-                    "platform::process::tests::managed_child_test_helper".into(),
+                    "platform::process::medium_tests::managed_child_test_helper".into(),
                     "--ignored".into(),
                     "--nocapture".into(),
                 ],
@@ -6602,6 +6678,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.RUNTIME.FULL-EXPORT-RETAINED-IDENTITY
     #[test]
     fn controlled_stream_held_stderr_keeps_timeout_after_leader_exit() {
         let (mut managed, mut fixture) = ControlledStderrFixture::spawn();
@@ -6636,6 +6713,7 @@ mod tests {
         assert_eq!(managed.state, ChildState::Reaped);
     }
 
+    /// rule: INV.RUNTIME.FULL-EXPORT-RETAINED-IDENTITY
     #[test]
     fn controlled_stream_late_stderr_eof_preserves_tail_after_leader_exit() {
         let (mut managed, mut fixture) = ControlledStderrFixture::spawn();
@@ -6700,6 +6778,7 @@ mod tests {
         )
     }
 
+    /// rule: INV.RUNTIME.FULL-EXPORT-RETAINED-IDENTITY
     #[test]
     fn controlled_stdout_read_error_stays_an_error_after_disconnect() {
         let (reader, finished) = controlled_faulting_read(ControlledReaderFault::Error);
@@ -6756,6 +6835,7 @@ mod tests {
         assert_eq!(lines, 1);
     }
 
+    /// rule: INV.RUNTIME.FULL-EXPORT-RETAINED-IDENTITY
     #[test]
     fn controlled_stdout_reader_panic_is_not_eof() {
         let (reader, finished) = controlled_faulting_read(ControlledReaderFault::Panic);
@@ -6799,6 +6879,7 @@ mod tests {
         assert_eq!(lines, 1);
     }
 
+    /// rule: INV.RUNTIME.FULL-EXPORT-RETAINED-IDENTITY
     #[test]
     fn controlled_stderr_reader_faults_do_not_satisfy_eof() {
         for fault in [ControlledReaderFault::Error, ControlledReaderFault::Panic] {
@@ -7173,13 +7254,14 @@ mod tests {
         assert!(cancellation.protected_process_started());
     }
 
+    /// rule: INV.APP.CODE-SEARCH-RESULT-EVIDENCE
     #[test]
     fn completed_line_drain_keeps_stop_only_for_successful_children() {
         for (mode, expected_stop) in [("stream_then_exit", true), ("stream_then_fail", false)] {
             let mut child = Command::new(std::env::current_exe().unwrap())
                 .args([
                     "--exact",
-                    "platform::process::tests::managed_child_test_helper",
+                    "platform::process::medium_tests::managed_child_test_helper",
                     "--ignored",
                     "--nocapture",
                 ])
@@ -7229,7 +7311,7 @@ mod tests {
             program: std::env::current_exe().unwrap(),
             args: vec![
                 "--exact".into(),
-                "platform::process::tests::managed_child_test_helper".into(),
+                "platform::process::medium_tests::managed_child_test_helper".into(),
                 "--ignored".into(),
                 "--nocapture".into(),
             ],
@@ -7258,7 +7340,7 @@ mod tests {
             program: std::env::current_exe().unwrap(),
             args: vec![
                 "--exact".into(),
-                "platform::process::tests::managed_child_test_helper".into(),
+                "platform::process::medium_tests::managed_child_test_helper".into(),
                 "--ignored".into(),
                 "--nocapture".into(),
             ],
@@ -7295,7 +7377,7 @@ mod tests {
             program: std::env::current_exe().unwrap(),
             args: vec![
                 "--exact".into(),
-                "platform::process::tests::managed_child_test_helper".into(),
+                "platform::process::medium_tests::managed_child_test_helper".into(),
                 "--ignored".into(),
                 "--nocapture".into(),
             ],
@@ -7332,6 +7414,7 @@ mod tests {
         cleanup.disarm();
     }
 
+    /// rule: INV.WIRE.TERMINAL-RUN-HAS-NO-FENCE
     #[test]
     fn pending_launch_release_preserves_detached_descendant() {
         let directory = tempfile::tempdir().unwrap();
@@ -7359,6 +7442,7 @@ mod tests {
         assert_eq!(super::unix_signal_count_for_test(), 0);
     }
 
+    /// rule: INV.WIRE.TERMINAL-RUN-HAS-NO-FENCE
     #[test]
     fn pending_launch_rejection_drops_owned_descendant() {
         let directory = tempfile::tempdir().unwrap();
@@ -7402,7 +7486,7 @@ mod tests {
             Command::new(std::env::current_exe().unwrap())
                 .args([
                     "--exact",
-                    "platform::process::tests::managed_child_test_helper",
+                    "platform::process::medium_tests::managed_child_test_helper",
                     "--ignored",
                     "--nocapture",
                 ])
@@ -7558,6 +7642,7 @@ mod tests {
         cleanup.disarm();
     }
 
+    /// rule: INV.WIRE.TERMINAL-RUN-HAS-NO-FENCE
     #[cfg(unix)]
     #[test]
     fn pending_launch_complete_json_without_eof_remains_cancelable() {
@@ -7608,7 +7693,7 @@ mod tests {
             program: std::env::current_exe().unwrap(),
             args: vec![
                 "--exact".into(),
-                "platform::process::tests::managed_child_test_helper".into(),
+                "platform::process::medium_tests::managed_child_test_helper".into(),
                 "--ignored".into(),
                 "--nocapture".into(),
             ],
@@ -7662,7 +7747,7 @@ mod tests {
             program: std::env::current_exe().unwrap(),
             args: vec![
                 "--exact".into(),
-                "platform::process::tests::managed_child_test_helper".into(),
+                "platform::process::medium_tests::managed_child_test_helper".into(),
                 "--ignored".into(),
                 "--nocapture".into(),
             ],
@@ -7726,7 +7811,7 @@ mod tests {
         command
             .args([
                 "--exact",
-                "platform::process::tests::managed_child_test_helper",
+                "platform::process::medium_tests::managed_child_test_helper",
                 "--ignored",
                 "--nocapture",
             ])
@@ -7753,7 +7838,7 @@ mod tests {
         command
             .args([
                 "--exact",
-                "platform::process::tests::managed_child_test_helper",
+                "platform::process::medium_tests::managed_child_test_helper",
                 "--ignored",
                 "--nocapture",
             ])
@@ -7786,7 +7871,7 @@ mod tests {
         command
             .args([
                 "--exact",
-                "platform::process::tests::managed_child_test_helper",
+                "platform::process::medium_tests::managed_child_test_helper",
                 "--ignored",
                 "--nocapture",
             ])
@@ -7820,7 +7905,7 @@ mod tests {
         command
             .args([
                 "--exact",
-                "platform::process::tests::managed_child_test_helper",
+                "platform::process::medium_tests::managed_child_test_helper",
                 "--ignored",
                 "--nocapture",
             ])
@@ -7844,6 +7929,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.PLATFORM.PROCESS-TREE-LIFECYCLE
     #[test]
     fn managed_process_tree_lifecycle_is_bounded() {
         managed_child_timeout_returns_within_a_bounded_interval();
@@ -7862,7 +7948,7 @@ mod tests {
         command
             .args([
                 "--exact",
-                "platform::process::tests::managed_child_test_helper",
+                "platform::process::medium_tests::managed_child_test_helper",
                 "--ignored",
                 "--nocapture",
             ])
@@ -7889,7 +7975,7 @@ mod tests {
         command
             .args([
                 "--exact",
-                "platform::process::tests::managed_child_test_helper",
+                "platform::process::medium_tests::managed_child_test_helper",
                 "--ignored",
                 "--nocapture",
             ])
@@ -7936,7 +8022,7 @@ mod tests {
         command
             .args([
                 "--exact",
-                "platform::process::tests::managed_child_test_helper",
+                "platform::process::medium_tests::managed_child_test_helper",
                 "--ignored",
                 "--nocapture",
             ])
@@ -7960,6 +8046,7 @@ mod tests {
         child.wait();
     }
 
+    /// rule: INV.RUNTIME.RUNNER-MUTATION-CANCELLATION
     #[cfg(windows)]
     #[test]
     fn slow_job_attach_delays_cancel_without_starting_the_mutation_early() {
@@ -7978,7 +8065,7 @@ mod tests {
         command
             .args([
                 "--exact",
-                "platform::process::tests::managed_child_test_helper",
+                "platform::process::medium_tests::managed_child_test_helper",
                 "--ignored",
                 "--nocapture",
             ])

@@ -25,3 +25,7 @@ fs2.workspace = true
 tempfile.workspace = true
 unica-workspace = { path = "../unica-workspace", features = ["test-support"] }
 unica-process = { path = "../unica-process", features = ["test-support"] }
+
+[package.metadata.unica]
+component = "coordinator"
+file-io = "owned"

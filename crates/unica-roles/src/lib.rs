@@ -1015,5 +1015,3 @@ mod tests {
 
 pub mod applicability;
 pub mod operations;
-
-pub mod recovery;
