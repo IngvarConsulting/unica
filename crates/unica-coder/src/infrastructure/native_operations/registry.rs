@@ -12,7 +12,7 @@ pub(crate) enum TypedMutationHandler {
     XdtoEdit,
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TopLevelJsonInput {
     None,
@@ -20,7 +20,7 @@ pub(crate) enum TopLevelJsonInput {
     OptionalDefinitionFile,
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct NativeMutationFileInputContract {
     pub(crate) top_level: TopLevelJsonInput,
@@ -28,7 +28,7 @@ pub(crate) struct NativeMutationFileInputContract {
     pub(crate) secondary_from_object_platform_xml: bool,
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 const NO_FILE_INPUT: NativeMutationFileInputContract = NativeMutationFileInputContract {
     top_level: TopLevelJsonInput::None,
     secondary_at_query_files: false,
@@ -44,7 +44,7 @@ const NO_FILE_INPUT: NativeMutationFileInputContract = NativeMutationFileInputCo
 ///
 /// Mutation targets and platform owner/provenance files are guarded separately
 /// and are intentionally outside this caller-input classification.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) fn native_mutation_file_input_contract(
     operation: &str,
 ) -> Option<NativeMutationFileInputContract> {

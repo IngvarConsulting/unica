@@ -1,0 +1,37 @@
+{
+  "area": "Реквизиты и состав",
+  "task": "Добавить реквизит документу (превью)",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Document.АктОбУничтоженииПерсональныхДанных",
+        "ops": [
+          {
+            "op": "attribute.add",
+            "args": {
+              "items": [
+                {
+                  "name": "ОснованиеУничтожения",
+                  "type": {
+                    "variants": [
+                      {
+                        "kind": "string",
+                        "length": 200,
+                        "allowedLength": "variable"
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S067"
+}

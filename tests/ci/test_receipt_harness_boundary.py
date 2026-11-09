@@ -20,10 +20,10 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT_PATH = REPO_ROOT / "scripts" / "ci" / "check-receipt-harness-boundary.py"
 HARNESS_ROOT = Path(
-    "crates/unica-coder/tests/support/receipt_scenario.rs"
+    "crates/unica-daemon/tests/support/receipt_scenario.rs"
 )
 HARNESS_DIR = Path(
-    "crates/unica-coder/tests/support/receipt_scenario"
+    "crates/unica-daemon/tests/support/receipt_scenario"
 )
 CONTRACT_ROOT = Path("crates/unica-execution/src/receipt_runtime/contracts.rs")
 CONTRACT_DIR = Path("crates/unica-execution/src/receipt_runtime/contracts")

@@ -1,0 +1,17 @@
+{
+  "area": "Навигация и чтение",
+  "task": "Сравнить два перечисления одного вида между собой",
+  "wire": [
+    {
+      "tool": "unica.diff",
+      "args": {
+        "left": "main:Enum.LanguageAware",
+        "right": "main:Enum.ВажностьПроблемыУчета"
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S031"
+}

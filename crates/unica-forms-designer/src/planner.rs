@@ -1,7 +1,7 @@
 //! Form operation parsing and planning over an existing source proposal.
 use serde_json::{Map, Value};
 use unica_address::address::{NodeKind, QualifiedAddress};
-use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+use unica_address::source_target::MetadataAddress;
 use unica_forms::default_forms::FormSlotTarget;
 use unica_forms::facts::FormInfoElement;
 use unica_forms::operations::FormOperation;
@@ -79,35 +79,6 @@ pub fn form_item_at<'a>(
         Some(item)
     } else {
         form_item_at(&item.children, rest)
-    }
-}
-/// Путь элемента с именем `name` от корня формы: один, ни одного или
-/// несколько элементов с этим именем.
-pub fn form_item_path(
-    elements: &[FormInfoElement],
-    name: &str,
-) -> unica_operations::recovery::NamedLookup {
-    fn collect(
-        elements: &[FormInfoElement],
-        name: &str,
-        prefix: &mut Vec<String>,
-        found: &mut Vec<Vec<String>>,
-    ) {
-        for element in elements {
-            prefix.push(element.name.clone());
-            if element.name == name {
-                found.push(prefix.clone());
-            }
-            collect(&element.children, name, prefix, found);
-            prefix.pop();
-        }
-    }
-    let mut found = Vec::new();
-    collect(elements, name, &mut Vec::new(), &mut found);
-    match found.len() {
-        0 => unica_operations::recovery::NamedLookup::Missing,
-        1 => unica_operations::recovery::NamedLookup::Found(found.remove(0)),
-        _ => unica_operations::recovery::NamedLookup::Ambiguous(found),
     }
 }
 /// Дерево элементов формы, как его читает `view`.
@@ -219,11 +190,9 @@ pub fn form_target(
     let owner_name = owner
         .name()
         .ok_or_else(|| bad(op_index, "at", "the form owner must be named"))?;
-    let address = MetadataAddress::parse(
-        PLATFORM_XML_8_3_27_FORMAT_2_20,
-        &format!("{}.{owner_name}", owner.kind().as_str()),
-    )
-    .map_err(|error| bad(op_index, "at", error.to_string()))?;
+    let address =
+        MetadataAddress::parse_logical(&format!("{}.{owner_name}", owner.kind().as_str()))
+            .map_err(|error| bad(op_index, "at", error.to_string()))?;
     let named = |segment: &unica_address::address::AddressSegment, what: &str| {
         segment
             .name()
@@ -1896,30 +1865,22 @@ mod form_slot_kind_tests {
     #[test]
     fn form_slots_of_each_kind_match_an_8_3_27_export() {
         // The exports are compiled in: this component reads no files itself.
-        macro_rules! export {
-            ($path:literal) => {
-                (
-                    $path,
-                    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../", $path)),
-                )
-            };
-        }
-        for (kind, (fixture, text)) in [
-            ("Catalog", export!("crates/unica-forms-designer/tests/platform/dump_parity/Catalog.before.xml")),
-            ("Document", export!("crates/unica-metadata-designer/tests/platform/dump_parity/Document.before.xml")),
-            ("ChartOfAccounts", export!("crates/unica-metadata-designer/tests/platform/dump_parity/ChartsOfAccounts.before.xml")),
-            ("ChartOfCalculationTypes", export!("crates/unica-metadata-designer/tests/platform/dump_parity/ChartsOfCalculationTypes.before.xml")),
-            ("ChartOfCharacteristicTypes", export!("crates/unica-metadata-designer/tests/platform/dump_parity/ChartsOfCharacteristicTypes.before.xml")),
-            ("Constant", export!("tests/fixtures/platform_8_3_27/meta_info_surface/constant/Constants/MainCurrency.xml")),
-            ("Enum", export!("tests/fixtures/platform_8_3_27/meta_info_surface/enum/Enums/PresentationEnum.xml")),
-            ("InformationRegister", export!("tests/fixtures/platform_8_3_27/meta_info_surface/register/InformationRegisters/CommandInterfaceRegister.xml")),
-            ("Report", export!("tests/fixtures/platform_8_3_27/template-new-xml/seed/Reports/CorpusReport.xml")),
-            ("ExternalDataProcessor", export!("tests/fixtures/platform_8_3_27/external_artifacts/epf/SyntheticProcessor.xml")),
-            ("ExternalReport", export!("tests/fixtures/platform_8_3_27/external_artifacts/erf/SyntheticReport.xml")),
+        for (kind, text) in [
+            ("Catalog", include_str!("../tests/platform/dump_parity/Catalog.before.xml")),
+            ("Document", include_str!("../../unica-metadata-designer/tests/platform/dump_parity/Document.before.xml")),
+            ("ChartOfAccounts", include_str!("../../unica-metadata-designer/tests/platform/dump_parity/ChartsOfAccounts.before.xml")),
+            ("ChartOfCalculationTypes", include_str!("../../unica-metadata-designer/tests/platform/dump_parity/ChartsOfCalculationTypes.before.xml")),
+            ("ChartOfCharacteristicTypes", include_str!("../../unica-metadata-designer/tests/platform/dump_parity/ChartsOfCharacteristicTypes.before.xml")),
+            ("Constant", include_str!("../../../tests/fixtures/platform_8_3_27/meta_info_surface/constant/Constants/MainCurrency.xml")),
+            ("Enum", include_str!("../../../tests/fixtures/platform_8_3_27/meta_info_surface/enum/Enums/PresentationEnum.xml")),
+            ("InformationRegister", include_str!("../../../tests/fixtures/platform_8_3_27/meta_info_surface/register/InformationRegisters/CommandInterfaceRegister.xml")),
+            ("Report", include_str!("../../../tests/fixtures/platform_8_3_27/template-new-xml/seed/Reports/CorpusReport.xml")),
+            ("ExternalDataProcessor", include_str!("../../../tests/fixtures/platform_8_3_27/external_artifacts/epf/SyntheticProcessor.xml")),
+            ("ExternalReport", include_str!("../../../tests/fixtures/platform_8_3_27/external_artifacts/erf/SyntheticReport.xml")),
         ] {
             let document = roxmltree::Document::parse(text.trim_start_matches('\u{feff}')).unwrap();
             let owner = document.root_element().first_element_child().unwrap();
-            assert_eq!(owner.tag_name().name(), kind, "{fixture}");
+            assert_eq!(owner.tag_name().name(), kind);
             let properties = owner
                 .children()
                 .find(|node| node.has_tag_name((super::FORM_OWNER_MD_NS, "Properties")))

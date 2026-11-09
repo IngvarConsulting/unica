@@ -10,11 +10,14 @@ use serde::Serialize;
 use serde_json::{Map, Value};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use unica_bsl::outline::CodeOutlineResult;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 pub enum ProviderId {
-    #[serde(rename = "rlm")]
-    Rlm,
+    /// Поставщик смысловой роли в тестах: в поставке такого поставщика нет.
+    #[cfg(any(test, feature = "test-support"))]
+    #[serde(rename = "semantic-fixture")]
+    SemanticFixture,
     #[serde(rename = "bsl-analyzer")]
     BslAnalyzer,
     #[serde(rename = "git-grep")]
@@ -195,7 +198,8 @@ impl ProviderProgressSink for NoopProviderProgressSink {
 impl ProviderId {
     pub const fn role(self) -> ProviderRole {
         match self {
-            Self::Rlm => ProviderRole::Semantic,
+            #[cfg(any(test, feature = "test-support"))]
+            Self::SemanticFixture => ProviderRole::Semantic,
             Self::BslAnalyzer => ProviderRole::Symbol,
             Self::GitGrep => ProviderRole::Lexical,
         }
@@ -209,7 +213,8 @@ impl ProviderId {
 impl ProviderId {
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::Rlm => "rlm",
+            #[cfg(any(test, feature = "test-support"))]
+            Self::SemanticFixture => "semantic-fixture",
             Self::BslAnalyzer => "bsl-analyzer",
             Self::GitGrep => "git-grep",
         }
@@ -219,9 +224,7 @@ impl ProviderId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ProviderCapability {
     Search,
-    Definition,
     Outline,
-    ObjectProfile,
     CallGraph,
 }
 
@@ -233,11 +236,6 @@ pub struct SearchRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CodeIntelligenceReadRequest {
-    Definition {
-        name: String,
-        module_hint: String,
-        limit: usize,
-    },
     Outline {
         path: String,
         include_methods: bool,
@@ -255,7 +253,6 @@ pub enum CodeIntelligenceReadRequest {
 impl CodeIntelligenceReadRequest {
     pub const fn capability(&self) -> ProviderCapability {
         match self {
-            Self::Definition { .. } => ProviderCapability::Definition,
             Self::Outline { .. } => ProviderCapability::Outline,
             Self::CallGraph { .. } => ProviderCapability::CallGraph,
         }
@@ -263,7 +260,6 @@ impl CodeIntelligenceReadRequest {
 
     pub const fn operation_name(&self) -> &'static str {
         match self {
-            Self::Definition { .. } => "code definition",
             Self::Outline { .. } => "code outline",
             Self::CallGraph { direction, .. } => match direction {
                 CallGraphDirection::Callers => "call graph callers",
@@ -560,13 +556,13 @@ pub enum IndexMaintenanceEvidence {
 impl IndexMaintenanceEvidence {
     pub fn summary(self) -> &'static str {
         match self {
-            Self::Queued => "RLM index maintenance is queued",
-            Self::Running => "RLM index maintenance is running",
-            Self::StartFailed => "RLM index maintenance could not be queued: start failed",
-            Self::ExecutionFailed => "RLM index maintenance execution failed",
-            Self::Unknown => "RLM index maintenance state is unknown",
-            Self::Completed => "RLM index maintenance completed",
-            Self::Cancelled => "RLM index maintenance was cancelled",
+            Self::Queued => "Index maintenance is queued",
+            Self::Running => "Index maintenance is running",
+            Self::StartFailed => "Index maintenance could not be queued: start failed",
+            Self::ExecutionFailed => "Index maintenance execution failed",
+            Self::Unknown => "Index maintenance state is unknown",
+            Self::Completed => "Index maintenance completed",
+            Self::Cancelled => "Index maintenance was cancelled",
         }
     }
 }
@@ -983,15 +979,12 @@ pub struct CodeSearchResult {
     pub sections: Vec<ProviderSearchSection>,
 }
 
-use unica_bsl::outline::CodeOutlineResult;
-
 // `Eq` is gone because a profile section carries whatever the index reported,
 // and `serde_json::Value` is only `PartialEq`.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum CodeIntelligenceReadData {
     Outline(CodeOutlineResult),
-    Definition(CodeDefinitionResult),
     CallGraph(CallGraphResult),
 }
 
@@ -1072,38 +1065,6 @@ pub struct CallGraphResult {
     /// admission fact; the public branch reports completeness through a cursor.
     #[serde(skip)]
     pub complete: bool,
-}
-
-/// Typed answer of `unica.code.definition` (ADR-0023). The index already
-/// returns structured definitions; the tool used to render them into a line
-/// grammar the caller then had to parse back.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CodeDefinitionResult {
-    pub name: String,
-    pub definitions: Vec<CodeDefinition>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub index_freshness: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub index_build_id: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-/// Every field the index does not report is `null` (ADR-0023). An explicit
-/// zero, `false` or empty list is a proven answer and keeps its value; only
-/// `file` and `line` are required, because a definition nobody can open is not
-/// a definition.
-pub struct CodeDefinition {
-    pub file: String,
-    pub line: u64,
-    /// Platform kind reported by the index; `null` when it reported none.
-    pub kind: Option<String>,
-    pub params: Option<Vec<String>>,
-    pub export: Option<bool>,
-    pub category: Option<String>,
-    pub object_name: Option<String>,
-    pub module_type: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1282,7 +1243,7 @@ mod tests {
     fn registry_preserves_injected_search_provider_order() {
         let registry = CodeIntelligenceRegistry::new(vec![
             Arc::new(FakeProvider {
-                identity: ProviderId::Rlm.identity(),
+                identity: ProviderId::SemanticFixture.identity(),
                 capabilities: vec![ProviderCapability::Search],
             }),
             Arc::new(FakeProvider {
@@ -1301,18 +1262,18 @@ mod tests {
             .map(|provider| provider.identity().provider)
             .collect::<Vec<_>>();
 
-        assert_eq!(ids, vec!["rlm", "git-grep"]);
+        assert_eq!(ids, vec!["semantic-fixture", "git-grep"]);
     }
 
     #[test]
     fn registry_rejects_duplicate_provider_ids() {
         let providers: Vec<Arc<dyn CodeIntelligenceProvider>> = vec![
             Arc::new(FakeProvider {
-                identity: ProviderId::Rlm.identity(),
+                identity: ProviderId::SemanticFixture.identity(),
                 capabilities: vec![ProviderCapability::Search],
             }),
             Arc::new(FakeProvider {
-                identity: ProviderId::Rlm.identity(),
+                identity: ProviderId::SemanticFixture.identity(),
                 capabilities: Vec::new(),
             }),
         ];
@@ -1322,7 +1283,10 @@ mod tests {
             Err(error) => error,
         };
 
-        assert_eq!(error, "duplicate code intelligence provider: rlm");
+        assert_eq!(
+            error,
+            "duplicate code intelligence provider: semantic-fixture"
+        );
     }
 
     #[test]
@@ -1355,24 +1319,19 @@ mod tests {
                 capabilities: vec![ProviderCapability::Search],
             }),
             Arc::new(FakeProvider {
-                identity: ProviderId::Rlm.identity(),
-                capabilities: vec![
-                    ProviderCapability::Search,
-                    ProviderCapability::Definition,
-                    ProviderCapability::Outline,
-                    ProviderCapability::ObjectProfile,
-                ],
+                identity: ProviderId::SemanticFixture.identity(),
+                capabilities: vec![ProviderCapability::Search, ProviderCapability::CallGraph],
             }),
         ])
         .unwrap();
-        let request = CodeIntelligenceReadRequest::Definition {
-            name: "Найти".to_string(),
-            module_hint: String::new(),
+        let request = CodeIntelligenceReadRequest::CallGraph {
+            id: "Найти".to_string(),
+            direction: CallGraphDirection::Callers,
             limit: 50,
         };
         let provider = registry
             .provider_for(request.capability())
-            .expect("definition capability must resolve to a provider");
+            .expect("call graph capability must resolve to a provider");
 
         let outcome = provider
             .read(
@@ -1383,8 +1342,8 @@ mod tests {
             )
             .unwrap();
 
-        assert_eq!(outcome.provider, ProviderId::Rlm.identity());
-        assert_eq!(outcome.summary, "code definition handled");
+        assert_eq!(outcome.provider, ProviderId::SemanticFixture.identity());
+        assert_eq!(outcome.summary, "call graph callers handled");
     }
 
     #[test]
@@ -1393,7 +1352,7 @@ mod tests {
             coverage: SearchCoverage::Complete,
             elapsed_ms: 12,
             sections: vec![ProviderSearchSection::complete(
-                ProviderId::Rlm.identity(),
+                ProviderId::SemanticFixture.identity(),
                 SearchRanking::Provider,
                 SearchOrdering::Provider,
                 vec![ProviderSearchHit {
@@ -1423,7 +1382,7 @@ mod tests {
                 "elapsedMs": 12,
                 "sections": [{
                     "role": "semantic",
-                    "provider": "rlm",
+                    "provider": "semantic-fixture",
                     "status": "ok",
                     "termination": null,
                     "searchComplete": true,
@@ -1511,19 +1470,13 @@ mod tests {
     /// rule: INV.APP.CODE-SEARCH-RESULT-EVIDENCE
     #[test]
     fn search_section_serializes_role_provenance_completeness_and_logical_location() {
-        use unica_address::source_target::{
-            MetadataAddress, TargetKind, PLATFORM_XML_8_3_27_FORMAT_2_20,
-        };
+        use unica_address::source_target::{MetadataAddress, TargetKind};
         use unica_source_contract::location::SourceLocation;
 
         let location = SourceLocation::Addressed {
             source_set: "main".to_string(),
             metadata_path: Some(
-                MetadataAddress::parse(
-                    PLATFORM_XML_8_3_27_FORMAT_2_20,
-                    "CommonModule.Sales.Module",
-                )
-                .unwrap(),
+                MetadataAddress::parse_logical("CommonModule.Sales.Module").unwrap(),
             ),
             target_kind: TargetKind::Module,
         };

@@ -4,13 +4,13 @@ use std::{
 };
 type Hook = Arc<dyn Fn(bool) + Send + Sync>;
 static HOOKS: Mutex<Vec<(PathBuf, Hook)>> = Mutex::new(Vec::new());
-pub(crate) struct Guard(PathBuf);
+pub struct Guard(PathBuf);
 impl Drop for Guard {
     fn drop(&mut self) {
         HOOKS.lock().unwrap().retain(|(root, _)| root != &self.0);
     }
 }
-pub(crate) fn install(root: &Path, hook: Hook) -> Guard {
+pub fn install(root: &Path, hook: Hook) -> Guard {
     let root = std::fs::canonicalize(root).unwrap();
     let mut hooks = HOOKS.lock().unwrap();
     assert!(
