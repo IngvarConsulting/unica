@@ -74,10 +74,8 @@ come from the tag is the channel: every marketplace job checks out only
 `scripts/ci/release-channel.py`, sparsely, from `main`, and nothing in those
 jobs checks out the tag's code. `UNICA_MARKETPLACE_TOKEN` lives in the
 `marketplace` environment, which accepts `v*` tags only, so a branch or a manual
-run cannot read it. The environment has no reviewer: a release needs one
-approval, given when its tag is set — the signed tag of a person, or the
-`release-tag` job of a candidate below — and the publication from that tag
-runs without waiting. The jobs holding the token still come from the tagged
+run cannot read it. The environment has no reviewer: the publication from a tag
+runs to the end without waiting for a person. The jobs holding the token still come from the tagged
 commit's `release.yml`, so whoever can create a `v*` tag defines those steps. Old
 tags also run against the current `release-channel.py` from `main`, so keep its
 commands compatible with them.
@@ -320,16 +318,30 @@ so nothing but a published tag will do — and a candidate needs testers before
 the release it becomes. A release candidate is published to the `next`
 channel of the marketplace and never to the stable catalog.
 
-A candidate is cut from a checked alpha by a workflow:
+### Releasing an RC
+
+A candidate from a checked alpha is one button; nothing after it waits for a
+person:
+
+| Step | Who | What happens |
+| --- | --- | --- |
+| Night | **Unica Nightly** | full tests on every OS, then the alpha `vX.Y.Z-alpha.N` |
+| Button | a repository administrator | `rc-from-alpha.yml` with the alpha's tag |
+| Tag | the deploy key | version commit on the alpha's slice, tag `vX.Y.Z-rc.N` |
+| Release | `release.yml` on the tag push | full tests, build, install checks |
+| `next` | `release.yml` | the candidate is live on the `next` channel |
 
 ```bash
 gh workflow run rc-from-alpha.yml --repo IngvarConsulting/unica --ref main -f alpha=v0.15.0-alpha.4
 ```
 
-The job runs in the environment `release-tag`, which admits only `main`, and
-waits for the owner's approval. It is the release's only approval: the
-publication jobs of the tag run without a reviewer. `scripts/ci/release-rc.py`
-then refuses unless:
+Only an administrator gets past the first job, `admit`: it reads the role of
+the person who started or re-ran the run (`collaborators/<actor>/permission`)
+and refuses anything but `admin`. No name is written in the workflow. A writer
+can press the button, but the run stops there, before the job that holds the
+tag key starts. That job runs in the environment `marketplace`, which admits
+only `main` and `v*` and has no reviewer. `scripts/ci/release-rc.py` then
+refuses unless:
 
 - the alpha is published and its slice — the parent of its version commit — is
   in `main` and equals the `main@<sha>` of its release description;
@@ -340,9 +352,9 @@ then refuses unless:
 It commits `bump-version.py X.Y.Z-rc.N` on the slice, with `N` the next free
 number, tags the commit and pushes the tag with the deploy key from the secret
 `RELEASE_TAG_KEY`. The key's push starts the ordinary release by tag below:
-the full tests, the build, the install checks and the `next` channel. That tag
-is set by the workflow, not signed by a person: the owner's approval of the job
-and the checks above stand in for the signature. A stable `vX.Y.Z` is still a
+the full tests, the build, the install checks and the `next` channel, with no
+approval on the way. That tag is set by the workflow, not signed by a person:
+the administrator's button and the checks above stand in for the signature. A stable `vX.Y.Z` is still a
 signed tag as in step 1.
 
 A candidate can still be tagged by hand when it must not come from an alpha:
@@ -487,8 +499,8 @@ commits. The commit's parent is the slice; the release description names it as
   non-fast-forward updates are blocked for everyone, and creation is restricted
   with the role admin and **Deploy keys** in the bypass list. The deploy key from
   `RELEASE_TAG_KEY` creates alpha tags in the environment `alpha` and candidate
-  tags in `release-tag`; both admit only `main`. The app GitHub Actions gets no
-  bypass, so a workflow run from any branch cannot create a `v*` tag with the run's token.
+  tags in `marketplace`; the app GitHub Actions gets no bypass, so a workflow run
+  from any branch cannot create a `v*` tag with the run's token.
 - **Immutable releases.** Assets can be uploaded only before publication, so every
   prerelease goes up as a draft and a separate step publishes it. A failed run
   before that step can be rerun: it continues the draft. After publication a

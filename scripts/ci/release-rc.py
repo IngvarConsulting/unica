@@ -11,10 +11,13 @@ Alpha — срез `main`, который ночь проверила полны
 - выпуска `vX.Y.Z` ещё нет: кандидат не может быть младше стабильной версии.
 
 Номер `N` — следующий после существующих тегов `vX.Y.Z-rc.*`. Тег ставит ключ
-развёртывания из окружения `release-tag` (`tag_push`) после одобрения владельца,
-и его push запускает обычный выпуск по тегу: тесты, сборку, проверки установки
-и канал `next`.
+развёртывания из окружения `marketplace` (`tag_push`), и его push запускает
+обычный выпуск по тегу: тесты, сборку, проверки установки и канал `next`.
 
+Кнопку нажимает администратор репозитория: `admit` сверяет роль запустившего
+до задания с ключом, а не его имя.
+
+    python scripts/ci/release-rc.py admit --actor "$GITHUB_TRIGGERING_ACTOR"
     python scripts/ci/release-rc.py publish --alpha v0.15.0-alpha.4
 """
 
@@ -92,6 +95,23 @@ def prove(repo: str, alpha_tag: str, gh, git) -> Proof:
     raise RcError(f"нет зелёной ночи, выпустившей {alpha_tag} на срезе {slice_sha[:7]}")
 
 
+def admit(repo: str, actor: str, gh=alpha.gh_api) -> None:
+    """Кандидата ставит только администратор репозитория; роль, а не имя."""
+    if not actor:
+        raise RcError("не назван запустивший: кандидата ставит только администратор репозитория")
+    try:
+        answer = gh(f"repos/{repo}/collaborators/{actor}/permission")
+    except alpha.AlphaError as error:
+        raise RcError(f"{actor}: роль в репозитории не прочитана, кандидата ставит только администратор: {error}") from error
+    permission = answer.get("permission") if isinstance(answer, dict) else None
+    if permission != "admin":
+        raise RcError(
+            f"{actor}: роль в репозитории {permission or 'неизвестна'}, а кандидата из alpha ставит "
+            "только администратор. Попросите администратора нажать кнопку"
+        )
+    print(f"{actor}: администратор, кандидата ставить можно")
+
+
 def publish(root: Path, repo: str, alpha_tag: str, *, dry_run: bool, gh=alpha.gh_api, runner=alpha.run) -> str:
     def git(arguments: list[str]) -> str:
         return runner(["git", *arguments], cwd=root)
@@ -129,13 +149,18 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--repo", default=os.environ.get("GITHUB_REPOSITORY", "IngvarConsulting/unica"))
     commands = parser.add_subparsers(dest="command", required=True)
+    admit_command = commands.add_parser("admit", help="пустить к кнопке только администратора репозитория")
+    admit_command.add_argument("--actor", required=True, help="запустивший прогон")
     publish_command = commands.add_parser("publish", help="поставить кандидата из проверенной alpha")
     publish_command.add_argument("--alpha", required=True, help="тег alpha, например v0.15.0-alpha.4")
     publish_command.add_argument("--root", type=Path, default=Path("."))
     publish_command.add_argument("--dry-run", action="store_true", help="проверить и назвать номер, ничего не меняя")
     args = parser.parse_args(argv)
     try:
-        publish(args.root, args.repo, args.alpha, dry_run=args.dry_run)
+        if args.command == "admit":
+            admit(args.repo, args.actor)
+        else:
+            publish(args.root, args.repo, args.alpha, dry_run=args.dry_run)
     except (RcError, alpha.AlphaError) as error:
         print(f"::error::{error}", file=sys.stderr)
         return 1

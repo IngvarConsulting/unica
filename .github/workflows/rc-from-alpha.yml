@@ -2,11 +2,12 @@ name: Unica RC from Alpha
 
 # Кандидат `vX.Y.Z-rc.N` из проверенной alpha. Берётся срез `main`, на котором ночь
 # выпустила alpha, поверх него — служебный коммит, где меняется только версия, и
-# тег. Тег ставит ключ развёртывания из окружения `release-tag`: оно пускает только
-# `main` и ждёт одобрения владельца. Это одобрение — единственное на выпуск: push
-# тега ключом запускает обычный выпуск по тегу (`release.yml`) — полные тесты,
-# сборку, проверки установки и канал `next`, — и его задания публикации ревьюера
-# не ждут. Подробности — `scripts/ci/release-rc.py` и раздел rc в runbook.
+# тег. Это единственная кнопка выпуска кандидата, и нажимает её администратор
+# репозитория: задание `admit` сверяет роль запустившего, а не имя, до задания
+# с ключом. Тег ставит ключ развёртывания из окружения `marketplace`: оно пускает
+# только `main` и `v*`. Push тега ключом запускает обычный выпуск по тегу
+# (`release.yml`) — полные тесты, сборку, проверки установки и канал `next` —
+# без остановок на одобрение. Подробности — `scripts/ci/release-rc.py` и раздел rc в runbook.
 on:
   workflow_dispatch:
     inputs:
@@ -24,9 +25,31 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Писатель может нажать кнопку, но прогон остановится здесь: задание
+  # с секретом окружения не начнётся. `triggering_actor` — тот, кто запустил
+  # или перезапустил прогон: перезапуск чужого прогона роль не наследует.
+  admit:
+    name: Кнопку нажал администратор
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: main
+          sparse-checkout: scripts/ci
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          ACTOR: ${{ github.triggering_actor }}
+        run: python scripts/ci/release-rc.py admit --actor "$ACTOR"
+
   rc:
     name: Кандидат из alpha
-    environment: release-tag
+    needs: admit
+    environment: marketplace
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
