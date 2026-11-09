@@ -204,13 +204,13 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(rc_steps[recheck]["env"]["ACTOR"], "${{ github.triggering_actor }}")
         self.assertNotIn("RELEASE_TAG_KEY", json.dumps(rc_steps[:publish]))
 
-    def test_a_button_on_main_in_the_marketplace_environment_with_the_tag_key(self) -> None:
+    def test_a_button_on_main_in_the_alpha_environment_with_the_tag_key(self) -> None:
         workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
         self.assertEqual(set(workflow[True]), {"workflow_dispatch"})
         self.assertTrue(workflow[True]["workflow_dispatch"]["inputs"]["alpha"]["required"])
         self.assertEqual(workflow["permissions"], {"contents": "read", "actions": "read"})
         job = workflow["jobs"]["rc"]
-        self.assertEqual(job["environment"], "marketplace")
+        self.assertEqual(job["environment"], "alpha")
         checkout = job["steps"][0]
         self.assertEqual((checkout["with"]["ref"], checkout["with"]["fetch-depth"]), ("main", 0))
         publish = next(step for step in job["steps"] if step.get("id") == "publish")

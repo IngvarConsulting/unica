@@ -11,7 +11,7 @@ Alpha — срез `main`, который ночь проверила полны
 - выпуска `vX.Y.Z` ещё нет: кандидат не может быть младше стабильной версии.
 
 Номер `N` — следующий после существующих тегов `vX.Y.Z-rc.*`. Тег ставит ключ
-развёртывания из окружения `marketplace` (`tag_push`), и его push запускает
+развёртывания из окружения `alpha` (`tag_push`), и его push запускает
 обычный выпуск по тегу: тесты, сборку, проверки установки и канал `next`.
 
 Кнопку нажимает администратор репозитория: `admit` сверяет роль запустившего
@@ -97,22 +97,22 @@ def prove(repo: str, alpha_tag: str, gh, git) -> Proof:
 
 
 def admit(repo: str, actor: str, ref: str, gh=alpha.gh_api) -> None:
-    """Кандидата ставит только администратор репозитория и только с `main`; роль, а не имя."""
+    """Кнопку выпуска проходит только администратор репозитория и только с `main`; роль, а не имя."""
     if ref != MAIN_REF:
-        raise RcError(f"кнопку кандидата запускают с main, а не с {ref or 'неизвестной ссылки'}")
+        raise RcError(f"кнопку выпуска запускают с main, а не с {ref or 'неизвестной ссылки'}")
     if not actor:
-        raise RcError("не назван запустивший: кандидата ставит только администратор репозитория")
+        raise RcError("не назван запустивший: кнопку выпуска проходит только администратор репозитория")
     try:
         answer = gh(f"repos/{repo}/collaborators/{actor}/permission")
     except alpha.AlphaError as error:
-        raise RcError(f"{actor}: роль в репозитории не прочитана, кандидата ставит только администратор: {error}") from error
+        raise RcError(f"{actor}: роль в репозитории не прочитана, кнопку выпуска проходит только администратор: {error}") from error
     permission = answer.get("permission") if isinstance(answer, dict) else None
     if permission != "admin":
         raise RcError(
-            f"{actor}: роль в репозитории {permission or 'неизвестна'}, а кандидата из alpha ставит "
+            f"{actor}: роль в репозитории {permission or 'неизвестна'}, а кнопку выпуска проходит "
             "только администратор. Попросите администратора нажать кнопку"
         )
-    print(f"{actor}: администратор, кандидата ставить можно")
+    print(f"{actor}: администратор, кнопка выпуска пропускает")
 
 
 def publish(root: Path, repo: str, alpha_tag: str, *, dry_run: bool, gh=alpha.gh_api, runner=alpha.run) -> str:

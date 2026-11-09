@@ -74,10 +74,8 @@ come from the tag is the channel: every marketplace job checks out only
 `scripts/ci/release-channel.py`, sparsely, from `main`, and nothing in those
 jobs checks out the tag's code. `UNICA_MARKETPLACE_TOKEN` lives in the
 `marketplace` environment, which admits only `main` and `v*` tags, so another
-branch cannot read it. On `main` only the candidate button runs in it, and that
-job lets nobody but an administrator through (below). The environment has no
-reviewer: the publication from a tag runs to the end without waiting for a
-person. The jobs holding the token still come from the tagged
+branch cannot read it. The environment holds no tag key and has no reviewer:
+the publication from a tag runs to the end without waiting for a person. The jobs holding the token still come from the tagged
 commit's `release.yml`, so whoever can create a `v*` tag defines those steps. Old
 tags also run against the current `release-channel.py` from `main`, so keep its
 commands compatible with them.
@@ -320,31 +318,36 @@ so nothing but a published tag will do — and a candidate needs testers before
 the release it becomes. A release candidate is published to the `next`
 channel of the marketplace and never to the stable catalog.
 
-### Releasing an RC
+### Releasing an RC and its final version
 
-A candidate from a checked alpha is one button; nothing after it waits for a
-person:
+A candidate from a checked alpha is one button, and the final version from a
+checked candidate is another; nothing after either waits for a person:
 
 | Step | Who | What happens |
 | --- | --- | --- |
 | Night | **Unica Nightly** | full tests on every OS, then the alpha `vX.Y.Z-alpha.N` |
-| Button | a repository administrator | `rc-from-alpha.yml` with the alpha's tag |
-| Tag | the deploy key | version commit on the alpha's slice, tag `vX.Y.Z-rc.N` |
-| Release | `release.yml` on the tag push | full tests, build, install checks |
-| `next` | `release.yml` | the candidate is live on the `next` channel |
+| RC button | a repository administrator | `rc-from-alpha.yml` with the alpha's tag |
+| RC tag | the deploy key | version commit on the alpha's slice, tag `vX.Y.Z-rc.N` |
+| RC release | `release.yml` on the tag push | full tests, build, install checks, the `next` channel |
+| Final button | a repository administrator | `release-from-rc.yml` with the candidate's tag |
+| Final tag | the deploy key | version commit on the candidate's commit, tag `vX.Y.Z` |
+| Final release | `release.yml` on the tag push | full tests, build, install checks, the main catalog |
 
 ```bash
 gh workflow run rc-from-alpha.yml --repo IngvarConsulting/unica --ref main -f alpha=v0.15.0-alpha.4
+gh workflow run release-from-rc.yml --repo IngvarConsulting/unica --ref main -f rc=v0.15.0-rc.2
 ```
 
-Only an administrator gets past the first job, `admit`: it refuses a run not
-started from `main`, reads the role of the person who started or re-ran the run
-(`collaborators/<actor>/permission`) and refuses anything but `admin`. No name
-is written in the workflow. A writer can press the button, but the run stops
-there, before the job that holds the tag key starts; a re-run of the failed
-job checks the role again before its key step. That job runs in the environment `marketplace`, which admits
-only `main` and `v*` and has no reviewer. `scripts/ci/release-rc.py` then
-refuses unless:
+Only an administrator gets past the first job of either button, `admit`: it
+refuses a run not started from `main`, reads the role of the person who started
+or re-ran the run (`collaborators/<actor>/permission`) and refuses anything but
+`admin`. No name is written in the workflows. A writer can press a button, but
+the run stops there, before the job that holds the tag key starts; a re-run of
+the failed job checks the role again before its key step. That job runs in the
+environment `alpha`, which admits only `main`: a copy of a button kept in an old
+tag gets no key. The two buttons share one queue.
+
+`scripts/ci/release-rc.py` refuses a candidate unless:
 
 - the alpha is published and its slice — the parent of its version commit — is
   in `main` and equals the `main@<sha>` of its release description;
@@ -354,11 +357,34 @@ refuses unless:
 
 It commits `bump-version.py X.Y.Z-rc.N` on the slice, with `N` the next free
 number, tags the commit and pushes the tag with the deploy key from the secret
-`RELEASE_TAG_KEY`. The key's push starts the ordinary release by tag below:
-the full tests, the build, the install checks and the `next` channel, with no
-approval on the way. That tag is set by the workflow, not signed by a person:
-the administrator's button and the checks above stand in for the signature. A stable `vX.Y.Z` is still a
-signed tag as in step 1.
+`RELEASE_TAG_KEY`.
+
+`scripts/ci/release-final.py` refuses a final version unless:
+
+- the candidate's tag exists and its GitHub release is published;
+- the release run of that tag's push (`release.yml`) is green;
+- the marketplace has the candidate's tag, which appears only together with
+  the `next` catalog that names it;
+- no later candidate of the same core exists;
+- `vX.Y.Z` is not released yet.
+
+It commits `bump-version.py X.Y.Z` on the candidate's commit — the tree that
+was tested and served on `next`, with only the version changed — tags it and
+pushes the tag with the same key.
+
+Each key push starts the ordinary release by tag below, with no approval on the
+way. These tags are set by a workflow, not signed by a person: the
+administrator's button and the checks above stand in for the signature. A
+stable version can still be a signed tag as in step 1, for a patch from a line
+branch or a release that does not come from a candidate.
+
+Neither button leaves anything to merge back: the alpha's slice is already in
+`main`, and the version commits live only under their tags, as an alpha's does.
+Step 3 does not apply. What `main` does need after a final version is a higher
+version: until then the night publishes no alpha and says so ("raise the version
+of main"). Raise it through a version pull request as in step 0; which version
+comes next — the next minor or a patch — is a choice for a person, and the bump
+also updates the tests that assert the version by hand.
 
 A candidate can still be tagged by hand when it must not come from an alpha:
 give the version an `-rc.N` suffix and tag it as usual:
@@ -501,8 +527,8 @@ commits. The commit's parent is the slice; the release description names it as
 - **Tag ruleset.** One rule covers every `v*` tag, alphas included: deletion and
   non-fast-forward updates are blocked for everyone, and creation is restricted
   with the role admin and **Deploy keys** in the bypass list. The deploy key from
-  `RELEASE_TAG_KEY` creates alpha tags in the environment `alpha` and candidate
-  tags in `marketplace`; the app GitHub Actions gets no bypass, so a workflow run
+  `RELEASE_TAG_KEY` lives only in the environment `alpha`, which admits only
+  `main`, and creates the alpha, candidate and final tags there; the app GitHub Actions gets no bypass, so a workflow run
   from any branch cannot create a `v*` tag with the run's token.
 - **Immutable releases.** Assets can be uploaded only before publication, so every
   prerelease goes up as a draft and a separate step publishes it. A failed run
