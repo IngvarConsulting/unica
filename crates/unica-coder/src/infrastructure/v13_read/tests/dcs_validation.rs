@@ -359,8 +359,7 @@ fn canonical_dcs_format_owner_read_stops_at_typed_midstream_checkpoint() {
         )
         .unwrap();
         let authority = fixture.read_authority();
-        let target = unica_address::source_target::MetadataAddress::parse(
-            unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+        let target = unica_address::source_target::MetadataAddress::parse_logical(
             "Report.ParityReport.Template.MainSchema",
         )
         .unwrap();

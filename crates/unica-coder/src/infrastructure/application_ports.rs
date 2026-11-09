@@ -270,9 +270,7 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
             workspace.cwd = unica_workspace::paths::normalize_path_identity(&workspace.cwd)?;
             let filters = metadata_path
                 .map(|raw| {
-                    let address = unica_address::source_target::MetadataAddress::parse(
-                        unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
-                        raw,
+                    let address = unica_address::source_target::MetadataAddress::parse_logical(raw,
                     )
                     .map_err(|error| error.to_string())?;
                     let target = unica_address::source_target::SourceTarget {
@@ -1475,9 +1473,7 @@ mod medium_tests {
         preview_strategy, tools, InvocationMode, PreviewStrategy, RuntimeJobAction, ToolHandler,
         ToolSpec,
     };
-    use unica_address::source_target::{
-        MetadataAddress, ResolvedTarget, TargetKind, PLATFORM_XML_8_3_27_FORMAT_2_20,
-    };
+    use unica_address::source_target::{MetadataAddress, ResolvedTarget, TargetKind};
     use unica_code_intelligence::model::CodeIntelligenceContext;
     use unica_code_intelligence::model::CodeIntelligenceReadRequest;
     use unica_metadata::support_state::{
@@ -1984,7 +1980,7 @@ mod medium_tests {
     }
 
     fn metadata_address(raw: &str) -> MetadataAddress {
-        MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, raw).unwrap()
+        MetadataAddress::parse_logical(raw).unwrap()
     }
 
     #[test]

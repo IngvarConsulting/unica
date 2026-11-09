@@ -5,7 +5,7 @@ use super::{
 use serde_json::{json, Value};
 use std::path::PathBuf;
 use unica_address::address::NodeKind;
-use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+use unica_address::source_target::MetadataAddress;
 use unica_forms::facts::{FormInfoData, FormSupportDetails, FormSupportRuleReason};
 use unica_forms_designer::codec::parse_form_info_xml;
 use unica_metadata::support_state::ObjectSupportState;
@@ -81,11 +81,9 @@ impl ProviderReadAuthority {
         let owner_support = if object_context.is_empty() {
             None
         } else {
-            let owner =
-                MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &parts[..2].join("."))
-                    .map_err(|error| {
-                        ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
-                    })?;
+            let owner = MetadataAddress::parse_logical(&parts[..2].join(".")).map_err(|error| {
+                ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+            })?;
             let owner_descriptor = self.metadata_descriptor(&owner)?;
             let owner_rule = form_support_rule(state.as_deref(), &owner_descriptor)?;
             Some(object_support_from_state(state.as_deref(), owner_rule))
@@ -142,11 +140,9 @@ impl ProviderReadAuthority {
             NodeKind::parse(parts[0]).ok()
         };
         let source_relative = if self.is_external_source_set() {
-            let owner =
-                MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &parts[..2].join("."))
-                    .map_err(|error| {
-                        ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
-                    })?;
+            let owner = MetadataAddress::parse_logical(&parts[..2].join(".")).map_err(|error| {
+                ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+            })?;
             self.metadata_descriptor_relative(&owner)?
         } else {
             PathBuf::from("Configuration.xml")

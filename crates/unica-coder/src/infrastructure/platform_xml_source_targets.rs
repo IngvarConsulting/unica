@@ -208,11 +208,7 @@ fn locate_platform_xml_source_path_in_with_policy(
             if !proven {
                 return Ok(reject(relative_text, LocateRejection::OwnerUnproven));
             }
-            let owner = MetadataAddress::parse(
-                unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
-                &identity.owner,
-            )
-            .ok();
+            let owner = MetadataAddress::parse_logical(&identity.owner).ok();
             return Ok(SourceLocateResult {
                 source_set: source_set.name.clone(),
                 relative_path: relative_text,
@@ -245,10 +241,7 @@ fn locate_platform_xml_source_path_in_with_policy(
         return Ok(reject(relative_text, LocateRejection::NotAddressable));
     };
     let object = format!("{}.{name}", kind.tag);
-    let Ok(object_address) = MetadataAddress::parse(
-        unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
-        &object,
-    ) else {
+    let Ok(object_address) = MetadataAddress::parse_logical(&object) else {
         return Ok(reject(relative_text, LocateRejection::NotAddressable));
     };
     if exact_object_outcome_with_policy(source_root, &object_address, cancellation, version_policy)?
@@ -274,10 +267,7 @@ fn locate_platform_xml_source_path_in_with_policy(
         _ => None,
     };
     if let Some(nested) = nested {
-        if let Ok(nested_address) = MetadataAddress::parse(
-            unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
-            &nested,
-        ) {
+        if let Ok(nested_address) = MetadataAddress::parse_logical(&nested) {
             if exact_object_outcome_with_policy(
                 source_root,
                 &nested_address,
@@ -1544,10 +1534,8 @@ fn object_module_paths(
 ) -> Vec<PathBuf> {
     let mut paths = Vec::new();
     for role in PLATFORM_XML_OBJECT_MODULE_ROLES {
-        let Ok(candidate) = MetadataAddress::parse(
-            unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
-            &format!("{address}.{}", role.as_str()),
-        ) else {
+        let Ok(candidate) = MetadataAddress::parse_logical(&format!("{address}.{}", role.as_str()))
+        else {
             continue;
         };
         let Ok(relative) = platform_xml_module_relative(&candidate) else {
@@ -1796,7 +1784,6 @@ mod medium_tests {
     use std::time::{SystemTime, UNIX_EPOCH};
     use unica_address::source_target::{
         MetadataAddress, SourceTarget, SourceTargetErrorCode, SourceTargetErrorReason,
-        PLATFORM_XML_8_3_27_FORMAT_2_20,
     };
     use unica_code_intelligence::model::RelativeSearchFilter;
     use unica_source_contract::workspace::WorkspaceContext;
@@ -2790,9 +2777,7 @@ mod medium_tests {
     fn target(source_set: &str, metadata_path: &str) -> SourceTarget {
         SourceTarget {
             source_set: source_set.to_string(),
-            metadata_path: Some(
-                MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, metadata_path).unwrap(),
-            ),
+            metadata_path: Some(MetadataAddress::parse_logical(metadata_path).unwrap()),
         }
     }
 

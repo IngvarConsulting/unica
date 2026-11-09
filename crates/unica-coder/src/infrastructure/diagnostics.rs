@@ -799,9 +799,7 @@ mod tests {
     use std::time::Duration;
     use tempfile::TempDir;
     use unica_address::source_target::ResolvedTarget;
-    use unica_address::source_target::{
-        MetadataAddress, TargetKind, PLATFORM_XML_8_3_27_FORMAT_2_20,
-    };
+    use unica_address::source_target::{MetadataAddress, TargetKind};
     use unica_diagnostics::coordinator::DiagnosticMapping;
     use unica_diagnostics::model::DiagnosticAction;
     use unica_diagnostics::model::DiagnosticCodeFilter;
@@ -914,7 +912,7 @@ mod tests {
     }
 
     fn address(raw: &str) -> MetadataAddress {
-        MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, raw).unwrap()
+        MetadataAddress::parse_logical(raw).unwrap()
     }
 
     fn request(metadata_path: Option<&str>) -> DiagnosticRequest {

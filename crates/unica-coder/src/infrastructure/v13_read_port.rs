@@ -13,7 +13,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use unica_address::address::NodeKind;
-use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+use unica_address::source_target::MetadataAddress;
 use unica_metadata::support_state::ObjectSupportState;
 use unica_metadata::validation_subject::MetadataChildProfile;
 use unica_refusal::{RefusalCode, RefusalDetail};
@@ -447,9 +447,9 @@ impl ProviderReadAuthority {
             .take(2)
             .collect::<Vec<_>>()
             .join(".");
-        let owner = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &owner_text).map_err(
-            |error| ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string()),
-        )?;
+        let owner = MetadataAddress::parse_logical(&owner_text).map_err(|error| {
+            ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+        })?;
         let Some((parsed_target, profile)) =
             crate::infrastructure::family_codecs::metadata_read_codec()
                 .child_profile(&descriptor, &owner)
@@ -599,7 +599,7 @@ pub(crate) fn companion_owner(
         })
         .collect::<Vec<_>>()
         .join(".");
-    MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &path).ok()
+    MetadataAddress::parse_logical(&path).ok()
 }
 
 /// The whole regular file under `root`, read in chunks without a size limit.
@@ -656,7 +656,7 @@ pub(crate) fn inherited_companion(
     }
     let parts = target.as_str().split('.').collect::<Vec<_>>();
     if parts.len() > 2 {
-        let owner = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &parts[..2].join("."))
+        let owner = MetadataAddress::parse_logical(&parts[..2].join("."))
             .map_err(|error| error.to_string())?;
         if !crate::infrastructure::family_codecs::metadata_read_codec()
             .extends_parent(&descriptor_of(&owner)?)
