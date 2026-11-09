@@ -141,9 +141,11 @@ the current `release-channel.py` from `main`, so keep its commands compatible
 with them.
 
 A tag's line — where the site files its report — is the `release-vX.Y` that
-holds its commit. A button's version commit lies on no branch, so its line is
-that of the commit beneath it: `main` for an alpha or a candidate, the line for
-a patch (`scripts/ci/resolve-line.py`).
+holds its commit; a final version holds its own line from the start. A button's
+version commit lies on no branch, so the commit beneath it names the line, and
+only the line the tag's name allows: `main` for an alpha or a candidate, its own
+`release-vX.Y` for a patch. Anything else is refused
+(`scripts/ci/resolve-line.py`).
 
 The site job deploys through the `github-pages` environment, which must allow
 `main`, `release-v*` and `v*`: a ref it refuses ends the run red after the release.
@@ -287,7 +289,10 @@ The version contract differs every time. In all five of its files and in
 number, and `main`'s `Cargo.lock` carries the real dependency state. A conflict
 in any other file stops the job with the list of files; merge the line by hand
 on that branch, keeping `main`'s side in those six files. A line already in
-`main` opens nothing.
+`main`, or one that differs only in the version, opens nothing. The run's token
+cannot push a change to `.github/workflows`, so a line that carries one is also
+merged by hand. A rerun finds the branch of an earlier run and leaves it, with
+its pull request, as it is.
 
 The run's token creates that pull request, so its CI does not start on its own:
 the coordinator closes and reopens it with their own token, or pushes an empty
@@ -305,7 +310,7 @@ commit.
 | final | the release of `vX.Y.0` is red | Rerun the failed jobs. A defect in the code burns the number; `release-vX.Y` already exists, so the fix ships as a patch from the line |
 | patch | the button refuses | The source is not a `release-*` branch with a final version, the head is already released, or it has no green CI: merge the fix through the line's queue, or run the `large` check of the line |
 | patch | the release of `vX.Y.Z` is red | Rerun the failed jobs. A defect in the code burns the number: fix the line and press the patch button again |
-| patch | `back-merge` fails | A conflict outside the version files: merge the line by hand on `merge/release-vX.Y.Z-into-main`. The patch itself is already released |
+| patch | `back-merge` fails | A conflict outside the version files, or a line that changes `.github/workflows`: merge the line by hand on `merge/release-vX.Y.Z-into-main`. The patch itself is already released |
 
 A tag push that started nothing at all — a red `admit` or a refused key job —
 changed nothing: press the button again once the cause is gone.

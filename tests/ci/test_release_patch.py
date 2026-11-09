@@ -142,15 +142,29 @@ class BackMergeTests(unittest.TestCase):
     def setUp(self) -> None:
         self.module = load()
 
-    def merge(self, *, conflicted="", staged="crates/x/src/lib.rs\n"):
+    def merge(self, *, conflicted="", staged="crates/x/src/lib.rs\n", open_branch="", merged_in=False,
+              started=True, push_refused=False):
         commands, probes = [], []
+        module = self.module
 
         def runner(command, cwd=None, env=None):
             commands.append(command)
-            return "https://github.com/o/r/pull/9\n" if command[:3] == ["gh", "pr", "create"] else ""
+            if command[:3] == ["gh", "pr", "create"]:
+                return "https://github.com/o/r/pull/9\n"
+            if command[:2] == ["git", "rev-parse"]:
+                return "linehead\n"
+            if command[:2] == ["git", "push"] and push_refused:
+                raise module.alpha.AlphaError("refusing to allow a GitHub App to create or update workflow")
+            return ""
 
         def probe(command, cwd=None):
             probes.append(command)
+            if command[:2] == ["git", "ls-remote"]:
+                return open_branch
+            if command[:2] == ["git", "merge-base"]:
+                return "linehead\n" if merged_in else "older\n"
+            if command[-1] == "MERGE_HEAD":
+                return "mergehead\n" if started else ""
             if "--diff-filter=U" in command:
                 return conflicted
             if command[-2:] == ["--name-only", "origin/main"]:
@@ -159,16 +173,23 @@ class BackMergeTests(unittest.TestCase):
 
         return commands, probes, runner, probe
 
+    def back_merge(self, runner, probe, tag="v0.15.2"):
+        return self.module.back_merge(Path("."), "o/r", tag, runner=runner, probe=probe)
+
+    @staticmethod
+    def pushed(commands):
+        return any(command[:2] == ["git", "push"] or command[:2] == ["gh", "pr"] for command in commands)
+
     def test_the_line_returns_to_main_with_mains_side_of_the_version(self) -> None:
         commands, probes, runner, probe = self.merge(conflicted="Cargo.toml\nCargo.lock\n")
-        branch = self.module.back_merge(Path("."), "o/r", "v0.15.2", runner=runner, probe=probe)
+        branch = self.back_merge(runner, probe)
         self.assertEqual(branch, "merge/release-v0.15.2-into-main")
         self.assertIn(["git", "checkout", "-B", branch, "origin/main"], commands)
         self.assertIn(["git", "checkout", "origin/main", "--", *self.module.VERSION_FILES], commands)
-        self.assertIn("origin/release-v0.15", next(command for command in probes if "merge" in command))
+        self.assertIn("origin/release-v0.15", next(command for command in probes if "--no-commit" in command))
         push = next(command for command in commands if command[:2] == ["git", "push"])
         self.assertLess(commands.index(["gh", "auth", "setup-git"]), commands.index(push))
-        self.assertEqual(push, ["git", "push", "--force-with-lease", "origin", f"HEAD:refs/heads/{branch}"])
+        self.assertEqual(push, ["git", "push", "origin", f"HEAD:refs/heads/{branch}"])
         create = next(command for command in commands if command[:3] == ["gh", "pr", "create"])
         self.assertEqual(create[create.index("--base") + 1], "main")
         self.assertIn("координатор", create[create.index("--body") + 1])
@@ -177,19 +198,42 @@ class BackMergeTests(unittest.TestCase):
     def test_a_conflict_outside_the_version_is_left_to_a_person(self) -> None:
         commands, probes, runner, probe = self.merge(conflicted="Cargo.toml\ncrates/x/src/lib.rs\n")
         with self.assertRaisesRegex(self.module.PatchError, "crates/x/src/lib.rs"):
-            self.module.back_merge(Path("."), "o/r", "v0.15.2", runner=runner, probe=probe)
+            self.back_merge(runner, probe)
         self.assertIn(["git", "merge", "--abort"], probes)
-        self.assertFalse(any(command[:2] == ["git", "push"] or command[:2] == ["gh", "pr"] for command in commands))
+        self.assertFalse(self.pushed(commands))
 
     def test_a_line_already_in_main_opens_nothing(self) -> None:
-        commands, _, runner, probe = self.merge(staged="")
-        self.assertIsNone(self.module.back_merge(Path("."), "o/r", "v0.15.2", runner=runner, probe=probe))
-        self.assertFalse(any(command[:2] == ["git", "push"] or command[:2] == ["gh", "pr"] for command in commands))
+        commands, probes, runner, probe = self.merge(merged_in=True)
+        self.assertIsNone(self.back_merge(runner, probe))
+        self.assertFalse(any("--no-commit" in command for command in probes))
+        self.assertFalse(self.pushed(commands))
+
+    def test_a_line_that_differs_only_in_the_version_opens_nothing(self) -> None:
+        commands, _, runner, probe = self.merge(conflicted="Cargo.toml\n", staged="")
+        self.assertIsNone(self.back_merge(runner, probe))
+        self.assertFalse(self.pushed(commands))
+
+    def test_a_merge_that_did_not_start_is_a_failure_not_an_empty_line(self) -> None:
+        commands, _, runner, probe = self.merge(started=False)
+        with self.assertRaisesRegex(self.module.PatchError, "не началось"):
+            self.back_merge(runner, probe)
+        self.assertFalse(self.pushed(commands))
+
+    def test_a_rerun_leaves_the_branch_of_an_earlier_run_alone(self) -> None:
+        commands, _, runner, probe = self.merge(open_branch="abc\trefs/heads/merge/release-v0.15.2-into-main\n")
+        self.assertEqual(self.back_merge(runner, probe), "merge/release-v0.15.2-into-main")
+        self.assertEqual(commands, [])
+
+    def test_a_refused_push_names_the_workflow_files_and_the_way_by_hand(self) -> None:
+        commands, _, runner, probe = self.merge(push_refused=True)
+        with self.assertRaisesRegex(self.module.PatchError, r"\.github/workflows.*вручную"):
+            self.back_merge(runner, probe)
+        self.assertFalse(any(command[:2] == ["gh", "pr"] for command in commands))
 
     def test_only_a_stable_tag_is_merged_back(self) -> None:
         _, _, runner, probe = self.merge()
         with self.assertRaisesRegex(self.module.PatchError, "не тег исправительной"):
-            self.module.back_merge(Path("."), "o/r", "v0.15.2-rc.1", runner=runner, probe=probe)
+            self.back_merge(runner, probe, "v0.15.2-rc.1")
 
     def test_the_version_files_are_the_version_contract_and_the_lock(self) -> None:
         source = (ROOT / "scripts/dev/bump-version.py").read_text(encoding="utf-8")

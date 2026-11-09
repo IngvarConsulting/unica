@@ -172,9 +172,20 @@ def back_merge(root: Path, repo: str, tag: str, *, runner=alpha.run, probe=unche
     def look(arguments: list[str]) -> str:
         return probe(["git", *arguments], cwd=root)
 
+    # Повтор задания не перезаписывает уже открытую ветку слияния: в ней мог
+    # работать человек, а её pull request уже есть.
+    if look(["ls-remote", "--heads", "origin", f"refs/heads/{branch}"]).strip():
+        print(f"{branch} уже есть: pull request линии открыт прежним прогоном")
+        return branch
     git(["fetch", "origin", "main", line])
     git(["checkout", "-B", branch, "origin/main"])
+    head = git(["rev-parse", f"origin/{line}"]).strip()
+    if look(["merge-base", f"origin/{line}", "origin/main"]).strip() == head:
+        print(f"{line}: всё уже в main, pull request не нужен")
+        return None
     look([*IDENTITY, "merge", "--no-ff", "--no-commit", f"origin/{line}"])
+    if not look(["rev-parse", "-q", "--verify", "MERGE_HEAD"]).strip():
+        raise PatchError(f"слияние {line} в main не началось: нет ни конфликта, ни MERGE_HEAD")
     conflicted = look(["diff", "--name-only", "--diff-filter=U"]).split()
     foreign = sorted(set(conflicted) - set(VERSION_FILES))
     if foreign:
@@ -187,13 +198,20 @@ def back_merge(root: Path, repo: str, tag: str, *, runner=alpha.run, probe=unche
     git(["checkout", "origin/main", "--", *VERSION_FILES])
     if not look(["diff", "--cached", "--name-only", "origin/main"]).strip():
         look(["merge", "--abort"])
-        print(f"{line}: всё уже в main, pull request не нужен")
+        print(f"{line}: кроме номера версии, вливать нечего; pull request не нужен")
         return None
     title = f"Линия {line} после {tag} — обратно в main"
     git([*IDENTITY, "commit", "--no-edit", "--message", title])
     # Checkout не оставляет токен в дереве: push идёт через помощник `gh`.
     runner(["gh", "auth", "setup-git"], cwd=root)
-    git(["push", "--force-with-lease", "origin", f"HEAD:refs/heads/{branch}"])
+    try:
+        git(["push", "origin", f"HEAD:refs/heads/{branch}"])
+    except alpha.AlphaError as error:
+        # Токен прогона не может менять `.github/workflows`: такую линию вливает человек.
+        raise PatchError(
+            f"ветка {branch} не принята: {error}. Если линия меняет .github/workflows, токен прогона "
+            "её не толкнёт: влейте линию вручную, оставив сторону main в файлах версии"
+        ) from error
     body = "\n\n".join((
         f"Шаг 3 runbook: исправления линии `{line}`, выпущенные как `{tag}`, возвращаются в `main`.",
         "В файлах контракта версии и `Cargo.lock` оставлена сторона `main`: линия меняла там только номер.",

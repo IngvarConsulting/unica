@@ -3,12 +3,12 @@
 
 У тега нет ветки, а линия нужна: по ней сайт кладёт отчёт и память ночного
 прогона. Линия тега — та `release-vX.Y`, что содержит его коммит. Теги кнопок
-выпуска стоят на служебном коммите версии, который не лежит ни в одной ветке:
-его линия — линия ближайшего предка в ветке. Кандидат стоит над срезом `main`
-(линия `main`), исправительная — над головой `release-vX.Y`. Тег, чей коммит
-лежит в ветке, но не в релизной линии, и тег, ни один предок которого не лежит
-ни в `main`, ни в релизной линии, — отказ: теги ставятся только на релизных
-линиях и на служебных коммитах кнопок.
+выпуска стоят на служебном коммите версии, который не лежит ни в одной ветке,
+и линию называет его родитель: кандидат `vX.Y.Z-rc.N` стоит на срезе `main`
+(линия `main`), исправительная `vX.Y.Z` — на голове своей `release-vX.Y`.
+Финальная версия создаёт свою линию на собственном коммите. Тег, чей коммит
+лежит в ветке, но не в релизной линии, и тег вне веток, родитель которого не
+в линии, допустимой его именем, — отказ.
 
 Очередь слияния идёт на временной ветке `gh-readonly-queue/<база>/pr-N-<sha>`:
 её линия — база. Прогон очереди проверяет то дерево, что ляжет в базу, и его
@@ -27,9 +27,11 @@ ALPHA_TAG = re.compile(r"\Av\d+\.\d+\.\d+-alpha\.\d+\Z")
 QUEUE_BRANCH = re.compile(r"\Agh-readonly-queue/(?P<base>[^/]+)/pr-\d+-[0-9a-f]+\Z")
 
 
-# Служебный коммит кандидата и исправительной стоит прямо на срезе ветки,
-# финальной версии — на коммите кандидата: до ветки не больше двух шагов.
-BUTTON_DEPTH = 2
+# Тег кнопки на служебном коммите вне веток: кандидат стоит на срезе `main`,
+# исправительная `vX.Y.Z` — на голове `release-vX.Y`. Имя тега задаёт, какая
+# линия под ним допустима; другой предок — отказ.
+RC_TAG = re.compile(r"\Av\d+\.\d+\.\d+-rc\.\d+\Z")
+PATCH_TAG = re.compile(r"\Av(?P<major>\d+)\.(?P<minor>\d+)\.\d+\Z")
 
 
 def git_first_parent(sha: str) -> str | None:
@@ -73,20 +75,15 @@ def resolve(ref_type: str, ref_name: str, sha: str, branches_containing=git_bran
         if line is None:
             raise SystemExit(refusal)
         return line
-    # Служебный коммит кнопки: линия — у ближайшего предка в ветке.
-    commit = sha
-    for _ in range(BUTTON_DEPTH):
-        commit = first_parent(commit)
-        if commit is None:
-            break
-        branches = branches_containing(commit)
-        if branches:
-            line = release_line(branches)
-            if line is not None:
-                return line
-            if "main" in branches:
-                return "main"
-            break
+    # Служебный коммит кнопки: линия — та, что держит его родителя и которую
+    # допускает имя тега.
+    parent = first_parent(sha)
+    holders = branches_containing(parent) if parent else []
+    if RC_TAG.match(ref_name) and "main" in holders:
+        return "main"
+    patch = PATCH_TAG.match(ref_name)
+    if patch and f"release-v{patch['major']}.{patch['minor']}" in holders:
+        return f"release-v{patch['major']}.{patch['minor']}"
     raise SystemExit(refusal)
 
 
