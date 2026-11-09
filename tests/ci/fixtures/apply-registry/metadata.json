@@ -28,19 +28,19 @@
     {
       "variant": "RelationAdd",
       "operation": "relation.add",
-      "applicability": "Metadata",
+      "applicability": "MetadataRelations",
       "skeleton": "Values"
     },
     {
       "variant": "RelationRemove",
       "operation": "relation.remove",
-      "applicability": "Metadata",
+      "applicability": "MetadataRelations",
       "skeleton": "Values"
     },
     {
       "variant": "RelationReplace",
       "operation": "relation.replace",
-      "applicability": "Metadata",
+      "applicability": "MetadataRelations",
       "skeleton": "Values"
     },
     {
