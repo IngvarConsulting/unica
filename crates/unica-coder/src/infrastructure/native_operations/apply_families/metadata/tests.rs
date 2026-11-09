@@ -4223,6 +4223,61 @@ fn object_create_writes_the_configuration_default_language() {
     assert_eq!(error.path(), Some("ops[0].args.at"));
 }
 
+/// rule: INV.SOURCE.PROFILE-CAPABILITIES
+#[test]
+fn the_mode_of_the_extension_itself_admits_its_operations() {
+    // The extension's own ConfigurationExtensionCompatibilityMode decides; the
+    // CompatibilityMode next to it, which the loading platform keeps at its
+    // line, does not.
+    let extension = |mode: &str| {
+        let configuration = format!(
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration uuid="99999999-9999-4999-8999-999999999999"><Properties><ObjectBelonging>Adopted</ObjectBelonging><Name>Ext</Name><ConfigurationExtensionPurpose>Customization</ConfigurationExtensionPurpose><NamePrefix>Ext_</NamePrefix><CompatibilityMode>Version8_3_27</CompatibilityMode><ConfigurationExtensionCompatibilityMode>{mode}</ConfigurationExtensionCompatibilityMode><DefaultLanguage>Language.English</DefaultLanguage></Properties><ChildObjects><Language>English</Language><Document>Order</Document></ChildObjects></Configuration></MetaDataObject>"#
+        );
+        let language = r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Language uuid="33333333-3333-4333-8333-333333333333"><InternalInfo/><Properties><ObjectBelonging>Adopted</ObjectBelonging><Name>English</Name><Comment/><ExtendedConfigurationObject>44444444-4444-4444-8444-444444444444</ExtendedConfigurationObject><LanguageCode>en</LanguageCode></Properties></Language></MetaDataObject>"#;
+        // A borrowed Order: its properties name the object it extends.
+        let order = ORDER_XML.replace(
+            "<BasedOn/></Properties>",
+            "<BasedOn/><ObjectBelonging>Adopted</ObjectBelonging><ExtendedConfigurationObject>55555555-5555-4555-8555-555555555555</ExtendedConfigurationObject></Properties>",
+        );
+        MetadataFixture::with_kind_and_files(
+            SourceSetKind::Extension,
+            &[
+                ("Configuration.xml", configuration.as_str()),
+                ("Languages/English.xml", language),
+                ("Documents/Order.xml", order.as_str()),
+            ],
+        )
+    };
+    let catalog = (
+        "object.create",
+        json!({"at": "main:Configuration", "values": {"kind": "Catalog", "name": "Ext_Products"}}),
+    );
+    let attribute = (
+        "attribute.add",
+        json!({"at": "main:Document.Order", "items": [{"name": "Total"}]}),
+    );
+
+    for (operation, refused_in, since, admitted_in) in [
+        (&catalog, "Version8_3_10", "Version8_3_11", "Version8_3_11"),
+        (&attribute, "Version8_3_8", "Version8_3_9", "Version8_3_9"),
+    ] {
+        let error = plan_all(&extension(refused_in), std::slice::from_ref(operation))
+            .expect_err("the mode of the extension refuses the operation");
+        assert_eq!(error.kind(), ApplyPlanErrorKind::InvalidState, "{error:?}");
+        assert_eq!(error.path(), Some("ops[0]"), "{error:?}");
+        let message = error.to_string();
+        assert!(
+            message.contains(refused_in) && message.contains(since),
+            "{message}"
+        );
+        plan_all(&extension(admitted_in), std::slice::from_ref(operation))
+            .unwrap_or_else(|error| panic!("{admitted_in}: {error:?} at {:?}", error.path()));
+    }
+    // No compatibility admits both.
+    plan_all(&extension("DontUse"), &[catalog, attribute])
+        .unwrap_or_else(|error| panic!("{error:?} at {:?}", error.path()));
+}
+
 #[test]
 fn an_extension_writes_new_values_in_its_own_default_language() {
     // The extension's own Configuration.xml and adopted language decide;
