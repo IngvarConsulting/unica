@@ -33,7 +33,7 @@ impl MetadataOperations {
             context,
             cancellation,
         )?;
-        let (local, validation_subject) = read_typed_meta_info(
+        let (mut local, validation_subject) = read_typed_meta_info(
             &resolved,
             &request.source_set,
             &request.metadata_path,
@@ -44,6 +44,30 @@ impl MetadataOperations {
             cancellation,
             support_reader,
         )?;
+        // Values the compatibility mode of the set forbids (kind (б)): the
+        // mode is read from the registering root, the same check `apply`
+        // runs before publishing.
+        if let Some(mode) = unica_source_designer::extension_mode::source_set_compatibility_mode(
+            &resolved.owner_preimage,
+            resolved.handle.source_set_kind(),
+        ) {
+            let rules = unica_source_contract::compatibility::CompatibilityRules::for_mode(mode);
+            local.diagnostics.extend(
+                unica_metadata_designer::mode_checks::descriptor_mode_findings(
+                    &resolved.descriptor_preimage,
+                    rules,
+                )
+                .into_iter()
+                .map(|finding| {
+                    unica_metadata::MetaDiagnostic::error(
+                        unica_metadata::MetaDiagnosticCode::ValidationFailed,
+                        finding.message,
+                    )
+                    .with_field("type")
+                    .with_metadata_path(request.metadata_path.clone())
+                }),
+            );
+        }
         Ok(unica_metadata::validation_subject::MetadataRead {
             local,
             validation_subject,
