@@ -127,6 +127,33 @@ pub fn warm_actor_whose_named_root_was_replaced_is_rebuilt() {
     assert_eq!(registry.warm_len_for_test().unwrap(), 1);
 }
 
+pub fn a_held_actor_whose_named_root_was_replaced_is_temporarily_unavailable() {
+    let root = temp_root("held-replaced-root");
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    let registry = registry_for_test();
+    let context = context(&root);
+    let held = registry
+        .get_or_create(&context, [source_input("main", root.join("src"))], "p")
+        .unwrap();
+    std::fs::rename(root.join("src"), root.join("src-old")).unwrap();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+
+    assert_eq!(
+        registry
+            .get_or_create(&context, [source_input("main", root.join("src"))], "p")
+            .err(),
+        Some(WorkspaceActorRegistryError::NamedRootUnavailable),
+        "the stale actor of a live invocation is never handed out again"
+    );
+    let stale = Arc::downgrade(&held);
+    drop(held);
+    let rebuilt = registry
+        .get_or_create(&context, [source_input("main", root.join("src"))], "p")
+        .unwrap();
+    assert!(stale.upgrade().is_none());
+    assert!(rebuilt.retains_named_roots().unwrap());
+}
+
 pub fn warm_actors_do_not_block_a_distinct_identity() {
     let root = temp_root("warm-capacity");
     let registry = registry_for_test();

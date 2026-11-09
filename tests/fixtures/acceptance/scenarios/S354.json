@@ -1,0 +1,135 @@
+{
+  "id": "S354",
+  "name": "report-include-help-in-contents",
+  "issue": 896,
+  "area": "Свойства объектов",
+  "task": "Включить справку отчёта в оглавление через props.set IncludeHelpInContents; у перечисления свойства нет — отказ",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Report.АнализВерсийОбъектов",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "IncludeHelpInContents": true
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/executable",
+          "eq": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Reports/АнализВерсийОбъектов.xml",
+          "eq": "4a5d35f1061d329b0003a90ffe4b3a2ecd37de256a442694061bfc3f19124230"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "41c7a0b8161a1e7661471f225cc24faf46d85761df32ff022b171b525b063989"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Reports/АнализВерсийОбъектов.xml",
+          "eq": "8ec11319632a21155b9827e4bc9842062722e9c0dec658ba830e7bc408a3a6c4"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "41c7a0b8161a1e7661471f225cc24faf46d85761df32ff022b171b525b063989"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Report.АнализВерсийОбъектов"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/IncludeHelpInContents",
+          "eq": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Enum.ВажностьПроблемыУчета",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "IncludeHelpInContents": true
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: property `IncludeHelpInContents` is not supported for Enum",
+      "assertions": [
+        {
+          "pointer": "/ok",
+          "eq": false
+        },
+        {
+          "pointer": "/diagnostics",
+          "eq": [
+            {
+              "code": "bad_value",
+              "outcome": "fixCall",
+              "message": "property `IncludeHelpInContents` is not supported for Enum"
+            }
+          ]
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Enums/ВажностьПроблемыУчета.xml",
+          "eq": "447910907ea597f23a78dc42e81b5b6716b6565f696565656eb6ea1f05d08a03"
+        }
+      ]
+    }
+  ]
+}

@@ -4,12 +4,16 @@
 from __future__ import annotations
 
 import argparse
+import functools
 import re
 import subprocess
 import sys
 import tomllib
 from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import crate_declarations  # noqa: E402
 
 
 OS_CFG_TERM = re.compile(
@@ -76,9 +80,15 @@ HOST_MARKER_KINDS = {
     "manifest": "host manifest directory",
     "name": "host name",
 }
+# What a package may do with files is its `[package.metadata.unica] file-io`:
+# "domain" (no `std::fs`, `std::env`, `std::process`), "none" (no `std::fs`)
+# or "owned". A declaration may only tighten a package: the floors below hold
+# the packages restricted today, and a package leaves one only by an edit of
+# this guard, never by its own declaration.
+FILE_IO_LEVELS = {"owned": 0, "none": 1, "domain": 2}
 # Semantic packages retain the former domain boundary after physical relocation.
-DOMAIN_COMPONENTS = frozenset({
-    "unica-address", "unica-source-contract", "unica-operation-contract",
+DOMAIN_FLOOR = frozenset({
+    "unica-domain", "unica-address", "unica-source-contract", "unica-operation-contract",
     "unica-metadata", "unica-forms", "unica-roles", "unica-dcs", "unica-xdto",
     "unica-templates", "unica-bsl", "unica-bsl-applied", "unica-bindings", "unica-documentation",
 })
@@ -88,11 +98,30 @@ DOMAIN_COMPONENTS = frozenset({
 # through workspace ports; a direct `std::fs` call would bypass the publication
 # authority that workspace owns (INV.APP.COMPONENT-DEPENDENCIES). The owners are
 # named by package, never by file: every `unica-*-designer` package is a codec.
-FILE_IO_COMPONENTS = frozenset({
+FILE_IO_FLOOR = frozenset({
     "unica-operations", "unica-navigation", "unica-diagnostics",
-    "unica-code-intelligence", "unica-xml-format", "unica-work-control",
+    "unica-code-intelligence", "unica-code-model", "unica-xml-format", "unica-work-control",
 })
 DESIGNER_CODEC_PACKAGE = re.compile(r"unica-[a-z0-9-]+-designer")
+DOMAIN_COMPONENTS = DOMAIN_FLOOR | crate_declarations.packages(crate_declarations.repository(), file_io="domain")
+FILE_IO_COMPONENTS = FILE_IO_FLOOR | crate_declarations.packages(crate_declarations.repository(), file_io="none")
+
+
+def use_declarations(repo_root: Path) -> None:
+    """Derive the file-IO sets from the crates under `repo_root`, the tree checked."""
+    global DOMAIN_COMPONENTS, FILE_IO_COMPONENTS
+    declarations = crate_declarations.read(repo_root)
+    DOMAIN_COMPONENTS = DOMAIN_FLOOR | crate_declarations.packages(declarations, file_io="domain")
+    FILE_IO_COMPONENTS = FILE_IO_FLOOR | crate_declarations.packages(declarations, file_io="none")
+
+
+def required_file_io(name: str) -> str:
+    """The least restriction a package keeps whatever it declares."""
+    if name in DOMAIN_FLOOR:
+        return "domain"
+    if name in FILE_IO_FLOOR or DESIGNER_CODEC_PACKAGE.fullmatch(name) is not None:
+        return "none"
+    return "owned"
 
 
 # Third-party file crates would bypass the same boundary without naming
@@ -135,7 +164,7 @@ def _is_file_io_free_source(path: PurePosixPath) -> bool:
 
 def _is_domain_source(path: PurePosixPath) -> bool:
     parts = path.parts
-    return path.as_posix().startswith("crates/unica-coder/src/domain/") or (
+    return (
         len(parts) >= 4 and parts[0] == "crates"
         and parts[2] == "src" and (parts[1] in DOMAIN_COMPONENTS or parts[3] == "model")
     )
@@ -218,9 +247,7 @@ def _cfg_expression_end(source: str, opening_parenthesis: int) -> int:
 
 
 def _mask_range(masked: list[str], start: int, end: int) -> None:
-    for index in range(start, end):
-        if masked[index] != "\n":
-            masked[index] = " "
+    masked[start:end] = [" " if char != "\n" else char for char in masked[start:end]]
 
 
 def _raw_string_end(source: str, start: int) -> int | None:
@@ -296,6 +323,9 @@ def _char_literal_end(source: str, start: int) -> int | None:
     return index + 1 if index < len(source) and source[index] == "'" else None
 
 
+_MASK_START = re.compile(r"""[/"'rb]""")
+
+
 def _mask_non_code(source: str) -> str:
     """Replace comments and literals with spaces while keeping source offsets stable."""
     masked = list(source)
@@ -343,7 +373,10 @@ def _mask_non_code(source: str) -> str:
                 index = end
                 continue
 
-        index += 1
+        # Only these characters start a comment or a literal: every other
+        # position falls through all branches above, so skip to the next one.
+        found = _MASK_START.search(source, index + 1)
+        index = found.start() if found else len(source)
     return "".join(masked)
 
 
@@ -414,9 +447,9 @@ def _forbidden_imports(path: PurePosixPath) -> tuple[str, ...]:
     normalized = path.as_posix()
     if _is_domain_source(path):
         return FORBIDDEN_DOMAIN_IMPORTS
-    if normalized.startswith("crates/unica-coder/src/application/"):
+    if normalized.startswith("crates/unica-application/src/application/"):
         return FORBIDDEN_APPLICATION_IMPORTS
-    if normalized.startswith("crates/unica-coder/src/infrastructure/"):
+    if normalized.startswith(("crates/unica-coder/src/infrastructure/", "crates/unica-daemon/src/infrastructure/")):
         return FORBIDDEN_INFRASTRUCTURE_IMPORTS
     return ()
 
@@ -478,12 +511,20 @@ def _grouped_use_entries(
     return entries
 
 
+_GROUP_DELIMITER = re.compile(r"[{},]")
+
+
 def _grouped_entries_at(masked: str, opening_brace: int) -> list[tuple[int, str]]:
     entries: list[tuple[int, str]] = []
     entry_start = opening_brace + 1
     depth = 1
     index = entry_start
     while index < len(masked) and depth:
+        # Only braces and commas change the walk: jump straight to the next one.
+        found = _GROUP_DELIMITER.search(masked, index)
+        if found is None:
+            break
+        index = found.start()
         char = masked[index]
         if char == "{":
             depth += 1
@@ -581,7 +622,9 @@ def _root_aliases(masked: str, root: str) -> tuple[str, ...]:
     )
 
 
+@functools.lru_cache(maxsize=4)
 def _alias_sources(masked: str) -> dict[str, set[str]]:
+    """Aliases of one masked file; cached, since every root asks for them. Read-only."""
     aliases: dict[str, set[str]] = {}
 
     def record(source: str, alias: str) -> None:
@@ -910,22 +953,42 @@ def collect_repository_manifests(repo_root: Path) -> tuple[dict[str, str], dict[
     """Package manifests under `crates/` and the root workspace dependency table."""
     result = subprocess.run(["git", "-C", str(repo_root), "ls-files", "-z", "--", "crates/*/Cargo.toml"],
                             text=False, capture_output=True, check=True)
-    manifests = {raw.decode("utf-8"): (repo_root / raw.decode("utf-8")).read_text(encoding="utf-8")
-                 for raw in sorted(set(result.stdout.split(b"\0")) - {b""})}
     root_manifest = repo_root / "Cargo.toml"
     root = tomllib.loads(root_manifest.read_text(encoding="utf-8")) if root_manifest.is_file() else {}
+    # Как Cargo: `exclude` снимает каталог с членства, и он не пакет продукта.
+    excluded = set(root.get("workspace", {}).get("exclude", []))
+    manifests = {raw.decode("utf-8"): (repo_root / raw.decode("utf-8")).read_text(encoding="utf-8")
+                 for raw in sorted(set(result.stdout.split(b"\0")) - {b""})
+                 if str(PurePosixPath(raw.decode("utf-8")).parent) not in excluded}
     return manifests, root.get("workspace", {}).get("dependencies", {})
 
 
 def file_io_free_packages(repo_root: Path) -> dict[str, str]:
     """Package name → repository directory of every file-IO-free package."""
+    use_declarations(repo_root)
     manifests, _ = collect_repository_manifests(repo_root)
     found = {name: str(PurePosixPath(path).parent) for path, text in manifests.items()
              if isinstance(name := tomllib.loads(text).get("package", {}).get("name", ""), str)}
     return {name: found[name] for name in sorted(found) if is_file_io_free_package(name)}
 
 
+def file_io_declaration_errors(manifests: dict[str, str]) -> list[str]:
+    """A package that says nothing about file IO would stay outside this guard unnoticed."""
+    errors: list[str] = []
+    for path, text in sorted(manifests.items()):
+        package = tomllib.loads(text).get("package", {})
+        name = package.get("name", "")
+        declared = package.get("metadata", {}).get("unica", {}).get("file-io")
+        required = required_file_io(name)
+        if declared not in FILE_IO_LEVELS:
+            errors.append(f'{path}: declare file-io under [package.metadata.unica]: "domain" uses neither std::fs nor std::env nor std::process, "none" reads files only through workspace ports, "owned" may touch the file system directly')
+        elif FILE_IO_LEVELS[declared] < FILE_IO_LEVELS[required]:
+            errors.append(f"{path}: file-io {declared} lifts a restriction this guard holds for {name}, which stays at least {required}; only DOMAIN_FLOOR or FILE_IO_FLOOR in this guard lift it")
+    return errors
+
+
 def check_repository(repo_root: Path) -> list[str]:
+    use_declarations(repo_root)
     manifests, workspace_dependencies = collect_repository_manifests(repo_root)
     manifest_diagnostics = [diagnostic for path in sorted(manifests)
                             for diagnostic in check_manifest(path, manifests[path], workspace_dependencies)]
@@ -943,7 +1006,8 @@ def main() -> int:
         return 0
 
     try:
-        diagnostics = check_repository(args.repo_root.resolve())
+        root = args.repo_root.resolve()
+        diagnostics = file_io_declaration_errors(collect_repository_manifests(root)[0]) + check_repository(root)
     except (OSError, subprocess.CalledProcessError, UnicodeDecodeError, ValueError, tomllib.TOMLDecodeError) as error:
         print(f"rust platform boundary error: {error}", file=sys.stderr)
         return 1

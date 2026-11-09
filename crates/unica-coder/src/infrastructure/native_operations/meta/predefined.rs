@@ -1,10 +1,10 @@
 //! Trusted binding for the existing bounded source-contained predefined read.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use crate::infrastructure::platform_xml_source_targets::ClosedPlatformXmlTarget;
 use std::path::Path;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use unica_address::source_target::MetadataAddress;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use unica_metadata::*;
 use unica_metadata_designer::predefined::*;
 pub(crate) struct PredefinedResourceReadBinding;
@@ -23,7 +23,7 @@ impl PredefinedResourceRead for PredefinedResourceReadBinding {
             .map(|observed| observed.bytes)
     }
 }
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn plan_predefined_resource(
     source_root: &Path,
     descriptor_path: &Path,
@@ -80,11 +80,7 @@ mod tests {
     }
 
     fn owner(kind: &str) -> MetadataAddress {
-        MetadataAddress::parse(
-            unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
-            &format!("{kind}.Items"),
-        )
-        .unwrap()
+        MetadataAddress::parse_logical(&format!("{kind}.Items")).unwrap()
     }
 
     #[test]
@@ -292,7 +288,7 @@ mod tests {
         }
     }
 
-    /// #1119: корректный `Predefined.xml` больше прежних 8 МиБ читается
+    /// Корректный `Predefined.xml` больше прежних 8 МиБ читается
     /// целиком, а не отклоняется по размеру.
     #[test]
     fn predefined_plan_reads_a_resource_larger_than_eight_mebibytes() {
@@ -333,7 +329,7 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
-    /// #1381: описание без `CodeType` (так платформа выгружает заимствованный
+    /// Описание без `CodeType` (так платформа выгружает заимствованный
     /// справочник) не даёт писателю проверять коды по придуманному виду:
     /// запись предопределённых отказывает тем же текстом, что и чтение.
     /// rule: INV.SOURCE.INCOMPLETE-METADATA-READ
@@ -1232,11 +1228,7 @@ mod tests {
     #[test]
     fn add_equivalence_does_not_ignore_an_existing_child_subtree() {
         let mut xml = r#"<PredefinedData xmlns="http://v8.1c.ru/8.3/xcf/predef" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="CatalogPredefinedItems" version="2.20"><Item id="a7d2e6fc-3824-4b56-b4be-ae6be4944c0e"><Name>Main</Name><Code/><Description/><IsFolder>false</IsFolder><ChildItems><Item id="b7d2e6fc-3824-4b56-b4be-ae6be4944c0e"><Name>Child</Name></Item></ChildItems></Item></PredefinedData>"#.to_string();
-        let owner = MetadataAddress::parse(
-            unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
-            "Catalog.Items",
-        )
-        .unwrap();
+        let owner = MetadataAddress::parse_logical("Catalog.Items").unwrap();
         let element = MetaPredefinedItemAdd {
             id: "a7d2e6fc-3824-4b56-b4be-ae6be4944c0e".to_string(),
             name: "Main".to_string(),
@@ -1878,7 +1870,7 @@ mod tests {
                 MetadataKind::Catalog,
                 include_bytes!(concat!(
                     env!("CARGO_MANIFEST_DIR"),
-                    "/../../tests/fixtures/platform_8_3_27/predefined/Catalog.xml"
+                    "/tests/fixtures/predefined/Catalog.xml"
                 ))
                 .as_slice(),
             ),
@@ -1886,7 +1878,7 @@ mod tests {
                 MetadataKind::ChartOfAccounts,
                 include_bytes!(concat!(
                     env!("CARGO_MANIFEST_DIR"),
-                    "/../../tests/fixtures/platform_8_3_27/predefined/ChartOfAccounts.xml"
+                    "/tests/fixtures/predefined/ChartOfAccounts.xml"
                 ))
                 .as_slice(),
             ),
@@ -1894,7 +1886,7 @@ mod tests {
                 MetadataKind::ChartOfCharacteristicTypes,
                 include_bytes!(concat!(
                     env!("CARGO_MANIFEST_DIR"),
-                    "/../../tests/fixtures/platform_8_3_27/predefined/ChartOfCharacteristicTypes.xml"
+                    "/tests/fixtures/predefined/ChartOfCharacteristicTypes.xml"
                 ))
                 .as_slice(),
             ),
@@ -1902,7 +1894,7 @@ mod tests {
                 MetadataKind::ChartOfCalculationTypes,
                 include_bytes!(concat!(
                     env!("CARGO_MANIFEST_DIR"),
-                    "/../../tests/fixtures/platform_8_3_27/predefined/ChartOfCalculationTypes.xml"
+                    "/tests/fixtures/predefined/ChartOfCalculationTypes.xml"
                 ))
                 .as_slice(),
             ),
@@ -1923,7 +1915,7 @@ mod tests {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         let fixture = include_bytes!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../tests/fixtures/platform_8_3_27/predefined/ChartOfAccounts.xml"
+            "/tests/fixtures/predefined/ChartOfAccounts.xml"
         ));
         fs::write(&path, fixture).unwrap();
         let accounting_flags = BTreeMap::from([

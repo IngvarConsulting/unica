@@ -18,11 +18,11 @@ use unica_metadata::support_state::{
 use unica_metadata_designer::support::{support_root_uuid_from_bytes, SupportState};
 use unica_source_contract::workspace::WorkspaceContext;
 
-pub(crate) trait SupportStateReaderFactory: Send + Sync {
+pub trait SupportStateReaderFactory: Send + Sync {
     fn create<'a>(&'a self, context: &'a WorkspaceContext) -> Box<dyn SupportStateReader + 'a>;
 }
 
-pub(crate) struct WorkspaceSupportStateReaderFactory;
+pub struct WorkspaceSupportStateReaderFactory;
 
 impl SupportStateReaderFactory for WorkspaceSupportStateReaderFactory {
     fn create<'a>(&'a self, context: &'a WorkspaceContext) -> Box<dyn SupportStateReader + 'a> {
@@ -302,9 +302,7 @@ mod medium_tests {
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
-    use unica_address::source_target::{
-        MetadataAddress, ResolvedTarget, TargetKind, PLATFORM_XML_8_3_27_FORMAT_2_20,
-    };
+    use unica_address::source_target::{MetadataAddress, ResolvedTarget, TargetKind};
     use unica_metadata::support_state::{
         ConfigurationSupportState, ObjectSupportState, SupportReadErrorCode, SupportStateReader,
     };
@@ -381,9 +379,7 @@ mod medium_tests {
     fn object_target() -> ResolvedTarget {
         ResolvedTarget {
             source_set: "main".to_string(),
-            metadata_path: Some(
-                MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Role.Reader").unwrap(),
-            ),
+            metadata_path: Some(MetadataAddress::parse_logical("Role.Reader").unwrap()),
             target_kind: TargetKind::MetadataObject,
         }
     }

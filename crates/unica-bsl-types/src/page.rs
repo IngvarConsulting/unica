@@ -58,6 +58,16 @@ const CHAPTER: &str = "<p class=\"V8SH_chapter\">";
 const RUBRIC: &str = "<div class=\"V8SH_rubric\">";
 /// How far after «Массив из» the element type link is looked for, in
 /// characters: the phrase and the link stand together in the help.
+// resource-limit: bsl-types.array-element-window
+// class: format
+// unit: count
+// scope: record
+// value: 200
+// resource: Сколько символов после «Массив из» на странице справки просматривается в поисках ссылки на тип элемента массива.
+// status: unproven
+// origin: #2238
+// problem: тип элемента, названный дальше окна, не попадает в каталог
+// on-reach: тихо: массив остаётся без типа элемента, то есть с неизвестным, а не с угаданным элементом
 const ARRAY_ELEMENT_WINDOW: usize = 200;
 
 /// The kind and owner of a page, from its path; `None` for a page that is

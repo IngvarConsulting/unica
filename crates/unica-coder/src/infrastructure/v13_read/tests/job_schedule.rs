@@ -203,7 +203,7 @@ fn job_schedule_refuses_linked_artifacts() {
 
 #[test]
 fn job_schedule_checkpoints_preserve_cancellation_and_deadline() {
-    use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+    use unica_address::source_target::MetadataAddress;
     use unica_execution_contract::view_error::ViewError;
     use unica_refusal::RefusalCode;
     let fixture = RealReaderFixture::new();
@@ -214,8 +214,7 @@ fn job_schedule_checkpoints_preserve_cancellation_and_deadline() {
         SCHEDULE,
     );
     let authority = fixture.read_authority();
-    let target =
-        MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "ScheduledJob.MonthClose").unwrap();
+    let target = MetadataAddress::parse_logical("ScheduledJob.MonthClose").unwrap();
     let mut total = 0;
     authority
         .read
@@ -293,9 +292,8 @@ fn job_schedule_resolves_to_its_file_only_while_the_file_exists() {
 #[test]
 fn job_schedule_reads_detailed_daily_schedules_in_platform_export_shape() {
     let fixture = RealReaderFixture::new();
-    let bytes = include_bytes!(
-        "../../../../../../tests/fixtures/platform_8_3_27/job_schedule/detailed-daily-schedules.xml"
-    );
+    let bytes =
+        include_bytes!("../../../../tests/fixtures/job_schedule/detailed-daily-schedules.xml");
     assert!(bytes.starts_with(b"\xef\xbb\xbf") && bytes.windows(2).any(|pair| pair == b"\r\n"));
     let path = fixture
         .source

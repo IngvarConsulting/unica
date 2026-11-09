@@ -1,7 +1,7 @@
 //! Typed family dispatch and batch ownership; codec-owned plans have no publication authority.
 use super::validate_platform_xml_binding;
 use serde_json::Value;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use unica_address::address::QualifiedAddress;
 
 use unica_metadata_designer::resource_planner::{self, MetadataResourcePlan};
@@ -35,7 +35,7 @@ impl FormResourcePlanOperation {
 
 /// Разбор без семейства, выбранного вызывающим: общее имя (`attribute.add`
 /// формы и объекта, #1465) выбирает запись реестра по адресу вызова.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) fn parse_form_resource_plan_operation(
     operation: &str,
     args: &Value,
@@ -208,7 +208,7 @@ pub(crate) fn plan_form_resource_batch(
     Ok(provisional)
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) fn plan_form_resource_batch_owned_for_test(
     mut staged: unica_workspace::apply::ApplyStagedState,
     authority: unica_workspace::actor::FormResourceApplyAuthority<'_>,
@@ -276,7 +276,7 @@ mod tests {
         String::from_utf8(bytes).unwrap()
     }
 
-    /// Р2 (#1447): `item.add` добавляет один элемент. Вложенное дерево,
+    /// Р2: `item.add` добавляет один элемент. Вложенное дерево,
     /// companion-содержимое и события отказывают `bad_value` по точному
     /// пути до записи, а `next` ведёт к контракту `item.add`.
     #[test]
@@ -374,7 +374,7 @@ mod tests {
 
     /// Контракт `item.add` и писатель согласны по каждому виду: каждый
     /// опубликованный ключ принимают контракт и планировщик, и хотя бы одно
-    /// его значение меняет записанный XML вида (#1447). Ключ, который
+    /// его значение меняет записанный XML вида. Ключ, который
     /// писатель вида не пишет, в контракт не попадает.
     #[test]
     fn every_published_element_key_reaches_the_xml_of_its_kind() {
@@ -475,7 +475,7 @@ mod tests {
         }
     }
 
-    /// Реквизит формы принимает только то, что пишет его писатель (#1447);
+    /// Реквизит формы принимает только то, что пишет его писатель;
     /// проверка заполнения пишется тегом `<FillCheck>`, который знает 8.3.27.
     #[test]
     fn form_attribute_add_refuses_unwritten_keys_and_writes_fill_check() {
@@ -566,7 +566,7 @@ mod tests {
         }
     }
 
-    /// #1257: titles, tooltips and input hints of new form elements,
+    /// Titles, tooltips and input hints of new form elements,
     /// attributes and commands are written in the default language of the
     /// source set; an explicit language-to-text value is written as given.
     #[test]
@@ -991,7 +991,7 @@ mod tests {
         let document = roxmltree::Document::parse(text.trim_start_matches('\u{feff}')).unwrap();
         let platform_export = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../tests/fixtures/platform_8_3_27/text-document-field/Form.xml"
+            "/tests/fixtures/text-document-field/Form.xml"
         ));
         let platform = roxmltree::Document::parse(platform_export).unwrap();
         for name in ["Протокол1", "Протокол2"] {
@@ -1041,7 +1041,7 @@ mod tests {
         assert!(!text.contains("<InputField name=\"Протокол2\""));
     }
 
-    /// Узел правки формы — ровно адрес (#1355): цепочка `Item` сверяется
+    /// Узел правки формы — ровно адрес: цепочка `Item` сверяется
     /// с формой, отсутствующий элемент даёт `not_found`, в поле не
     /// добавить, сосед `after` берётся только из адресованного контейнера,
     /// а удаление и событие касаются только названного элемента.
@@ -1218,7 +1218,7 @@ mod tests {
         }
     }
 
-    /// Сосед `after` может быть добавлен раньше в том же `items` (#1443).
+    /// Сосед `after` может быть добавлен раньше в том же `items`.
     #[test]
     fn item_add_after_names_an_item_added_earlier_in_the_same_list() {
         let fixture = ApplySeamFixture::new();
@@ -1275,7 +1275,7 @@ mod tests {
 
     /// События из каталога 8.3.27, зависящие от вида владельца формы и пути
     /// данных таблицы, принимаются и при добавлении элемента, и итоговой
-    /// проверкой формы (#1443).
+    /// проверкой формы.
     #[test]
     fn owner_and_data_path_specific_events_pass_planning_and_final_validation() {
         let fixture = ApplySeamFixture::new();
@@ -1320,7 +1320,7 @@ mod tests {
                 2,
             ),
             // Событие нового элемента привязывает `event.bind` на его адресе
-            // (Р2, #1447).
+            // (Р2).
             parse(
                 "event.bind",
                 json!({
@@ -1463,7 +1463,7 @@ mod tests {
             )
         };
         // Запись прав создаёт `right.add` на роли, а `right.set` меняет
-        // существующую запись по её адресу (#1354).
+        // существующую запись по её адресу.
         let operations = [
             parse(
                 "right.set",
@@ -1880,7 +1880,7 @@ mod tests {
                 json!({"values":{"name":"Reader","synonym":"Ignored"}}),
                 "ops[0].args.values.synonym",
             ),
-            // Previously ignored top-level fields are intentionally closed by #1468.
+            // Top-level fields outside the contract are refused.
             (
                 json!({"values":{"name":"Reader"},"ignored":true}),
                 "ops[0].args.ignored",
@@ -2002,7 +2002,7 @@ mod tests {
         assert!(text.contains("<Subsystem>Orders</Subsystem>"), "{text}");
         // Пустой тег раскрывается так, как пишет платформа: элемент на своей
         // строке с отступом на уровень глубже, закрывающий тег — с отступом
-        // контейнера (#1889).
+        // контейнера.
         let indent = |tag: &str| {
             let at = stub.find(tag).unwrap();
             stub[..at].rsplit('\n').next().unwrap().to_owned()
@@ -2544,7 +2544,7 @@ mod tests {
     }
 
     /// Имя дочерней подсистемы задаёт адрес: аргумент, который его
-    /// повторял, отказывает и в разборе планировщиком (#1353). Форму создаёт
+    /// повторял, отказывает и в разборе планировщиком. Форму создаёт
     /// `form.add` на владельце: снятую `form.create` планировщик не знает.
     /// rule: INV.WIRE.OPERATION-TARGET-ADDRESS
     #[test]
@@ -2593,7 +2593,7 @@ mod tests {
 
     /// `command.add` принимает ровно ключи, которые писатель кладёт
     /// в `<Command>`, и передаёт их писателю; остальное отказывает
-    /// `bad_value` до записи, а не теряется молча (#1439).
+    /// `bad_value` до записи, а не теряется молча.
     #[test]
     fn form_command_add_accepts_only_the_keys_its_writer_writes() {
         let fixture = ApplySeamFixture::new();

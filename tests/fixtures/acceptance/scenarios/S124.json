@@ -1,0 +1,27 @@
+{
+  "area": "Создание и удаление объектов",
+  "task": "Создать определяемый тип",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "object.create",
+            "args": {
+              "values": {
+                "kind": "DefinedType",
+                "name": "ТипВладельца"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S124"
+}

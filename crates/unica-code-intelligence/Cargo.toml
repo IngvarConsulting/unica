@@ -15,6 +15,7 @@ unica-navigation = { path = "../unica-navigation" }
 unica-address = { path = "../unica-address" }
 unica-bsl = { path = "../unica-bsl" }
 unica-bsl-parser = { path = "../unica-bsl-parser" }
+unica-code-model = { path = "../unica-code-model" }
 unica-source-contract = { path = "../unica-source-contract" }
 unica-work-control = { path = "../unica-work-control" }
 serde.workspace = true
@@ -24,3 +25,7 @@ serde_json.workspace = true
 [dev-dependencies]
 uuid.workspace = true
 unica-address = { path = "../unica-address" }
+
+[package.metadata.unica]
+component = "coordinator"
+file-io = "none"
