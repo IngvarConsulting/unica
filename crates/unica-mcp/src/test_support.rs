@@ -14,9 +14,11 @@ pub use rmcp;
 
 // Внутренности двери, которые тесты демона собирают вокруг живого демона.
 pub use crate::canonical_cancellation::*;
+pub use crate::catalog::tool_definitions;
 pub use crate::daemon_router::*;
 pub use crate::in_flight::*;
 pub use crate::manual_calls::ManualCalls;
+pub use crate::server::UnicaServer;
 pub use crate::surface::*;
 pub use crate::tool_result::*;
 pub use crate::transport::*;

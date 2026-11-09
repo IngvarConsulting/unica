@@ -8,6 +8,7 @@
 //! descriptors (ADR-0001) instead of SDK macros.
 
 mod canonical_cancellation;
+mod catalog;
 mod daemon_router;
 mod in_flight;
 mod surface;
@@ -24,6 +25,7 @@ use crate::daemon_router::{
 };
 mod manual_calls;
 mod receive_pump;
+mod server;
 use crate::application::tool_contracts::{SurfaceRelease, V13TaskProfile};
 use crate::application::{
     code_search_output_schema, input_schema_for_tool, metadata_argument_failure_result,
@@ -33,6 +35,7 @@ use crate::application::{
 };
 #[cfg(any(test, feature = "test-support"))]
 use crate::daemon_router::{CanonicalCallHandler, CanonicalTaskHandler, CanonicalTaskWaitHandler};
+use catalog::tool_definitions;
 use in_flight::{drain_stdio_frontend, InFlightGuard, InFlightRegistry};
 use manual_calls::ManualCalls;
 use rmcp::model::{
@@ -49,6 +52,7 @@ use rmcp::service::{NotificationContext, RequestContext, ServerInitializeError};
 use rmcp::transport::Transport;
 use rmcp::{RoleServer, ServerHandler, ServiceExt};
 use serde_json::{Map, Value};
+use server::UnicaServer;
 use std::collections::HashSet;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
@@ -158,20 +162,6 @@ pub fn run_stdio(connect: fn() -> Result<V5DaemonClient, String>) {
 const STARTUP_NOTICE_ENV: &str = "UNICA_STARTUP_NOTICE";
 
 const CANONICAL_INSTRUCTIONS: &str = "Start with unica.view using an empty object when the workspace or logical address is unknown. Use returned addresses instead of guessing at. A qualified logical address has the form <sourceSet>:<Kind>[.<Name>...]. Use unica.check to confirm source-set admission or logical-node readability.";
-
-pub struct UnicaServer {
-    router: SurfaceToolRouter,
-    in_flight: Arc<InFlightRegistry>,
-    manual_calls: Arc<ManualCalls>,
-    structured_tools: HashSet<&'static str>,
-    /// О чём рассказать вызывающему при рукопожатии. Обычная сессия платит за
-    /// это ноль байтов поверхности: рассказывать нечего.
-    startup_notice: Option<String>,
-    /// Тестовый каталог вместо канонического: постраничный обход `tools/list`
-    /// проверяется на каталоге больше одной страницы.
-    #[cfg(any(test, feature = "test-support"))]
-    listed_tools_for_test: Option<Arc<Vec<Tool>>>,
-}
 
 #[allow(dead_code)]
 fn assert_unica_server_implements_official_rmcp_server_handler()
@@ -1334,38 +1324,6 @@ fn progress_notification(
         .with_message(event.message.clone());
     notification.meta = Some(meta);
     notification
-}
-
-/// Data-driven MCP tool definitions from the application descriptor registry.
-pub fn tool_definitions(specs: &[ToolSpec]) -> Vec<Tool> {
-    specs
-        .iter()
-        .map(|spec| {
-            // #479 §1 schema-only baseline (owner decision, 2026-08-17): the
-            // wire surface carries no prose while descriptions are reauthored;
-            // the v0.12 history keeps the previous texts.
-            let mut input_schema = input_schema_for_tool(spec);
-            strip_schema_descriptions(&mut input_schema);
-            let schema = match input_schema {
-                Value::Object(schema) => schema,
-                other => {
-                    unreachable!("tool {} produced a non-object schema: {other}", spec.name)
-                }
-            };
-            let mut tool = Tool::new(spec.name, spec.description, schema);
-            tool.description = None;
-            if let Some(mut schema) = structured_output_schema(spec) {
-                strip_schema_descriptions(&mut schema);
-                let output_schema = match schema {
-                    Value::Object(schema) => schema,
-                    other => unreachable!("OperationResult produced a non-object schema: {other}"),
-                };
-                tool.with_raw_output_schema(Arc::new(output_schema))
-            } else {
-                tool
-            }
-        })
-        .collect()
 }
 
 fn render_tool_result(

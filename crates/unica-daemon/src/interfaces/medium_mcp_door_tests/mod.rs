@@ -53,7 +53,6 @@ mod prelude {
     pub(super) use unica_mcp::test_support::rmcp::transport::Transport;
     pub(super) use unica_mcp::test_support::rmcp::{RoleServer, ServerHandler, ServiceExt};
     pub(super) use unica_mcp::test_support::*;
-    pub(super) use unica_mcp::{tool_definitions, UnicaServer};
     pub(super) use unica_refusal::RefusalCode;
     pub(super) use unica_refusal::RefusalDetail;
     pub(super) use unica_work_control::cancellation::CancellationToken;
