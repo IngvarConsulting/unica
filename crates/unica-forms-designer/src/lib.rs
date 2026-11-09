@@ -3,6 +3,8 @@ pub mod form_move;
 pub mod form_root_properties;
 pub mod root;
 
+mod dialect;
+
 pub mod event_context;
 
 pub mod codec;
