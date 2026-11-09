@@ -51,6 +51,30 @@ class ResolveLineTests(unittest.TestCase):
 
         self.assertEqual(module.resolve("tag", "v0.12.4", "abc", containing), "release-v0.12")
 
+    def test_a_button_tag_takes_the_line_of_the_commit_beneath_its_version_commit(self) -> None:
+        """Кнопки ставят тег на служебный коммит вне веток: линия — у среза под ним."""
+        module = load_module()
+        parents = {"rc": "slice", "patch": "line-head", "final": "rc", "rc-of-final": "slice"}
+        holders = {"slice": ["main"], "line-head": ["release-v0.15"]}
+        resolve = lambda tag, sha: module.resolve(
+            "tag", tag, sha, lambda commit: holders.get(commit, []), lambda commit: parents.get(commit))
+
+        self.assertEqual(resolve("v0.16.0-rc.2", "rc"), "main")
+        self.assertEqual(resolve("v0.15.1", "patch"), "release-v0.15")
+        self.assertEqual(resolve("v0.16.0", "final"), "main")
+
+    def test_a_tag_far_from_every_branch_or_on_a_foreign_branch_is_refused(self) -> None:
+        module = load_module()
+        parents = {"a": "b", "b": "c", "c": "slice"}
+        with self.assertRaises(SystemExit):
+            module.resolve("tag", "v0.15.1", "a", lambda commit: ["main"] if commit == "slice" else [],
+                           lambda commit: parents.get(commit))
+        with self.assertRaises(SystemExit):
+            module.resolve("tag", "v0.15.1", "a", lambda commit: ["feature/x"] if commit == "b" else [],
+                           lambda commit: parents.get(commit))
+        with self.assertRaises(SystemExit):
+            module.resolve("tag", "v0.15.1", "a", lambda commit: [], lambda commit: None)
+
     def test_tag_outside_any_release_line_is_a_refusal(self) -> None:
         """Теги только на релизных линиях: тег на main или в воздухе — отказ."""
         module = load_module()

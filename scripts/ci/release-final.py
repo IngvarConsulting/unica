@@ -11,11 +11,13 @@
   канала `next`, который его называет;
 - кандидат — последний для своего ядра: финальная версия не обходит более
   позднего кандидата;
-- выпуска `vX.Y.Z` ещё нет.
+- выпуска `vX.Y.Z` ещё нет;
+- ветки линии `release-vX.Y` ещё нет.
 
-Тег ставит ключ развёртывания из окружения `alpha` (`tag_push`), и его push
-запускает обычный выпуск по тегу: тесты, сборку, проверки установки и основной
-каталог маркетплейса. Кнопку нажимает администратор репозитория: роль сверяет
+Ключ развёртывания из окружения `alpha` (`tag_push`) одним атомарным push
+ставит тег и создаёт на том же коммите ветку линии `release-vX.Y`: из её головы
+потом выходят исправительные версии. Push тега запускает обычный выпуск по тегу:
+тесты, сборку, проверки установки и основной каталог маркетплейса. Кнопку нажимает администратор репозитория: роль сверяет
 `release-rc.py admit`.
 
     python scripts/ci/release-final.py publish --rc v0.15.0-rc.2
@@ -52,6 +54,12 @@ class Proof:
     rc: str
     commit: str
     run_url: str
+
+
+def line_branch(core: str) -> str:
+    """Ветка линии выпуска: `release-vX.Y` для ядра `X.Y.Z`."""
+    major, minor, _ = core.split(".")
+    return f"release-v{major}.{minor}"
 
 
 def pages(answer, key: str) -> list[dict]:
@@ -95,6 +103,14 @@ def prove(repo: str, rc_tag: str, gh, git) -> Proof:
         if "Not Found" in str(error) or "404" in str(error):
             raise FinalError(f"{rc_tag} не опубликован в канале next маркетплейса") from error
         raise FinalError(f"тег {rc_tag} в маркетплейсе не прочитан: {error}") from error
+    line = line_branch(match["core"])
+    try:
+        gh(f"repos/{repo}/branches/{line}")
+    except alpha.AlphaError as error:
+        if "Not Found" not in str(error) and "404" not in str(error):
+            raise FinalError(f"ветка {line} не прочитана: {error}") from error
+    else:
+        raise FinalError(f"ветка {line} уже есть: финальная версия этой линии уже выходила")
     newest = max(green, key=lambda run: run.get("created_at", ""))
     return Proof(rc_tag, commit, newest.get("html_url", ""))
 
@@ -121,7 +137,10 @@ def publish(root: Path, repo: str, rc_tag: str, *, dry_run: bool, gh=alpha.gh_ap
          f"Unica {tag} из кандидата {rc_tag}: коммит {proof.commit}, выпуск {proof.run_url}"])
     try:
         with tag_push.ssh_remote(repo) as (remote, env):
-            runner(["git", "push", remote, f"refs/tags/{tag}"], cwd=root, env=env)
+            # Тег и ветка линии уходят вместе: тега нет без линии, из которой
+            # выйдут исправительные, и линии нет без выпуска, который её открыл.
+            runner(["git", "push", "--atomic", remote, f"refs/tags/{tag}",
+                    f"HEAD:refs/heads/{line_branch(version)}"], cwd=root, env=env)
     except tag_push.TagKeyMissing as error:
         raise FinalError(str(error)) from error
     outputs = os.environ.get("GITHUB_OUTPUT")
