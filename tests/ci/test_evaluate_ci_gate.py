@@ -194,7 +194,7 @@ class EvaluateCiGateTests(unittest.TestCase):
                     self.assertEqual((outcome, "success"), result.unexpected["lint-rust-platforms"])
 
     def test_windows_clippy_is_required_in_the_code_queue_and_the_manual_main_run(self) -> None:
-        """Clippy под Windows — отдельная запись очереди и кнопки `main` (#2152)."""
+        """Clippy под Windows — отдельная запись очереди и кнопки `main`."""
         module = load_gate_module()
         outputs = classification(**{name: True for name in OUTPUT_NAMES})
         code = {**source_results(), "test-rust-platforms": "success", "lint-rust-platforms": "success"}
@@ -915,7 +915,7 @@ class StepResultTests(unittest.TestCase):
         self.assertEqual("missing", gate.combined(["failure", "missing"]))
 
     def test_a_red_windows_job_fails_the_nightly_like_any_other_runner(self) -> None:
-        """Windows в `large` блокирует, как macOS: по зелёному прогону ставят тег (#2152)."""
+        """Windows в `large` блокирует, как macOS: по зелёному прогону ставят тег."""
         gate = load_gate_module()
         for outcome in ("failure", "timed_out", "cancelled", "not_acquired", "missing"):
             with self.subTest(outcome=outcome):

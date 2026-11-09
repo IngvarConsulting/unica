@@ -7,3 +7,7 @@ repository.workspace = true
 
 [dependencies]
 roxmltree.workspace = true
+
+[package.metadata.unica]
+component = "abstraction"
+file-io = "none"

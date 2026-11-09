@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Find Rust tests a change removes and check the description declares them.
+"""Find Rust and Python tests a change removes and check the description declares them.
 
 The queue gate compares each run with the previous inventory and refuses a
 vanished test result unless a merged pull request description declares it
@@ -27,10 +27,22 @@ gone. Packages under `crates/` and `vendor/ureq` are checked. `cfg` is not
 evaluated; tests a macro generates and files reached only through a computed
 `include!` are not seen, except the modules a build script of `crates/`
 declares for each `*.rs` of a module's own directory. The queue still checks what this misses.
+
+Python tests of `tests/**/test_*.py` (the local `tests/agent_evaluation`
+included: its tests are checks too) are named by their module path from the
+repository root, as `run-static-tests.py` names them, `tests.ci.test_x.Class.test`,
+and read from the source without importing it: a
+class whose bases within the module reach a `...TestCase`, its `test*`
+methods and those of its bases defined in the same module. A test moved to
+another module keeps its `Class.test`: a lost one counts as moved when that
+pair left exactly one module and arrived in exactly one other. A declaration is
+the exact name or a literal prefix ending in `*`. Python tests are checked on a
+pull request (`--base`); `--baseline` compares the Rust inventory only.
 """
 from __future__ import annotations
 
 import argparse
+import ast
 from collections import Counter
 import importlib.util
 import json
@@ -42,6 +54,7 @@ import shlex
 import subprocess
 import sys
 import tomllib
+import warnings
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import ci_rust_lanes
@@ -130,7 +143,7 @@ MODULE_ITEM = re.compile(
 PATH_ATTRIBUTE = re.compile(r"#\[path\s*=([^\[\]]*)\]")
 STRING = re.compile(r'^\s*"([^"\\]*)"\s*$')
 # `include!` of the `mod` declarations build.rs writes for every `*.rs` file
-# of the including module's own directory (crates/unica-coder/build.rs).
+# of the including module's own directory (crates/unica-coder*/build.rs).
 DISCOVERED_MODULES = re.compile(
     r'\s*concat!\s*\(\s*env!\s*\(\s*"OUT_DIR"\s*\)\s*,\s*"/[a-z0-9_]+_modules\.rs"\s*\)\s*\)')
 
@@ -314,9 +327,92 @@ def removed_tests(root: Path, base: str, head: str = "HEAD") -> list[tuple[str, 
     after = cases(Packages(root, head), directories)
     remaining = {binary for _, binaries in after.values() for binary in binaries}
     remaining |= {binary for directory in directories for binary, _ in Packages(root, head).targets(directory)}
-    # A test moved to another module changes its case ID: the queue sees it go.
-    return sorted((package, case, binaries, sorted(set(binaries) - remaining))
-                  for case, (package, binaries) in before.items() if case not in after)
+    # A test moved to another crate or module changes its case ID but keeps its
+    # function name: the inventory gate counts it as moved, not removed.
+    lost = sorted(case for case in before if case not in after)
+    moved = ci_rust_lanes.moved_cases(lost, sorted(case for case in after if case not in before))
+    return sorted((before[case][0], case, before[case][1], sorted(set(before[case][1]) - remaining))
+                  for case in lost if case not in moved)
+
+
+PYTHON_TEST_MODULE = re.compile(r"^tests/(?:[^/]+/)*test_[^/]*\.py$")
+
+
+def python_tests_in(source: str, module: str) -> list[str]:
+    """`unittest` names of the tests a module defines, read without importing it."""
+    try:
+        with warnings.catch_warnings():
+            # A test's own string escapes are not this check's business.
+            warnings.simplefilter("ignore", SyntaxWarning)
+            tree = ast.parse(source)
+    except SyntaxError:
+        return []
+    classes = {node.name: node for node in tree.body if isinstance(node, ast.ClassDef)}
+
+    def base_names(node: ast.ClassDef) -> list[str]:
+        names = []
+        for base in node.bases:
+            target = base.attr if isinstance(base, ast.Attribute) else base.id if isinstance(base, ast.Name) else None
+            if target:
+                names.append(target)
+        return names
+
+    def is_test_case(name: str, seen: frozenset = frozenset()) -> bool:
+        node = classes.get(name)
+        if node is None or name in seen:
+            return False
+        return any(base.endswith("TestCase") or is_test_case(base, seen | {name}) for base in base_names(node))
+
+    def methods(name: str, seen: frozenset = frozenset()) -> set[str]:
+        node = classes.get(name)
+        if node is None or name in seen:
+            return set()
+        own = {item.name for item in node.body
+               if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)) and item.name.startswith("test")}
+        for base in base_names(node):
+            own |= methods(base, seen | {name})
+        return own
+
+    return sorted(f"{module}.{name}.{method}" for name in classes if is_test_case(name) for method in methods(name))
+
+
+def python_cases(root: Path, revision: str, paths: list[str]) -> dict[str, str]:
+    """Name of every Python test the given modules define at a revision, with its module path."""
+    found = {}
+    present = set(git(root, "ls-tree", "-r", "--name-only", revision, "--", *paths).splitlines()) if paths else set()
+    for path in paths:
+        if path not in present:
+            continue
+        module = path[:-len(".py")].replace("/", ".")
+        for case in python_tests_in(git(root, "show", f"{revision}:{path}"), module):
+            found[case] = path
+    return found
+
+
+def python_moved(lost: list[str], arrived: list[str]) -> set[str]:
+    """Lost tests whose `Class.test` left one module and arrived in exactly one other."""
+    def name(case: str) -> str:
+        return ".".join(case.rsplit(".", 2)[-2:])
+    lost_names = Counter(name(case) for case in lost)
+    arrivals = Counter(name(case) for case in arrived)
+    return {case for case in lost if lost_names[name(case)] == 1 and arrivals[name(case)] == 1}
+
+
+def removed_python_tests(root: Path, base: str, head: str = "HEAD") -> list[str]:
+    """Python tests defined at the merge base and not at head, in the modules the change touches."""
+    merge_base = git(root, "merge-base", base, head).strip()
+    changed = [line.split("\t") for line in git(root, "diff", "--name-status", "--no-renames", merge_base, head).splitlines()]
+    paths = sorted({path for _, *names in changed for path in names if PYTHON_TEST_MODULE.match(path)})
+    before = python_cases(root, merge_base, paths)
+    after = python_cases(root, head, paths)
+    lost = sorted(case for case in before if case not in after)
+    moved = python_moved(lost, sorted(case for case in after if case not in before))
+    return [case for case in lost if case not in moved]
+
+
+def python_explained(case: str, declarations: dict) -> bool:
+    return any(case.startswith(pattern[:-1]) if pattern.endswith("*") else case == pattern
+               for pattern in declarations["removedTests"])
 
 
 # The queue gate (`ci_rust_lanes.explained_case`) matches a declaration
@@ -344,9 +440,15 @@ def explained(case: str, binaries: list[str], gone: list[str], declarations: dic
     binary = binary_of(case, binaries)
     if binary in gone and binary in declarations["removedTargets"]:
         return True
-    return any(binary_of(pattern, binaries) == binary
-               and (case.startswith(pattern[:-1]) if pattern.endswith("*") else case == pattern)
-               for pattern in declarations["removedTests"])
+    if any(binary_of(pattern, binaries) == binary
+           and (case.startswith(pattern[:-1]) if pattern.endswith("*") else case == pattern)
+           for pattern in declarations["removedTests"]):
+        return True
+    # The same test compiled into another target is explained by its exact
+    # declaration there (`ci_rust_lanes.declared_in_another_target`).
+    path = case[len(binary) + 2:] if binary is not None else None
+    return path is not None and any(ci_rust_lanes.twin_declaration(path, pattern, binaries)
+                                    for pattern in declarations["removedTests"])
 
 
 def declarations_in(description: str) -> dict:
@@ -355,13 +457,19 @@ def declarations_in(description: str) -> dict:
             "removedTargets": sorted(set(baseline.REMOVED.findall(text)))}
 
 
-def check(root: Path, base: str, description: str, head: str = "HEAD") -> list[str]:
+def check(root: Path, base: str, description: str, head: str = "HEAD", *, python: bool = True) -> list[str]:
+    """Undeclared removals; `python` adds the Python tests, which only a pull
+    request checks: the Rust inventory baseline knows no Python declarations."""
     declarations = declarations_in(description)
     return unsupported_declarations(declarations) + [
         f"{package}: test {case} disappeared; declare 'Removes-test: {case}' "
         "(or a literal prefix ending in *) in the pull request description"
         for package, case, binaries, gone in removed_tests(root, base, head)
-        if not explained(case, binaries, gone, declarations)]
+        if not explained(case, binaries, gone, declarations)] + [
+        f"python: test {case} disappeared; declare 'Removes-test: {case}' "
+        "(or a literal prefix ending in *) in the pull request description"
+        for case in (removed_python_tests(root, base, head) if python else [])
+        if not python_explained(case, declarations)]
 
 
 def event_description() -> str | None:
@@ -384,6 +492,31 @@ def baseline_scope(document: dict) -> tuple[str, str] | None:
     return source["headSha"], "\n".join(declared)
 
 
+def nightly_problems(root: Path, profile: str, head: str) -> list[str]:
+    """Removals the night would report: a pull request base is recent, the night's
+    inventory may be days old.
+
+    Between them a test may have moved to another target or left a second
+    target that compiled the same source; the pull request then declares the
+    ID it sees at its base, while the night still knows the older one. The same
+    source check from the night's inventory commit, with every declaration
+    merged since and this pull request's own, names that ID here.
+    """
+    try:
+        document = baseline.baseline(root, os.environ["GITHUB_REPOSITORY"], int(os.environ["GITHUB_REPOSITORY_ID"]),
+                                     profile, baseline.own_pull_request(), [])
+    except Exception as error:  # noqa: BLE001 - a lookup failure only skips this extra comparison
+        message = f"the {profile} inventory was not found, removals were not compared with it: {error}"
+        print(f"::warning::{message}" if os.environ.get("GITHUB_ACTIONS") else message, file=sys.stderr)
+        return []
+    scope = baseline_scope(document)
+    if scope is None:
+        return []
+    revision, declared = scope
+    return [f"since the {profile} inventory: {problem}"
+            for problem in check(root, revision, declared, head, python=False)]
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     origin = parser.add_mutually_exclusive_group(required=True)
@@ -394,6 +527,9 @@ def main() -> int:
     source.add_argument("--description-file", type=Path, help="pull request description text")
     source.add_argument("--description", help="pull request description text")
     parser.add_argument("--repo-root", type=Path, default=ROOT)
+    parser.add_argument("--nightly-profile", default=None,
+                        help="with --base on a pull request: also compare from that profile's previous "
+                             "inventory, as the night will, with the declarations merged since and this one")
     args = parser.parse_args()
     if args.baseline is not None:
         scope = baseline_scope(json.loads(args.baseline.read_text(encoding="utf-8")))
@@ -410,7 +546,10 @@ def main() -> int:
         if description is None:
             parser.error("give --description-file or --description outside a pull request run")
     try:
-        problems = check(args.repo_root, args.base, description, args.head)
+        problems = check(args.repo_root, args.base, description, args.head, python=args.baseline is None)
+        if args.nightly_profile is not None and args.baseline is None:
+            problems += [problem for problem in nightly_problems(args.repo_root, args.nightly_profile, args.head)
+                         if problem not in problems]
     except subprocess.CalledProcessError as error:
         # No verdict: git could not read the revisions, so nothing was checked.
         detail = error.stderr.decode("utf-8", "replace").strip()

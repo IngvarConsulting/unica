@@ -1,0 +1,67 @@
+[package]
+name = "unica-application"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "unica_application"
+path = "src/lib.rs"
+
+[features]
+default = []
+test-support = []
+
+[dependencies]
+unica-address = { path = "../unica-address" }
+unica-artifact-delivery = { path = "../unica-artifact-delivery" }
+unica-bootstrap = { path = "../unica-bootstrap" }
+unica-bsl = { path = "../unica-bsl" }
+unica-code-intelligence = { path = "../unica-code-intelligence" }
+unica-configuration = { path = "../unica-configuration" }
+unica-dcs = { path = "../unica-dcs" }
+unica-domain = { path = "../unica-domain" }
+unica-diagnostics = { path = "../unica-diagnostics" }
+unica-execution = { path = "../unica-execution" }
+unica-execution-contract = { path = "../unica-execution-contract" }
+unica-forms = { path = "../unica-forms" }
+unica-metadata = { path = "../unica-metadata" }
+unica-navigation = { path = "../unica-navigation" }
+unica-operation-contract = { path = "../unica-operation-contract" }
+unica-operations = { path = "../unica-operations" }
+unica-refusal = { path = "../unica-refusal" }
+unica-roles = { path = "../unica-roles" }
+unica-runner = { path = "../unica-runner" }
+unica-source-contract = { path = "../unica-source-contract" }
+unica-templates = { path = "../unica-templates" }
+unica-work-control = { path = "../unica-work-control" }
+unica-workspace = { path = "../unica-workspace" }
+unica-xdto = { path = "../unica-xdto" }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+unica-bsl = { path = "../unica-bsl", features = ["test-support"] }
+unica-code-intelligence = { path = "../unica-code-intelligence", features = ["test-support"] }
+unica-dcs = { path = "../unica-dcs", features = ["test-support"] }
+unica-diagnostics = { path = "../unica-diagnostics", features = ["test-support"] }
+unica-execution = { path = "../unica-execution", features = ["test-support"] }
+unica-execution-contract = { path = "../unica-execution-contract", features = ["test-support"] }
+unica-forms = { path = "../unica-forms", features = ["test-support"] }
+unica-metadata = { path = "../unica-metadata", features = ["test-support"] }
+unica-navigation = { path = "../unica-navigation", features = ["test-support"] }
+unica-source-contract = { path = "../unica-source-contract", features = ["test-support"] }
+unica-templates = { path = "../unica-templates", features = ["test-support"] }
+unica-work-control = { path = "../unica-work-control", features = ["test-support"] }
+unica-workspace = { path = "../unica-workspace", features = ["test-support"] }
+unica-xdto = { path = "../unica-xdto", features = ["test-support"] }
+jsonschema.workspace = true
+
+[package.metadata.unica]
+version-literal-baseline = 3
+component = "coordinator"
+file-io = "owned"
+inputs = ["tests/fixtures/v013"]

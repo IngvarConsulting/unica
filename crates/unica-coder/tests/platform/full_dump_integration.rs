@@ -3687,12 +3687,12 @@ mod tests {
         ),
         (
             "Catalogs/CorpusCatalog/Ext/AdditionalIndexes.xml",
-            include_bytes!("../../../../tests/fixtures/platform_8_3_27/additional_indexes/AdditionalIndexes.xml"),
+            include_bytes!("../../tests/fixtures/additional_indexes/AdditionalIndexes.xml"),
             StagedRootVersionPolicy::ExactRootVersion,
         ),
         (
             "AccumulationRegisters/CorpusTurnovers/Ext/Aggregates.xml",
-            include_bytes!("../../../../tests/fixtures/platform_8_3_27/accumulation_register_aggregates/Aggregates.xml"),
+            include_bytes!("../../tests/fixtures/accumulation_register_aggregates/Aggregates.xml"),
             StagedRootVersionPolicy::ExactRootVersion,
         ),
         (

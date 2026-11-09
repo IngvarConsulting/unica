@@ -16,6 +16,7 @@ or git failure stops.
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
 import os
@@ -31,6 +32,7 @@ ARTIFACT = "ci-rust-inventory-"
 WORKFLOW = ".github/workflows/release.yml"
 WORKFLOWS = {WORKFLOW, ".github/workflows/nightly.yml", ".github/workflows/unica-plugin-release.yml"}
 ANCESTORS = 200
+DESCRIPTION_WORKERS = 8
 PAGES = 10
 REMOVED = re.compile(r"^[ \t*-]*Removes-test-target:[ \t]*`?([^\s`]+)`?[ \t]*$", re.MULTILINE)
 REMOVED_TEST = re.compile(r"^[ \t*-]*Removes-test:[ \t]*`?([^\s`]+)`?[ \t]*$", re.MULTILINE)
@@ -49,6 +51,10 @@ class NotFound(RuntimeError):
     pass
 
 
+# Срок снятия: раннеры перешли на macos-15 31.10.2026, инвентарь хранится
+# 90 дней. Сверка с macos-14 здесь и в `ci_rust_lanes.py` снимается вместе с
+# тестами, когда у каждой релизной линии будет прогон позже 31.10.2026, или
+# после 29.01.2027 — что наступит раньше.
 class ExpiredPlans(ValueError):
     """Планы macos-14 истекли: перенос на macos-15 сверить не с чем."""
 
@@ -187,8 +193,12 @@ def explanations(root: Path, repository: str, base: str | None, profile: str, ow
         resetting = merged
     declared: dict[str, list[int]] = {}
     targets, tests, reset = set(), set(), set()
-    for number in sorted(merged | resetting):
-        body = description(repository, number)
+    numbers = sorted(merged | resetting)
+    # Описания читаются параллельно: после нескольких красных ночей база старая,
+    # и последовательные запросы по сотне PR занимали минуты.
+    with ThreadPoolExecutor(max_workers=DESCRIPTION_WORKERS) as pool:
+        bodies = list(pool.map(lambda number: description(repository, number), numbers))
+    for number, body in zip(numbers, bodies, strict=True):
         if body is None:
             continue
         for kind, pattern, items in (("Removes-test-target", REMOVED, targets), ("Removes-test", REMOVED_TEST, tests)):

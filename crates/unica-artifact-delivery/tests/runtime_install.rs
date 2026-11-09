@@ -536,7 +536,7 @@ fn rebuilt_artifact_with_the_same_version_gets_a_distinct_immutable_root() {
 /// rule: INV.PKG.ARTIFACT-CACHE-IDENTITY
 #[test]
 fn a_plugin_release_does_not_refetch_an_unchanged_artifact() {
-    // Ровно тот случай из #585: обновление плагина объявляло холодным весь кеш.
+    // Обновление плагина объявляло холодным весь кеш.
     let runtime = b"unica-runtime";
     let archive = tar_gz(&[("bin/linux-x64/unica", runtime)]);
     let cache = temp_dir("unchanged");

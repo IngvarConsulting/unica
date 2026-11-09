@@ -57,10 +57,40 @@ pub const USER_AGENT: &str = user_agent!();
 pub const DOCS_USER_AGENT: &str = user_agent!("docs");
 
 /// Сколько редиректов проходим. Столько же разрешал прежний агент.
+// resource-limit: network.max-redirects
+// class: format
+// unit: count
+// scope: request
+// value: 5
+// resource: Число переходов по редиректам одного сетевого запроса.
+// status: unproven
+// origin: #1266
+// problem: Столько же разрешал прежний агент.
+// on-reach: ошибка «<url>: more than 5 redirects»
 const MAX_REDIRECTS: usize = 5;
+// resource-limit: network.connect-timeout
+// class: deadline
+// unit: ms
+// scope: connection
+// value: 30000
+// resource: Срок установления сетевого соединения агента загрузки.
+// status: unproven
+// origin: #1266
+// problem: неизвестно
+// on-reach: запрос завершается ошибкой соединения по сроку
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 /// Ожидание следующей порции данных, а не всей передачи: медленный, но живой
 /// канал не обрывается.
+// resource-limit: network.read-timeout
+// class: deadline
+// unit: ms
+// scope: connection
+// value: 60000
+// resource: Ожидание следующей порции данных сетевого ответа, а не всей передачи.
+// status: unproven
+// origin: #1266
+// problem: Медленный, но живой канал не должен обрываться.
+// on-reach: запрос завершается ошибкой чтения по сроку
 const READ_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// HTTP-клиент процесса: одна конфигурация TLS, одни настройки прокси.

@@ -29,4 +29,6 @@ tar.workspace = true
 uuid.workspace = true
 
 [package.metadata.unica]
-read-outside-baseline = 2
+component = "service"
+file-io = "owned"
+inputs = ["plugins/unica"]

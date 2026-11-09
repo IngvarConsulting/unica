@@ -2,6 +2,19 @@ pub(crate) mod git;
 pub(crate) mod layout;
 pub mod resources;
 
+// resource-limit: project-health.git-stdout-capture-bytes
+// class: retention
+// unit: bytes
+// scope: repository
+// value: 67108864
+// resource: Захват stdout коротких команд git в проверке здоровья проекта: rev-parse, config, version, check-ignore и cat-file blob ConfigDumpInfo. Вывод, растущий с репозиторием (ls-files --stage и --eol, check-attr, cat-file --batch-check), читается потоком без этого захвата.
+// status: unproven
+// origin: коммит 6ab5b211d (harden typed health inspection)
+// problem: Блоб ConfigDumpInfo.xml растёт с конфигурацией и читается целиком в пределах этого захвата; блоб больше 64 МиБ даёт неполную проверку ConfigDumpInfo.
+// on-reach: вывод усекается, команда считается неполной («stdout was truncated»), зависимая проверка помечается невыполненной
+// issue: #1119
+// evidence: Замер 25.10.2026 (Apple M3 Max, 14 ядер, macOS, git 2.54, релизная сборка ветки поверх main 07306a173): на выгрузке УТ 11 (48 159 файлов в индексе Git, 12 290 модулей BSL на 508 МБ, 31 009 XML на 692 МБ) вывод git ls-files --eol — 17 014 676 байт, --stage — 17 544 425 байт (26,1% предела); на синтетическом корпусе формы УТ из scripts/dev/synthetic-configuration.py (10 757 модулей BSL на 510 МБ, 14 546 XML на 69 МБ) --eol — 4 796 702 байт.
+// review: блоб ConfigDumpInfo по-прежнему захватывается целиком (#1119)
 pub(crate) const PROJECT_HEALTH_STDOUT_CAPTURE_LIMIT: usize = 64 * 1024 * 1024;
 
 use crate::{

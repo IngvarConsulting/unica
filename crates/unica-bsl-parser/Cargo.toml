@@ -14,4 +14,9 @@ serde.workspace = true
 serde_json.workspace = true
 
 [package.metadata.unica]
-read-outside-baseline = 2
+component = "service"
+file-io = "owned"
+inputs = [
+    "Cargo.lock",
+    "plugins/unica/third-party/tools.lock.json",
+]

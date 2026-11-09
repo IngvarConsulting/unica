@@ -62,7 +62,8 @@ class DiscoveredModulesFormatTests(unittest.TestCase):
         self.assertIn("crates/unica-metadata-designer/src/edit.rs", modules)
         self.assertNotIn("crates/unica-metadata-designer/src/lib.rs", modules)
         for directory in (
-            "crates/unica-coder/src/infrastructure/daemon/metadata_can_tests/",
+            "crates/unica-daemon/src/infrastructure/daemon/metadata_can_tests/",
+            "crates/unica-coder/src/infrastructure/v13_read_port/",
             "crates/unica-metadata/src/properties/",
         ):
             with self.subTest(directory):

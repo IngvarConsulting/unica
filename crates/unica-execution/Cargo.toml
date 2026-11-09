@@ -32,3 +32,7 @@ libc.workspace = true
 unica-workspace = { path = "../unica-workspace", features = ["test-support"] }
 unica-execution-contract = { path = "../unica-execution-contract", features = ["test-support"] }
 tempfile.workspace = true
+
+[package.metadata.unica]
+component = "service"
+file-io = "owned"
