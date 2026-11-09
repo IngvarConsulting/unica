@@ -745,12 +745,16 @@ fn analysis_within(
         ) {
             return Some(done);
         }
-        let _ = analysis.findings(
+        // An analysis that ended between the two calls is answered now: it
+        // took no session waiter, so no refresh would tell of it.
+        if let Some(done) = analysis.findings(
             key.clone(),
             &session_waiter(&asked.session),
             |_| LspAnalysis::default(),
             Arc::clone(&refresh),
-        );
+        ) {
+            return Some(done);
+        }
         // An editor that hears the refresh asks again once the analysis is
         // ready, so its answer goes now; another has no such signal and
         // waits for the analysis as long as its deadline allows.
