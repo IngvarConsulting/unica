@@ -46,9 +46,11 @@ use unica_metadata_designer::interface::interface_metadata_owner_path;
 use unica_metadata_designer::subsystem::{
     subsystem_edit_operations, subsystem_validation_format_dependency_paths,
 };
+use unica_source_contract::format_identity::ReadResolution;
 use unica_source_contract::workspace::WorkspaceContext;
 use unica_source_designer::format_profile::{
-    classify_root_version, writable_profile_refusal, FormatCompatibility, ACTIVE_FORMAT_PROFILE,
+    classify_root_version, known_platform_xml_versions, resolve_platform_xml_read,
+    writable_profile_refusal, FormatCompatibility, ACTIVE_FORMAT_PROFILE, PLATFORM_XML,
 };
 use unica_source_designer::owner::{
     PlatformXmlOwner, PlatformXmlOwnerKind, PlatformXmlRootExpectation, DCS_ROOT,
@@ -286,6 +288,8 @@ fn evaluate_resolved_format_owners(
 ) -> Result<FormatGuardCheck, FormatGuardError> {
     let mut older = None;
     let mut newer = None;
+    let mut unreadable = None;
+    let mut unverified = None;
     for owner in owners {
         let compatibility = match classify_root_version(owner.version.as_deref()) {
             Ok(compatibility) => compatibility,
@@ -310,6 +314,20 @@ fn evaluate_resolved_format_owners(
                 ));
             }
         };
+        if !mutating && !matches!(compatibility, FormatCompatibility::Supported { .. }) {
+            match resolve_platform_xml_read(owner.version.as_deref()) {
+                ReadResolution::Dialect => {}
+                ReadResolution::Unverified { read_as } if unverified.is_none() => {
+                    unverified = Some((owner, read_as));
+                }
+                ReadResolution::Unverified { .. } => {}
+                ReadResolution::Unsupported if unreadable.is_none() => {
+                    unreadable = Some(owner);
+                }
+                ReadResolution::Unsupported => {}
+            }
+            continue;
+        }
         match compatibility {
             FormatCompatibility::Supported { .. } => {}
             FormatCompatibility::Older { .. } if older.is_none() => {
@@ -320,6 +338,43 @@ fn evaluate_resolved_format_owners(
             }
             FormatCompatibility::Older { .. } | FormatCompatibility::Newer { .. } => {}
         }
+    }
+    if let Some(owner) = unreadable {
+        let actual = owner.version.clone().unwrap_or_else(|| "1.0".to_string());
+        let known = known_platform_xml_versions();
+        let warning = format!(
+            "Формат выгрузки {actual} в {} не читается: для него нет эталона выгрузки. Известные форматы: {}. Перевыгрузите исходники платформой 1С одной из этих версий.",
+            owner.path.display(),
+            known.join(", ")
+        );
+        let diagnostic = json!({
+            "code": "formatVersionUnsupported",
+            "family": PLATFORM_XML.name(),
+            "actualFormat": actual,
+            "knownFormats": known,
+            "compatibility": "unsupported",
+            "root": owner.path.display().to_string(),
+            "ownerKind": owner.kind.label(),
+        });
+        return Ok(read_refusal(tool_name, warning, diagnostic));
+    }
+    if let Some((owner, read_as)) = unverified {
+        let actual = owner.version.clone().unwrap_or_else(|| "1.0".to_string());
+        let read_as = read_as.parts().join(", ");
+        let warning = format!(
+            "Формат выгрузки {actual} в {} прочитан по диалекту формата {read_as}: свой диалект у этого формата пока не проверен. Изменение исходников этого формата недоступно.",
+            owner.path.display()
+        );
+        let diagnostic = json!({
+            "code": "formatVersionUnverified",
+            "family": PLATFORM_XML.name(),
+            "actualFormat": actual,
+            "readAs": read_as,
+            "compatibility": "unverified",
+            "root": owner.path.display().to_string(),
+            "ownerKind": owner.kind.label(),
+        });
+        return Ok(format_check(tool_name, false, warning, diagnostic));
     }
     if let Some((owner, compatibility)) = newer.or(older) {
         let actual = compatibility.actual().to_string();
@@ -393,6 +448,25 @@ fn declared_output_root_expectation(
     output
         .filter(|output| output == target)
         .map(|_| expected_root)
+}
+
+/// A read the export format forbids: the operation does not read the sources
+/// (INV.SOURCE.WRITABLE-PROFILE), so the check reports the refusal alone.
+fn read_refusal(tool_name: &str, warning: String, diagnostic: Value) -> FormatGuardCheck {
+    FormatGuardCheck::Block {
+        outcome: AdapterOutcome {
+            ok: false,
+            summary: format!("{tool_name} refused by export format guard"),
+            changes: Vec::new(),
+            warnings: Vec::new(),
+            errors: vec![warning.clone()],
+            artifacts: Vec::new(),
+            stdout: None,
+            stderr: Some(format!("{warning}\n")),
+            command: None,
+        },
+        diagnostic,
+    }
 }
 
 fn format_check(
@@ -1170,7 +1244,7 @@ mod medium_tests {
         let FormatGuardCheck::Warn { diagnostic, .. } = check else {
             panic!("full CFE validation must warn for a newer registered form wrapper");
         };
-        assert_eq!(diagnostic["code"], "platformVersionUnsupported");
+        assert_eq!(diagnostic["code"], "formatVersionUnverified");
         assert_eq!(diagnostic["actualFormat"], "2.21");
         assert_eq!(
             diagnostic["root"],
@@ -1671,10 +1745,21 @@ mod medium_tests {
             Value::String(path.display().to_string()),
         );
         let check = evaluate_read_format_guard("cf-validate", &args, &context(&root)).unwrap();
-        let FormatGuardCheck::Warn { diagnostic, .. } = check else {
-            panic!("missing root version must be old-format warning");
+        let FormatGuardCheck::Block {
+            outcome,
+            diagnostic,
+        } = check
+        else {
+            panic!("a root without version is format 1.0, which is not read");
         };
+        assert!(!outcome.ok);
+        assert_eq!(diagnostic["code"], "formatVersionUnsupported");
         assert_eq!(diagnostic["actualFormat"], "1.0");
+        assert_eq!(diagnostic["family"], "platform_xml");
+        assert_eq!(
+            diagnostic["knownFormats"],
+            serde_json::json!(["2.17", "2.18", "2.19", "2.20", "2.21", "2.22"])
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -2052,7 +2137,7 @@ mod medium_tests {
             let FormatGuardCheck::Warn { diagnostic, .. } = check else {
                 panic!("{tool} must warn for the newer XML resolved from its directory input");
             };
-            assert_eq!(diagnostic["code"], "platformVersionUnsupported", "{tool}");
+            assert_eq!(diagnostic["code"], "formatVersionUnverified", "{tool}");
             assert_eq!(diagnostic["actualFormat"], "2.21", "{tool}");
         }
 
@@ -2400,8 +2485,13 @@ mod medium_tests {
         else {
             panic!("newer read-only input must warn and continue");
         };
-        assert_eq!(diagnostic["code"], "platformVersionUnsupported");
-        assert!(warning.contains("Поддержка платформы 1С 8.5 планируется"));
+        assert_eq!(diagnostic["code"], "formatVersionUnverified");
+        assert_eq!(diagnostic["readAs"], "2.20");
+        assert_eq!(diagnostic["family"], "platform_xml");
+        assert!(
+            warning.contains("прочитан по диалекту формата 2.20"),
+            "{warning}"
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -2409,7 +2499,7 @@ mod medium_tests {
     fn mxl_info_warns_old_external_source_set_via_owner_descriptor() {
         let root = test_root("old-external-mxl-info");
         std::fs::create_dir_all(&root).unwrap();
-        let source_root = external_source_set(&root, "EXTERNAL_REPORTS", "erf", "Sales", "2.19");
+        let source_root = external_source_set(&root, "EXTERNAL_REPORTS", "erf", "Sales", "2.17");
         let target = source_root.join("Sales/Templates/Print/Ext/Template.xml");
         std::fs::create_dir_all(target.parent().unwrap()).unwrap();
         std::fs::write(&target, "<document/>").unwrap();
@@ -2427,10 +2517,11 @@ mod medium_tests {
         else {
             panic!("old ERF owner must warn for read-only MXL info");
         };
-        assert_eq!(diagnostic["actualFormat"], "2.19");
-        assert_platform_reexport_warning(&warning);
+        assert_eq!(diagnostic["code"], "formatVersionUnverified");
+        assert_eq!(diagnostic["actualFormat"], "2.17");
+        assert_eq!(diagnostic["readAs"], "2.20");
         assert!(
-            warning.contains("Доступен только режим чтения."),
+            warning.contains("Изменение исходников этого формата недоступно."),
             "{warning}"
         );
         assert!(!warning.contains("Изменение отменено."), "{warning}");
@@ -2817,10 +2908,7 @@ mod medium_staged_root_tests {
             let FormatGuardCheck::Warn { diagnostic, .. } = check else {
                 panic!("{operation} must warn for the newer wrapper");
             };
-            assert_eq!(
-                diagnostic["code"], "platformVersionUnsupported",
-                "{operation}"
-            );
+            assert_eq!(diagnostic["code"], "formatVersionUnverified", "{operation}");
             assert_eq!(diagnostic["actualFormat"], "2.21", "{operation}");
         }
         let _ = std::fs::remove_dir_all(root);

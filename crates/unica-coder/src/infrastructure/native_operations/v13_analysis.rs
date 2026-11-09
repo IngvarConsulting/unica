@@ -124,6 +124,21 @@ fn with_format_guard(
             warning,
             diagnostic,
         }) => Some(format_diagnostic(&warning, &diagnostic)),
+        // A read the export format forbids: the validator does not read the
+        // sources (INV.SOURCE.WRITABLE-PROFILE).
+        Ok(FormatGuardCheck::Block {
+            outcome,
+            diagnostic,
+            ..
+        }) if diagnostic.get("code").and_then(Value::as_str)
+            == Some("formatVersionUnsupported") =>
+        {
+            let code = "formatVersionUnsupported";
+            return NativeCheckOutcome::refused(CheckDiagnostic::error(
+                code,
+                &outcome.errors.join(" "),
+            ));
+        }
         Ok(FormatGuardCheck::Block {
             outcome,
             diagnostic,
@@ -494,7 +509,7 @@ mod medium_tests {
             .first()
             .expect("the format warning leads the diagnostics");
         assert_eq!(first.severity(), "warning");
-        assert_eq!(first.code(), "platformVersionUnsupported");
+        assert_eq!(first.code(), "formatVersionUnverified");
         fs::remove_dir_all(root).unwrap();
     }
 

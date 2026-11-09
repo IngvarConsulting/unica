@@ -1582,8 +1582,8 @@ fn canonical_form_check_keeps_owner_format_warnings() {
         for path in [wrapper, owner] {
             let original = std::fs::read_to_string(&path).unwrap();
             for (version, code) in [
-                ("2.19", "formatMigrationAvailable"),
-                ("2.21", "platformVersionUnsupported"),
+                ("2.17", "formatVersionUnverified"),
+                ("2.21", "formatVersionUnverified"),
             ] {
                 std::fs::write(&path, original.replace("2.20", version)).unwrap();
                 let checked = call_dcs_check(workspace.path(), ToolIdentity::Check, &at);
@@ -1709,7 +1709,7 @@ fn canonical_dcs_check_accepts_external_report_processor_and_configuration() {
 #[test]
 fn canonical_template_read_warns_while_writes_keep_the_exact_owner_profile() {
     for kind in ["Report", "ExternalReport", "ExternalDataProcessor"] {
-        for version in [Some("2.21"), Some("2.19"), None] {
+        for version in [Some("2.21"), Some("2.17"), None] {
             let (workspace, at, body) = dcs_check_workspace(kind);
             let wrapper = body
                 .parent()
@@ -1765,10 +1765,11 @@ fn canonical_template_read_warns_while_writes_keep_the_exact_owner_profile() {
             assert!(viewed.ok, "{kind} {version:?}: {viewed:?}");
             let checked = call(ToolIdentity::Check, serde_json::json!({"at": at}));
             assert!(checked.ok, "{kind} {version:?}: {checked:?}");
-            let expected = if version == Some("2.21") {
-                "platformVersionUnsupported"
+            // A known version is read by the 2.20 dialect; format 1.0 is not read.
+            let expected = if version.is_some() {
+                "formatVersionUnverified"
             } else {
-                "formatMigrationAvailable"
+                "formatVersionUnsupported"
             };
             assert!(
                 checked.data.as_ref().unwrap()["diagnostics"]

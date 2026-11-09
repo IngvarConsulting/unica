@@ -61,8 +61,9 @@ fn canonical_dcs_validation_keeps_captured_format_evidence_after_replacement() {
 fn canonical_dcs_validation_keeps_captured_owner_format_warnings() {
     for relative in ["Configuration.xml"] {
         for (version, expected) in [
-            ("2.21", "platformVersionUnsupported"),
-            ("2.19", "formatMigrationAvailable"),
+            ("2.21", "formatVersionUnverified"),
+            ("2.17", "formatVersionUnverified"),
+            ("2.16", "formatVersionUnsupported"),
             ("2.&#50;0", "formatVersionInvalid"),
         ] {
             let fixture = RealReaderFixture::new();
@@ -125,10 +126,10 @@ fn canonical_dcs_validation_keeps_captured_owner_format_warnings() {
             &source.join(format!("{name}/Templates/MainSchema/Ext/Template.xml")),
             &dcs,
         );
-        // Only the external root has the older format; its Template stays 2.20.
+        // Only the external root has the older known format; its Template stays 2.20.
         fs::write(
             &owner,
-            original.replace("version=\"2.20\"", "version=\"2.19\""),
+            original.replace("version=\"2.20\"", "version=\"2.17\""),
         )
         .unwrap();
         let address = QualifiedAddress::parse(&format!(
@@ -149,7 +150,7 @@ fn canonical_dcs_validation_keeps_captured_owner_format_warnings() {
         .unwrap();
         assert_eq!(
             checked.diagnostics()[0].code(),
-            "formatMigrationAvailable",
+            "formatVersionUnverified",
             "{source_set}: restored owner bytes must not replace captured format evidence"
         );
         assert_eq!(fs::read_to_string(&owner).unwrap(), original);
@@ -270,7 +271,7 @@ fn canonical_dcs_validation_keeps_large_configuration_owner_format_warning() {
     .unwrap();
     assert_eq!(
         checked.diagnostics()[0].code(),
-        "platformVersionUnsupported"
+        "formatVersionUnverified"
     );
 }
 
@@ -307,9 +308,10 @@ fn canonical_dcs_validation_keeps_exact_versionless_dcs_root_guard() {
 #[test]
 fn canonical_dcs_validation_reports_readable_template_owner_versions() {
     for (version, expected) in [
-        (Some("2.19"), "formatMigrationAvailable"),
-        (Some("2.21"), "platformVersionUnsupported"),
-        (None, "formatMigrationAvailable"),
+        (Some("2.17"), "formatVersionUnverified"),
+        (Some("2.16"), "formatVersionUnsupported"),
+        (Some("2.21"), "formatVersionUnverified"),
+        (None, "formatVersionUnsupported"),
     ] {
         let fixture = RealReaderFixture::new();
         let owner = fixture
