@@ -154,11 +154,7 @@ fn an_editor_folder_reaches_the_mcp_actor_and_its_buffer_stays_in_its_session() 
     let admitted = workspaces.admit(workspace.path(), soon()).unwrap();
     // The analysis read of the editor's session sees the buffer as well, and
     // the read of another session sees the file.
-    let module_target = MetadataAddress::parse(
-        unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
-        "CommonModule.Main.Module",
-    )
-    .unwrap();
+    let module_target = MetadataAddress::parse_logical("CommonModule.Main.Module").unwrap();
     let module_of = |session: &V5LspSessionId| {
         admitted
             .reads

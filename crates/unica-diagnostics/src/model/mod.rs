@@ -715,9 +715,7 @@ mod tests {
     use serde_json::{json, Value};
     use std::sync::Arc;
     use std::time::{Duration, Instant};
-    use unica_address::source_target::{
-        MetadataAddress, TargetKind, PLATFORM_XML_8_3_27_FORMAT_2_20,
-    };
+    use unica_address::source_target::{MetadataAddress, TargetKind};
 
     const BSL_LANGUAGE_SERVER_PROVIDER: DiagnosticProviderId =
         DiagnosticProviderId::new_const("bsl-language-server");
@@ -796,7 +794,7 @@ mod tests {
     }
 
     fn metadata_address(value: &str) -> MetadataAddress {
-        MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, value).unwrap()
+        MetadataAddress::parse_logical(value).unwrap()
     }
 
     #[test]

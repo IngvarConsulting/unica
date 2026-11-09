@@ -1,7 +1,7 @@
 //! Form operation parsing and planning over an existing source proposal.
 use serde_json::{Map, Value};
 use unica_address::address::{NodeKind, QualifiedAddress};
-use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+use unica_address::source_target::MetadataAddress;
 use unica_forms::default_forms::FormSlotTarget;
 use unica_forms::facts::FormInfoElement;
 use unica_forms::operations::FormOperation;
@@ -190,11 +190,9 @@ pub fn form_target(
     let owner_name = owner
         .name()
         .ok_or_else(|| bad(op_index, "at", "the form owner must be named"))?;
-    let address = MetadataAddress::parse(
-        PLATFORM_XML_8_3_27_FORMAT_2_20,
-        &format!("{}.{owner_name}", owner.kind().as_str()),
-    )
-    .map_err(|error| bad(op_index, "at", error.to_string()))?;
+    let address =
+        MetadataAddress::parse_logical(&format!("{}.{owner_name}", owner.kind().as_str()))
+            .map_err(|error| bad(op_index, "at", error.to_string()))?;
     let named = |segment: &unica_address::address::AddressSegment, what: &str| {
         segment
             .name()
