@@ -25,7 +25,7 @@
   модуль формы `Module.bsl`;
 - `Ext/ObjectModule.bsl`;
 - макеты `Layout` (SpreadsheetDocument; тело взято без изменений из
-  `../../../../crates/unica-templates-designer/tests/fixtures/mxl_edit/Template.xml` и выгружено байт в байт), `Notes`
+  `../../../../../../crates/unica-templates-designer/tests/fixtures/mxl_edit/Template.xml` и выгружено байт в байт), `Notes`
   (TextDocument), `Blob` (BinaryData, 16 байт `00..0F`).
 
 Только отчёт:

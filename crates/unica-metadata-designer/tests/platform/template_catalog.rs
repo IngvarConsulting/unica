@@ -289,8 +289,10 @@ fn typed_auxiliary_xml_matches_platform_fixtures() {
     assert_eq!(exchange.len(), 1);
     assert_eq!(
         exchange[0].2.replace("\r\n", "\n"),
-        include_str!("../../../../tests/fixtures/platform_8_3_27/exchange_plan/Content.xml")
-            .replace("\r\n", "\n")
+        include_str!(
+            "../../../../tests/fixtures/formats/platform_xml/2.20/exchange_plan/Content.xml"
+        )
+        .replace("\r\n", "\n")
     );
 
     let process =

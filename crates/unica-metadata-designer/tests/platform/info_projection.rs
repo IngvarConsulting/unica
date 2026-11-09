@@ -75,7 +75,7 @@ fn project_declarations(xml: &str, kind: MetadataKind, metadata_path: &str) -> s
 fn scheduled_job_details_split_the_logical_common_module_method() {
     let xml = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../tests/fixtures/platform_8_3_27/meta_info/edge/scheduled-job.xml"
+        "/../../tests/fixtures/formats/platform_xml/2.20/meta_info/edge/scheduled-job.xml"
     ));
 
     let details = project(xml, MetadataKind::ScheduledJob, "ScheduledJob.MonthClose");
@@ -114,7 +114,7 @@ fn scheduled_job_rejects_a_two_part_value_that_is_not_a_common_module_method() {
 fn calculation_register_details_keep_the_schedule_triple_at_its_real_owner() {
     let xml = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../tests/fixtures/platform_8_3_27/meta_info/edge/calculation-register.xml"
+        "/../../tests/fixtures/formats/platform_xml/2.20/meta_info/edge/calculation-register.xml"
     ));
 
     let details = project(
@@ -146,7 +146,7 @@ fn calculation_register_details_keep_the_schedule_triple_at_its_real_owner() {
 fn http_service_details_preserve_templates_and_methods() {
     let xml = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../tests/fixtures/platform_8_3_27/meta_info/edge/http-service.xml"
+        "/../../tests/fixtures/formats/platform_xml/2.20/meta_info/edge/http-service.xml"
     ));
 
     let details = project(xml, MetadataKind::HTTPService, "HTTPService.ExternalAPI");
@@ -173,7 +173,7 @@ fn http_service_details_preserve_templates_and_methods() {
 fn http_service_details_accept_the_configurator_synonym_and_comment() {
     let xml = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../tests/fixtures/platform_8_3_27/meta_info/edge/http-service-configurator.xml"
+        "/../../tests/fixtures/formats/platform_xml/2.20/meta_info/edge/http-service-configurator.xml"
     ));
 
     let details = project(xml, MetadataKind::HTTPService, "HTTPService.ПроверкаСвязи");
@@ -200,7 +200,7 @@ fn http_service_descriptive_properties_still_reject_nested_markup() {
     let target = MetadataAddress::parse_logical("HTTPService.ПроверкаСвязи").unwrap();
     for (eol, original) in line_ending_variants(include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../tests/fixtures/platform_8_3_27/meta_info/edge/http-service-configurator.xml"
+        "/../../tests/fixtures/formats/platform_xml/2.20/meta_info/edge/http-service-configurator.xml"
     ))) {
         for (field, xml) in [
             (
@@ -268,7 +268,7 @@ fn http_service_descriptive_properties_still_reject_nested_markup() {
 fn web_service_details_preserve_packages_operations_and_expanded_qnames() {
     let xml = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../tests/fixtures/platform_8_3_27/meta_info/edge/web-service.xml"
+        "/../../tests/fixtures/formats/platform_xml/2.20/meta_info/edge/web-service.xml"
     ));
 
     let details = project(xml, MetadataKind::WebService, "WebService.Exchange");
@@ -309,7 +309,7 @@ fn web_service_details_preserve_packages_operations_and_expanded_qnames() {
 fn web_service_details_accept_the_configurator_operation_properties() {
     let xml = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../tests/fixtures/platform_8_3_27/meta_info/edge/web-service-configurator.xml"
+        "/../../tests/fixtures/formats/platform_xml/2.20/meta_info/edge/web-service-configurator.xml"
     ));
 
     let details = project(xml, MetadataKind::WebService, "WebService.ОбменДанными");
@@ -347,7 +347,7 @@ fn web_service_operation_properties_still_reject_foreign_content() {
     let target = MetadataAddress::parse_logical("WebService.ОбменДанными").unwrap();
     for (eol, original) in line_ending_variants(include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../tests/fixtures/platform_8_3_27/meta_info/edge/web-service-configurator.xml"
+        "/../../tests/fixtures/formats/platform_xml/2.20/meta_info/edge/web-service-configurator.xml"
     ))) {
         for (field, xml) in [
             (
@@ -430,11 +430,11 @@ fn web_service_operation_properties_still_reject_foreign_content() {
 fn manifest_edge_fixtures_keep_the_canonical_platform_wrapper() {
     let manifest: serde_json::Value = serde_json::from_str(include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../tests/fixtures/platform_8_3_27/meta_info/manifest.json"
+        "/../../tests/fixtures/formats/platform_xml/2.20/meta_info/manifest.json"
     )))
     .unwrap();
     let fixture_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tests/fixtures/platform_8_3_27/meta_info");
+        .join("../../tests/fixtures/formats/platform_xml/2.20/meta_info");
 
     for entry in manifest["kinds"].as_array().unwrap() {
         for relative in entry
@@ -469,7 +469,7 @@ fn manifest_edge_fixtures_keep_the_canonical_platform_wrapper() {
 fn manifest_and_profile_cover_every_platform_gated_metadata_kind() {
     let manifest: serde_json::Value = serde_json::from_str(include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../tests/fixtures/platform_8_3_27/meta_info/manifest.json"
+        "/../../tests/fixtures/formats/platform_xml/2.20/meta_info/manifest.json"
     )))
     .unwrap();
     let manifest_kinds = manifest["kinds"]
@@ -541,7 +541,7 @@ fn manifest_and_profile_cover_every_platform_gated_metadata_kind() {
     );
 
     let fixture_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tests/fixtures/platform_8_3_27/meta_info");
+        .join("../../tests/fixtures/formats/platform_xml/2.20/meta_info");
     for entry in manifest["kinds"].as_array().unwrap() {
         let kind = MetadataKind::parse(entry["kind"].as_str().unwrap()).unwrap();
         for relative in entry
@@ -687,7 +687,7 @@ fn manifest_and_profile_cover_every_platform_gated_metadata_kind() {
 fn defined_type_details_preserve_type_sets_and_qualifiers() {
     let xml = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../tests/fixtures/platform_8_3_27/meta_info/edge/defined-type.xml"
+        "/../../tests/fixtures/formats/platform_xml/2.20/meta_info/edge/defined-type.xml"
     ));
 
     let details = project(xml, MetadataKind::DefinedType, "DefinedType.Identifier");
@@ -1081,7 +1081,7 @@ fn root_reference_lists_reject_nested_metadata_addresses() {
 
     let web = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../tests/fixtures/platform_8_3_27/meta_info/edge/web-service.xml"
+        "/../../tests/fixtures/formats/platform_xml/2.20/meta_info/edge/web-service.xml"
     ))
     .replace(
         "XDTOPackage.Exchange</xr:Value>",
@@ -1154,7 +1154,7 @@ fn document_journal_details_preserve_registered_documents() {
 fn an_incomplete_http_collection_is_null_and_names_the_public_field() {
     let xml = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../tests/fixtures/platform_8_3_27/meta_info/edge/http-service.xml"
+        "/../../tests/fixtures/formats/platform_xml/2.20/meta_info/edge/http-service.xml"
     ))
     .replace("<Handler>MetricsGet</Handler>", "<Handler/>");
     let document = roxmltree::Document::parse(&xml).unwrap();
@@ -1328,7 +1328,7 @@ fn an_unexpected_nested_web_child_is_not_reported_as_an_empty_collection() {
 fn web_service_rejects_a_qname_with_an_invalid_local_name() {
     let xml = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../tests/fixtures/platform_8_3_27/meta_info/edge/web-service.xml"
+        "/../../tests/fixtures/formats/platform_xml/2.20/meta_info/edge/web-service.xml"
     ))
     .replace("xs:boolean", "xs:1invalid");
     let document = roxmltree::Document::parse(&xml).unwrap();
@@ -1358,7 +1358,7 @@ fn web_service_rejects_a_qname_with_an_invalid_local_name() {
 fn expanded_xdto_names_do_not_depend_on_the_xml_prefix() {
     let original = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../tests/fixtures/platform_8_3_27/meta_info/edge/web-service.xml"
+        "/../../tests/fixtures/formats/platform_xml/2.20/meta_info/edge/web-service.xml"
     ));
     let aliased = original
         .replace("xmlns:svc=", "xmlns:alternate=")
@@ -1422,7 +1422,7 @@ fn profile_rejects_a_boolean_suffix_hidden_after_an_xml_comment() {
 fn nested_http_names_use_the_complete_direct_text_value() {
     let xml = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../tests/fixtures/platform_8_3_27/meta_info/edge/http-service.xml"
+        "/../../tests/fixtures/formats/platform_xml/2.20/meta_info/edge/http-service.xml"
     ))
     .replace("<Name>Metrics</Name>", "<Name>Met<!--split-->rics</Name>");
 
@@ -1435,7 +1435,7 @@ fn nested_http_names_use_the_complete_direct_text_value() {
 fn http_url_template_name_must_be_a_platform_identifier() {
     let xml = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../tests/fixtures/platform_8_3_27/meta_info/edge/http-service.xml"
+        "/../../tests/fixtures/formats/platform_xml/2.20/meta_info/edge/http-service.xml"
     ))
     .replace("<Name>Metrics</Name>", "<Name>bad name</Name>");
     let document = roxmltree::Document::parse(&xml).unwrap();
@@ -1617,7 +1617,7 @@ fn profile_rejects_a_relation_property_under_the_wrong_kind() {
 fn http_method_projection_accepts_every_8_3_27_enum_literal() {
     let base = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../tests/fixtures/platform_8_3_27/meta_info/edge/http-service.xml"
+        "/../../tests/fixtures/formats/platform_xml/2.20/meta_info/edge/http-service.xml"
     ));
     let allowed = crate::validation::meta_validate_property_values()
         .iter()
@@ -2053,7 +2053,7 @@ fn defined_type_object_members_keep_malformed_and_unmodelled_compositions_distin
 fn constant_exchange_plan_family_is_read_only_without_a_metadata_address() {
     let xml = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../tests/fixtures/platform_8_3_27/meta_info/edge/constant-exchange-plan-family.xml"
+        "/../../tests/fixtures/formats/platform_xml/2.20/meta_info/edge/constant-exchange-plan-family.xml"
     ));
     let details = project(xml, MetadataKind::Constant, "Constant.ГлавныйУзел");
     assert_eq!(

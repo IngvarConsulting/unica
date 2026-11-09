@@ -55,7 +55,9 @@ fn actor_owned_configuration_support_and_home_page_sidecars_are_retained() {
     let fixture = RealReaderFixture::new();
     fs::create_dir_all(fixture.source.join("Ext")).unwrap();
     fs::copy(
-        fixture_path("platform_8_3_27/support-edit-bin-only/src/Ext/ParentConfigurations.bin"),
+        fixture_path(
+            "formats/platform_xml/2.20/support-edit-bin-only/src/Ext/ParentConfigurations.bin",
+        ),
         fixture.source.join("Ext/ParentConfigurations.bin"),
     )
     .unwrap();

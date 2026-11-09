@@ -31,8 +31,8 @@ file-io = "none"
 inputs = [
     "crates/unica-metadata-designer/tests/platform/dump_parity",
     "plugins/unica/skills/form-compile/SKILL.md",
-    "tests/fixtures/platform_8_3_27/external_artifacts",
-    "tests/fixtures/platform_8_3_27/meta_info_surface",
-    "tests/fixtures/platform_8_3_27/support-edit-bin-only",
-    "tests/fixtures/platform_8_3_27/template-new-xml/seed",
+    "tests/fixtures/formats/platform_xml/2.20/external_artifacts",
+    "tests/fixtures/formats/platform_xml/2.20/meta_info_surface",
+    "tests/fixtures/formats/platform_xml/2.20/support-edit-bin-only",
+    "tests/fixtures/formats/platform_xml/2.20/template-new-xml/seed",
 ]

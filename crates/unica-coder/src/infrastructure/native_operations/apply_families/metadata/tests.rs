@@ -3798,7 +3798,7 @@ fn properties_typed_patches_compose_and_preserve_descriptor_companions() {
 fn configuration_root_fixture(relative: &str) -> String {
     std::fs::read_to_string(
         Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../tests/fixtures/platform_8_3_27")
+            .join("../../tests/fixtures/formats/platform_xml/2.20")
             .join(relative),
     )
     .unwrap()

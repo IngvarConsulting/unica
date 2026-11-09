@@ -2007,7 +2007,7 @@ mod medium_tests {
         std::fs::write(
             workspace.join("src/Configuration.xml"),
             include_bytes!(
-                "../../../../tests/fixtures/platform_8_3_27/support-edit-bin-only/src/Configuration.xml"
+                "../../../../tests/fixtures/formats/platform_xml/2.20/support-edit-bin-only/src/Configuration.xml"
             ),
         )
         .unwrap();
