@@ -139,6 +139,8 @@ impl SourceFormat {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum SourceProfile {
     PlatformXml8_3_27Format2_20,
+    /// A Designer export format beyond 2.20 with its own dialects.
+    PlatformXmlRelease(format_identity::PlatformXmlRelease),
     LegacyWorkspaceServiceCompatibility,
     #[cfg(any(test, feature = "test-support"))]
     TestPlatform8_3_28Format2_20,
@@ -151,6 +153,24 @@ impl SourceProfile {
         Self::PlatformXml8_3_27Format2_20
     }
 
+    /// The profile of a Designer export recording `raw` in its root: 2.20 or a
+    /// later release with dialects; `None` for any other version.
+    pub fn platform_xml_for_export_format(raw: &str) -> Option<Self> {
+        format_identity::platform_xml_profile_for_export_format(raw)
+    }
+
+    /// The profile of the Designer export format platform `line` writes.
+    pub fn platform_xml_of_line(line: format_identity::PlatformLine) -> Option<Self> {
+        format_identity::platform_xml_profile_of_line(line)
+    }
+
+    /// Whether this is a Designer export profile with codec dialects; which
+    /// of its files an edit may write is decided by the format gate
+    /// (INV.SOURCE.WRITABLE-PROFILE).
+    pub const fn is_writable_platform_xml(self) -> bool {
+        format_identity::is_writable_platform_xml_profile(self)
+    }
+
     pub const fn legacy_workspace_service_compatibility() -> Self {
         Self::LegacyWorkspaceServiceCompatibility
     }
@@ -158,6 +178,7 @@ impl SourceProfile {
     pub const fn stable_discriminants(self) -> [u8; 3] {
         match self {
             Self::PlatformXml8_3_27Format2_20 => [1, 1, 1],
+            Self::PlatformXmlRelease(release) => release.stable_discriminants(),
             Self::LegacyWorkspaceServiceCompatibility => [2, 0, 0],
             #[cfg(any(test, feature = "test-support"))]
             Self::TestPlatform8_3_28Format2_20 => [1, 2, 1],
@@ -169,6 +190,7 @@ impl SourceProfile {
     pub const fn platform_line(self) -> Option<&'static str> {
         match self {
             Self::PlatformXml8_3_27Format2_20 => Some(ACTIVE_PLATFORM_LINE),
+            Self::PlatformXmlRelease(release) => Some(release.platform_line_text()),
             Self::LegacyWorkspaceServiceCompatibility => None,
             #[cfg(any(test, feature = "test-support"))]
             Self::TestPlatform8_3_28Format2_20 => Some("8.3.28-test"),
@@ -180,6 +202,7 @@ impl SourceProfile {
     pub const fn serialization_format(self) -> Option<&'static str> {
         match self {
             Self::PlatformXml8_3_27Format2_20 => Some(ACTIVE_SERIALIZATION_FORMAT),
+            Self::PlatformXmlRelease(release) => Some(release.export_format()),
             Self::LegacyWorkspaceServiceCompatibility => None,
             #[cfg(any(test, feature = "test-support"))]
             Self::TestPlatform8_3_28Format2_20 => Some(ACTIVE_SERIALIZATION_FORMAT),
@@ -194,6 +217,7 @@ impl SourceProfile {
     pub const fn semantic_line(self) -> Option<format_identity::PlatformLine> {
         match self {
             Self::PlatformXml8_3_27Format2_20 => Some(format_identity::PlatformLine::new(8, 3, 27)),
+            Self::PlatformXmlRelease(release) => Some(release.platform_line()),
             Self::LegacyWorkspaceServiceCompatibility => None,
             #[cfg(any(test, feature = "test-support"))]
             Self::TestPlatform8_3_28Format2_20 | Self::TestPlatform8_3_27Format2_21 => None,
@@ -203,6 +227,7 @@ impl SourceProfile {
     pub const fn canonical_id(self) -> &'static str {
         match self {
             Self::PlatformXml8_3_27Format2_20 => PLATFORM_XML_8_3_27_FORMAT_2_20,
+            Self::PlatformXmlRelease(release) => release.canonical_id(),
             Self::LegacyWorkspaceServiceCompatibility => "legacy-workspace-service-compatibility",
             #[cfg(any(test, feature = "test-support"))]
             Self::TestPlatform8_3_28Format2_20 => "platform-xml-8.3.28-test-format-2.20",
@@ -270,6 +295,48 @@ mod tests {
             SourceProfile::TestPlatform8_3_27Format2_21.stable_discriminants(),
             [1, 1, 2]
         );
+        for (raw, line, id, discriminants) in [
+            ("2.21", "8.5.1", "platform-xml-8.5.1-format-2.21", [1, 3, 3]),
+            ("2.22", "8.5.4", "platform-xml-8.5.4-format-2.22", [1, 4, 4]),
+        ] {
+            let release = SourceProfile::platform_xml_for_export_format(raw)
+                .expect("a format with dialects has a profile row");
+            assert_eq!(release.platform_line(), Some(line));
+            assert_eq!(release.serialization_format(), Some(raw));
+            assert_eq!(
+                release.semantic_line().map(|line| line.to_string()),
+                Some(line.to_string())
+            );
+            assert_eq!(release.canonical_id(), id);
+            assert_eq!(release.stable_discriminants(), discriminants);
+        }
+        assert_eq!(
+            SourceProfile::platform_xml_for_export_format("2.20"),
+            Some(active)
+        );
+        for (line, raw) in [
+            ((8, 3, 27), "2.20"),
+            ((8, 5, 1), "2.21"),
+            ((8, 5, 4), "2.22"),
+        ] {
+            let line = format_identity::PlatformLine::new(line.0, line.1, line.2);
+            assert_eq!(
+                SourceProfile::platform_xml_of_line(line),
+                SourceProfile::platform_xml_for_export_format(raw),
+                "{line}"
+            );
+        }
+        assert_eq!(
+            SourceProfile::platform_xml_of_line(format_identity::PlatformLine::new(8, 3, 26)),
+            None
+        );
+        for raw in ["2.19", "2.23", "2.21.0", "02.21", ""] {
+            assert_eq!(
+                SourceProfile::platform_xml_for_export_format(raw),
+                None,
+                "{raw}"
+            );
+        }
         assert!(!SourceFormat::Edt.is_supported());
         assert!(!SourceFormat::Unknown.is_supported());
         assert!(!SourceFormat::Invalid.is_supported());
