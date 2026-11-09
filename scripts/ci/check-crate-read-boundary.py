@@ -260,7 +260,12 @@ def source_reads(crate: Crate, relative: str, source: str, root: Path) -> list[R
 def load_crates(root: Path) -> list[Crate]:
     workspace = tomllib.loads((root / "Cargo.toml").read_text(encoding="utf-8"))
     crates = []
-    for member in workspace["workspace"]["members"]:
+    members = sorted(
+        directory.relative_to(root)
+        for pattern in workspace["workspace"]["members"]
+        for directory in root.glob(pattern)
+    )
+    for member in members:
         manifest = root / member / "Cargo.toml"
         document = tomllib.loads(manifest.read_text(encoding="utf-8"))
         settings = document["package"].get("metadata", {}).get("unica", {})

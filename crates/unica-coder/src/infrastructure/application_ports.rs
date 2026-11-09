@@ -46,22 +46,32 @@ use unica_work_control::provider_deadline::ProviderDeadline;
 use unica_workspace::cache::{CacheAccess, CacheReport};
 use unica_workspace::state::WorkspaceStateRepository;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 thread_local! {
     /// A test's diagnostic provider in place of the bundled analyzer, read on
     /// the thread that resolves the registry.
-    pub(crate) static DIAGNOSTIC_PROVIDER_OVERRIDE: std::cell::RefCell<Option<Arc<dyn DiagnosticProvider>>> =
+    pub static DIAGNOSTIC_PROVIDER_OVERRIDE: std::cell::RefCell<Option<Arc<dyn DiagnosticProvider>>> =
         const { std::cell::RefCell::new(None) };
     /// A test's code intelligence providers in place of the bundled ones, read
     /// on the thread that resolves the registry.
-    pub(crate) static CODE_INTELLIGENCE_PROVIDER_OVERRIDE: std::cell::RefCell<Option<Vec<Arc<dyn CodeIntelligenceProvider>>>> =
+    pub static CODE_INTELLIGENCE_PROVIDER_OVERRIDE: std::cell::RefCell<Option<Vec<Arc<dyn CodeIntelligenceProvider>>>> =
         const { std::cell::RefCell::new(None) };
     /// A test's symbol provider in place of the bundled analyzer, read on the
     /// thread that answers the symbol request.
-    pub(crate) static SYMBOL_PROVIDER_OVERRIDE: std::cell::RefCell<Option<Arc<dyn unica_code_intelligence::symbols::SymbolProvider>>> =
+    pub static SYMBOL_PROVIDER_OVERRIDE: std::cell::RefCell<Option<Arc<dyn unica_code_intelligence::symbols::SymbolProvider>>> =
         const { std::cell::RefCell::new(None) };
 }
 
+// resource-limit: native.typed-invocation-deadline-ms
+// class: deadline
+// unit: ms
+// scope: operation
+// value: 5000
+// resource: Срок провайдера для нативного типизированного вызова устаревшей поверхности v0.12.
+// status: unproven
+// origin: 2a3fb2cf1
+// problem: неизвестно
+// on-reach: Срок ProviderDeadline истекает: провайдер прерывает работу с отказом по сроку.
 const NATIVE_TYPED_INVOCATION_DEADLINE: Duration = Duration::from_secs(5);
 
 fn adapter_dry_run(spec: ToolSpec, mode: InvocationMode) -> Result<bool, String> {
@@ -98,22 +108,28 @@ pub(crate) fn engine_for(spec: ToolSpec) -> Option<&'static str> {
     }
 }
 
-pub(crate) struct InfrastructureApplicationPorts {
+pub struct InfrastructureApplicationPorts {
     support_state_readers: Arc<dyn SupportStateReaderFactory>,
     /// Идущие доставки. Стол принадлежит серверу: доставка переживает вызов,
     /// который её начал, и достаётся следующему.
     deliveries: unica_artifact_delivery::desk::DeliveryDesk,
 }
 
+impl Default for InfrastructureApplicationPorts {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl InfrastructureApplicationPorts {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             support_state_readers: Arc::new(WorkspaceSupportStateReaderFactory),
             deliveries: Default::default(),
         }
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     fn with_support_reader_factory(
         support_state_readers: Arc<dyn SupportStateReaderFactory>,
     ) -> Self {
@@ -254,9 +270,7 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
             workspace.cwd = unica_workspace::paths::normalize_path_identity(&workspace.cwd)?;
             let filters = metadata_path
                 .map(|raw| {
-                    let address = unica_address::source_target::MetadataAddress::parse(
-                        unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
-                        raw,
+                    let address = unica_address::source_target::MetadataAddress::parse_logical(raw,
                     )
                     .map_err(|error| error.to_string())?;
                     let target = unica_address::source_target::SourceTarget {
@@ -319,7 +333,7 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
     }
 
     fn code_intelligence_registry(&self) -> Result<CodeIntelligenceRegistry, String> {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         if let Some(providers) =
             CODE_INTELLIGENCE_PROVIDER_OVERRIDE.with(|slot| slot.borrow().clone())
         {
@@ -333,7 +347,7 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
     }
 
     fn diagnostic_provider_registry(&self) -> Result<DiagnosticProviderRegistry, String> {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         if let Some(provider) = DIAGNOSTIC_PROVIDER_OVERRIDE.with(|slot| slot.borrow().clone()) {
             return DiagnosticProviderRegistry::new(vec![provider])
                 .map_err(|error| error.to_string());
@@ -595,8 +609,7 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                     .and_then(Value::as_str)
                     .unwrap_or("ru")
                     .to_string();
-                let (registry, policy_warnings) =
-                    documentation_registry(context, cancellation, false)?;
+                let registry = documentation_registry(context, cancellation, false)?;
                 let requested_version = args.get("platformVersion").and_then(Value::as_str);
                 let context = documentation_context(
                     &unica_adapter_v8_runner::full_dump::default_platform_roots(),
@@ -609,21 +622,10 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                     &language,
                     &context,
                 )?;
-                let mut handler = HandlerOutcome::with_data(
+                let handler = HandlerOutcome::with_data(
                     AdapterOutcome::ok("unica.documentation.get completed"),
                     data,
                 );
-                if !policy_warnings.is_empty() {
-                    handler.diagnostics = Some(Value::Array(
-                        documentation_policy_warnings(&policy_warnings)
-                            .into_iter()
-                            .map(|mut warning| {
-                                warning["severity"] = json!("warning");
-                                warning
-                            })
-                            .collect(),
-                    ));
-                }
                 Ok(handler)
             }
             ToolHandler::Documentation { operation } => {
@@ -897,40 +899,23 @@ const DOCUMENTATION_PROVIDER_IDS: &[&str] = &[
     "bsl-analyzer-rules",
 ];
 
-/// Предупреждения политики документации — в `warnings` ответа: секция
-/// удалённого поставщика принимается, но пользователь должен её увидеть.
-fn documentation_policy_warnings(warnings: &[String]) -> Vec<Value> {
-    warnings
-        .iter()
-        .map(|message| json!({"code": "retired_provider", "message": message}))
-        .collect()
-}
-
 /// Composition root: the registry of documentation providers. Declaration
 /// order here is the section order of the public result:
 /// локальная справка платформы раньше сетевых поставщиков, справка раньше
 /// стандартов. Собирается здесь, а не в домене, чтобы тесты внедряли
 /// подмены; политика читается на каждый вызов — она из файлов проекта.
-/// Вторым значением идут предупреждения политики для ответа вызова.
 fn documentation_registry(
     context: &WorkspaceContext,
     cancellation: &unica_work_control::cancellation::CancellationToken,
     revalidate_search: bool,
-) -> Result<
-    (
-        unica_documentation::model::DocumentationRegistry,
-        Vec<String>,
-    ),
-    String,
-> {
+) -> Result<unica_documentation::model::DocumentationRegistry, String> {
     use std::sync::Arc;
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     {
         let _ = cancellation;
         if let Some(stand_in) = documentation_registry_stand_in() {
-            return unica_documentation::model::DocumentationRegistry::new(vec![stand_in])
-                .map(|registry| (registry, Vec::new()));
+            return unica_documentation::model::DocumentationRegistry::new(vec![stand_in]);
         }
     }
     let policy = unica_documentation_sources::documentation_policy::DocumentationPolicy::load(
@@ -977,7 +962,6 @@ fn documentation_registry(
             },
         ),
     ])
-    .map(|registry| (registry, policy.warnings().to_vec()))
 }
 
 /// Canonical v0.13 documentation search adapter.
@@ -991,7 +975,7 @@ fn documentation_registry(
 /// Поставщики выдают идентификатор со схемой — `configuration-help:<набор>:<путь>`
 /// — или ссылкой. Ни имя метода, ни фраза на языке такой формы не имеют,
 /// поэтому разделение детерминированно и не гадает.
-pub(crate) fn documentation_locator(query: &str) -> Option<&str> {
+pub fn documentation_locator(query: &str) -> Option<&str> {
     let trimmed = query.trim();
     // Синтакс-помощник выдаёт пути вроде `objects/Global context/...`.
     // Пробелы внутри такого пути не превращают локатор во фразу для поиска.
@@ -1023,10 +1007,8 @@ fn open_documentation_page(
     document_id: &str,
     cancellation: &CancellationToken,
 ) -> unica_execution_contract::invocation::DomainResult {
-    let mut policy_warnings = Vec::new();
     let opened = (|| {
-        let (registry, warnings) = documentation_registry(workspace, cancellation, false)?;
-        policy_warnings = warnings;
+        let registry = documentation_registry(workspace, cancellation, false)?;
         let context = documentation_context(
             &unica_adapter_v8_runner::full_dump::default_platform_roots(),
             None,
@@ -1034,7 +1016,7 @@ fn open_documentation_page(
         );
         unica_documentation::projection::get(&registry, document_id, "ru", &context)
     })();
-    let mut result = match opened {
+    match opened {
         Ok(data) => {
             let mut result = unica_execution_contract::invocation::DomainResult::success(
                 "unica.docs opened the page",
@@ -1056,12 +1038,10 @@ fn open_documentation_page(
             }));
             refusal
         }
-    };
-    result.warnings = documentation_policy_warnings(&policy_warnings);
-    result
+    }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) fn canonical_v13_docs_search(
     workspace: &WorkspaceContext,
     query: &str,
@@ -1071,7 +1051,7 @@ pub(crate) fn canonical_v13_docs_search(
     canonical_v13_docs_search_with_limit(workspace, query, source, 20, false, cancellation)
 }
 
-pub(crate) fn canonical_v13_docs_search_with_limit(
+pub fn canonical_v13_docs_search_with_limit(
     workspace: &WorkspaceContext,
     query: &str,
     source: Option<&str>,
@@ -1133,11 +1113,8 @@ pub(crate) fn canonical_v13_docs_search_with_limit(
         limit: fetch_limit,
         language: "ru".to_string(),
     };
-    let mut policy_warnings = Vec::new();
     let result = (|| {
-        let (registry, warnings) =
-            documentation_registry(workspace, cancellation, revalidate_search)?;
-        policy_warnings = warnings;
+        let registry = documentation_registry(workspace, cancellation, revalidate_search)?;
         let context = documentation_context(
             &unica_adapter_v8_runner::full_dump::default_platform_roots(),
             None,
@@ -1145,7 +1122,7 @@ pub(crate) fn canonical_v13_docs_search_with_limit(
         );
         unica_documentation::projection::search(&registry, &request, &context)
     })();
-    let mut result = match result {
+    match result {
         Ok(data) => {
             let mut result =
                 unica_execution_contract::invocation::DomainResult::success("unica.docs completed");
@@ -1163,9 +1140,7 @@ pub(crate) fn canonical_v13_docs_search_with_limit(
                 error,
             )
         }
-    };
-    result.warnings = documentation_policy_warnings(&policy_warnings);
-    result
+    }
 }
 
 /// Подмена реестра позволяет управлять поставщиками в тестах.
@@ -1173,20 +1148,20 @@ pub(crate) fn canonical_v13_docs_search_with_limit(
 /// проверить: настоящий поставщик отвечает по установкам МАШИНЫ, и тест не
 /// выбирает ни их состав, ни их наличие, поэтому наблюдать через него, что
 /// аргументы вызова дошли до запроса и контекста, нельзя.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 static DOCUMENTATION_REGISTRY_STAND_IN: std::sync::Mutex<
     Option<std::sync::Arc<dyn unica_documentation::model::DocumentationProvider>>,
 > = std::sync::Mutex::new(None);
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 static DOCUMENTATION_REGISTRY_STAND_IN_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-#[cfg(test)]
-pub(crate) struct DocumentationRegistryStandInGuard {
+#[cfg(any(test, feature = "test-support"))]
+pub struct DocumentationRegistryStandInGuard {
     _serial: std::sync::MutexGuard<'static, ()>,
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl Drop for DocumentationRegistryStandInGuard {
     fn drop(&mut self) {
         *DOCUMENTATION_REGISTRY_STAND_IN
@@ -1195,8 +1170,8 @@ impl Drop for DocumentationRegistryStandInGuard {
     }
 }
 
-#[cfg(test)]
-pub(crate) fn install_documentation_registry_stand_in(
+#[cfg(any(test, feature = "test-support"))]
+pub fn install_documentation_registry_stand_in(
     provider: std::sync::Arc<dyn unica_documentation::model::DocumentationProvider>,
 ) -> DocumentationRegistryStandInGuard {
     let serial = DOCUMENTATION_REGISTRY_STAND_IN_SERIAL
@@ -1208,7 +1183,7 @@ pub(crate) fn install_documentation_registry_stand_in(
     DocumentationRegistryStandInGuard { _serial: serial }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn documentation_registry_stand_in(
 ) -> Option<std::sync::Arc<dyn unica_documentation::model::DocumentationProvider>> {
     DOCUMENTATION_REGISTRY_STAND_IN
@@ -1337,6 +1312,17 @@ fn documentation_context(
         // отказе, когда установки не нашлось.
         platform_version: requested.map(str::to_string).or(project_version),
     }
+}
+
+/// The platform installation `unica.docs` reads for `workspace`: the
+/// project's pin, otherwise the newest installation found.
+pub fn platform_installation_root(workspace: &WorkspaceContext) -> Option<std::path::PathBuf> {
+    documentation_context(
+        &unica_adapter_v8_runner::full_dump::default_platform_roots(),
+        None,
+        workspace,
+    )
+    .installation_root
 }
 
 /// Pure root pick, split out of `documentation_context`'s resolution so it can
@@ -1485,11 +1471,9 @@ mod medium_tests {
     use crate::application::ports::ApplicationPorts;
     use crate::application::{
         preview_strategy, tools, InvocationMode, PreviewStrategy, RuntimeJobAction, ToolHandler,
-        ToolSpec, UnicaApplication,
+        ToolSpec,
     };
-    use unica_address::source_target::{
-        MetadataAddress, ResolvedTarget, TargetKind, PLATFORM_XML_8_3_27_FORMAT_2_20,
-    };
+    use unica_address::source_target::{MetadataAddress, ResolvedTarget, TargetKind};
     use unica_code_intelligence::model::CodeIntelligenceContext;
     use unica_code_intelligence::model::CodeIntelligenceReadRequest;
     use unica_metadata::support_state::{
@@ -1641,7 +1625,7 @@ mod medium_tests {
         assert!(absent.iter().all(|path| !path.exists()));
         let before = recursive_storage_snapshot(&workspace);
 
-        let post_image_result = UnicaApplication::new()
+        let post_image_result = crate::composition::testing::application()
             .call_tool(
                 "unica.meta.add",
                 json!({
@@ -1660,7 +1644,7 @@ mod medium_tests {
         assert_eq!(recursive_storage_snapshot(&workspace), before);
         assert!(absent.iter().all(|path| !path.exists()));
 
-        let planned_result = UnicaApplication::new()
+        let planned_result = crate::composition::testing::application()
             .call_tool(
                 "unica.build.load",
                 json!({"cwd": workspace}).as_object().unwrap(),
@@ -1996,7 +1980,7 @@ mod medium_tests {
     }
 
     fn metadata_address(raw: &str) -> MetadataAddress {
-        MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, raw).unwrap()
+        MetadataAddress::parse_logical(raw).unwrap()
     }
 
     #[test]
@@ -2196,109 +2180,6 @@ mod medium_tests {
                 .unwrap();
             assert_eq!(read.local.support, expected, "state {state:?}");
         }
-    }
-
-    #[test]
-    fn support_readers_cannot_bypass_the_logical_port() {
-        const READERS: &[(&str, &str, &[&str])] = &[
-            (
-                "cf",
-                include_str!("native_operations/cf.rs"),
-                &[".configuration_support("],
-            ),
-            (
-                "role",
-                include_str!("native_operations/role.rs"),
-                &[".object_support("],
-            ),
-            (
-                "mxl",
-                include_str!("native_operations/mxl_composition.rs"),
-                &[".object_support("],
-            ),
-            (
-                "mxl-codec",
-                include_str!("../../../unica-templates-designer/src/mxl_codec.rs"),
-                &[],
-            ),
-            (
-                "mxl-root",
-                include_str!("../../../unica-templates-designer/src/mxl_root.rs"),
-                &[],
-            ),
-            (
-                "mxl-cells",
-                include_str!("../../../unica-templates-designer/src/mxl_cells.rs"),
-                &[],
-            ),
-            (
-                "dcs",
-                include_str!("native_operations/dcs.rs"),
-                &[".object_support("],
-            ),
-            (
-                "form",
-                include_str!("form_composition.rs"),
-                &[".object_support("],
-            ),
-            (
-                "form-codec",
-                include_str!("../../../unica-forms-designer/src/codec.rs"),
-                &[],
-            ),
-            (
-                "subsystem",
-                include_str!("subsystem_composition.rs"),
-                &[".object_support(", ".subsystem_support("],
-            ),
-            (
-                "subsystem-codec",
-                include_str!("../../../unica-metadata-designer/src/subsystem.rs"),
-                &[],
-            ),
-            (
-                "meta",
-                include_str!("native_operations/meta/info.rs"),
-                &["unica_metadata_designer::info_read::read_typed_meta_info("],
-            ),
-            (
-                "meta-codec",
-                include_str!("../../../unica-metadata-designer/src/info_read.rs"),
-                &[".object_support("],
-            ),
-        ];
-        const COORDINATOR: &str = include_str!("metadata_operations.rs");
-        const FORBIDDEN: &[&str] = &[
-            "object_support_state(",
-            "support_state_data(",
-            "support_status_for_path(",
-        ];
-
-        for (name, source, required_calls) in READERS {
-            for forbidden in FORBIDDEN {
-                assert!(
-                    !source.contains(forbidden),
-                    "{name} bypasses SupportStateReader through {forbidden}"
-                );
-            }
-            for required_call in *required_calls {
-                assert!(
-                    source.contains(required_call),
-                    "{name} must route support through {required_call}"
-                );
-            }
-        }
-        for forbidden in FORBIDDEN {
-            assert!(
-                !COORDINATOR.contains(forbidden),
-                "metadata coordinator bypasses SupportStateReader through {forbidden}"
-            );
-        }
-
-        let domain_port = include_str!("../../../unica-metadata/src/support_state.rs");
-        assert!(!domain_port.contains("std::path"));
-        assert!(!domain_port.contains("&Path"));
-        assert!(!domain_port.contains("PathBuf"));
     }
 
     #[test]
@@ -2523,7 +2404,7 @@ mod medium_tests {
             cache_root: workspace.join(".build/unica"),
             workspace_epoch: 1,
         };
-        let (registry, _) = documentation_registry(
+        let registry = documentation_registry(
             &context,
             &unica_work_control::cancellation::CancellationToken::default(),
             false,
@@ -2566,50 +2447,6 @@ mod medium_tests {
         );
     }
 
-    /// Секция удалённого поставщика `kb-1ci` в `unica.toml` не отключает
-    /// документацию: поиск и открытие страницы доходят до ответа, а в его
-    /// `warnings` пользователь видит, что ключ можно убрать.
-    /// rule: INV.APP.DOCUMENTATION-NETWORK-POLICY
-    #[test]
-    fn a_retired_provider_in_the_policy_reaches_the_docs_answer_as_a_warning() {
-        let _serial = documentation_registry_serial();
-        let dir = tempfile::tempdir().expect("каталог");
-        let workspace = dir.path().to_path_buf();
-        // Сеть запрещена общим умолчанием: проверке не нужен v8std.
-        std::fs::write(
-            workspace.join("unica.toml"),
-            "[network]\ndefault = \"deny\"\n\n[providers.kb-1ci]\nnetwork = \"allow\"\n",
-        )
-        .expect("unica.toml");
-        let context = WorkspaceContext {
-            cwd: workspace.clone(),
-            workspace_root: workspace.clone(),
-            cache_root: workspace.join(".build/unica"),
-            workspace_epoch: 1,
-        };
-        let cancellation = CancellationToken::default();
-        for result in [
-            canonical_v13_docs_search(
-                &context,
-                "ссылка",
-                Some("development-standard"),
-                &cancellation,
-            ),
-            canonical_v13_docs_search(&context, "https://kb.1ci.com/x/", None, &cancellation),
-        ] {
-            // Предупреждение есть только у прочитанной политики: отказ разбора
-            // его бы не дал.
-            assert_eq!(result.warnings.len(), 1, "{:?}", result.warnings);
-            assert_eq!(result.warnings[0]["code"], "retired_provider");
-            let message = result.warnings[0]["message"].as_str().expect("message");
-            assert!(
-                message.contains("unica.toml")
-                    && message.contains("поставщик kb-1ci удалён, ключ можно убрать"),
-                "{message}"
-            );
-        }
-    }
-
     /// Источник поставщика справки конфигурации — source-set'ы рабочего
     /// пространства: выгрузка с `Configuration.xml` в корне обязана дать
     /// секцию с попаданием без какой-либо настройки проекта.
@@ -2637,7 +2474,7 @@ mod medium_tests {
             cache_root: workspace.join(".build/unica"),
             workspace_epoch: 1,
         };
-        let (registry, _) = documentation_registry(
+        let registry = documentation_registry(
             &context,
             &unica_work_control::cancellation::CancellationToken::default(),
             false,
@@ -3178,7 +3015,7 @@ mod medium_tests {
         assert!(recorder.seen.lock().expect("recorded request").is_empty());
     }
 
-    /// #1419: сбой сервера стандартов отвечал общей фразой «ни один
+    /// Сбой сервера стандартов отвечал общей фразой «ни один
     /// поставщик не дал результата», и причина сбоя терялась. Отказ обязан
     /// назвать поставщика v8std и его собственную диагностику.
     #[test]

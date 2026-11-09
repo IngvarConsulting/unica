@@ -81,7 +81,7 @@ fn stage_metadata_publication_state(
     Ok((vec![event], Some(cache)))
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 thread_local! {
     static META_ADD_AFTER_AUTHORIZATION_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
         const { std::cell::RefCell::new(None) };
@@ -89,7 +89,7 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) fn with_meta_add_after_authorization_hook<T>(
     hook: impl FnOnce() + 'static,
     action: impl FnOnce() -> T,
@@ -109,7 +109,7 @@ pub(crate) fn with_meta_add_after_authorization_hook<T>(
     action()
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn run_meta_add_after_authorization_hook() {
     META_ADD_AFTER_AUTHORIZATION_HOOK.with(|slot| {
         if let Some(hook) = slot.borrow_mut().take() {
@@ -118,7 +118,7 @@ fn run_meta_add_after_authorization_hook() {
     });
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) fn with_meta_edit_before_reauthorization_hook<T>(
     hook: impl FnOnce() + 'static,
     action: impl FnOnce() -> T,
@@ -138,7 +138,7 @@ pub(crate) fn with_meta_edit_before_reauthorization_hook<T>(
     action()
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn run_meta_edit_before_reauthorization_hook() {
     META_EDIT_BEFORE_REAUTHORIZATION_HOOK.with(|slot| {
         if let Some(hook) = slot.borrow_mut().take() {
@@ -190,7 +190,7 @@ impl PreparedMetaEdit {
                 "unchanged metadata preview cannot contain filesystem mutations".to_string(),
             ));
         }
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         run_meta_edit_before_reauthorization_hook();
         let mut transaction = CompileTransaction::new();
         bind_resolved_support_guard_evidence(&mut transaction, &resolved.descriptor_path, context)
@@ -583,7 +583,7 @@ pub(crate) fn prepare_meta_add(
     }];
     mutation_effects.extend(effects);
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     run_meta_add_after_authorization_hook();
 
     // The transaction starts only after template operations and every derived
@@ -1128,7 +1128,7 @@ fn commit_failure_from_meta(failure: &unica_metadata::request::MetaFailure) -> C
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn registered_language_images(
     source_root: &Path,
     owner_preimage: &[u8],
@@ -1145,7 +1145,7 @@ pub(crate) mod medium_typed_add_publication_tests {
     use super::*;
 
     use std::collections::BTreeMap;
-    use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+    use unica_address::source_target::MetadataAddress;
     use unica_metadata::{
         EventSourceClass, MetaCollection, MetaEditOperation, MetaElementInput, MetaEventSource,
         MetaPredefinedFields, MetaPredefinedItemAdd, MetaPropertyChanges, MetaPropertyInput,
@@ -1156,8 +1156,7 @@ pub(crate) mod medium_typed_add_publication_tests {
 
     #[test]
     fn publication_failure_code_is_selected_by_typed_commit_kind() {
-        let target =
-            MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Catalog.Items").unwrap();
+        let target = MetadataAddress::parse_logical("Catalog.Items").unwrap();
         for (kind, expected) in [
             (
                 CommitFailureKind::ConcurrentModification,
@@ -1506,8 +1505,7 @@ pub(crate) mod medium_typed_add_publication_tests {
             .unwrap()
             .publish(&cancellation)
             .unwrap();
-        let parent_address =
-            MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Catalog.Parent").unwrap();
+        let parent_address = MetadataAddress::parse_logical("Catalog.Parent").unwrap();
         let request = unica_metadata::request::MetaAddRequest {
             operations: vec![MetaEditOperation::edit_relations(
                 MetaRelation::Owners,
@@ -1960,11 +1958,7 @@ mod host_path_tests {
         let extended = extended_length_spelling_for_test(&plain);
         std::fs::create_dir_all(plain.join("src/Catalogs")).unwrap();
         let relative = Path::new("src/Catalogs/Absent.xml");
-        let target = MetadataAddress::parse(
-            unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
-            "Catalog.Absent",
-        )
-        .unwrap();
+        let target = MetadataAddress::parse_logical("Catalog.Absent").unwrap();
 
         let mut transaction = CompileTransaction::new();
         bind_prerequisite_ancestor_topology(

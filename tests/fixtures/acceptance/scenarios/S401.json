@@ -1,0 +1,151 @@
+{
+  "id": "S401",
+  "name": "new-tabular-section-takes-attributes-at-its-address",
+  "issue": 1352,
+  "area": "Реквизиты и состав",
+  "task": "Одним пакетом создать табличную часть и добавить в неё реквизит по адресу новой части; публикация кладёт реквизит в часть",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Document.АктОбУничтоженииПерсональныхДанных",
+        "ops": [
+          {
+            "op": "tabularSection.add",
+            "args": {
+              "items": [
+                {
+                  "name": "Основания",
+                  "attributes": [
+                    {
+                      "name": "Документ",
+                      "type": {
+                        "variants": [
+                          {
+                            "kind": "string",
+                            "length": 50,
+                            "allowedLength": "variable"
+                          }
+                        ]
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "op": "attribute.add",
+            "args": {
+              "at": "main:Document.АктОбУничтоженииПерсональныхДанных.TabularSection.Основания",
+              "items": [
+                {
+                  "name": "Дата",
+                  "type": {
+                    "variants": [
+                      {
+                        "kind": "date",
+                        "fractions": "date"
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/executable",
+          "eq": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "kind": "xml",
+          "path": "src/Documents/АктОбУничтоженииПерсональныхДанных.xml",
+          "select": ".//{*}TabularSection/{*}Properties/{*}Name",
+          "eq": [
+            "КатегорииДанных",
+            "ДополнительныеРеквизиты",
+            "ОбъектыСУничтожаемымиДанными",
+            "Основания"
+          ]
+        },
+        {
+          "kind": "xml",
+          "path": "src/Documents/АктОбУничтоженииПерсональныхДанных.xml",
+          "select": "./{*}Document/{*}ChildObjects/{*}Attribute/{*}Properties/{*}Name",
+          "eq": [
+            "Организация",
+            "НаименованиеОрганизации",
+            "ЮридическийАдресОрганизации",
+            "ОтветственныйЗаОбработкуПерсональныхДанных",
+            "ФИООтветственногоЗаОбработкуПДн",
+            "НаименованиеИнформационнойСистемы",
+            "ДатаУничтожения",
+            "СпособУничтожения",
+            "ПричинаУничтожения",
+            "Ответственный",
+            "Комментарий",
+            "Субъект",
+            "ФИОСубъекта"
+          ]
+        },
+        {
+          "kind": "xml",
+          "path": "src/Documents/АктОбУничтоженииПерсональныхДанных.xml",
+          "select": ".//{*}TabularSection/{*}ChildObjects/{*}Attribute/{*}Properties/{*}Name",
+          "eq": [
+            "Субъект",
+            "ИмяОбъекта",
+            "Категория",
+            "Свойство",
+            "Значение",
+            "ТекстоваяСтрока",
+            "ИмяОбъекта",
+            "КоличествоОбъектов",
+            "Документ",
+            "Дата"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.АктОбУничтоженииПерсональныхДанных.TabularSection.Основания.Attribute"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:Document.АктОбУничтоженииПерсональныхДанных.TabularSection.Основания.Attribute.Документ"
+        },
+        {
+          "pointer": "/data/items/1/at",
+          "eq": "main:Document.АктОбУничтоженииПерсональныхДанных.TabularSection.Основания.Attribute.Дата"
+        },
+        {
+          "pointer": "/data/items/2",
+          "absent": true
+        }
+      ]
+    }
+  ]
+}

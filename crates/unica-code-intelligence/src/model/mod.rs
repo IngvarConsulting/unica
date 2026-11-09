@@ -1470,19 +1470,13 @@ mod tests {
     /// rule: INV.APP.CODE-SEARCH-RESULT-EVIDENCE
     #[test]
     fn search_section_serializes_role_provenance_completeness_and_logical_location() {
-        use unica_address::source_target::{
-            MetadataAddress, TargetKind, PLATFORM_XML_8_3_27_FORMAT_2_20,
-        };
+        use unica_address::source_target::{MetadataAddress, TargetKind};
         use unica_source_contract::location::SourceLocation;
 
         let location = SourceLocation::Addressed {
             source_set: "main".to_string(),
             metadata_path: Some(
-                MetadataAddress::parse(
-                    PLATFORM_XML_8_3_27_FORMAT_2_20,
-                    "CommonModule.Sales.Module",
-                )
-                .unwrap(),
+                MetadataAddress::parse_logical("CommonModule.Sales.Module").unwrap(),
             ),
             target_kind: TargetKind::Module,
         };

@@ -2,7 +2,7 @@
 
 Отбор объявлен профилями: `pr` пропускает только `small`, очередь и `main` —
 всё, кроме `large` и временного каталога `nightly-only`, релиз гоняет всё,
-`large` — названные тесты ёмкости и нагрузки ReceiptLedger и карты исходников, а на
+`large` — названные тесты ёмкости и нагрузки ReceiptLedger, а на
 Windows — весь набор. Меняется этот страж осознанно, вместе с выражениями профилей.
 """
 
@@ -16,39 +16,33 @@ from pathlib import Path
 
 from tree_sitter import Language, Parser
 import tree_sitter_rust
+import os
+from unittest import mock
+
+# The fixtures describe the CI layout, where the build directory is the
+# workspace's own `target`. A session sets `CARGO_TARGET_DIR`; the scripts
+# under test would follow it, so this module's tests run without the variable.
+_CARGO_ENV = mock.patch.dict(os.environ)
+
+
+def setUpModule() -> None:
+    _CARGO_ENV.start()
+    os.environ.pop("CARGO_TARGET_DIR", None)
+
+
+def tearDownModule() -> None:
+    _CARGO_ENV.stop()
+
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+NEXTEST_ACTION = REPO_ROOT / ".github" / "actions" / "install-nextest" / "action.yml"
 GATES = ("pr", "queue", "main", "release")
-# Library modules whose named tests may enter the large tier, with the source
-# file that declares them: map capacity checks and the real-time daemon run
-# past the former operation deadlines (#1251).
-LARGE_LIBRARY_MODULES = {
-    ("unica_coder", "infrastructure::daemon::medium_receipt_runtime_tests::"): (
-        "crates/unica-coder/tests/platform/receipt_runtime.rs",
-        "infrastructure::daemon::medium_receipt_runtime_tests::",
-    ),
-    # Root check and resource inspection past the former corpus caps (#1119).
-    ("unica_coder", "infrastructure::daemon::v13_workspace_bootstrap::medium_tests::"): (
-        "crates/unica-coder/src/infrastructure/daemon/v13_workspace_bootstrap.rs",
-        "infrastructure::daemon::v13_workspace_bootstrap::",
-    ),
-    ("unica_project_health", "inspection::resources::medium_tests::"): (
-        "crates/unica-project-health/tests/platform/project_health_resources.rs",
-        "inspection::resources::medium_tests::",
-    ),
-    ("unica_project_health", "inspection::git::medium_tests::"): (
-        "crates/unica-project-health/tests/platform/project_health_git.rs",
-        "inspection::git::medium_tests::",
-    ),
-    ("selection", ""): (
-        "crates/unica-source-integration-tests/tests/selection.rs",
-        "",
-    ),
-    ("unica_workspace", "selection_evidence::tests::"): (
-        "crates/unica-workspace/src/selection_evidence.rs", "selection_evidence::",
-    ),
-}
+# Library modules whose named tests may enter the large tier, keyed by
+# (binary, module prefix), with the source file and module that declare them.
+# Empty while the tier names only ReceiptLedger contract tests.
+LARGE_LIBRARY_MODULES: dict[tuple[str, str], tuple[str, str]] = {}
+LARGE_TARGETS = {"daemon_receipt_ledger"} | {binary for binary, _ in LARGE_LIBRARY_MODULES}
 
 # Expected command is independent of the runner's production constant.
 UREQ_SELECTION = (
@@ -100,7 +94,7 @@ def large_groups(expression: str) -> dict[str, list[str]]:
     result = exact_groups(
         expression,
         "large",
-        {"daemon_receipt_ledger", "unica_coder", "unica_project_health", "unica_workspace", "selection"},
+        LARGE_TARGETS,
     )
     for target, names in result.items():
         for name in names:
@@ -188,7 +182,7 @@ class GateProfileCompositionTests(unittest.TestCase):
         # Тела проверок обвязки — в библиотеке без `#[test]`; тест каждой из
         # них разворачивает бинарь контракта одним макросом. Список в макросе
         # единственный, и обе известные проверки в нём есть.
-        coder = REPO_ROOT / "crates/unica-coder"
+        coder = REPO_ROOT / "crates/unica-daemon"
         harness = (coder / "tests/support/receipt_scenario/tests.rs").read_text(encoding="utf-8")
         self.assertEqual(attributed_test_functions(harness), set())
         listed = re.search(r"(?m)^harness_checks!\((.*?)\);", harness, re.S)
@@ -200,7 +194,7 @@ class GateProfileCompositionTests(unittest.TestCase):
         ledger = (REPO_ROOT / "crates/unica-product/tests/daemon_receipt_ledger.rs").read_text(encoding="utf-8")
         self.assertIn('#[path = "daemon_receipt_ledger/receipt_scenario_harness.rs"]\nmod receipt_scenario_harness;', ledger)
         wrapper = (REPO_ROOT / "crates/unica-product/tests/daemon_receipt_ledger/receipt_scenario_harness.rs").read_text(encoding="utf-8")
-        self.assertIn("unica_coder::receipt_scenario_harness_tests!();", wrapper)
+        self.assertIn("unica_daemon::receipt_scenario_harness_tests!();", wrapper)
         # Бинарь контракта — `kind(test)`: размер `medium` идёт из каталога,
         # особой переразметки у запускателя для обвязки нет.
         self.assertIn("kind(test)", self.config["profile"]["pr"]["default-filter"])
@@ -243,7 +237,7 @@ class GateProfileCompositionTests(unittest.TestCase):
         self.assertEqual(set(self.run_tests.PROFILES), {"all", "large", *GATES})
         self.assertEqual(self.run_tests.nextest_profile("large"), "nightly-full")
         self.assertEqual(profiles["nightly-full"]["default-filter"], "all()")
-        # Ночью Windows гоняет весь набор, без исключений по платформе (#1879).
+        # Ночью Windows гоняет весь набор, без исключений по платформе.
         self.assertNotIn("overrides", profiles["nightly-full"])
         self.assertNotIn("overrides", profiles["large"])
         # Ночной ярус на ubuntu и macOS — только названные тесты своих целей;
@@ -255,7 +249,7 @@ class GateProfileCompositionTests(unittest.TestCase):
         self.assertEqual(deadline["threads-required"], "num-cpus")
         # Nextest берёт для каждой настройки первое совпавшее переопределение,
         # а интеграционные цели `large` входят и в `kind(test)` срока `medium`:
-        # срок `large` обязан стоять раньше, иначе они получают 600 с (#1879).
+        # срок `large` обязан стоять раньше, иначе они получают 600 с.
         deadlines = [o for o in profiles["default"]["overrides"] if "slow-timeout" in o]
         self.assertIs(deadlines[0], deadline)
         for command in self.run_tests.rust_commands("large"):
@@ -264,6 +258,21 @@ class GateProfileCompositionTests(unittest.TestCase):
                 self.assertNotIn("--no-tests=pass", command, "the named vendor regressions must never be empty")
             else:
                 self.assertNotIn("--no-tests=pass", command, "full nightly inventory must never be empty")
+
+    def test_pr_gate_excludes_the_shared_medium_and_large_expressions(self) -> None:
+        # Одно выражение `medium` на два места: ворота `pr` его исключают,
+        # срок `medium` по нему даётся. Расхождение пустило бы `medium` в `pr`
+        # или оставило бы его на сроке `small`.
+        profiles = self.config["profile"]
+        medium_deadline = next(
+            o for o in profiles["default"]["overrides"]
+            if o.get("slow-timeout", {}).get("period") == "300s"
+        )
+        medium = medium_deadline["filter"].strip()
+        large = profiles["large"]["default-filter"].strip()
+        self.assertEqual(profiles["pr"]["default-filter"].strip(), f"not (\n{medium}\n) & not (\n{large}\n)")
+        self.assertEqual(medium_deadline["slow-timeout"], {"period": "300s", "terminate-after": 2})
+        self.assertTrue(medium.startswith("kind(test)"))
 
     def test_dependency_regressions_have_a_standalone_config_and_no_retry_at_admitting_gates(self) -> None:
         config = tomllib.loads((REPO_ROOT / "vendor/ureq/.config/nextest.toml").read_text(encoding="utf-8"))
@@ -293,13 +302,8 @@ class GateProfileCompositionTests(unittest.TestCase):
         groups = large_groups(large)
         self.assertEqual(sum(map(len, groups.values())), large.count("test("))
         ledger = (REPO_ROOT / "crates" / "unica-product" / "tests/daemon_receipt_ledger.rs").read_text(encoding="utf-8")
-        declared_by_target = {
-            "daemon_receipt_ledger": attributed_test_functions(ledger),
-            "unica_coder": set(),
-            "unica_project_health": set(),
-            "unica_workspace": set(),
-            "selection": set(),
-        }
+        declared_by_target = {target: set() for target in LARGE_TARGETS}
+        declared_by_target["daemon_receipt_ledger"] = attributed_test_functions(ledger)
         for (binary, _), (path, module) in LARGE_LIBRARY_MODULES.items():
             source = (REPO_ROOT / path).read_text(encoding="utf-8")
             declared_by_target[binary] |= {module + name for name in attributed_test_functions(source)}
@@ -334,13 +338,13 @@ class GateProfileCompositionTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     nightly_only_groups(expression.replace(exact, replacement, 1))
         with self.assertRaises(ValueError):
-            nightly_only_groups(expression.replace("binary(v13_workspace_bootstrap)", "binary(unica_coder)", 1))
+            nightly_only_groups(expression.replace("binary(v13_workspace_bootstrap)", "binary(unica_daemon)", 1))
         self.assertEqual(test_function_attributes('#[test]\n#[ignore = "why"]\nfn quiet() {}\n#[test]\nfn loud() {}'),
                          {"quiet": ["#[test]", '#[ignore="why"]'], "loud": ["#[test]"]})
 
     def test_large_filter_rejects_broad_wrong_target_and_duplicate_members(self) -> None:
         expression = self.config["profile"]["large"]["default-filter"].strip()
-        name = large_groups(expression)["unica_coder"][-1]
+        name = large_groups(expression)["daemon_receipt_ledger"][0]
         exact = f"test(/^{name}$/)"
         for replacement in [
             f"test(/^{name}/)",
@@ -385,16 +389,78 @@ class GateProfileCompositionTests(unittest.TestCase):
         """Одна версия исполнителя для CI и локального прогона."""
         import yaml
 
-        release = yaml.safe_load((REPO_ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8"))
+        action = yaml.safe_load(NEXTEST_ACTION.read_text(encoding="utf-8"))
         tools = next(
             step["with"]["tool"]
-            for job in ("unica-ci", "rust-os")
-            for step in release["jobs"][job]["steps"]
+            for step in action["runs"]["steps"]
             if step.get("uses", "").startswith("taiki-e/install-action@") and "cargo-nextest@" in step["with"]["tool"]
         )
         installed = next(part.split("@")[1] for part in tools.split(",") if part.startswith("cargo-nextest@"))
 
         self.assertEqual(self.config["nextest-version"], {"recommended": installed})
+
+    def test_tool_installs_are_bounded_and_nextest_is_reused_where_present(self) -> None:
+        """Зависшая загрузка выпуска GitHub не съедает запись; готовый nextest не ставится заново.
+
+        nextest ставит одно общее действие: очередь и ночь проходят одну установку."""
+        import yaml
+
+        users = []
+        for name in ("ci.yml", "release.yml"):
+            workflow = yaml.safe_load((REPO_ROOT / ".github" / "workflows" / name).read_text(encoding="utf-8"))
+            for job_name, job in workflow["jobs"].items():
+                for step in job.get("steps", []):
+                    uses = step.get("uses", "")
+                    if uses == "./.github/actions/install-nextest":
+                        users.append((name, job_name))
+                    elif not uses.startswith("taiki-e/install-action@"):
+                        continue
+                    with self.subTest(workflow=name, job=job_name, uses=uses):
+                        self.assertLessEqual(step.get("timeout-minutes", 0), 10)
+                        self.assertGreater(step.get("timeout-minutes", 0), 0)
+                        if uses.startswith("taiki-e/"):
+                            self.assertNotIn("cargo-nextest@", step["with"]["tool"])
+        self.assertEqual(users, [("ci.yml", "unica-ci"), ("release.yml", "unica-ci"), ("release.yml", "rust-os")])
+        probe, install = yaml.safe_load(NEXTEST_ACTION.read_text(encoding="utf-8"))["runs"]["steps"]
+        self.assertEqual(probe["shell"], "bash")
+        self.assertTrue(install["uses"].startswith("taiki-e/install-action@"))
+        self.assertIn("cargo-nextest@", install["with"]["tool"])
+        self.assertEqual(install["if"], f"steps.{probe['id']}.outputs.present != 'true'")
+
+    def test_the_nextest_probe_runs_under_actions_bash_and_never_fails(self) -> None:
+        """Под `bash -e -o pipefail` отсутствующий nextest не роняет шаг: иначе установка пропускается."""
+        import os
+        import shutil
+        import subprocess
+        import tempfile
+        import yaml
+
+        bash = shutil.which("bash")
+        if bash is None:
+            self.skipTest("bash is not available")
+        probes = [step["run"] for step in yaml.safe_load(NEXTEST_ACTION.read_text(encoding="utf-8"))["runs"]["steps"]
+                  if "run" in step]
+        self.assertEqual(len(probes), 1)
+        cases = (
+            ("echo 'error: no such command: `nextest`' >&2; exit 101", ""),
+            ("echo 'cargo-nextest 0.9.148 (cd1d6d546 2026-10-07)'", "present=true"),
+            ("echo 'cargo-nextest 0.9.147 (abc 2026-09-01)'", ""),
+        )
+        for script in probes:
+            for cargo, expected in cases:
+                with self.subTest(cargo=cargo), tempfile.TemporaryDirectory() as temporary:
+                    fake = Path(temporary) / "cargo"
+                    fake.write_text(f"#!/usr/bin/env bash\n{cargo}\n", encoding="utf-8", newline="\n")
+                    fake.chmod(0o755)
+                    output = Path(temporary) / "output"
+                    output.write_text("", encoding="utf-8")
+                    environment = {**os.environ, "PATH": temporary + os.pathsep + os.environ.get("PATH", ""),
+                                   "GITHUB_OUTPUT": str(output)}
+                    # The shell Actions uses for `shell: bash`.
+                    result = subprocess.run([bash, "--noprofile", "--norc", "-eo", "pipefail", "-c", script],
+                                            cwd=REPO_ROOT, env=environment, capture_output=True, text=True)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(output.read_text(encoding="utf-8").strip(), expected)
 
     def test_default_profile_carries_the_small_deadline_for_everyone(self) -> None:
         """Срок на тест — то, чем размер держится честным; пока он один на всех."""
@@ -460,7 +526,7 @@ FACADE_GUARDS = (
 
 class FacadeGuardInventoryTests(unittest.TestCase):
     def test_facade_guards_are_contract_tests_the_receipt_lane_runs(self) -> None:
-        coder = REPO_ROOT / "crates/unica-coder"
+        coder = REPO_ROOT / "crates/unica-daemon"
         guards = (REPO_ROOT / "crates/unica-product/tests/daemon_receipt_ledger/facade_guards.rs").read_text(encoding="utf-8")
         self.assertEqual(sorted(attributed_test_functions(guards)), sorted(FACADE_GUARDS))
         # Страж исполняется, а не только объявлен: ни `#[ignore]`, ни `cfg`

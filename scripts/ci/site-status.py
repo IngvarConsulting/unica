@@ -102,23 +102,6 @@ def site_lines(branch: str, repo: str, now: datetime) -> list[str]:
     return list(dict.fromkeys(["main", *own, *open_lines(repo, now)]))
 
 
-def line_run(path: Path | None, repo: str) -> dict[str, str]:
-    """Чей прогон дал этот отчёт.
-
-    Отчёт линии пересобирается из результатов, которые хранит сайт, — он тогда
-    показывает прошлый прогон, а не тот, что собирает сайт сейчас. Подпись
-    берётся из метки, сохранённой рядом с результатами, поэтому вчерашние
-    счётчики не выдаются за сегодняшние.
-    """
-    record = json.loads(path.read_text(encoding="utf-8")) if path and path.is_file() else {}
-    at = record.get("at")
-    return {
-        "sha": (record.get("sha") or "")[:7] or "—",
-        "date": human(moment(at)) if at else "—",
-        "url": record.get("url") or f"https://github.com/{repo}/actions",
-    }
-
-
 def github_stars(repo: str) -> str:
     """Звёзд у репозитория на момент сборки."""
     try:
@@ -263,6 +246,105 @@ def latest_alpha(releases: list, repo: str) -> dict[str, str]:
     }
 
 
+ALPHA_RULES = Path(__file__).with_name("release-alpha.py")
+HOST_NAMES = (("ubuntu", "Linux"), ("macos", "macOS"), ("windows", "Windows"))
+
+
+def alphas_kept() -> int:
+    """Сколько alpha держит `release-alpha.py prune`: столько и карточек."""
+    spec = importlib.util.spec_from_file_location("release_alpha", ALPHA_RULES)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules.setdefault("release_alpha", module)
+    spec.loader.exec_module(module)
+    return int(module.KEEP)
+
+
+def site_versions(status: dict[str, object], releases: list) -> list[tuple[str, dict]]:
+    """Версии карточек сайта: стабильная, кандидат канала next и последние alpha.
+
+    Тесты показываются по версии, а не по ветке: каждая карточка — прогон,
+    давший этот тег. Alpha столько, сколько их держит `prune`; удалённая alpha
+    уходит со страницы вместе с отчётом.
+    """
+    by_tag = {str(release["tag_name"]): release for release in releases}
+    rules = channel_rules()
+    found: list[tuple[str, dict]] = []
+    stable = by_tag.get(str(status["version"]))
+    if stable is not None:
+        found.append(("Стабильная", stable))
+    for candidate in candidates(status, releases):
+        if candidate["candidate_tag"] in by_tag:
+            found.append(("Кандидат", by_tag[candidate["candidate_tag"]]))
+    alphas = []
+    for release in releases:
+        tag = str(release["tag_name"])
+        try:
+            if rules.channel(tag) == "none" and "-alpha." in tag:
+                alphas.append((rules.precedence(tag), release))
+        except rules.TagError:
+            continue
+    for _, release in sorted(alphas, key=lambda item: item[0], reverse=True)[:alphas_kept()]:
+        found.append(("Alpha", release))
+    return found
+
+
+def host_name(host: str) -> str:
+    return next((name for prefix, name in HOST_NAMES if host.startswith(prefix)), host)
+
+
+def skipped_by_host(by_host: dict[str, dict[str, int]]) -> str:
+    """Пропуски по ОС одной строкой: `Linux 12 · macOS 7356 · Windows 7321`."""
+    order = [prefix for prefix, _ in HOST_NAMES]
+
+    def rank(host: str) -> tuple[int, str]:
+        return next((index for index, prefix in enumerate(order) if host.startswith(prefix)), len(order)), host
+
+    parts = [f"{host_name(host)} {by_host[host].get('skipped', 0)}" for host in sorted(by_host, key=rank)]
+    return " · ".join(parts) if parts else "—"
+
+
+def version_card(kind: str, release: dict, data: Path | None, repo: str) -> dict[str, str]:
+    """Карточка версии: тег, дата, проверенный коммит и тесты прогона на нём.
+
+    Отчёт Allure есть, когда сайт хранит результаты этого тега. Без них
+    счётчики берутся из журнала прогона, если он был жив при первой сборке,
+    а ссылка ведёт на прогон и честно говорит, что отчёта нет.
+    """
+    tag = str(release["tag_name"])
+    folder = data / "versions" / tag if data is not None else None
+
+    def read(name: str) -> dict:
+        path = folder / name if folder is not None else None
+        return json.loads(path.read_text(encoding="utf-8")) if path is not None and path.is_file() else {}
+
+    run, legacy, split = read("run.json"), read("legacy.json"), read("breakdown.json")
+    counts = summary_counts(folder / "summary.json") if folder is not None else None
+    # Alpha проверена ночью на срезе main: её служебный коммит меняет только версию.
+    slice_ = re.search(r"main@([0-9a-f]{40})", str(release.get("body") or ""))
+    sha = run.get("sha") or legacy.get("sha") or (slice_[1] if slice_ else "")
+    card = {
+        "version_kind": kind,
+        "version_tag": tag,
+        "version_notes_url": str(release["html_url"]),
+        "version_published": human(moment(release["published_at"])),
+        "version_commit": sha[:7] or "—",
+        "version_commit_url": f"https://github.com/{repo}/commit/{sha}" if sha else str(release["html_url"]),
+    }
+    if counts is not None:
+        return {**card, **counts, "tests_skipped_hosts": skipped_by_host(split.get("by_host", {})),
+                "report_url": f"allure/versions/{tag}/", "report_label": "Отчёт Allure"}
+    by_host = legacy.get("by_host", {})
+    statistic = {key: sum(item.get(key, 0) for item in by_host.values()) for key in ("total", "passed", "failed", "skipped")}
+    shown = statistic_counts(statistic) if by_host else None
+    empty = {key: "—" for key in ("tests_total", "tests_passed", "tests_failed", "tests_skipped")}
+    words = {"tests_total_word": "тестов", "tests_passed_word": "прошли", "tests_failed_word": "упали",
+             "tests_skipped_word": "пропущены"}
+    return {**card, **(shown or {**empty, **words}),
+            "tests_skipped_hosts": skipped_by_host(by_host) if by_host else "—",
+            "report_url": legacy.get("url") or str(release["html_url"]),
+            "report_label": "Отчёта нет — счётчики из журнала прогона" if by_host else "Отчёта нет"}
+
+
 def plural(count: int, one: str, few: str, many: str) -> str:
     """Форма слова при числе: 1 тест, 2 теста, 5 тестов, 11 тестов, 21 тест."""
     if count % 10 == 1 and count % 100 != 11:
@@ -280,7 +362,11 @@ def summary_counts(path: Path | None) -> dict[str, str] | None:
     """
     if path is None or not path.is_file():
         return None
-    statistic = json.loads(path.read_text(encoding="utf-8")).get("statistic", {})
+    return statistic_counts(json.loads(path.read_text(encoding="utf-8")).get("statistic", {}))
+
+
+def statistic_counts(statistic: dict) -> dict[str, str]:
+    """Счётчики со словами из статистики вида Allure: `total`, `passed`, `failed`, `broken`, `skipped`."""
     total = statistic.get("total", 0)
     passed = statistic.get("passed", 0)
     failed = statistic.get("failed", 0) + statistic.get("broken", 0)
@@ -303,16 +389,15 @@ def main() -> int:
     parser.add_argument("--branch", default="main")
     parser.add_argument("--sha", default=os.environ.get("GITHUB_SHA", ""))
     parser.add_argument("--run-url", default="")
-    parser.add_argument("--allure-summary", type=Path, help="widgets/summary.json собранного отчёта")
-    parser.add_argument("--summaries", type=Path, help="каталог data/ собранного сайта: сводка на линию")
+    parser.add_argument("--summaries", type=Path, help="каталог data/ собранного сайта: данные версий")
     parser.add_argument("--print-lines", action="store_true", help="напечатать открытые линии и выйти")
+    parser.add_argument("--print-versions", action="store_true", help="напечатать теги карточек версий и выйти")
     parser.add_argument("--telegram", default="unica_ai", help="публичная группа Telegram")
     parser.add_argument(
         "--marketplace",
         default="IngvarConsulting/unica-marketplace",
         help="репозиторий маркетплейса: его ветки next и main называют выпуски каналов",
     )
-    parser.add_argument("--report-url", default="allure/main/")
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
 
@@ -353,33 +438,13 @@ def main() -> int:
 
     status["candidates"] = candidates(status, releases)
     status.update(latest_alpha(releases, args.repo))
+    if args.print_versions:
+        print("\n".join(str(release["tag_name"]) for _, release in site_versions(status, releases)))
+        return 0
 
-    tested, plain = [], []
-    for line in site_lines(args.branch, args.repo, now):
-        data = args.summaries / line if args.summaries else None
-        counts = summary_counts(data / "summary.json" if data else args.allure_summary)
-        if counts:
-            run = line_run(data / "run.json" if data else None, args.repo)
-            tested.append(
-                {
-                    "line": line,
-                    "build_sha": run["sha"],
-                    "build_date": run["date"],
-                    "build_url": run["url"],
-                    "report_url": f"allure/{line}/",
-                    **counts,
-                }
-            )
-        else:
-            plain.append(
-                {
-                    "line": line,
-                    "build_state": "Нет прогонов",
-                    "build_note": "отчёт появится, когда линия начнёт его собирать",
-                }
-            )
-    status["tested_lines"] = tested
-    status["plain_lines"] = plain
+    status["versions"] = [
+        version_card(kind, release, args.summaries, args.repo) for kind, release in site_versions(status, releases)
+    ]
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(status, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

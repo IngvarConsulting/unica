@@ -5,7 +5,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant};
-use unica_coder::interfaces::daemon::{connect_owner_for_protocol_test, DaemonOwnerLease};
+use unica_daemon::interfaces::daemon::{connect_owner_for_protocol_test, DaemonOwnerLease};
 
 const IDLE_GRACE_MS: u64 = 2_000;
 

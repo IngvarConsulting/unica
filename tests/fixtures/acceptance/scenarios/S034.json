@@ -1,0 +1,17 @@
+{
+  "area": "Навигация и чтение",
+  "task": "Сравнить два реквизита одного справочника",
+  "wire": [
+    {
+      "tool": "unica.diff",
+      "args": {
+        "left": "main:Catalog.Валюты.Attribute.Наценка",
+        "right": "main:Catalog.Валюты.Attribute.НаименованиеПолное"
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S034"
+}

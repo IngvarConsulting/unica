@@ -22,134 +22,135 @@ fn resource_resolve_mcp(workspace: &std::path::Path) -> McpProcess {
     mcp
 }
 
-/// rule: INV.SOURCE.RESOLVED-RESOURCE-IDENTITY
-#[test]
-fn resolve_form_and_module_paths_preserve_the_exact_resource_on_public_mcp() {
-    for source_kind in ["CONFIGURATION", "EXTENSION"] {
-        let root = resource_resolve_fixture();
-        let manifest = root.path().join("v8project.yaml");
-        let text = std::fs::read_to_string(&manifest)
-            .unwrap()
-            .replace("CONFIGURATION", source_kind);
-        std::fs::write(manifest, text).unwrap();
-        let mut mcp = resource_resolve_mcp(root.path());
-        let mut id = 2;
-        for (kind, name, form_prefix, form_address) in [
+fn resolve_form_and_module_paths_preserve_the_exact_resource(source_kind: &str) {
+    let root = resource_resolve_fixture();
+    let manifest = root.path().join("v8project.yaml");
+    let text = std::fs::read_to_string(&manifest)
+        .unwrap()
+        .replace("CONFIGURATION", source_kind);
+    std::fs::write(manifest, text).unwrap();
+    let mut mcp = resource_resolve_mcp(root.path());
+    let mut id = 2;
+    for (kind, name, form_prefix, form_address) in [
+        (
+            "DataProcessor",
+            "Processor",
+            "DataProcessors/Processor/Forms/Main",
+            "main:DataProcessor.Processor.Form.Main",
+        ),
+        (
+            "Document",
+            "Invoice",
+            "Documents/Invoice/Forms/Main",
+            "main:Document.Invoice.Form.Main",
+        ),
+        (
+            "CommonForm",
+            "Main",
+            "CommonForms/Main",
+            "main:CommonForm.Main",
+        ),
+    ] {
+        let mut resources = vec![
             (
-                "DataProcessor",
-                "Processor",
-                "DataProcessors/Processor/Forms/Main",
-                "main:DataProcessor.Processor.Form.Main",
+                format!("{form_prefix}/Ext/Form.xml"),
+                form_address.to_string(),
+                "Form",
             ),
             (
-                "Document",
-                "Invoice",
-                "Documents/Invoice/Forms/Main",
-                "main:Document.Invoice.Form.Main",
+                format!("{form_prefix}.xml"),
+                format!("{form_address}.Metadata"),
+                "Metadata",
             ),
             (
-                "CommonForm",
-                "Main",
-                "CommonForms/Main",
-                "main:CommonForm.Main",
+                format!("{form_prefix}/Ext/Form/Module.bsl"),
+                format!("{form_address}.Module.Form"),
+                "Module",
             ),
-        ] {
-            let mut resources = vec![
+        ];
+        if kind != "CommonForm" {
+            resources.extend([
                 (
-                    format!("{form_prefix}/Ext/Form.xml"),
-                    form_address.to_string(),
-                    "Form",
-                ),
-                (
-                    format!("{form_prefix}.xml"),
-                    format!("{form_address}.Metadata"),
-                    "Metadata",
-                ),
-                (
-                    format!("{form_prefix}/Ext/Form/Module.bsl"),
-                    format!("{form_address}.Module.Form"),
+                    format!("{kind}s/{name}/Ext/ObjectModule.bsl"),
+                    format!("main:{kind}.{name}.Module.Object"),
                     "Module",
                 ),
-            ];
-            if kind != "CommonForm" {
-                resources.extend([
-                    (
-                        format!("{kind}s/{name}/Ext/ObjectModule.bsl"),
-                        format!("main:{kind}.{name}.Module.Object"),
-                        "Module",
-                    ),
-                    (
-                        format!("{kind}s/{name}/Ext/ManagerModule.bsl"),
-                        format!("main:{kind}.{name}.Module.Manager"),
-                        "Module",
-                    ),
-                ]);
-            }
-            for (path, address, expected_kind) in resources {
-                for query in [
-                    path.clone(),
-                    format!("src/{path}"),
-                    std::fs::canonicalize(root.path().join("src").join(&path))
-                        .unwrap()
-                        .to_str()
-                        .unwrap()
-                        .to_string(),
-                ] {
-                    let result = mcp.completed_tool_call(call_tool(
-                        id,
-                        "unica.resolve",
-                        json!({"path":query}),
-                    ));
-                    id += 1;
-                    assert_eq!(result["ok"], true, "{query}: {result:#}");
-                    assert_eq!(result["data"]["at"], address);
-                    assert_eq!(result["data"]["path"], path);
-                    assert_eq!(result["data"]["kind"], expected_kind);
-                    assert_eq!(result["data"]["lines"]["state"], "notLineBased");
-                    let viewed =
-                        mcp.completed_tool_call(call_tool(id, "unica.view", json!({"at":address})));
-                    id += 1;
-                    assert_eq!(viewed["ok"], true, "{viewed:#}");
-                    let reverse = mcp.completed_tool_call(call_tool(
-                        id,
-                        "unica.resolve",
-                        json!({"at": address}),
-                    ));
-                    id += 1;
-                    assert_eq!(reverse["ok"], true, "{reverse:#}");
-                    assert_eq!(reverse["data"]["at"], address);
-                    assert_eq!(reverse["data"]["path"], path);
-                    assert_eq!(reverse["data"]["kind"], expected_kind);
-                }
+                (
+                    format!("{kind}s/{name}/Ext/ManagerModule.bsl"),
+                    format!("main:{kind}.{name}.Module.Manager"),
+                    "Module",
+                ),
+            ]);
+        }
+        for (path, address, expected_kind) in resources {
+            for query in [
+                path.clone(),
+                format!("src/{path}"),
+                std::fs::canonicalize(root.path().join("src").join(&path))
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+                    .to_string(),
+            ] {
+                let result =
+                    mcp.completed_tool_call(call_tool(id, "unica.resolve", json!({"path":query})));
+                id += 1;
+                assert_eq!(result["ok"], true, "{query}: {result:#}");
+                assert_eq!(result["data"]["at"], address);
+                assert_eq!(result["data"]["path"], path);
+                assert_eq!(result["data"]["kind"], expected_kind);
+                assert_eq!(result["data"]["lines"]["state"], "notLineBased");
+                let viewed =
+                    mcp.completed_tool_call(call_tool(id, "unica.view", json!({"at":address})));
+                id += 1;
+                assert_eq!(viewed["ok"], true, "{viewed:#}");
+                let reverse =
+                    mcp.completed_tool_call(call_tool(id, "unica.resolve", json!({"at": address})));
+                id += 1;
+                assert_eq!(reverse["ok"], true, "{reverse:#}");
+                assert_eq!(reverse["data"]["at"], address);
+                assert_eq!(reverse["data"]["path"], path);
+                assert_eq!(reverse["data"]["kind"], expected_kind);
             }
         }
-        for (path, address) in [
-            (
-                "Documents/Invoice/Commands/Post/Ext/CommandModule.bsl",
-                "main:Document.Invoice.Command.Post.Module.Command",
-            ),
-            ("Ext/SessionModule.bsl", "main:Module.Session"),
-        ] {
-            let result =
-                mcp.completed_tool_call(call_tool(id, "unica.resolve", json!({"path":path})));
-            id += 1;
-            assert_eq!(result["ok"], true, "{path}: {result:#}");
-            assert_eq!(result["data"]["at"], address);
-            assert_eq!(result["data"]["path"], path);
-            assert_eq!(result["data"]["kind"], "Module");
-        }
-        let descriptor = mcp.completed_tool_call(call_tool(
-            id,
-            "unica.resolve",
-            json!({"at":"main:DataProcessor.Processor.Form.Main.Metadata"}),
-        ));
-        assert_eq!(descriptor["ok"], true, "{descriptor:#}");
-        assert_eq!(
-            descriptor["data"]["path"],
-            "DataProcessors/Processor/Forms/Main.xml"
-        );
-        mcp.finish();
     }
+    for (path, address) in [
+        (
+            "Documents/Invoice/Commands/Post/Ext/CommandModule.bsl",
+            "main:Document.Invoice.Command.Post.Module.Command",
+        ),
+        ("Ext/SessionModule.bsl", "main:Module.Session"),
+    ] {
+        let result = mcp.completed_tool_call(call_tool(id, "unica.resolve", json!({"path":path})));
+        id += 1;
+        assert_eq!(result["ok"], true, "{path}: {result:#}");
+        assert_eq!(result["data"]["at"], address);
+        assert_eq!(result["data"]["path"], path);
+        assert_eq!(result["data"]["kind"], "Module");
+    }
+    let descriptor = mcp.completed_tool_call(call_tool(
+        id,
+        "unica.resolve",
+        json!({"at":"main:DataProcessor.Processor.Form.Main.Metadata"}),
+    ));
+    assert_eq!(descriptor["ok"], true, "{descriptor:#}");
+    assert_eq!(
+        descriptor["data"]["path"],
+        "DataProcessors/Processor/Forms/Main.xml"
+    );
+    mcp.finish();
+}
+
+/// rule: INV.SOURCE.RESOLVED-RESOURCE-IDENTITY
+#[test]
+fn resolve_form_and_module_paths_preserve_the_exact_resource_of_a_configuration_on_public_mcp() {
+    resolve_form_and_module_paths_preserve_the_exact_resource("CONFIGURATION");
+}
+
+/// rule: INV.SOURCE.RESOLVED-RESOURCE-IDENTITY
+#[test]
+fn resolve_form_and_module_paths_preserve_the_exact_resource_of_an_extension_on_public_mcp() {
+    resolve_form_and_module_paths_preserve_the_exact_resource("EXTENSION");
 }
 
 /// rule: INV.SOURCE.RESOLVED-RESOURCE-IDENTITY

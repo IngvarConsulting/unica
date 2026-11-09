@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -86,6 +87,32 @@ class PublishTests(unittest.TestCase):
 
     def test_the_tag_and_the_commit_go_to_the_outputs_of_the_step(self) -> None:
         commands = []
+        environments = []
+
+        def pushing(command, cwd=None, env=None):
+            commands.append(command)
+            if command[:2] == ["git", "push"]:
+                environments.append(env)
+            return "abc123\n" if command[:2] == ["git", "rev-parse"] else ""
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            outputs = root / "output.txt"
+            (root / "Cargo.toml").write_text('[workspace.package]\nversion = "0.15.0"\n', encoding="utf-8")
+            with mock.patch.dict(os.environ, {"GH_TOKEN": "t", "RELEASE_TAG_KEY": "-----KEY-----", "GITHUB_OUTPUT": str(outputs)}):
+                tag = self.module.publish(root, "o/r", force=False, dry_run=False, gh=lambda path, **_: [], runner=pushing)
+            self.assertEqual(tag, "v0.15.0-alpha.1")
+            self.assertEqual(outputs.read_text(encoding="utf-8"), "tag=v0.15.0-alpha.1\nsha=abc123\n")
+        # Сборку делает этот же прогон: запуска другого workflow нет.
+        self.assertFalse(any(command[0] == "gh" for command in commands))
+        # Тег ставит ключ из секрета по SSH, не токен прогона.
+        self.assertIn(["git", "push", "git@github.com:o/r.git", "refs/tags/v0.15.0-alpha.1"], commands)
+        self.assertIn("StrictHostKeyChecking=yes", environments[0]["GIT_SSH_COMMAND"])
+        self.assertNotIn("RELEASE_TAG_KEY", environments[0])
+        self.assertNotIn("GIT_CONFIG_VALUE_0", environments[0])
+
+    def test_without_the_tag_key_nothing_is_pushed_and_the_error_names_the_secret(self) -> None:
+        commands = []
 
         def runner(command, cwd=None, env=None):
             commands.append(command)
@@ -93,15 +120,11 @@ class PublishTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            outputs = root / "output.txt"
             (root / "Cargo.toml").write_text('[workspace.package]\nversion = "0.15.0"\n', encoding="utf-8")
-            with mock.patch.dict(os.environ, {"GH_TOKEN": "t", "GITHUB_OUTPUT": str(outputs)}):
-                tag = self.module.publish(root, "o/r", force=False, dry_run=False, gh=lambda path, **_: [], runner=runner)
-            self.assertEqual(tag, "v0.15.0-alpha.1")
-            self.assertEqual(outputs.read_text(encoding="utf-8"), "tag=v0.15.0-alpha.1\nsha=abc123\n")
-        # Сборку делает этот же прогон: запуска другого workflow нет.
-        self.assertFalse(any(command[0] == "gh" for command in commands))
-        self.assertIn(["git", "push", "origin", "refs/tags/v0.15.0-alpha.1"], commands)
+            with mock.patch.dict(os.environ, {"GH_TOKEN": "t", "RELEASE_TAG_KEY": ""}), \
+                 self.assertRaisesRegex(self.module.AlphaError, "RELEASE_TAG_KEY"):
+                self.module.publish(root, "o/r", force=False, dry_run=False, gh=lambda path, **_: [], runner=runner)
+        self.assertFalse(any(command[:2] == ["git", "push"] for command in commands))
 
     def test_a_slice_without_a_new_alpha_leaves_no_outputs(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -117,16 +140,16 @@ class PublishTests(unittest.TestCase):
 
 
 class PruneTests(unittest.TestCase):
+    """`prune` удаляет только релизы старых alpha; теги остаются."""
+
     def setUp(self) -> None:
         self.module = load_module()
 
-    def gh(self, tags, releases, refuse=False):
+    def gh(self, tags, releases):
         calls = []
 
         def gh(path, method="GET"):
             calls.append((method, path))
-            if method == "DELETE" and refuse and "git/refs" in path:
-                raise self.module.RuleRefused("HTTP 422 Repository rule violations")
             if "matching-refs" in path:
                 return [{"ref": f"refs/tags/{tag}"} for tag in tags]
             if path.endswith("/releases"):
@@ -135,57 +158,93 @@ class PruneTests(unittest.TestCase):
 
         return gh, calls
 
-    def test_two_newest_published_stay_and_only_alphas_go(self) -> None:
+    def test_two_newest_published_stay_and_only_releases_of_older_alphas_go(self) -> None:
         tags = ["v0.15.0-rc.1", "v0.15.0-alpha.1", "v0.15.0-alpha.2", "v0.15.0-alpha.3", "v0.15.0-alpha.10"]
         gh, calls = self.gh(tags, tags)
         self.assertEqual(self.module.prune("o/r", keep=2, dry_run=False, gh=gh), ["v0.15.0-alpha.1", "v0.15.0-alpha.2"])
         deleted = [path for method, path in calls if method == "DELETE"]
-        self.assertEqual(deleted[0], "repos/o/r/git/refs/tags/v0.15.0-alpha.1")
-        self.assertEqual(deleted[1], "repos/o/r/releases/1")
-        self.assertFalse(any("rc.1" in path for path in deleted))
+        self.assertEqual(deleted, ["repos/o/r/releases/1", "repos/o/r/releases/2"])
+        # Tags stay: nothing under git/refs is touched.
+        self.assertFalse(any("git/refs" in path for path in deleted))
 
     def test_a_tag_still_building_does_not_push_out_a_published_alpha(self) -> None:
         tags = ["v0.15.0-alpha.1", "v0.15.0-alpha.2", "v0.15.0-alpha.3"]
         self.assertEqual(self.module.stale_alphas(tags, {"v0.15.0-alpha.1", "v0.15.0-alpha.2"}, 2), [])
 
-    def test_an_old_tag_without_a_release_goes_with_the_rest(self) -> None:
+    def test_an_old_tag_whose_release_is_already_gone_needs_nothing(self) -> None:
         tags = ["v0.15.0-alpha.1", "v0.15.0-alpha.2", "v0.15.0-alpha.3"]
-        self.assertEqual(self.module.stale_alphas(tags, {"v0.15.0-alpha.2", "v0.15.0-alpha.3"}, 2), ["v0.15.0-alpha.1"])
+        gh, calls = self.gh(tags, tags[1:])
+        self.assertEqual(self.module.prune("o/r", keep=2, dry_run=False, gh=gh), [])
+        self.assertFalse(any(method == "DELETE" for method, _ in calls))
 
-    def test_a_rule_refusal_names_the_fix_and_keeps_the_release(self) -> None:
-        tags = ["v0.15.0-alpha.1", "v0.15.0-alpha.2", "v0.15.0-alpha.3"]
-        gh, calls = self.gh(tags, tags, refuse=True)
-        with self.assertRaisesRegex(self.module.RuleRefused, r"refs/tags/v\*-alpha"):
-            self.module.prune("o/r", keep=2, dry_run=False, gh=gh)
-        self.assertFalse(any(method == "DELETE" and "/releases/" in path for method, path in calls))
-
-    def test_an_immutable_release_goes_even_if_its_tag_stays(self) -> None:
-        tags = ["v0.15.0-alpha.1", "v0.15.0-alpha.2", "v0.15.0-alpha.3"]
-        calls = []
-
-        def gh(path, method="GET"):
-            calls.append((method, path))
-            if "matching-refs" in path:
-                return [{"ref": f"refs/tags/{tag}"} for tag in tags]
-            if path.endswith("/releases"):
-                return [{"tag_name": tag, "id": index, "draft": False, "immutable": True} for index, tag in enumerate(tags)]
-            if method == "DELETE" and "git/refs" in path:
-                raise self.module.AlphaError("HTTP 422 tag of an immutable release")
-            return None
-
-        self.assertEqual(self.module.prune("o/r", keep=2, dry_run=False, gh=gh), ["v0.15.0-alpha.1"])
-        self.assertIn(("DELETE", "repos/o/r/releases/0"), calls)
-
-    def test_a_leftover_tag_without_a_release_does_not_fail_the_cleanup(self) -> None:
-        tags = ["v0.15.0-alpha.1", "v0.15.0-alpha.2", "v0.15.0-alpha.3"]
-        gh, _ = self.gh(tags, tags[1:], refuse=True)
-        self.assertEqual(self.module.prune("o/r", keep=2, dry_run=False, gh=gh), ["v0.15.0-alpha.1"])
+    def test_after_a_prune_the_next_number_still_grows_from_the_tags(self) -> None:
+        # Releases of alpha.1..alpha.3 are gone, their tags stay: the number grows past them.
+        tags = ["v0.15.0-alpha.1", "v0.15.0-alpha.2", "v0.15.0-alpha.3", "v0.15.0-alpha.4", "v0.15.0-alpha.5"]
+        plan = self.module.plan_next("0.15.0", "f" * 40, tags, lambda tag: "e" * 40)
+        self.assertEqual(plan.tag, "v0.15.0-alpha.6")
+        # The released slice is read from the newest tag too.
+        plan = self.module.plan_next("0.15.0", "e" * 40, tags, lambda tag: "e" * 40)
+        self.assertIsNone(plan.tag)
 
     def test_a_dry_run_deletes_nothing(self) -> None:
         tags = ["v0.15.0-alpha.1", "v0.15.0-alpha.2", "v0.15.0-alpha.3"]
         gh, calls = self.gh(tags, tags)
         self.assertEqual(self.module.prune("o/r", keep=2, dry_run=True, gh=gh), [])
         self.assertFalse(any(method == "DELETE" for method, _ in calls))
+
+
+class TagKeyTests(unittest.TestCase):
+    """Тег выпуска ставит ключ из секрета окружения; токен прогона ruleset не пропустит."""
+
+    def setUp(self) -> None:
+        sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts" / "ci"))
+        import tag_push
+
+        self.tag_push = tag_push
+
+    def test_the_key_lives_only_inside_and_the_host_key_is_pinned(self) -> None:
+        with self.tag_push.ssh_remote("o/r", {"RELEASE_TAG_KEY": "-----KEY-----", "PATH": "/bin"}) as (remote, env):
+            command = env["GIT_SSH_COMMAND"]
+            key = Path(command.split(" -i ", 1)[1].split(" ", 1)[0])
+            known = Path(command.split("UserKnownHostsFile=", 1)[1].split(" ", 1)[0])
+            self.assertEqual(remote, "git@github.com:o/r.git")
+            self.assertEqual(key.read_text(encoding="utf-8"), "-----KEY-----\n")
+            self.assertEqual(known.read_text(encoding="utf-8").split()[:2], ["github.com", "ssh-ed25519"])
+            self.assertNotIn("RELEASE_TAG_KEY", env)
+        self.assertFalse(key.exists())
+
+    def test_a_missing_key_is_refused(self) -> None:
+        with self.assertRaises(self.tag_push.TagKeyMissing):
+            with self.tag_push.ssh_remote("o/r", {"RELEASE_TAG_KEY": "  "}):
+                pass
+
+    def test_the_alpha_job_takes_the_key_from_its_environment_and_tag_runs_skip_alpha(self) -> None:
+        import yaml
+
+        release = yaml.safe_load((Path(__file__).resolve().parents[2] / ".github/workflows/release.yml").read_text(encoding="utf-8"))
+        job = release["jobs"]["alpha-tag"]
+        self.assertEqual(job["environment"], "alpha")
+        publish = next(step for step in job["steps"] if step.get("id") == "publish")
+        self.assertEqual(publish["env"]["RELEASE_TAG_KEY"], "${{ secrets.RELEASE_TAG_KEY }}")
+        # Push ключом будит `on: push`: alpha собирает ночь, второй прогон по тегу не нужен.
+        self.assertEqual(release[True]["push"]["tags"], ["v*", "!v*-alpha.*"])
+
+    def test_every_call_of_the_release_workflow_lets_environment_secrets_through(self) -> None:
+        # Без переданных секретов секрет окружения в вызванном workflow — пустая
+        # строка без ошибки: ночь проходит тесты и падает на теге alpha.
+        import yaml
+
+        workflows = Path(__file__).resolve().parents[2] / ".github/workflows"
+        calls = [(path.name, name, job) for path in sorted(workflows.glob("*.yml"))
+                 for name, job in (yaml.safe_load(path.read_text(encoding="utf-8")).get("jobs") or {}).items()
+                 if str(job.get("uses", "")).endswith("/.github/workflows/release.yml")]
+        self.assertIn(("nightly.yml", "full"), [(file, name) for file, name, _ in calls])
+        release = yaml.safe_load((workflows / "release.yml").read_text(encoding="utf-8"))
+        declared = release[True]["workflow_call"]["secrets"]
+        self.assertTrue(declared["RELEASE_TAG_KEY"]["required"])
+        for file, name, job in calls:
+            with self.subTest(call=f"{file}:{name}"):
+                self.assertEqual(job.get("secrets"), {key: f"${{{{ secrets.{key} }}}}" for key in declared})
 
 
 if __name__ == "__main__":

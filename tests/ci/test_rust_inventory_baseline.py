@@ -174,7 +174,7 @@ class InventoryBaselineTests(unittest.TestCase):
         self.assertIn("- `Removes-test: x::y` — #10", text)
         self.assertIn("**none found**", baseline.summary_text({"source": None, "explanations": {"declaredBy": {}}}))
 
-    def test_commit_messages_no_longer_explain_anything(self):
+    def test_commit_messages_explain_nothing(self):
         found = self.explain("queue", entry="this entry (#12)\n\nRemoves-test-target: hidden\nRust-inventory-baseline: reset")
         self.assertNotIn("hidden", found["removedTargets"])
         self.assertFalse(found["reset"])

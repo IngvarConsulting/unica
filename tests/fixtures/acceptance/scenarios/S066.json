@@ -1,0 +1,50 @@
+{
+  "area": "Реквизиты и состав",
+  "task": "Добавить сразу два реквизита одним вызовом (превью)",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Document.АктОбУничтоженииПерсональныхДанных",
+        "ops": [
+          {
+            "op": "attribute.add",
+            "args": {
+              "items": [
+                {
+                  "name": "Приоритет",
+                  "type": {
+                    "variants": [
+                      {
+                        "kind": "number",
+                        "digits": 2,
+                        "fraction": 0,
+                        "sign": "nonNegative"
+                      }
+                    ]
+                  }
+                },
+                {
+                  "name": "Примечание",
+                  "type": {
+                    "variants": [
+                      {
+                        "kind": "string",
+                        "length": 100,
+                        "allowedLength": "variable"
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S066"
+}

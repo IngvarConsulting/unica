@@ -12,7 +12,7 @@ ZCode prefers its native manifest rather than loading a second plugin.
 
 ## Public installation
 
-Prerequisites are Git and one host: Codex CLI, Claude Code 2.1.69 or newer,
+Prerequisites are Git 2.31 or newer (2.46 or newer for a partial clone) and one host: Codex CLI, Claude Code 2.1.69 or newer,
 or ZCode Desktop with native plugin support (the integration contract targets 3.14.4).
 Node.js, Python, download utilities, and archive utilities are not consumer
 dependencies.
@@ -160,6 +160,18 @@ Uninstall with:
 codex plugin remove unica@unica
 codex plugin marketplace remove unica
 ```
+
+### Removed configuration keys
+
+A key that Unica no longer knows makes its settings file refuse to load, and
+the refusal names the key. Remove these keys when updating from an earlier
+version:
+
+| File | Key | What to do |
+| --- | --- | --- |
+| `unica.toml`, `unica.local.toml`, the file named by `UNICA_DOCUMENTATION_POLICY_FILE` | `[providers.kb-1ci]` | delete the section; the provider was removed |
+| `unica.toml`, `unica.local.toml` | `search_rlm_timeout_seconds` in `[operational.code_intelligence]` | rename to `search_semantic_timeout_seconds` |
+| `unica.toml`, `unica.local.toml` | `search_git_grep_timeout_seconds` in `[operational.code_intelligence]` | delete; literal search has no separate deadline |
 
 ## Data composition schemas
 

@@ -15,58 +15,58 @@ use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use unica_address::source_target::{
     MetadataAddress, SourceTarget, SourceTargetError, SourceTargetErrorCode,
-    SourceTargetErrorReason, TargetKind, PLATFORM_XML_8_3_27_FORMAT_2_20,
+    SourceTargetErrorReason, TargetKind,
 };
 use unica_execution_contract::adapter_outcome::AdapterOutcome;
 use unica_navigation::source_navigation::{
     authenticate_cursor, page_bounds_from_offset, SOURCE_NAVIGATION_LIMIT_DEFAULT,
     SOURCE_NAVIGATION_LIMIT_MAX,
 };
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use unica_source_contract::proposal::{
     ApplyPlanError, ApplyPlanErrorKind, IndexedPlanOperation, ProvisionalApplyEffect,
 };
 use unica_source_contract::workspace::WorkspaceContext;
 use unica_source_designer::owner::PlatformXmlResourceEvidence;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use unica_workspace::actor::ProviderRootBinding;
 use unica_workspace::compile_transaction::CompileTransaction;
 use unica_workspace::path_policy::WorkspacePathPolicy;
 use unica_workspace::paths::metadata_is_link_or_reparse_point;
 use unica_workspace::paths::normalize_path_identity;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use unica_xdto::operations::{
     PrefixedXmlQName, XdtoAddObjectTypeArgs, XdtoAddPropertyArgs, XdtoAddValueTypeArgs,
     XdtoPropertySpec, XdtoRemovePropertyArgs, XdtoRemoveTypeArgs, XmlNcName,
 };
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use unica_xdto::operations::{XdtoOperation, XdtoPlanOperation, XdtoPropertyPath};
 use unica_xdto::results::*;
 use unica_xdto_designer::descriptor::descriptor_fields;
 
 use unica_xdto_designer::edit_plan::{plan_xdto_edit_operations, PlanningFailure};
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use unica_xdto_designer::info::parse_xdto_info_bytes;
 use unica_xdto_designer::info::{
     build_xdto_info, model_error, parse_xdto_info_model, validate_xdto_type_name,
 };
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use unica_xdto_designer::planner::{
     decode_xdto_plan_operation, plan_xdto_batch, validate_final_xdto_resources,
     XdtoValidationLedger,
 };
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use unica_xdto_designer::planner::{staged_writer_error, staged_writer_operation};
 
 use unica_xdto_designer::{decode, model, required};
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use unica_xdto_designer::{validation, writer};
 
 use model::PackageModel;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use validation::validate;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn parse_xdto_plan_operation(
     operation: &str,
     value: &Value,
@@ -80,7 +80,7 @@ fn parse_xdto_plan_operation(
     decode_xdto_plan_operation(operation, value, op_index, binding.source_set_name())
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn plan_unindexed_xdto_batch(
     staged: unica_workspace::apply::ApplyStagedState,
     authority: unica_workspace::actor::XdtoApplyAuthority<'_>,
@@ -586,8 +586,7 @@ impl XdtoResolutionError {
             (SourceTargetErrorCode::TargetKindMismatch, _) => XdtoPublicErrorCode::NotAnXdtoPackage,
             (SourceTargetErrorCode::ContainmentDenied, _) => XdtoPublicErrorCode::ContainmentDenied,
             (SourceTargetErrorCode::MetadataAddressInvalid, _)
-            | (SourceTargetErrorCode::MetadataAddressNotFound, _)
-            | (SourceTargetErrorCode::AddressProfileUnsupported, _) => {
+            | (SourceTargetErrorCode::MetadataAddressNotFound, _) => {
                 XdtoPublicErrorCode::TargetNotFound
             }
         };
@@ -631,7 +630,7 @@ fn resolve_package(
         .map_err(|error| XdtoResolutionError::new(XdtoPublicErrorCode::SourceSetUnknown, error))?;
     let raw_address = required(args, "metadataPath")
         .map_err(|error| XdtoResolutionError::new(XdtoPublicErrorCode::TargetNotFound, error))?;
-    let address = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, raw_address)
+    let address = MetadataAddress::parse_logical(raw_address)
         .map_err(XdtoResolutionError::from_source_target)?;
     let parts = address.as_str().split('.').collect::<Vec<_>>();
     if parts.len() != 2 || parts[0] != "XDTOPackage" {
@@ -813,7 +812,7 @@ fn descriptor_namespace(path: &Path) -> Result<String, String> {
     descriptor_fields(&bytes).map(|fields| fields.namespace)
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) fn plan_xdto_batch_owned_for_test(
     mut staged: unica_workspace::apply::ApplyStagedState,
     authority: &unica_workspace::actor::XdtoApplyAuthority<'_>,
@@ -854,7 +853,7 @@ pub(crate) mod medium_tests {
     use unica_xdto_designer::test_support::{args, PACKAGE};
 
     use crate::infrastructure::native_operations::common::support_guard_violation;
-    use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+    use unica_address::source_target::MetadataAddress;
     use unica_source_contract::proposal::{ApplyPlanError, ApplyPlanErrorKind};
     use unica_source_contract::workspace::WorkspaceContext;
     use unica_workspace::single_file_publisher::with_before_commit_hook;
@@ -883,8 +882,7 @@ pub(crate) mod medium_tests {
             ("typeName", json!("ЛюбаяСсылка")),
         ]);
         let wrapper = info_with_data(&request, &context).unwrap().data.unwrap();
-        let address =
-            MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "XDTOPackage.Sample").unwrap();
+        let address = MetadataAddress::parse_logical("XDTOPackage.Sample").unwrap();
         let core = parse_xdto_info_bytes(
             &fs::read(&package).unwrap(),
             &fs::read(&descriptor).unwrap(),

@@ -1,43 +1,7 @@
 use roxmltree::Document;
 use std::collections::HashMap;
 use unica_metadata::support_state::{SupportReadError, SupportReadErrorCode};
-
-#[derive(Debug, Clone)]
-pub struct SupportState {
-    pub global_editing_enabled: bool,
-    pub vendor_count: usize,
-    pub removed: bool,
-    pub counts: [usize; 3],
-    pub object_rules: HashMap<String, u8>,
-    pub vendors: Vec<SupportVendor>,
-}
-
-impl SupportState {
-    pub fn object_rule(&self, object_uuid: &str) -> Option<u8> {
-        self.object_rules
-            .get(&object_uuid.to_ascii_lowercase())
-            .copied()
-    }
-
-    pub fn global_editing_enabled(&self) -> bool {
-        self.global_editing_enabled
-    }
-
-    pub fn removed(&self) -> bool {
-        self.removed
-    }
-
-    pub fn counts(&self) -> [usize; 3] {
-        self.counts
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct SupportVendor {
-    pub version: String,
-    pub vendor: String,
-    pub name: String,
-}
+pub use unica_metadata::support_state::{SupportState, SupportVendor};
 
 /// Strict marker parsing retains the result and bounded input windows, never the
 /// complete marker. The compatibility mutation guard intentionally has its own
@@ -379,6 +343,16 @@ pub fn parse_support_object_rules(text: &str) -> ([usize; 3], HashMap<String, u8
 
 /// Длины записи правила объекта: `<правило>,0,<uuid>` и `<правило>,-1,<uuid>`.
 const RULE_RECORD_MIN: usize = 40;
+// resource-limit: support.rule-record-length
+// class: format
+// unit: chars
+// scope: record
+// value: 41
+// resource: Наибольшая длина записи правила объекта `<правило>,-1,<uuid>` в файле поддержки конфигурации.
+// status: external
+// origin: #2051; формат записи правила поддержки 1С
+// problem: неизвестно
+// on-reach: окно разбора сдвигается до накопления полной записи; хвост короче записи переносится в следующий блок
 const RULE_RECORD_MAX: usize = 41;
 
 /// Запись правила объекта в `ParentConfigurations.bin`: правило (0 — на
@@ -496,7 +470,7 @@ mod support_stream_tests {
 
     /// Маркеры настоящих выгрузок 8.3.27 до и после «Включить возможность
     /// изменения»: второе поле заголовка `1` — изменения выключены, `0` —
-    /// включены; правило объекта — первое поле его записи (#1976).
+    /// включены; правило объекта — первое поле его записи.
     #[test]
     fn platform_markers_read_the_capability_and_object_rules() {
         let objects = [
