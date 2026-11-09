@@ -19,6 +19,7 @@ import subprocess
 import sys
 
 LINE = re.compile(r"\Arelease-v(\d+)\.(\d+)\Z")
+ALPHA_TAG = re.compile(r"\Av\d+\.\d+\.\d+-alpha\.\d+\Z")
 QUEUE_BRANCH = re.compile(r"\Agh-readonly-queue/(?P<base>[^/]+)/pr-\d+-[0-9a-f]+\Z")
 
 
@@ -36,6 +37,9 @@ def resolve(ref_type: str, ref_name: str, sha: str, branches_containing=git_bran
         return queued.group("base") if queued else ref_name
     if ref_type != "tag":
         raise SystemExit(f"неизвестный тип ссылки {ref_type!r}: ожидались branch или tag")
+    # Alpha — срез main под служебным коммитом вне веток: его линия main.
+    if ALPHA_TAG.match(ref_name):
+        return "main"
     lines = [name for name in branches_containing(sha) if LINE.match(name)]
     if not lines:
         raise SystemExit(

@@ -1,0 +1,22 @@
+{
+  "id": "S268",
+  "area": "Проверки качества",
+  "task": "Проверить форму списка в выгрузке 2.21 — предупреждение о формате рядом с вердиктом",
+  "wire": [
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "newer:Catalog.Валюты.Form.ФормаСписка"
+      },
+      "expect": [
+        "ok"
+      ],
+      "status": "passed",
+      "diagnostic": "platformVersionUnsupported",
+      "validators": [
+        "form"
+      ]
+    }
+  ],
+  "workspace": "tests/fixtures/acceptance/workspace-format"
+}

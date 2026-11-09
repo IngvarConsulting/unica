@@ -24,7 +24,28 @@ const TERMINAL_OUTCOME_DOMAIN: &[u8] = b"unica.terminal-outcome.v1\0";
 ///
 /// The daemon envelope validation refuses a longer workspace hint, so a valid
 /// envelope can never rely on a larger scope being truncated before hashing.
+// resource-limit: receipt.request-scope-bytes
+// class: format
+// unit: bytes
+// scope: request
+// value: 16384
+// resource: Длина подсказки рабочего пространства, входящей в область запроса ключа квитанции.
+// status: unproven
+// origin: коммит 5faaf598c (feat(v13): add receipt identity authorities)
+// problem: Конверт с более длинной подсказкой отвергается, чтобы область не усекалась перед хешированием.
+// on-reach: запрос отвергается: «v5 invocation workspace hint exceeds the request scope limit»
 pub const MAX_REQUEST_SCOPE_BYTES: usize = 16 * 1024;
+// resource-limit: receipt.task-lifecycle-link-record-bytes
+// class: format
+// unit: bytes
+// scope: record
+// value: 1024
+// resource: Размер одной сериализованной записи связи задания с квитанцией.
+// status: unproven
+// origin: коммит 7f6b8536e (feat(v13): add receipt actor and exact recovery)
+// problem: неизвестно
+// on-reach: ошибка RecordTooLarge с фактическим и предельным размером; связь не сохраняется
+// review: снимается в #1119 вместе с путём переноса данных (правило runtime/task-capacity.md)
 pub const MAX_TASK_LIFECYCLE_LINK_RECORD_BYTES: u64 = 1_024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -861,13 +882,72 @@ impl ReceiptKey {
     }
 }
 
+// resource-limit: receipt.original-response-budget-ms
+// class: deadline
+// unit: ms
+// scope: request
+// value: 7000
+// resource: Наибольший бюджет прямого ответа вызова, записываемый в квитанцию; от него же срок дочитывания кадра сессии.
+// status: unproven
+// origin: коммит e6d1a86ed (feat(v13): persist exact receipt reservations)
+// problem: неизвестно
+// on-reach: frontend урезает бюджет до 7000 мс; квитанция с большим бюджетом отвергается (ResponseBudgetTooLarge); недочитанный за срок кадр закрывает сессию
+// decision: закреплено правилом
+// decision-date: 2026-09-22
+// decision-source: arch/rules/runtime/daemon-protocol.md
 pub const MAX_ORIGINAL_RESPONSE_BUDGET_MS: u64 = 7_000;
+// resource-limit: receipt.result-entitlement-bytes
+// class: result
+// unit: bytes
+// scope: record
+// derived: true
+// resource: Резерв квитанции под запись задания и кадр ответа: канонический результат плюс запас конверта.
+// status: unproven
+// origin: коммит e6d1a86ed (feat(v13): persist exact receipt reservations)
+// problem: неизвестно
+// on-reach: терминал больше резерва не переносится в задание; вызов получает result_too_large
+// issue: #1119
+// decision: закреплено правилом INV.APP.RECEIPT-RESULT-RESERVATION
+// decision-date: 2026-09-22
+// decision-source: arch/rules/runtime/receipt-result-reservation.md
+// review: #1119 PR9
 pub const MAX_RECEIPT_ENTITLEMENT_BYTES: u64 =
     (MAX_CANONICAL_RESULT_BYTES + MAX_TASK_RECORD_ENVELOPE_BYTES) as u64;
+// resource-limit: receipt.direct-terminal-retention-ms
+// class: retention
+// unit: ms
+// scope: record
+// value: 3600000
+// resource: Срок хранения задания, в которое перешла квитанция прямого вызова (ttl_ms его снимка).
+// status: unproven
+// origin: коммит 4c53c9c23 (feat(v13): preflight direct receipt publication)
+// problem: неизвестно
+// on-reach: после срока задание истекает и уходит в отставку; его taskId больше не читается
 pub const DIRECT_TERMINAL_RETENTION_MS: u64 = 3_600_000;
 // Used only to validate historical V1 cancellation records and deletion witnesses.
+// resource-limit-excluded: не предел: константа проверки истечения в исторических записях отмены V1 и свидетельствах удаления
 pub const LEGACY_CANCEL_RESERVATION_TTL_MS: u64 = 7_125;
+// resource-limit: receipt.acknowledged-tombstone-ttl-ms
+// class: retention
+// unit: ms
+// scope: record
+// value: 900000
+// resource: Срок хранения подтверждённого следа квитанции после ACK.
+// status: unproven
+// origin: коммит 013b1acde (feat(daemon): add durable direct receipt acknowledgement)
+// problem: неизвестно
+// on-reach: след с истёкшим сроком удаляется механизмом сроков хранения
 pub const ACKNOWLEDGED_TOMBSTONE_TTL_MS: u64 = 900_000;
+// resource-limit: receipt.acknowledged-tombstone-record-bytes
+// class: format
+// unit: bytes
+// scope: record
+// value: 512
+// resource: Размер одной сериализованной записи подтверждённого следа квитанции.
+// status: unproven
+// origin: коммит 013b1acde (feat(daemon): add durable direct receipt acknowledgement)
+// problem: неизвестно
+// on-reach: ошибка RecordTooLarge, запись следа не сохраняется
 pub const MAX_ACKNOWLEDGED_TOMBSTONE_BYTES: u64 = 512;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

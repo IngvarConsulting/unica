@@ -19,7 +19,8 @@ with `at` and `ops` to obtain a non-writing plan. Execute it by passing only
   metadata XML, `Form.xml`, `Module.bsl` and the owner's `<Form>` registration.
   A form address does not exist before its form: there is no form-address
   creation operation.
-- `unica.form.edit` applies point changes to an existing form.
+- `unica.apply` with the form's item, attribute and command operations on the
+  form node applies point changes to an existing form.
 - `unica.view` on the form node gives compact structure before editing.
 - `unica.check` on the form node (validator `form`) checks XML and structural constraints.
 - `unica.apply` with `form.remove` removes form metadata and files.

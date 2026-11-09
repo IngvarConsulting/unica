@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
-use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+use unica_address::source_target::MetadataAddress;
 use unica_metadata::subsystem::{EffectiveSubsystemRole, SubsystemAddress};
 use unica_metadata::subsystem_topology::*;
 use uuid::Uuid;
@@ -444,7 +444,7 @@ fn parse_content_reference(
     raw: &str,
     logical_path: &str,
 ) -> Result<ContentReference, SubsystemTopologyError> {
-    if let Ok(address) = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, raw) {
+    if let Ok(address) = MetadataAddress::parse_logical(raw) {
         return Ok(ContentReference::MetadataAddress(address));
     }
     if let Ok(uuid) = Uuid::parse_str(raw) {

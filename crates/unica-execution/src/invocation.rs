@@ -8,10 +8,49 @@ use std::time::{Duration, Instant};
 use unica_execution_contract::invocation::NormalizedArgumentsHash;
 use unica_work_control::clock::Clock;
 
+// resource-limit: invocation.handoff-window
+// class: deadline
+// unit: ms
+// scope: request
+// value: 7000
+// resource: Окно ожидания прямого ответа, после которого вызов передаётся в задание.
+// status: unproven
+// origin: коммит 88b99b0e0 (feat(invocation): hand long calls off after seven seconds)
+// problem: неизвестно
+// on-reach: демон возвращает задание с заранее выделенным taskId, та же попытка продолжает работу
+// decision: закреплено правилом
+// decision-date: 2026-09-22
+// decision-source: arch/rules/runtime/invocation-handoff.md
 pub const INVOCATION_HANDOFF_WINDOW: Duration = Duration::from_secs(7);
+// resource-limit: invocation.response-serialization-margin
+// class: deadline
+// unit: ms
+// scope: request
+// value: 125
+// resource: Добавка к бюджету прямого ответа на сериализацию ответа.
+// status: unproven
+// origin: коммит 215497a92 (fix(invocation): bound durable result publication)
+// problem: неизвестно
+// on-reach: квитанция, не решённая к бюджету плюс 125 мс, считается потерянной: frontend отвечает закрытым отказом о потерянном вызове
+// decision: закреплено правилом INV.WIRE.DAEMON-RESPONSE-TIME
+// decision-date: 2026-09-22
+// decision-source: arch/rules/runtime/daemon-response-time.md
 pub const RESPONSE_SERIALIZATION_MARGIN_MS: u64 = 125;
 pub const RESPONSE_SERIALIZATION_MARGIN: Duration =
     Duration::from_millis(RESPONSE_SERIALIZATION_MARGIN_MS);
+// resource-limit: invocation.task-reconciliation-budget
+// class: deadline
+// unit: ms
+// scope: operation
+// value: 2000
+// resource: Добавка к ожиданию задания на сверку и нижняя граница срока долговечного шага хранилища квитанций.
+// status: unproven
+// origin: коммит 6115f4cd3 (fix(v13): align daemon task deadlines)
+// problem: Короткий бюджет вызывающего не должен прерывать начатую запись хранилища и переводить демон в fail-stop (#1387).
+// on-reach: ошибка срока ожидания задания; начатый шаг хранилища получает не меньше этого времени
+// decision: закреплено правилом
+// decision-date: 2026-10-12
+// decision-source: arch/rules/runtime/receipt-store-fail-stop.md
 pub const TASK_RECONCILIATION_BUDGET: Duration = Duration::from_secs(2);
 
 pub fn handoff_budget(host_remaining: Option<Duration>) -> Duration {

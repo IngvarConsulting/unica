@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import io
+import shutil
 import tempfile
 import unittest
 import urllib.error
@@ -37,7 +38,9 @@ class Response:
 class SiteFetchTests(unittest.TestCase):
     def setUp(self) -> None:
         self.module = load_module()
-        self.target = Path(tempfile.mkdtemp(prefix="fetch-")) / "nested" / "file.bin"
+        scratch = Path(tempfile.mkdtemp(prefix="fetch-"))
+        self.addCleanup(shutil.rmtree, scratch)
+        self.target = scratch / "nested" / "file.bin"
 
     def fetch_with(self, opener):
         self.module.urllib.request.urlopen = opener

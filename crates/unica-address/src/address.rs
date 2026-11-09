@@ -1044,7 +1044,7 @@ mod tests {
     }
 
     /// `<узел>.Props.<имя>` называет одно свойство узла: сегмент последний и
-    /// с одним именем, владелец — адрес до него (#2088).
+    /// с одним именем, владелец — адрес до него.
     /// rule: CTR.SOURCE.QUALIFIED-LOGICAL-ADDRESS
     #[test]
     fn a_property_address_names_its_owner_and_one_property() {
@@ -1365,7 +1365,7 @@ mod tests {
     }
 
     use super::{AddressErrorCode, NodeKind, QualifiedAddress};
-    use crate::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+    use crate::source_target::MetadataAddress;
     use serde::Deserialize;
 
     #[derive(Debug, Deserialize)]
@@ -1489,14 +1489,13 @@ mod tests {
     /// rule: CTR.SOURCE.QUALIFIED-LOGICAL-ADDRESS
     #[test]
     fn metadata_aliases_reuse_v12_evidence_while_structural_aliases_stay_separate() {
-        let legacy =
-            MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Документ.Заказ").unwrap();
+        let legacy = MetadataAddress::parse_logical("Документ.Заказ").unwrap();
         let qualified = QualifiedAddress::parse("main:Документ.Заказ").unwrap();
         assert_eq!(qualified.logical_path(), legacy.as_str());
         assert_eq!(qualified.to_string(), "main:Document.Заказ");
 
         assert_eq!(NodeKind::parse("Реквизит").unwrap(), NodeKind::Attribute);
-        assert!(MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Реквизит.Заказ").is_err());
+        assert!(MetadataAddress::parse_logical("Реквизит.Заказ").is_err());
         assert!(NodeKind::parse("Документы").is_err());
     }
 
