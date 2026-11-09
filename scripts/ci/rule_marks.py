@@ -467,6 +467,9 @@ def _mark_python(lines: list[str], node, rules: list[str]) -> None:
         lines[end:end] = ["", *marks]
 
 
+# Срок снятия: перенос нужен веткам, открытым до перехода на пометки
+# (05.11.2026). Когда закрыт последний PR, открытый до этой даты, `migrate`,
+# команда `rule-marks.py migrate` и `RuleMarkMigrationTests` снимаются.
 def migrate(root: Path) -> tuple[set[tuple[str, str]], set[tuple[str, str]], list[str]]:
     """Перенести `check` в пометки; вернуть пары до (канонические), после и проблемы."""
 

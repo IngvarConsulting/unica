@@ -1,5 +1,6 @@
 use crate::subsystem::SubsystemAddress;
 use serde::Serialize;
+use std::collections::HashMap;
 use std::fmt;
 use unica_address::source_target::ResolvedTarget;
 
@@ -228,4 +229,43 @@ mod tests {
             "provider_unavailable: support-state provider is unavailable"
         );
     }
+}
+
+/// Состояние поддержки из `Ext/ParentConfigurations.bin`: правила объектов,
+/// поставщики и признаки конфигурации в целом.
+#[derive(Debug, Clone)]
+pub struct SupportState {
+    pub global_editing_enabled: bool,
+    pub vendor_count: usize,
+    pub removed: bool,
+    pub counts: [usize; 3],
+    pub object_rules: HashMap<String, u8>,
+    pub vendors: Vec<SupportVendor>,
+}
+
+impl SupportState {
+    pub fn object_rule(&self, object_uuid: &str) -> Option<u8> {
+        self.object_rules
+            .get(&object_uuid.to_ascii_lowercase())
+            .copied()
+    }
+
+    pub fn global_editing_enabled(&self) -> bool {
+        self.global_editing_enabled
+    }
+
+    pub fn removed(&self) -> bool {
+        self.removed
+    }
+
+    pub fn counts(&self) -> [usize; 3] {
+        self.counts
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SupportVendor {
+    pub version: String,
+    pub vendor: String,
+    pub name: String,
 }

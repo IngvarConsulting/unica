@@ -1,0 +1,549 @@
+{
+  "id": "S376",
+  "name": "dcs-parameter-reference-nil-multivalue-period",
+  "issue": 1310,
+  "area": "СКД",
+  "task": "Типизированные значения reference/nil, список default/available values и именованный/Custom StandardPeriod; изменение ссылки сохраняет заявленный тип",
+  "workspace": "tests/fixtures/acceptance/workspace-dcs",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F05Report",
+        "ops": [
+          {
+            "op": "template.add",
+            "args": {
+              "items": [
+                {
+                  "name": "PrimitiveTypedValues",
+                  "templateType": "DataCompositionSchema"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveTypedValues/Ext/Template.xml",
+          "kind": "exists",
+          "eq": false
+        }
+      ],
+      "captures": {
+        "createToken": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.createToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveTypedValues/Ext/Template.xml",
+          "kind": "exists",
+          "eq": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveTypedValues"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "phase2Before": {
+          "file": "src/cf/Reports/F05Report/Templates/PrimitiveTypedValues/Ext/Template.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveTypedValues",
+        "ops": [
+          {
+            "op": "parameter.add",
+            "args": {
+              "items": [
+                {
+                  "name": "Choice",
+                  "type": "EnumRef.Округления",
+                  "value": "Перечисление.Округления.Окр1",
+                  "availableValues": [
+                    {
+                      "value": "Перечисление.Округления.Окр1",
+                      "presentation": {
+                        "ru": "Рубли",
+                        "en": "Rubles"
+                      }
+                    },
+                    {
+                      "value": "Перечисление.Округления.Окр1000",
+                      "presentation": "Тысячи"
+                    }
+                  ]
+                },
+                {
+                  "name": "Empty",
+                  "type": "string",
+                  "value": null
+                },
+                {
+                  "name": "List",
+                  "type": "string",
+                  "values": [
+                    "A",
+                    "B"
+                  ],
+                  "valueListAllowed": true
+                },
+                {
+                  "name": "Period",
+                  "type": "StandardPeriod",
+                  "value": "ThisMonth"
+                },
+                {
+                  "name": "CustomPeriod",
+                  "type": "StandardPeriod",
+                  "value": {
+                    "variant": "Custom",
+                    "startDate": "2026-01-01T00:00:00",
+                    "endDate": "2026-01-31T23:59:59"
+                  }
+                },
+                {
+                  "name": "EmptyComposite",
+                  "type": "string|decimal",
+                  "value": null
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveTypedValues/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.phase2Before"
+        }
+      ],
+      "captures": {
+        "phase2Token": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.phase2Token"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveTypedValues/Ext/Template.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}parameter[{http://v8.1c.ru/8.1/data-composition-system/schema}name='Choice']/{http://v8.1c.ru/8.1/data-composition-system/schema}value[@{http://www.w3.org/2001/XMLSchema-instance}type='dcscor:DesignTimeValue']",
+          "eq": [
+            "Перечисление.Округления.Окр1"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveTypedValues/Ext/Template.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}parameter[{http://v8.1c.ru/8.1/data-composition-system/schema}name='Choice']/{http://v8.1c.ru/8.1/data-composition-system/schema}availableValue/{http://v8.1c.ru/8.1/data-composition-system/schema}value",
+          "eq": [
+            "Перечисление.Округления.Окр1",
+            "Перечисление.Округления.Окр1000"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveTypedValues/Ext/Template.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}parameter[{http://v8.1c.ru/8.1/data-composition-system/schema}name='Choice']/{http://v8.1c.ru/8.1/data-composition-system/schema}availableValue/{http://v8.1c.ru/8.1/data-composition-system/schema}presentation/{http://v8.1c.ru/8.1/data/core}item[{http://v8.1c.ru/8.1/data/core}lang='en']/{http://v8.1c.ru/8.1/data/core}content",
+          "eq": [
+            "Rubles"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveTypedValues/Ext/Template.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}parameter[{http://v8.1c.ru/8.1/data-composition-system/schema}name='Choice']/{http://v8.1c.ru/8.1/data-composition-system/schema}availableValue/{http://v8.1c.ru/8.1/data-composition-system/schema}presentation/{http://v8.1c.ru/8.1/data/core}item[{http://v8.1c.ru/8.1/data/core}lang='ru']/{http://v8.1c.ru/8.1/data/core}content",
+          "eq": [
+            "Рубли",
+            "Тысячи"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveTypedValues/Ext/Template.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}parameter[{http://v8.1c.ru/8.1/data-composition-system/schema}name='Empty']/{http://v8.1c.ru/8.1/data-composition-system/schema}value[@{http://www.w3.org/2001/XMLSchema-instance}nil='true']",
+          "eq": [
+            ""
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveTypedValues/Ext/Template.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}parameter[{http://v8.1c.ru/8.1/data-composition-system/schema}name='List']/{http://v8.1c.ru/8.1/data-composition-system/schema}value",
+          "eq": [
+            "A",
+            "B"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveTypedValues/Ext/Template.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}parameter[{http://v8.1c.ru/8.1/data-composition-system/schema}name='Period']/{http://v8.1c.ru/8.1/data-composition-system/schema}value/{http://v8.1c.ru/8.1/data/core}variant",
+          "eq": [
+            "ThisMonth"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveTypedValues/Ext/Template.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}parameter[{http://v8.1c.ru/8.1/data-composition-system/schema}name='Period']/{http://v8.1c.ru/8.1/data-composition-system/schema}value/{http://v8.1c.ru/8.1/data/core}startDate",
+          "eq": []
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveTypedValues/Ext/Template.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}parameter[{http://v8.1c.ru/8.1/data-composition-system/schema}name='CustomPeriod']/{http://v8.1c.ru/8.1/data-composition-system/schema}value/{http://v8.1c.ru/8.1/data/core}startDate",
+          "eq": [
+            "2026-01-01T00:00:00"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveTypedValues/Ext/Template.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}parameter[{http://v8.1c.ru/8.1/data-composition-system/schema}name='CustomPeriod']/{http://v8.1c.ru/8.1/data-composition-system/schema}value/{http://v8.1c.ru/8.1/data/core}endDate",
+          "eq": [
+            "2026-01-31T23:59:59"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveTypedValues/Ext/Template.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}parameter[{http://v8.1c.ru/8.1/data-composition-system/schema}name='EmptyComposite']/{http://v8.1c.ru/8.1/data-composition-system/schema}valueType/{http://v8.1c.ru/8.1/data/core}Type",
+          "eq": [
+            "xs:string",
+            "xs:decimal"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveTypedValues/Ext/Template.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}parameter[{http://v8.1c.ru/8.1/data-composition-system/schema}name='EmptyComposite']/{http://v8.1c.ru/8.1/data-composition-system/schema}value[@{http://www.w3.org/2001/XMLSchema-instance}nil='true']",
+          "eq": [
+            ""
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveTypedValues/Ext/Template.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}parameter[{http://v8.1c.ru/8.1/data-composition-system/schema}name='Period']/{http://v8.1c.ru/8.1/data-composition-system/schema}value/{http://v8.1c.ru/8.1/data/core}variant[@{http://www.w3.org/2001/XMLSchema-instance}type='v8:StandardPeriodVariant']",
+          "eq": [
+            "ThisMonth"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveTypedValues"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "phase4Before": {
+          "file": "src/cf/Reports/F05Report/Templates/PrimitiveTypedValues/Ext/Template.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveTypedValues",
+        "ops": [
+          {
+            "op": "parameter.set",
+            "args": {
+              "at": "cf:Report.F05Report.Template.PrimitiveTypedValues.Parameter.Choice",
+              "values": {
+                "value": "Перечисление.Округления.Окр1000"
+              }
+            }
+          },
+          {
+            "op": "parameter.set",
+            "args": {
+              "at": "cf:Report.F05Report.Template.PrimitiveTypedValues.Parameter.List",
+              "values": {
+                "values": [
+                  "B",
+                  "C"
+                ]
+              }
+            }
+          },
+          {
+            "op": "parameter.set",
+            "args": {
+              "at": "cf:Report.F05Report.Template.PrimitiveTypedValues.Parameter.CustomPeriod",
+              "values": {
+                "value": "Today"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveTypedValues/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.phase4Before"
+        }
+      ],
+      "captures": {
+        "phase4Token": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.phase4Token"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveTypedValues/Ext/Template.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}parameter[{http://v8.1c.ru/8.1/data-composition-system/schema}name='Choice']/{http://v8.1c.ru/8.1/data-composition-system/schema}value[@{http://www.w3.org/2001/XMLSchema-instance}type='dcscor:DesignTimeValue']",
+          "eq": [
+            "Перечисление.Округления.Окр1000"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveTypedValues/Ext/Template.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}parameter[{http://v8.1c.ru/8.1/data-composition-system/schema}name='Choice']/{http://v8.1c.ru/8.1/data-composition-system/schema}availableValue/{http://v8.1c.ru/8.1/data-composition-system/schema}value",
+          "eq": [
+            "Перечисление.Округления.Окр1",
+            "Перечисление.Округления.Окр1000"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveTypedValues/Ext/Template.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}parameter[{http://v8.1c.ru/8.1/data-composition-system/schema}name='List']/{http://v8.1c.ru/8.1/data-composition-system/schema}value",
+          "eq": [
+            "B",
+            "C"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveTypedValues/Ext/Template.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}parameter[{http://v8.1c.ru/8.1/data-composition-system/schema}name='CustomPeriod']/{http://v8.1c.ru/8.1/data-composition-system/schema}value/{http://v8.1c.ru/8.1/data/core}variant",
+          "eq": [
+            "Today"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveTypedValues/Ext/Template.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}parameter[{http://v8.1c.ru/8.1/data-composition-system/schema}name='CustomPeriod']/{http://v8.1c.ru/8.1/data-composition-system/schema}value/{http://v8.1c.ru/8.1/data/core}startDate",
+          "eq": []
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveTypedValues/Ext/Template.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}parameter[{http://v8.1c.ru/8.1/data-composition-system/schema}name='Empty']/{http://v8.1c.ru/8.1/data-composition-system/schema}value[@{http://www.w3.org/2001/XMLSchema-instance}nil='true']",
+          "eq": [
+            ""
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveTypedValues/Ext/Template.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}parameter[{http://v8.1c.ru/8.1/data-composition-system/schema}name='CustomPeriod']/{http://v8.1c.ru/8.1/data-composition-system/schema}value/{http://v8.1c.ru/8.1/data/core}variant[@{http://www.w3.org/2001/XMLSchema-instance}type='v8:StandardPeriodVariant']",
+          "eq": [
+            "Today"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveTypedValues"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "identicalValues": {
+          "file": "src/cf/Reports/F05Report/Templates/PrimitiveTypedValues/Ext/Template.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveTypedValues",
+        "ops": [
+          {
+            "op": "parameter.set",
+            "args": {
+              "at": "cf:Report.F05Report.Template.PrimitiveTypedValues.Parameter.Choice",
+              "values": {
+                "value": "Перечисление.Округления.Окр1000"
+              }
+            }
+          },
+          {
+            "op": "parameter.set",
+            "args": {
+              "at": "cf:Report.F05Report.Template.PrimitiveTypedValues.Parameter.List",
+              "values": {
+                "values": [
+                  "B",
+                  "C"
+                ]
+              }
+            }
+          },
+          {
+            "op": "parameter.set",
+            "args": {
+              "at": "cf:Report.F05Report.Template.PrimitiveTypedValues.Parameter.Empty",
+              "values": {
+                "value": null
+              }
+            }
+          },
+          {
+            "op": "parameter.set",
+            "args": {
+              "at": "cf:Report.F05Report.Template.PrimitiveTypedValues.Parameter.EmptyComposite",
+              "values": {
+                "value": null
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/effects",
+          "eq": 0
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveTypedValues/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.identicalValues"
+        }
+      ],
+      "captures": {
+        "identicalToken": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.identicalToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/effects",
+          "eq": 0
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveTypedValues/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.identicalValues"
+        }
+      ]
+    }
+  ]
+}

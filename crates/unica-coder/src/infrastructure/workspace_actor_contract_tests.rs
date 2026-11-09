@@ -33,34 +33,32 @@ fn plan_events(
     )?;
     Ok((state, effects))
 }
+/// Каталог состояния поставщика: у привязанной к актору работы он свой на область.
 fn index_state_root(
     context: &WorkspaceContext,
     root: &Path,
     lease: Option<ProviderSourceLease>,
 ) -> Result<std::path::PathBuf, String> {
-    let service = unica_adapter_rlm::index::WorkspaceIndexService::new(
-        crate::infrastructure::analysis_composition::environment(),
-    );
-    match lease {
-        Some(lease) => service
-            .with_source_lease(lease)
-            .provider_state_root_for_test(context, root),
-        None => service.provider_state_root_for_test(context, root),
-    }
+    let base = unica_adapter_bsl_analyzer::session::bsl_analyzer_cache_dir(context, root)?;
+    Ok(
+        match lease.and_then(|lease| lease.state_scope().scoped_digest().map(str::to_owned)) {
+            Some(scope) => base.join("actor-scopes").join(scope),
+            None => base,
+        },
+    )
 }
 fn index_active_build(
-    context: &WorkspaceContext,
+    _context: &WorkspaceContext,
     root: &Path,
     lease: ProviderSourceLease,
 ) -> Result<(), String> {
-    unica_adapter_rlm::index::WorkspaceIndexService::new(
-        crate::infrastructure::analysis_composition::environment(),
-    )
-    .with_source_lease(lease)
-    .active_build(context, root)
-    .map(|_| ())
+    if lease.source_root() != root {
+        return Err("workspace index request escaped its actor-bound source root".to_string());
+    }
+    lease
+        .validate_named_identity()
+        .map_err(|error| format!("source root changed after admission: {error}"))
 }
-
 #[test]
 fn workspace_actor_poisoned_mutation_lane_fails_closed_before_publication() {
     unica_workspace::actor::policy_contract_tests::workspace_actor_poisoned_mutation_lane_fails_closed_before_publication(policies());

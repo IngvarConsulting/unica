@@ -3,7 +3,27 @@ use serde_json::{json, Value};
 use unica_operation_contract::FormatValidator;
 use unica_operation_contract::{object, text, OperationContract};
 
+// resource-limit: templates.mxl-row
+// class: format
+// unit: count
+// scope: record
+// value: 10000
+// resource: Номер строки в адресе ячейки R<row>C<column> внутри области макета MXL.
+// status: unproven
+// origin: 81287e9a7
+// problem: неизвестно
+// on-reach: Отказ проверки формата «expected area-local R<row>C<column>, up to R10000C1000».
 pub const MXL_MAX_ROW: i64 = 10_000;
+// resource-limit: templates.mxl-column
+// class: format
+// unit: count
+// scope: record
+// value: 1000
+// resource: Номер колонки в адресе ячейки R<row>C<column> внутри области макета MXL.
+// status: unproven
+// origin: 81287e9a7
+// problem: неизвестно
+// on-reach: Отказ проверки формата «expected area-local R<row>C<column>, up to R10000C1000».
 pub const MXL_MAX_COLUMN: i64 = 1_000;
 
 /// Preserve the existing integer spelling accepted at the apply boundary,

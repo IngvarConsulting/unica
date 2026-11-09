@@ -26,10 +26,10 @@ use unica_workspace::discovery::ProjectDiscoveryReader;
 use unica_workspace::paths::normalize_path_identity;
 use unica_xml_format::text::*;
 const FORM_KINDS: &[&str] = &["Form", "CommonForm"];
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 type FormCompileAfterParentOwnerProbeHook = Box<dyn FnOnce(&Path)>;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 thread_local! {
     static FORM_COMPILE_AFTER_PARENT_OWNER_PROBE_HOOK:
         std::cell::RefCell<Option<FormCompileAfterParentOwnerProbeHook>> =
@@ -708,7 +708,7 @@ pub(crate) fn compile_form(
         ) {
             transaction.guard_path_absent(owner_path)?;
         }
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         run_form_compile_after_parent_owner_probe_hook(&output_path);
         if let (Some(owner_path), Some(_)) = (
             owner_candidate.as_deref(),
@@ -1110,7 +1110,7 @@ pub(crate) fn invoke_mutation(
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn with_form_compile_after_parent_owner_probe_hook<T>(
     hook: impl FnOnce(&Path) + 'static,
     action: impl FnOnce() -> T,
@@ -1130,7 +1130,7 @@ fn with_form_compile_after_parent_owner_probe_hook<T>(
     action()
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn run_form_compile_after_parent_owner_probe_hook(path: &Path) {
     if let Some(hook) =
         FORM_COMPILE_AFTER_PARENT_OWNER_PROBE_HOOK.with(|slot| slot.borrow_mut().take())

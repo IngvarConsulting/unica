@@ -36,31 +36,31 @@ mod tests {
 
     const COMPLEX: &str = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../tests/fixtures/v013/modules/complex.bsl"
+        "/tests/fixtures/modules/complex.bsl"
     ));
     const EXTENSION: &str = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../tests/fixtures/v013/modules/extension.bsl"
+        "/tests/fixtures/modules/extension.bsl"
     ));
     const SYNTAX_BOUNDARIES: &str = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../tests/fixtures/v013/modules/syntax-boundaries.bsl"
+        "/tests/fixtures/modules/syntax-boundaries.bsl"
     ));
     const NESTED_REGION_ADDRESSES: &str = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../tests/fixtures/v013/modules/nested-region-addresses.bsl"
+        "/tests/fixtures/modules/nested-region-addresses.bsl"
     ));
     const DECLARATIVE_HTTP: &str = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../tests/fixtures/v013/modules/declarative-http.bsl"
+        "/tests/fixtures/modules/declarative-http.bsl"
     ));
     const DECLARATIVE_SOAP: &str = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../tests/fixtures/v013/modules/declarative-soap.bsl"
+        "/tests/fixtures/modules/declarative-soap.bsl"
     ));
     const DECLARATIVE_INTEGRATION: &str = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../tests/fixtures/v013/modules/declarative-integration.bsl"
+        "/tests/fixtures/modules/declarative-integration.bsl"
     ));
 
     #[derive(Debug, Deserialize)]
@@ -111,7 +111,7 @@ mod tests {
     fn module_fixture() -> ModuleFixture {
         serde_json::from_str(include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../tests/fixtures/v013/modules/module-cases.json"
+            "/tests/fixtures/modules/module-cases.json"
         )))
         .unwrap()
     }
@@ -119,7 +119,7 @@ mod tests {
     fn form_fixture() -> FormFixture {
         serde_json::from_str(include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../tests/fixtures/v013/modules/form-bindings.json"
+            "/tests/fixtures/modules/form-bindings.json"
         )))
         .unwrap()
     }
@@ -127,7 +127,7 @@ mod tests {
     fn declarative_fixture() -> DeclarativeFixture {
         serde_json::from_str(include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../tests/fixtures/v013/modules/declarative-handlers.json"
+            "/tests/fixtures/modules/declarative-handlers.json"
         )))
         .unwrap()
     }
@@ -1479,7 +1479,7 @@ mod tests {
         }
     }
 
-    /// #1381 (по PR #1364): без любого из четырёх флагов среды контексты
+    /// Без любого из четырёх флагов среды контексты
     /// методов и областей неизвестны, тело без фильтра доступно; все флаги
     /// `false` дают известный пустой список.
     /// rule: INV.SOURCE.MODULE-COMMON-PROPERTIES

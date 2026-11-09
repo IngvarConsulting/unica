@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """Дождаться джоб других ОС того же прогона и напечатать их исходы.
 
-Прогон занимает Linux-джобу `Unica CI` и джобы других ОС; запись очереди —
-`Unica CI` и `Clippy (windows-latest)`. `needs` между ними сделал бы прогон
+Прогон занимает Linux-джобу `Unica CI` и джобы других ОС. `needs` между ними сделал бы прогон
 последовательным, поэтому `Unica CI` идёт параллельно и в конце читает исход
 джобы `Rust (<runner>)` или названной `--job` из jobs API этого же прогона.
 Скрипт ничего не решает: исходы сверяет `ci_rust_lanes`
@@ -34,7 +33,13 @@ def list_jobs(repository: str, run_id: str) -> list[dict]:
         ["gh", "api", "--paginate", f"repos/{repository}/actions/runs/{run_id}/jobs?filter=latest&per_page=100",
          "--jq", ".jobs[] | {name, status, conclusion, runner_name, steps: [.steps[]? | {name, conclusion}]}"], text=True,
     )
-    return [json.loads(line) for line in pages.splitlines() if line.strip()]
+    jobs = [json.loads(line) for line in pages.splitlines() if line.strip()]
+    return [{**job, "name": own_name(job["name"])} for job in jobs]
+
+
+def own_name(name: str) -> str:
+    """Имя джобы без префикса вызова: в вызванном workflow API отдаёт `Вызов / Джоба`."""
+    return name.rsplit(" / ", 1)[-1]
 
 
 NOT_ACQUIRED = "not_acquired"
