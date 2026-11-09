@@ -1,6 +1,8 @@
 use super::super::protocol::InvocationRequest;
 use crate::domain::apply::ApplyRequest;
-use unica_analysis_services::provider_host::{LongWorkFailure, ProviderHostKey, ProviderHostOwner};
+use crate::infrastructure::analysis_composition::provider_host::{
+    LongWorkFailure, ProviderHostKey, ProviderHostOwner,
+};
 use unica_execution::invocation::InvocationResponseDeadline;
 use unica_execution::receipt_runtime::ports::ExecutionClass;
 use unica_source_contract::{ProjectSourceSet, SourceFormat, SourceProfile, SourceSetKind};
