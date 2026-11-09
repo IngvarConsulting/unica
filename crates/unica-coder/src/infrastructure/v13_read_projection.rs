@@ -1454,7 +1454,7 @@ struct InterfaceCommandLimits {
 }
 
 fn named_interface_command(reference: &str) -> bool {
-    use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+    use unica_address::source_target::MetadataAddress;
     use unica_xml_format::names::xml_ncname_is_valid;
     let parts = reference.split('.').collect::<Vec<_>>();
     let owner = match parts.as_slice() {
@@ -1466,7 +1466,7 @@ fn named_interface_command(reference: &str) -> bool {
         }
         _ => return false,
     };
-    MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &owner).is_ok()
+    MetadataAddress::parse_logical(&owner).is_ok()
 }
 
 fn split_interface_commands(

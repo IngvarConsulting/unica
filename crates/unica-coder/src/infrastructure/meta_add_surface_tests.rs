@@ -9,7 +9,7 @@ use crate::infrastructure::support_state::{
 use crate::infrastructure::test_fixtures;
 use serde_json::{json, Map, Value};
 use std::path::{Path, PathBuf};
-use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+use unica_address::source_target::MetadataAddress;
 use unica_metadata::request::MetaInfoRequest;
 use unica_metadata::validation_subject::MetadataValidationResult;
 use unica_metadata::MetaValidationStatus;
@@ -221,8 +221,7 @@ fn check_metadata(workspace: &Path, metadata_path: &str) -> MetadataValidationRe
     };
     let request = MetaInfoRequest {
         source_set: "main".to_string(),
-        metadata_path: MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, metadata_path)
-            .unwrap(),
+        metadata_path: MetadataAddress::parse_logical(metadata_path).unwrap(),
         sections: Vec::new(),
         limit: 0,
     };

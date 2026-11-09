@@ -2374,7 +2374,6 @@ dependencies = [
  "unica-execution-contract",
  "unica-process",
  "unica-redaction",
- "unica-runner",
  "unica-source-contract",
  "unica-source-designer",
  "unica-work-control",
@@ -2433,7 +2432,6 @@ dependencies = [
  "unica-operations",
  "unica-refusal",
  "unica-roles",
- "unica-runner",
  "unica-source-contract",
  "unica-templates",
  "unica-work-control",
@@ -2557,6 +2555,7 @@ dependencies = [
  "unica-bsl",
  "unica-bsl-parser",
  "unica-code-model",
+ "unica-configuration",
  "unica-navigation",
  "unica-source-contract",
  "unica-work-control",
@@ -2635,7 +2634,6 @@ dependencies = [
  "unica-refusal",
  "unica-roles",
  "unica-roles-designer",
- "unica-runner",
  "unica-source-contract",
  "unica-source-designer",
  "unica-templates",
@@ -2661,8 +2659,6 @@ dependencies = [
  "serde",
  "serde_json",
  "toml",
- "unica-code-intelligence",
- "unica-diagnostics",
 ]
 
 [[package]]
@@ -2694,6 +2690,7 @@ dependencies = [
  "unica-bsl-parser",
  "unica-code-intelligence",
  "unica-coder",
+ "unica-configuration",
  "unica-daemon-protocol",
  "unica-diagnostics",
  "unica-documentation",
@@ -2711,7 +2708,6 @@ dependencies = [
  "unica-project-health",
  "unica-redaction",
  "unica-refusal",
- "unica-runner",
  "unica-source-contract",
  "unica-source-designer",
  "unica-templates",
@@ -2867,7 +2863,6 @@ dependencies = [
  "unica-process",
  "unica-redaction",
  "unica-refusal",
- "unica-runner",
  "unica-source-contract",
  "unica-work-control",
  "unica-workspace",
@@ -3158,17 +3153,6 @@ dependencies = [
  "unica-source-contract",
  "unica-source-designer",
  "unica-xml-format",
-]
-
-[[package]]
-name = "unica-runner"
-version = "0.15.0-rc.1"
-dependencies = [
- "serde",
- "serde_json",
- "unica-process",
- "unica-redaction",
- "unica-source-contract",
 ]
 
 [[package]]

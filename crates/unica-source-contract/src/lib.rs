@@ -5,7 +5,8 @@ pub mod context;
 pub mod route;
 
 use serde::Serialize;
-use unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20;
+/// The canonical id of the Designer export profile 8.3.27 / 2.20.
+pub const PLATFORM_XML_8_3_27_FORMAT_2_20: &str = "platform-xml-8.3.27-format-2.20";
 
 /// Built-in script language, independent of multilingual presentation values.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

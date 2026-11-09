@@ -2,7 +2,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use unica_address::address::{AddressSegment, NodeKind, QualifiedAddress};
 use unica_address::module_routes::ModuleRole;
-use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+use unica_address::source_target::MetadataAddress;
 use unica_bsl::profile::{ModuleCapability, PlatformProfile};
 use unica_forms::event_targets::{PropertyEventOwner, PropertyEventOwnerKind};
 use unica_refusal::RefusalCode;
@@ -183,9 +183,8 @@ fn resolve_property_event_source(
         })?;
     let form_at =
         qualified_prefix(event_at, form_index + 1).map_err(EventSourceError::unavailable)?;
-    let form_target =
-        MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &form_at.logical_path())
-            .map_err(|error| EventSourceError::unavailable(error.to_string()))?;
+    let form_target = MetadataAddress::parse_logical(&form_at.logical_path())
+        .map_err(|error| EventSourceError::unavailable(error.to_string()))?;
     let tail = &segments[form_index + 1..segments.len() - 1];
     let mut owner_chain = vec![PropertyEventOwner {
         kind: PropertyEventOwnerKind::Form,

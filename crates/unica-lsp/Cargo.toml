@@ -6,7 +6,7 @@ license.workspace = true
 repository.workspace = true
 
 [package.metadata.unica]
-component = "service"
+component = "coordinator"
 file-io = "owned"
 
 [dependencies]

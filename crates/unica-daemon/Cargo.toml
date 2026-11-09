@@ -28,6 +28,7 @@ unica-operations = { path = "../unica-operations" }
 unica-diagnostics = { path = "../unica-diagnostics" }
 unica-navigation = { path = "../unica-navigation" }
 unica-code-intelligence = { path = "../unica-code-intelligence" }
+unica-configuration = { path = "../unica-configuration" }
 unica-execution = { path = "../unica-execution" }
 unica-forms = { path = "../unica-forms" }
 unica-documentation-sources = { path = "../unica-documentation-sources" }
@@ -78,6 +79,7 @@ unica-templates = { path = "../unica-templates", features = ["test-support"] }
 unica-diagnostics = { path = "../unica-diagnostics", features = ["test-support"] }
 unica-navigation = { path = "../unica-navigation", features = ["test-support"] }
 unica-code-intelligence = { path = "../unica-code-intelligence", features = ["test-support"] }
+unica-configuration = { path = "../unica-configuration", features = ["test-support"] }
 unica-execution = { path = "../unica-execution", features = ["test-support"] }
 unica-metadata = { path = "../unica-metadata", features = ["test-support"] }
 unica-source-contract = { path = "../unica-source-contract", features = ["test-support"] }
@@ -85,7 +87,6 @@ unica-execution-contract = { path = "../unica-execution-contract", features = ["
 unica-process = { path = "../unica-process", features = ["test-support"] }
 unica-work-control = { path = "../unica-work-control", features = ["test-support"] }
 unica-documentation = { path = "../unica-documentation" }
-unica-runner = { path = "../unica-runner" }
 jsonschema.workspace = true
 proc-macro2.workspace = true
 quote.workspace = true
