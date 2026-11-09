@@ -552,6 +552,11 @@ fn warm_actor_whose_named_root_was_replaced_is_rebuilt() {
 }
 
 #[test]
+fn a_held_actor_whose_named_root_was_replaced_is_temporarily_unavailable() {
+    super::retention_contract_tests::a_held_actor_whose_named_root_was_replaced_is_temporarily_unavailable();
+}
+
+#[test]
 fn warm_actors_do_not_block_a_distinct_identity() {
     super::retention_contract_tests::warm_actors_do_not_block_a_distinct_identity();
 }

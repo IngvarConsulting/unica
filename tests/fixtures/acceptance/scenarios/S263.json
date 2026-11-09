@@ -1,0 +1,19 @@
+{
+  "area": "Документация и стандарты",
+  "task": "Стандарт по именованию реквизитов объектов",
+  "wire": [
+    {
+      "tool": "unica.docs",
+      "args": {
+        "query": "имена реквизитов",
+        "source": "development-standard"
+      },
+      "expect": [
+        "ok",
+        "provider",
+        "task"
+      ]
+    }
+  ],
+  "id": "S263"
+}

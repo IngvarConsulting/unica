@@ -1,4 +1,4 @@
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use unica_adapter_bsl_analyzer::adapter::{
     AnalyzerRunFailureKind, BslAnalyzerMcpAdapter, BslAnalyzerOutcome, BslMcpCommand, BslMcpOutput,
     BslMcpRunner,
@@ -7,10 +7,10 @@ use unica_adapter_bsl_analyzer::adapter::{
 use crate::application::RuntimeJobAction;
 use crate::infrastructure::bundled_tools::resolve_bundled_tool;
 use crate::infrastructure::plugin_runtime::find_plugin_root;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use unica_adapter_bsl_analyzer::jsonl::MAX_DIAGNOSTICS_JSONL_LINE_BYTES;
 use unica_adapter_v8_runner::adapter::runtime_args;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use unica_adapter_v8_runner::adapter::{validate_runtime_mapper_payload, RuntimeAdapter};
 use unica_adapter_v8_runner::preflight::RuntimeBuildPreflight;
 use unica_adapter_v8_runner::request::RuntimeJobRequest;
@@ -22,30 +22,40 @@ use unica_execution_contract::adapter_outcome::AdapterOutcome;
 use unica_process::arguments::process_timeout_error;
 use unica_process::arguments::{kebab_case, reported_cli_value};
 use unica_process::runner::{system_process_runner, ProcessCommand, ProcessRunner};
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use unica_process::runner::{ProcessOutput, ProcessStreamFailure, ProcessStreamOutput};
 use unica_redaction::redactor;
 use unica_runner::operation::RuntimeJobOperation;
 use unica_source_contract::workspace::WorkspaceContext;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use unica_workspace::paths::path_lock_identity;
 type RuntimeJobService = runtime_jobs::RuntimeJobService<RuntimeJobRequest>;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use crate::infrastructure::source_roots::resolve_source_root;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use crate::infrastructure::workspace::discover_workspace;
 use serde_json::{json, Map, Value};
 use std::path::PathBuf;
 use std::time::Duration;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use unica_process::StreamControl;
 use unica_work_control::cancellation::{CancellationToken, CANCELLED_PREFIX};
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use unica_workspace::paths::normalize_path_identity;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use unica_process::ProcessLineReply;
 
+// resource-limit: analysis.internal-adapter-process-ms
+// class: deadline
+// unit: ms
+// scope: process
+// value: 120000
+// resource: Срок процесса внутреннего адаптера анализа (и bsl-analyzer) по умолчанию.
+// status: unproven
+// origin: aff5640a7 (v10)
+// problem: неизвестно
+// on-reach: Процесс прерывается, диагностика «internal <label> adapter timed out after 120 seconds».
 const DEFAULT_PROCESS_TIMEOUT: Duration = Duration::from_secs(120);
 
 pub struct CliAdapter<'a> {
@@ -124,7 +134,7 @@ impl<'a> CliAdapter<'a> {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     fn with_runner(
         tool_name: &'static str,
         default_command: &'static [&'static str],
@@ -260,7 +270,7 @@ impl<'a> CliAdapter<'a> {
 }
 
 impl RuntimeJobAdapter {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn invoke(
         action: RuntimeJobAction,
         tool_name: &str,
@@ -629,13 +639,13 @@ fn runtime_job_snapshot_value(snapshot: &runtime_jobs::RuntimeJobSnapshot) -> Va
     })
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn process_exit_code_is(status: &str, code: i32) -> bool {
     let status = status.trim();
     status == code.to_string() || status.ends_with(&format!(": {code}"))
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn resolve_source_dir(
     context: &WorkspaceContext,
     args: &Map<String, Value>,
@@ -782,7 +792,7 @@ mod tests {
     }
 
     /// This synchronous adapter must not start a second process after a
-    /// partial-failure receipt. The durable worker owns the retry (#404).
+    /// partial-failure receipt. The durable worker owns the retry.
     #[test]
     fn runtime_adapter_never_retries_a_failed_partial_build() {
         let mut context = temp_context("runtime-partial-no-sync-retry");
@@ -1422,7 +1432,7 @@ mod tests {
         cleanup_context(&context);
     }
 
-    /// #343. Credentials written into the connection string were carried into
+    /// Credentials written into the connection string were carried into
     /// the project config and then silently dropped: the run reported a wrong
     /// password while the same connection worked in Designer. The safe answer
     /// is an early refusal naming where credentials belong — and it must not
@@ -1465,7 +1475,7 @@ mod tests {
         validate_runtime_mapper_payload("config-init", &args).unwrap();
     }
 
-    /// #408. A project that declares a client MCP extension but has no
+    /// A project that declares a client MCP extension but has no
     /// artifact used to fail deep inside `build`, on a cause the caller could
     /// have been told before the run started.
     #[test]
@@ -2358,7 +2368,7 @@ mod tests {
         }
 
         // Маршрут загрузки зависимостей через раннер снят: продукт его не
-        // маппит ни в какую команду (#871, B-2).
+        // маппит ни в какую команду (B-2).
         let removed = json!({"operation": "tools-download", "tool": "client-mcp"});
         let error = runtime_args(removed.as_object().unwrap(), false).unwrap_err();
         assert!(error.contains("unknown runtime operation"), "{error}");
@@ -2794,7 +2804,7 @@ analyze_timeout_seconds = 900
         cleanup_context(&context);
     }
 
-    /// #275. A checkout that has not downloaded the tools has no
+    /// A checkout that has not downloaded the tools has no
     /// `bsl-analyzer` in its manifest. `code.search` already answers that
     /// workstation state with an unavailable section and a working result;
     /// `code.graph` must not turn the same cause into a failed call.
@@ -3418,7 +3428,7 @@ analyze_timeout_seconds = 900
 
     /// A run that gives no diagnostics batch says where it stopped: the
     /// engine is absent, failed its install checks, could not start, ran out
-    /// of time or exited with an error (#1338).
+    /// of time or exited with an error.
     /// rule: INV.APP.DIAGNOSTIC-PROVIDERS
     #[test]
     fn analyze_failure_names_where_the_run_stopped() {
@@ -3543,7 +3553,7 @@ analyze_timeout_seconds = 900
         );
     }
 
-    /// Ревью #549: рабочий каталог, которого нет, — не незапуск программы.
+    /// Рабочий каталог, которого нет, — не незапуск программы.
     /// Оба пути запуска раннера отвечают на него сбоем после старта, а не
     /// `Spawn`, которым маршрут назвал бы отказ «нет движка».
     /// rule: INV.WIRE.MISSING-ENGINE-REFUSAL
@@ -3748,7 +3758,7 @@ analyze_timeout_seconds = 900
         let context = discover_workspace(Some(std::env::current_dir().unwrap())).unwrap();
         let mut args = Map::new();
         args.insert("operation".to_string(), json!("config-init"));
-        // Credentials in the connection string are refused outright (#343),
+        // Credentials in the connection string are refused outright,
         // so the redaction case uses a connection the mapper accepts. What it
         // proves is unchanged: the connection value never reaches the reported
         // command, whatever it holds.
@@ -4725,7 +4735,7 @@ mod dry_run_honesty_tests {
 
     #[test]
     fn a_preview_without_the_binary_is_not_a_runnable_plan() {
-        // #549: `ok` и `command` вместе выглядели готовым к запуску планом,
+        // `ok` и `command` вместе выглядели готовым к запуску планом,
         // хотя файла по этому пути нет. Худший из возможных ответов.
         let outcome = dry_run_outcome(
             "unica.build.load",

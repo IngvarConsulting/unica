@@ -1,0 +1,298 @@
+{
+  "id": "S419",
+  "name": "schema-subnodes-and-method-insert-are-addressed",
+  "issue": 1354,
+  "area": "СКД",
+  "task": "Операции варианта, параметра и поля схемы на владельце отказывают без записи с next к словарю адресованного узла, метод в selector у code.insert — с next к контракту code.insert на модуле; исправленные вызовы по адресам Setting, Field и Method строят предпросмотр",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "schema": {
+          "kind": "sha256",
+          "file": "src/Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных/Ext/Template.xml"
+        },
+        "module": {
+          "kind": "sha256",
+          "file": "src/CommonModules/GoogleПереводчик/Ext/Module.bsl"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных",
+        "ops": [
+          {
+            "op": "variant.set",
+            "args": {
+              "values": {
+                "name": "Основной",
+                "title": "Версии"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: apply operation `variant.set` does not apply to Template `main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных`; it addresses `Kind.Name.Temp",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[0].at"
+        },
+        {
+          "pointer": "/next/0/args/at",
+          "eq": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных/Ext/Template.xml",
+          "eq": "$capture.schema"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.Setting.Основной",
+        "ops": [
+          {
+            "op": "variant.set",
+            "args": {
+              "values": {
+                "title": "Версии"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных/Ext/Template.xml",
+          "eq": "$capture.schema"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных",
+        "ops": [
+          {
+            "op": "parameter.set",
+            "args": {
+              "values": {
+                "name": "Период",
+                "title": "Период"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: apply operation `parameter.set` does not apply to Template `main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных`; it addresses `Kind.Name.Te",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[0].at"
+        },
+        {
+          "pointer": "/next/0/args/at",
+          "eq": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных/Ext/Template.xml",
+          "eq": "$capture.schema"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.НаборДанных1",
+        "ops": [
+          {
+            "op": "field.set",
+            "args": {
+              "values": {
+                "title": "Число версий",
+                "dataPath": "Количество"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: apply operation `field.set` does not apply to DataSet `main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.НаборДанных1`; it address",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[0].at"
+        },
+        {
+          "pointer": "/next/0/args/at",
+          "eq": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.НаборДанных1"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных/Ext/Template.xml",
+          "eq": "$capture.schema"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.НаборДанных1.Field.Количество",
+        "ops": [
+          {
+            "op": "field.set",
+            "args": {
+              "values": {
+                "title": "Число версий"
+              }
+            }
+          },
+          {
+            "op": "fieldRole.set",
+            "args": {
+              "values": {
+                "role": {
+                  "dimension": true
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных/Ext/Template.xml",
+          "eq": "$capture.schema"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:CommonModule.GoogleПереводчик",
+        "ops": [
+          {
+            "op": "code.insert",
+            "args": {
+              "selector": {
+                "method": "ДоступныеЯзыки"
+              },
+              "position": "after",
+              "text": "// приёмочная вставка"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: unknown argument; selector accepts only anchor",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.selector.method"
+        },
+        {
+          "pointer": "/next/0/args/at",
+          "eq": "main:CommonModule.GoogleПереводчик.Can.code.insert"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/GoogleПереводчик/Ext/Module.bsl",
+          "eq": "$capture.module"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:CommonModule.GoogleПереводчик.Method.ДоступныеЯзыки",
+        "ops": [
+          {
+            "op": "code.insert",
+            "args": {
+              "position": "before",
+              "text": "// приёмочная вставка"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/GoogleПереводчик/Ext/Module.bsl",
+          "eq": "$capture.module"
+        }
+      ]
+    }
+  ]
+}

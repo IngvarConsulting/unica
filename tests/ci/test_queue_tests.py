@@ -56,13 +56,67 @@ class ChoiceTests(unittest.TestCase):
         runner = mock.Mock(LEDGER_FEATURE_SELECTION=("ledger",), UREQ_RECYCLING_SELECTION=("ureq",))
         runner.rust_command.side_effect = lambda profile, selection: [profile, *selection]
         planned = queue.commands(("unica-a",), runner, ("unica-coder",))
-        self.assertEqual(planned[-1], ["queue", "-p", "unica-coder", "-E", queue.DEPENDENT_FILTER, "--no-tests=pass"])
+        self.assertEqual(planned[-1], [
+            "queue", "--workspace", "-E", f"(package(unica-coder)) & ({queue.DEPENDENT_FILTER})", "--no-tests=pass",
+        ])
         self.assertNotIn(["queue", "ledger"], planned)
 
     def test_only_the_whole_build_runs_everything(self) -> None:
         for path in ("Cargo.lock", "Cargo.toml", "rust-toolchain.toml", ".cargo/config.toml"):
             with self.subTest(path=path):
                 self.assertTrue(choose([path, "crates/a/src/lib.rs"]).full)
+
+    def test_a_lock_changed_only_for_workspace_crates_selects_by_crate(self) -> None:
+        choice = choose(["Cargo.lock", "crates/a/Cargo.toml", "crates/a/src/lib.rs"], lock_is_internal=True)
+        self.assertFalse(choice.full)
+        self.assertEqual(choice.packages, ("unica-a",))
+        self.assertEqual(choice.dependents, ("unica-b", "unica-coder"))
+        # Манифест рабочей области и тулчейн остаются полным набором и рядом с такой правкой.
+        for path in ("Cargo.toml", "rust-toolchain.toml"):
+            with self.subTest(path=path):
+                self.assertTrue(choose(["Cargo.lock", path], lock_is_internal=True).full)
+
+    def test_only_external_packages_of_the_lock_count(self) -> None:
+        member = '[[package]]\nname = "unica-a"\nversion = "1.0.0"\ndependencies = ["serde"]\n'
+        serde = '[[package]]\nname = "serde"\nversion = "1.0.0"\nsource = "registry+x"\nchecksum = "aa"\n'
+        members = {"unica-a", "unica-new"}
+        same = queue.external_packages(serde + member, members)
+        self.assertEqual(same, queue.external_packages(serde, members))
+        self.assertEqual(same, queue.external_packages(member + '[[package]]\nname = "unica-new"\nversion = "1.0.0"\n' + serde, members))
+        # Путевой патч не член рабочей области, хотя `source` у него тоже нет.
+        patched = '[[package]]\nname = "ureq"\nversion = "2.0.0"\n'
+        self.assertNotEqual(queue.external_packages(serde + patched, members), queue.external_packages(serde + patched.replace("2.0.0", "2.0.1"), members))
+        for changed in (
+            serde.replace('version = "1.0.0"', 'version = "1.0.1"'),
+            serde.replace('checksum = "aa"', 'checksum = "bb"'),
+            serde.replace('registry+x', 'git+y'),
+            serde + 'dependencies = ["itoa"]\n',
+            serde + '[[package]]\nname = "itoa"\nversion = "1.0.0"\nsource = "registry+x"\n',
+            '[[package]]\nname = "other"\nversion = "1.0.0"\n',
+        ):
+            with self.subTest(changed=changed):
+                self.assertNotEqual(same, queue.external_packages(changed, members))
+
+    def test_the_lock_is_compared_between_the_two_revisions(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            git = lambda *arguments: subprocess.check_output(["git", "-c", "user.name=t", "-c", "user.email=t@example.test", *arguments], cwd=root, text=True).strip()
+            git("init", "-q")
+            serde = '[[package]]\nname = "serde"\nversion = "1.0.0"\nsource = "registry+x"\n'
+            revisions = []
+            for lock in (serde, serde + '[[package]]\nname = "unica-new"\nversion = "1.0.0"\n', serde.replace("1.0.0", "1.0.1")):
+                (root / "Cargo.lock").write_text(lock, encoding="utf-8")
+                git("add", "Cargo.lock")
+                git("commit", "-qm", "x")
+                revisions.append(git("rev-parse", "HEAD"))
+            self.assertTrue(queue.lock_keeps_external(revisions[0], revisions[1], {"unica-new"}, root))
+            self.assertFalse(queue.lock_keeps_external(revisions[1], revisions[2], {"unica-new"}, root))
+
+    def test_a_lock_that_cannot_be_read_runs_everything(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, mock.patch.dict(os.environ, {"GITHUB_OUTPUT": str(Path(directory) / "o")}):
+            with mock.patch.object(queue, "workspace", return_value=(DIRS, DEPENDENTS)), mock.patch.object(queue.subprocess, "check_output", side_effect=["Cargo.lock\n", subprocess.CalledProcessError(128, "git")]):
+                self.assertEqual(queue.main(["--base", "a", "--head", "b", "--dry-run"]), 0)
+            self.assertEqual((Path(directory) / "o").read_text(encoding="utf-8"), "full=true\n")
 
     def test_paths_rust_tests_read_select_the_crates_that_mention_them(self) -> None:
         for path in ("tests/fixtures/xdto/a.xml", "scripts/dev/x.py"):
@@ -74,7 +128,7 @@ class ChoiceTests(unittest.TestCase):
         self.assertEqual(queue.needle("scripts/dev/x.py"), "scripts/dev/x.py")
 
     def test_everything_else_runs_only_small(self) -> None:
-        for path in (".github/workflows/ci.yml", ".github/CODEOWNERS", "scripts/ci/run-tests.py", ".config/nextest.toml", ".config/python-sizes.toml",
+        for path in (".github/workflows/ci.yml", ".github/CODEOWNERS", "scripts/ci/run-tests.py", ".config/nextest.toml", "scripts/ci/python_sizes.py",
                      "tests/fixtures/acceptance/scenario-manifest/x.json", "tests/ci/test_x.py", "docs/release-runbook.md", ".gitattributes",
                      "plugins/unica/skills/x/SKILL.md"):
             with self.subTest(path=path):
@@ -98,16 +152,56 @@ class ChoiceTests(unittest.TestCase):
         self.assertTrue(choose([]).full)
         self.assertTrue(choose(["crates/a/src/lib.rs"], force_full=True).full)
 
+    def test_every_crate_selected_runs_the_full_set_in_the_real_workspace(self) -> None:
+        directories, dependents = queue.workspace()
+        members = [path for path, name in directories.items() if name != "ureq"]
+        choice = queue.choose([f"{path}/Cargo.toml" for path in members], directories, dependents)
+        self.assertTrue(choice.full, choice.reason)
+        # Один незатронутый крейт оставляет обычный выбор.
+        choice = queue.choose([f"{path}/Cargo.toml" for path in members[1:]], directories, dependents)
+        self.assertFalse(choice.full, choice.reason)
+        self.assertNotIn(directories[members[0]], choice.packages)
+
     def test_small_runs_everywhere_and_selected_crates_are_not_run_twice(self) -> None:
         runner = mock.Mock(LEDGER_FEATURE_SELECTION=("ledger",), UREQ_RECYCLING_SELECTION=("ureq",))
         runner.rust_command.side_effect = lambda profile, selection: [profile, *selection]
         self.assertEqual(queue.commands((), runner), [["pr", "--workspace", "--no-tests=pass"]])
-        self.assertEqual(queue.commands(("unica-a",), runner), [
-            ["pr", "--workspace", "--exclude", "unica-a", "--no-tests=pass"],
-            ["queue", "-p", "unica-a", "--no-tests=pass"],
+        self.assertEqual(queue.commands(("unica-a", "unica-b"), runner), [
+            ["pr", "--workspace", "-E", "not (package(unica-a) | package(unica-b))", "--no-tests=pass"],
+            ["queue", "--workspace", "-E", "package(unica-a) | package(unica-b)", "--no-tests=pass"],
         ])
-        planned = queue.commands(("unica-coder", "ureq"), runner)
+        planned = queue.commands(("unica-daemon", "ureq"), runner)
+        self.assertEqual(planned[1], ["queue", "--workspace", "-E", "package(unica-daemon)", "--no-tests=pass"])
         self.assertEqual(planned[2:], [["queue", "ledger"], ["queue", "ureq"]])
+        # Фасад журнала живёт в демоне: правка нижнего слоя его не запускает.
+        self.assertNotIn(["queue", "ledger"], queue.commands(("unica-coder",), runner))
+
+    def test_every_workspace_call_builds_the_same_package_set(self) -> None:
+        # С `-p` или `--exclude` Cargo объединяет признаки по другому набору
+        # пакетов и пересобирает общие зависимости в следующем вызове.
+        runner = mock.Mock(LEDGER_FEATURE_SELECTION=("ledger",), UREQ_RECYCLING_SELECTION=("ureq",))
+        runner.rust_command.side_effect = lambda profile, selection: [profile, *selection]
+        planned = queue.commands(("unica-a", "unica-coder"), runner, ("unica-b",))
+        self.assertEqual(len(planned), 3)
+        for command in planned:
+            with self.subTest(command=command):
+                self.assertEqual(command[1], "--workspace")
+                self.assertNotIn("-p", command)
+                self.assertNotIn("--exclude", command)
+
+    def test_a_vendored_patch_is_selected_in_the_real_workspace(self) -> None:
+        directories, dependents = queue.workspace()
+        self.assertEqual(directories["vendor/ureq"], "ureq")
+        choice = queue.choose(["vendor/ureq/src/stream.rs"], directories, dependents)
+        self.assertFalse(choice.full)
+        self.assertEqual(choice.packages, ("ureq",))
+        # Cargo не принимает `-p` для пакета вне рабочей области.
+        runner = queue.load_runner()
+        planned = queue.commands(choice.packages, runner, choice.dependents)
+        self.assertIn(runner.rust_command("queue", runner.UREQ_RECYCLING_SELECTION), planned)
+        for command in planned:
+            self.assertNotIn(["-p", "ureq"], [command[index:index + 2] for index in range(len(command) - 1)], command)
+            self.assertNotIn(["--exclude", "ureq"], [command[index:index + 2] for index in range(len(command) - 1)], command)
 
     def test_a_failed_diff_runs_everything(self) -> None:
         with tempfile.TemporaryDirectory() as directory, mock.patch.dict(os.environ, {"GITHUB_OUTPUT": str(Path(directory) / "o")}):
@@ -124,7 +218,7 @@ class GuardTests(unittest.TestCase):
 
     def test_rust_does_not_read_the_paths_that_run_only_small(self) -> None:
         # Упоминания `scripts/ci/` в комментариях и текстах ошибок не читают файл: ищется строка пути.
-        for text in ("scenario-manifest", "python-sizes.toml", "CODEOWNERS", '"scripts/ci', ".github/workflows", ".agents/", '"tests/ci/', '"tests/dev/', '"docs/', "../docs/", "docs/pages", "visual-kit", '"arch/rules', '"scripts/research', '"AGENTS.md"'):
+        for text in ("scenario-manifest", "CODEOWNERS", '"scripts/ci', ".github/workflows", ".agents/", '"tests/ci/', '"tests/dev/', '"docs/', "../docs/", "docs/pages", "visual-kit", '"arch/rules', '"scripts/research', '"AGENTS.md"'):
             with self.subTest(text=text):
                 # `bundled_tools.rs` создаёт этот путь во временном каталоге теста, а файл репозитория не читает.
                 self.assertEqual([path for path in self.grep(text) if not path.endswith("infrastructure/bundled_tools.rs")], [])
@@ -146,28 +240,75 @@ class GuardTests(unittest.TestCase):
 
 
 class WorkflowTests(unittest.TestCase):
+    """Ворота `ci.yml` по поведению: шаг по `id`, условие по исходам, скрипт — исполнением."""
+
     def setUp(self) -> None:
+        sys.path.insert(0, str(ROOT))
+        from tests.ci.test_unica_workflow import bash, evaluate, step_by_id
+
+        self.bash, self.evaluate = bash, evaluate
         jobs = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"))["jobs"]
-        self.steps = {step.get("name"): step for step in jobs["unica-ci"]["steps"]}
-        self.windows = jobs["windows-clippy"]
+        self.gate, self.windows = jobs["unica-ci"], jobs["windows-clippy"]
+        self.step = lambda step_id: step_by_id(self.gate, step_id)
 
     def test_clippy_of_the_whole_workspace_runs_on_linux_and_windows(self) -> None:
-        self.assertIn("--workspace --all-targets", self.steps["Clippy"]["run"])
-        self.assertEqual(self.steps["Clippy"]["if"], "env.KEPT != 'true'")
-        self.assertEqual(self.windows["if"], "github.event_name == 'merge_group'")
+        for clippy in (self.step("clippy"), self.windows["steps"][-1]):
+            for flag in ("--workspace", "--all-targets", "-D warnings"):
+                self.assertIn(flag, clippy["run"])
+        # Линукс линтует и PR, и очередь, пока ворота не взяты из прошлого прогона.
+        for kept in ("true", "false"):
+            with self.subTest(kept=kept):
+                self.assertEqual(self.evaluate(self.step("clippy")["if"], {"env.KEPT": kept}), kept != "true")
+        # Windows — только в очереди.
+        for event in ("merge_group", "pull_request"):
+            with self.subTest(event=event):
+                self.assertEqual(self.evaluate(self.windows["if"], {"github.event_name": event}), event == "merge_group")
 
     def test_the_queue_selects_rust_and_keeps_the_rollback_switch(self) -> None:
-        rust = self.steps["Тесты Rust"]
-        self.assertEqual(rust["id"], "selection")
-        self.assertIn("python scripts/ci/queue-tests.py", rust["run"])
+        rust = self.step("selection")
         self.assertEqual(rust["env"]["QUEUE_FULL_TESTS"], "${{ vars.QUEUE_FULL_TESTS }}")
         self.assertEqual(rust["env"]["BASE_SHA"], "${{ github.event.merge_group.base_sha }}")
+        self.assertIn("queue-tests.py", rust["run"])
+        for name in ("BASE_SHA", "HEAD_SHA"):
+            self.assertIn(f"${name}", rust["run"])
+        for event in ("merge_group", "pull_request"):
+            with self.subTest(event=event):
+                self.assertEqual(self.evaluate(rust["if"], {"github.event_name": event, "env.KEPT": "false"}), event == "merge_group")
 
     def test_python_medium_leaves_the_queue_unless_the_choice_is_full(self) -> None:
-        run = self.steps["Тесты Python"]["run"]
-        self.assertIn("python scripts/ci/run-static-tests.py --queue", run)
-        self.assertIn('python scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem python', run)
-        self.assertEqual(self.steps["Тесты Python"]["env"]["FULL"], "${{ steps.selection.outputs.full }}")
+        python = self.step("python")
+        self.assertEqual(python["env"]["FULL"], "${{ steps.selection.outputs.full }}")
+        # Шаг исполняется: выбор очереди решает, какой исполнитель идёт.
+        for full, runner in (("false", "scripts/ci/run-static-tests.py"), ("true", "scripts/ci/run-tests.py")):
+            with self.subTest(full=full), tempfile.TemporaryDirectory() as tmp:
+                result = self.bash(python["run"], cwd=Path(tmp), env={"FULL": full, "GATE_PROFILE": "queue"},
+                                   prelude='python() { echo "$1" >> calls.txt; }\n')
+                self.assertEqual(result.returncode, 0, result.stderr)
+                calls = (Path(tmp) / "calls.txt").read_text(encoding="utf-8").split()
+                self.assertEqual(set(calls), {runner})
+
+
+class MemoryTempTests(unittest.TestCase):
+    def test_outside_linux_tests_keep_the_system_temp(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            self.assertEqual(queue.memory_temp(Path(root), 0, platform="win32"), (None, "не Linux"))
+
+    def test_a_missing_or_small_memory_volume_keeps_the_system_temp(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            missing = Path(root) / "absent"
+            self.assertEqual(queue.memory_temp(missing, 0, platform="linux")[0], None)
+            if hasattr(os, "statvfs"):
+                temp, why = queue.memory_temp(Path(root), 1 << 62, platform="linux")
+                self.assertIsNone(temp)
+                self.assertIn("нужно", why)
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "the probe runs a shell script")
+    def test_an_executable_memory_volume_gives_a_fresh_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            temp, _ = queue.memory_temp(Path(root), 0, platform="linux")
+            self.assertIsNotNone(temp)
+            self.assertEqual(temp.parent, Path(root))
+            self.assertEqual(list(temp.iterdir()), [])
 
 
 if __name__ == "__main__":

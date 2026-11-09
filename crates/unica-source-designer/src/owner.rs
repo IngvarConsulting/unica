@@ -534,7 +534,7 @@ mod tests {
 }
 
 use crate::layout::metadata_descriptor_relative;
-use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+use unica_address::source_target::MetadataAddress;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EventOwnerDescriptorProof {
     SourceSet,
@@ -570,11 +570,8 @@ pub fn owner_evidence_plan(
                 "external event target has no typed owner identity",
             ));
         };
-        let root_target = MetadataAddress::parse(
-            PLATFORM_XML_8_3_27_FORMAT_2_20,
-            &format!("{owner_kind}.{owner_name}"),
-        )
-        .map_err(|error| error.to_string())?;
+        let root_target = MetadataAddress::parse_logical(&format!("{owner_kind}.{owner_name}"))
+            .map_err(|error| error.to_string())?;
         descriptors.push(EventOwnerDescriptorExpectation {
             relative: metadata_descriptor_relative(&root_target, source_set_kind)?,
             proof: EventOwnerDescriptorProof::SourceSet,

@@ -16,6 +16,11 @@ from tests.ci.acceptance_controls import tool_result
 from tests.ci.acceptance_profiles import completed_delivery_call, isolated_environment
 from tests.ci.test_acceptance_scenarios import AcceptanceServer, REPO_ROOT
 from tests.ci.test_unica_mcp_smoke import snapshot_workspace_files
+from scripts.ci.temp_tree import remove_tree
+
+# Размер тестов модуля (scripts/ci/python_sizes.py).
+# Собирает продукт и гоняет сценарии через MCP.
+MEDIUM = ("WholeTemplatePlanDiffWireTests",)
 
 
 FIXTURE = REPO_ROOT / "tests/fixtures/acceptance/workspace-whole-template-removal"
@@ -70,9 +75,8 @@ class WholeTemplatePlanDiffWireTests(unittest.TestCase):
         ensure_binary(REPO_ROOT)
 
     def _start(self):
-        temporary = tempfile.TemporaryDirectory(prefix="unica-whole-template-plan-")
-        self.addCleanup(temporary.cleanup)
-        root = Path(temporary.name).resolve()
+        root = Path(tempfile.mkdtemp(prefix="unica-whole-template-plan-")).resolve()
+        self.addCleanup(remove_tree, root, 30)
         self.workspace = root / "workspace"
         shutil.copytree(FIXTURE, self.workspace)
         (self.workspace / "unrelated/empty").mkdir(parents=True)

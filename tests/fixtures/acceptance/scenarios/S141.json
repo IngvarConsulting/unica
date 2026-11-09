@@ -1,0 +1,30 @@
+{
+  "area": "Формы",
+  "task": "Добавить табличное поле списка на форму",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты.Form.ФормаСписка",
+        "ops": [
+          {
+            "op": "item.add",
+            "args": {
+              "items": [
+                {
+                  "name": "ТаблицаКурсов",
+                  "type": "Table",
+                  "path": "List"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S141"
+}

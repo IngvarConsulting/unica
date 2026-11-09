@@ -2,7 +2,7 @@ use crate::infrastructure::event_sources::{
     resolve_event_source_for_form_evidence, PropertyEventSource,
 };
 use unica_address::address::QualifiedAddress;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use unica_bindings::events::EventImplementationOwner;
 use unica_bindings::events::{
     form_semantic_inputs, refine_property_owner_chain, EventImplementationShape,
@@ -10,7 +10,7 @@ use unica_bindings::events::{
 };
 use unica_bsl::profile::PlatformProfile;
 use unica_bsl::projection::EventProjection;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use unica_bsl::projection::MethodKind;
 use unica_forms_designer::codec::parse_form_event_evidence_xml;
 use unica_source_contract::SourceSetKind;

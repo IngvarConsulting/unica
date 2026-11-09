@@ -414,7 +414,7 @@ mod platform_marker_tests {
     }
 
     /// Включение изменений пишет тот же маркер, что платформа 8.3.27 после
-    /// «Включить возможность изменения» с правилом «на замке» (#1976).
+    /// «Включить возможность изменения» с правилом «на замке».
     #[test]
     fn enabling_changes_writes_the_platform_marker() {
         let (written, data) = plan_capability_data(

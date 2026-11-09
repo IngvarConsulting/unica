@@ -11,3 +11,7 @@ serde_json.workspace = true
 unica-redaction = { path = "../unica-redaction" }
 unica-process = { path = "../unica-process" }
 unica-source-contract = { path = "../unica-source-contract" }
+
+[package.metadata.unica]
+component = "service"
+file-io = "owned"

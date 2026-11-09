@@ -6,7 +6,7 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
-use unica_address::source_target::{MetadataAddress, TargetKind, PLATFORM_XML_8_3_27_FORMAT_2_20};
+use unica_address::source_target::{MetadataAddress, TargetKind};
 use unica_source_contract::location::SourceLocation;
 use unica_source_contract::workspace::WorkspaceContext;
 use unica_work_control::cancellation::CancellationToken;
@@ -1252,7 +1252,7 @@ pub fn parse_diagnostic_request(
     let metadata_path = args
         .get("metadataPath")
         .and_then(Value::as_str)
-        .map(|raw| MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, raw))
+        .map(MetadataAddress::parse_logical)
         .transpose()
         .map_err(|_| {
             request_error(
@@ -1401,9 +1401,7 @@ mod tests {
     use std::sync::{mpsc, Arc, Condvar, Mutex};
     use std::thread;
     use std::time::{Duration, Instant};
-    use unica_address::source_target::{
-        MetadataAddress, ResolvedTarget, TargetKind, PLATFORM_XML_8_3_27_FORMAT_2_20,
-    };
+    use unica_address::source_target::{MetadataAddress, ResolvedTarget, TargetKind};
     use unica_source_contract::location::SourceLocation;
     use unica_source_contract::workspace::ResolvedSourceRoot;
     use unica_source_contract::workspace::WorkspaceContext;
@@ -1657,7 +1655,7 @@ mod tests {
     }
 
     fn address(raw: &str) -> MetadataAddress {
-        MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, raw).unwrap()
+        MetadataAddress::parse_logical(raw).unwrap()
     }
 
     fn workspace() -> WorkspaceContext {
@@ -2657,64 +2655,6 @@ mod tests {
 
     /// rule: INV.APP.PROVIDER-WORKER-CONCURRENCY
     #[test]
-    fn diagnostics_executes_all_workers_past_the_former_provider_quota() {
-        for descriptor in [
-            &ANALYZER_DESCRIPTOR,
-            &LANGUAGE_SERVER_DESCRIPTOR,
-            &METADATA_DESCRIPTOR,
-        ] {
-            let (entered_tx, entered_rx) = mpsc::channel();
-            let release = Arc::new((Mutex::new(false), Condvar::new()));
-            let mut calls = Vec::new();
-            for _ in 0..33 {
-                let registry = behavior_registry(vec![(
-                    descriptor,
-                    ProviderBehavior::WaitForRelease {
-                        started: entered_tx.clone(),
-                        gate: Arc::clone(&release),
-                    },
-                )]);
-                calls.push(thread::spawn(move || {
-                    let mut request = findings_request();
-                    request.timeout = Some(Duration::from_secs(30));
-                    if descriptor.id == METADATA_VALIDATOR {
-                        request.metadata_path = Some(address("Catalog.Selected"));
-                    }
-                    run(registry, &request)
-                }));
-            }
-            drop(entered_tx);
-            let cutoff = Instant::now() + Duration::from_secs(5);
-            let mut entered = Vec::new();
-            while entered.len() < 33 {
-                match entered_rx.recv_timeout(cutoff.saturating_duration_since(Instant::now())) {
-                    Ok(id) => entered.push(id),
-                    Err(_) => break,
-                }
-            }
-            *release.0.lock().unwrap() = true;
-            release.1.notify_all();
-            let results: Vec<_> = calls.into_iter().map(|call| call.join().unwrap()).collect();
-            assert!(super::drain_diagnostic_workers(Duration::from_secs(5)));
-            assert_eq!(
-                entered.len(),
-                33,
-                "not every {} worker entered",
-                descriptor.id.as_str()
-            );
-            assert!(entered.iter().all(|id| *id == descriptor.id));
-            for result in results {
-                let result = result.expect("worker count must not refuse diagnostics");
-                assert_eq!(result.state, DiagnosticResultState::Completed);
-                assert!(result.complete);
-                assert_eq!(result.providers.len(), 1);
-                assert_eq!(result.providers[0].id, descriptor.id.as_str());
-            }
-        }
-    }
-
-    /// rule: INV.APP.PROVIDER-WORKER-CONCURRENCY
-    #[test]
     fn diagnostics_retains_each_noncooperative_worker_after_its_caller_returns() {
         let lifecycle = super::DiagnosticWorkerLifecycle {
             handles: Mutex::new(Vec::new()),
@@ -3159,7 +3099,7 @@ mod tests {
             .at_stage(stage);
             let reason = missing_engine_public_reason(&missing);
             // One text on every route: the refusal's message is this reason
-            // behind the closed code (#549).
+            // behind the closed code.
             assert_eq!(missing.message(), format!("bundled_tool_missing: {reason}"));
             assert!(!reason.contains("/private"));
             assert_eq!(

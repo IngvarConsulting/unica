@@ -1,7 +1,7 @@
 //! Form operation parsing and planning over an existing source proposal.
 use serde_json::{Map, Value};
 use unica_address::address::{NodeKind, QualifiedAddress};
-use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+use unica_address::source_target::MetadataAddress;
 use unica_forms::default_forms::FormSlotTarget;
 use unica_forms::facts::FormInfoElement;
 use unica_forms::operations::FormOperation;
@@ -79,35 +79,6 @@ pub fn form_item_at<'a>(
         Some(item)
     } else {
         form_item_at(&item.children, rest)
-    }
-}
-/// Путь элемента с именем `name` от корня формы: один, ни одного или
-/// несколько элементов с этим именем.
-pub fn form_item_path(
-    elements: &[FormInfoElement],
-    name: &str,
-) -> unica_operations::recovery::NamedLookup {
-    fn collect(
-        elements: &[FormInfoElement],
-        name: &str,
-        prefix: &mut Vec<String>,
-        found: &mut Vec<Vec<String>>,
-    ) {
-        for element in elements {
-            prefix.push(element.name.clone());
-            if element.name == name {
-                found.push(prefix.clone());
-            }
-            collect(&element.children, name, prefix, found);
-            prefix.pop();
-        }
-    }
-    let mut found = Vec::new();
-    collect(elements, name, &mut Vec::new(), &mut found);
-    match found.len() {
-        0 => unica_operations::recovery::NamedLookup::Missing,
-        1 => unica_operations::recovery::NamedLookup::Found(found.remove(0)),
-        _ => unica_operations::recovery::NamedLookup::Ambiguous(found),
     }
 }
 /// Дерево элементов формы, как его читает `view`.
@@ -219,11 +190,9 @@ pub fn form_target(
     let owner_name = owner
         .name()
         .ok_or_else(|| bad(op_index, "at", "the form owner must be named"))?;
-    let address = MetadataAddress::parse(
-        PLATFORM_XML_8_3_27_FORMAT_2_20,
-        &format!("{}.{owner_name}", owner.kind().as_str()),
-    )
-    .map_err(|error| bad(op_index, "at", error.to_string()))?;
+    let address =
+        MetadataAddress::parse_logical(&format!("{}.{owner_name}", owner.kind().as_str()))
+            .map_err(|error| bad(op_index, "at", error.to_string()))?;
     let named = |segment: &unica_address::address::AddressSegment, what: &str| {
         segment
             .name()

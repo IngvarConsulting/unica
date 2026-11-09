@@ -6,7 +6,7 @@ use std::sync::Arc;
 use unica_analysis_services::backend::ServiceEnvironment;
 use unica_artifact_delivery::engine::{BundledTool, BundledToolError, MissingEngine};
 use unica_code_intelligence::source_locations::SearchSourceBindings;
-use unica_daemon::identity::{verify_executable_build, CoreIdentity};
+use unica_daemon_protocol::identity::{verify_executable_build, CoreIdentity};
 use unica_execution_contract::adapter_outcome::AdapterOutcome;
 use unica_source_contract::workspace::{ResolvedSourceRoot, WorkspaceContext};
 use unica_workspace::policies::WorkspacePolicies;
@@ -108,11 +108,11 @@ static BSL_DIAGNOSTIC_BACKEND:
     unica_adapter_bsl_analyzer::diagnostics::WorkspaceBslDiagnosticBackend {
         environment: &ANALYSIS_ENVIRONMENT,
     };
-pub(crate) fn bsl_provider() -> unica_adapter_bsl_analyzer::provider::BslAnalyzerProvider<'static> {
+pub fn bsl_provider() -> unica_adapter_bsl_analyzer::provider::BslAnalyzerProvider<'static> {
     unica_adapter_bsl_analyzer::provider::BslAnalyzerProvider::new(&BSL_CLIENT, source_bindings())
 }
 /// The analyzer behind the symbol port for one source set.
-pub(crate) fn bsl_symbols(
+pub fn bsl_symbols(
     context: unica_code_intelligence::model::CodeIntelligenceContext,
 ) -> unica_adapter_bsl_analyzer::symbols::BslAnalyzerSymbols<'static> {
     unica_adapter_bsl_analyzer::symbols::BslAnalyzerSymbols::new(&BSL_CLIENT, context)
@@ -127,7 +127,7 @@ pub(crate) fn diagnostic_provider(
         crate::infrastructure::diagnostics::findings_module_path,
     )
 }
-pub(crate) fn run_workspace_service(args: &[String]) -> Result<(), String> {
+pub fn run_workspace_service(args: &[String]) -> Result<(), String> {
     unica_analysis_services::run_workspace_service_from_args(
         args,
         Arc::new(
