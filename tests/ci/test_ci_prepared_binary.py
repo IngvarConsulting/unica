@@ -68,11 +68,12 @@ class PreparedBinaryTests(unittest.TestCase):
             self.assertEqual(product.ensure_binary(self.root), binary.resolve())
             self.assertEqual(product.ensure_binary(self.root), binary.resolve())
         build.assert_called_once_with(product.LOCAL_BUILD, cwd=self.root, check=True)
-        self.assertEqual(product.LOCAL_BUILD, ["cargo", "build", "--quiet", "--locked", "-p", "unica-coder", "--bin", "unica"])
+        self.assertEqual(product.LOCAL_BUILD, ["cargo", "build", "--quiet", "--locked", "-p", "unica-product", "--bin", "unica"])
         self.assertIn(" ".join(product.LOCAL_BUILD), stderr.getvalue())
         self.assertIn(f"{product.MANIFEST_ENV}=DIR/manifest.json", stderr.getvalue())
 
     def test_wrong_source_target_toolchain_features_or_path_are_rejected(self):
+        """rule: INV.WIRE.SDK-TRANSPORT"""
         changes = [("features", ["default", "receipt-ledger-test-support"]), ("features", []),
                    ("profile", "release"), ("binary", "../unica"), ("mode", 0o755), ("schemaVersion", 999)]
         for field, value in changes:
@@ -174,7 +175,7 @@ class PreparedBinaryTests(unittest.TestCase):
                 files = [Path(p) for p in held["files"]]
                 self.assertEqual(
                     {p.name for p in files},
-                    {"bsl-analyzer.py", "rlm-bsl-index.py", "rlm-bsl-mcp.py", "v8-runner.py"},
+                    {"bsl-analyzer.py", "v8-runner.py"},
                 )
                 self.assertTrue(held["relative"])
                 self.assertTrue(held["executable"])

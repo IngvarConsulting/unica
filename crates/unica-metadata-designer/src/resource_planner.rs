@@ -12,7 +12,7 @@ use crate::interface::{
 use serde_json::{json, Map, Value};
 use std::path::PathBuf;
 use unica_address::address::{NodeKind, QualifiedAddress};
-use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+use unica_address::source_target::MetadataAddress;
 use unica_metadata::interface::InterfaceEditCounters;
 use unica_metadata::support::SupportOperation;
 use unica_metadata::support_edit::{SupportCapability, SupportObjectRule};
@@ -443,7 +443,7 @@ fn home_page_reference(reference: &str, role: bool) -> Option<PathBuf> {
     if !fits {
         return None;
     }
-    let address = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, reference).ok()?;
+    let address = MetadataAddress::parse_logical(reference).ok()?;
     unica_source_designer::layout::metadata_descriptor_relative(
         &address,
         unica_source_contract::SourceSetKind::Configuration,
@@ -631,18 +631,6 @@ pub fn parse_subsystem_operation(
             "values",
             "pass either `items` or `values`, not both",
         ));
-    }
-    if operation == "childSubsystem.remove" {
-        if let Some(key) = ["items", "values"]
-            .into_iter()
-            .find(|key| args.contains_key(*key))
-        {
-            return Err(bad(
-                    op_index,
-                    key,
-                    "childSubsystem.remove takes the child from its address: `Subsystem.Parent.Subsystem.Child`",
-                ));
-        }
     }
     contract
         .normalize(
@@ -867,7 +855,7 @@ pub fn parse_support_operation(
                     ))
                 }
             };
-            let target = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &raw)
+            let target = MetadataAddress::parse_logical(&raw)
                 .map_err(|error| bad(op_index, "at", error.to_string()))?;
             Ok(MetadataResourcePlan::SupportRule { target, rule })
         }
@@ -925,8 +913,7 @@ fn prove_support_form_owner(
     if !root.registers(kind, name) {
         return Err(invalid());
     }
-    let owner = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &format!("{kind}.{name}"))
-        .map_err(|_| invalid())?;
+    let owner = MetadataAddress::parse_logical(&format!("{kind}.{name}")).map_err(|_| invalid())?;
     let owner_path = unica_source_designer::layout::metadata_descriptor_relative(
         &owner,
         authority.source_kind(),
@@ -1014,6 +1001,66 @@ fn stage_support_state(
         ),
         op_index,
     ));
+    Ok(())
+}
+
+/// Removing an owned form also removes its entries from the configuration's
+/// home page. The product composition calls this after the form codec has
+/// staged its own resources, within the same retained proposal.
+pub fn stage_removed_form_home_page(
+    staged: &mut ApplyProposal<'_>,
+    authority: &dyn ApplySourceAuthority,
+    owner: &MetadataAddress,
+    form: &str,
+    op_index: usize,
+    provisional: &mut Vec<ProvisionalApplyEffect>,
+) -> Result<(), ApplyPlanError> {
+    use crate::remove::{meta_remove_composition_image, remove_home_page_form_entries};
+    use unica_source_contract::SourceSetKind;
+    if !matches!(
+        authority.source_kind(),
+        SourceSetKind::Configuration | SourceSetKind::Extension
+    ) {
+        return Ok(());
+    }
+    let relative = PathBuf::from(HOME_PAGE_RELATIVE);
+    let at_path = format!("ops[{op_index}].args.at");
+    let Some(preimage) = staged
+        .read(&relative)
+        .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?
+    else {
+        return Ok(());
+    };
+    let invalid = |message| {
+        ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message).at_path(at_path.clone())
+    };
+    let text = std::str::from_utf8(&preimage)
+        .map_err(|error| invalid(format!("HomePageWorkArea.xml is not UTF-8: {error}")))?
+        .trim_start_matches('\u{feff}');
+    let qualified = format!("{}.Form.{form}", owner.as_str());
+    let property = "HomePageWorkArea";
+    let (updated, removed) = remove_home_page_form_entries(text, &qualified).map_err(invalid)?;
+    if removed == 0 {
+        return Ok(());
+    }
+    staged
+        .replace(
+            &relative,
+            &preimage,
+            meta_remove_composition_image(&preimage, updated),
+        )
+        .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?;
+    let configuration = format!("{}:Configuration", authority.source_set_name());
+    let removed_form = format!("{}:{qualified}", authority.source_set_name());
+    provisional.push(ProvisionalApplyEffect::single(
+        relative,
+        DomainEvent::new(DomainEventKind::ConfigXmlChanged, "Configuration".to_string()),
+        op_index,
+    ).with_warning(json!({
+        "code":"composition_cleaned", "at":at_path, "count":1,
+        "entries":[{"at":configuration,"property":property}],
+        "message":format!("the removal also takes `{removed_form}` out of `{configuration}` → {property}"),
+    })));
     Ok(())
 }
 
@@ -1694,53 +1741,4 @@ fn descriptor_format_version(descriptor: &[u8]) -> Option<String> {
     let source = source.trim_start_matches('\u{feff}');
     let document = roxmltree::Document::parse(source).ok()?;
     unica_source_designer::roots::root_version_literal(source, document.root_element())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn child_remove_retired_shapes_keep_address_guidance() {
-        for (retired, key) in [
-            (json!({"items":[]}), "items"),
-            (json!({"values":{}}), "values"),
-            (json!({"items":null}), "items"),
-            (json!({"values":null}), "values"),
-            (json!({"items":[{}]}), "items"),
-            (json!({"values":{"name":null}}), "values"),
-        ] {
-            let mut args = retired.as_object().unwrap().clone();
-            args.insert("at".into(), json!("main:Subsystem.Parent.Subsystem.Child"));
-            let error = parse_subsystem_operation(
-                "childSubsystem.remove",
-                &args,
-                2,
-                "main",
-                unica_source_contract::SourceSetKind::Configuration,
-            )
-            .unwrap_err();
-            assert_eq!(error.path(), Some(format!("ops[2].args.{key}").as_str()));
-            assert!(
-                error
-                    .to_string()
-                    .contains("Subsystem.Parent.Subsystem.Child"),
-                "{retired}: {}",
-                error
-            );
-        }
-        let args = json!({"at":"main:Subsystem.Parent.Subsystem.Child","items":[],"values":{}});
-        let error = parse_subsystem_operation(
-            "childSubsystem.remove",
-            args.as_object().unwrap(),
-            2,
-            "main",
-            unica_source_contract::SourceSetKind::Configuration,
-        )
-        .unwrap_err();
-        assert_eq!(error.path(), Some("ops[2].args.values"));
-        assert!(error
-            .to_string()
-            .contains("pass either `items` or `values`, not both"));
-    }
 }

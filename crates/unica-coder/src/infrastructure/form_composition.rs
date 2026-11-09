@@ -26,10 +26,10 @@ use unica_workspace::discovery::ProjectDiscoveryReader;
 use unica_workspace::paths::normalize_path_identity;
 use unica_xml_format::text::*;
 const FORM_KINDS: &[&str] = &["Form", "CommonForm"];
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 type FormCompileAfterParentOwnerProbeHook = Box<dyn FnOnce(&Path)>;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 thread_local! {
     static FORM_COMPILE_AFTER_PARENT_OWNER_PROBE_HOOK:
         std::cell::RefCell<Option<FormCompileAfterParentOwnerProbeHook>> =
@@ -271,7 +271,11 @@ pub(crate) fn add_form_with_data(
         validate_metadata_owner_shape_8_3_27(&object_xml_full, context, "form.add")?;
         let object_source = read_utf8_sig_snapshot(&object_xml_full)?;
         let object_source_text = object_source.text;
-        let mut object_text = object_source_text.clone();
+        // Registration and the default-form property are written in the
+        // default-namespace spelling; a prefixed owner gets its prefix back.
+        let (mut object_text, object_form) =
+            unica_xml_format::prefix_form::PrefixForm::normalize(&object_source_text)
+                .map_err(|message| format!("form.add: {message}"))?;
         let (object_type, object_name) = detect_form_add_object(&object_text)?;
         let format_version = detect_format_version(&object_xml_full, context)?.to_string();
 
@@ -330,6 +334,9 @@ pub(crate) fn add_form_with_data(
                 updated
             }
         };
+        let object_text = object_form
+            .restore(&object_text)
+            .map_err(|message| format!("form.add: {message}"))?;
         let object_replacement = utf8_bom_bytes(
             &lxml_tree_serialized_text_like_source_preserving_final_newline(
                 &object_text,
@@ -701,7 +708,7 @@ pub(crate) fn compile_form(
         ) {
             transaction.guard_path_absent(owner_path)?;
         }
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         run_form_compile_after_parent_owner_probe_hook(&output_path);
         if let (Some(owner_path), Some(_)) = (
             owner_candidate.as_deref(),
@@ -1103,7 +1110,7 @@ pub(crate) fn invoke_mutation(
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn with_form_compile_after_parent_owner_probe_hook<T>(
     hook: impl FnOnce(&Path) + 'static,
     action: impl FnOnce() -> T,
@@ -1123,7 +1130,7 @@ fn with_form_compile_after_parent_owner_probe_hook<T>(
     action()
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn run_form_compile_after_parent_owner_probe_hook(path: &Path) {
     if let Some(hook) =
         FORM_COMPILE_AFTER_PARENT_OWNER_PROBE_HOOK.with(|slot| slot.borrow_mut().take())
@@ -1165,7 +1172,7 @@ struct FormEditSuccess {
 
 #[cfg(test)]
 #[path = "../../tests/platform/form_read_selector.rs"]
-pub(crate) mod form_read_selector_bridge_tests;
+pub(crate) mod medium_form_read_selector_bridge_tests;
 #[cfg(test)]
 #[path = "../../tests/platform/form_composition.rs"]
 pub(crate) mod tests;

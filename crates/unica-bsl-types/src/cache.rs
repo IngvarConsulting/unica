@@ -15,7 +15,6 @@ use flate2::Compression;
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use unica_documentation_sources::platform_help::corpus::read_markup_pages;
 
 /// The help containers of an installation: the Russian syntax help and the
 /// English one (`root` in the platform's naming).
@@ -32,6 +31,16 @@ impl Containers {
             english: root.join("shcntx_root.hbk"),
         }
     }
+}
+
+/// The pages of a help container: the port the catalog reads the help
+/// through. Its implementation knows the container format; the catalog
+/// knows only page paths and their markup.
+pub trait HelpPages {
+    /// Markup pages of `container` whose path starts with `prefix`, as
+    /// (path, markup) pairs.
+    fn markup_pages(&self, container: &[u8], prefix: &str)
+        -> Result<Vec<(String, String)>, String>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -66,11 +75,12 @@ pub fn catalog_path(state_root: &Path, platform: &str) -> PathBuf {
 }
 
 /// The catalog of `platform` from its cache under `state_root`, built from
-/// `containers` and cached when there is none or it is stale.
+/// `containers` through `help` and cached when there is none or it is stale.
 pub fn load_or_build(
     platform: &str,
     containers: &Containers,
     state_root: &Path,
+    help: &dyn HelpPages,
 ) -> Result<PlatformCatalog, CatalogError> {
     // The build names a directory of the state root and nothing else.
     let valid = !platform.is_empty()
@@ -93,8 +103,8 @@ pub fn load_or_build(
     let read = |path: &Path| {
         let bytes = std::fs::read(path)
             .map_err(|error| CatalogError(format!("{}: {error}", path.display())))?;
-        read_markup_pages(&bytes, "objects/")
-            .map_err(|error| CatalogError(format!("{}: {error:?}", path.display())))
+        help.markup_pages(&bytes, "objects/")
+            .map_err(|error| CatalogError(format!("{}: {error}", path.display())))
     };
     let cached = CachedCatalog {
         fingerprint,
@@ -171,14 +181,30 @@ fn write_cached(path: &Path, cached: &CachedCatalog) -> Result<(), CatalogError>
 }
 
 #[cfg(test)]
-mod tests {
+mod medium_tests {
     use super::*;
+    use std::cell::Cell;
 
+    /// Help that is no container: every read is refused and counted.
+    #[derive(Default)]
+    struct NoHelp {
+        reads: Cell<usize>,
+    }
+
+    impl HelpPages for NoHelp {
+        fn markup_pages(&self, _: &[u8], _: &str) -> Result<Vec<(String, String)>, String> {
+            self.reads.set(self.reads.get() + 1);
+            Err("not a help container".to_string())
+        }
+    }
+
+    /// rule: INV.ANALYSIS.PLATFORM-TYPE-CATALOG
     #[test]
     fn a_catalog_is_kept_per_user_build_and_generator_and_stale_when_the_help_changes() {
         let state = tempfile::tempdir().unwrap();
         let help = tempfile::tempdir().unwrap();
         let containers = Containers::of_installation(help.path());
+        let pages = NoHelp::default();
         std::fs::write(&containers.russian, b"ru").unwrap();
         std::fs::write(&containers.english, b"en").unwrap();
 
@@ -203,16 +229,18 @@ mod tests {
         assert_eq!(read.fingerprint, fingerprint(&containers).unwrap());
         // The cached catalog answers without reading the help.
         assert_eq!(
-            load_or_build("8.3.27.2074", &containers, state.path()).unwrap(),
+            load_or_build("8.3.27.2074", &containers, state.path(), &pages).unwrap(),
             catalog
         );
+        assert_eq!(pages.reads.get(), 0);
 
         // A platform reinstalled into the same directory changes the help:
         // the cached catalog no longer answers, a new one is built from it.
         std::fs::write(&containers.russian, b"another help").unwrap();
         assert_ne!(read.fingerprint, fingerprint(&containers).unwrap());
-        assert!(load_or_build("8.3.27.2074", &containers, state.path()).is_err());
+        assert!(load_or_build("8.3.27.2074", &containers, state.path(), &pages).is_err());
+        assert_eq!(pages.reads.get(), 1);
         // A build is a directory name, never a path out of the state root.
-        assert!(load_or_build("../x", &containers, state.path()).is_err());
+        assert!(load_or_build("../x", &containers, state.path(), &pages).is_err());
     }
 }

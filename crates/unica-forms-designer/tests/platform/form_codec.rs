@@ -1,6 +1,234 @@
 //! Original pure Form codec oracles; assertions retained once.
 use super::*;
 use serde_json::{json, Map};
+
+#[test]
+fn form_item_binding_facts_preserve_both_targets_and_legacy_normalization() {
+    let data = parse_form_event_evidence_xml(
+        r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20"><ChildItems>
+<Button name="Both" id="1"><DataPath> Объект.<!-- split -->Ref </DataPath><CommandName> Form.Command.Заполнить </CommandName></Button>
+<Button name="Command" id="2"><CommandName><![CDATA[ Form.StandardCommand.Close ]]></CommandName></Button>
+</ChildItems></Form>"#,
+    ).unwrap();
+    let both = &data.elements[0];
+    assert_eq!(both.data_path.as_deref(), Some(" Объект.Ref "));
+    assert_eq!(
+        both.command_name.as_deref(),
+        Some(" Form.Command.Заполнить ")
+    );
+    assert!(both.binding_limits.is_empty());
+    let legacy = both.binding.as_ref().unwrap();
+    assert_eq!(legacy.kind, "dataPath");
+    assert_eq!(legacy.target, "Объект.Ref");
+    let command = &data.elements[1];
+    assert_eq!(
+        command.command_name.as_deref(),
+        Some(" Form.StandardCommand.Close ")
+    );
+    let legacy = command.binding.as_ref().unwrap();
+    assert_eq!(legacy.kind, "standardCommand");
+    assert_eq!(legacy.target, "Close");
+}
+
+#[test]
+fn form_item_binding_facts_keep_damage_local_to_each_property() {
+    for property in ["DataPath", "CommandName"] {
+        for raw in [
+            format!("<{property}><Nested>bad</Nested></{property}>"),
+            format!("<{property}>One</{property}><{property}>Two</{property}>"),
+            format!("<{property} xmlns=\"urn:foreign\">Foreign</{property}>"),
+            format!("<{property} unknown=\"value\">Bad</{property}>"),
+        ] {
+            let other = if property == "DataPath" {
+                "<CommandName>CommonCommand.Probe</CommandName>"
+            } else {
+                "<DataPath>Объект.Code</DataPath>"
+            };
+            let data = parse_form_event_evidence_xml(&format!(
+                "<Form xmlns=\"http://v8.1c.ru/8.3/xcf/logform\" version=\"2.20\"><ChildItems><Button name=\"Probe\" id=\"1\">{raw}{other}</Button></ChildItems></Form>"
+            )).unwrap();
+            let element = &data.elements[0];
+            assert_eq!(element.binding_limits.len(), 1);
+            assert!(element.binding_limits[0].contains(property));
+            if property == "DataPath" {
+                assert!(element.data_path.is_none());
+                assert_eq!(element.command_name.as_deref(), Some("CommonCommand.Probe"));
+            } else {
+                assert!(element.command_name.is_none());
+                assert_eq!(element.data_path.as_deref(), Some("Объект.Code"));
+            }
+        }
+    }
+}
+#[test]
+fn form_command_string_values_preserve_space_and_resolve_expanded_type_names() {
+    for property in [
+        r#"<AssociatedTableElementId xsi:type=" xs:string "> Товары </AssociatedTableElementId>"#,
+        r#"<lf:AssociatedTableElementId xmlns:lf="http://v8.1c.ru/8.3/xcf/logform" xmlns="http://www.w3.org/2001/XMLSchema" xsi:type="string"> Товары </lf:AssociatedTableElementId>"#,
+        "<AssociatedTableElementId> Товары </AssociatedTableElementId>",
+    ] {
+        let data = parse_form_event_evidence_xml(&format!(r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xs="http://www.w3.org/2001/XMLSchema" version="2.20"><Commands><Command name="Fill" id="1">{property}<Action>Keep</Action></Command></Commands></Form>"#)).unwrap();
+        let command = &data.commands[0];
+        assert_eq!(
+            command.associated_table_element_id.as_deref(),
+            Some(" Товары "),
+            "{property}"
+        );
+        assert!(
+            command.property_limits.is_empty(),
+            "{:?}",
+            command.property_limits
+        );
+        assert_eq!(command.actions[0].handler, "Keep");
+    }
+}
+
+#[test]
+fn form_command_string_type_rejects_unresolved_or_wrong_qnames() {
+    for property in [
+        r#"<AssociatedTableElementId xsi:type="string">Товары</AssociatedTableElementId>"#,
+        r#"<AssociatedTableElementId xsi:type="missing:string">Товары</AssociatedTableElementId>"#,
+        r#"<AssociatedTableElementId xsi:type="xs:boolean">Товары</AssociatedTableElementId>"#,
+        r#"<AssociatedTableElementId xsi:type="xs:string:bad">Товары</AssociatedTableElementId>"#,
+        r#"<AssociatedTableElementId xsi:type="&#160;xs:string&#160;">Товары</AssociatedTableElementId>"#,
+        r#"<lf:AssociatedTableElementId xmlns:lf="http://v8.1c.ru/8.3/xcf/logform" xmlns="urn:foreign" xsi:type="string">Товары</lf:AssociatedTableElementId>"#,
+    ] {
+        let data = parse_form_event_evidence_xml(&format!(r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xs="http://www.w3.org/2001/XMLSchema" version="2.20"><Commands><Command name="Fill" id="1">{property}<Action>Keep</Action></Command></Commands></Form>"#)).unwrap();
+        let command = &data.commands[0];
+        assert!(command.associated_table_element_id.is_none(), "{property}");
+        assert_eq!(
+            command.property_limits,
+            ["AssociatedTableElementId is unreadable: malformed or duplicate command property"]
+        );
+        assert_eq!(command.actions[0].handler, "Keep");
+    }
+}
+
+#[test]
+fn form_command_option_reference_does_not_trim_non_xml_whitespace() {
+    let data = parse_form_event_evidence_xml(r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20"><Commands><Command name="Fill" id="1"><FunctionalOptions><Item>&#160;FunctionalOption.Bad&#160;</Item><Item>FunctionalOption.Keep</Item></FunctionalOptions><Action>Keep</Action></Command></Commands></Form>"#).unwrap();
+    let command = &data.commands[0];
+    assert_eq!(
+        command.functional_options,
+        Some(vec!["FunctionalOption.Keep".to_string()])
+    );
+    assert_eq!(
+        command.property_limits,
+        ["FunctionalOptions is unreadable: malformed or duplicate command property"]
+    );
+    assert_eq!(command.actions[0].handler, "Keep");
+}
+
+#[test]
+fn form_command_non_xml_whitespace_is_damage_in_boolean_and_enum_values() {
+    for (property, field) in [
+        ("<ModifiesSavedData>&#160;false&#160;</ModifiesSavedData>", "ModifiesSavedData"),
+        ("<CurrentRowUse>&#160;DontUse&#160;</CurrentRowUse>", "CurrentRowUse"),
+        ("<Picture><xr:Ref>CommonPicture.Fill</xr:Ref><xr:LoadTransparent>&#160;false&#160;</xr:LoadTransparent></Picture>", "LoadTransparent"),
+        ("<FunctionalOptions>&#160;</FunctionalOptions>", "FunctionalOptions"),
+    ] {
+        let data = parse_form_event_evidence_xml(&format!(r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" version="2.20"><Commands><Command name="Fill" id="1">{property}<Action>Keep</Action></Command></Commands></Form>"#)).unwrap();
+        let command = &data.commands[0];
+        assert!(command.modifies_saved_data.is_none());
+        assert!(command.current_row_use.is_none());
+        assert!(command.picture_load_transparent.is_none());
+        assert!(command.functional_options.is_none());
+        assert_eq!(command.property_limits, [format!("{field} is unreadable: malformed or duplicate command property")]);
+        assert_eq!(command.actions[0].handler, "Keep");
+        if field == "LoadTransparent" { assert_eq!(command.picture.as_deref(), Some("CommonPicture.Fill")); }
+    }
+}
+
+#[test]
+fn form_command_context_and_picture_transparency_survive_typed_reading() {
+    for transparent in [false, true] {
+        let text = format!(
+            r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xs="http://www.w3.org/2001/XMLSchema" version="2.20"><Commands><Command name="Fill" id="1"><CurrentRowUse>DontUse</CurrentRowUse><ModifiesSavedData>true</ModifiesSavedData><AssociatedTableElementId xsi:type="xs:string">Товары</AssociatedTableElementId><FunctionalOptions><Item>FunctionalOption.Prices</Item><Item>FunctionalOption.Taxes</Item></FunctionalOptions><Picture><xr:Ref>CommonPicture.Fill</xr:Ref><xr:LoadTransparent>{transparent}</xr:LoadTransparent></Picture><Action callType="After">FillAfter</Action></Command></Commands></Form>"#
+        );
+        let data = parse_form_event_evidence_xml(&text).unwrap();
+        let command = serde_json::to_value(&data.commands[0]).unwrap();
+        assert_eq!(command["currentRowUse"], "DontUse");
+        assert_eq!(command["modifiesSavedData"], true);
+        assert_eq!(command["associatedTableElementId"], "Товары");
+        assert_eq!(
+            command["functionalOptions"],
+            json!(["FunctionalOption.Prices", "FunctionalOption.Taxes"])
+        );
+        assert_eq!(command["picture"], "CommonPicture.Fill");
+        assert_eq!(command["pictureLoadTransparent"], transparent);
+        assert_eq!(command["actions"][0]["handler"], "FillAfter");
+        assert_eq!(command["actions"][0]["callType"], "After");
+    }
+}
+
+#[test]
+fn form_command_properties_distinguish_absence_empty_and_local_damage() {
+    let read = |body: &str| {
+        let xml = format!(
+            r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" version="2.20"><Commands><Command name="Fill" id="1"><Action>Keep</Action>{body}</Command></Commands></Form>"#
+        );
+        parse_form_event_evidence_xml(&xml)
+            .unwrap()
+            .commands
+            .remove(0)
+    };
+    let absent = read("");
+    assert!(absent.current_row_use.is_none());
+    assert!(absent.modifies_saved_data.is_none());
+    assert!(absent.associated_table_element_id.is_none());
+    assert!(absent.functional_options.is_none());
+    assert!(absent.picture_load_transparent.is_none());
+    assert!(absent.property_limits.is_empty());
+    let empty = read("<AssociatedTableElementId/><FunctionalOptions/>");
+    assert_eq!(empty.associated_table_element_id.as_deref(), Some(""));
+    assert_eq!(empty.functional_options, Some(Vec::new()));
+    assert!(empty.property_limits.is_empty());
+    for (raw, property) in [
+        ("<CurrentRowUse/>", "CurrentRowUse"),
+        ("<CurrentRowUse>SelectionPresentation</CurrentRowUse>", "CurrentRowUse"),
+        ("<CurrentRowUse>Use</CurrentRowUse><CurrentRowUse>DontUse</CurrentRowUse>", "CurrentRowUse"),
+        ("<ModifiesSavedData/>", "ModifiesSavedData"),
+        ("<ModifiesSavedData>yes</ModifiesSavedData>", "ModifiesSavedData"),
+        ("<ModifiesSavedData><Nested>true</Nested></ModifiesSavedData>", "ModifiesSavedData"),
+        ("<ModifiesSavedData xmlns='urn:vendor'>true</ModifiesSavedData>", "ModifiesSavedData"),
+        ("<AssociatedTableElementId>One</AssociatedTableElementId><AssociatedTableElementId>Two</AssociatedTableElementId>", "AssociatedTableElementId"),
+        ("<FunctionalOptions/><FunctionalOptions/>", "FunctionalOptions"),
+    ] {
+        let command = read(raw);
+        assert_eq!(command.actions[0].handler,"Keep");
+        assert_eq!(command.property_limits.len(),1,"{raw}");
+        assert!(command.property_limits[0].contains(property));
+    }
+    for (reference, transparent, expected_reference, expected_transparent) in [
+        (
+            "<xr:Ref>CommonPicture.Fill</xr:Ref>",
+            "<xr:LoadTransparent>bad</xr:LoadTransparent>",
+            Some("CommonPicture.Fill"),
+            None,
+        ),
+        (
+            "<xr:Ref>One</xr:Ref><xr:Ref>Two</xr:Ref>",
+            "<xr:LoadTransparent>false</xr:LoadTransparent>",
+            None,
+            Some(false),
+        ),
+    ] {
+        let command = read(&format!("<Picture>{reference}{transparent}</Picture>"));
+        assert_eq!(command.picture.as_deref(), expected_reference);
+        assert_eq!(command.picture_load_transparent, expected_transparent);
+        assert_eq!(command.property_limits.len(), 1);
+    }
+    let partial=read("<FunctionalOptions><Item>FunctionalOption.Keep</Item><Item><Bad/></Item><Item>FunctionalOption.123</Item><Item>FunctionalOption.Bad-Name</Item><Item>FunctionalOption./broken</Item><Item>FunctionalOption.AlsoKeep</Item></FunctionalOptions>");
+    assert_eq!(
+        partial.functional_options,
+        Some(vec![
+            "FunctionalOption.Keep".into(),
+            "FunctionalOption.AlsoKeep".into()
+        ])
+    );
+    assert_eq!(partial.property_limits.len(), 1);
+}
+
 #[test]
 fn generated_form_module_uses_the_8_3_27_crlf_serialization() {
     assert_platform_text_uses_crlf_without_bare_lf(form_add_module_bsl());
@@ -34,9 +262,10 @@ fn form_info_projects_direct_command_action_as_execute_binding() {
     assert_eq!(action.call_type, None);
 }
 
-/// #1385: a form is registered in the platform slot of forms, which
+/// A form is registered in the platform slot of forms, which
 /// depends on the owner kind: a catalog writes its forms after its tabular
 /// sections, a document before them; templates and commands follow.
+/// rule: INV.SOURCE.CHILD-OBJECTS-PLATFORM-ORDER
 #[test]
 fn form_registration_takes_the_platform_slot_of_its_owner_kind() {
     fn owner(kind: &str, children: &[&str]) -> String {
@@ -111,6 +340,32 @@ fn form_registration_takes_the_platform_slot_of_its_owner_kind() {
     ] {
         let updated = register_form_in_object_text(&owner(kind, existing), "New");
         assert_eq!(children(&updated), expected, "{kind} {existing:?}");
+        // A prefixed owner gets the same registration with its own prefix.
+        let prefixed_owner = prefixed(&owner(kind, existing));
+        let updated_prefixed = register_form_in_object_text(&prefixed_owner, "New");
+        assert_eq!(updated_prefixed, prefixed(&updated), "{kind} {existing:?}");
+        assert_eq!(
+            register_form_in_object_text(&updated_prefixed, "New"),
+            updated_prefixed
+        );
+    }
+    /// Every element of these synthetic owners is an MDClasses element.
+    fn prefixed(xml: &str) -> String {
+        let mut text = String::new();
+        let mut rest = xml;
+        while let Some(at) = rest.find('<') {
+            text.push_str(&rest[..=at]);
+            rest = &rest[at + 1..];
+            if rest.starts_with('/') {
+                text.push('/');
+                rest = &rest[1..];
+            }
+            if rest.starts_with(|ch: char| ch.is_ascii_alphabetic()) {
+                text.push_str("md:");
+            }
+        }
+        text.push_str(rest);
+        text.replacen("xmlns=", "xmlns:md=", 1)
     }
 }
 
@@ -146,6 +401,57 @@ fn form_edit_rejects_malformed_or_unsupported_attribute_columns() {
             "expected {expected:?}, got {error:?}"
         );
     }
+}
+
+#[test]
+fn placement_after_column_group_preserves_the_whole_subtree() {
+    let group = "<ColumnGroup name=\"Group\" id=\"2\"><ChildItems><InputField name=\"Nested\" id=\"3\"/></ChildItems></ColumnGroup>";
+    let mut xml = format!(
+        "<Form xmlns=\"{FORM_LOGFORM_NS}\"><ChildItems><Table name=\"Rows\" id=\"1\"><ChildItems>{group}<InputField name=\"Last\" id=\"4\"/></ChildItems></Table></ChildItems></Form>"
+    );
+    let target = form_edit_target_child_items_range(&xml, None, Some("Group")).unwrap();
+    form_edit_insert_lines_into_target(
+        &mut xml,
+        target,
+        &["<InputField name=\"Added\" id=\"5\"/>".to_string()],
+    )
+    .unwrap();
+    assert!(
+        xml.contains(group),
+        "the existing group must remain byte-for-byte intact"
+    );
+    let doc = Document::parse(&xml).unwrap();
+    let rows = doc
+        .descendants()
+        .find(|n| n.attribute("name") == Some("Rows"))
+        .unwrap();
+    let names = form_child(rows, "ChildItems")
+        .unwrap()
+        .children()
+        .filter_map(|n| n.attribute("name"))
+        .collect::<Vec<_>>();
+    assert_eq!(names, ["Group", "Added", "Last"]);
+    assert!(form_edit_target_child_items_range(&xml, None, Some("Missing")).is_err());
+}
+
+#[test]
+fn column_group_placement_keeps_namespace_base_form_and_event_boundaries() {
+    let own = "<ColumnGroup name=\"Group\" id=\"1\"/>";
+    let foreign = "<ColumnGroup xmlns=\"urn:foreign\" name=\"Group\"/>";
+    let base = "<BaseForm><ChildItems><ColumnGroup name=\"Group\"/></ChildItems></BaseForm>";
+    let xml = format!(
+        "<Form xmlns=\"{FORM_LOGFORM_NS}\"><ChildItems>{own}{foreign}</ChildItems>{base}</Form>"
+    );
+    let doc = Document::parse(&xml).unwrap();
+    let target = form_edit_find_placement_element(doc.root_element(), "Group")
+        .unwrap()
+        .unwrap();
+    assert_eq!(target.attribute("id"), Some("1"));
+    assert!(form_edit_find_element_nodes(doc.root_element(), "Group").is_empty());
+
+    let xml = xml.replace(foreign, &format!("{foreign}{own}"));
+    let doc = Document::parse(&xml).unwrap();
+    assert!(form_edit_find_placement_element(doc.root_element(), "Group").is_err());
 }
 
 #[test]
@@ -380,7 +686,7 @@ fn form_compile_writes_command_properties_in_platform_order() {
 }
 
 /// Each command key `command.add` publishes is written exactly as an
-/// 8.3.27 dump writes it (#1439). Every expected block repeats, with
+/// 8.3.27 dump writes it. Every expected block repeats, with
 /// neutral names and texts, the shape of a `<Command>` from a platform
 /// dump that carries only the keys under test: tabs, element order,
 /// multilingual ToolTip, Shortcut text, Picture with `xr:Ref` and
@@ -500,7 +806,10 @@ fn form_compile_writes_the_same_command_block_as_form_command_add() {
         "action": "СписокОбновить",
         "representation": "Picture"
     }]);
-    let mut ids = FormIdAllocator { next: 4 };
+    let mut ids = FormEmissionContext {
+        next: 4,
+        ..Default::default()
+    };
     let mut lines = Vec::new();
     emit_form_commands(&mut lines, Some(&commands), "\t", &mut ids, Some("ru")).unwrap();
     assert_eq!(
@@ -510,7 +819,7 @@ fn form_compile_writes_the_same_command_block_as_form_command_add() {
 }
 
 /// The button value set is not the command one: 8.3.27 does not load
-/// `PictureAndText` on a form command (#1436), so compile writes nothing.
+/// `PictureAndText` on a form command, so compile writes nothing.
 #[test]
 fn form_compile_refuses_button_representation_on_command() {
     for invalid in ["PictureAndText", "None", "Compact"] {
@@ -1836,7 +2145,7 @@ fn form_compile_accepts_every_8_3_27_element_enum_value() {
 #[test]
 fn form_element_emitters_escape_enum_text_when_preflight_is_bypassed() {
     let mut lines = vec!["<Form>".to_string()];
-    let mut ids = FormIdAllocator::new();
+    let mut ids = FormEmissionContext::new();
     let check = json!({
         "checkBoxType": "</CheckBoxType><Injected/>",
         "titleLocation": "</TitleLocation><Injected/>"
@@ -2595,7 +2904,7 @@ fn text_document_binding_uses_the_qname_namespace_and_requires_a_path() {
 }
 
 #[test]
-fn retired_form_compiler_does_not_accept_text_document_field() {
+fn form_compiler_refuses_text_doc_as_an_unknown_element_key() {
     let error = form_compile_xml(
         &json!({
             "attributes":[{"name":"Protocol","type":"d5p1:TextDocument"}],
@@ -2604,7 +2913,10 @@ fn retired_form_compiler_does_not_accept_text_document_field() {
         "2.20",
     )
     .unwrap_err();
-    assert!(error.contains("only by item.add"), "{error}");
+    assert!(
+        error.contains("unknown element key `textDoc`") && !error.contains("item.add"),
+        "{error}"
+    );
 }
 
 #[test]
@@ -2660,9 +2972,9 @@ fn html_document_field_matches_platform_fixture_and_preserves_requested_properti
         .filter(|node| node.is_element())
         .map(|node| node.tag_name().name())
         .collect::<Vec<_>>();
-    // Канон ревью #1389 задаёт общий порядок HTML- и TextDocumentField.
+    // Канон задаёт общий порядок HTML- и TextDocumentField.
     // Положение SkipOnInput после ReadOnly подтверждено живым кругом
-    // 8.3.27.2074 при ревью #1389; выгрузка HTML ниже сверяет значения
+    // 8.3.27.2074 при сверке; выгрузка HTML ниже сверяет значения
     // DataPath, SkipOnInput, TitleLocation и companions.
     assert_eq!(
         child_names,
@@ -2926,7 +3238,7 @@ const DUMP_SHAPED_REFRESH_COMMAND: &str = concat!(
 );
 
 /// A form edit takes the line endings of the form: a CRLF export stays CRLF,
-/// an LF or mixed form keeps them as they were (#1996).
+/// an LF or mixed form keeps them as they were.
 #[test]
 fn form_edit_inserts_lines_with_the_form_line_ending() {
     let form = |newline: &str| {
@@ -2966,4 +3278,198 @@ fn form_edit_inserts_lines_with_the_form_line_ending() {
         has_bare_lf(&edited) && edited.contains("\r\n"),
         "{edited:?}"
     );
+}
+
+#[test]
+fn column_group_add_rejects_nonfields_for_direct_and_sibling_placement() {
+    for placement in [json!({"into":"Columns"}), json!({"after":"Existing"})] {
+        for element in [
+            json!({"button":"Added","command":"Run"}),
+            json!({"group":"Added"}),
+            json!({"label":"Added"}),
+        ] {
+            let before = format!(
+                r#"<Form xmlns="{FORM_LOGFORM_NS}"><ChildItems><Table name="Rows" id="1"><ChildItems><ColumnGroup name="Columns" id="2"><ChildItems><InputField name="Existing" id="3"/></ChildItems></ColumnGroup></ChildItems></Table></ChildItems></Form>"#
+            );
+            let mut xml = before.clone();
+            let mut definition = placement.clone();
+            definition["elements"] = json!([element]);
+            let result = form_edit_apply_definition(
+                &mut xml,
+                &definition,
+                std::path::Path::new("Main/Form.xml"),
+                0,
+                Some("ru"),
+            );
+            let error = match result {
+                Err(error) => error,
+                Ok(_) => panic!("accepted {definition}"),
+            };
+            assert!(error.contains("column group holds only fields"), "{error}");
+            assert_eq!(xml, before);
+        }
+    }
+}
+
+#[test]
+fn column_group_add_accepts_supported_fields_and_preserves_their_container() {
+    for (element, tag) in [
+        (json!({"input":"Added"}), "InputField"),
+        (json!({"labelField":"Added"}), "LabelField"),
+        (json!({"check":"Added"}), "CheckBoxField"),
+        (json!({"html":"Added"}), "HTMLDocumentField"),
+        (
+            json!({"textDoc":"Added","path":"Text"}),
+            "TextDocumentField",
+        ),
+    ] {
+        let mut xml = format!(
+            r#"<Form xmlns="{FORM_LOGFORM_NS}" xmlns:v8="http://v8.1c.ru/8.1/data/core"><ChildItems><Table name="Rows" id="1"><ChildItems><ColumnGroup name="Columns" id="2"/></ChildItems></Table></ChildItems><Attributes><Attribute name="Text" id="1"><Type><v8:Type xmlns:txt="http://v8.1c.ru/8.1/data/txtedt">txt:TextDocument</v8:Type></Type></Attribute></Attributes></Form>"#
+        );
+        form_edit_apply_definition(
+            &mut xml,
+            &json!({"into":"Columns","elements":[element]}),
+            std::path::Path::new("Main/Form.xml"),
+            0,
+            Some("ru"),
+        )
+        .unwrap();
+        let doc = Document::parse(&xml).unwrap();
+        let added = doc
+            .descendants()
+            .find(|node| node.attribute("name") == Some("Added"))
+            .unwrap();
+        assert_eq!(added.tag_name().name(), tag);
+        assert_eq!(
+            added
+                .parent_element()
+                .unwrap()
+                .parent_element()
+                .unwrap()
+                .attribute("name"),
+            Some("Columns")
+        );
+    }
+}
+
+#[test]
+fn generated_form_main_attributes_follow_the_script_variant() {
+    for (kind, purpose, russian, english) in [
+        ("Catalog", "Object", "Объект", "Object"),
+        ("Catalog", "List", "Список", "List"),
+        ("Catalog", "Choice", "Список", "List"),
+        ("InformationRegister", "Record", "Запись", "Record"),
+    ] {
+        for (variant, attribute, bar) in [
+            (ScriptVariant::Russian, russian, "ФормаКоманднаяПанель"),
+            (ScriptVariant::English, english, "FormCommandBar"),
+        ] {
+            let xml = form_add_content_xml_with_variant(kind, "Sample", purpose, "2.20", variant)
+                .unwrap();
+            let doc = roxmltree::Document::parse(&xml).unwrap();
+            let root = doc.root_element();
+            assert_eq!(
+                root.children()
+                    .find(|n| n.has_tag_name("AutoCommandBar"))
+                    .unwrap()
+                    .attribute("name"),
+                Some(bar)
+            );
+            assert_eq!(
+                root.descendants()
+                    .find(|n| n.has_tag_name("Attribute"))
+                    .unwrap()
+                    .attribute("name"),
+                Some(attribute)
+            );
+            assert_platform_text_uses_crlf_without_bare_lf(&xml);
+        }
+    }
+    assert_platform_text_uses_crlf_without_bare_lf(form_add_module_bsl_with_variant(
+        ScriptVariant::English,
+    ));
+}
+
+#[test]
+fn english_companions_preserve_existing_names_and_repeat_without_changes() {
+    let mut xml = form_add_content_xml("Catalog", "Sample", "Object", "2.20").unwrap();
+    let before = xml.clone();
+    let root_start = xml.find("<Form ").unwrap();
+    let definition = json!({"elements": [{"button": "Обновить", "name": "Обновить"}]});
+    form_edit_apply_definition_with_variant(
+        &mut xml,
+        &definition,
+        Path::new("Form.xml"),
+        root_start,
+        None,
+        ScriptVariant::English,
+    )
+    .unwrap();
+    let doc = roxmltree::Document::parse(&xml).unwrap();
+    let root = doc.root_element();
+    assert_eq!(
+        root.children()
+            .find(|n| n.has_tag_name("AutoCommandBar"))
+            .unwrap()
+            .attribute("name"),
+        Some("ФормаКоманднаяПанель")
+    );
+    assert!(root
+        .descendants()
+        .any(|n| n.has_tag_name("Attribute") && n.attribute("name") == Some("Объект")));
+    assert!(root.descendants().any(|n| n.has_tag_name("ExtendedTooltip")
+        && n.attribute("name") == Some("ОбновитьExtendedTooltip")));
+    // Attribute subtree is byte-for-byte unchanged by adding the button.
+    let attributes = |text: &str| {
+        text[text.find("\t<Attributes>").unwrap()
+            ..text.find("\t</Attributes>").unwrap() + "\t</Attributes>".len()]
+            .to_string()
+    };
+    assert_eq!(attributes(&xml), attributes(&before));
+    let first = xml.clone();
+    form_edit_apply_definition_with_variant(
+        &mut xml,
+        &definition,
+        Path::new("Form.xml"),
+        root_start,
+        None,
+        ScriptVariant::English,
+    )
+    .unwrap();
+    assert_eq!(xml, first);
+}
+
+#[test]
+fn english_table_companions_match_the_platform_dump_in_both_command_bar_modes() {
+    // Names are independently present in platform_8_3_27/external_artifacts/
+    // epf/SyntheticProcessor/Forms/Main/Ext/Form.xml (LinesSearchString etc.).
+    for autofill in [None, Some(true), Some(false)] {
+        let mut table = json!({"table": "Lines", "path": "Object.Lines"});
+        if let Some(value) = autofill {
+            table["tableAutofill"] = json!(value);
+        }
+        let mut lines = Vec::new();
+        let mut context = FormEmissionContext::with_script_variant(ScriptVariant::English);
+        emit_form_element(&mut lines, &table, "", &mut context, None).unwrap();
+        let fragment = format!("<Form {FORM_ROOT_NAMESPACES}>{}</Form>", lines.join("\n"));
+        let doc = roxmltree::Document::parse(&fragment).unwrap();
+        let names = doc
+            .descendants()
+            .filter_map(|node| node.attribute("name"))
+            .collect::<Vec<_>>();
+        for expected in [
+            "LinesCommandBar",
+            "LinesSearchString",
+            "LinesViewStatus",
+            "LinesSearchControl",
+            "LinesSearchStringContextMenu",
+            "LinesViewStatusExtendedTooltip",
+            "LinesSearchControlExtendedTooltip",
+        ] {
+            assert!(
+                names.contains(&expected),
+                "{autofill:?}: missing {expected}: {names:?}"
+            );
+        }
+    }
 }

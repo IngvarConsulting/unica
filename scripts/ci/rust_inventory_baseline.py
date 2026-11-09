@@ -16,6 +16,8 @@ or git failure stops.
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -25,8 +27,12 @@ import sys
 import tempfile
 
 ARTIFACT = "ci-rust-inventory-"
-WORKFLOW = ".github/workflows/unica-plugin-release.yml"
+# Ночь публикует базу от своего имени, вызывая `release.yml`. Прежний файл читается,
+# пока его артефакты не истекут: первый прогон сравнивается с его базой.
+WORKFLOW = ".github/workflows/release.yml"
+WORKFLOWS = {WORKFLOW, ".github/workflows/nightly.yml", ".github/workflows/unica-plugin-release.yml"}
 ANCESTORS = 200
+DESCRIPTION_WORKERS = 8
 PAGES = 10
 REMOVED = re.compile(r"^[ \t*-]*Removes-test-target:[ \t]*`?([^\s`]+)`?[ \t]*$", re.MULTILINE)
 REMOVED_TEST = re.compile(r"^[ \t*-]*Removes-test:[ \t]*`?([^\s`]+)`?[ \t]*$", re.MULTILINE)
@@ -43,6 +49,14 @@ def git(root: Path, *args: str) -> str:
 
 class NotFound(RuntimeError):
     pass
+
+
+# Срок снятия: раннеры перешли на macos-15 31.10.2026, инвентарь хранится
+# 90 дней. Сверка с macos-14 здесь и в `ci_rust_lanes.py` снимается вместе с
+# тестами, когда у каждой релизной линии будет прогон позже 31.10.2026, или
+# после 29.01.2027 — что наступит раньше.
+class ExpiredPlans(ValueError):
+    """Планы macos-14 истекли: перенос на macos-15 сверить не с чем."""
 
 
 def gh(*args: str) -> str:
@@ -96,9 +110,54 @@ def download(repository: str, artifact: dict) -> dict:
     if (document.get("sha") != run["head_sha"] or document.get("runId") != str(run["id"])
         or ARTIFACT + str(document.get("profile")) != artifact["name"]):
         raise ValueError("previous inventory does not match its artifact run")
-    if gh("api", f"repos/{repository}/actions/runs/{run['id']}", "--jq", ".path").strip() != WORKFLOW:
+    if gh("api", f"repos/{repository}/actions/runs/{run['id']}", "--jq", ".path").strip() not in WORKFLOWS:
         raise ValueError("previous inventory was published by another workflow")
     return document
+
+
+def previous_macos_plans(repository: str, repository_id: int, inventory: dict) -> dict:
+    """Keep the original lane identity beside the older compact inventory."""
+    run_id, attempt = str(inventory.get("runId", "")), str(inventory.get("attempt", ""))
+    if not run_id.isdigit() or not attempt.isdigit():
+        raise ValueError("previous macOS inventory has no workflow run or attempt")
+    run = json.loads(gh("api", f"repos/{repository}/actions/runs/{run_id}/attempts/{attempt}"))
+    if (run.get("conclusion") != "success" or str(run.get("id")) != run_id
+        or str(run.get("run_attempt")) != attempt or run.get("head_sha") != inventory["sha"]
+        or run.get("path") not in WORKFLOWS or run.get("repository", {}).get("id") != repository_id
+        or run.get("head_repository", {}).get("id") != repository_id):
+        raise ValueError("previous macOS plan requires the successful inventory workflow attempt of this repository")
+    listed = json.loads(gh("api", f"repos/{repository}/actions/runs/{run_id}/artifacts?per_page=100"))["artifacts"]
+    matches = [item for item in listed if item.get("name") == "plan-macos-14" and not item.get("expired")]
+    if not matches:
+        raise ExpiredPlans(f"run {run_id} has no live plan-macos-14 artifact")
+    if len(matches) != 1:
+        raise ValueError("missing or duplicate previous macos-14 plan artifact")
+    artifact = matches[0]
+    metadata = json.loads(gh("api", f"repos/{repository}/actions/artifacts/{artifact['id']}"))
+    origin = metadata.get("workflow_run", {})
+    if (metadata.get("id") != artifact["id"] or metadata.get("name") != "plan-macos-14"
+        or metadata.get("expired") or str(origin.get("id")) != run_id
+        or origin.get("head_sha") != inventory["sha"] or origin.get("repository_id") != repository_id
+        or origin.get("head_repository_id") != repository_id):
+        raise ValueError("previous macOS plan artifact belongs to another workflow source")
+    with tempfile.TemporaryDirectory() as temporary:
+        gh("run", "download", run_id, "--repo", repository, "--name", "plan-macos-14", "--dir", temporary)
+        plans = []
+        hashes = []
+        for path in sorted(Path(temporary).rglob("lane.json")):
+            payload = path.read_bytes()
+            plan = json.loads(payload)
+            if (plan.get("runner") != "macos-14" or plan.get("profile") != inventory["profile"]
+                or plan.get("identity", {}).get("sha") != inventory["sha"]
+                or str(plan.get("runId")) != run_id or str(plan.get("attempt")) != attempt):
+                raise ValueError("previous macOS lane plan belongs to another revision, profile, run or attempt")
+            plans.append(plan)
+            hashes.append([str(path.relative_to(temporary)), hashlib.sha256(payload).hexdigest()])
+    if not plans:
+        raise ValueError("previous macOS artifact has no lane plans")
+    return {"source": {"artifact": "plan-macos-14", "artifactId": artifact["id"], "runId": run_id,
+                       "attempt": attempt, "headSha": inventory["sha"],
+                       "planFilesSha256": hashlib.sha256(json.dumps(hashes).encode()).hexdigest()}, "plans": plans}
 
 
 def pull_requests(root: Path, revisions: str) -> set[int]:
@@ -134,8 +193,12 @@ def explanations(root: Path, repository: str, base: str | None, profile: str, ow
         resetting = merged
     declared: dict[str, list[int]] = {}
     targets, tests, reset = set(), set(), set()
-    for number in sorted(merged | resetting):
-        body = description(repository, number)
+    numbers = sorted(merged | resetting)
+    # Описания читаются параллельно: после нескольких красных ночей база старая,
+    # и последовательные запросы по сотне PR занимали минуты.
+    with ThreadPoolExecutor(max_workers=DESCRIPTION_WORKERS) as pool:
+        bodies = list(pool.map(lambda number: description(repository, number), numbers))
+    for number, body in zip(numbers, bodies, strict=True):
         if body is None:
             continue
         for kind, pattern, items in (("Removes-test-target", REMOVED, targets), ("Removes-test", REMOVED_TEST, tests)):
@@ -157,7 +220,7 @@ def own_pull_request() -> int | None:
     return int(json.loads(Path(path).read_text(encoding="utf-8"))["pull_request"]["number"])
 
 
-def baseline(root: Path, repository: str, repository_id: int, profile: str, own: int | None = None) -> dict:
+def baseline(root: Path, repository: str, repository_id: int, profile: str, own: int | None = None, runners: list[str] | None = None) -> dict:
     ancestors = git(root, "rev-list", "--first-parent", f"--max-count={ANCESTORS}", "HEAD").split()
     artifact = find(repository, repository_id, profile, ancestors)
     if artifact is None:
@@ -165,9 +228,24 @@ def baseline(root: Path, repository: str, repository_id: int, profile: str, own:
                 "inventory": None, "explanations": explanations(root, repository, None, profile, own)}
     source = {"artifact": artifact["name"], "runId": artifact["workflow_run"]["id"],
               "headSha": artifact["workflow_run"]["head_sha"]}
-    return {"schemaVersion": 1, "source": source, "searchedAncestors": len(ancestors),
-            "inventory": download(repository, artifact),
-            "explanations": explanations(root, repository, source["headSha"], profile, own)}
+    inventory = download(repository, artifact)
+    document = {"schemaVersion": 1, "source": source, "searchedAncestors": len(ancestors),
+                "inventory": inventory,
+                "explanations": explanations(root, repository, source["headSha"], profile, own)}
+    if "macos-15" in (runners or []) and any(item.get("runner") == "macos-14" for item in inventory["configurations"]):
+        try:
+            document["previousPlans"] = previous_macos_plans(repository, repository_id, inventory)
+        except ExpiredPlans as error:
+            # Артефакт плана живёт 7 дней, инвентарь 90. Без плана перенос не сверить,
+            # поэтому macos-14 снимается с базы явно. Linux сравнивается как обычно,
+            # снятые из исходников тесты проверяет `removed_tests.py --baseline`, а
+            # macOS снова сравнивается, как только появится инвентарь на macos-15.
+            print(f"::warning::macOS не сравнивается с базой {source['headSha'][:9]}: {error}", flush=True)
+            inventory["configurations"] = [item for item in inventory["configurations"] if item.get("runner") != "macos-14"]
+            if inventory.get("jobs") is not None:
+                inventory["jobs"] = [job for job in inventory["jobs"] if job != "Rust (macos-14)"]
+            document["droppedRunners"] = ["macos-14"]
+    return document
 
 
 def summary_text(document: dict) -> str:
@@ -188,10 +266,14 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--profile", required=True)
     parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--runners", default="[]", help="actual current workflow runner matrix as JSON")
     parser.add_argument("--repo-root", type=Path, default=Path.cwd())
     args = parser.parse_args()
+    runners = json.loads(args.runners)
+    if not isinstance(runners, list) or any(not isinstance(host, str) for host in runners):
+        raise ValueError("runner matrix must be a list of runner labels")
     document = baseline(args.repo_root, os.environ["GITHUB_REPOSITORY"], int(os.environ["GITHUB_REPOSITORY_ID"]),
-                        args.profile, own_pull_request())
+                        args.profile, own_pull_request(), runners)
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(document, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     visible = json.dumps({key: document[key] for key in ("source", "searchedAncestors", "explanations")}, indent=2)

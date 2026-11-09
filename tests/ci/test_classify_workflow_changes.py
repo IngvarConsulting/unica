@@ -9,6 +9,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from collector_rules import without_repository_rule_index
 
 def load_classifier_module():
     module_path = Path(__file__).resolve().parents[2] / "scripts" / "ci" / "classify-workflow-changes.py"
@@ -66,7 +67,7 @@ class GitEventClassificationTests(unittest.TestCase):
         self.assertFalse(scope.docs_only)
         self.assertTrue(all(scope.classification.as_dict().values()), scope)
 
-    def invoke_workflow(self, repo: Path, event: dict, head: str, runners: str = '["ubuntu-latest", "macos-14"]'):
+    def invoke_workflow(self, repo: Path, event: dict, head: str, runners: str = '["ubuntu-latest", "macos-15"]'):
         payload = repo / "event.json"
         payload.write_text(json.dumps(event))
         script = Path(__file__).resolve().parents[2] / "scripts/ci/classify-workflow-changes.py"
@@ -91,7 +92,7 @@ class GitEventClassificationTests(unittest.TestCase):
         self.assertTrue(all(outputs[name] == "false" for name in OUTPUT_NAMES))
         self.assertFalse((repo / "routing/run.json").exists())
         self.assertEqual(2, len(list((repo / "routing").rglob("*.*"))))
-        for runner in ("ubuntu-latest", "macos-14"):
+        for runner in ("ubuntu-latest", "macos-15"):
             marker = json.loads((repo / f"routing/results-rust-{runner}/run.json").read_text())
             self.assertEqual(("rust", "queue", "main", runner, head),
                 tuple(marker[field] for field in ("ecosystem", "profile", "ref", "runner", "sha")))
@@ -104,17 +105,18 @@ class GitEventClassificationTests(unittest.TestCase):
         spec = importlib.util.spec_from_file_location("collect_event_results", collector_path)
         collector = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(collector)
+        without_repository_rule_index(self, collector)
         jobs = repo / "jobs.json"
         jobs.write_text(json.dumps({"jobs": [{"name": "Rust tests (complete inventory)", "conclusion": "skipped"}]}))
         collector.collect(repo / "routing", repo / "report", jobs, "", "")
         report = json.loads((repo / "report/main/run.json").read_text())
         self.assertEqual(head, report["sha"])
-        self.assertEqual({"ubuntu-latest", "macos-14"}, {item["runner"] for item in report["routing_skips"]})
+        self.assertEqual({"ubuntu-latest", "macos-15"}, {item["runner"] for item in report["routing_skips"]})
         self.assertTrue(all(item["inventory_count"] == 0 for item in report["routing_skips"]))
         self.assertEqual([], list((repo / "report").rglob("*-result.json")))
 
     def test_windows_clippy_job_routes_a_docs_only_queue_on_its_own(self) -> None:
-        """Джоба `Clippy (windows-latest)` маршрутизирует себя тем же классификатором (#2152)."""
+        """Джоба `Clippy (windows-latest)` маршрутизирует себя тем же классификатором."""
         repo, base = self.repository()
         (repo / "README.md").write_text("After\n")
         head = self.commit(repo)
@@ -292,8 +294,8 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
 
     def test_platform_independent_domain_or_application_rust_uses_primary_rust_contour(self) -> None:
         for path in (
-            "crates/unica-coder/src/domain/cache.rs",
-            "crates/unica-coder/src/application/metadata.rs",
+            "crates/unica-domain/src/cache.rs",
+            "crates/unica-application/src/application/metadata.rs",
             "vendor/ureq/src/response.rs",
             "vendor/ureq/src/completed_response_recycling.rs",
         ):
@@ -337,7 +339,7 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
             "crates/unica-coder/Cargo.toml",
             "rust-toolchain.toml",
             ".config/nextest.toml",
-            ".config/python-sizes.toml",
+            "scripts/ci/python_sizes.py",
             "vendor/ureq/Cargo.toml",
             "vendor/ureq/Cargo.lock",
             "vendor/ureq/.config/nextest.toml",
@@ -358,28 +360,26 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
             with self.subTest(path=path):
                 self.assert_classification([path])
 
-    def test_search_and_rlm_mechanism_changes_route_the_long_integration_test(self) -> None:
+    def test_search_mechanism_changes_route_the_long_integration_test(self) -> None:
         for path in (
-            "crates/unica-coder/src/application/code_intelligence.rs",
-            "crates/unica-coder/src/application/mod.rs",
-            "crates/unica-coder/src/application/operational_config.rs",
-            "crates/unica-coder/src/application/ports.rs",
-            "crates/unica-coder/src/application/source_navigation.rs",
-            "crates/unica-coder/src/application/tool_contracts.rs",
-            "crates/unica-coder/src/domain/code_intelligence.rs",
-            "crates/unica-coder/src/domain/operational_config.rs",
-            "crates/unica-coder/src/domain/source_location.rs",
+            "crates/unica-application/src/application/code_intelligence.rs",
+            "crates/unica-application/src/application/mod.rs",
+            "crates/unica-application/src/application/operational_config.rs",
+            "crates/unica-application/src/application/ports.rs",
+            "crates/unica-application/src/application/source_navigation.rs",
+            "crates/unica-application/src/application/tool_contracts.rs",
+            "crates/unica-domain/src/code_intelligence.rs",
+            "crates/unica-domain/src/operational_config.rs",
+            "crates/unica-domain/src/source_location.rs",
             "crates/unica-coder/src/infrastructure/application_ports.rs",
             "crates/unica-coder/src/infrastructure/code_intelligence.rs",
             "crates/unica-coder/src/infrastructure/internal_adapters.rs",
             "crates/unica-coder/src/infrastructure/operational_config.rs",
             "crates/unica-coder/src/infrastructure/platform/process.rs",
             "crates/unica-coder/src/infrastructure/platform_xml_source_targets.rs",
-            "crates/unica-coder/src/infrastructure/rlm_navigation.rs",
             "crates/unica-coder/src/infrastructure/source_roots.rs",
-            "crates/unica-coder/src/infrastructure/workspace_index.rs",
             "crates/unica-coder/src/infrastructure/workspace_services.rs",
-            "crates/unica-coder/src/interfaces/mcp.rs",
+            "crates/unica-daemon/src/interfaces/mcp.rs",
         ):
             with self.subTest(path=path):
                 platform_changed = (
@@ -444,7 +444,7 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
 
     def test_classifier_workflow_and_platform_guard_changes_fail_closed(self) -> None:
         cases = {
-            ".github/workflows/unica-plugin-release.yml": {
+            ".github/workflows/release.yml": {
                 "ci_changed": True,
                 "assessment_required": True,
             },
@@ -472,26 +472,6 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
         for path, expected in cases.items():
             with self.subTest(path=path):
                 self.assert_classification([path], **expected)
-
-    def test_release_matrix_reports_standalone_runtime_size_evidence(self) -> None:
-        workflow = (
-            Path(__file__).resolve().parents[2]
-            / ".github"
-            / "workflows"
-            / "unica-plugin-release.yml"
-        ).read_text(encoding="utf-8")
-
-        self.assertIn("Report standalone runtime size evidence", workflow)
-        for label in (
-            "RLM source archive bytes",
-            "RLM extracted payload bytes",
-            "Final runtime archive bytes",
-            "Runtime file count",
-        ):
-            with self.subTest(label=label):
-                self.assertIn(label, workflow)
-        self.assertIn('manifest["runtimeFiles"]', workflow)
-        self.assertIn('archive.extractfile("manifest.json")', workflow)
 
     def test_local_installer_change_requires_ci_contour(self) -> None:
         self.assert_classification(
@@ -530,12 +510,10 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
             "scripts/ci/collect-results.py",
             "tests/ci/test_run_tests.py",
             "tests/ci/test_gate_profiles.py",
-            "scripts/ci/nightly-lines.py",
+            "scripts/ci/nightly-decide.py",
             "scripts/ci/resolve-line.py",
-            "tests/ci/test_nightly_lines.py",
+            "tests/ci/test_nightly_decide.py",
             "tests/ci/test_resolve_line.py",
-            "scripts/ci/size-filters.py",
-            "tests/ci/test_size_guard.py",
             "tests/ci/test_python_sizes.py",
             "tests/ci/test_research_policy.py",
             "tests/ci/test_allure_results.py",
@@ -577,7 +555,7 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
         search contour at all.
         """
         self.assert_classification(
-            ["crates/unica-coder/src/domain/cache.rs"],
+            ["crates/unica-domain/src/cache.rs"],
             rust_changed=True,
             release_required=True,
         )
@@ -638,7 +616,7 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
         for path in (
             "README.md",
             "plugins/unica/skills/meta-add/SKILL.md",
-            "crates/unica-coder/src/domain/cache.rs",
+            "crates/unica-domain/src/cache.rs",
             "docs/provenance/skill-upstreams.json",
         ):
             with self.subTest(unaffected=path):

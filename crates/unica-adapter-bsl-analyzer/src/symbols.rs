@@ -19,6 +19,7 @@ const CALL_NEIGHBOURS: usize = 500;
 pub struct BslAnalyzerSymbols<'a> {
     client: &'a (dyn BslToolClient + Send + Sync),
     context: CodeIntelligenceContext,
+    yields: bool,
 }
 
 impl<'a> BslAnalyzerSymbols<'a> {
@@ -26,13 +27,20 @@ impl<'a> BslAnalyzerSymbols<'a> {
         client: &'a (dyn BslToolClient + Send + Sync),
         context: CodeIntelligenceContext,
     ) -> Self {
-        Self { client, context }
+        Self {
+            client,
+            context,
+            yields: false,
+        }
     }
 
-    /// One tool call. Running out of the request's time is "not ready". The
-    /// analysis service still retires the shared analyzer session on such a
-    /// call, so a caller passes the request's own deadline, never a shorter
-    /// editor budget, until #2189 cancels without retiring it.
+    /// Editor calls give way to MCP without replacing the shared analyzer.
+    pub fn yielding(mut self) -> Self {
+        self.yields = true;
+        self
+    }
+
+    /// One tool call retains the caller's typed deadline and cancellation.
     fn call(
         &self,
         tool: &'static str,
@@ -42,18 +50,15 @@ impl<'a> BslAnalyzerSymbols<'a> {
         if context.cancellation.is_cancelled() {
             return Err(ProviderFailure::NotReady);
         }
-        let timeout = context
-            .deadline
-            .finite_remaining()
-            .map_err(|_| ProviderFailure::NotReady)?;
         let output = self
             .client
-            .call(
+            .call_before(
                 tool,
                 &self.context,
                 arguments,
-                timeout,
+                context.deadline,
                 context.cancellation,
+                self.yields,
             )
             .map_err(|_| {
                 if context.deadline.is_elapsed() || context.cancellation.is_cancelled() {
@@ -384,10 +389,8 @@ mod tests {
     /// workspace: the manager module of `Справочник.Валюты` with a function
     /// `Ф` and a procedure `Вызов` that calls it.
     fn recorded(key: &str) -> Value {
-        let all: Value = serde_json::from_str(include_str!(
-            "../../../tests/fixtures/bsl_analyzer/symbols-0.2.86.json"
-        ))
-        .unwrap();
+        let all: Value =
+            serde_json::from_str(include_str!("../tests/fixtures/symbols-0.2.86.json")).unwrap();
         all[key]["answer"].clone()
     }
 

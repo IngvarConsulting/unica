@@ -18,3 +18,8 @@ unica-address = { path = "../unica-address" }
 unica-source-contract = { path = "../unica-source-contract" }
 unica-operations = { path = "../unica-operations" }
 serde_json.workspace = true
+
+[package.metadata.unica]
+version-literal-baseline = 11
+component = "family"
+file-io = "domain"

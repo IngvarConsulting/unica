@@ -5,6 +5,8 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import contextlib
+import io
 import unittest
 from unittest.mock import patch
 
@@ -35,6 +37,41 @@ class Repository:
     def commit(self, message):
         self.git("commit", "-q", "--allow-empty", "-m", message)
         return self.git("rev-parse", "HEAD")
+
+
+class ExpiredMacosPlanTests(unittest.TestCase):
+    """Инвентарь живёт 90 дней, план 7: истёкший план не роняет следующий выпуск."""
+
+    INVENTORY = {
+        "sha": "b" * 40, "runId": "11", "profile": "release", "jobs": ["Unica CI", "Rust (macos-14)"],
+        "configurations": [{"runner": "ubuntu-latest", "lane": "ordinary"}, {"runner": "macos-14", "lane": "ordinary"}],
+    }
+
+    def document(self, plans):
+        artifact = {"name": "ci-rust-inventory-release", "workflow_run": {"id": 11, "head_sha": "b" * 40}}
+        with tempfile.TemporaryDirectory() as temporary, \
+                patch.object(baseline, "git", return_value="b" * 40), \
+                patch.object(baseline, "find", return_value=artifact), \
+                patch.object(baseline, "download", return_value=json.loads(json.dumps(self.INVENTORY))), \
+                patch.object(baseline, "explanations", return_value={"removedTests": [], "removedTargets": [], "reset": False, "declaredBy": {}, "range": "", "pullRequests": []}), \
+                patch.object(baseline, "previous_macos_plans", plans):
+            return baseline.baseline(Path(temporary), "o/r", 7, "release", None, ["ubuntu-latest", "macos-15"])
+
+    def test_an_expired_plan_drops_only_macos_and_says_so(self) -> None:
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            document = self.document(lambda *_: (_ for _ in ()).throw(baseline.ExpiredPlans("run 11 has no live plan-macos-14 artifact")))
+        self.assertEqual([item["runner"] for item in document["inventory"]["configurations"]], ["ubuntu-latest"])
+        self.assertEqual(document["inventory"]["jobs"], ["Unica CI"])
+        self.assertEqual(document["droppedRunners"], ["macos-14"])
+        self.assertNotIn("previousPlans", document)
+        self.assertIn("::warning::macOS не сравнивается", stdout.getvalue())
+
+    def test_any_other_plan_defect_still_stops(self) -> None:
+        def broken(*_):
+            raise ValueError("missing or duplicate previous macos-14 plan artifact")
+        with self.assertRaisesRegex(ValueError, "missing or duplicate"):
+            self.document(broken)
 
 
 class InventoryBaselineTests(unittest.TestCase):
@@ -137,7 +174,7 @@ class InventoryBaselineTests(unittest.TestCase):
         self.assertIn("- `Removes-test: x::y` — #10", text)
         self.assertIn("**none found**", baseline.summary_text({"source": None, "explanations": {"declaredBy": {}}}))
 
-    def test_commit_messages_no_longer_explain_anything(self):
+    def test_commit_messages_explain_nothing(self):
         found = self.explain("queue", entry="this entry (#12)\n\nRemoves-test-target: hidden\nRust-inventory-baseline: reset")
         self.assertNotIn("hidden", found["removedTargets"])
         self.assertFalse(found["reset"])
@@ -211,6 +248,72 @@ class InventoryBaselineTests(unittest.TestCase):
                 self.run_baseline([lambda sha: artifact(sha)], **options)
         with self.assertRaisesRegex(RuntimeError, "502"):
             self.run_baseline([], failure="api")
+
+
+class MacosPreviousPlanTests(unittest.TestCase):
+    def download(self, *, mutate=None):
+        inventory = {"sha": "a" * 40, "runId": "41", "attempt": "2", "profile": "queue"}
+        run = {"id": 41, "run_attempt": 2, "head_sha": "a" * 40, "conclusion": "success", "path": baseline.WORKFLOW,
+               "repository": {"id": 7}, "head_repository": {"id": 7}}
+        plan = {"runner": "macos-14", "lane": "ordinary", "profile": "queue", "runId": "41", "attempt": "2",
+                "identity": {"sha": "a" * 40, "os": "Darwin", "target": "aarch64-apple-darwin"}}
+        asset = {"id": 19, "name": "plan-macos-14", "expired": False, "workflow_run": {
+                 "id": 41, "head_sha": "a" * 40, "repository_id": 7, "head_repository_id": 7}}
+        if mutate:
+            mutate(run, asset, plan)
+        calls = []
+        def gh(*args):
+            calls.append(args)
+            if args[0] == "run":
+                root = Path(args[args.index("--dir") + 1]) / "plan-rust-macos-14-ordinary"
+                root.mkdir()
+                (root / "lane.json").write_text(json.dumps(plan))
+                return ""
+            if "/attempts/" in args[1]:
+                return json.dumps(run)
+            if "/artifacts?" in args[1]:
+                return json.dumps({"artifacts": [asset]})
+            if args[1].endswith("/artifacts/19"):
+                return json.dumps(asset)
+            raise AssertionError(args)
+        with patch.object(baseline, "gh", side_effect=gh):
+            evidence = baseline.previous_macos_plans(REPOSITORY, 7, inventory)
+        return evidence, calls
+
+    def test_old_plan_comes_from_its_successful_exact_attempt_and_keeps_raw_identity(self):
+        evidence, calls = self.download()
+        self.assertEqual(evidence["plans"][0]["runner"], "macos-14")
+        self.assertEqual(evidence["source"]["attempt"], "2")
+        self.assertIn(("api", f"repos/{REPOSITORY}/actions/runs/41/attempts/2"), calls)
+        self.assertTrue(evidence["source"]["planFilesSha256"])
+
+    def test_only_a_current_15_matrix_against_old_14_fetches_supplementary_plans(self):
+        for current_hosts, previous_host, expected in [(["ubuntu-latest"], "macos-14", False),
+                                                       (["ubuntu-latest", "macos-15"], "macos-14", True),
+                                                       (["ubuntu-latest", "macos-15"], "macos-15", False)]:
+            inventory = {"sha": "a" * 40, "configurations": [{"runner": previous_host}]}
+            found = artifact("a" * 40)
+            with self.subTest(current=current_hosts, previous=previous_host), \
+                 patch.object(baseline, "git", return_value="a" * 40), \
+                 patch.object(baseline, "find", return_value=found), \
+                 patch.object(baseline, "download", return_value=inventory), \
+                 patch.object(baseline, "explanations", return_value={}), \
+                 patch.object(baseline, "previous_macos_plans", return_value={"plans": []}) as fetch:
+                result = baseline.baseline(Path("unused"), REPOSITORY, 7, "pr", runners=current_hosts)
+                self.assertEqual(fetch.called, expected)
+                self.assertEqual("previousPlans" in result, expected)
+
+    def test_failed_foreign_or_other_attempt_source_never_becomes_migration_proof(self):
+        changes = [lambda run, asset, plan: run.update(conclusion="failure"),
+                   lambda run, asset, plan: run.update(run_attempt=1),
+                   lambda run, asset, plan: run.update(path="other.yml"),
+                   lambda run, asset, plan: asset["workflow_run"].update(repository_id=99),
+                   lambda run, asset, plan: plan.update(attempt="1"),
+                   lambda run, asset, plan: plan.update(runner="macos-15"),
+                   lambda run, asset, plan: plan["identity"].update(sha="b" * 40)]
+        for change in changes:
+            with self.subTest(change=changes.index(change)), self.assertRaises(ValueError):
+                self.download(mutate=change)
 
 
 if __name__ == "__main__":

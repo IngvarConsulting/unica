@@ -2,7 +2,7 @@
 use serde_json::{Map, Value};
 use std::path::PathBuf;
 use unica_address::address::{member_address, NodeKind, QualifiedAddress};
-use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+use unica_address::source_target::MetadataAddress;
 use unica_roles::operations::RoleOperation;
 use unica_source_contract::events::{DomainEvent, DomainEventKind};
 use unica_source_contract::proposal::input::{bad, creation_name, required_values};
@@ -67,11 +67,8 @@ fn role_of(
         _ => None,
     }
     .ok_or_else(|| bad(op_index, "at", shape))?;
-    MetadataAddress::parse(
-        PLATFORM_XML_8_3_27_FORMAT_2_20,
-        &format!("Role.{role_name}"),
-    )
-    .map_err(|error| bad(op_index, "at", error.to_string()))
+    MetadataAddress::parse_logical(&format!("Role.{role_name}"))
+        .map_err(|error| bad(op_index, "at", error.to_string()))
 }
 pub fn parse_role_operation(
     operation: RoleOperation,
@@ -419,6 +416,18 @@ fn rights_entry_size(body: &str, object: &str) -> Result<Option<usize>, ApplyPla
                 .count()
         }))
 }
+// Only whitespace between a preceding newline and this XML node is layout.
+fn structural_line_start(body: &str, offset: usize) -> Option<usize> {
+    let start = body.as_bytes()[..offset]
+        .iter()
+        .rposition(|byte| matches!(byte, b'\r' | b'\n'))?
+        + 1;
+    body[start..offset]
+        .chars()
+        .all(|ch| matches!(ch, ' ' | '\t'))
+        .then_some(start)
+}
+
 fn ensure_rights_object(body: &str, object: &str) -> Result<String, String> {
     let document = roxmltree::Document::parse(body)
         .map_err(|_| "Rights.xml is not well-formed XML".to_string())?;
@@ -443,9 +452,17 @@ fn ensure_rights_object(body: &str, object: &str) -> Result<String, String> {
         .map(|node| node.range().start)
         .or_else(|| body.rfind("</Rights>"))
         .ok_or_else(|| "Rights.xml has no closing root element".to_string())?;
-    let line_start = body[..insert_at]
-        .rfind('\n')
-        .map_or(insert_at, |index| index + 1);
+    let Some(line_start) = structural_line_start(body, insert_at) else {
+        let mut updated = body.to_string();
+        updated.insert_str(
+            insert_at,
+            &format!(
+                "<object><name>{}</name></object>",
+                unica_xml_format::text::escape_xml_text(object)
+            ),
+        );
+        return Ok(updated);
+    };
     let indent = body[line_start..insert_at]
         .chars()
         .take_while(|ch| *ch == '\t' || *ch == ' ')
@@ -455,8 +472,9 @@ fn ensure_rights_object(body: &str, object: &str) -> Result<String, String> {
     } else {
         "\t".to_string()
     };
+    let eol = crate::writer::role_source_eol(body, line_start)?;
     let block = format!(
-        "{indent}<object>\n{indent}{unit}<name>{}</name>\n{indent}</object>\n",
+        "{indent}<object>{eol}{indent}{unit}<name>{}</name>{eol}{indent}</object>{eol}",
         unica_xml_format::text::escape_xml_text(object)
     );
     let mut updated = body.to_string();
@@ -508,20 +526,17 @@ fn set_rights_restriction(
             Some(node) => node.range(),
             None => existing.range(),
         };
-        let indent = body[..range.start]
-            .rfind('\n')
-            .map(|index| {
-                body[index + 1..range.start]
-                    .chars()
-                    .take_while(|ch| *ch == '\t' || *ch == ' ')
-                    .collect::<String>()
-            })
-            .unwrap_or_default();
+        let indent = crate::writer::line_indent(body, range.start);
         let replacement = if condition_node.is_some() {
             format!("<condition>{escaped}</condition>")
-        } else {
+        } else if structural_line_start(body, range.start).is_none() {
             format!(
-                "<restrictionByCondition>\n{indent}\t<condition>{escaped}</condition>\n{indent}</restrictionByCondition>"
+                "<restrictionByCondition><condition>{escaped}</condition></restrictionByCondition>"
+            )
+        } else {
+            let eol = crate::writer::role_source_eol(body, range.start)?;
+            format!(
+                "<restrictionByCondition>{eol}{indent}\t<condition>{escaped}</condition>{eol}{indent}</restrictionByCondition>"
             )
         };
         let mut updated = body.to_string();
@@ -533,23 +548,20 @@ fn set_rights_restriction(
         .find(|node| node.is_element() && node.tag_name().name() == "value")
         .ok_or_else(|| format!("right `{right}` of `{object}` has no value element"))?;
     let range = value_node.range();
-    let indent = body[..range.start]
-        .rfind('\n')
-        .map(|index| {
-            body[index + 1..range.start]
-                .chars()
-                .take_while(|ch| *ch == '\t' || *ch == ' ')
-                .collect::<String>()
-        })
-        .unwrap_or_default();
+    let indent = crate::writer::line_indent(body, range.start);
     let unit = if indent.starts_with(' ') {
         " ".repeat(4)
     } else {
         "\t".to_string()
     };
-    let block = format!(
-        "\n{indent}<restrictionByCondition>\n{indent}{unit}<condition>{escaped}</condition>\n{indent}</restrictionByCondition>"
-    );
+    let block = if structural_line_start(body, range.start).is_none() {
+        format!("<restrictionByCondition><condition>{escaped}</condition></restrictionByCondition>")
+    } else {
+        let eol = crate::writer::role_source_eol(body, range.start)?;
+        format!(
+        "{eol}{indent}<restrictionByCondition>{eol}{indent}{unit}<condition>{escaped}</condition>{eol}{indent}</restrictionByCondition>"
+        )
+    };
     let mut updated = body.to_string();
     updated.insert_str(range.end, &block);
     Ok(updated)
@@ -711,4 +723,110 @@ pub fn stage_role_plan(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod eol_tests {
+    use super::*;
+    use crate::test_support::rights_xml;
+
+    #[test]
+    fn new_object_and_right_preserve_the_insertion_line_ending() {
+        for eol in ["\r\n", "\n", "\r"] {
+            let body = rights_xml(eol, "<value>true</value>");
+            let updated = ensure_rights_object(&body, "Catalog.New").unwrap();
+            let block = format!("\t<object>{eol}\t\t<name>Catalog.New</name>{eol}\t</object>{eol}");
+            assert!(updated.contains(&block), "{updated:?}");
+            assert_eq!(updated.replacen(&block, "", 1), body);
+            let granted = set_role_right(&updated, "Catalog.New", "Read", true, 0).unwrap();
+            assert!(!granted.replace(eol, "").contains(['\r', '\n']));
+        }
+    }
+
+    #[test]
+    fn new_object_preserves_lf_inside_rls_and_local_crlf_outside() {
+        let body = rights_xml("\r\n", "<value>true</value>").replace(
+            "<condition>TRUE</condition>",
+            "<condition>#Then\n#ForObject</condition>",
+        );
+        let updated = ensure_rights_object(&body, "Catalog.New").unwrap();
+        let block = "\t<object>\r\n\t\t<name>Catalog.New</name>\r\n\t</object>\r\n";
+        assert_eq!(updated.replacen(block, "", 1), body);
+        let granted = set_role_right(&updated, "Catalog.New", "Read", true, 0).unwrap();
+        assert!(granted.contains("#Then\n#ForObject"));
+        assert!(granted.contains("<name>Read</name>\r\n"));
+    }
+
+    #[test]
+    fn compact_object_insertion_never_uses_a_newline_inside_rls_as_an_xml_boundary() {
+        let body = rights_xml("", "<value>true</value>")
+            .replace("WHERE false", "WHERE\nfalse\r\nAND true");
+        let updated = ensure_rights_object(&body, "Catalog.New").unwrap();
+        let block = "<object><name>Catalog.New</name></object>";
+        assert_eq!(updated.replacen(block, "", 1), body);
+        let document = roxmltree::Document::parse(&updated).unwrap();
+        assert!(document.root_element().children().any(|node| node
+            .has_tag_name((crate::writer::ROLE_RIGHTS_NAMESPACE, "object"))
+            && node.children().any(|child| child
+                .has_tag_name((crate::writer::ROLE_RIGHTS_NAMESPACE, "name"))
+                && child.text() == Some("Catalog.New"))));
+        let granted = set_role_right(&updated, "Catalog.New", "Read", true, 0).unwrap();
+        assert!(granted.contains(
+            "<name>Catalog.New</name><right><name>Read</name><value>true</value></right></object>"
+        ));
+        assert!(granted.contains("WHERE\nfalse\r\nAND true"));
+    }
+
+    #[test]
+    fn compact_restriction_does_not_choose_eol_from_a_later_template() {
+        for existing in ["", "<restrictionByCondition/>"] {
+            let body = rights_xml("", "<value>true</value>")
+                .replace(
+                    "<name>Use</name><value>true</value>",
+                    &format!("<name>Use</name><value>true</value>{existing}"),
+                )
+                .replace(
+                    "<condition>TRUE</condition>",
+                    "<condition>A\nB\r\nC</condition>",
+                );
+            let updated =
+                set_rights_restriction(&body, "DataProcessor.Worker", "Use", "WHERE true").unwrap();
+            let block = "<restrictionByCondition><condition>WHERE true</condition></restrictionByCondition>";
+            assert!(updated.contains(block), "{updated}");
+            assert_eq!(updated.replacen(block, existing, 1), body);
+            roxmltree::Document::parse(&updated).unwrap();
+        }
+    }
+
+    #[test]
+    fn adding_restriction_preserves_local_eol_and_existing_bytes() {
+        for eol in ["\r\n", "\n", "\r"] {
+            let body = rights_xml(eol, "<value>true</value>").replace(
+                "<right><name>Use</name><value>true</value></right>",
+                &format!("<right>{eol}\t\t\t<name>Use</name>{eol}\t\t\t<value>true</value>{eol}\t\t</right>"),
+            );
+            let updated =
+                set_rights_restriction(&body, "DataProcessor.Worker", "Use", "WHERE true").unwrap();
+            assert!(
+                !updated.replace(eol, "").contains(['\r', '\n']),
+                "{updated:?}"
+            );
+            let block = format!("{eol}\t\t\t<restrictionByCondition>{eol}\t\t\t\t<condition>WHERE true</condition>{eol}\t\t\t</restrictionByCondition>");
+            assert!(updated.contains(&block));
+            assert_eq!(updated.replacen(&block, "", 1), body);
+        }
+    }
+
+    #[test]
+    fn restriction_layout_is_not_taken_from_a_comment_inside_value() {
+        let body = rights_xml("\r\n", "<value>true</value>").replace(
+            "<right><name>Use</name><value>true</value></right>",
+            "<right>\r\n\t\t\t<name>Use</name>\r\n\t\t\t<value><!-- keep\n -->true</value>\r\n\t\t</right>",
+        );
+        let updated =
+            set_rights_restriction(&body, "DataProcessor.Worker", "Use", "WHERE true").unwrap();
+        let block = "\r\n\t\t\t<restrictionByCondition>\r\n\t\t\t\t<condition>WHERE true</condition>\r\n\t\t\t</restrictionByCondition>";
+        assert!(updated.contains(block));
+        assert_eq!(updated.replacen(block, "", 1), body);
+    }
 }

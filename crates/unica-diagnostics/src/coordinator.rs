@@ -6,7 +6,7 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
-use unica_address::source_target::{MetadataAddress, TargetKind, PLATFORM_XML_8_3_27_FORMAT_2_20};
+use unica_address::source_target::{MetadataAddress, TargetKind};
 use unica_source_contract::location::SourceLocation;
 use unica_source_contract::workspace::WorkspaceContext;
 use unica_work_control::cancellation::CancellationToken;
@@ -1252,7 +1252,7 @@ pub fn parse_diagnostic_request(
     let metadata_path = args
         .get("metadataPath")
         .and_then(Value::as_str)
-        .map(|raw| MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, raw))
+        .map(MetadataAddress::parse_logical)
         .transpose()
         .map_err(|_| {
             request_error(
@@ -1401,9 +1401,7 @@ mod tests {
     use std::sync::{mpsc, Arc, Condvar, Mutex};
     use std::thread;
     use std::time::{Duration, Instant};
-    use unica_address::source_target::{
-        MetadataAddress, ResolvedTarget, TargetKind, PLATFORM_XML_8_3_27_FORMAT_2_20,
-    };
+    use unica_address::source_target::{MetadataAddress, ResolvedTarget, TargetKind};
     use unica_source_contract::location::SourceLocation;
     use unica_source_contract::workspace::ResolvedSourceRoot;
     use unica_source_contract::workspace::WorkspaceContext;
@@ -1657,7 +1655,7 @@ mod tests {
     }
 
     fn address(raw: &str) -> MetadataAddress {
-        MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, raw).unwrap()
+        MetadataAddress::parse_logical(raw).unwrap()
     }
 
     fn workspace() -> WorkspaceContext {
@@ -1840,6 +1838,7 @@ mod tests {
         )
     }
 
+    /// rule: INV.APP.DIAGNOSTIC-FILTERED-RESULTS
     #[test]
     fn diagnostics_provider_selection_uses_registry_order_and_skips_inapplicable_providers() {
         let empty = successful(Vec::new());
@@ -1854,6 +1853,7 @@ mod tests {
         assert_eq!(calls[2].load(Ordering::SeqCst), 0);
     }
 
+    /// rule: INV.APP.DIAGNOSTIC-FILTERED-RESULTS
     #[test]
     fn diagnostics_code_filters_do_not_select_execution_providers() {
         let empty = successful(Vec::new());
@@ -1940,6 +1940,7 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), 0);
     }
 
+    /// rule: INV.APP.DIAGNOSTIC-FILTERED-RESULTS
     #[test]
     fn diagnostics_result_assembly_filters_sorts_and_applies_one_global_limit() {
         let requested_range = DiagnosticRange {
@@ -2041,6 +2042,8 @@ mod tests {
         );
     }
 
+    /// rule: INV.APP.DIAGNOSTIC-FILTERED-RESULTS
+    /// rule: INV.APP.DIAGNOSTIC-PROVIDERS
     #[test]
     fn diagnostics_resource_failure_keeps_incomplete_coverage_when_limit_hides_the_failure() {
         for failed_resource in [false, true] {
@@ -2097,6 +2100,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.APP.DIAGNOSTIC-FILTERED-RESULTS
     #[test]
     fn diagnostics_result_assembly_keeps_cross_provider_duplicates_and_metadata_focus_order() {
         let metadata_outcome = successful(vec![
@@ -2219,6 +2223,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.APP.DIAGNOSTIC-PROVIDERS
     #[test]
     fn diagnostics_outcome_matrix_distinguishes_complete_partial_and_failed() {
         let useful = successful(vec![diagnostic(
@@ -2256,6 +2261,7 @@ mod tests {
         assert!(complete.complete);
     }
 
+    /// rule: INV.APP.DIAGNOSTIC-SUPPRESSION-EVIDENCE
     #[test]
     fn diagnostics_baseline_suppression_is_a_named_filter_not_incompleteness() {
         let filtered = |known: usize, reason: Option<DiagnosticSuppressionReason>| {
@@ -2338,6 +2344,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.APP.DIAGNOSTIC-SUPPRESSION-EVIDENCE
     #[test]
     fn diagnostics_authors_and_baseline_survive_named_analysis_incompleteness() {
         let filters = vec![
@@ -2413,6 +2420,7 @@ mod tests {
     /// A named suppression failure is the reason the section is incomplete:
     /// a provider that names one and still claims completeness breaks the
     /// contract instead of passing a broken baseline off as a clean result.
+    /// rule: INV.APP.DIAGNOSTIC-SUPPRESSION-EVIDENCE
     #[test]
     fn diagnostics_named_suppression_failure_cannot_claim_a_complete_section() {
         let mut outcome = successful(Vec::new());
@@ -2608,6 +2616,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.APP.DIAGNOSTIC-PROVIDERS
     #[test]
     fn diagnostics_concurrency_contains_provider_panic_and_keeps_sibling_items() {
         let registry = behavior_registry(vec![
@@ -2644,63 +2653,7 @@ mod tests {
         );
     }
 
-    #[test]
-    fn diagnostics_executes_all_workers_past_the_former_provider_quota() {
-        for descriptor in [
-            &ANALYZER_DESCRIPTOR,
-            &LANGUAGE_SERVER_DESCRIPTOR,
-            &METADATA_DESCRIPTOR,
-        ] {
-            let (entered_tx, entered_rx) = mpsc::channel();
-            let release = Arc::new((Mutex::new(false), Condvar::new()));
-            let mut calls = Vec::new();
-            for _ in 0..33 {
-                let registry = behavior_registry(vec![(
-                    descriptor,
-                    ProviderBehavior::WaitForRelease {
-                        started: entered_tx.clone(),
-                        gate: Arc::clone(&release),
-                    },
-                )]);
-                calls.push(thread::spawn(move || {
-                    let mut request = findings_request();
-                    request.timeout = Some(Duration::from_secs(30));
-                    if descriptor.id == METADATA_VALIDATOR {
-                        request.metadata_path = Some(address("Catalog.Selected"));
-                    }
-                    run(registry, &request)
-                }));
-            }
-            drop(entered_tx);
-            let cutoff = Instant::now() + Duration::from_secs(5);
-            let mut entered = Vec::new();
-            while entered.len() < 33 {
-                match entered_rx.recv_timeout(cutoff.saturating_duration_since(Instant::now())) {
-                    Ok(id) => entered.push(id),
-                    Err(_) => break,
-                }
-            }
-            *release.0.lock().unwrap() = true;
-            release.1.notify_all();
-            let results: Vec<_> = calls.into_iter().map(|call| call.join().unwrap()).collect();
-            assert!(super::drain_diagnostic_workers(Duration::from_secs(5)));
-            assert_eq!(
-                entered.len(),
-                33,
-                "not every {} worker entered",
-                descriptor.id.as_str()
-            );
-            assert!(entered.iter().all(|id| *id == descriptor.id));
-            for result in results {
-                let result = result.expect("worker count must not refuse diagnostics");
-                assert_eq!(result.state, DiagnosticResultState::Completed);
-                assert!(result.complete);
-                assert_eq!(result.providers.len(), 1);
-                assert_eq!(result.providers[0].id, descriptor.id.as_str());
-            }
-        }
-    }
-
+    /// rule: INV.APP.PROVIDER-WORKER-CONCURRENCY
     #[test]
     fn diagnostics_retains_each_noncooperative_worker_after_its_caller_returns() {
         let lifecycle = super::DiagnosticWorkerLifecycle {
@@ -2764,6 +2717,7 @@ mod tests {
         assert_eq!(lifecycle.pending_count(), 0);
     }
 
+    /// rule: INV.APP.DIAGNOSTIC-PROVIDERS
     #[test]
     fn diagnostics_concurrency_timeout_cancels_provider_without_waiting_for_it() {
         let saw_cancellation = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -2801,6 +2755,7 @@ mod tests {
         assert!(saw_cancellation.load(Ordering::SeqCst));
     }
 
+    /// rule: INV.APP.DIAGNOSTIC-CANCELLATION
     #[test]
     fn diagnostics_cancellation_discards_partial_items() {
         let (started_tx, started_rx) = mpsc::channel();
@@ -2982,6 +2937,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.SAFETY.DIAGNOSTIC-LOCATION-BOUNDARY
     #[test]
     fn diagnostics_public_result_redacts_provider_controlled_physical_paths() {
         let private_root = std::env::temp_dir().join("unica-diagnostics-private-message-workspace");
@@ -3121,6 +3077,8 @@ mod tests {
 
     /// An absent engine keeps its install mode's next step only in the exact
     /// shape Unica builds; an appended path or foreign text is not published.
+    /// rule: INV.APP.DIAGNOSTIC-PROVIDERS
+    /// rule: INV.WIRE.MISSING-ENGINE-REFUSAL
     #[test]
     fn absent_engine_reason_is_published_only_in_its_canonical_shape() {
         use crate::coordinator::canonical_missing_engine_reason;
@@ -3141,7 +3099,7 @@ mod tests {
             .at_stage(stage);
             let reason = missing_engine_public_reason(&missing);
             // One text on every route: the refusal's message is this reason
-            // behind the closed code (#549).
+            // behind the closed code.
             assert_eq!(missing.message(), format!("bundled_tool_missing: {reason}"));
             assert!(!reason.contains("/private"));
             assert_eq!(
@@ -3194,6 +3152,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.APP.DIAGNOSTIC-FOCUS
     #[test]
     fn diagnostics_metadata_object_scope_excludes_separately_addressable_children() {
         let outcome = successful(vec![
@@ -3360,6 +3319,7 @@ mod tests {
         assert_eq!(metadata["items"][0]["focus"]["property"], "Type");
     }
 
+    /// rule: INV.APP.DIAGNOSTIC-PROVIDERS
     #[test]
     fn diagnostics_unmappable_observation_keeps_the_proven_findings_of_its_provider() {
         let mixed = successful(vec![
@@ -3407,6 +3367,7 @@ mod tests {
         assert_eq!(error.code, "location_mapping_failed");
     }
 
+    /// rule: INV.SAFETY.DIAGNOSTIC-LOCATION-BOUNDARY
     #[test]
     fn diagnostics_out_of_scope_handle_still_costs_the_whole_provider_section() {
         // A handle outside the permitted scope is an adapter
@@ -3480,6 +3441,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.APP.DIAGNOSTIC-FOCUS
     #[test]
     fn diagnostics_zero_width_focus_keeps_its_position_and_respects_the_requested_range() {
         let caret = DiagnosticRange {

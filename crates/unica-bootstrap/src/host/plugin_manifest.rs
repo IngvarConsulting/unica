@@ -63,7 +63,7 @@ pub fn verify_installed_plugin_metadata(plugin_root: &Path, version: &str) -> Re
 }
 
 #[cfg(test)]
-mod tests {
+mod medium_tests {
     use super::*;
 
     use std::path::PathBuf;

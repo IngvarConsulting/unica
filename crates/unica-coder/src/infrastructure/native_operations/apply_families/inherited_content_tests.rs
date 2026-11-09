@@ -136,6 +136,7 @@ fn content_operations() -> Vec<(&'static str, Value, &'static str)> {
     ]
 }
 
+/// rule: INV.SOURCE.BORROWED-OBJECT-INHERITED-CONTENT
 #[test]
 fn writes_into_inherited_content_refuse_with_the_way_to_the_parent() {
     for (at, op, owner) in content_operations() {
@@ -166,6 +167,7 @@ fn writes_into_inherited_content_refuse_with_the_way_to_the_parent() {
 
 /// Свой файл у заимствованного объекта или собственный владелец формы
 /// снимают отказ о наследовании: отвечает обычный планировщик.
+/// rule: INV.SOURCE.BORROWED-OBJECT-INHERITED-CONTENT
 #[test]
 fn inherited_refusal_needs_a_borrowed_object_without_its_file() {
     let own_owner = |ext: &Path| unborrow(&ext.join("DataProcessors/Обработка.xml"));
@@ -257,9 +259,10 @@ fn plan_single(
     plan_hidden_v13_apply(&request, &binding, &admission).map(|_| ())
 }
 
-/// #1381 (вторая вычитка): заимствованный справочник без `CodeType` не даёт
+/// Заимствованный справочник без `CodeType` не даёт
 /// вида кодов; запись предопределённых отказывает тем же текстом, что и
 /// чтение, а не проверяет коды по придуманному `String`.
+/// rule: INV.SOURCE.INCOMPLETE-METADATA-READ
 #[test]
 fn predefined_writes_refuse_an_owner_without_code_type() {
     let item = json!({"name": "Основной", "id": "a1b2c3d4-1111-4111-8111-111111111111"});

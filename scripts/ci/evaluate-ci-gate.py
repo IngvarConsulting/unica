@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from collections.abc import Mapping
 from pathlib import Path
@@ -18,8 +19,8 @@ LINUX = "ubuntu-latest"
 # lazily there would pull Cargo helpers into the gate, so the table is small
 # and its equality is a test.
 PROFILE_RUNNERS = {
-    "pr": [LINUX, "macos-14"], "queue": [LINUX, "macos-14"], "main": [LINUX, "macos-14"],
-    "release": [LINUX, "macos-14"], "large": [LINUX, "macos-14", "windows-latest"],
+    "pr": [LINUX, "macos-15"], "queue": [LINUX], "main": [LINUX, "macos-15"],
+    "release": [LINUX, "macos-15"], "large": [LINUX, "macos-15", "windows-latest"],
 }
 
 
@@ -61,7 +62,13 @@ OS_JOBS = "os-jobs"
 WINDOWS_LINT = "lint-rust-windows"
 # What the `Unica CI` job proves itself; the delivery tail of a tag or a manual
 # run is judged by `Delivery CI` after it, over the same table.
+ALPHA_JOB = "alpha-tag"
+ALPHA_TAG = re.compile(r"v\d+\.\d+\.\d+-alpha\.\d+")
 DELIVERY_ONLY = (*PACKAGE_JOBS, ASSESSMENT_JOB, P0_PROOF_JOB, "probe-thin-bootstrap", *PUBLISH_JOBS)
+
+# Шаги pull request и прогрева кэша ушли из `release.yml`; оценщик ещё знает их
+# события, и отсутствие такого шага там — пропуск, а не потеря.
+ABSENT_STEPS = {"shadow", "rust-medium", "lint-job", "pr-python", "warm"}
 
 # Steps of the `Unica CI` job behind each gate entry. A group is green only
 # when every step of it succeeded and skipped only when every step skipped:
@@ -71,10 +78,10 @@ STEP_GROUPS = {
     "guards": ("guards-compile", "guards-version", "guards-fmt", "guards-zizmor"),
     "build-python-product": ("product",),
     "test-python": ("python-plan", "python", "pr-python"),
-    "test-rust-platforms": ("shadow", "rust-build", "rust-run", "verify"),
-    # Добавки pull request к Rust: medium затронутых пакетов и проверка
-    # объявления снятых тестов (#1938); обе идут только в PR с Rust.
-    RUST_MEDIUM: ("rust-medium", "removed-tests"),
+    # Снятые из исходников тесты сверяются с объявлениями вместе с инвентарём (#1938).
+    "test-rust-platforms": ("rust-build", "rust-run", "verify", "removed-tests"),
+    # Добавка pull request к Rust: medium затронутых пакетов.
+    RUST_MEDIUM: ("rust-medium",),
     # Clippy — шаг `clippy` (в фоне, очередь и ветки) или ожидание шага
     # джобы `Lint and Python` (pull request).
     "lint-rust-platforms": ("clippy", "lint-job"),
@@ -118,7 +125,8 @@ def validation_results(steps: Mapping, os_jobs: Mapping[str, str] | None) -> dic
         outcomes = []
         for step in ids:
             details = steps.get(step)
-            outcomes.append(details.get("outcome", "missing") if isinstance(details, Mapping) else "missing")
+            absent = "skipped" if step in ABSENT_STEPS else "missing"
+            outcomes.append(details.get("outcome", "missing") if isinstance(details, Mapping) else absent)
         if entry in ALTERNATIVE_GROUPS:
             by_step = dict(zip(ids, outcomes))
             parts = [[by_step[step] for step in part] for part in ALTERNATIVE_GROUPS[entry]]
@@ -190,6 +198,8 @@ def expected_results(
     python_matrix: str | None = None,
     runners: str | None = None,
     scope: str = "delivery",
+    alpha_requested: bool = False,
+    alpha_tag: str = "",
 ) -> tuple[str, dict[str, str], dict[str, tuple[str, str]]]:
     expected = {job: "success" for job in ALWAYS_JOBS}
     invalid: dict[str, tuple[str, str]] = {}
@@ -210,10 +220,11 @@ def expected_results(
     # Кодовая очередь — полный набор. Исключение для известной прозы задаёт
     # classifier по всему immutable диапазону группы, а не по одному PR.
     is_queue = event_name == "merge_group"
-    is_manual = event_name == "workflow_dispatch"
+    # Ночь вызывает `release.yml` с тем же профилем, что и кнопка.
+    is_manual = event_name in {"workflow_dispatch", "schedule"}
     is_pr = event_name == "pull_request"
     if not (is_tag or is_main_push or is_branch or is_queue or is_manual or is_pr):
-        invalid["event"] = (f"{event_name}:{ref}", "pull_request, merge_group, branch push, tag push, or workflow_dispatch")
+        invalid["event"] = (f"{event_name}:{ref}", "pull_request, merge_group, branch push, tag push, workflow_dispatch or schedule")
     profiles = {"main", "large"} if is_manual else {
         "release" if is_tag else "queue" if is_queue else "pr" if is_pr else "main"
     }
@@ -296,11 +307,17 @@ def expected_results(
     expected[P0_PROOF_JOB] = (
         "success" if values["assessment_required"] and is_manual else "skipped"
     )
-    expected["probe-thin-bootstrap"] = "success" if package_pipeline and is_manual else "skipped"
-    expected.update({job: "success" if is_tag else "skipped" for job in PUBLISH_JOBS})
+    # Проба ждёт отказа скачивания: у выпущенного alpha ассеты есть, его проверяет дым.
+    is_alpha = is_manual and ALPHA_TAG.fullmatch(alpha_tag) is not None
+    if alpha_tag and not is_alpha:
+        invalid["alpha_tag"] = (alpha_tag, "vX.Y.Z-alpha.N in a nightly run")
+    expected["probe-thin-bootstrap"] = "success" if package_pipeline and is_manual and not is_alpha else "skipped"
+    expected.update({job: "success" if is_tag or is_alpha else "skipped" for job in PUBLISH_JOBS})
+    if alpha_requested:
+        expected[ALPHA_JOB] = "success"
     if scope == "validation":
-        for job in DELIVERY_ONLY:
-            expected.pop(job)
+        for job in (*DELIVERY_ONLY, ALPHA_JOB):
+            expected.pop(job, None)
 
     if is_tag:
         contour = "release"
@@ -342,10 +359,13 @@ def evaluate_gate(
     python_matrix: str | None = None,
     runners: str | None = None,
     scope: str = "delivery",
+    alpha_requested: bool = False,
+    alpha_tag: str = "",
 ) -> GateEvaluation:
     contour, expected, unexpected = expected_results(
         event_name, ref, classification,
         gate_profile=gate_profile, python_matrix=python_matrix, runners=runners, scope=scope,
+        alpha_requested=alpha_requested, alpha_tag=alpha_tag,
     )
     unexpected = dict(unexpected)
 
@@ -440,6 +460,10 @@ def main() -> int:
             for job, details in needs.items()
             if isinstance(details, dict) and job not in ("unica-ci", "rust-os")
         })
+        # Alpha не просили: его пропуск — норма, а не запись таблицы. Запрошенный или
+        # исполненный без запроса остаётся и сверяется.
+        if os.environ.get("ALPHA_REQUESTED") != "true" and results.get(ALPHA_JOB) == "skipped":
+            del results[ALPHA_JOB]
     else:
         raise SystemExit(f"unknown GATE_SCOPE {scope!r}")
     classification = {
@@ -455,6 +479,8 @@ def main() -> int:
         python_matrix=os.environ.get("PYTHON_MATRIX"),
         runners=os.environ.get("RUNNERS"),
         scope=scope,
+        alpha_requested=os.environ.get("ALPHA_REQUESTED") == "true",
+        alpha_tag=os.environ.get("ALPHA_TAG", ""),
     )
     summary = render_summary(evaluation)
     print(summary, end="")

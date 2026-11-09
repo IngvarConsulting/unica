@@ -339,6 +339,7 @@ fn mutation_compatible_read_key(xml_name: &str) -> Option<(&'static str, MetaPro
         "Use" => ("Use", Use),
         "WriteMode" => ("WriteMode", WriteMode),
         "CheckUnique" => ("CheckUnique", CheckUnique),
+        "CodeSeries" => ("CodeSeries", CodeSeries),
         "CodeLength" => ("CodeLength", CodeLength),
         "DescriptionLength" => ("DescriptionLength", DescriptionLength),
         "Hierarchical" => ("Hierarchical", Hierarchical),
@@ -362,6 +363,8 @@ fn mutation_value_kind(key: MetaPropertyKey) -> MetaInfoPropertyValueKind {
             | Correspondence
             | DistributedInfoBase
             | EnableTotalsSplitting
+            | UpdateDataHistoryImmediatelyAfterWrite
+            | ExecuteAfterWriteDataHistoryVersionProcessing
             | ExternalConnection
             | FoldersOnTop
             | Global
@@ -409,13 +412,13 @@ fn mutation_property_is_observable(kind: MetadataKind, key: MetaPropertyKey) -> 
         // Constant Type is observed through MetaInfoDetails, not scalar properties.
         Type | ClientOrdinaryApplication => false,
         Synonym | Comment => true,
+        EditType => matches!(kind, Catalog | InformationRegister),
         ActionPeriod | BasePeriod => kind == CalculationRegister,
         ActionPeriodUse | DependenceOnCalculationTypes => kind == ChartOfCalculationTypes,
         AutoOrderByCode | CodeMask | MaxExtDimensionCount | OrderLength => kind == ChartOfAccounts,
-        ChoiceMode | CodeAllowedLength | CodeType | DefaultPresentation | FoldersOnTop
-        | HierarchyType | LevelCount | LimitLevelCount | QuickChoice | SubordinationUse => {
-            kind == Catalog
-        }
+        ChoiceMode | CodeAllowedLength | CodeType | CodeSeries | DefaultPresentation
+        | FoldersOnTop | HierarchyType | LevelCount | LimitLevelCount | QuickChoice
+        | SubordinationUse => kind == Catalog,
         ClientManagedApplication
         | ExternalConnection
         | Global
@@ -423,6 +426,34 @@ fn mutation_property_is_observable(kind: MetadataKind, key: MetaPropertyKey) -> 
         | ReturnValuesReuse
         | Server
         | ServerCall => kind == CommonModule,
+        DataHistory
+        | UpdateDataHistoryImmediatelyAfterWrite
+        | ExecuteAfterWriteDataHistoryVersionProcessing => {
+            matches!(kind, Catalog | Document | InformationRegister)
+        }
+        CreateTaskInPrivilegedMode => kind == BusinessProcess,
+        FullTextSearch
+        | SearchStringModeOnInputByString
+        | FullTextSearchOnInputByString
+        | ChoiceDataGetModeOnInputByString
+        | CreateOnInput
+        | ChoiceHistoryOnInput => matches!(kind, Catalog | Document),
+        DataLockControlMode => matches!(
+            kind,
+            Catalog
+                | Document
+                | Constant
+                | InformationRegister
+                | AccumulationRegister
+                | AccountingRegister
+                | CalculationRegister
+                | ChartOfAccounts
+                | ChartOfCharacteristicTypes
+                | ChartOfCalculationTypes
+                | BusinessProcess
+                | Task
+                | ExchangePlan
+        ),
         Correspondence | PeriodAdjustmentLength => kind == AccountingRegister,
         Description | Predefined | RestartCountOnFailure | RestartIntervalOnFailure | Use => {
             kind == ScheduledJob
@@ -439,6 +470,10 @@ fn mutation_property_is_observable(kind: MetadataKind, key: MetaPropertyKey) -> 
         | RegisterRecordsDeletion
         | RegisterRecordsWritingOnPost
         | UnpostInPrivilegedMode => kind == Document,
+        PredefinedDataUpdate => matches!(
+            kind,
+            Catalog | ChartOfAccounts | ChartOfCharacteristicTypes | ChartOfCalculationTypes
+        ),
         Periodicity => matches!(kind, InformationRegister | CalculationRegister),
         ReuseSessions | SessionMaxAge => matches!(kind, HTTPService | WebService),
         RootUrl => kind == HTTPService,
@@ -848,6 +883,21 @@ mod tests {
     use crate::{MetaPropertyValueKind, METADATA_PROPERTY_SPECS};
 
     #[test]
+    fn code_series_reading_remains_available_for_all_three_existing_kinds() {
+        for kind in [
+            MetadataKind::Catalog,
+            MetadataKind::ChartOfAccounts,
+            MetadataKind::ChartOfCharacteristicTypes,
+        ] {
+            let property = META_INFO_PROPERTY_PROFILE
+                .resolve(kind, "CodeSeries")
+                .unwrap();
+            assert_eq!(property.key, "CodeSeries");
+            assert_eq!(property.value_kind, MetaInfoPropertyValueKind::String);
+        }
+    }
+
+    #[test]
     fn read_profile_preserves_every_published_writer_property_without_using_it_at_runtime() {
         for writer in METADATA_PROPERTY_SPECS {
             // Structured Constant Type is covered by the canonical create/edit/view
@@ -898,6 +948,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.WIRE.COMMON-MODULE-ORDINARY-CLIENT
     #[test]
     fn ordinary_client_read_property_stays_independent_from_the_writer_registry() {
         assert!(mutation_compatible_read_key("ClientOrdinaryApplication").is_none());

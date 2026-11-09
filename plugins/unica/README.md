@@ -12,7 +12,7 @@ ZCode prefers its native manifest rather than loading a second plugin.
 
 ## Public installation
 
-Prerequisites are Git and one host: Codex CLI, Claude Code 2.1.69 or newer,
+Prerequisites are Git 2.31 or newer (2.46 or newer for a partial clone) and one host: Codex CLI, Claude Code 2.1.69 or newer,
 or ZCode Desktop with native plugin support (the integration contract targets 3.14.4).
 Node.js, Python, download utilities, and archive utilities are not consumer
 dependencies.
@@ -161,6 +161,18 @@ codex plugin remove unica@unica
 codex plugin marketplace remove unica
 ```
 
+### Removed configuration keys
+
+A key that Unica no longer knows makes its settings file refuse to load, and
+the refusal names the key. Remove these keys when updating from an earlier
+version:
+
+| File | Key | What to do |
+| --- | --- | --- |
+| `unica.toml`, `unica.local.toml`, the file named by `UNICA_DOCUMENTATION_POLICY_FILE` | `[providers.kb-1ci]` | delete the section; the provider was removed |
+| `unica.toml`, `unica.local.toml` | `search_rlm_timeout_seconds` in `[operational.code_intelligence]` | rename to `search_semantic_timeout_seconds` |
+| `unica.toml`, `unica.local.toml` | `search_git_grep_timeout_seconds` in `[operational.code_intelligence]` | delete; literal search has no separate deadline |
+
 ## Data composition schemas
 
 Read the template's datasets and settings with `unica.view`; every node
@@ -246,6 +258,23 @@ server. When a client declares MCP `roots` in a session before protocol
 them afresh, and the first root outranks the captured variables. A new session
 project is therefore picked up without restarting the server. The existing canonical workspace/profile keys continue to
 isolate project state.
+
+
+If a host-required connection reports missing workspace context, the refusal
+names the project variables, recognized request-metadata channel and the
+client-roots status. `UNICA_HOST_CONTEXT_REQUIRED=1` (also used by packaged
+launches) prevents the plugin's technical cwd from becoming a project.
+Project variables are captured once: set `ZCODE_PROJECT_DIR` or the compatible
+`CLAUDE_PROJECT_DIR` to an existing absolute project directory and reconnect
+the MCP server from that project. A valid later request can recover the same
+connection through recognized metadata, or client roots in a session that
+supports them; the previous call's project is never remembered as fallback.
+The recognized metadata channel is `codex/sandbox-state-meta` with `sandboxCwd`.
+This is a channel contract, not a claim that every ZCode-compatible host sends
+it. Unknown metadata keys are not used to guess the project. A captured startup
+error remains unchanged until reconnect, but does not block valid per-call
+context. A malformed context supplied for the current call still refuses
+instead of choosing another project.
 
 Each installed artifact lives below
 `<artifact>/<version>--<asset-sha256>/<target>`. The SHA-256 component prevents

@@ -1,7 +1,7 @@
 use crate::infrastructure::analysis_composition;
+use crate::infrastructure::workspace_service_fixture::new_runtime;
 
-use serde_json::{json, Map, Value};
-use std::collections::HashMap;
+use serde_json::{json, Value};
 use std::env;
 use std::fs;
 use std::io::{self, BufRead, BufReader, ErrorKind, Read, Write};
@@ -16,10 +16,6 @@ use std::thread;
 use std::time::{Duration, Instant};
 use unica_adapter_bsl_analyzer::session::BslWorkspaceBackend;
 use unica_adapter_bsl_analyzer::session::*;
-use unica_adapter_rlm::backend::{BoundRlmIndex, RlmWorkspaceBackend};
-use unica_adapter_rlm::client::RlmServiceClient;
-use unica_adapter_rlm::index::*;
-use unica_adapter_rlm::session::*;
 
 use unica_analysis_services::protocol::*;
 use unica_analysis_services::test_support::WorkspaceServiceOperationExecutor as GenericWorkspaceServiceOperationExecutor;
@@ -31,7 +27,7 @@ use unica_analysis_services::{
     WorkspaceServiceBslCall, WorkspaceServiceConfig, WorkspaceServiceIdentity,
     WorkspaceServiceManager, WorkspaceServiceRecord, WorkspaceServices,
 };
-use unica_daemon::identity::CoreIdentity;
+use unica_daemon_protocol::identity::CoreIdentity;
 use unica_process::mcp_session::PersistentMcpSession;
 
 use unica_process::ManagedStartupChild;
@@ -46,80 +42,17 @@ use unica_workspace::actor::WorkspaceActor;
 use unica_workspace::paths::normalize_path_identity;
 use unica_workspace::state_fs::short_private_runtime_dir;
 use uuid::Uuid;
-type WorkspaceServiceRuntime = WorkspaceServices<BslWorkspaceBackend, RlmWorkspaceBackend>;
-type WorkspaceServiceRuntimeState = unica_analysis_services::test_support::WorkspaceServicesState<
-    BslWorkspaceBackend,
-    RlmWorkspaceBackend,
->;
-fn new_runtime(
-    identity: WorkspaceServiceIdentity,
-    record: &WorkspaceServiceRecord,
-) -> WorkspaceServiceRuntime {
-    WorkspaceServices::new(
-        identity,
-        record,
-        Arc::new(BslWorkspaceBackend::new(Arc::new(
-            analysis_composition::AnalysisEnvironment,
-        ))),
-        Arc::new(RlmWorkspaceBackend::new(Arc::new(
-            analysis_composition::AnalysisEnvironment,
-        ))),
-        analysis_composition::service_environment(),
-    )
-}
-fn handle_rlm_ready_with_runner(
-    runtime: &WorkspaceServiceRuntime,
-    args: Value,
-    seconds: u64,
-    nanos: u32,
-    cancel: &CancellationToken,
-    runner: &dyn IndexRunner,
-) -> ServiceResponse {
-    runtime.test_handle_rlm_ready_using(args, seconds, nanos, cancel, |lease, _tracker| {
-        BoundRlmIndex::test_with_runner(
-            Arc::new(analysis_composition::AnalysisEnvironment),
-            lease,
-            runner,
-        )
-    })
-}
-fn handle_rlm_mcp_with_runner(
-    runtime: &WorkspaceServiceRuntime,
-    operation: WorkspaceRlmOperation,
-    seconds: u64,
-    nanos: u32,
-    cancel: &CancellationToken,
-    runner: &dyn IndexRunner,
-) -> ServiceResponse {
-    runtime.test_handle_rlm_mcp_using(operation, seconds, nanos, cancel, |lease, _tracker| {
-        BoundRlmIndex::test_with_runner(
-            Arc::new(analysis_composition::AnalysisEnvironment),
-            lease,
-            runner,
-        )
-    })
-}
-fn start_rlm_transport(
-    context: &WorkspaceContext,
-    source: &Path,
-    cancel: &CancellationToken,
-) -> Result<PersistentMcpSession, String> {
-    unica_adapter_rlm::session::start_rlm_transport(
-        context,
-        source,
-        cancel,
-        analysis_composition::environment(),
-    )
-}
-
+type WorkspaceServiceRuntime = WorkspaceServices<BslWorkspaceBackend>;
+type WorkspaceServiceRuntimeState =
+    unica_analysis_services::test_support::WorkspaceServicesState<BslWorkspaceBackend>;
+#[path = "persistent_provider_cwd.rs"]
+mod medium_persistent_provider_cwd_native_tests;
+#[path = "../workspace_service_support/private_failure_tests.rs"]
+mod medium_private_failure_tests;
 #[path = "../workspace_service_support/persistent_provider_cwd_command_tests.rs"]
 mod persistent_provider_cwd_command_tests;
-#[path = "persistent_provider_cwd.rs"]
-mod persistent_provider_cwd_native_tests;
 #[path = "../workspace_service_support/persistent_provider_cwd_selection_tests.rs"]
 mod persistent_provider_cwd_selection_tests;
-#[path = "../workspace_service_support/private_failure_tests.rs"]
-mod private_failure_tests;
 macro_rules! assert_not_impl_production {
     ($type:ty: $trait:path) => {
         const _: fn() = || {
@@ -173,1161 +106,22 @@ fn wait_for_record_with_connector(
     )
 }
 
+// Shared helpers keep their former name for the modules that import them.
 #[cfg(test)]
-mod tests {
+use medium_tests as tests;
+#[cfg(test)]
+mod medium_tests {
     use super::*;
+    pub(super) use crate::infrastructure::workspace_service_fixture::test_record;
+    use crate::infrastructure::workspace_service_fixture::{
+        now_secs_for_test, open_test_request, read_test_response, send_test_request, wait_for_file,
+        wait_for_process_exit, CanonicalInvalidationHelper, SNAPSHOT_BEFORE, SNAPSHOT_MODULE,
+    };
     use std::fs;
     use std::path::Path;
     use std::sync::OnceLock;
-    use std::time::{SystemTime, UNIX_EPOCH};
     use unica_analysis_services::provider_host::ProviderHostKey;
     use unica_source_contract::workspace::WorkspaceContext;
-    use unica_workspace::test_support as testing;
-    use unica_workspace::test_support::supports_retained_root_replacement_test;
-
-    const SNAPSHOT_MODULE: &str = "CommonModules/SearchProbe/Ext/Module.bsl";
-    const SNAPSHOT_BEFORE: &str = "Procedure AcceptanceExistingSymbol1306() Export\nEndProcedure\n";
-    const SNAPSHOT_AFTER: &str = "Procedure AcceptanceChangedSymbol978() Export\nEndProcedure\n";
-
-    struct CanonicalInvalidationHelper {
-        record: WorkspaceServiceRecord,
-        runtime: Arc<WorkspaceServiceRuntime>,
-        notifications: Arc<Mutex<Vec<Vec<DomainEvent>>>>,
-        connections: Arc<AtomicUsize>,
-        pid_file: PathBuf,
-        server: Option<thread::JoinHandle<Result<(), String>>>,
-    }
-
-    impl CanonicalInvalidationHelper {
-        fn start(context: &WorkspaceContext, source_root: &Path, executable: &Path) -> Self {
-            Self::start_with_cleanup_gate(context, source_root, executable, None)
-        }
-
-        fn start_with_cleanup_gate(
-            context: &WorkspaceContext,
-            source_root: &Path,
-            executable: &Path,
-            cleanup_gate: Option<PathBuf>,
-        ) -> Self {
-            Self::start_in_directory(context, source_root, executable, cleanup_gate, None)
-        }
-
-        fn start_in_directory(
-            context: &WorkspaceContext,
-            source_root: &Path,
-            executable: &Path,
-            cleanup_gate: Option<PathBuf>,
-            service_dir: Option<PathBuf>,
-        ) -> Self {
-            let mut identity = WorkspaceServiceIdentity::new(context, source_root).unwrap();
-            if let Some(service_dir) = service_dir {
-                identity.service_dir = service_dir;
-            }
-            let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
-            listener.set_nonblocking(true).unwrap();
-            let record = test_record(
-                &identity,
-                listener.local_addr().unwrap().port(),
-                CoreIdentity::production().as_str(),
-            );
-            write_record(&identity, record.clone());
-            let pid_file = identity.service_dir.join("snapshot-pids.txt");
-            let mut runtime = new_runtime(identity, &record);
-            runtime.test_set_analyzer_starter(Arc::new({
-                let executable = executable.to_path_buf();
-                let pid_file = pid_file.clone();
-                move |_, source_root, cancellation| {
-                    let mut command = Command::new(&executable);
-                    command
-                        .args([source_root.join(SNAPSHOT_MODULE), pid_file.clone()])
-                        .arg("analyzer")
-                        .arg(pid_file.with_extension("lease"));
-                    if let Some(cleanup_gate) = &cleanup_gate {
-                        command.arg(cleanup_gate);
-                    }
-                    PersistentMcpSession::start_with_command(command, cancellation)
-                }
-            }));
-            runtime.test_set_rlm_starter(Arc::new({
-                let executable = executable.to_path_buf();
-                let pid_file = pid_file.with_extension("rlm-pids");
-                move |_, source_root, _, build_id, cancellation| {
-                    let mut command = Command::new(&executable);
-                    command
-                        .args([source_root.join(SNAPSHOT_MODULE), pid_file.clone()])
-                        .arg("rlm");
-                    Ok(RlmMcpSession::test_from_transport(
-                        PersistentMcpSession::start_with_command(command, cancellation)?,
-                        source_root.to_path_buf(),
-                        build_id.to_owned(),
-                        None,
-                    ))
-                }
-            }));
-            let notifications = Arc::new(Mutex::new(Vec::new()));
-            let connections = Arc::new(AtomicUsize::new(0));
-            *runtime.test_handler_started_hook().lock().unwrap() = Some(Arc::new({
-                let connections = Arc::clone(&connections);
-                move || {
-                    connections.fetch_add(1, Ordering::AcqRel);
-                }
-            }));
-            runtime.test_set_authenticated_request_hook(Some(Arc::new({
-                let notifications = Arc::clone(&notifications);
-                move |_, request| {
-                    if let ServiceRequestKind::Invalidate { events } = request {
-                        notifications.lock().unwrap().push(events.clone());
-                    }
-                }
-            })));
-            let runtime = Arc::new(runtime);
-            let server_runtime = Arc::clone(&runtime);
-            let server = thread::spawn(move || {
-                serve_workspace_service(
-                    listener,
-                    server_runtime,
-                    Arc::new(SystemWorkspaceServiceOperationExecutor),
-                    Duration::from_secs(120),
-                    SERVICE_REQUEST_HEADER_TIMEOUT,
-                    SERVICE_SHUTDOWN_GRACE,
-                )
-            });
-            Self {
-                record,
-                runtime,
-                notifications,
-                connections,
-                pid_file,
-                server: Some(server),
-            }
-        }
-
-        fn notifications(&self) -> Vec<Vec<DomainEvent>> {
-            self.notifications.lock().unwrap().clone()
-        }
-
-        fn snapshot(&self) -> String {
-            let response = send_test_request(
-                &self.record,
-                ServiceRequestKind::BslMcp {
-                    operation_id: Uuid::new_v4().to_string(),
-                    tool_name: "search".into(),
-                    tool_args: json!({"action": "search_code", "query": "Acceptance"}),
-                    timeout_seconds: 10,
-                    timeout_nanos: 0,
-                    yields: false,
-                },
-            );
-            assert!(response.ok, "{response:?}");
-            response.result_text.unwrap()
-        }
-
-        fn pids(&self) -> Vec<u32> {
-            fs::read_to_string(&self.pid_file)
-                .unwrap()
-                .lines()
-                .map(|line| line.parse().unwrap())
-                .collect()
-        }
-
-        fn stop_and_verify(mut self) {
-            let mut pids = self.pids();
-            match fs::read_to_string(self.pid_file.with_extension("rlm-pids")) {
-                Ok(rlm_pids) => {
-                    pids.extend(rlm_pids.lines().map(|line| line.parse::<u32>().unwrap()))
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => panic!("read controlled RLM PID log: {error}"),
-            }
-            let mut readers = Vec::new();
-            if let Some(session) = self.runtime.test_analyzer().lock().unwrap().as_ref() {
-                readers.push(session.test_reader_terminal());
-            }
-            if let Some(session) = self.runtime.test_rlm().lock().unwrap().as_ref() {
-                readers.push(session.test_reader_terminal());
-            }
-            assert!(
-                !readers.is_empty(),
-                "controlled providers must have been warmed"
-            );
-            self.runtime.test_begin_shutdown();
-            self.server
-                .take()
-                .unwrap()
-                .join()
-                .expect("controlled helper server must join")
-                .expect("controlled helper provider teardown must finish");
-            for pid in pids {
-                assert!(
-                    wait_for_process_exit(pid, Duration::from_secs(5)),
-                    "owned controlled provider {pid} did not exit"
-                );
-            }
-            let deadline = Instant::now() + Duration::from_secs(5);
-            while readers.iter().any(|reader| !reader.load(Ordering::Acquire)) {
-                assert!(
-                    Instant::now() < deadline,
-                    "controlled provider stdout did not close"
-                );
-                thread::yield_now();
-            }
-        }
-    }
-
-    impl Drop for CanonicalInvalidationHelper {
-        fn drop(&mut self) {
-            self.runtime.test_begin_shutdown();
-            if let Some(server) = self.server.take() {
-                let _ = server.join();
-            }
-        }
-    }
-
-    // The real service prepares and executes every operation. Held executions
-    // are declared known-long only for this fixture's scheduling; no process
-    // starts and the original cancellation token retains ordinary safe points.
-    struct HeldApplyTaskService {
-        inner: Arc<dyn crate::infrastructure::daemon::server::CanonicalInvocationService>,
-    }
-
-    impl crate::infrastructure::daemon::server::CanonicalInvocationService for HeldApplyTaskService {
-        fn prepare(
-            &self,
-            invocation: &crate::infrastructure::daemon::server::ActorBoundInvocation,
-        ) -> Result<
-            unica_execution::receipt_runtime::ports::ExecutionClass,
-            Box<unica_execution_contract::invocation::DomainResult>,
-        > {
-            let class = self.inner.prepare(invocation)?;
-            Ok(
-                if invocation.tool() == unica_execution::invocation_store::ToolIdentity::Apply
-                    && invocation.arguments().contains_key("executionToken")
-                {
-                    unica_execution::receipt_runtime::ports::ExecutionClass::KnownLong(
-                        unica_execution::receipt_runtime::ports::KnownLongReason::ExternalProcess,
-                    )
-                } else {
-                    class
-                },
-            )
-        }
-
-        fn execute(
-            &self,
-            invocation: &crate::infrastructure::daemon::server::ActorBoundExecution,
-            cancellation: CancellationToken,
-        ) -> Result<
-            unica_execution_contract::invocation::DomainResult,
-            unica_execution_contract::invocation::InvocationFailure,
-        > {
-            assert!(
-                !cancellation.protected_process_started(),
-                "fixture classification must not protect a process"
-            );
-            let result = self.inner.execute(invocation, cancellation.clone());
-            assert!(
-                !cancellation.protected_process_started(),
-                "canonical XML Apply must not acquire process authority"
-            );
-            result
-        }
-    }
-
-    struct CanonicalInvalidationFixture {
-        context: WorkspaceContext,
-        executable: PathBuf,
-        daemon: Option<crate::infrastructure::daemon::server::actor_capacity_tests::LiveV5Daemon>,
-        owner: Option<unica_daemon::client_v5::V5DaemonProcessOwner>,
-        _directory: tempfile::TempDir,
-    }
-
-    impl CanonicalInvalidationFixture {
-        fn new() -> Self {
-            Self::with_held_apply_schedule(false)
-        }
-
-        fn new_for_held_apply() -> Self {
-            Self::with_held_apply_schedule(true)
-        }
-
-        fn with_held_apply_schedule(held: bool) -> Self {
-            use crate::infrastructure::daemon::server::actor_capacity_tests::{
-                canonical_v13_service, LiveV5Daemon,
-            };
-            let directory = tempfile::tempdir().unwrap();
-            let workspace =
-                unica_workspace::test_support::canonical_path(directory.path()).join("workspace");
-            let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../tests/fixtures/acceptance/workspace-symbol");
-            for relative in [
-                "v8project.yaml",
-                "src/Configuration.xml",
-                "src/CommonModules/SearchProbe.xml",
-                "src/CommonModules/SearchProbe/Ext/Module.bsl",
-            ] {
-                let target = workspace.join(relative);
-                fs::create_dir_all(target.parent().unwrap()).unwrap();
-                fs::copy(fixture.join(relative), target).unwrap();
-            }
-            let context =
-                crate::infrastructure::workspace::discover_workspace(Some(workspace)).unwrap();
-            assert_eq!(
-                context.cache_root,
-                context.workspace_root.join(".build/unica")
-            );
-            let executable = unica_process::test_support::fixture_executable_path(
-                directory.path(),
-                "snapshot-provider",
-            );
-            let output = Command::new("rustc")
-                .arg("--edition=2021")
-                .arg(
-                    Path::new(env!("CARGO_MANIFEST_DIR"))
-                        .join("../../tests/fixtures/analyzer/workspace-snapshot-producer.rs"),
-                )
-                .arg("-o")
-                .arg(&executable)
-                .output()
-                .unwrap();
-            assert!(
-                output.status.success(),
-                "compile controlled resident provider"
-            );
-            let inner = canonical_v13_service();
-            let service: Arc<
-                dyn crate::infrastructure::daemon::server::CanonicalInvocationService,
-            > = if held {
-                Arc::new(HeldApplyTaskService { inner })
-            } else {
-                inner
-            };
-            let daemon = LiveV5Daemon::start_with_owned_stop(service);
-            let owner = daemon.owner();
-            Self {
-                context,
-                executable,
-                daemon: Some(daemon),
-                owner: Some(owner),
-                _directory: directory,
-            }
-        }
-
-        fn apply(&self, arguments: Value) -> unica_execution_contract::invocation::DomainResult {
-            use crate::infrastructure::daemon::server::actor_capacity_tests::V5Submission;
-            use unica_execution::receipt_runtime::response::V5DaemonTaskSnapshot;
-            let request = crate::infrastructure::daemon::protocol::InvocationRequest::new(
-                unica_execution::invocation_store::ToolIdentity::Apply,
-                arguments,
-                self.context.workspace_root.to_string_lossy(),
-                7_000,
-            )
-            .unwrap();
-            let daemon = self.daemon.as_ref().unwrap();
-            let owner = self.owner.as_ref().unwrap();
-            match daemon.submit(owner, &request) {
-                V5Submission::Direct(result) => *result,
-                V5Submission::Task(task) => {
-                    match daemon.wait_terminal(owner, task, Duration::from_secs(15)) {
-                        V5DaemonTaskSnapshot::Completed { result, .. } => *result,
-                        other => panic!("canonical apply did not complete: {other:?}"),
-                    }
-                }
-            }
-        }
-
-        fn plan(&self, text: &str) -> unica_execution_contract::invocation::DomainResult {
-            self.apply(json!({
-                "at": "main:CommonModule.SearchProbe",
-                "ops": [{"op": "code.replace", "args": {
-                    "at": "main:CommonModule.SearchProbe.Body", "text": text,
-                }}],
-            }))
-        }
-
-        fn prepare_snapshot_module(&self, line_ending: &str) -> (PathBuf, Vec<u8>) {
-            assert!(matches!(line_ending, "\n" | "\r\n"));
-            let module = self
-                .context
-                .workspace_root
-                .join("src")
-                .join(SNAPSHOT_MODULE);
-            let lf_before = SNAPSHOT_BEFORE.as_bytes();
-            let crlf_before = SNAPSHOT_BEFORE.replace('\n', "\r\n");
-            let fixture_bytes = fs::read(&module).unwrap();
-            assert!(
-                fixture_bytes == lf_before || fixture_bytes == crlf_before.as_bytes(),
-                "the controlled module must match its known LF or CRLF source"
-            );
-            let chosen_before = SNAPSHOT_BEFORE.replace('\n', line_ending);
-            fs::write(&module, &chosen_before).unwrap();
-            let before = fs::read(&module).unwrap();
-            assert_eq!(before, chosen_before.as_bytes());
-            let expected = if before == lf_before {
-                SNAPSHOT_AFTER.as_bytes().to_vec()
-            } else if before == crlf_before.as_bytes() {
-                SNAPSHOT_AFTER.replace('\n', "\r\n").into_bytes()
-            } else {
-                panic!("the controlled source must retain its exact chosen line ending")
-            };
-            (module, expected)
-        }
-
-        fn helper(&self) -> CanonicalInvalidationHelper {
-            CanonicalInvalidationHelper::start(
-                &self.context,
-                &self.context.workspace_root.join("src"),
-                &self.executable,
-            )
-        }
-    }
-
-    impl Drop for CanonicalInvalidationFixture {
-        fn drop(&mut self) {
-            if let (Some(mut daemon), Some(owner)) = (self.daemon.take(), self.owner.take()) {
-                daemon.stop(owner);
-            }
-        }
-    }
-
-    struct InvalidationDispatchRegistration(PathBuf);
-
-    impl InvalidationDispatchRegistration {
-        fn install(context: &WorkspaceContext, hook: Arc<InvalidationDispatchHook>) -> Self {
-            assert!(invalidation_dispatch_hooks()
-                .lock()
-                .unwrap()
-                .insert(context.workspace_root.clone(), hook)
-                .is_none());
-            Self(context.workspace_root.clone())
-        }
-    }
-
-    impl Drop for InvalidationDispatchRegistration {
-        fn drop(&mut self) {
-            invalidation_dispatch_hooks()
-                .lock()
-                .unwrap()
-                .remove(&self.0);
-        }
-    }
-
-    struct InvalidationTestRelease(Arc<(Mutex<bool>, Condvar)>);
-
-    impl Drop for InvalidationTestRelease {
-        fn drop(&mut self) {
-            *self.0 .0.lock().unwrap() = true;
-            self.0 .1.notify_all();
-        }
-    }
-
-    #[test]
-    fn canonical_saved_apply_cancel_finishes_before_the_real_helper_ack_is_released() {
-        use crate::infrastructure::daemon::server::actor_capacity_tests::V5Submission;
-        use unica_execution::receipt_runtime::response::V5DaemonTaskSnapshot;
-
-        let fixture = CanonicalInvalidationFixture::new_for_held_apply();
-        let (module, expected) = fixture.prepare_snapshot_module("\n");
-        let helper = fixture.helper();
-        assert!(helper.snapshot().contains("AcceptanceExistingSymbol1306"));
-        let preview = fixture.plan(SNAPSHOT_AFTER);
-        assert!(preview.ok, "{preview:?}");
-        let token = preview.data.as_ref().unwrap()["executionToken"]
-            .as_str()
-            .unwrap();
-        let (entered, observed) = mpsc::channel();
-        let release = Arc::new((Mutex::new(false), Condvar::new()));
-        helper
-            .runtime
-            .test_set_invalidation_response_hook(Some(Arc::new({
-                let release = Arc::clone(&release);
-                move || {
-                    entered.send(()).unwrap();
-                    let mut released = release.0.lock().unwrap();
-                    while !*released {
-                        released = release.1.wait(released).unwrap();
-                    }
-                }
-            })));
-        // Declared after both owners: unwind releases the real helper before shutdown.
-        let cleanup = InvalidationTestRelease(Arc::clone(&release));
-        let request = crate::infrastructure::daemon::protocol::InvocationRequest::new(
-            unica_execution::invocation_store::ToolIdentity::Apply,
-            json!({"executionToken": token}),
-            fixture.context.workspace_root.to_string_lossy(),
-            7_000,
-        )
-        .unwrap();
-        let daemon = fixture.daemon.as_ref().unwrap();
-        let owner = fixture.owner.as_ref().unwrap();
-        let V5Submission::Task(task) = daemon.submit(owner, &request) else {
-            panic!("an unacknowledged helper must keep the canonical apply in a Task");
-        };
-        observed.recv_timeout(Duration::from_secs(5)).unwrap();
-        assert!(helper
-            .runtime
-            .test_analyzer_invalidated()
-            .load(Ordering::Acquire));
-        assert!(helper
-            .runtime
-            .test_rlm_invalidated()
-            .load(Ordering::Acquire));
-        assert_eq!(fs::read(&module).unwrap(), expected);
-        let source_identity = unica_workspace::state_fs::test_support::file_identity(
-            &fs::File::open(&module).unwrap(),
-        )
-        .unwrap();
-        let state = fs::read(fixture.context.cache_root.join("state.json")).unwrap();
-        let cache: Value = serde_json::from_slice(&state).unwrap();
-        assert_eq!(cache["caches"]["bsl_index"]["status"], "stale");
-        assert_eq!(cache["caches"]["bsl_diagnostics"]["status"], "stale");
-        daemon.cancel(owner, task);
-        let terminal = daemon.wait_terminal(owner, task, Duration::from_secs(2));
-        assert!(
-            !*release.0.lock().unwrap(),
-            "terminal must precede ACK release"
-        );
-        let V5DaemonTaskSnapshot::Completed { result, .. } = terminal else {
-            panic!("committed apply must retain its Completed receipt: {terminal:?}");
-        };
-        assert!(result.ok, "{result:?}");
-        assert!(result.rev.is_some());
-        assert!(!result.changed.is_empty());
-        assert_eq!(
-            result.data.as_ref().unwrap()["planHash"],
-            preview.data.as_ref().unwrap()["planHash"]
-        );
-        let notifications = helper.notifications();
-        assert_eq!(notifications.len(), 1);
-        assert_eq!(fixture.apply(json!({"executionToken": token})), *result);
-        assert_eq!(
-            helper.notifications(),
-            notifications,
-            "saved replay must not notify again"
-        );
-        assert_eq!(fs::read(&module).unwrap(), expected);
-        assert_eq!(
-            unica_workspace::state_fs::test_support::file_identity(
-                &fs::File::open(&module).unwrap(),
-            )
-            .unwrap(),
-            source_identity
-        );
-        assert_eq!(
-            fs::read(fixture.context.cache_root.join("state.json")).unwrap(),
-            state
-        );
-        drop(cleanup);
-        assert!(helper.snapshot().contains("AcceptanceChangedSymbol978"));
-        helper.stop_and_verify();
-    }
-
-    #[test]
-    fn canonical_saved_apply_cancel_before_dispatch_or_between_records_keeps_unknown_old_results() {
-        use crate::infrastructure::daemon::server::actor_capacity_tests::V5Submission;
-        use unica_code_intelligence::model::CodeIntelligenceContext;
-        use unica_code_intelligence::model::CodeIntelligenceProvider;
-        use unica_code_intelligence::model::SearchRequest;
-        use unica_execution::receipt_runtime::response::V5DaemonTaskSnapshot;
-
-        for stop_after in [0, 1] {
-            let fixture = CanonicalInvalidationFixture::new_for_held_apply();
-            let (module, expected) = fixture.prepare_snapshot_module("\n");
-            let helper = fixture.helper();
-            let replica = CanonicalInvalidationHelper::start_in_directory(
-                &fixture.context,
-                &fixture.context.workspace_root.join("src"),
-                &fixture.executable,
-                None,
-                Some(
-                    fixture
-                        .context
-                        .cache_root
-                        .join("services/controlled-second-record"),
-                ),
-            );
-            let source_root = fixture.context.workspace_root.join("src");
-            let context = CodeIntelligenceContext::new(
-                fixture.context.clone(),
-                unica_source_contract::workspace::ResolvedSourceRoot {
-                    source_set: Some("main".into()),
-                    path: source_root.clone(),
-                },
-                std::sync::Arc::new(unica_workspace::discovery::ProjectDiscoveryReader::new(
-                    &fixture.context.workspace_root,
-                )),
-            );
-            let symbol = || {
-                analysis_composition::bsl_provider().search(
-                    &SearchRequest {
-                        query: "Acceptance".into(),
-                        limit: 20,
-                    },
-                    &context,
-                    ProviderDeadline::from_budget(Duration::from_secs(10)),
-                    &CancellationToken::new(),
-                )
-            };
-            let primary_identity = helper.runtime.test_identity();
-            let mut initial = Vec::new();
-            write_ready_rlm_status_for_current_source(&fixture.context, &source_root);
-            for current in [&helper, &replica] {
-                // Select this controlled resident using the ordinary provider adapter.
-                write_record(primary_identity, current.record.clone());
-                let bsl = symbol();
-                assert_eq!(bsl.hits.len(), 1, "{bsl:?}");
-                assert_eq!(bsl.index_freshness.as_deref(), Some("unknown"));
-                let rlm = send_test_request(
-                    &current.record,
-                    ServiceRequestKind::RlmMcp {
-                        operation_id: Uuid::new_v4().to_string(),
-                        operation: WorkspaceRlmOperation::Search {
-                            query: "Acceptance".into(),
-                            limit: 20,
-                        },
-                        timeout_seconds: 10,
-                        timeout_nanos: 0,
-                    },
-                );
-                assert!(rlm.ok, "{rlm:?}");
-                assert_eq!(rlm.index_freshness.as_deref(), Some("unknown"));
-                initial.push((
-                    bsl.hits,
-                    current.pids(),
-                    rlm.result_text,
-                    rlm.index_build_id,
-                ));
-            }
-            write_record(primary_identity, helper.record.clone());
-            let preview = fixture.plan(SNAPSHOT_AFTER);
-            assert!(preview.ok, "{preview:?}");
-            let token = preview.data.as_ref().unwrap()["executionToken"]
-                .as_str()
-                .unwrap();
-            let (entered, observed) = mpsc::channel();
-            let release = Arc::new((Mutex::new(false), Condvar::new()));
-            let registration = InvalidationDispatchRegistration::install(
-                &fixture.context,
-                Arc::new({
-                    let release = Arc::clone(&release);
-                    move |dispatched| {
-                        if dispatched == stop_after {
-                            entered.send(()).unwrap();
-                            let mut released = release.0.lock().unwrap();
-                            while !*released {
-                                released = release.1.wait(released).unwrap();
-                            }
-                        }
-                    }
-                }),
-            );
-            let cleanup = InvalidationTestRelease(Arc::clone(&release));
-            let request = crate::infrastructure::daemon::protocol::InvocationRequest::new(
-                unica_execution::invocation_store::ToolIdentity::Apply,
-                json!({"executionToken": token}),
-                fixture.context.workspace_root.to_string_lossy(),
-                7_000,
-            )
-            .unwrap();
-            let daemon = fixture.daemon.as_ref().unwrap();
-            let owner = fixture.owner.as_ref().unwrap();
-            let V5Submission::Task(task) = daemon.submit(owner, &request) else {
-                panic!("dispatch gate must retain the canonical apply Task");
-            };
-            observed.recv_timeout(Duration::from_secs(5)).unwrap();
-            assert_eq!(fs::read(&module).unwrap(), expected);
-            let state = fs::read(fixture.context.cache_root.join("state.json")).unwrap();
-            let cache: Value = serde_json::from_slice(&state).unwrap();
-            assert_eq!(cache["caches"]["bsl_index"]["status"], "stale");
-            assert_eq!(cache["caches"]["bsl_diagnostics"]["status"], "stale");
-            daemon.cancel(owner, task);
-            drop(cleanup);
-            let terminal = daemon.wait_terminal(owner, task, Duration::from_secs(2));
-            let V5DaemonTaskSnapshot::Completed { result, .. } = terminal else {
-                panic!("committed publication must remain Completed: {terminal:?}");
-            };
-            assert!(result.ok, "{result:?}");
-            drop(registration);
-            assert_eq!(
-                helper.notifications().len() + replica.notifications().len(),
-                stop_after
-            );
-            let notifications = [helper.notifications(), replica.notifications()];
-            assert_eq!(fixture.apply(json!({"executionToken": token})), *result);
-            assert_eq!(
-                [helper.notifications(), replica.notifications()],
-                notifications
-            );
-            assert_eq!(
-                fs::read(fixture.context.cache_root.join("state.json")).unwrap(),
-                state
-            );
-            for (current, (old_hits, pids, old_rlm, build_id)) in
-                [&helper, &replica].into_iter().zip(initial)
-            {
-                if !current.notifications().is_empty() {
-                    continue;
-                }
-                write_record(primary_identity, current.record.clone());
-                let old_bsl = symbol();
-                assert_eq!(old_bsl.hits, old_hits);
-                assert_eq!(old_bsl.index_freshness.as_deref(), Some("unknown"));
-                assert_eq!(current.pids(), pids);
-                let rlm = send_test_request(
-                    &current.record,
-                    ServiceRequestKind::RlmMcp {
-                        operation_id: Uuid::new_v4().to_string(),
-                        operation: WorkspaceRlmOperation::Search {
-                            query: "Acceptance".into(),
-                            limit: 20,
-                        },
-                        timeout_seconds: 10,
-                        timeout_nanos: 0,
-                    },
-                );
-                assert!(rlm.ok, "{rlm:?}");
-                assert_eq!(rlm.result_text, old_rlm);
-                assert_eq!(rlm.index_build_id, build_id);
-                assert_eq!(rlm.index_freshness.as_deref(), Some("unknown"));
-            }
-            write_record(primary_identity, helper.record.clone());
-            replica.stop_and_verify();
-            helper.stop_and_verify();
-        }
-    }
-
-    #[test]
-    fn canonical_saved_apply_notifies_live_helpers_once_and_restarts_the_warmed_analyzer() {
-        for line_ending in ["\n", "\r\n"] {
-            assert_canonical_saved_apply_notifies_live_helpers_once_and_restarts_the_warmed_analyzer(line_ending);
-        }
-    }
-
-    fn assert_canonical_saved_apply_notifies_live_helpers_once_and_restarts_the_warmed_analyzer(
-        line_ending: &str,
-    ) {
-        let fixture = CanonicalInvalidationFixture::new();
-        let (module, expected) = fixture.prepare_snapshot_module(line_ending);
-        let before = fs::read(&module).unwrap();
-        let helper = fixture.helper();
-        assert!(helper.snapshot().contains("AcceptanceExistingSymbol1306"));
-        let first_pid = helper.pids()[0];
-
-        let mut neighbor_context = fixture.context.clone();
-        neighbor_context.workspace_root = fixture._directory.path().join("neighbor");
-        neighbor_context.cwd = neighbor_context.workspace_root.clone();
-        let neighbor_source = neighbor_context.workspace_root.join("src");
-        fs::create_dir_all(neighbor_source.join(SNAPSHOT_MODULE).parent().unwrap()).unwrap();
-        fs::write(neighbor_source.join(SNAPSHOT_MODULE), &before).unwrap();
-        let neighbor = CanonicalInvalidationHelper::start(
-            &neighbor_context,
-            &neighbor_source,
-            &fixture.executable,
-        );
-        assert!(neighbor.snapshot().contains("AcceptanceExistingSymbol1306"));
-
-        let preview = fixture.plan(SNAPSHOT_AFTER);
-        assert!(preview.ok, "{preview:?}");
-        assert_eq!(fs::read(&module).unwrap(), before);
-        assert!(helper.notifications().is_empty());
-        assert!(helper.snapshot().contains("AcceptanceExistingSymbol1306"));
-        assert_eq!(helper.pids(), [first_pid]);
-
-        let token = preview.data.as_ref().unwrap()["executionToken"]
-            .as_str()
-            .unwrap();
-        let published = fixture.apply(json!({"executionToken": token}));
-        assert!(published.ok, "{published:?}");
-        assert_eq!(fs::read(&module).unwrap(), expected);
-        let notifications = helper.notifications();
-        assert_eq!(
-            notifications.len(),
-            1,
-            "the canonical commit must reach the actual helper"
-        );
-        assert_eq!(notifications[0].len(), 1, "{notifications:?}");
-        assert_eq!(
-            notifications[0][0],
-            DomainEvent::new(
-                DomainEventKind::ModuleChanged,
-                "main:CommonModule.SearchProbe"
-            )
-        );
-        assert!(helper
-            .runtime
-            .test_analyzer_invalidated()
-            .load(Ordering::Acquire));
-        assert!(helper
-            .runtime
-            .test_rlm_invalidated()
-            .load(Ordering::Acquire));
-        assert!(
-            neighbor.notifications().is_empty(),
-            "a neighbor sharing services must stay isolated"
-        );
-        assert!(helper.snapshot().contains("AcceptanceChangedSymbol978"));
-        let pids = helper.pids();
-        assert_eq!(pids.len(), 2);
-        assert_ne!(pids[0], pids[1]);
-        assert!(wait_for_process_exit(first_pid, Duration::from_secs(5)));
-
-        let replay = fixture.apply(json!({"executionToken": token}));
-        assert_eq!(
-            serde_json::to_value(replay).unwrap(),
-            serde_json::to_value(&published).unwrap()
-        );
-        assert_eq!(helper.notifications(), notifications);
-        assert!(helper.snapshot().contains("AcceptanceChangedSymbol978"));
-        assert_eq!(helper.pids(), pids);
-
-        let no_op = fixture.plan(SNAPSHOT_AFTER);
-        assert!(no_op.ok, "{no_op:?}");
-        let no_op_token = no_op.data.as_ref().unwrap()["executionToken"]
-            .as_str()
-            .unwrap();
-        assert!(fixture.apply(json!({"executionToken": no_op_token})).ok);
-        assert_eq!(
-            helper.notifications(),
-            notifications,
-            "empty effects must not invalidate"
-        );
-
-        let stale = fixture.plan("Procedure NeverPublished978() Export\nEndProcedure\n");
-        assert!(stale.ok, "{stale:?}");
-        let stale_token = stale.data.as_ref().unwrap()["executionToken"]
-            .as_str()
-            .unwrap();
-        fs::write(
-            &module,
-            "Procedure ExternalEdit978() Export\nEndProcedure\n",
-        )
-        .unwrap();
-        let state_before = fs::read(fixture.context.cache_root.join("state.json")).unwrap();
-        let refused = fixture.apply(json!({"executionToken": stale_token}));
-        assert!(!refused.ok, "{refused:?}");
-        assert!(fs::read_to_string(&module)
-            .unwrap()
-            .contains("ExternalEdit978"));
-        assert_eq!(
-            fs::read(fixture.context.cache_root.join("state.json")).unwrap(),
-            state_before
-        );
-        assert_eq!(helper.notifications(), notifications);
-        assert_eq!(
-            serde_json::to_value(fixture.apply(json!({"executionToken": stale_token}))).unwrap(),
-            serde_json::to_value(refused).unwrap()
-        );
-        let invalid = fixture.apply(json!({"at": "main:CommonModule.SearchProbe", "ops": [{"op": "code.replace", "args": {"text": 42}}]}));
-        assert!(!invalid.ok);
-        assert_eq!(helper.notifications(), notifications);
-        assert_eq!(helper.pids(), pids);
-        neighbor.stop_and_verify();
-        helper.stop_and_verify();
-    }
-
-    #[test]
-    fn invalidated_analyzer_retirement_observes_cancellation_and_budget_before_replacement() {
-        for cancel in [false, true] {
-            let fixture = CanonicalInvalidationFixture::new();
-            let cleanup_gate = fixture._directory.path().join("hold-analyzer-cleanup");
-            fs::write(&cleanup_gate, b"hold").unwrap();
-            let helper = CanonicalInvalidationHelper::start_with_cleanup_gate(
-                &fixture.context,
-                &fixture.context.workspace_root.join("src"),
-                &fixture.executable,
-                Some(cleanup_gate.clone()),
-            );
-            assert!(helper.snapshot().contains("AcceptanceExistingSymbol1306"));
-            let first_pid = helper.pids()[0];
-            write_ready_rlm_status_for_current_source(
-                &fixture.context,
-                &fixture.context.workspace_root.join("src"),
-            );
-            let rlm = || {
-                send_test_request(
-                    &helper.record,
-                    ServiceRequestKind::RlmMcp {
-                        operation_id: Uuid::new_v4().to_string(),
-                        operation: WorkspaceRlmOperation::Search {
-                            query: "Acceptance".into(),
-                            limit: 20,
-                        },
-                        timeout_seconds: 10,
-                        timeout_nanos: 0,
-                    },
-                )
-            };
-            let initial_rlm = rlm();
-            assert!(initial_rlm.ok);
-            assert!(initial_rlm
-                .result_text
-                .unwrap()
-                .contains("AcceptanceExistingSymbol1306"));
-            let preview = fixture.plan(SNAPSHOT_AFTER);
-            assert!(preview.ok);
-            let token = preview.data.as_ref().unwrap()["executionToken"]
-                .as_str()
-                .unwrap();
-            assert!(fixture.apply(json!({"executionToken": token})).ok);
-
-            let mut response = open_test_request(
-                &helper.record,
-                ServiceRequestKind::BslMcp {
-                    operation_id: "waiting-for-analyzer-exit".into(),
-                    tool_name: "search".into(),
-                    tool_args: json!({"action": "search_code", "query": "Acceptance"}),
-                    timeout_seconds: if cancel { 10 } else { 0 },
-                    timeout_nanos: if cancel { 0 } else { 500_000_000 },
-                    yields: false,
-                },
-            );
-            let closing = PathBuf::from(format!("{}.closing", cleanup_gate.display()));
-            wait_for_file(&closing, Duration::from_secs(2));
-            assert_eq!(
-                helper.pids(),
-                [first_pid],
-                "replacement waits for old EOF cleanup"
-            );
-            assert!(send_test_request(&helper.record, ServiceRequestKind::Ping).ok);
-            let pinned_rlm = rlm();
-            assert!(
-                pinned_rlm.ok,
-                "analyzer shutdown must leave pinned RLM reads independent"
-            );
-            assert!(pinned_rlm
-                .result_text
-                .unwrap()
-                .contains("AcceptanceExistingSymbol1306"));
-            assert_eq!(pinned_rlm.index_freshness.as_deref(), Some("unknown"));
-            if cancel {
-                assert!(
-                    send_test_request(
-                        &helper.record,
-                        ServiceRequestKind::Cancel {
-                            operation_id: "waiting-for-analyzer-exit".into(),
-                        },
-                    )
-                    .ok
-                );
-            }
-            let response = read_test_response(&mut response);
-            assert!(
-                !response.ok,
-                "unfinished retirement cannot claim a replacement"
-            );
-            let error = response.error.as_deref().unwrap();
-            assert!(error.starts_with(if cancel { "cancelled:" } else { "timeout:" }));
-            assert_eq!(helper.pids(), [first_pid]);
-            assert!(wait_for_process_exit(first_pid, Duration::from_secs(5)));
-            assert!(
-                helper.pid_file.with_extension("lease").exists(),
-                "forced stop does not claim the provider released its lease"
-            );
-            fs::remove_file(cleanup_gate).unwrap();
-            // Recover only the fixture's witness after the owned process has
-            // actually exited; no provider-private state is edited by Unica.
-            fs::remove_file(helper.pid_file.with_extension("lease")).unwrap();
-            assert!(helper.snapshot().contains("AcceptanceChangedSymbol978"));
-            assert_eq!(helper.pids().len(), 2);
-        }
-    }
-
-    #[test]
-    fn invalidated_analyzer_preserves_its_owner_after_exit_observation_is_lost() {
-        use crate::infrastructure::platform::{
-            inject_unix_waitid_error_for_test, reap_runtime_authority_test_child,
-        };
-
-        if !unica_process::test_support::unix_runtime_authority_tests_supported() {
-            unica_process::test_support::skip_without_host_capability(
-                unica_process::test_support::HostCapability::UnixProcessGroups,
-                "the exit-observation fault exists only on Unix",
-            );
-            return;
-        }
-
-        struct ExactChildCleanup(u32);
-        impl Drop for ExactChildCleanup {
-            fn drop(&mut self) {
-                reap_runtime_authority_test_child(self.0);
-            }
-        }
-
-        let fixture = CanonicalInvalidationFixture::new();
-        let cleanup_gate = fixture._directory.path().join("hold-lost-owner-cleanup");
-        fs::write(&cleanup_gate, b"hold").unwrap();
-        let helper = CanonicalInvalidationHelper::start_with_cleanup_gate(
-            &fixture.context,
-            &fixture.context.workspace_root.join("src"),
-            &fixture.executable,
-            Some(cleanup_gate.clone()),
-        );
-        assert!(helper.snapshot().contains("AcceptanceExistingSymbol1306"));
-        let first_pid = helper.pids()[0];
-        let preview = fixture.plan(SNAPSHOT_AFTER);
-        assert!(preview.ok);
-        let token = preview.data.as_ref().unwrap()["executionToken"]
-            .as_str()
-            .unwrap();
-        assert!(fixture.apply(json!({"executionToken": token})).ok);
-
-        // The fault is thread-local: call the real component in this thread,
-        // after the public TCP apply delivered the actual invalidation.
-        inject_unix_waitid_error_for_test();
-        let cleanup = ExactChildCleanup(first_pid);
-        let call = || {
-            helper.runtime.test_handle_bsl_mcp(
-                "search",
-                json!({"action": "search_code", "query": "Acceptance"}),
-                10,
-                0,
-                &CancellationToken::new(),
-            )
-        };
-        let first = call();
-        assert!(!first.ok);
-        assert!(first
-            .error
-            .as_deref()
-            .unwrap()
-            .contains("injected Unix waitid failure"));
-        for _ in 0..2 {
-            let retained = helper.runtime.test_analyzer().lock().unwrap();
-            assert_eq!(retained.as_ref().unwrap().test_child_pid(), first_pid);
-            assert!(helper
-                .runtime
-                .test_analyzer_invalidated()
-                .load(Ordering::Acquire));
-            drop(retained);
-            let next = call();
-            assert!(
-                !next.ok,
-                "an unknown old owner cannot authorize replacement"
-            );
-            assert!(next
-                .error
-                .as_deref()
-                .unwrap()
-                .contains("authority was lost"));
-            assert_eq!(helper.pids(), [first_pid]);
-        }
-        fs::remove_file(cleanup_gate).unwrap();
-        drop(cleanup);
-    }
-
-    #[test]
-    fn failed_helper_invalidation_preserves_the_published_receipt_and_unknown_old_results() {
-        for line_ending in ["\n", "\r\n"] {
-            assert_failed_helper_invalidation_preserves_the_published_receipt_and_unknown_old_results(line_ending);
-        }
-    }
-
-    fn assert_failed_helper_invalidation_preserves_the_published_receipt_and_unknown_old_results(
-        line_ending: &str,
-    ) {
-        use unica_code_intelligence::model::CodeIntelligenceContext;
-        use unica_code_intelligence::model::CodeIntelligenceProvider;
-        use unica_code_intelligence::model::SearchRequest;
-        let fixture = CanonicalInvalidationFixture::new();
-        let (module, expected) = fixture.prepare_snapshot_module(line_ending);
-        let helper = fixture.helper();
-        let source_root = fixture.context.workspace_root.join("src");
-        let context = CodeIntelligenceContext::new(
-            fixture.context.clone(),
-            unica_source_contract::workspace::ResolvedSourceRoot {
-                source_set: Some("main".into()),
-                path: source_root.clone(),
-            },
-            std::sync::Arc::new(unica_workspace::discovery::ProjectDiscoveryReader::new(
-                &fixture.context.workspace_root,
-            )),
-        );
-        let symbol = || {
-            analysis_composition::bsl_provider().search(
-                &SearchRequest {
-                    query: "Acceptance".into(),
-                    limit: 20,
-                },
-                &context,
-                ProviderDeadline::from_budget(Duration::from_secs(10)),
-                &CancellationToken::new(),
-            )
-        };
-        let before = symbol();
-        assert_eq!(before.hits.len(), 1, "{before:?}");
-        assert_eq!(before.index_freshness.as_deref(), Some("unknown"));
-        let first_pid = helper.pids()[0];
-        write_ready_rlm_status_for_current_source(&fixture.context, &source_root);
-        let rlm = || {
-            WorkspaceServiceManager::new(analysis_composition::service_environment())
-                .call_rlm_cancellable(
-                    &fixture.context,
-                    &source_root,
-                    WorkspaceRlmOperation::Search {
-                        query: "Acceptance".into(),
-                        limit: 20,
-                    },
-                    Duration::from_secs(10),
-                    &CancellationToken::new(),
-                )
-                .unwrap()
-        };
-        let WorkspaceServiceRlmCall::Output(initial_rlm) = rlm() else {
-            panic!("ready pinned build must stay readable")
-        };
-        assert!(initial_rlm
-            .result_text
-            .contains("AcceptanceExistingSymbol1306"));
-        assert_eq!(initial_rlm.freshness.as_deref(), Some("unknown"));
-
-        let preview = fixture.plan(SNAPSHOT_AFTER);
-        assert!(preview.ok, "{preview:?}");
-        let token = preview.data.as_ref().unwrap()["executionToken"]
-            .as_str()
-            .unwrap();
-        let mut wrong_token = helper.record.clone();
-        wrong_token.token = "rejected-invalidation-token".into();
-        write_record(helper.runtime.test_identity(), wrong_token);
-        let connections_before = helper.connections.load(Ordering::Acquire);
-        let published = fixture.apply(json!({"executionToken": token}));
-        write_record(helper.runtime.test_identity(), helper.record.clone());
-        assert!(
-            published.ok,
-            "delivery failure must not change a committed apply: {published:?}"
-        );
-        assert_eq!(fs::read(&module).unwrap(), expected);
-        assert!(
-            helper.notifications().is_empty(),
-            "the original helper rejects the token before invalidation"
-        );
-        assert_eq!(helper.connections.load(Ordering::Acquire), connections_before + 1, "the committed apply makes one real notification attempt even when authentication rejects it");
-        let state = fs::read_to_string(fixture.context.cache_root.join("state.json")).unwrap();
-        let state: Value = serde_json::from_str(&state).unwrap();
-        assert_eq!(state["caches"]["bsl_index"]["status"], "stale");
-        assert_eq!(state["caches"]["bsl_diagnostics"]["status"], "stale");
-        assert_eq!(
-            serde_json::to_value(fixture.apply(json!({"executionToken": token}))).unwrap(),
-            serde_json::to_value(published).unwrap()
-        );
-        assert!(
-            helper.notifications().is_empty(),
-            "replay must not retry a publication's notification"
-        );
-        assert_eq!(
-            helper.connections.load(Ordering::Acquire),
-            connections_before + 1
-        );
-        let old_symbol = symbol();
-        assert_eq!(old_symbol.hits, before.hits);
-        assert_eq!(old_symbol.index_freshness.as_deref(), Some("unknown"));
-        assert_eq!(helper.pids(), [first_pid]);
-        let WorkspaceServiceRlmCall::Output(old_rlm) = rlm() else {
-            panic!("the previous usable build must remain readable")
-        };
-        assert_eq!(old_rlm.result_text, initial_rlm.result_text);
-        assert_eq!(old_rlm.build_id, initial_rlm.build_id);
-        assert_eq!(old_rlm.freshness.as_deref(), Some("unknown"));
-        helper.stop_and_verify();
-    }
 
     #[test]
     fn legacy_workspace_service_runtime_is_owned_by_the_workspace_actor_adapter() {
@@ -1340,7 +134,7 @@ mod tests {
         runtime.test_assert_actor_owned();
         assert_eq!(
             runtime.test_workspace_identity().provider_profile(),
-            LEGACY_WORKSPACE_SERVICE_PROVIDER_PROFILE
+            WORKSPACE_SERVICE_PROVIDER_PROFILE
         );
         cleanup(&context);
     }
@@ -1381,59 +175,7 @@ mod tests {
             bsl_analyzer_cache_dir(&context, &second_root).unwrap(),
             "code intelligence and diagnostics caches remain root-bound"
         );
-        assert_ne!(
-            rlm_generation_root(&context, &first_root).unwrap(),
-            rlm_generation_root(&context, &second_root).unwrap(),
-            "RLM navigation generations remain root-bound"
-        );
         cleanup(&context);
-    }
-
-    #[test]
-    fn rlm_start_uses_remaining_caller_deadline_for_execution_timeout() {
-        let args = rlm_start_arguments(
-            Path::new("/workspace/src"),
-            "needle",
-            Duration::from_millis(299_001),
-        )
-        .unwrap();
-
-        assert_eq!(args["execution_timeout_seconds"], 300);
-        assert_eq!(args["domains"], json!([]));
-    }
-
-    #[test]
-    fn persistent_rlm_deadline_handles_full_configured_range_without_panicking() {
-        let context = test_context("rlm-full-range-deadline");
-        let fixture = compile_exit_after_call_fixture(&context);
-        let pid_file = context.cache_root.join("rlm-full-range-pids.txt");
-        let completion_file = context.cache_root.join("rlm-full-range-completed.txt");
-        let mut command = Command::new(&fixture);
-        command.args([&pid_file, &completion_file]);
-        let cancellation = CancellationToken::new();
-        let mut session = RlmMcpSession::test_from_transport(
-            PersistentMcpSession::start_with_command(command, &cancellation).unwrap(),
-            context.workspace_root.join("src"),
-            "test-build".to_string(),
-            None,
-        );
-        cancellation.cancel();
-
-        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            session.execute(
-                &WorkspaceRlmOperation::Search {
-                    query: "needle".to_string(),
-                    limit: 20,
-                },
-                Duration::from_secs(i64::MAX as u64),
-                &cancellation,
-            )
-        }));
-
-        drop(session);
-        cleanup(&context);
-        let error = outcome.expect("full configured timeout must not overflow Instant");
-        assert!(error.unwrap_err().starts_with("cancelled:"));
     }
 
     #[test]
@@ -1451,7 +193,7 @@ mod tests {
 
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             session.call(
-                "rlm_start",
+                "status",
                 json!({}),
                 Duration::from_secs(i64::MAX as u64),
                 &cancellation,
@@ -1462,25 +204,6 @@ mod tests {
         cleanup(&context);
         let output = outcome.expect("full configured timeout must not overflow Instant");
         assert_eq!(output.unwrap().result_text, "ok");
-    }
-
-    #[test]
-    fn rlm_protocol_roundtrips_full_positive_i64_seconds() {
-        let wire = json!({
-            "type": "rlm-mcp",
-            "operation_id": "max-timeout",
-            "operation": {
-                "operation": "search",
-                "query": "needle",
-                "limit": 20
-            },
-            "timeout_seconds": i64::MAX,
-            "timeout_nanos": 0
-        });
-
-        let request: ServiceRequestKind = serde_json::from_value(wire.clone()).unwrap();
-
-        assert_eq!(serde_json::to_value(request).unwrap(), wire);
     }
 
     #[test]
@@ -1500,21 +223,6 @@ mod tests {
     }
 
     #[test]
-    fn rlm_readiness_protocol_roundtrips_full_positive_i64_seconds() {
-        let wire = json!({
-            "type": "rlm-ready",
-            "operation_id": "max-timeout",
-            "args": {},
-            "timeout_seconds": i64::MAX,
-            "timeout_nanos": 123_456_789
-        });
-
-        let request: ServiceRequestKind = serde_json::from_value(wire.clone()).unwrap();
-
-        assert_eq!(serde_json::to_value(request).unwrap(), wire);
-    }
-
-    #[test]
     fn service_timeout_parts_reject_seconds_outside_positive_i64_config_domain() {
         let error = duration_from_timeout_parts(u64::MAX, 1)
             .expect_err("wire timeout must stay inside the accepted config domain");
@@ -1523,183 +231,7 @@ mod tests {
         assert!(error.contains(&i64::MAX.to_string()), "{error}");
     }
 
-    #[test]
-    fn duration_seconds_ceil_reports_overflow_instead_of_panicking() {
-        let error = duration_seconds_ceil(Duration::new(u64::MAX, 1))
-            .expect_err("invalid wire-derived duration must not panic or wrap");
-
-        assert!(error.contains("rounded up"), "{error}");
-    }
-
-    #[test]
-    fn rlm_wire_boundary_rejects_out_of_domain_timeout_before_runtime_work() {
-        let context = test_context("rlm-out-of-domain-wire-timeout");
-        let source_root = context.workspace_root.join("src");
-        let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
-        let record = test_record(&identity, 1, CoreIdentity::production().as_str());
-        let runtime = new_runtime(identity, &record);
-
-        let response = runtime.test_handle_rlm_mcp(
-            WorkspaceRlmOperation::Search {
-                query: "needle".to_string(),
-                limit: 20,
-            },
-            u64::MAX,
-            1,
-            &CancellationToken::new(),
-        );
-
-        cleanup(&context);
-        assert!(!response.ok, "{response:?}");
-        let error = response.error.expect("protocol error");
-        assert!(error.contains("exceeds"), "{error}");
-        assert!(error.contains(&i64::MAX.to_string()), "{error}");
-    }
-
-    #[test]
-    fn rlm_readiness_wire_boundary_rejects_out_of_domain_timeout_before_runtime_work() {
-        let context = test_context("rlm-readiness-out-of-domain-wire-timeout");
-        let source_root = context.workspace_root.join("src");
-        let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
-        let record = test_record(&identity, 1, CoreIdentity::production().as_str());
-        let runtime = new_runtime(identity, &record);
-
-        let response =
-            runtime.test_handle_rlm_ready(json!({}), u64::MAX, 1, &CancellationToken::new());
-
-        cleanup(&context);
-        assert!(!response.ok, "{response:?}");
-        let error = response.error.expect("protocol error");
-        assert!(error.contains("exceeds"), "{error}");
-        assert!(error.contains(&i64::MAX.to_string()), "{error}");
-    }
-
-    #[test]
-    fn fixed_rlm_helper_keeps_untrusted_values_inside_json_data() {
-        let query = "x'); __import__('os').system('boom')\n#";
-        let code = fixed_rlm_helper_code(&WorkspaceRlmOperation::Search {
-            query: query.to_string(),
-            limit: 7,
-        })
-        .unwrap();
-
-        assert!(!code.contains("_result = search(\"x');"));
-        let literal = code
-            .lines()
-            .find_map(|line| line.strip_prefix("_args = json.loads("))
-            .and_then(|line| line.strip_suffix(')'))
-            .expect("serialized argument literal");
-        let serialized: String = serde_json::from_str(literal).unwrap();
-        let decoded: WorkspaceRlmOperation = serde_json::from_str(&serialized).unwrap();
-        assert_eq!(
-            decoded,
-            WorkspaceRlmOperation::Search {
-                query: query.to_string(),
-                limit: 7
-            }
-        );
-    }
-
-    #[test]
-    fn rlm_transport_requires_renamed_manifest_identity_without_legacy_fallback() {
-        let context = test_context("renamed-rlm-mcp-only");
-        let plugin_root = context.workspace_root.join("plugins/unica");
-        fs::create_dir_all(plugin_root.join("skills")).unwrap();
-        fs::create_dir_all(plugin_root.join("third-party")).unwrap();
-        fs::write(
-            plugin_root.join("third-party/manifest.json"),
-            r#"{
-  "schemaVersion": 2,
-  "tools": [
-    {"name": "rlm-tools-bsl", "version": "legacy", "binaries": {}}
-  ]
-}"#,
-        )
-        .unwrap();
-
-        let error = match start_rlm_transport(
-            &context,
-            &context.workspace_root.join("src"),
-            &CancellationToken::new(),
-        ) {
-            Ok(mut session) => {
-                session.invalidate();
-                panic!("legacy RLM MCP manifest identity must not be accepted")
-            }
-            Err(error) => error,
-        };
-
-        cleanup(&context);
-        // Прежнее имя в манифесте не признаётся: движок не описан, шаг
-        // поставки `manifest`, а не найденный под старым именем бинарь.
-        assert!(
-            error.starts_with("bundled_tool_missing: rlm-bsl-mcp is not available for ")
-                && error.contains("the delivery manifest does not describe it"),
-            "{error}"
-        );
-    }
-
-    #[test]
-    fn rlm_reader_command_preserves_native_generation_environment_bytes() {
-        let mut context = test_context("rlm-reader-native-generation-environment");
-        let Some(invalid_component) = testing::non_utf8_relative_path_for_test() else {
-            cleanup(&context);
-            unica_process::test_support::skip_without_host_capability(
-                unica_process::test_support::HostCapability::NonUtf8FileNames,
-                "this host has no file names outside UTF-8",
-            );
-            return;
-        };
-        context.cache_root = context.workspace_root.join(invalid_component);
-        let source_root = context.workspace_root.join("src");
-        fs::create_dir_all(&source_root).unwrap();
-        let expected = rlm_generation_root(&context, &source_root).unwrap();
-
-        let command =
-            rlm_transport_command(PathBuf::from("rlm-bsl-mcp"), &context, &source_root).unwrap();
-        let env = command.get_envs().collect::<HashMap<_, _>>();
-
-        assert_eq!(
-            env[std::ffi::OsStr::new("RLM_INDEX_DIR")],
-            Some(expected.as_os_str())
-        );
-        assert_eq!(
-            env[std::ffi::OsStr::new("PYTHONUTF8")],
-            Some(std::ffi::OsStr::new("1"))
-        );
-        assert_eq!(
-            env[std::ffi::OsStr::new("PYTHONIOENCODING")],
-            Some(std::ffi::OsStr::new("utf-8:surrogateescape"))
-        );
-        cleanup(&context);
-    }
-
-    #[test]
-    fn rlm_reader_command_uses_native_generation_environment_on_normal_paths() {
-        let context = test_context("rlm-reader-normal-generation-environment");
-        let source_root = context.workspace_root.join("src");
-        fs::create_dir_all(&source_root).unwrap();
-        let expected = rlm_generation_root(&context, &source_root).unwrap();
-
-        let command =
-            rlm_transport_command(PathBuf::from("rlm-bsl-mcp"), &context, &source_root).unwrap();
-        let env = command.get_envs().collect::<HashMap<_, _>>();
-
-        assert_eq!(
-            env[std::ffi::OsStr::new("RLM_INDEX_DIR")],
-            Some(expected.as_os_str())
-        );
-        assert_eq!(
-            env[std::ffi::OsStr::new("PYTHONUTF8")],
-            Some(std::ffi::OsStr::new("1"))
-        );
-        assert_eq!(
-            env[std::ffi::OsStr::new("PYTHONIOENCODING")],
-            Some(std::ffi::OsStr::new("utf-8:surrogateescape"))
-        );
-        cleanup(&context);
-    }
-
+    /// rule: INV.APP.PERSISTENT-PROVIDER-CWD
     #[test]
     fn bsl_analyzer_child_does_not_run_from_inside_the_workspace() {
         let context = test_context("bsl-analyzer-external-cwd");
@@ -1762,6 +294,7 @@ mod tests {
         assert_ne!(first_cache, second_cache);
     }
 
+    /// rule: INV.CACHE.STATE-OUTSIDE-SOURCE
     #[test]
     fn bsl_analyzer_cache_stays_outside_a_workspace_wide_source_root() {
         let mut context = test_context("bsl-analyzer-workspace-cache");
@@ -1840,709 +373,6 @@ mod tests {
         cleanup(&context);
     }
 
-    #[test]
-    fn object_profile_helper_maps_public_sections_and_composes_predefined_items() {
-        let code = fixed_rlm_helper_code(&WorkspaceRlmOperation::ObjectProfile {
-            name: "Document.Заказ".to_string(),
-            sections: Some(vec![
-                "functionalOptions".to_string(),
-                "predefinedItems".to_string(),
-            ]),
-            limit: 20,
-        })
-        .unwrap();
-
-        assert!(code.contains("\"functionalOptions\": \"functional_options\""));
-        assert!(code.contains("find_predefined("));
-        assert!(code.contains("[\"predefined_items\"]"));
-        assert_eq!(code.matches("print(json.dumps(").count(), 1);
-    }
-
-    #[test]
-    fn object_profile_helper_reports_predefined_items_it_holds_instead_of_a_fabricated_total() {
-        let code = fixed_rlm_helper_code(&WorkspaceRlmOperation::ObjectProfile {
-            name: "Document.Заказ".to_string(),
-            sections: Some(vec!["predefinedItems".to_string()]),
-            limit: 20,
-        })
-        .unwrap();
-
-        assert!(code.contains("\"total\": len(_items),"), "{code}");
-        assert!(!code.contains("(1 if _has_more else 0)"), "{code}");
-        // The over-fetch decides truncation before the category filter can hide it.
-        let fetch = code
-            .find("_has_more = len(_fetched) > _args[\"limit\"]")
-            .expect("truncation is measured from the raw fetch window");
-        let filter = code
-            .find("_item.get(\"category\") == _category")
-            .expect("the category filter is still applied");
-        assert!(fetch < filter, "{code}");
-    }
-
-    #[test]
-    fn object_profile_helper_does_not_claim_category_complete_results_after_a_capped_fetch() {
-        let code = fixed_rlm_helper_code(&WorkspaceRlmOperation::ObjectProfile {
-            name: "Document.Заказ".to_string(),
-            sections: Some(vec!["predefinedItems".to_string()]),
-            limit: 20,
-        })
-        .unwrap();
-
-        assert!(
-            code.contains("if _category and _has_more:"),
-            "category ambiguity must be handled explicitly: {code}"
-        );
-        assert!(
-            code.contains("\"status\": \"unavailable\""),
-            "a capped cross-category fetch must not claim ok or empty: {code}"
-        );
-        assert!(
-            code.contains("category-complete predefined items"),
-            "the unavailable result must explain why completeness is unknown: {code}"
-        );
-    }
-
-    #[test]
-    fn service_response_preserves_exact_stale_status() {
-        let response = ServiceResponse::from_readiness(
-            IndexReadiness::Stale {
-                status: "stale (content)".to_string(),
-            },
-            Vec::new(),
-        );
-
-        assert_eq!(
-            response.index_readiness(),
-            IndexReadiness::Stale {
-                status: "stale (content)".to_string(),
-            }
-        );
-    }
-
-    #[test]
-    fn service_response_does_not_infer_maintenance_from_incomplete_index() {
-        let response = ServiceResponse::from_readiness(IndexReadiness::Incomplete, Vec::new());
-
-        assert_eq!(response.index_status.as_deref(), Some("incomplete"));
-        assert_eq!(response.index_readiness(), IndexReadiness::Incomplete);
-        let unavailable =
-            ServiceResponse::unavailable_rlm_execution(IndexReadiness::Incomplete, Vec::new());
-        assert!(!unavailable.ok);
-        assert!(unavailable
-            .error
-            .as_deref()
-            .is_some_and(|message| message.contains("maintenance state is unknown")));
-        assert!(unavailable.result_text.is_none());
-        assert!(unavailable.stderr.is_none());
-    }
-
-    #[test]
-    fn service_response_preserves_failed_index_message() {
-        let response = ServiceResponse::from_readiness(
-            IndexReadiness::Failed(
-                "update left stale (content); recovery build failed".to_string(),
-            ),
-            Vec::new(),
-        );
-
-        assert_eq!(
-            response.index_readiness(),
-            IndexReadiness::Failed(
-                "update left stale (content); recovery build failed".to_string(),
-            )
-        );
-    }
-
-    fn install_index_tool_fixture(context: &WorkspaceContext) {
-        let plugin = context.workspace_root.join("plugins/unica");
-        fs::create_dir_all(plugin.join("skills")).unwrap();
-        fs::create_dir_all(plugin.join("third-party")).unwrap();
-        let mut binaries = serde_json::Map::new();
-        for (target, executable) in [
-            ("darwin-arm64", "rlm-bsl-index"),
-            ("linux-x64", "rlm-bsl-index"),
-            ("win-x64", "rlm-bsl-index.exe"),
-        ] {
-            let relative = format!("bin/{target}/{executable}");
-            fs::create_dir_all(plugin.join(&relative).parent().unwrap()).unwrap();
-            fs::write(plugin.join(&relative), b"rlm-index").unwrap();
-            binaries.insert(target.to_string(), json!({"binaryPath":relative,"sha256":"fa6a77fa531fa57e7781010a7cec69b7be4b7b58903365153bf1f66e851ab213"}));
-        }
-        fs::write(
-            plugin.join("third-party/manifest.json"),
-            serde_json::to_vec(
-                &json!({"schemaVersion":2,"tools":[{"name":"rlm-bsl-index","binaries":binaries}]}),
-            )
-            .unwrap(),
-        )
-        .unwrap();
-    }
-
-    #[derive(Clone, Copy)]
-    enum ControlledIndexMode {
-        Hold,
-        Refuse,
-        FailInline,
-        CancelInline,
-        Drop,
-    }
-
-    struct ControlledIndexRunner {
-        mode: Mutex<ControlledIndexMode>,
-        jobs: Mutex<Vec<unica_adapter_rlm::index::IndexBackgroundJob>>,
-        calls: AtomicUsize,
-    }
-
-    impl ControlledIndexRunner {
-        fn new(mode: ControlledIndexMode) -> Self {
-            Self {
-                mode: Mutex::new(mode),
-                jobs: Mutex::new(Vec::new()),
-                calls: AtomicUsize::new(0),
-            }
-        }
-    }
-
-    impl unica_adapter_rlm::index::IndexRunner for ControlledIndexRunner {
-        fn start_background(
-            &self,
-            job: unica_adapter_rlm::index::IndexBackgroundJob,
-        ) -> Result<(), String> {
-            self.calls.fetch_add(1, Ordering::SeqCst);
-            match *self.mode.lock().unwrap() {
-                ControlledIndexMode::Hold => self.jobs.lock().unwrap().push(job),
-                ControlledIndexMode::Refuse => return Err("controlled queue refusal; PRIVATE-EXECUTOR /private/cache stderr token=hidden".to_string()),
-                ControlledIndexMode::Drop => drop(job),
-                ControlledIndexMode::CancelInline => job.run_with_for_test(|_, _| {
-                    Ok(unica_adapter_rlm::index::IndexOutput {
-                        status_success: true, status: "exit status: 0".to_string(), stdout: String::new(),
-                        stderr: String::new(), timed_out: false, cancelled: true, duration_ms: 0,
-                    })
-                }),
-                ControlledIndexMode::FailInline => {
-                    job.run_with_for_test(|_, _| Err("controlled worker failure; PRIVATE-EXECUTOR /private/cache stderr token=hidden".to_string()))
-                }
-            }
-            Ok(())
-        }
-    }
-
-    /// The bridge uses the real handlers and the same serialized response as
-    /// the workspace service transport. It never invents a readiness enum.
-    struct MaintenanceHandlerClient<'a> {
-        runtime: &'a WorkspaceServiceRuntime,
-        runner: &'a ControlledIndexRunner,
-    }
-
-    impl MaintenanceHandlerClient<'_> {
-        fn decoded_ready(&self) -> ServiceResponse {
-            let response = handle_rlm_ready_with_runner(
-                self.runtime,
-                json!({}),
-                5,
-                0,
-                &CancellationToken::new(),
-                self.runner,
-            );
-            serde_json::from_slice(&serde_json::to_vec(&response).unwrap()).unwrap()
-        }
-    }
-
-    impl unica_adapter_rlm::navigation::RlmNavigationClient for MaintenanceHandlerClient<'_> {
-        fn readiness(
-            &self,
-            _: &WorkspaceContext,
-            _: &Path,
-            _: Duration,
-            _: &CancellationToken,
-        ) -> Result<IndexReadiness, String> {
-            Ok(self.decoded_ready().index_readiness())
-        }
-        fn call(
-            &self,
-            _: &WorkspaceContext,
-            _: &Path,
-            _: WorkspaceRlmOperation,
-            _: Duration,
-            _: &CancellationToken,
-        ) -> Result<WorkspaceServiceRlmCall, String> {
-            panic!("an index without a published build cannot execute navigation")
-        }
-    }
-
-    impl unica_adapter_rlm::provider::RlmSearchClient for MaintenanceHandlerClient<'_> {
-        fn search(
-            &self,
-            _: &unica_code_intelligence::model::CodeIntelligenceContext,
-            _: &str,
-            _: usize,
-            _: Duration,
-            _: &CancellationToken,
-        ) -> Result<unica_adapter_rlm::provider::RlmSearchAttempt, String> {
-            let response = handle_rlm_mcp_with_runner(
-                self.runtime,
-                WorkspaceRlmOperation::Search {
-                    query: "Find".to_string(),
-                    limit: 20,
-                },
-                5,
-                0,
-                &CancellationToken::new(),
-                self.runner,
-            );
-            let response: ServiceResponse =
-                serde_json::from_slice(&serde_json::to_vec(&response).unwrap()).unwrap();
-            match response.into_rlm_call()? {
-                WorkspaceServiceRlmCall::Output(output) => Ok(
-                    unica_adapter_rlm::provider::RlmSearchAttempt::Output(output),
-                ),
-                WorkspaceServiceRlmCall::Unready(readiness) => Ok(
-                    unica_adapter_rlm::provider::RlmSearchAttempt::Unready(readiness),
-                ),
-            }
-        }
-    }
-
-    fn assert_maintenance_reaches_adapters(
-        client: &MaintenanceHandlerClient<'_>,
-        context: &WorkspaceContext,
-        expected: &str,
-        pending: bool,
-        expected_state: &str,
-    ) {
-        use unica_code_intelligence::model::CodeIntelligenceContext;
-        use unica_code_intelligence::model::CodeIntelligenceProvider;
-        use unica_code_intelligence::model::CodeIntelligenceReadRequest;
-        use unica_code_intelligence::model::SearchRequest;
-        let context = CodeIntelligenceContext::new(
-            context.clone(),
-            unica_source_contract::workspace::ResolvedSourceRoot {
-                source_set: Some("main".to_string()),
-                path: context.workspace_root.join("src"),
-            },
-            std::sync::Arc::new(unica_workspace::discovery::ProjectDiscoveryReader::new(
-                &context.workspace_root,
-            )),
-        );
-        let deadline = || ProviderDeadline::new(Instant::now() + Duration::from_secs(5));
-        let nav = unica_adapter_rlm::navigation::RlmNavigationAdapter::new(client)
-            .invoke_resolved_cancellable(
-                &CodeIntelligenceReadRequest::Definition {
-                    name: "Find".to_string(),
-                    module_hint: String::new(),
-                    limit: 20,
-                },
-                &context,
-                deadline(),
-                &CancellationToken::new(),
-            )
-            .unwrap();
-        assert!(!nav.outcome.ok);
-        let nav = serde_json::to_string(&nav.outcome).unwrap();
-        assert!(nav.contains(expected), "{nav}");
-        assert_eq!(nav.contains("index_pending:"), pending, "{nav}");
-        let search = unica_adapter_rlm::provider::RlmProvider::new(
-            client,
-            analysis_composition::rlm_navigation_client(),
-            analysis_composition::source_bindings(),
-        )
-        .search(
-            &SearchRequest {
-                query: "Find".to_string(),
-                limit: 20,
-            },
-            &context,
-            deadline(),
-            &CancellationToken::new(),
-        );
-        let section = search;
-        let search = serde_json::to_string(&section).unwrap();
-        assert!(search.contains(expected), "{search}");
-        assert_eq!(search.contains("dependencyPending"), pending, "{search}");
-        let maintenance = section
-            .index_maintenance
-            .expect("observed maintenance reaches provider");
-        let cancellation = CancellationToken::new();
-        cancellation.cancel();
-        let cancelled = public_maintenance_search(section.clone(), &cancellation);
-        assert_eq!(cancelled.diagnostics[0]["code"], "cancelled");
-        assert!(cancelled.data.is_none());
-        let result = public_maintenance_search(section, &CancellationToken::new());
-        let wire = serde_json::to_value(&result).unwrap();
-        assert!(!result.ok, "{wire}");
-        let evidence = &wire["data"]["matches"][0];
-        assert_eq!(
-            evidence["indexMaintenance"],
-            json!(expected_state),
-            "{wire}"
-        );
-        assert_eq!(
-            evidence["termination"]["detailCode"] == "indexQueued",
-            maintenance == unica_code_intelligence::model::IndexMaintenanceEvidence::Queued,
-            "{wire}",
-        );
-        let public_text = wire.to_string();
-        assert!(!public_text.contains("PRIVATE-EXECUTOR"), "{public_text}");
-        assert!(!public_text.contains("controlled"), "{public_text}");
-    }
-
-    fn public_maintenance_search(
-        section: unica_code_intelligence::model::ProviderSearchSection,
-        cancellation: &CancellationToken,
-    ) -> unica_execution_contract::invocation::DomainResult {
-        use unica_code_intelligence::model::CodeSearchResult;
-        use unica_code_intelligence::model::ProviderSectionStatus;
-        use unica_code_intelligence::model::SearchCoverage;
-        let role = section.identity.role;
-        let ok = matches!(
-            section.status,
-            ProviderSectionStatus::Ok | ProviderSectionStatus::Empty
-        );
-        crate::infrastructure::daemon::provider_search_page(
-            &Default::default(),
-            role,
-            unica_code_intelligence::coordinator::CodeSearchExecution {
-                ok,
-                result: CodeSearchResult {
-                    coverage: SearchCoverage::Partial,
-                    elapsed_ms: 0,
-                    sections: vec![section],
-                },
-                warnings: vec![],
-                errors: vec![],
-            },
-            unica_navigation::result_store::SearchCursorBinding {
-                workspace_identity: "maintenance-test".to_string(),
-                query: "Find".to_string(),
-                scope: None,
-                mode: role.as_str().to_string(),
-                kind: None,
-                source_sets: vec!["main".to_string()],
-                result_fingerprint: None,
-                page_limit: 20,
-            },
-            None,
-            cancellation,
-        )
-    }
-
-    #[test]
-    fn real_index_queue_and_worker_state_reach_serialized_search_and_navigation() {
-        let context = test_context("maintenance-pipeline");
-        install_index_tool_fixture(&context);
-        let identity =
-            WorkspaceServiceIdentity::new(&context, &context.workspace_root.join("src")).unwrap();
-        let record = test_record(&identity, 1, CoreIdentity::production().as_str());
-        let runtime = new_runtime(identity, &record);
-        let runner = ControlledIndexRunner::new(ControlledIndexMode::Hold);
-        let client = MaintenanceHandlerClient {
-            runtime: &runtime,
-            runner: &runner,
-        };
-        assert_maintenance_reaches_adapters(&client, &context, "queued", true, "queued");
-        assert_eq!(
-            runner.calls.load(Ordering::SeqCst),
-            1,
-            "queued work must be reused"
-        );
-        let job = runner.jobs.lock().unwrap().pop().unwrap();
-        // Losing command preparation must not hide the job that already owns
-        // its lock. The worker has its own admitted command and source root.
-        fs::remove_file(
-            context
-                .workspace_root
-                .join("plugins/unica/third-party/manifest.json"),
-        )
-        .unwrap();
-        job.run_with_for_test(|_, _| {
-            assert_maintenance_reaches_adapters(&client, &context, "building", true, "running");
-            assert_eq!(runner.calls.load(Ordering::SeqCst), 1);
-            Err(
-                "controlled worker failure; PRIVATE-EXECUTOR /private/cache stderr token=hidden"
-                    .to_string(),
-            )
-        });
-        install_index_tool_fixture(&context);
-        *runner.mode.lock().unwrap() = ControlledIndexMode::FailInline;
-        assert_maintenance_reaches_adapters(
-            &client,
-            &context,
-            "execution failed",
-            false,
-            "executionFailed",
-        );
-        *runner.mode.lock().unwrap() = ControlledIndexMode::Refuse;
-        assert_maintenance_reaches_adapters(
-            &client,
-            &context,
-            "start failed",
-            false,
-            "startFailed",
-        );
-        *runner.mode.lock().unwrap() = ControlledIndexMode::CancelInline;
-        assert_maintenance_reaches_adapters(
-            &client,
-            &context,
-            "maintenance was cancelled",
-            false,
-            "cancelled",
-        );
-        *runner.mode.lock().unwrap() = ControlledIndexMode::Drop;
-        assert_maintenance_reaches_adapters(
-            &client,
-            &context,
-            "state is unknown",
-            false,
-            "unknown",
-        );
-        cleanup(&context);
-    }
-
-    fn assert_readable_maintenance(
-        runtime: &WorkspaceServiceRuntime,
-        runner: &ControlledIndexRunner,
-        workspace: &WorkspaceContext,
-        expected: Option<unica_code_intelligence::model::IndexMaintenanceEvidence>,
-    ) {
-        use unica_code_intelligence::model::CodeIntelligenceContext;
-        use unica_code_intelligence::model::CodeIntelligenceProvider;
-        use unica_code_intelligence::model::SearchRequest;
-        let client = MaintenanceHandlerClient { runtime, runner };
-        let context = CodeIntelligenceContext::new(
-            workspace.clone(),
-            unica_source_contract::workspace::ResolvedSourceRoot {
-                source_set: Some("main".to_string()),
-                path: workspace.workspace_root.join("src"),
-            },
-            std::sync::Arc::new(unica_workspace::discovery::ProjectDiscoveryReader::new(
-                &workspace.workspace_root,
-            )),
-        );
-        let section = unica_adapter_rlm::provider::RlmProvider::new(
-            &client,
-            analysis_composition::rlm_navigation_client(),
-            analysis_composition::source_bindings(),
-        )
-        .search(
-            &SearchRequest {
-                query: "Find".to_string(),
-                limit: 20,
-            },
-            &context,
-            ProviderDeadline::new(Instant::now() + Duration::from_secs(5)),
-            &CancellationToken::new(),
-        );
-        assert_eq!(section.hits.len(), 1, "{section:?}");
-        assert_eq!(section.index_maintenance, expected);
-        let result = public_maintenance_search(section, &CancellationToken::new());
-        assert!(result.ok, "{result:?}");
-        let wire = serde_json::to_value(&result).unwrap();
-        assert_eq!(
-            wire["data"]["matches"][0]["indexMaintenance"],
-            json!(expected)
-        );
-        assert!(wire.to_string().contains("old-index-result"));
-        assert!(!wire.to_string().contains("PRIVATE-EXECUTOR"));
-    }
-
-    #[test]
-    fn maintenance_queue_execution_and_failure_keep_the_published_index_readable() {
-        let context = test_context("maintenance-preserves-readable-index");
-        install_index_tool_fixture(&context);
-        let source_root = context.workspace_root.join("src");
-        write_ready_rlm_status_for_current_source(&context, &source_root);
-        let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
-        let record = test_record(&identity, 1, CoreIdentity::production().as_str());
-        let mut runtime = new_runtime(identity, &record);
-        let fixture = blocking_rlm_fixture();
-        let execute_started = context.cache_root.join("maintenance-read-started");
-        let execute_release = context.cache_root.join("maintenance-read-release");
-        fs::write(&execute_release, "release").unwrap();
-        runtime.test_set_rlm_starter(Arc::new(
-            move |_, source_root, _, build_id, cancellation| {
-                let rows = json!([{"text":"old-index-result", "source_type":"method", "path":"CommonModules/SmokeModule.bsl", "detail":{"line":1}}]);
-                let response = json!({"jsonrpc":"2.0","id":3,"result":{"content":[{"type":"text","text":json!({"stdout":rows.to_string()}).to_string()}]}});
-                let mut command = Command::new(&fixture);
-                command
-                    .args([&execute_started, &execute_release])
-                    .env("UNICA_TEST_RLM_RESPONSE", response.to_string());
-                Ok(RlmMcpSession::test_from_transport(PersistentMcpSession::start_with_command(command, cancellation)?,source_root.to_path_buf(),build_id.to_string(),None))
-            },
-        ));
-        let runner = ControlledIndexRunner::new(ControlledIndexMode::Hold);
-        runtime
-            .test_rlm_invalidated()
-            .store(true, Ordering::Release);
-        let queued = handle_rlm_ready_with_runner(
-            &runtime,
-            json!({}),
-            5,
-            0,
-            &CancellationToken::new(),
-            &runner,
-        );
-        assert_eq!(queued.index_status.as_deref(), Some("ready"));
-        assert_eq!(
-            queued.index_maintenance,
-            Some(IndexMaintenanceStatus::Queued)
-        );
-        assert_readable_maintenance(
-            &runtime,
-            &runner,
-            &context,
-            Some(unica_code_intelligence::model::IndexMaintenanceEvidence::Queued),
-        );
-        let db = queued.db_path.clone().unwrap();
-        let bytes = fs::read(&db).unwrap();
-        let job = runner.jobs.lock().unwrap().pop().unwrap();
-        job.run_with_for_test(|_, _| {
-            let running = handle_rlm_ready_with_runner(
-                &runtime,
-                json!({}),
-                5,
-                0,
-                &CancellationToken::new(),
-                &runner,
-            );
-            assert_eq!(running.index_status.as_deref(), Some("ready"));
-            assert_eq!(running.db_path.as_ref(), Some(&db));
-            assert_eq!(
-                running.index_maintenance,
-                Some(IndexMaintenanceStatus::Running)
-            );
-            assert_readable_maintenance(
-                &runtime,
-                &runner,
-                &context,
-                Some(unica_code_intelligence::model::IndexMaintenanceEvidence::Running),
-            );
-            Err("controlled update failure".to_string())
-        });
-        let after = handle_rlm_ready_with_runner(
-            &runtime,
-            json!({}),
-            5,
-            0,
-            &CancellationToken::new(),
-            &runner,
-        );
-        assert_eq!(after.index_status.as_deref(), Some("ready"));
-        assert!(after.index_maintenance.is_none());
-        assert_eq!(after.db_path.as_ref(), Some(&db));
-        assert_eq!(fs::read(&db).unwrap(), bytes);
-        *runner.mode.lock().unwrap() = ControlledIndexMode::Refuse;
-        runtime
-            .test_rlm_invalidated()
-            .store(true, Ordering::Release);
-        let failed = handle_rlm_ready_with_runner(
-            &runtime,
-            json!({}),
-            5,
-            0,
-            &CancellationToken::new(),
-            &runner,
-        );
-        assert_eq!(failed.index_status.as_deref(), Some("ready"));
-        assert!(matches!(
-            failed.index_maintenance,
-            Some(IndexMaintenanceStatus::StartFailed(_))
-        ));
-        assert_eq!(failed.db_path.as_ref(), Some(&db));
-        assert_readable_maintenance(
-            &runtime,
-            &runner,
-            &context,
-            Some(unica_code_intelligence::model::IndexMaintenanceEvidence::StartFailed),
-        );
-        *runner.mode.lock().unwrap() = ControlledIndexMode::FailInline;
-        assert_readable_maintenance(
-            &runtime,
-            &runner,
-            &context,
-            Some(unica_code_intelligence::model::IndexMaintenanceEvidence::ExecutionFailed),
-        );
-        drop(runtime);
-        cleanup(&context);
-    }
-
-    #[test]
-    fn dropped_index_job_is_not_reported_as_running() {
-        struct DroppingRunner;
-        impl unica_adapter_rlm::index::IndexRunner for DroppingRunner {
-            fn start_background(
-                &self,
-                job: unica_adapter_rlm::index::IndexBackgroundJob,
-            ) -> Result<(), String> {
-                drop(job);
-                Ok(())
-            }
-        }
-        let context = test_context("dropped-index-job");
-        install_index_tool_fixture(&context);
-        let source_root = context.workspace_root.join("src");
-        let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
-        let record = test_record(&identity, 1, CoreIdentity::production().as_str());
-        let runtime = new_runtime(identity, &record);
-        let response = handle_rlm_ready_with_runner(
-            &runtime,
-            json!({}),
-            5,
-            0,
-            &CancellationToken::new(),
-            &DroppingRunner,
-        );
-        let wire = serde_json::to_value(&response).unwrap();
-        assert_ne!(
-            wire["index_status"], "building",
-            "a dropped job is not running: {wire}"
-        );
-        cleanup(&context);
-    }
-
-    #[test]
-    fn rlm_ready_rejects_unsafe_provider_state_root() {
-        let context = test_context("rlm-ready-safe-root-failure");
-        let source_root = context.workspace_root.join("src");
-        let mut identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
-        let first = context.workspace_root.join("provider-state-cycle-a");
-        let second = context.workspace_root.join("provider-state-cycle-b");
-        for (source, target) in [(&second, &first), (&first, &second)] {
-            match testing::create_directory_link_fixture_for_test(source, target).unwrap() {
-                testing::FileLinkFixtureOutcome::Created => {}
-                testing::FileLinkFixtureOutcome::Unsupported
-                | testing::FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => {
-                    cleanup(&context);
-                    unica_process::test_support::skip_without_host_capability(
-                        unica_process::test_support::HostCapability::Symlink,
-                        "the provider-state link cycle needs directory links",
-                    );
-                    return;
-                }
-            }
-        }
-        identity.service_dir = first.join("services").join(&identity.key);
-        let record = test_record(&identity, 1, CoreIdentity::production().as_str());
-        let runtime = new_runtime(identity, &record);
-
-        let response = runtime.test_handle_rlm_ready(json!({}), 5, 0, &CancellationToken::new());
-
-        assert!(!response.ok, "{response:?}");
-        assert!(response
-            .error
-            .as_deref()
-            .is_some_and(|error| { error.contains("failed to resolve existing path ancestor") }));
-        assert!(!source_root.join("rlm-bsl/index-v17/bsl_index.db").exists());
-        assert!(!source_root
-            .join("caches/rlm-bsl/index-v17/bsl_index_status.json")
-            .exists());
-        assert!(!source_root
-            .join("locks/rlm-bsl/index-v17/bsl_index.lock")
-            .exists());
-        testing::remove_dir_symlink_for_test(&second).unwrap();
-        testing::remove_dir_symlink_for_test(&first).unwrap();
-        cleanup(&context);
-    }
-
     #[derive(Default)]
     struct BlockingWorkspaceState {
         started: Vec<String>,
@@ -2593,9 +423,7 @@ mod tests {
         }
     }
 
-    impl GenericWorkspaceServiceOperationExecutor<BslWorkspaceBackend, RlmWorkspaceBackend>
-        for BlockingWorkspaceExecutor
-    {
+    impl GenericWorkspaceServiceOperationExecutor<BslWorkspaceBackend> for BlockingWorkspaceExecutor {
         fn execute(
             &self,
             _runtime: &WorkspaceServiceRuntime,
@@ -2660,9 +488,7 @@ mod tests {
         }
     }
 
-    impl GenericWorkspaceServiceOperationExecutor<BslWorkspaceBackend, RlmWorkspaceBackend>
-        for AnalyzerLaneExecutor
-    {
+    impl GenericWorkspaceServiceOperationExecutor<BslWorkspaceBackend> for AnalyzerLaneExecutor {
         fn execute(
             &self,
             runtime: &WorkspaceServiceRuntime,
@@ -2750,9 +576,7 @@ mod tests {
 
     fn workspace_test_server_with_executor(
         name: &str,
-        executor: Arc<
-            dyn GenericWorkspaceServiceOperationExecutor<BslWorkspaceBackend, RlmWorkspaceBackend>,
-        >,
+        executor: Arc<dyn GenericWorkspaceServiceOperationExecutor<BslWorkspaceBackend>>,
         shutdown_grace: Duration,
     ) -> (
         WorkspaceContext,
@@ -2786,44 +610,12 @@ mod tests {
         (context, record, runtime, server)
     }
 
-    fn open_test_request(
-        record: &WorkspaceServiceRecord,
-        kind: ServiceRequestKind,
-    ) -> BufReader<TcpStream> {
-        let mut stream = TcpStream::connect(("127.0.0.1", record.port)).unwrap();
-        stream
-            .set_read_timeout(Some(Duration::from_secs(2)))
-            .unwrap();
-        let request = ServiceRequest {
-            token: record.token.clone(),
-            kind,
-        };
-        writeln!(stream, "{}", serde_json::to_string(&request).unwrap()).unwrap();
-        stream.flush().unwrap();
-        BufReader::new(stream)
-    }
-
-    fn read_test_response(reader: &mut BufReader<TcpStream>) -> ServiceResponse {
-        let mut line = String::new();
-        reader.read_line(&mut line).unwrap();
-        serde_json::from_str(line.trim()).unwrap()
-    }
-
-    fn send_test_request(
-        record: &WorkspaceServiceRecord,
-        kind: ServiceRequestKind,
-    ) -> ServiceResponse {
-        read_test_response(&mut open_test_request(record, kind))
-    }
-
     /// Answers after `delay`, unless the service stops it first.
     struct SlowCancellableExecutor {
         delay: Duration,
     }
 
-    impl GenericWorkspaceServiceOperationExecutor<BslWorkspaceBackend, RlmWorkspaceBackend>
-        for SlowCancellableExecutor
-    {
+    impl GenericWorkspaceServiceOperationExecutor<BslWorkspaceBackend> for SlowCancellableExecutor {
         fn execute(
             &self,
             _runtime: &WorkspaceServiceRuntime,
@@ -2847,6 +639,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.RUNTIME.SERVICE-LIFETIME
     #[test]
     fn workspace_service_never_stops_under_a_request_longer_than_its_idle_time() {
         let context = test_context("idle-under-request");
@@ -2877,11 +670,13 @@ mod tests {
         });
         let response = send_test_request(
             &record,
-            ServiceRequestKind::RlmReady {
+            ServiceRequestKind::BslMcp {
                 operation_id: "slow-1".to_string(),
-                args: json!({}),
+                tool_name: "diagnostics".to_string(),
+                tool_args: json!({}),
                 timeout_seconds: 5,
                 timeout_nanos: 0,
+                yields: false,
             },
         );
         assert!(
@@ -2904,11 +699,13 @@ mod tests {
             workspace_control_test_server("control-ping-cancel");
         let mut work = open_test_request(
             &record,
-            ServiceRequestKind::RlmReady {
+            ServiceRequestKind::BslMcp {
                 operation_id: "blocked-1".to_string(),
-                args: json!({}),
+                tool_name: "diagnostics".to_string(),
+                tool_args: json!({}),
                 timeout_seconds: 5,
                 timeout_nanos: 0,
+                yields: false,
             },
         );
         executor.wait_started(1);
@@ -2928,19 +725,21 @@ mod tests {
         let cancelled = read_test_response(&mut work);
         assert!(!cancelled.ok);
         assert!(cancelled.error.unwrap().starts_with("cancelled:"));
-        assert!(runtime.test_operations().lock().unwrap().is_empty());
+        assert!(runtime.test_operation_ids().is_empty());
 
         let recovered = send_test_request(
             &record,
-            ServiceRequestKind::RlmReady {
+            ServiceRequestKind::BslMcp {
                 operation_id: "success-2".to_string(),
-                args: json!({}),
+                tool_name: "diagnostics".to_string(),
+                tool_args: json!({}),
                 timeout_seconds: 5,
                 timeout_nanos: 0,
+                yields: false,
             },
         );
         assert!(recovered.ok);
-        assert!(runtime.test_operations().lock().unwrap().is_empty());
+        assert!(runtime.test_operation_ids().is_empty());
 
         assert!(send_test_request(&record, ServiceRequestKind::Shutdown).ok);
         server.join().unwrap().unwrap();
@@ -2950,6 +749,7 @@ mod tests {
         cleanup(&context);
     }
 
+    /// rule: INV.RUNTIME.SERVICE-REQUEST-FRAMING
     #[test]
     fn workspace_service_request_lines_are_bounded_and_resynchronize() {
         let mut bytes = vec![b'x'; SERVICE_REQUEST_LINE_LIMIT + 1];
@@ -2965,6 +765,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.RUNTIME.SERVICE-REQUEST-FRAMING
     #[test]
     fn workspace_service_header_deadline_is_aggregate_across_drip_bytes() {
         struct DripReader {
@@ -2999,6 +800,7 @@ mod tests {
         assert_eq!(error.kind(), ErrorKind::TimedOut);
     }
 
+    /// rule: INV.RUNTIME.SERVICE-REQUEST-FRAMING
     #[test]
     fn workspace_service_header_timeout_is_connection_local() {
         let (handler_started_tx, handler_started_rx) = mpsc::sync_channel(0);
@@ -3038,6 +840,1949 @@ mod tests {
         cleanup(&context);
     }
 
+    fn prepared_begin(id: &str) -> ServiceRequestKind {
+        ServiceRequestKind::BslMcpBegin {
+            operation_id: id.into(),
+            call: PreparedBslCall {
+                tool_name: "symbol_info".into(),
+                tool_args: json!({}),
+                yields: false,
+            },
+            deadline: BslOperationDeadline::Absent {},
+        }
+    }
+
+    fn read_prepared_reply(reader: &mut BufReader<TcpStream>) -> PreparedBslReply {
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        serde_json::from_str(&line).unwrap()
+    }
+
+    fn write_prepared_phase(
+        reader: &mut BufReader<TcpStream>,
+        record: &WorkspaceServiceRecord,
+        kind: ServiceRequestKind,
+    ) {
+        let frame = ServiceRequest {
+            token: record.token.clone(),
+            kind,
+        };
+        writeln!(
+            reader.get_mut(),
+            "{}",
+            serde_json::to_string(&frame).unwrap()
+        )
+        .unwrap();
+        reader.get_mut().flush().unwrap();
+    }
+
+    fn wait_operation_retired(runtime: &WorkspaceServiceRuntime, id: &str) {
+        let watchdog = Instant::now() + Duration::from_secs(3);
+        while runtime
+            .test_operation_ids()
+            .iter()
+            .any(|active| active == id)
+        {
+            assert!(
+                Instant::now() < watchdog,
+                "operation owner was not collected: {id}"
+            );
+            thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    #[test]
+    fn prepared_bsl_symbol_absence_reaches_the_actual_persistent_mcp_session() {
+        use unica_adapter_bsl_analyzer::provider::WorkspaceBslToolClient;
+        use unica_adapter_bsl_analyzer::symbols::BslAnalyzerSymbols;
+        use unica_code_intelligence::model::CodeIntelligenceContext;
+        use unica_code_intelligence::symbols::{
+            SymbolPosition, SymbolProvider, SymbolQuery, SymbolRequestContext,
+        };
+        use unica_source_contract::workspace::ResolvedSourceRoot;
+
+        for finite in [false, true] {
+            let context = test_context(&format!("prepared-symbol-full-route-{finite}"));
+            let source_root = context.workspace_root.join("src");
+            fs::create_dir_all(source_root.join("CommonModules/SearchProbe/Ext")).unwrap();
+            fs::write(source_root.join(SNAPSHOT_MODULE), SNAPSHOT_BEFORE).unwrap();
+            fs::create_dir_all(&context.cache_root).unwrap();
+            let source = context.cache_root.join("symbol-session.rs");
+            let executable = unica_process::test_support::fixture_executable_path(
+                &context.cache_root,
+                "symbol-session",
+            );
+            let answer = json!({"status":"ok", "symbol":"DeadlineProbe", "kind":"procedure", "definitions":[],
+            "freshness":{"stale":false,"completeness":{"status":"complete"}}});
+            let reply = json!({"jsonrpc":"2.0", "id":2, "result":{"content":[{"type":"text","text":answer.to_string()}]}}).to_string();
+            let program = r#"use std::{env, fs::OpenOptions, io::{self, BufRead, Write}};
+fn main() {
+    let pid_file = env::args().nth(2).unwrap();
+    writeln!(OpenOptions::new().create(true).append(true).open(pid_file).unwrap(), "{}", std::process::id()).unwrap();
+    for (index, line) in io::stdin().lock().lines().enumerate() {
+        let line = line.unwrap();
+        match index {
+            0 => { std::thread::sleep(std::time::Duration::from_millis(150)); println!("{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{}}}}"); },
+            2 => { assert!(line.contains("symbol_info"), "{}", line); println!("{}", __REPLY__); }
+            _ => {}
+        }
+        io::stdout().flush().unwrap();
+    }
+}"#.replace("__REPLY__", &format!("{reply:?}"));
+            fs::write(&source, program).unwrap();
+            assert!(Command::new("rustc")
+                .arg(&source)
+                .arg("-o")
+                .arg(&executable)
+                .status()
+                .unwrap()
+                .success());
+            let helper = CanonicalInvalidationHelper::start(&context, &source_root, &executable);
+            let dispatch_observed_at = Arc::new(Mutex::new(None));
+            if finite {
+                let dispatch_observed_at = dispatch_observed_at.clone();
+                helper
+                    .runtime
+                    .test_set_prepared_dispatch_hook(Some(Arc::new(move || {
+                        *dispatch_observed_at.lock().unwrap() = Some(Instant::now());
+                        // Budget consumption before System execution, not a readiness wait.
+                        thread::sleep(Duration::from_millis(100));
+                    })));
+            }
+            let (session_observed, session_received) = mpsc::channel();
+            helper
+                .runtime
+                .test_set_bsl_session_deadline_hook(Some(Arc::new(move |remaining, elapsed| {
+                    session_observed
+                        .send((remaining, elapsed, Instant::now()))
+                        .unwrap();
+                })));
+            let (observed, received) = mpsc::channel();
+            helper
+                .runtime
+                .test_set_authenticated_request_hook(Some(Arc::new(move |_, request| {
+                    if let ServiceRequestKind::BslMcpBegin { deadline, call, .. } = request {
+                        observed
+                            .send((deadline.clone(), call.tool_name.clone()))
+                            .unwrap();
+                    }
+                })));
+            let client = WorkspaceBslToolClient {
+                environment: analysis_composition::service_environment,
+            };
+            let symbols = BslAnalyzerSymbols::new(
+                &client,
+                CodeIntelligenceContext::new(
+                    context.clone(),
+                    ResolvedSourceRoot {
+                        source_set: Some("main".into()),
+                        path: source_root,
+                    },
+                    Arc::new(unica_workspace::discovery::ProjectDiscoveryReader::new(
+                        &context.workspace_root,
+                    )),
+                ),
+            );
+            let cancellation = CancellationToken::new();
+            let symbol = symbols
+                .symbol(
+                    &SymbolQuery::At {
+                        path: SNAPSHOT_MODULE.into(),
+                        position: SymbolPosition { line: 0, column: 1 },
+                    },
+                    &SymbolRequestContext {
+                        deadline: if finite {
+                            ProviderDeadline::from_budget(Duration::from_secs(5))
+                        } else {
+                            ProviderDeadline::no_deadline()
+                        },
+                        cancellation: &cancellation,
+                    },
+                )
+                .unwrap()
+                .unwrap();
+            assert_eq!(symbol.name, "DeadlineProbe");
+            let (remaining, elapsed, session_observed_at) = session_received
+                .recv_timeout(Duration::from_secs(3))
+                .unwrap();
+            assert!(!elapsed);
+            if finite {
+                let remaining = remaining.expect("finite must not become absence");
+                let dispatch_observed_at = dispatch_observed_at.lock().unwrap().unwrap();
+                let consumed = session_observed_at.saturating_duration_since(dispatch_observed_at);
+                let upper = Duration::from_secs(5)
+                    .saturating_sub(consumed)
+                    .saturating_add(Duration::from_millis(5));
+                assert!(remaining > Duration::ZERO && remaining <= upper,
+                    "same receiver anchor must account for all actual dispatch/initialization delay: remaining={remaining:?}, consumed={consumed:?}");
+            } else {
+                assert_eq!(remaining, None, "the actual session deadline port must retain absence, not a finite replacement");
+            }
+            let (deadline, tool) = received.recv_timeout(Duration::from_secs(3)).unwrap();
+            assert_eq!(matches!(deadline, BslOperationDeadline::Absent {}), !finite);
+            assert_eq!(tool, "symbol_info");
+            assert_eq!(
+                helper.pids().len(),
+                1,
+                "one real MCP child handled the symbol request"
+            );
+            helper.stop_and_verify();
+            cleanup(&context);
+        }
+    }
+
+    #[test]
+    fn prepared_bsl_cancel_and_expire_before_start_preserve_the_registered_decision() {
+        // Two admissible orders before Start, each fixed by an event:
+        // the handler finishes on the recorded stop without waiting for Start,
+        // or a Start already consumed by the held handler meets the stop.
+        // A Start written after the handler has finished is not a scenario:
+        // the closed reservation may reset it, which proves nothing.
+        for start_delivered in [false, true] {
+            for expire in [false, true] {
+                let mut server =
+                    WorkspaceAdmissionTestServer::start("prepared-control-before-start");
+                let gate = Arc::new((Mutex::new(false), Condvar::new()));
+                let (entered, start_received) = mpsc::channel();
+                if start_delivered {
+                    server.gates.push(gate.clone());
+                    server
+                        .runtime
+                        .test_set_prepared_start_received_hook(Some(Arc::new({
+                            let gate = gate.clone();
+                            move || {
+                                entered.send(()).unwrap();
+                                wait_admission_test_gate(&gate);
+                            }
+                        })));
+                }
+                let id = "held-before-start";
+                let mut work = open_test_request(&server.record, prepared_begin(id));
+                assert!(matches!(read_prepared_reply(&mut work),
+                    PreparedBslReply::Admitted { operation_id } if operation_id == id));
+                let token = server.token(id);
+                assert!(!token.is_cancelled());
+                if start_delivered {
+                    write_prepared_phase(
+                        &mut work,
+                        &server.record,
+                        ServiceRequestKind::BslMcpStart {
+                            operation_id: id.into(),
+                            deadline: BslOperationDeadline::Absent {},
+                        },
+                    );
+                    start_received
+                        .recv_timeout(Duration::from_secs(3))
+                        .expect("the handler consumed Start");
+                }
+                let control = if expire {
+                    ServiceRequestKind::Expire {
+                        operation_id: id.into(),
+                    }
+                } else {
+                    ServiceRequestKind::Cancel {
+                        operation_id: id.into(),
+                    }
+                };
+                assert!(send_test_request(&server.record, control).ok);
+                assert!(token.is_cancelled());
+                if start_delivered {
+                    *gate.0.lock().unwrap() = true;
+                    gate.1.notify_all();
+                }
+                let PreparedBslReply::Finished { response } = read_prepared_reply(&mut work) else {
+                    panic!("a stopped reservation was admitted again");
+                };
+                assert!(!response.ok);
+                let error = response.error.unwrap_or_default();
+                assert!(
+                    error.starts_with(if expire { "timeout:" } else { "cancelled:" }),
+                    "start_delivered={start_delivered}, expire={expire}: {error}"
+                );
+                assert!(
+                    server.executor.started.lock().unwrap().is_empty(),
+                    "Start dispatched stopped work"
+                );
+                wait_operation_retired(&server.runtime, id);
+                assert!(
+                    send_test_request(
+                        &server.record,
+                        ServiceRequestKind::BslMcp {
+                            operation_id: "success-neighbor".into(),
+                            tool_name: "diagnostics".to_string(),
+                            tool_args: json!({}),
+                            timeout_seconds: 5,
+                            timeout_nanos: 0,
+                            yields: false
+                        }
+                    )
+                    .ok
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn prepared_bsl_cancellation_before_registration_cannot_create_late_work() {
+        thread::scope(|scope| {
+            let mut server = WorkspaceAdmissionTestServer::start("prepared-before-registration");
+            let gate = Arc::new((Mutex::new(false), Condvar::new()));
+            server.gates.push(gate.clone());
+            let (entered, observed) = mpsc::channel();
+            server
+                .runtime
+                .test_set_authenticated_request_hook(Some(Arc::new({
+                    let gate = gate.clone();
+                    move |_, kind| {
+                        if matches!(kind, ServiceRequestKind::BslMcpBegin { .. }) {
+                            entered.send(()).unwrap();
+                            wait_admission_test_gate(&gate);
+                        }
+                    }
+                })));
+            let (finished, collected) = mpsc::channel();
+            server
+                .runtime
+                .test_set_operation_retired_hook(Some(Arc::new(move |id| {
+                    if id == "late-never-started" {
+                        let _ = finished.send(());
+                    }
+                })));
+            let cancellation = CancellationToken::new();
+            let worker_cancellation = cancellation.clone();
+            let record = server.record.clone();
+            let sender = scope.spawn(move || {
+                SYSTEM_SERVICE_CONNECTOR.send_operation_before(
+                    &record,
+                    ServiceRequest {
+                        token: record.token.clone(),
+                        kind: prepared_begin("late-never-started"),
+                    },
+                    &worker_cancellation,
+                    ProviderDeadline::no_deadline(),
+                )
+            });
+            observed.recv_timeout(Duration::from_secs(3)).unwrap();
+            assert!(server.runtime.test_operation_ids().is_empty());
+            cancellation.cancel();
+            *gate.0.lock().unwrap() = true;
+            gate.1.notify_all();
+            let error = sender.join().unwrap().unwrap_err();
+            assert!(error.starts_with("cancelled:"));
+            collected
+                .recv_timeout(Duration::from_secs(3))
+                .expect("the late Begin reservation was registered and retired");
+            wait_operation_retired(&server.runtime, "late-never-started");
+            assert!(server.executor.started.lock().unwrap().is_empty());
+            assert!(
+                send_test_request(
+                    &server.record,
+                    ServiceRequestKind::BslMcp {
+                        operation_id: "success-independent".into(),
+                        tool_name: "diagnostics".to_string(),
+                        tool_args: json!({}),
+                        timeout_seconds: 5,
+                        timeout_nanos: 0,
+                        yields: false
+                    }
+                )
+                .ok
+            );
+        });
+    }
+
+    #[test]
+    fn prepared_bsl_accepted_eof_retains_owner_until_separate_expiry() {
+        let server = WorkspaceAdmissionTestServer::start("prepared-accepted-eof");
+        let id = "held-after-start";
+        let mut work = open_test_request(&server.record, prepared_begin(id));
+        assert!(matches!(read_prepared_reply(&mut work),
+            PreparedBslReply::Admitted { operation_id } if operation_id == id));
+        write_prepared_phase(
+            &mut work,
+            &server.record,
+            ServiceRequestKind::BslMcpStart {
+                operation_id: id.into(),
+                deadline: BslOperationDeadline::Absent {},
+            },
+        );
+        server.executor.wait_started(1);
+        let token = server.token(id);
+        let (detached_tx, detached_rx) = mpsc::channel();
+        server
+            .runtime
+            .test_set_caller_detached_hook(Some(Arc::new(move |token| {
+                let _ = detached_tx.send(token.is_cancelled());
+            })));
+        drop(work);
+        assert!(
+            !detached_rx.recv_timeout(Duration::from_secs(3)).unwrap(),
+            "the real EOF monitor cancelled accepted provider work"
+        );
+        assert!(
+            !token.is_cancelled(),
+            "EOF cancelled accepted provider work"
+        );
+        assert!(server
+            .runtime
+            .test_operation_ids()
+            .iter()
+            .any(|active| active == id));
+        assert!(
+            send_test_request(
+                &server.record,
+                ServiceRequestKind::Expire {
+                    operation_id: id.into()
+                }
+            )
+            .ok
+        );
+        wait_operation_retired(&server.runtime, id);
+        assert!(token.is_cancelled());
+        assert_eq!(
+            server.executor.started.lock().unwrap().as_slice(),
+            &[id.to_owned()]
+        );
+        let unknown = send_test_request(
+            &server.record,
+            ServiceRequestKind::Expire {
+                operation_id: "not-observed".into(),
+            },
+        );
+        assert!(!unknown.ok);
+        assert!(unknown
+            .error
+            .unwrap()
+            .contains("termination is unconfirmed"));
+        assert!(
+            send_test_request(
+                &server.record,
+                ServiceRequestKind::BslMcp {
+                    operation_id: "success-after-expiry".into(),
+                    tool_name: "diagnostics".to_string(),
+                    tool_args: json!({}),
+                    timeout_seconds: 5,
+                    timeout_nanos: 0,
+                    yields: false
+                }
+            )
+            .ok
+        );
+    }
+
+    #[test]
+    fn prepared_bsl_receiver_anchor_includes_delayed_worker_without_expiry_delivery() {
+        for finite in [false, true] {
+            let mut server = WorkspaceAdmissionTestServer::start("prepared-delayed-worker");
+            let gate = Arc::new((Mutex::new(false), Condvar::new()));
+            server.gates.push(gate.clone());
+            let (entered, observed) = mpsc::channel();
+            server
+                .runtime
+                .test_set_prepared_dispatch_hook(Some(Arc::new({
+                    let gate = gate.clone();
+                    move || {
+                        entered.send(()).unwrap();
+                        wait_admission_test_gate(&gate);
+                    }
+                })));
+            let id = "success-delayed-worker";
+            let mut begin = prepared_begin(id);
+            let deadline = if finite {
+                BslOperationDeadline::Finite {
+                    seconds: 0,
+                    nanos: 30_000_000,
+                }
+            } else {
+                BslOperationDeadline::Absent {}
+            };
+            if let ServiceRequestKind::BslMcpBegin {
+                deadline: offered, ..
+            } = &mut begin
+            {
+                *offered = deadline.clone();
+            }
+            let mut work = open_test_request(&server.record, begin);
+            assert!(matches!(
+                read_prepared_reply(&mut work),
+                PreparedBslReply::Admitted { .. }
+            ));
+            write_prepared_phase(
+                &mut work,
+                &server.record,
+                ServiceRequestKind::BslMcpStart {
+                    operation_id: id.into(),
+                    deadline,
+                },
+            );
+            observed.recv_timeout(Duration::from_secs(3)).unwrap();
+            // No Expire control is sent. Receiver must account for the delay itself.
+            thread::sleep(Duration::from_millis(60));
+            *gate.0.lock().unwrap() = true;
+            gate.1.notify_all();
+            let PreparedBslReply::Finished { response } = read_prepared_reply(&mut work) else {
+                panic!("missing final result")
+            };
+            if finite {
+                assert!(!response.ok);
+                assert!(response.error.unwrap().starts_with("timeout:"));
+                assert!(server.executor.started.lock().unwrap().is_empty());
+            } else {
+                assert!(response.ok);
+                assert_eq!(
+                    server.executor.started.lock().unwrap().as_slice(),
+                    &[id.to_owned()]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn prepared_bsl_failed_separate_stop_delivery_retains_the_accepted_owner() {
+        struct FailControlIo(AtomicUsize);
+        impl ConnectorIo for FailControlIo {
+            fn connect(
+                &self,
+                port: u16,
+                timeout: Duration,
+            ) -> io::Result<Box<dyn ConnectorStream>> {
+                if self.0.fetch_add(1, Ordering::AcqRel) == 0 {
+                    SystemConnectorIo.connect(port, timeout)
+                } else {
+                    Err(io::Error::new(
+                        ErrorKind::ConnectionRefused,
+                        "controlled control connection failure",
+                    ))
+                }
+            }
+        }
+        static START: OnceLock<Instant> = OnceLock::new();
+        static ADVANCE: AtomicUsize = AtomicUsize::new(0);
+        fn now() -> Instant {
+            *START.get().unwrap() + Duration::from_secs(ADVANCE.load(Ordering::Acquire) as u64)
+        }
+        let start = *START.get_or_init(Instant::now);
+        for expiry in [false, true] {
+            ADVANCE.store(0, Ordering::Release);
+            thread::scope(|scope| {
+                let server = WorkspaceAdmissionTestServer::start("prepared-undelivered-stop");
+                let id = "held-with-unconfirmed-stop";
+                let cancellation = CancellationToken::new();
+                let deadline = if expiry {
+                    ProviderDeadline::with_clock(start + Duration::from_secs(10), now)
+                } else {
+                    ProviderDeadline::no_deadline()
+                };
+                let mut begin = prepared_begin(id);
+                if let ServiceRequestKind::BslMcpBegin {
+                    deadline: offered, ..
+                } = &mut begin
+                {
+                    *offered = BslOperationDeadline::from_remaining(deadline.remaining());
+                }
+                let io = Arc::new(FailControlIo(AtomicUsize::new(0)));
+                let record = server.record.clone();
+                let token = cancellation.clone();
+                let transport = io.clone();
+                let sender = scope.spawn(move || {
+                    SYSTEM_SERVICE_CONNECTOR.send_prepared_with(
+                        &record,
+                        connector_test_request(begin),
+                        &token,
+                        deadline,
+                        transport.as_ref(),
+                        &SystemClock::start(),
+                    )
+                });
+                server.executor.wait_started(1);
+                let accepted = server.token(id);
+                if expiry {
+                    ADVANCE.store(20, Ordering::Release);
+                } else {
+                    cancellation.cancel();
+                }
+                let error = sender.join().unwrap().unwrap_err();
+                assert!(
+                    error.starts_with(if expiry { "timeout:" } else { "cancelled:" }),
+                    "{error}"
+                );
+                assert!(error.contains("stop delivery is unconfirmed"), "{error}");
+                assert_eq!(
+                    io.0.load(Ordering::Acquire),
+                    2,
+                    "one work and one separate stop attempt, no replay"
+                );
+                assert!(
+                    !accepted.is_cancelled(),
+                    "failed control delivery is not a terminal stop"
+                );
+                assert!(server
+                    .runtime
+                    .test_operation_ids()
+                    .iter()
+                    .any(|active| active == id));
+                assert_eq!(
+                    server.executor.started.lock().unwrap().as_slice(),
+                    &[id.to_owned()]
+                );
+                assert!(
+                    send_test_request(
+                        &server.record,
+                        ServiceRequestKind::Expire {
+                            operation_id: id.into()
+                        }
+                    )
+                    .ok
+                );
+                wait_operation_retired(&server.runtime, id);
+            });
+        }
+    }
+
+    #[test]
+    fn prepared_bsl_manager_retains_original_finite_cutoff_through_reuse_spawn_and_result() {
+        static START: OnceLock<Instant> = OnceLock::new();
+        static ADVANCE: AtomicUsize = AtomicUsize::new(0);
+        fn now() -> Instant {
+            *START.get().unwrap() + Duration::from_secs(ADVANCE.load(Ordering::Acquire) as u64)
+        }
+        struct PreparedConnector {
+            original: ProviderDeadline,
+            late: bool,
+            exhaust: bool,
+            expected_remaining: Duration,
+            calls: AtomicUsize,
+        }
+        impl ServiceConnector for PreparedConnector {
+            fn send(
+                &self,
+                _: &WorkspaceServiceRecord,
+                _: ServiceRequest,
+                _: &CancellationToken,
+                _: Duration,
+            ) -> Result<ServiceResponse, String> {
+                unreachable!("typed operations must not fall back to legacy durations")
+            }
+            fn send_before(
+                &self,
+                _: &WorkspaceServiceRecord,
+                _: ServiceRequest,
+                _: &CancellationToken,
+                _: OperationDeadline,
+            ) -> Result<ServiceResponse, String> {
+                unreachable!("typed operations must retain their original provider cutoff")
+            }
+            fn send_operation_before(
+                &self,
+                _: &WorkspaceServiceRecord,
+                request: ServiceRequest,
+                _: &CancellationToken,
+                deadline: ProviderDeadline,
+            ) -> Result<ServiceResponse, String> {
+                assert_eq!(deadline, self.original);
+                match request.kind {
+                    ServiceRequestKind::Ping => {
+                        ADVANCE.store(if self.exhaust { 11 } else { 3 }, Ordering::Release);
+                        Ok(ServiceResponse {
+                            ok: true,
+                            status: Some("alive".into()),
+                            ..ServiceResponse::default()
+                        })
+                    }
+                    ServiceRequestKind::BslMcpBegin {
+                        operation_id,
+                        deadline: offered,
+                        ..
+                    } => {
+                        Uuid::parse_str(&operation_id).unwrap();
+                        self.calls.fetch_add(1, Ordering::AcqRel);
+                        assert_eq!(offered.remaining().unwrap(), Some(self.expected_remaining));
+                        assert_eq!(deadline.remaining(), Some(self.expected_remaining));
+                        if self.late {
+                            ADVANCE.store(11, Ordering::Release);
+                        }
+                        Ok(ServiceResponse {
+                            ok: true,
+                            result_text: Some("actual-result".into()),
+                            ..ServiceResponse::default()
+                        })
+                    }
+                    other => panic!("unexpected typed request: {other:?}"),
+                }
+            }
+        }
+        struct PreparedSpawner {
+            original: ProviderDeadline,
+            exhaust: bool,
+            calls: AtomicUsize,
+        }
+        impl ServiceSpawner for PreparedSpawner {
+            fn spawn(
+                &self,
+                _: &WorkspaceServiceIdentity,
+                _: WorkspaceServiceConfig,
+                _: &str,
+                _: &CancellationToken,
+                _: Duration,
+            ) -> Result<WorkspaceServiceRecord, String> {
+                unreachable!("typed startup must not rearm a duration")
+            }
+            fn spawn_operation_before(
+                &self,
+                identity: &WorkspaceServiceIdentity,
+                _: WorkspaceServiceConfig,
+                token: &str,
+                _: &CancellationToken,
+                deadline: ProviderDeadline,
+            ) -> Result<WorkspaceServiceRecord, String> {
+                assert_eq!(deadline, self.original);
+                self.calls.fetch_add(1, Ordering::AcqRel);
+                ADVANCE.store(if self.exhaust { 11 } else { 2 }, Ordering::Release);
+                let mut record = test_record(identity, 34567, CoreIdentity::production().as_str());
+                record.token = token.into();
+                Ok(record)
+            }
+        }
+        let start = *START.get_or_init(Instant::now);
+        for reuse in [false, true] {
+            for (late, exhaust) in [(false, false), (true, false), (false, true)] {
+                ADVANCE.store(0, Ordering::Release);
+                let context =
+                    test_context(&format!("prepared-manager-cutoff-{reuse}-{late}-{exhaust}"));
+                let root = context.workspace_root.join("src");
+                let identity = WorkspaceServiceIdentity::new(&context, &root).unwrap();
+                if reuse {
+                    write_record(
+                        &identity,
+                        test_record(&identity, 34567, CoreIdentity::production().as_str()),
+                    );
+                }
+                let original = ProviderDeadline::with_clock(start + Duration::from_secs(10), now);
+                let connector = PreparedConnector {
+                    original,
+                    late,
+                    exhaust,
+                    expected_remaining: Duration::from_secs(if reuse { 7 } else { 8 }),
+                    calls: AtomicUsize::new(0),
+                };
+                let spawner = PreparedSpawner {
+                    original,
+                    exhaust,
+                    calls: AtomicUsize::new(0),
+                };
+                let manager = WorkspaceServiceManager::with_io(
+                    &connector,
+                    &spawner,
+                    analysis_composition::service_environment(),
+                );
+                let result = manager.call_bsl_mcp_before(
+                    &context,
+                    &root,
+                    PreparedBslCall {
+                        tool_name: "symbol_info".into(),
+                        tool_args: json!({}),
+                        yields: false,
+                    },
+                    &CancellationToken::new(),
+                    original,
+                );
+                if late || exhaust {
+                    assert!(result.unwrap_err().starts_with("timeout:"));
+                } else {
+                    assert_eq!(result.unwrap().result_text, "actual-result");
+                }
+                assert_eq!(
+                    connector.calls.load(Ordering::Acquire),
+                    usize::from(!exhaust)
+                );
+                assert_eq!(spawner.calls.load(Ordering::Acquire), usize::from(!reuse));
+                cleanup(&context);
+            }
+        }
+    }
+
+    #[test]
+    fn prepared_bsl_control_steps_are_finite_without_replacing_the_business_deadline() {
+        static START: OnceLock<Instant> = OnceLock::new();
+        static ADVANCE: AtomicUsize = AtomicUsize::new(0);
+        fn now() -> Instant {
+            *START.get().unwrap() + Duration::from_secs(ADVANCE.load(Ordering::Acquire) as u64)
+        }
+        struct AckIo;
+        struct AckStream;
+        impl ConnectorIo for AckIo {
+            fn connect(&self, _: u16, _: Duration) -> io::Result<Box<dyn ConnectorStream>> {
+                Ok(Box::new(AckStream))
+            }
+        }
+        impl Read for AckStream {
+            fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+                ADVANCE.store(3, Ordering::Release);
+                let reply = b"{\"ok\":true,\"status\":\"alive\"}\n";
+                bytes[..reply.len()].copy_from_slice(reply);
+                Ok(reply.len())
+            }
+        }
+        impl Write for AckStream {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        impl ConnectorStream for AckStream {
+            fn set_read_timeout(&self, _: Option<Duration>) -> io::Result<()> {
+                Ok(())
+            }
+            fn set_write_timeout(&self, _: Option<Duration>) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        struct Connector {
+            original: ProviderDeadline,
+            controls: AtomicUsize,
+            begins: AtomicUsize,
+        }
+        impl ServiceConnector for Connector {
+            fn send(
+                &self,
+                _: &WorkspaceServiceRecord,
+                _: ServiceRequest,
+                _: &CancellationToken,
+                _: Duration,
+            ) -> Result<ServiceResponse, String> {
+                panic!("a control step must retain typed deadline dispatch");
+            }
+            fn send_before(
+                &self,
+                _: &WorkspaceServiceRecord,
+                _: ServiceRequest,
+                _: &CancellationToken,
+                _: OperationDeadline,
+            ) -> Result<ServiceResponse, String> {
+                panic!("a prepared call must retain its provider deadline");
+            }
+            fn send_operation_before(
+                &self,
+                record: &WorkspaceServiceRecord,
+                request: ServiceRequest,
+                cancellation: &CancellationToken,
+                deadline: ProviderDeadline,
+            ) -> Result<ServiceResponse, String> {
+                assert_eq!(deadline, self.original, "the manager must not replace an absent/long business deadline with a control deadline");
+                match &request.kind {
+                    ServiceRequestKind::Ping | ServiceRequestKind::Shutdown => {
+                        self.controls.fetch_add(1, Ordering::AcqRel);
+                        let result = SYSTEM_SERVICE_CONNECTOR.test_send_operation_with(
+                            record,
+                            request,
+                            cancellation,
+                            deadline,
+                            &AckIo,
+                            &ManualClock::default(),
+                        );
+                        if self.original.remaining() == Some(Duration::from_secs(7)) {
+                            assert_eq!(deadline.remaining(), Some(Duration::from_secs(7)), "the selected original deadline must retain its clock through control I/O");
+                        }
+                        result
+                    }
+                    ServiceRequestKind::BslMcpBegin {
+                        deadline: offered, ..
+                    } => {
+                        assert_eq!(offered.remaining().unwrap(), self.original.remaining());
+                        self.begins.fetch_add(1, Ordering::AcqRel);
+                        Ok(ServiceResponse {
+                            ok: true,
+                            result_text: Some("business-result".into()),
+                            ..ServiceResponse::default()
+                        })
+                    }
+                    other => panic!("unexpected request: {other:?}"),
+                }
+            }
+        }
+        struct Spawner {
+            original: ProviderDeadline,
+        }
+        impl ServiceSpawner for Spawner {
+            fn spawn(
+                &self,
+                _: &WorkspaceServiceIdentity,
+                _: WorkspaceServiceConfig,
+                _: &str,
+                _: &CancellationToken,
+                _: Duration,
+            ) -> Result<WorkspaceServiceRecord, String> {
+                panic!("typed startup required");
+            }
+            fn spawn_operation_before(
+                &self,
+                identity: &WorkspaceServiceIdentity,
+                _: WorkspaceServiceConfig,
+                token: &str,
+                _: &CancellationToken,
+                deadline: ProviderDeadline,
+            ) -> Result<WorkspaceServiceRecord, String> {
+                assert_eq!(deadline, self.original);
+                let mut record = test_record(identity, 34567, CoreIdentity::production().as_str());
+                record.token = token.into();
+                Ok(record)
+            }
+        }
+        let start = *START.get_or_init(Instant::now);
+        let current_build = CoreIdentity::production();
+        for mismatch in [false, true] {
+            for budget in [
+                None,
+                Some(Duration::from_secs(240)),
+                Some(Duration::from_secs(10)),
+            ] {
+                for stopped in ["running", "cancelled", "expired"] {
+                    ADVANCE.store(0, Ordering::Release);
+                    let context = test_context(&format!(
+                        "prepared-control-step-{mismatch}-{budget:?}-{stopped}"
+                    ));
+                    let root = context.workspace_root.join("src");
+                    let identity = WorkspaceServiceIdentity::new(&context, &root).unwrap();
+                    write_record(
+                        &identity,
+                        test_record(
+                            &identity,
+                            34567,
+                            if mismatch {
+                                "replaced-build"
+                            } else {
+                                current_build.as_str()
+                            },
+                        ),
+                    );
+                    let original = if stopped == "expired" {
+                        ProviderDeadline::with_clock(start, now)
+                    } else {
+                        budget.map_or(ProviderDeadline::no_deadline(), |budget| {
+                            ProviderDeadline::with_clock(start + budget, now)
+                        })
+                    };
+                    let cancellation = CancellationToken::new();
+                    if stopped == "cancelled" {
+                        cancellation.cancel();
+                    }
+                    let connector = Connector {
+                        original,
+                        controls: AtomicUsize::new(0),
+                        begins: AtomicUsize::new(0),
+                    };
+                    let spawner = Spawner { original };
+                    let manager = WorkspaceServiceManager::with_io(
+                        &connector,
+                        &spawner,
+                        analysis_composition::service_environment(),
+                    );
+                    let result = manager.call_bsl_mcp_before(
+                        &context,
+                        &root,
+                        PreparedBslCall {
+                            tool_name: "symbol_info".into(),
+                            tool_args: json!({}),
+                            yields: false,
+                        },
+                        &cancellation,
+                        original,
+                    );
+                    if stopped == "running" {
+                        assert_eq!(result.unwrap().result_text, "business-result");
+                        assert_eq!(connector.controls.load(Ordering::Acquire), 1);
+                        assert_eq!(connector.begins.load(Ordering::Acquire), 1);
+                    } else {
+                        let error = result.unwrap_err();
+                        assert!(
+                            error.starts_with(if stopped == "cancelled" {
+                                "cancelled:"
+                            } else {
+                                "timeout:"
+                            }),
+                            "{error}"
+                        );
+                        assert_eq!(connector.controls.load(Ordering::Acquire), 0);
+                        assert_eq!(connector.begins.load(Ordering::Acquire), 0);
+                    }
+                    cleanup(&context);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn prepared_bsl_control_transport_observes_the_selected_original_clock() {
+        static START: OnceLock<Instant> = OnceLock::new();
+        static ADVANCE: AtomicUsize = AtomicUsize::new(0);
+        fn now() -> Instant {
+            *START.get().unwrap() + Duration::from_secs(ADVANCE.load(Ordering::Acquire) as u64)
+        }
+        #[derive(Clone, Copy, Debug)]
+        enum Reply {
+            AfterPoll,
+            StepExpired,
+            CallerExpired,
+            Late,
+            Cancel,
+        }
+        struct ProbeIo {
+            clock: ManualClock,
+            reads: Arc<AtomicUsize>,
+            reply: Reply,
+            cancellation: CancellationToken,
+        }
+        struct ProbeStream {
+            clock: ManualClock,
+            reads: Arc<AtomicUsize>,
+            reply: Reply,
+            cancellation: CancellationToken,
+        }
+        impl ConnectorIo for ProbeIo {
+            fn connect(&self, _: u16, timeout: Duration) -> io::Result<Box<dyn ConnectorStream>> {
+                assert!(timeout > Duration::ZERO && timeout <= SERVICE_REQUEST_TIMEOUT);
+                Ok(Box::new(ProbeStream {
+                    clock: self.clock.clone(),
+                    reads: self.reads.clone(),
+                    reply: self.reply,
+                    cancellation: self.cancellation.clone(),
+                }))
+            }
+        }
+        impl Read for ProbeStream {
+            fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+                let read = self.reads.fetch_add(1, Ordering::AcqRel);
+                let reply = if read == 0 {
+                    b"{\"ok\":".as_slice()
+                } else {
+                    assert!(
+                        read == 1 || (read == 2 && matches!(self.reply, Reply::AfterPoll)),
+                        "the actual control-step deadline must stop further polling"
+                    );
+                    if read == 1 {
+                        let (step_elapsed, caller_elapsed) = match self.reply {
+                            Reply::AfterPoll => (3, 3),
+                            Reply::CallerExpired => (0, 11),
+                            _ => (121, 121),
+                        };
+                        self.clock.advance(Duration::from_secs(step_elapsed));
+                        ADVANCE.store(caller_elapsed, Ordering::Release);
+                        if matches!(self.reply, Reply::Cancel) {
+                            self.cancellation.cancel();
+                        }
+                        if !matches!(self.reply, Reply::Late) {
+                            return Err(io::Error::new(
+                                ErrorKind::TimedOut,
+                                "control polling slice",
+                            ));
+                        }
+                    }
+                    b"true}\n".as_slice()
+                };
+                bytes[..reply.len()].copy_from_slice(reply);
+                Ok(reply.len())
+            }
+        }
+        impl Write for ProbeStream {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        impl ConnectorStream for ProbeStream {
+            fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
+                assert!(timeout.is_some_and(
+                    |timeout| timeout > Duration::ZERO && timeout <= Duration::from_millis(100)
+                ));
+                Ok(())
+            }
+            fn set_write_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
+                assert!(timeout.is_some_and(
+                    |timeout| timeout > Duration::ZERO && timeout <= Duration::from_millis(100)
+                ));
+                Ok(())
+            }
+        }
+        let start = *START.get_or_init(Instant::now);
+        for shutdown in [false, true] {
+            for budget in [
+                None,
+                Some(Duration::from_secs(240)),
+                Some(Duration::from_secs(10)),
+            ] {
+                for reply in [
+                    Reply::StepExpired,
+                    Reply::CallerExpired,
+                    Reply::AfterPoll,
+                    Reply::Late,
+                    Reply::Cancel,
+                ] {
+                    if matches!(reply, Reply::CallerExpired)
+                        && budget != Some(Duration::from_secs(10))
+                    {
+                        continue;
+                    }
+                    ADVANCE.store(0, Ordering::Release);
+                    let original = budget.map_or(ProviderDeadline::no_deadline(), |budget| {
+                        ProviderDeadline::with_clock(start + budget, now)
+                    });
+                    let cancellation = CancellationToken::new();
+                    let clock = ManualClock::default();
+                    let reads = Arc::new(AtomicUsize::new(0));
+                    let io = ProbeIo {
+                        clock: clock.clone(),
+                        reads: reads.clone(),
+                        reply,
+                        cancellation: cancellation.clone(),
+                    };
+                    let kind = if shutdown {
+                        ServiceRequestKind::Shutdown
+                    } else {
+                        ServiceRequestKind::Ping
+                    };
+                    let result = SYSTEM_SERVICE_CONNECTOR.test_send_operation_with(
+                        &connector_test_record(),
+                        connector_test_request(kind),
+                        &cancellation,
+                        original,
+                        &io,
+                        &clock,
+                    );
+                    if matches!(reply, Reply::AfterPoll) {
+                        assert!(
+                            result.unwrap().ok,
+                            "the prefix before a polling timeout must survive"
+                        );
+                        assert_eq!(reads.load(Ordering::Acquire), 3);
+                    } else {
+                        let error = result.unwrap_err();
+                        if matches!(reply, Reply::Cancel) {
+                            assert!(error.starts_with("cancelled:"), "{error}");
+                        } else if budget == Some(Duration::from_secs(10)) {
+                            assert!(
+                                error.contains("operation deadline elapsed"),
+                                "the original caller clock must win: {error}"
+                            );
+                        } else {
+                            assert_eq!(
+                                error,
+                                workspace_service_request_timeout_error(SERVICE_REQUEST_TIMEOUT),
+                                "the transport step, not the business operation, expired"
+                            );
+                        }
+                        assert_eq!(reads.load(Ordering::Acquire), 2);
+                        if matches!(reply, Reply::CallerExpired) {
+                            assert_eq!(
+                                clock.elapsed(),
+                                Duration::ZERO,
+                                "the transport step is still live"
+                            );
+                            assert_eq!(
+                                original.remaining(),
+                                Some(Duration::ZERO),
+                                "only the independent caller clock expired"
+                            );
+                        }
+                    }
+                    assert_eq!(
+                        original.remaining().is_none(),
+                        budget.is_none(),
+                        "the control step must never overwrite the caller's absence"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn prepared_bsl_ping_step_timeout_preserves_the_live_service_and_accepted_neighbor() {
+        struct SilentIo {
+            clock: ManualClock,
+        }
+        struct SilentStream {
+            clock: ManualClock,
+            read: bool,
+        }
+        impl ConnectorIo for SilentIo {
+            fn connect(&self, _: u16, _: Duration) -> io::Result<Box<dyn ConnectorStream>> {
+                Ok(Box::new(SilentStream {
+                    clock: self.clock.clone(),
+                    read: false,
+                }))
+            }
+        }
+        impl Read for SilentStream {
+            fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+                assert!(
+                    !self.read,
+                    "the actual control step must expire after this polling slice"
+                );
+                self.read = true;
+                self.clock.advance(Duration::from_secs(121));
+                Err(io::Error::new(ErrorKind::TimedOut, "silent Ping peer"))
+            }
+        }
+        impl Write for SilentStream {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        impl ConnectorStream for SilentStream {
+            fn set_read_timeout(&self, _: Option<Duration>) -> io::Result<()> {
+                Ok(())
+            }
+            fn set_write_timeout(&self, _: Option<Duration>) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        struct Connector {
+            stall_ping: std::cell::Cell<bool>,
+            shutdowns: AtomicUsize,
+            begins: AtomicUsize,
+        }
+        impl ServiceConnector for Connector {
+            fn send(
+                &self,
+                _: &WorkspaceServiceRecord,
+                _: ServiceRequest,
+                _: &CancellationToken,
+                _: Duration,
+            ) -> Result<ServiceResponse, String> {
+                panic!("typed calls required");
+            }
+            fn send_before(
+                &self,
+                _: &WorkspaceServiceRecord,
+                _: ServiceRequest,
+                _: &CancellationToken,
+                _: OperationDeadline,
+            ) -> Result<ServiceResponse, String> {
+                panic!("provider deadline required");
+            }
+            fn send_operation_before(
+                &self,
+                record: &WorkspaceServiceRecord,
+                request: ServiceRequest,
+                cancellation: &CancellationToken,
+                deadline: ProviderDeadline,
+            ) -> Result<ServiceResponse, String> {
+                assert_eq!(deadline, ProviderDeadline::no_deadline());
+                match &request.kind {
+                    ServiceRequestKind::Ping if self.stall_ping.get() => {
+                        let clock = ManualClock::default();
+                        SYSTEM_SERVICE_CONNECTOR.test_send_operation_with(
+                            record,
+                            request,
+                            cancellation,
+                            deadline,
+                            &SilentIo {
+                                clock: clock.clone(),
+                            },
+                            &clock,
+                        )
+                    }
+                    ServiceRequestKind::Ping => SYSTEM_SERVICE_CONNECTOR.send_operation_before(
+                        record,
+                        request,
+                        cancellation,
+                        deadline,
+                    ),
+                    ServiceRequestKind::Shutdown => {
+                        self.shutdowns.fetch_add(1, Ordering::AcqRel);
+                        // A forbidden shutdown reaches the real helper and its real held worker.
+                        SYSTEM_SERVICE_CONNECTOR.send_operation_before(
+                            record,
+                            request,
+                            cancellation,
+                            deadline,
+                        )
+                    }
+                    ServiceRequestKind::BslMcpBegin {
+                        deadline: offered, ..
+                    } => {
+                        assert_eq!(offered.remaining().unwrap(), None);
+                        self.begins.fetch_add(1, Ordering::AcqRel);
+                        Ok(ServiceResponse {
+                            ok: true,
+                            result_text: Some("reused-service".into()),
+                            ..ServiceResponse::default()
+                        })
+                    }
+                    other => panic!("unexpected request {other:?}"),
+                }
+            }
+        }
+        struct Spawner {
+            record: WorkspaceServiceRecord,
+            calls: AtomicUsize,
+        }
+        impl ServiceSpawner for Spawner {
+            fn spawn(
+                &self,
+                _: &WorkspaceServiceIdentity,
+                _: WorkspaceServiceConfig,
+                _: &str,
+                _: &CancellationToken,
+                _: Duration,
+            ) -> Result<WorkspaceServiceRecord, String> {
+                panic!("typed startup required");
+            }
+            fn spawn_operation_before(
+                &self,
+                _: &WorkspaceServiceIdentity,
+                _: WorkspaceServiceConfig,
+                _: &str,
+                _: &CancellationToken,
+                _: ProviderDeadline,
+            ) -> Result<WorkspaceServiceRecord, String> {
+                self.calls.fetch_add(1, Ordering::AcqRel);
+                Ok(self.record.clone())
+            }
+        }
+        let mut server = WorkspaceAdmissionTestServer::start("prepared-probe-neighbor");
+        let mut neighbor_reader = server.work("held-probe-neighbor");
+        server.executor.wait_started(1);
+        let neighbor = server.token("held-probe-neighbor");
+        let source_root = server.context.workspace_root.join("src");
+        let identity = WorkspaceServiceIdentity::new(&server.context, &source_root).unwrap();
+        let connector = Connector {
+            stall_ping: std::cell::Cell::new(true),
+            shutdowns: AtomicUsize::new(0),
+            begins: AtomicUsize::new(0),
+        };
+        let spawner = Spawner {
+            record: server.record.clone(),
+            calls: AtomicUsize::new(0),
+        };
+        let manager = WorkspaceServiceManager::with_io(
+            &connector,
+            &spawner,
+            analysis_composition::service_environment(),
+        );
+        let deadline = ProviderDeadline::no_deadline();
+        let call = || PreparedBslCall {
+            tool_name: "symbol_info".into(),
+            tool_args: json!({}),
+            yields: false,
+        };
+        let result = manager.call_bsl_mcp_before(
+            &server.context,
+            &source_root,
+            call(),
+            &CancellationToken::new(),
+            deadline,
+        );
+        assert!(!neighbor.is_cancelled(), "a Ping step timeout must not send Shutdown and cancel an accepted neighboring operation");
+        assert!(!server.runtime.test_shutting_down().load(Ordering::Acquire));
+        assert_eq!(
+            result.unwrap_err(),
+            workspace_service_request_timeout_error(SERVICE_REQUEST_TIMEOUT)
+        );
+        assert!(
+            !deadline.is_elapsed(),
+            "transport failure is not expiry of this caller's absent operation deadline"
+        );
+        assert_eq!(connector.shutdowns.load(Ordering::Acquire), 0);
+        assert_eq!(connector.begins.load(Ordering::Acquire), 0);
+        assert_eq!(spawner.calls.load(Ordering::Acquire), 0);
+        assert!(server
+            .runtime
+            .test_owns_record(&read_record(&identity).unwrap()));
+        assert!(server
+            .runtime
+            .test_operation_ids()
+            .iter()
+            .any(|id| id == "held-probe-neighbor"));
+        connector.stall_ping.set(false);
+        assert_eq!(
+            manager
+                .call_bsl_mcp_before(
+                    &server.context,
+                    &source_root,
+                    call(),
+                    &CancellationToken::new(),
+                    deadline
+                )
+                .unwrap()
+                .result_text,
+            "reused-service"
+        );
+        assert_eq!(connector.shutdowns.load(Ordering::Acquire), 0);
+        assert_eq!(spawner.calls.load(Ordering::Acquire), 0);
+        assert_eq!(connector.begins.load(Ordering::Acquire), 1);
+        assert!(!neighbor.is_cancelled());
+        assert!(server
+            .runtime
+            .test_owns_record(&read_record(&identity).unwrap()));
+        assert!(
+            send_test_request(
+                &server.record,
+                ServiceRequestKind::Cancel {
+                    operation_id: "held-probe-neighbor".into()
+                }
+            )
+            .ok
+        );
+        assert!(!read_test_response(&mut neighbor_reader).ok);
+        assert!(
+            neighbor.is_cancelled(),
+            "explicit exact cancellation still owns the retained operation"
+        );
+    }
+
+    #[test]
+    fn prepared_bsl_admitted_delay_shrinks_start_and_original_cutoff_rejects_late_result() {
+        static START: OnceLock<Instant> = OnceLock::new();
+        static ADVANCE: AtomicUsize = AtomicUsize::new(0);
+        fn now() -> Instant {
+            *START.get().unwrap() + Duration::from_secs(ADVANCE.load(Ordering::Acquire) as u64)
+        }
+        fn accept(listener: &TcpListener) -> TcpStream {
+            let fuse = Instant::now() + Duration::from_secs(3);
+            loop {
+                match listener.accept() {
+                    Ok((stream, _)) => {
+                        stream.set_nonblocking(false).unwrap();
+                        stream
+                            .set_read_timeout(Some(Duration::from_secs(3)))
+                            .unwrap();
+                        return stream;
+                    }
+                    Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                        assert!(
+                            Instant::now() < fuse,
+                            "expected prepared connection was not opened"
+                        );
+                        thread::yield_now();
+                    }
+                    Err(error) => panic!("accept prepared peer: {error}"),
+                }
+            }
+        }
+        let start = *START.get_or_init(Instant::now);
+        for (expired_admission, late_result) in [(false, false), (true, false), (false, true)] {
+            ADVANCE.store(0, Ordering::Release);
+            let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let mut record = connector_test_record();
+            record.port = listener.local_addr().unwrap().port();
+            thread::scope(|scope| {
+                let peer = scope.spawn(move || {
+                    let mut stream = accept(&listener);
+                    let mut reader = BufReader::new(stream.try_clone().unwrap());
+                    let mut line = String::new();
+                    reader.read_line(&mut line).unwrap();
+                    let begin: ServiceRequest = serde_json::from_str(&line).unwrap();
+                    let ServiceRequestKind::BslMcpBegin { operation_id, .. } = begin.kind else { panic!("not Begin") };
+                    serde_json::to_writer(&mut stream, &PreparedBslReply::Admitted { operation_id: operation_id.clone() }).unwrap();
+                    writeln!(stream).unwrap();
+                    stream.flush().unwrap();
+                    line.clear();
+                    let count = match reader.read_line(&mut line) {
+                        Ok(count) => count,
+                        Err(error) if expired_admission && error.kind() == ErrorKind::ConnectionReset => 0,
+                        Err(error) => panic!("read prepared phase: {error}"),
+                    };
+                    if expired_admission {
+                        if count != 0 {
+                            let stop: ServiceRequest = serde_json::from_str(&line).unwrap();
+                            assert!(matches!(stop.kind, ServiceRequestKind::BslMcpStop { operation_id: id, cause: BslStopCause::Expire } if id == operation_id));
+                        }
+                        return;
+                    }
+                    let start_request: ServiceRequest = serde_json::from_str(&line).unwrap();
+                    let ServiceRequestKind::BslMcpStart { operation_id: id, deadline } = start_request.kind else { panic!("not Start") };
+                    assert_eq!(id, operation_id);
+                    assert_eq!(deadline.remaining().unwrap(), Some(Duration::from_secs(7)), "admission latency must consume the original budget");
+                    serde_json::to_writer(&mut stream, &PreparedBslReply::Finished { response: Box::new(ServiceResponse { ok: true, result_text: Some("observed-provider-result".into()), ..ServiceResponse::default() }) }).unwrap();
+                    writeln!(stream).unwrap();
+                    stream.flush().unwrap();
+                    if late_result {
+                        let mut control = BufReader::new(accept(&listener));
+                        line.clear();
+                        control.read_line(&mut line).unwrap();
+                        let stop: ServiceRequest = serde_json::from_str(&line).unwrap();
+                        assert!(matches!(stop.kind, ServiceRequestKind::Expire { operation_id: id } if id == operation_id));
+                    }
+                });
+                let original = ProviderDeadline::with_clock(start + Duration::from_secs(10), now);
+                let mut request = prepared_begin("prepared-delayed-admission");
+                if let ServiceRequestKind::BslMcpBegin { deadline, .. } = &mut request {
+                    *deadline = BslOperationDeadline::from_remaining(original.remaining());
+                }
+                let trace = Arc::new(Mutex::new(Vec::new()));
+                let transport = PreparedTestWireIo {
+                    trace: trace.clone(),
+                    disconnect_after_admitted: None,
+                    after_reply: Some(Arc::new(move |reply| {
+                        // Advance only after the actual bytes were delivered, before sender admission.
+                        if reply == 1 {
+                            ADVANCE
+                                .store(if expired_admission { 11 } else { 3 }, Ordering::Release);
+                        } else if late_result {
+                            ADVANCE.store(11, Ordering::Release);
+                        }
+                    })),
+                };
+                let result = SYSTEM_SERVICE_CONNECTOR.send_prepared_with(
+                    &record,
+                    connector_test_request(request),
+                    &CancellationToken::new(),
+                    original,
+                    &transport,
+                    &SystemClock::start(),
+                );
+                peer.join().unwrap();
+                let bytes = trace.lock().unwrap().clone();
+                let sent: Vec<ServiceRequest> = bytes
+                    .split(|byte| *byte == b'\n')
+                    .filter(|line| !line.is_empty())
+                    .map(|line| serde_json::from_slice(line).unwrap())
+                    .collect();
+                assert_eq!(
+                    sent.iter()
+                        .filter(|request| matches!(
+                            request.kind,
+                            ServiceRequestKind::BslMcpStart { .. }
+                        ))
+                        .count(),
+                    usize::from(!expired_admission),
+                    "expired admission must never submit Start, even when peer observes TCP reset"
+                );
+
+                if expired_admission || late_result {
+                    assert!(result.unwrap_err().starts_with("timeout:"));
+                } else {
+                    assert_eq!(
+                        result.unwrap().result_text.as_deref(),
+                        Some("observed-provider-result")
+                    );
+                }
+            });
+        }
+    }
+
+    type PreparedReplyReadObserver = dyn Fn(usize) + Send + Sync;
+
+    struct PreparedTestWireIo {
+        trace: Arc<Mutex<Vec<u8>>>,
+        disconnect_after_admitted: Option<Arc<AdmissionTestExecutor>>,
+        after_reply: Option<Arc<PreparedReplyReadObserver>>,
+    }
+    struct PreparedTestWireStream {
+        stream: TcpStream,
+        admitted: bool,
+        replies: usize,
+        trace: Arc<Mutex<Vec<u8>>>,
+        disconnect_after_admitted: Option<Arc<AdmissionTestExecutor>>,
+        after_reply: Option<Arc<PreparedReplyReadObserver>>,
+    }
+    impl Read for PreparedTestWireStream {
+        fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+            if self.admitted {
+                if let Some(executor) = &self.disconnect_after_admitted {
+                    executor.wait_started(1);
+                    self.stream.shutdown(std::net::Shutdown::Both)?;
+                    return Ok(0);
+                }
+            }
+            let count = self.stream.read(bytes)?;
+            let complete = bytes[..count].iter().filter(|byte| **byte == b'\n').count();
+            self.admitted |= complete != 0;
+            if complete != 0 {
+                self.replies += complete;
+                if let Some(observe) = &self.after_reply {
+                    observe(self.replies);
+                }
+            }
+            Ok(count)
+        }
+    }
+    impl Write for PreparedTestWireStream {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            let written = self.stream.write(&bytes[..bytes.len().min(7)])?;
+            self.trace
+                .lock()
+                .unwrap()
+                .extend_from_slice(&bytes[..written]);
+            Ok(written)
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            self.stream.flush()
+        }
+    }
+    impl ConnectorStream for PreparedTestWireStream {
+        fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
+            self.stream.set_read_timeout(timeout)
+        }
+        fn set_write_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
+            self.stream.set_write_timeout(timeout)
+        }
+    }
+    impl ConnectorIo for PreparedTestWireIo {
+        fn connect(&self, port: u16, timeout: Duration) -> io::Result<Box<dyn ConnectorStream>> {
+            let stream = TcpStream::connect_timeout(&([127, 0, 0, 1], port).into(), timeout)?;
+            Ok(Box::new(PreparedTestWireStream {
+                stream,
+                admitted: false,
+                replies: 0,
+                after_reply: self.after_reply.clone(),
+                trace: self.trace.clone(),
+                disconnect_after_admitted: self.disconnect_after_admitted.clone(),
+            }))
+        }
+    }
+
+    #[test]
+    fn prepared_bsl_ambiguous_accepted_start_is_not_replayed_or_implicitly_cancelled() {
+        struct AmbiguousConnector {
+            executor: Arc<AdmissionTestExecutor>,
+            trace: Arc<Mutex<Vec<u8>>>,
+            attempts: AtomicUsize,
+        }
+        impl ServiceConnector for AmbiguousConnector {
+            fn send(
+                &self,
+                _: &WorkspaceServiceRecord,
+                _: ServiceRequest,
+                _: &CancellationToken,
+                _: Duration,
+            ) -> Result<ServiceResponse, String> {
+                unreachable!("no legacy fallback")
+            }
+            fn send_before(
+                &self,
+                _: &WorkspaceServiceRecord,
+                _: ServiceRequest,
+                _: &CancellationToken,
+                _: OperationDeadline,
+            ) -> Result<ServiceResponse, String> {
+                unreachable!("no legacy fallback")
+            }
+            fn send_operation_before(
+                &self,
+                record: &WorkspaceServiceRecord,
+                request: ServiceRequest,
+                cancellation: &CancellationToken,
+                deadline: ProviderDeadline,
+            ) -> Result<ServiceResponse, String> {
+                if matches!(request.kind, ServiceRequestKind::BslMcpBegin { .. }) {
+                    assert_eq!(
+                        self.attempts.fetch_add(1, Ordering::AcqRel),
+                        0,
+                        "ambiguous accepted Start must not be replayed"
+                    );
+                    SYSTEM_SERVICE_CONNECTOR.send_prepared_with(
+                        record,
+                        request,
+                        cancellation,
+                        deadline,
+                        &PreparedTestWireIo {
+                            trace: self.trace.clone(),
+                            disconnect_after_admitted: Some(self.executor.clone()),
+                            after_reply: None,
+                        },
+                        &SystemClock::start(),
+                    )
+                } else {
+                    SYSTEM_SERVICE_CONNECTOR.send_operation_before(
+                        record,
+                        request,
+                        cancellation,
+                        deadline,
+                    )
+                }
+            }
+        }
+        let server = WorkspaceAdmissionTestServer::start("prepared-ambiguous-accepted-start");
+        let trace = Arc::new(Mutex::new(Vec::new()));
+        let connector = AmbiguousConnector {
+            executor: server.executor.clone(),
+            trace: trace.clone(),
+            attempts: AtomicUsize::new(0),
+        };
+        let spawner = RecordingSpawner::default();
+        let manager = WorkspaceServiceManager::with_io(
+            &connector,
+            &spawner,
+            analysis_composition::service_environment(),
+        );
+        let result = manager.call_bsl_mcp_before(
+            &server.context,
+            &server.context.workspace_root.join("src"),
+            PreparedBslCall {
+                tool_name: "diagnostics".into(),
+                tool_args: json!({}),
+                yields: false,
+            },
+            &CancellationToken::new(),
+            ProviderDeadline::no_deadline(),
+        );
+        assert!(result
+            .unwrap_err()
+            .contains("disconnected before responding"));
+        let bytes = trace.lock().unwrap().clone();
+        let phases: Vec<ServiceRequest> = bytes
+            .split(|byte| *byte == b'\n')
+            .filter(|line| !line.is_empty())
+            .map(|line| serde_json::from_slice(line).unwrap())
+            .collect();
+        assert_eq!(phases.len(), 2);
+        let ServiceRequestKind::BslMcpBegin {
+            operation_id: id, ..
+        } = &phases[0].kind
+        else {
+            panic!("not Begin")
+        };
+        assert!(
+            matches!(&phases[1].kind, ServiceRequestKind::BslMcpStart { operation_id, .. } if operation_id == id)
+        );
+        Uuid::parse_str(id).unwrap();
+        assert_eq!(
+            server.executor.started.lock().unwrap().as_slice(),
+            std::slice::from_ref(id)
+        );
+        assert!(
+            !server.token(id).is_cancelled(),
+            "an ambiguous transport outcome must not invent explicit cancellation"
+        );
+        assert_eq!(connector.attempts.load(Ordering::Acquire), 1);
+        assert!(
+            send_test_request(
+                &server.record,
+                ServiceRequestKind::Expire {
+                    operation_id: id.clone()
+                }
+            )
+            .ok
+        );
+        wait_operation_retired(&server.runtime, id);
+    }
+
+    #[test]
+    fn prepared_bsl_connect_failure_preserves_original_expiry_and_cancel_precedence() {
+        static START: OnceLock<Instant> = OnceLock::new();
+        static ADVANCE: AtomicUsize = AtomicUsize::new(0);
+        fn now() -> Instant {
+            *START.get().unwrap() + Duration::from_secs(ADVANCE.load(Ordering::Acquire) as u64)
+        }
+        struct FailingConnect {
+            cancellation: CancellationToken,
+            cancel: bool,
+            expire: bool,
+            connections: AtomicUsize,
+        }
+        impl ConnectorIo for FailingConnect {
+            fn connect(&self, _: u16, _: Duration) -> io::Result<Box<dyn ConnectorStream>> {
+                self.connections.fetch_add(1, Ordering::AcqRel);
+                if self.expire {
+                    ADVANCE.store(10, Ordering::Release);
+                }
+                if self.cancel {
+                    self.cancellation.cancel();
+                }
+                Err(io::Error::new(
+                    ErrorKind::ConnectionRefused,
+                    "controlled prepared connect failure",
+                ))
+            }
+        }
+        let start = *START.get_or_init(Instant::now);
+        for (cancel, expire) in [(false, false), (false, true), (true, false), (true, true)] {
+            ADVANCE.store(0, Ordering::Release);
+            let cancellation = CancellationToken::new();
+            let io = FailingConnect {
+                cancellation: cancellation.clone(),
+                cancel,
+                expire,
+                connections: AtomicUsize::new(0),
+            };
+            let original = ProviderDeadline::with_clock(start + Duration::from_secs(5), now);
+            let error = SYSTEM_SERVICE_CONNECTOR
+                .send_prepared_with(
+                    &connector_test_record(),
+                    connector_test_request(prepared_begin("connect-never-submitted")),
+                    &cancellation,
+                    original,
+                    &io,
+                    &SystemClock::start(),
+                )
+                .unwrap_err();
+            let expected = if cancel {
+                "cancelled:"
+            } else if expire {
+                "timeout:"
+            } else {
+                "failed to connect workspace service:"
+            };
+            assert!(
+                error.starts_with(expected),
+                "cancel={cancel}, expire={expire}: {error}"
+            );
+            assert_eq!(io.connections.load(Ordering::Acquire), 1);
+        }
+    }
+
+    #[test]
+    fn prepared_bsl_sender_rejects_success_before_start() {
+        for wrong_admitted in [false, true] {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            let mut record = connector_test_record();
+            record.port = listener.local_addr().unwrap().port();
+            thread::scope(|scope| {
+                let peer = scope.spawn(move || {
+                    let (mut stream, _) = listener.accept().unwrap();
+                    stream
+                        .set_read_timeout(Some(Duration::from_secs(3)))
+                        .unwrap();
+                    let mut reader = BufReader::new(stream.try_clone().unwrap());
+                    let mut begin = String::new();
+                    reader.read_line(&mut begin).unwrap();
+                    let request: ServiceRequest = serde_json::from_str(&begin).unwrap();
+                    assert!(matches!(
+                        request.kind,
+                        ServiceRequestKind::BslMcpBegin { .. }
+                    ));
+                    let reply = if wrong_admitted {
+                        PreparedBslReply::Admitted {
+                            operation_id: "foreign-admission".into(),
+                        }
+                    } else {
+                        PreparedBslReply::Finished {
+                            response: Box::new(ServiceResponse {
+                                ok: true,
+                                ..ServiceResponse::default()
+                            }),
+                        }
+                    };
+                    serde_json::to_writer(&mut stream, &reply).unwrap();
+                    writeln!(stream).unwrap();
+                    stream.flush().unwrap();
+                    let mut phase = String::new();
+                    assert_eq!(
+                        reader.read_line(&mut phase).unwrap(),
+                        0,
+                        "a refused admission must never submit Start: {phase}"
+                    );
+                });
+                let result = SYSTEM_SERVICE_CONNECTOR.send_operation_before(
+                    &record,
+                    connector_test_request(prepared_begin("not-executed")),
+                    &CancellationToken::new(),
+                    ProviderDeadline::no_deadline(),
+                );
+                peer.join().unwrap();
+                assert!(
+                    result.is_err(),
+                    "fabricated success or foreign admission was accepted"
+                );
+            });
+        }
+    }
+
+    #[test]
+    fn prepared_bsl_phase_uuid_cannot_dispatch_or_stop_a_held_neighbor() {
+        for stop in [false, true] {
+            let mut server = WorkspaceAdmissionTestServer::start("prepared-foreign-phase");
+            let _neighbor_work = server.work("held-neighbor");
+            server.executor.wait_started(1);
+            let neighbor = server.token("held-neighbor");
+            let mut work =
+                open_test_request(&server.record, prepared_begin("pending-own-admission"));
+            assert!(
+                matches!(read_prepared_reply(&mut work), PreparedBslReply::Admitted { operation_id } if operation_id == "pending-own-admission")
+            );
+            let phase = if stop {
+                ServiceRequestKind::BslMcpStop {
+                    operation_id: "held-neighbor".into(),
+                    cause: BslStopCause::Cancel,
+                }
+            } else {
+                ServiceRequestKind::BslMcpStart {
+                    operation_id: "held-neighbor".into(),
+                    deadline: BslOperationDeadline::Absent {},
+                }
+            };
+            write_prepared_phase(&mut work, &server.record, phase);
+            let PreparedBslReply::Finished { response } = read_prepared_reply(&mut work) else {
+                panic!("missing foreign-phase refusal")
+            };
+            assert!(!response.ok);
+            wait_operation_retired(&server.runtime, "pending-own-admission");
+            assert!(!neighbor.is_cancelled());
+            assert!(server
+                .runtime
+                .test_operation_ids()
+                .iter()
+                .any(|id| id == "held-neighbor"));
+            assert_eq!(
+                server.executor.started.lock().unwrap().as_slice(),
+                &["held-neighbor"]
+            );
+            assert!(
+                send_test_request(
+                    &server.record,
+                    ServiceRequestKind::Expire {
+                        operation_id: "held-neighbor".into()
+                    }
+                )
+                .ok
+            );
+            wait_operation_retired(&server.runtime, "held-neighbor");
+        }
+    }
+
+    #[test]
+    fn prepared_bsl_late_stop_does_not_replace_a_factual_provider_failure() {
+        for id in ["factual-error-after-stop", "late-success-after-stop"] {
+            let server = WorkspaceAdmissionTestServer::start(id);
+            let mut work = open_test_request(&server.record, prepared_begin(id));
+            assert!(matches!(
+                read_prepared_reply(&mut work),
+                PreparedBslReply::Admitted { .. }
+            ));
+            write_prepared_phase(
+                &mut work,
+                &server.record,
+                ServiceRequestKind::BslMcpStart {
+                    operation_id: id.into(),
+                    deadline: BslOperationDeadline::Absent {},
+                },
+            );
+            server.executor.wait_started(1);
+            assert!(
+                send_test_request(
+                    &server.record,
+                    ServiceRequestKind::Expire {
+                        operation_id: id.into()
+                    }
+                )
+                .ok
+            );
+            let PreparedBslReply::Finished { response } = read_prepared_reply(&mut work) else {
+                panic!("missing failure")
+            };
+            if id.starts_with("late-success") {
+                assert!(response.ok);
+                assert_eq!(response.result_text.as_deref(), Some("actual-late-success"));
+                assert!(response.error.is_none());
+            } else {
+                assert!(!response.ok);
+                assert_eq!(
+                    response.error.as_deref(),
+                    Some("controlled provider protocol failure")
+                );
+            }
+        }
+    }
+
     #[test]
     fn workspace_service_handler_failures_have_stable_diagnostics() {
         assert_eq!(workspace_service_handler_diagnostic(Ok(Ok(()))), None);
@@ -3057,6 +2802,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.RUNTIME.SERVICE-CONTROL-CAPACITY
     #[test]
     fn slow_general_headers_cannot_exhaust_control_capacity() {
         let mut server = WorkspaceAdmissionTestServer::start("header-control-reserve");
@@ -3107,9 +2853,7 @@ mod tests {
         }
     }
 
-    impl GenericWorkspaceServiceOperationExecutor<BslWorkspaceBackend, RlmWorkspaceBackend>
-        for AdmissionTestExecutor
-    {
+    impl GenericWorkspaceServiceOperationExecutor<BslWorkspaceBackend> for AdmissionTestExecutor {
         fn execute(
             &self,
             _runtime: &WorkspaceServiceRuntime,
@@ -3132,6 +2876,18 @@ mod tests {
                     .changed
                     .wait_timeout(started, Duration::from_millis(10))
                     .unwrap();
+            }
+            if id.starts_with("late-success") {
+                return ServiceResponse {
+                    ok: true,
+                    result_text: Some("actual-late-success".into()),
+                    ..ServiceResponse::default()
+                };
+            }
+            if id.starts_with("factual-error") {
+                return unica_analysis_services::test_support::error_response(
+                    "controlled provider protocol failure",
+                );
             }
             unica_analysis_services::test_support::error_response(cancelled_error(&id))
         }
@@ -3210,12 +2966,8 @@ mod tests {
 
         fn token(&self, id: &str) -> CancellationToken {
             self.runtime
-                .test_operations()
-                .lock()
-                .unwrap()
-                .get(id)
+                .test_operation_cancellation(id)
                 .expect("operation remains registered")
-                .clone()
         }
     }
 
@@ -3238,14 +2990,17 @@ mod tests {
     }
 
     fn admission_test_work(id: &str) -> ServiceRequestKind {
-        ServiceRequestKind::RlmReady {
+        ServiceRequestKind::BslMcp {
             operation_id: id.to_owned(),
-            args: json!({}),
+            tool_name: "diagnostics".to_string(),
+            tool_args: json!({}),
             timeout_seconds: 30,
             timeout_nanos: 0,
+            yields: false,
         }
     }
 
+    /// rule: INV.RUNTIME.SERVICE-CONTROL-CAPACITY
     #[test]
     fn workspace_service_admission_ninth_work_runs_with_exact_cancel_ping_and_shutdown() {
         let mut server = WorkspaceAdmissionTestServer::start("admission-nine-workers");
@@ -3281,6 +3036,7 @@ mod tests {
         assert!(other.is_cancelled());
     }
 
+    /// rule: INV.RUNTIME.SERVICE-CONTROL-CAPACITY
     #[test]
     fn workspace_service_admission_sixty_fifth_partial_header_reaches_handler_and_executes_work() {
         let mut server = WorkspaceAdmissionTestServer::start("admission-65-headers");
@@ -3313,6 +3069,7 @@ mod tests {
         assert!(send_test_request(&server.record, ServiceRequestKind::Shutdown).ok);
     }
 
+    /// rule: INV.RUNTIME.SERVICE-CONTROL-CAPACITY
     #[test]
     fn workspace_service_admission_ninth_control_delivers_exact_cancel_with_all_old_slots_held() {
         let mut server = WorkspaceAdmissionTestServer::start("admission-nine-controls");
@@ -3380,6 +3137,7 @@ mod tests {
         drop(other_work);
     }
 
+    /// rule: INV.RUNTIME.SERVICE-CONTROL-CAPACITY
     #[test]
     fn workspace_service_concurrent_work_preserves_control_path() {
         let (context, record, _runtime, executor, server) =
@@ -3388,22 +3146,26 @@ mod tests {
         for index in 0..8 {
             work.push(open_test_request(
                 &record,
-                ServiceRequestKind::RlmReady {
+                ServiceRequestKind::BslMcp {
                     operation_id: format!("blocked-{index}"),
-                    args: json!({}),
+                    tool_name: "diagnostics".to_string(),
+                    tool_args: json!({}),
                     timeout_seconds: 5,
                     timeout_nanos: 0,
+                    yields: false,
                 },
             ));
         }
         executor.wait_started(8);
         let additional = send_test_request(
             &record,
-            ServiceRequestKind::RlmReady {
+            ServiceRequestKind::BslMcp {
                 operation_id: "success-ninth".into(),
-                args: json!({}),
+                tool_name: "diagnostics".to_string(),
+                tool_args: json!({}),
                 timeout_seconds: 5,
                 timeout_nanos: 0,
+                yields: false,
             },
         );
         assert!(additional.ok, "{:?}", additional.error);
@@ -3430,26 +3192,32 @@ mod tests {
         assert!(!identity.test_record_path().exists());
     }
 
+    /// rule: INV.RUNTIME.SERVICE-LIFETIME
+    /// rule: INV.RUNTIME.SERVICE-SHUTDOWN
     #[test]
     fn workspace_service_control_path_shutdown_cancels_all_and_rejects_new_work() {
         let (context, record, runtime, executor, server) =
             workspace_control_test_server("control-shutdown");
         let mut first = open_test_request(
             &record,
-            ServiceRequestKind::RlmReady {
+            ServiceRequestKind::BslMcp {
                 operation_id: "blocked-first".to_string(),
-                args: json!({}),
+                tool_name: "diagnostics".to_string(),
+                tool_args: json!({}),
                 timeout_seconds: 5,
                 timeout_nanos: 0,
+                yields: false,
             },
         );
         let mut second = open_test_request(
             &record,
-            ServiceRequestKind::RlmReady {
+            ServiceRequestKind::BslMcp {
                 operation_id: "blocked-second".to_string(),
-                args: json!({}),
+                tool_name: "diagnostics".to_string(),
+                tool_args: json!({}),
                 timeout_seconds: 5,
                 timeout_nanos: 0,
+                yields: false,
             },
         );
         executor.wait_started(2);
@@ -3470,101 +3238,7 @@ mod tests {
         executor.wait_cancelled(2);
 
         server.join().unwrap().unwrap();
-        assert!(runtime.test_operations().lock().unwrap().is_empty());
-        cleanup(&context);
-    }
-
-    #[test]
-    fn workspace_service_record_outlives_late_maintenance_registration() {
-        struct LateMaintenanceExecutor {
-            before_registration: mpsc::Sender<()>,
-            allow_registration: Mutex<mpsc::Receiver<()>>,
-            task_started: mpsc::Sender<()>,
-            task_release: Arc<Mutex<mpsc::Receiver<()>>>,
-        }
-
-        impl GenericWorkspaceServiceOperationExecutor<BslWorkspaceBackend, RlmWorkspaceBackend>
-            for LateMaintenanceExecutor
-        {
-            fn execute(
-                &self,
-                runtime: &WorkspaceServiceRuntime,
-                _kind: ServiceRequestKind,
-                _cancellation: &CancellationToken,
-            ) -> ServiceResponse {
-                self.before_registration.send(()).unwrap();
-                self.allow_registration.lock().unwrap().recv().unwrap();
-                let task_started = self.task_started.clone();
-                let task_release = Arc::clone(&self.task_release);
-                let handle = thread::spawn(move || {
-                    task_started.send(()).unwrap();
-                    task_release.lock().unwrap().recv().unwrap();
-                });
-                runtime.test_rlm_maintenance_tasks().track(handle);
-                ServiceResponse {
-                    ok: true,
-                    status: Some("late-maintenance-finished".to_string()),
-                    ..ServiceResponse::default()
-                }
-            }
-        }
-
-        let (before_registration_tx, before_registration_rx) = mpsc::channel();
-        let (allow_registration_tx, allow_registration_rx) = mpsc::channel();
-        let (task_started_tx, task_started_rx) = mpsc::channel();
-        let (task_release_tx, task_release_rx) = mpsc::channel();
-        let executor = Arc::new(LateMaintenanceExecutor {
-            before_registration: before_registration_tx,
-            allow_registration: Mutex::new(allow_registration_rx),
-            task_started: task_started_tx,
-            task_release: Arc::new(Mutex::new(task_release_rx)),
-        });
-        let (context, record, _runtime, server) = workspace_test_server_with_executor(
-            "late-maintenance-record",
-            executor,
-            SERVICE_SHUTDOWN_GRACE,
-        );
-        let mut request = open_test_request(
-            &record,
-            ServiceRequestKind::RlmReady {
-                operation_id: "late-maintenance".to_string(),
-                args: json!({}),
-                timeout_seconds: 5,
-                timeout_nanos: 0,
-            },
-        );
-        before_registration_rx
-            .recv_timeout(Duration::from_secs(1))
-            .unwrap();
-
-        assert!(send_test_request(&record, ServiceRequestKind::Shutdown).ok);
-        let record_path =
-            WorkspaceServiceIdentity::new(&context, &context.workspace_root.join("src"))
-                .unwrap()
-                .test_record_path();
-        let (server_finished_tx, server_finished_rx) = mpsc::channel();
-        let joiner = thread::spawn(move || {
-            server_finished_tx.send(server.join().unwrap()).unwrap();
-        });
-        allow_registration_tx.send(()).unwrap();
-        task_started_rx
-            .recv_timeout(Duration::from_secs(1))
-            .unwrap();
-
-        assert!(matches!(
-            server_finished_rx.recv_timeout(Duration::from_millis(100)),
-            Err(mpsc::RecvTimeoutError::Timeout)
-        ));
-        assert!(record_path.exists());
-
-        task_release_tx.send(()).unwrap();
-        assert!(read_test_response(&mut request).ok);
-        server_finished_rx
-            .recv_timeout(Duration::from_secs(1))
-            .unwrap()
-            .unwrap();
-        joiner.join().unwrap();
-        assert!(!record_path.exists());
+        assert!(runtime.test_operation_ids().is_empty());
         cleanup(&context);
     }
 
@@ -3589,7 +3263,7 @@ mod tests {
             drop_release: Arc<Mutex<mpsc::Receiver<()>>>,
         }
 
-        impl GenericWorkspaceServiceOperationExecutor<BslWorkspaceBackend, RlmWorkspaceBackend>
+        impl GenericWorkspaceServiceOperationExecutor<BslWorkspaceBackend>
             for LateSessionRetirementExecutor
         {
             fn execute(
@@ -3634,11 +3308,13 @@ mod tests {
             .unwrap() = Some(Arc::new(move || providers_drained_tx.send(()).unwrap()));
         let mut request = open_test_request(
             &record,
-            ServiceRequestKind::RlmReady {
+            ServiceRequestKind::BslMcp {
                 operation_id: "late-session".to_string(),
-                args: json!({}),
+                tool_name: "diagnostics".to_string(),
+                tool_args: json!({}),
                 timeout_seconds: 5,
                 timeout_nanos: 0,
+                yields: false,
             },
         );
         before_retirement_rx
@@ -3679,6 +3355,7 @@ mod tests {
         cleanup(&context);
     }
 
+    /// rule: INV.RUNTIME.SERVICE-OPERATION-CANCELLATION
     #[test]
     fn workspace_service_detached_caller_keeps_work_and_exact_cancel_ownership() {
         let mut server = WorkspaceAdmissionTestServer::start("detached-exact-control");
@@ -3706,10 +3383,9 @@ mod tests {
         assert!(!other_token.is_cancelled());
         assert!(server
             .runtime
-            .test_operations()
-            .lock()
-            .unwrap()
-            .contains_key("held-disconnected"));
+            .test_operation_ids()
+            .iter()
+            .any(|id| id == "held-disconnected"));
         assert!(send_test_request(&server.record, ServiceRequestKind::Ping).ok);
         assert!(
             send_test_request(
@@ -3727,11 +3403,13 @@ mod tests {
         assert!(other_token.is_cancelled());
     }
 
+    /// rule: INV.RUNTIME.SERVICE-OPERATION-CANCELLATION
     #[test]
     fn workspace_service_half_closed_caller_receives_late_success_without_cancel() {
         assert_workspace_caller_completion(None);
     }
 
+    /// rule: INV.RUNTIME.SERVICE-OPERATION-CANCELLATION
     #[test]
     fn workspace_service_monitor_failures_preserve_worker_and_report_real_error_after_completion() {
         for point in [
@@ -3747,9 +3425,7 @@ mod tests {
             started: mpsc::Sender<()>,
             release: Mutex<mpsc::Receiver<()>>,
         }
-        impl GenericWorkspaceServiceOperationExecutor<BslWorkspaceBackend, RlmWorkspaceBackend>
-            for FinishingExecutor
-        {
+        impl GenericWorkspaceServiceOperationExecutor<BslWorkspaceBackend> for FinishingExecutor {
             fn execute(
                 &self,
                 _runtime: &WorkspaceServiceRuntime,
@@ -3835,7 +3511,7 @@ mod tests {
         let response = read_test_response(&mut request);
         assert!(response.ok, "{response:?}");
         assert_eq!(response.status.as_deref(), Some("late-complete-result"));
-        assert!(fixture.runtime.test_operations().lock().unwrap().is_empty());
+        assert!(fixture.runtime.test_operation_ids().is_empty());
         let handler_error = finished_rx.recv_timeout(Duration::from_secs(2)).unwrap();
         match fault {
             None => assert!(handler_error.is_none(), "{handler_error:?}"),
@@ -3854,22 +3530,26 @@ mod tests {
             workspace_control_test_server("control-duplicate");
         let mut first = open_test_request(
             &record,
-            ServiceRequestKind::RlmReady {
+            ServiceRequestKind::BslMcp {
                 operation_id: "duplicate-id".to_string(),
-                args: json!({}),
+                tool_name: "diagnostics".to_string(),
+                tool_args: json!({}),
                 timeout_seconds: 5,
                 timeout_nanos: 0,
+                yields: false,
             },
         );
         executor.wait_started(1);
 
         let duplicate = send_test_request(
             &record,
-            ServiceRequestKind::RlmReady {
+            ServiceRequestKind::BslMcp {
                 operation_id: "duplicate-id".to_string(),
-                args: json!({}),
+                tool_name: "diagnostics".to_string(),
+                tool_args: json!({}),
                 timeout_seconds: 5,
                 timeout_nanos: 0,
+                yields: false,
             },
         );
         assert!(!duplicate.ok);
@@ -3893,17 +3573,20 @@ mod tests {
         cleanup(&context);
     }
 
+    /// rule: INV.RUNTIME.SERVICE-OPERATION-CANCELLATION
     #[test]
     fn workspace_service_control_path_drains_disconnected_worker_before_cleanup() {
         let (context, record, runtime, executor, server) =
             workspace_control_test_server("control-disconnected-drain");
         let disconnected = open_test_request(
             &record,
-            ServiceRequestKind::RlmReady {
+            ServiceRequestKind::BslMcp {
                 operation_id: "held-after-cancel-1".to_string(),
-                args: json!({}),
+                tool_name: "diagnostics".to_string(),
+                tool_args: json!({}),
                 timeout_seconds: 5,
                 timeout_nanos: 0,
+                yields: false,
             },
         );
         executor.wait_started(1);
@@ -3924,7 +3607,7 @@ mod tests {
             .unwrap();
         joiner.join().unwrap();
 
-        assert!(runtime.test_operations().lock().unwrap().is_empty());
+        assert!(runtime.test_operation_ids().is_empty());
         cleanup(&context);
     }
 
@@ -3987,34 +3670,7 @@ mod tests {
             .unwrap()
             .starts_with("cancelled:"));
         server.join().unwrap().unwrap();
-        assert!(runtime.test_operations().lock().unwrap().is_empty());
-        cleanup(&context);
-    }
-
-    #[test]
-    fn runtime_serializes_rlm_operations_on_one_lane() {
-        let context = test_context("rlm-lane-serialization");
-        let identity =
-            WorkspaceServiceIdentity::new(&context, &context.workspace_root.join("src")).unwrap();
-        let record = test_record(&identity, 34567, CoreIdentity::production().as_str());
-        let runtime = Arc::new(new_runtime(identity, &record));
-        let first = runtime
-            .test_acquire_rlm_lane(&CancellationToken::new())
-            .unwrap();
-        let second_runtime = Arc::clone(&runtime);
-        let (acquired_tx, acquired_rx) = mpsc::channel();
-        let waiter = thread::spawn(move || {
-            let cancellation = CancellationToken::new();
-            let _second = second_runtime.test_acquire_rlm_lane(&cancellation).unwrap();
-            acquired_tx.send(()).unwrap();
-        });
-
-        assert!(acquired_rx
-            .recv_timeout(Duration::from_millis(100))
-            .is_err());
-        drop(first);
-        acquired_rx.recv_timeout(Duration::from_secs(1)).unwrap();
-        waiter.join().unwrap();
+        assert!(runtime.test_operation_ids().is_empty());
         cleanup(&context);
     }
 
@@ -4069,58 +3725,6 @@ mod tests {
     }
 
     #[test]
-    fn rlm_operation_times_out_while_rlm_lane_remains_held() {
-        let context = test_context("rlm-lane-deadline");
-        let source_root = context.workspace_root.join("src");
-        let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
-        let record = test_record(&identity, 34567, CoreIdentity::production().as_str());
-        let runtime = Arc::new(new_runtime(identity, &record));
-        let holder = runtime
-            .test_rlm_lane()
-            .acquire(&CancellationToken::new())
-            .unwrap();
-        let waiter_runtime = Arc::clone(&runtime);
-        let (response_tx, response_rx) = mpsc::channel();
-        let waiter = thread::spawn(move || {
-            response_tx
-                .send(waiter_runtime.test_handle_rlm_mcp(
-                    WorkspaceRlmOperation::Search {
-                        query: "Тест".to_string(),
-                        limit: 20,
-                    },
-                    0,
-                    50_000_000,
-                    &CancellationToken::new(),
-                ))
-                .unwrap();
-        });
-
-        let response = match response_rx.recv_timeout(Duration::from_secs(2)) {
-            Ok(response) => response,
-            Err(error) => {
-                drop(holder);
-                let late_response = response_rx.recv_timeout(Duration::from_secs(2)).ok();
-                waiter.join().unwrap();
-                drop(runtime);
-                cleanup(&context);
-                panic!("RLM lane wait exceeded its budget: {error}; {late_response:?}");
-            }
-        };
-
-        assert!(
-            response
-                .error
-                .as_deref()
-                .is_some_and(|error| error.starts_with("timeout:")),
-            "{response:?}"
-        );
-        drop(holder);
-        waiter.join().unwrap();
-        drop(runtime);
-        cleanup(&context);
-    }
-
-    #[test]
     fn runtime_tracks_session_teardown_until_shutdown_drain() {
         struct DropSignal(Option<mpsc::Sender<()>>);
         impl Drop for DropSignal {
@@ -4144,51 +3748,18 @@ mod tests {
     }
 
     #[test]
-    fn runtime_shutdown_joins_rlm_maintenance_registered_after_drain_started() {
-        let context = test_context("late-rlm-maintenance-registration");
-        let identity =
-            WorkspaceServiceIdentity::new(&context, &context.workspace_root.join("src")).unwrap();
-        let record = test_record(&identity, 34567, CoreIdentity::production().as_str());
-        let runtime = Arc::new(new_runtime(identity, &record));
-        let (allow_registration_tx, allow_registration_rx) = mpsc::channel();
-        let (task_release_tx, task_release_rx) = mpsc::channel();
-        let (registration_finished_tx, registration_finished_rx) = mpsc::channel();
-        let tracker = Arc::clone(runtime.test_rlm_maintenance_tasks());
-        let registrar = thread::spawn(move || {
-            allow_registration_rx.recv().unwrap();
-            let handle = thread::spawn(move || task_release_rx.recv().unwrap());
-            tracker.track(handle);
-            registration_finished_tx.send(()).unwrap();
-        });
-
-        runtime.test_begin_shutdown();
-        assert!(runtime.test_shutdown_provider_sessions());
-        allow_registration_tx.send(()).unwrap();
-        assert!(matches!(
-            registration_finished_rx.recv_timeout(Duration::from_millis(100)),
-            Err(mpsc::RecvTimeoutError::Timeout)
-        ));
-
-        task_release_tx.send(()).unwrap();
-        registration_finished_rx
-            .recv_timeout(Duration::from_secs(1))
-            .unwrap();
-        registrar.join().unwrap();
-        drop(runtime);
-        cleanup(&context);
-    }
-
-    #[test]
     fn workspace_service_worker_panic_cleans_registry_and_next_request_succeeds() {
         let (context, record, runtime, _executor, server) =
             workspace_control_test_server("worker-panic");
         let panic_response = send_test_request(
             &record,
-            ServiceRequestKind::RlmReady {
+            ServiceRequestKind::BslMcp {
                 operation_id: "panic-worker-1".to_string(),
-                args: json!({}),
+                tool_name: "diagnostics".to_string(),
+                tool_args: json!({}),
                 timeout_seconds: 5,
                 timeout_nanos: 0,
+                yields: false,
             },
         );
         assert!(!panic_response.ok);
@@ -4196,15 +3767,17 @@ mod tests {
             .error
             .unwrap()
             .contains("worker disconnected"));
-        assert!(runtime.test_operations().lock().unwrap().is_empty());
+        assert!(runtime.test_operation_ids().is_empty());
         assert!(
             send_test_request(
                 &record,
-                ServiceRequestKind::RlmReady {
+                ServiceRequestKind::BslMcp {
                     operation_id: "success-after-panic".to_string(),
-                    args: json!({}),
+                    tool_name: "diagnostics".to_string(),
+                    tool_args: json!({}),
                     timeout_seconds: 5,
                     timeout_nanos: 0,
+                    yields: false
                 },
             )
             .ok
@@ -4214,6 +3787,7 @@ mod tests {
         cleanup(&context);
     }
 
+    /// rule: INV.RUNTIME.SERVICE-RECORD-OWNERSHIP
     #[test]
     fn workspace_service_cleanup_preserves_replacement_record() {
         let context = test_context("cleanup-owner-race");
@@ -4234,6 +3808,7 @@ mod tests {
         cleanup(&context);
     }
 
+    /// rule: INV.RUNTIME.SERVICE-RECORD-OWNERSHIP
     #[test]
     fn workspace_service_record_cleanup_serializes_concurrent_replacement() {
         let context = test_context("cleanup-serialized-race");
@@ -4305,6 +3880,7 @@ mod tests {
         cleanup(&context);
     }
 
+    /// rule: INV.RUNTIME.SERVICE-RECORD-OWNERSHIP
     #[test]
     fn workspace_service_last_access_update_cannot_overwrite_replacement() {
         let context = test_context("last-access-serialized-race");
@@ -4424,11 +4000,13 @@ mod tests {
         );
         let disconnected = open_test_request(
             &record,
-            ServiceRequestKind::RlmReady {
+            ServiceRequestKind::BslMcp {
                 operation_id: "held-after-cancel-zero-grace".to_string(),
-                args: json!({}),
+                tool_name: "diagnostics".to_string(),
+                tool_args: json!({}),
                 timeout_seconds: 5,
                 timeout_nanos: 0,
+                yields: false,
             },
         );
         executor.wait_started(1);
@@ -4448,7 +4026,7 @@ mod tests {
         assert_eq!(read_record(&identity).unwrap().token, replacement.token);
         executor.release_cancelled();
         let retired_by = Instant::now() + Duration::from_secs(2);
-        while !runtime.test_operations().lock().unwrap().is_empty() {
+        while !runtime.test_operation_ids().is_empty() {
             assert!(
                 Instant::now() < retired_by,
                 "cancelled worker did not retire its guard"
@@ -4559,8 +4137,9 @@ mod tests {
         (context, runtime, pid_file, log_file)
     }
 
-    /// #2189: a call out of time is cancelled at the analyzer, and the next
+    /// A call out of time is cancelled at the analyzer, and the next
     /// call is answered by the same warm process.
+    /// rule: INV.LSP.MCP-PRIORITY
     #[test]
     fn an_expired_analyzer_call_keeps_the_warm_process_for_the_next_one() {
         let (context, runtime, pid_file, log_file) = stalling_runtime("expired-call");
@@ -4587,8 +4166,9 @@ mod tests {
         cleanup(&context);
     }
 
-    /// #2189, mcp-priority: an editor's call holding the analyzer gives way to
+    /// An editor's call holding the analyzer gives way to
     /// an MCP call, which is answered without waiting for it to finish.
+    /// rule: INV.LSP.MCP-PRIORITY
     #[test]
     fn an_mcp_call_cancels_a_yielding_call_that_holds_the_analyzer() {
         let (context, runtime, pid_file, log_file) = stalling_runtime("yielding-call");
@@ -5002,14 +4582,6 @@ fn main() {
         }
     }
 
-    fn wait_for_file(path: &Path, timeout: Duration) {
-        let deadline = Instant::now() + timeout;
-        while !path.is_file() {
-            assert!(Instant::now() < deadline, "fixture marker was not written");
-            thread::yield_now();
-        }
-    }
-
     fn wait_for_runtime_reader_terminal(runtime: &WorkspaceServiceRuntime, timeout: Duration) {
         let deadline = Instant::now() + timeout;
         loop {
@@ -5028,239 +4600,6 @@ fn main() {
             );
             thread::yield_now();
         }
-    }
-
-    fn wait_for_process_exit(pid: u32, timeout: Duration) -> bool {
-        unica_process::test_support::wait_for_process_exit(pid, timeout)
-    }
-
-    fn write_ready_rlm_status_for_current_source(context: &WorkspaceContext, source_root: &Path) {
-        // Sessions pin one immutable build, not the legacy mutable generation
-        // directory; source changes and maintenance must keep this DB usable.
-        let build_id = uuid::Uuid::new_v4().simple().to_string();
-        let db_path = rlm_generation_root(context, source_root)
-            .unwrap()
-            .join("builds")
-            .join(&build_id)
-            .join("bsl_index.db");
-        fs::create_dir_all(db_path.parent().unwrap()).unwrap();
-        fs::write(&db_path, "ready index").unwrap();
-        let status = unica_adapter_rlm::index::BslIndexStatus {
-            status: "ready".to_string(),
-            source_root: Some(source_root.display().to_string()),
-            db_path: Some(db_path.display().to_string()),
-            message: None,
-            failure_class: None,
-            build_id: Some(build_id.clone()),
-            next_action: None,
-            updated_at: now_secs_for_test(),
-            last_run: None,
-        };
-        let status_path = unica_adapter_rlm::index::status_path(context, source_root).unwrap();
-        fs::create_dir_all(status_path.parent().unwrap()).unwrap();
-        fs::write(
-            status_path,
-            serde_json::to_string_pretty(&status).unwrap() + "\n",
-        )
-        .unwrap();
-        let active = unica_adapter_rlm::index::usable_index_build(context, source_root)
-            .unwrap()
-            .expect("the session fixture must publish a usable isolated build");
-        assert_eq!(active.id, build_id);
-        assert_eq!(active.db_path, db_path);
-    }
-
-    fn write_active_rlm_index_lock(context: &WorkspaceContext, source_root: &Path) {
-        let lock_path = unica_adapter_rlm::index::rlm_provider_state_root(context, source_root)
-            .unwrap()
-            .join("locks/rlm-bsl/index-v17/bsl_index.lock");
-        fs::create_dir_all(lock_path.parent().unwrap()).unwrap();
-        let now = now_secs_for_test();
-        fs::write(
-            lock_path,
-            serde_json::to_string_pretty(&json!({
-                "schema_version": 1,
-                "lock_id": "blocking-execute-lock",
-                "owner_pid": std::process::id(),
-                "action": "update",
-                "source_root": source_root.display().to_string(),
-                "started_at": now,
-                "updated_at": now,
-                "state": "active"
-            }))
-            .unwrap()
-                + "\n",
-        )
-        .unwrap();
-    }
-
-    struct BlockingRlmObservation {
-        response: ServiceResponse,
-        session_retired: bool,
-        teardown_drained: bool,
-    }
-
-    fn run_blocking_rlm_execute(
-        name: &str,
-        during_execute: impl FnOnce(&WorkspaceContext, &Path, &Path),
-    ) -> BlockingRlmObservation {
-        let context = test_context(name);
-        let source_root = context.workspace_root.join("src");
-        let module = source_root.join("CommonModules/SmokeModule.bsl");
-        fs::write(&module, "Процедура Smoke()\nКонецПроцедуры\n").unwrap();
-        write_ready_rlm_status_for_current_source(&context, &source_root);
-        let fixture = blocking_rlm_fixture();
-        fs::create_dir_all(&context.cache_root).unwrap();
-        let execute_started = context.cache_root.join("blocking-rlm-execute-started.txt");
-        let execute_release = context.cache_root.join("blocking-rlm-execute-release.txt");
-        let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
-        let record = test_record(&identity, 1, CoreIdentity::production().as_str());
-        let mut runtime = new_runtime(identity, &record);
-        runtime.test_set_rlm_starter(Arc::new({
-            let fixture = fixture.clone();
-            let execute_started = execute_started.clone();
-            let execute_release = execute_release.clone();
-            move |_context, source_root, _build_directory, build_id, cancellation| {
-                let mut command = Command::new(&fixture);
-                command.args([&execute_started, &execute_release]);
-                Ok(RlmMcpSession::test_from_transport(
-                    PersistentMcpSession::start_with_command(command, cancellation)?,
-                    source_root.to_path_buf(),
-                    build_id.to_string(),
-                    None,
-                ))
-            }
-        }));
-        let runtime = Arc::new(runtime);
-        let caller_runtime = Arc::clone(&runtime);
-        let caller = thread::spawn(move || {
-            caller_runtime.test_handle_rlm_mcp(
-                WorkspaceRlmOperation::Search {
-                    query: "Smoke".to_string(),
-                    limit: 20,
-                },
-                5,
-                0,
-                &CancellationToken::new(),
-            )
-        });
-
-        // With the binary already built and validated, this wait measured 12
-        // and 14 ms under the full parallel suite, against 1822 to 2243 ms
-        // before. Five seconds is the bound the sibling terminal-marker wait
-        // already uses, and over that distribution it is headroom of two and a
-        // half orders of magnitude instead of the margin of tens of
-        // milliseconds the previous two seconds left.
-        wait_for_file(&execute_started, Duration::from_secs(5));
-        during_execute(&context, &source_root, &module);
-        fs::write(&execute_release, "release").unwrap();
-        let response = caller.join().unwrap();
-        let session_retired = runtime.test_rlm().lock().unwrap().is_none();
-        let teardown_drained = runtime
-            .test_session_teardowns()
-            .drain(SESSION_TEARDOWN_GRACE);
-        drop(runtime);
-        cleanup(&context);
-
-        BlockingRlmObservation {
-            response,
-            session_retired,
-            teardown_drained,
-        }
-    }
-
-    /// The helper binary is built and first run once per test process, before
-    /// any test starts timing a spawn.
-    ///
-    /// Measured on this fixture under the full parallel suite: `rustc` costs
-    /// ~100 ms, the JSON-RPC handshake to the first marker costs 0-1 ms, and
-    /// everything else — 1.8 to 2.2 s — was the child getting from `spawn` to
-    /// the first line of `main`. That gap is the first execution of a
-    /// freshly written binary: macOS validates its code signature through a
-    /// shared system service, and a suite that writes a new binary per call
-    /// pays that serialized validation every time. Idle, the same binary needs
-    /// ~300 ms on its first run and ~20 ms on every later one.
-    ///
-    /// Building once per process leaves exactly one validation, and running it
-    /// here moves that validation out of the timed section. What a test waits
-    /// on afterwards is the fixture's own progress, which is what the deadline
-    /// is meant to bound.
-    fn blocking_rlm_fixture() -> PathBuf {
-        static FIXTURE: OnceLock<PathBuf> = OnceLock::new();
-        FIXTURE
-            .get_or_init(|| {
-                let directory = std::env::temp_dir()
-                    .join(format!("unica-blocking-rlm-fixture-{}", std::process::id()));
-                let executable = compile_blocking_rlm_fixture(&directory);
-                // The first run pays the code-signature validation; the fixture
-                // exits on its own once stdin closes, so no marker is needed.
-                let mut warmup = Command::new(&executable)
-                    .arg(directory.join("warmup-started.txt"))
-                    .arg(directory.join("warmup-release.txt"))
-                    .stdin(Stdio::null())
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .spawn()
-                    .unwrap();
-                warmup.wait().unwrap();
-                executable
-            })
-            .clone()
-    }
-
-    fn compile_blocking_rlm_fixture(directory: &Path) -> PathBuf {
-        let source = directory.join("blocking-rlm-fixture.rs");
-        let executable =
-            unica_process::test_support::fixture_executable_path(directory, "blocking-rlm-fixture");
-        fs::create_dir_all(directory).unwrap();
-        fs::write(
-            &source,
-            r##"use std::{env, fs, io::{self, BufRead, Write}, thread, time::{Duration, Instant}};
-fn main() {
-    let execute_started = env::args().nth(1).unwrap();
-    let execute_release = env::args().nth(2).unwrap();
-    for (index, line) in io::stdin().lock().lines().enumerate() {
-        line.unwrap();
-        if index >= 3 {
-            if let Ok(response) = env::var("UNICA_TEST_RLM_RESPONSE") {
-                fs::write(&execute_started, "started").unwrap();
-                println!("{}", response.replacen("\"id\":3", &format!("\"id\":{index}"), 1));
-                io::stdout().flush().unwrap();
-                continue;
-            }
-        }
-        match index {
-            0 => println!("{}", r#"{"jsonrpc":"2.0","id":1,"result":{}}"#),
-            2 => println!("{}", r#"{"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"{\"session_id\":\"session-1\",\"index\":{\"index_status\":\"ready\"}}"}]}}"#),
-            3 => {
-                fs::write(&execute_started, "started").unwrap();
-                let deadline = Instant::now() + Duration::from_secs(5);
-                while !std::path::Path::new(&execute_release).is_file() && Instant::now() < deadline {
-                    thread::sleep(Duration::from_millis(5));
-                }
-                assert!(std::path::Path::new(&execute_release).is_file());
-                println!("{}", r#"{"jsonrpc":"2.0","id":3,"result":{"content":[{"type":"text","text":"{\"stdout\":\"[\\\"old-index-result\\\"]\"}"}]}}"#);
-            }
-            4 => {
-                println!("{}", r#"{"jsonrpc":"2.0","id":4,"result":{"content":[{"type":"text","text":"{}"}]}}"#);
-                io::stdout().flush().unwrap();
-                break;
-            }
-            _ => {}
-        }
-        io::stdout().flush().unwrap();
-    }
-}"##,
-        )
-        .unwrap();
-        let status = Command::new("rustc")
-            .arg(&source)
-            .arg("-o")
-            .arg(&executable)
-            .status()
-            .unwrap();
-        assert!(status.success());
-        executable
     }
 
     fn compile_initialize_fixture(context: &WorkspaceContext) -> PathBuf {
@@ -5709,6 +5048,16 @@ fn main() {
                 self.succeeded.borrow_mut().push(result.is_ok());
                 result
             }
+
+            fn send_operation_before(
+                &self,
+                _record: &WorkspaceServiceRecord,
+                _request: ServiceRequest,
+                _cancellation: &CancellationToken,
+                _deadline: ProviderDeadline,
+            ) -> Result<ServiceResponse, String> {
+                unreachable!("this legacy fixture does not use the prepared BSL route")
+            }
         }
         let context = test_context("committed-invalidation-aggregate");
         for source in ["src", "extension"] {
@@ -5819,6 +5168,7 @@ fn main() {
         assert_eq!(deadline.remaining(&clock), None);
     }
 
+    /// rule: INV.PERF.SERVICE-OPERATION-DEADLINE
     #[test]
     fn cancellable_connector_cancel_control_uses_one_aggregate_500ms_budget() {
         let clock = ManualClock::default();
@@ -5852,6 +5202,7 @@ fn main() {
         );
     }
 
+    /// rule: INV.PERF.SERVICE-OPERATION-DEADLINE
     #[test]
     fn control_flush_success_cannot_cross_aggregate_500ms_budget() {
         let clock = ManualClock::default();
@@ -6142,6 +5493,9 @@ fn main() {
     #[test]
     fn cancellable_connector_uses_short_connect_budget_for_every_control_kind() {
         for kind in [
+            ServiceRequestKind::Expire {
+                operation_id: "expiry".into(),
+            },
             ServiceRequestKind::Ping,
             ServiceRequestKind::Cancel {
                 operation_id: "cancel-budget".to_string(),
@@ -6170,23 +5524,30 @@ fn main() {
     enum ServiceDeadlineClass {
         Work,
         Control,
+        AdmissionPhase,
     }
 
     fn service_deadline_class(kind: &ServiceRequestKind) -> ServiceDeadlineClass {
         match kind {
-            ServiceRequestKind::BslMcp { .. }
-            | ServiceRequestKind::RlmReady { .. }
-            | ServiceRequestKind::RlmMcp { .. } => ServiceDeadlineClass::Work,
+            ServiceRequestKind::BslMcp { .. } | ServiceRequestKind::BslMcpBegin { .. } => {
+                ServiceDeadlineClass::Work
+            }
             ServiceRequestKind::Ping
             | ServiceRequestKind::Cancel { .. }
+            | ServiceRequestKind::Expire { .. }
             | ServiceRequestKind::Invalidate { .. }
             | ServiceRequestKind::Shutdown => ServiceDeadlineClass::Control,
+            ServiceRequestKind::BslMcpStart { .. } | ServiceRequestKind::BslMcpStop { .. } => {
+                ServiceDeadlineClass::AdmissionPhase
+            }
         }
     }
 
+    /// rule: INV.PERF.SERVICE-OPERATION-DEADLINE
     #[test]
     fn service_request_kind_deadline_matrix_is_exhaustive() {
         let work = [
+            prepared_begin("prepared-matrix"),
             ServiceRequestKind::BslMcp {
                 operation_id: "bsl".into(),
                 tool_name: "search".into(),
@@ -6195,23 +5556,29 @@ fn main() {
                 timeout_nanos: 0,
                 yields: false,
             },
-            ServiceRequestKind::RlmReady {
+            ServiceRequestKind::BslMcp {
                 operation_id: "ready".into(),
-                args: json!({}),
+                tool_name: "diagnostics".to_string(),
+                tool_args: json!({}),
                 timeout_seconds: 120,
                 timeout_nanos: 0,
+                yields: false,
             },
-            ServiceRequestKind::RlmMcp {
-                operation_id: "rlm".into(),
-                operation: WorkspaceRlmOperation::Search {
-                    query: "needle".into(),
-                    limit: 20,
-                },
-                timeout_seconds: 120,
-                timeout_nanos: 0,
+        ];
+        let phases = [
+            ServiceRequestKind::BslMcpStart {
+                operation_id: "phase".into(),
+                deadline: BslOperationDeadline::Absent {},
+            },
+            ServiceRequestKind::BslMcpStop {
+                operation_id: "phase".into(),
+                cause: BslStopCause::Cancel,
             },
         ];
         let control = [
+            ServiceRequestKind::Expire {
+                operation_id: "expiry".into(),
+            },
             ServiceRequestKind::Ping,
             ServiceRequestKind::Cancel {
                 operation_id: "cancel".into(),
@@ -6222,6 +5589,7 @@ fn main() {
         let tags = work
             .iter()
             .chain(control.iter())
+            .chain(phases.iter())
             .map(|kind| {
                 serde_json::to_value(kind).unwrap()["type"]
                     .as_str()
@@ -6233,11 +5601,13 @@ fn main() {
             tags,
             [
                 "bsl-mcp",
+                "bsl-mcp-begin",
+                "bsl-mcp-start",
+                "bsl-mcp-stop",
+                "expire",
                 "cancel",
                 "invalidate",
                 "ping",
-                "rlm-mcp",
-                "rlm-ready",
                 "shutdown"
             ]
             .into_iter()
@@ -6268,6 +5638,17 @@ fn main() {
             assert_eq!(service_deadline_class(&kind), ServiceDeadlineClass::Control);
             assert!(kind.is_control());
         }
+        for phase in phases {
+            assert_eq!(
+                service_deadline_class(&phase),
+                ServiceDeadlineClass::AdmissionPhase
+            );
+            assert!(
+                !phase.is_control(),
+                "admission phases use only their existing data connection"
+            );
+            assert!(phase.operation_id().is_none());
+        }
         cancellable_connector_uses_short_connect_budget_for_every_control_kind();
         cancellable_connector_partial_response_cannot_bypass_deadline();
         manager_shares_one_deadline_across_late_transport_retry();
@@ -6283,16 +5664,8 @@ fn main() {
             timeout_nanos: 0,
             yields: false,
         };
-        let rlm = ServiceRequestKind::RlmReady {
-            operation_id: Uuid::new_v4().to_string(),
-            args: json!({"sourceDir": "src"}),
-            timeout_seconds: 5,
-            timeout_nanos: 123,
-        };
-        assert_ne!(bsl.operation_id(), rlm.operation_id());
         for (kind, expected_tag) in [
             (bsl, "bsl-mcp"),
-            (rlm, "rlm-ready"),
             (
                 ServiceRequestKind::Cancel {
                     operation_id: "cancel-id".to_string(),
@@ -6362,6 +5735,7 @@ fn main() {
         cleanup(&context);
     }
 
+    /// rule: INV.RUNTIME.SERVICE-OPERATION-CANCELLATION
     #[test]
     fn cancellable_connector_sends_cancel_on_a_separate_connection() {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
@@ -6499,223 +5873,6 @@ fn main() {
     }
 
     #[test]
-    fn rlm_generation_exhausts_operation_budget_before_provider_start() {
-        let context = test_context("rlm-generation-budget");
-        let source_root = context.workspace_root.join("src");
-        fs::write(
-            source_root.join("Module.bsl"),
-            "Процедура Тест()\nКонецПроцедуры\n",
-        )
-        .unwrap();
-        let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
-        let record = test_record(&identity, 1, CoreIdentity::production().as_str());
-        let mut runtime = new_runtime(identity, &record);
-        let starts = Arc::new(AtomicUsize::new(0));
-        runtime.test_set_rlm_starter(Arc::new({
-            let starts = Arc::clone(&starts);
-            move |_context, _source_root, _build_directory, _build_id, _cancellation| {
-                starts.fetch_add(1, Ordering::AcqRel);
-                Err("provider started after operation budget expired".to_string())
-            }
-        }));
-
-        let response = runtime.test_handle_rlm_mcp(
-            WorkspaceRlmOperation::Search {
-                query: "Тест".to_string(),
-                limit: 20,
-            },
-            0,
-            1,
-            &CancellationToken::new(),
-        );
-
-        assert_eq!(starts.load(Ordering::Acquire), 0, "{response:?}");
-        assert!(
-            response
-                .error
-                .as_deref()
-                .is_some_and(|error| error.starts_with("timeout:")),
-            "{response:?}"
-        );
-        cleanup(&context);
-    }
-
-    #[test]
-    fn rlm_source_edit_does_not_prevent_pinned_session_start() {
-        let context = test_context("rlm-generation-before-execute");
-        let source_root = context.workspace_root.join("src");
-        let module = source_root.join("CommonModules/SmokeModule.bsl");
-        fs::write(&module, "Процедура Smoke()\nКонецПроцедуры\n").unwrap();
-        write_ready_rlm_status_for_current_source(&context, &source_root);
-        let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
-        let record = test_record(&identity, 1, CoreIdentity::production().as_str());
-        let mut runtime = new_runtime(identity, &record);
-        let starts = Arc::new(AtomicUsize::new(0));
-        runtime.test_set_rlm_starter(Arc::new({
-            let starts = Arc::clone(&starts);
-            move |_context, _source_root, _build_directory, _build_id, _cancellation| {
-                starts.fetch_add(1, Ordering::AcqRel);
-                Err("pinned provider start observed".to_string())
-            }
-        }));
-
-        fs::write(&module, "Процедура Smoke(НовыйПараметр)\nКонецПроцедуры\n").unwrap();
-        let response = runtime.test_handle_rlm_mcp(
-            WorkspaceRlmOperation::Search {
-                query: "Smoke".to_string(),
-                limit: 20,
-            },
-            5,
-            0,
-            &CancellationToken::new(),
-        );
-        cleanup(&context);
-
-        assert_eq!(starts.load(Ordering::Acquire), 1);
-        assert!(!response.ok);
-        assert_eq!(response.index_status, None);
-        assert_eq!(
-            response.error.as_deref(),
-            Some("pinned provider start observed")
-        );
-        assert!(response.result_text.is_none());
-        assert!(response.stderr.is_none());
-    }
-
-    #[test]
-    fn rlm_execute_returns_pinned_build_output_when_source_changes() {
-        let observation = run_blocking_rlm_execute(
-            "rlm-generation-during-execute",
-            |_context, _source_root, module| {
-                fs::write(module, "Процедура Smoke(НовыйПараметр)\nКонецПроцедуры\n").unwrap();
-            },
-        );
-
-        assert!(observation.response.ok, "{:?}", observation.response);
-        assert_eq!(
-            observation.response.index_freshness.as_deref(),
-            Some("unknown")
-        );
-        assert!(observation
-            .response
-            .result_text
-            .as_deref()
-            .is_some_and(|text| text.contains("old-index-result")));
-        assert!(!observation.session_retired);
-        assert!(observation.teardown_drained);
-    }
-
-    #[test]
-    fn rlm_execute_rejects_replaced_root_and_retires_its_session() {
-        if !supports_retained_root_replacement_test() {
-            unica_process::test_support::skip_without_host_capability(
-                unica_process::test_support::HostCapability::RenameUnderOpenHandle,
-                "the platform keeps an open handle from being renamed or replaced",
-            );
-            return;
-        }
-        let observation = run_blocking_rlm_execute(
-            "rlm-root-replaced-during-execute",
-            |context, source_root, module| {
-                let replacement = context.workspace_root.join("src-replacement");
-                fs::rename(source_root, &replacement).unwrap();
-                fs::create_dir_all(module.parent().unwrap()).unwrap();
-                fs::write(module, "Процедура Smoke()\nКонецПроцедуры\n").unwrap();
-            },
-        );
-
-        assert!(!observation.response.ok, "{:?}", observation.response);
-        assert!(observation.response.result_text.is_none());
-        assert!(observation.response.stderr.is_none());
-        assert!(
-            observation.session_retired,
-            "a session bound to the replaced root must not be reused: {:?}",
-            observation.response
-        );
-        assert!(observation.teardown_drained);
-    }
-
-    #[test]
-    fn rlm_executes_from_the_pinned_ready_build() {
-        let context = test_context("rlm-pinned-ready-build");
-        let source_root = context.workspace_root.join("src");
-        fs::write(
-            source_root.join("CommonModules/SmokeModule.bsl"),
-            "Процедура Smoke()\nКонецПроцедуры\n",
-        )
-        .unwrap();
-        let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
-        let record = test_record(&identity, 1, CoreIdentity::production().as_str());
-        let mut runtime = new_runtime(identity, &record);
-        write_ready_rlm_status_for_current_source(&context, &source_root);
-
-        let fixture = blocking_rlm_fixture();
-        let execute_started = context.cache_root.join("linux-rlm-execute-started.txt");
-        let execute_release = context.cache_root.join("linux-rlm-execute-release.txt");
-        fs::write(&execute_release, "release").unwrap();
-        runtime.test_set_rlm_starter(Arc::new({
-            let fixture = fixture.clone();
-            let execute_started = execute_started.clone();
-            let execute_release = execute_release.clone();
-            move |_context, source_root, _build_directory, build_id, cancellation| {
-                let mut command = Command::new(&fixture);
-                command.args([&execute_started, &execute_release]);
-                Ok(RlmMcpSession::test_from_transport(
-                    PersistentMcpSession::start_with_command(command, cancellation)?,
-                    source_root.to_path_buf(),
-                    build_id.to_string(),
-                    None,
-                ))
-            }
-        }));
-
-        let response = runtime.test_handle_rlm_mcp(
-            WorkspaceRlmOperation::Search {
-                query: "Smoke".to_string(),
-                limit: 20,
-            },
-            5,
-            0,
-            &CancellationToken::new(),
-        );
-        assert!(response.ok, "{response:?}");
-        assert!(execute_started.is_file(), "RLM provider was never invoked");
-        assert!(
-            response
-                .result_text
-                .as_deref()
-                .is_some_and(|text| text.contains("old-index-result")),
-            "{response:?}"
-        );
-        drop(runtime);
-        cleanup(&context);
-    }
-
-    #[test]
-    fn rlm_execute_keeps_pinned_build_readable_while_maintenance_holds_lock() {
-        let observation = run_blocking_rlm_execute(
-            "rlm-active-lock-during-execute",
-            |context, source_root, module| {
-                fs::write(module, "Процедура Smoke(НовыйПараметр)\nКонецПроцедуры\n").unwrap();
-                write_active_rlm_index_lock(context, source_root);
-            },
-        );
-
-        assert!(observation.response.ok, "{:?}", observation.response);
-        assert_eq!(
-            observation.response.index_freshness.as_deref(),
-            Some("unknown")
-        );
-        assert!(observation
-            .response
-            .result_text
-            .as_deref()
-            .is_some_and(|text| text.contains("old-index-result")));
-        assert!(!observation.session_retired);
-        assert!(observation.teardown_drained);
-    }
-
-    #[test]
     fn bsl_analyzer_cache_is_stable_and_separated_by_workspace_and_source() {
         let context = test_context("bsl-provider-cache");
         let source_root = context.workspace_root.join("src");
@@ -6825,9 +5982,10 @@ fn main() {
         cleanup(&other_workspace);
     }
 
+    /// rule: INV.APP.HIDDEN-SERVICES
     #[test]
     fn hidden_service_identity_distinguishes_user_core_daemon_from_workspace_helpers() {
-        use unica_daemon::identity::{CoreIdentity, DaemonStateDirectory};
+        use unica_daemon_protocol::identity::{CoreIdentity, DaemonStateDirectory};
 
         let first = test_context("hidden-topology-first");
         let second = test_context("hidden-topology-second");
@@ -6869,6 +6027,7 @@ fn main() {
         cleanup(&context);
     }
 
+    /// rule: INV.PERF.WORKSPACE-SERVICE-REUSE
     #[test]
     fn service_record_is_reusable_only_for_matching_live_build_and_paths() {
         let context = test_context("record");
@@ -6961,6 +6120,16 @@ fn main() {
                     ..ServiceResponse::default()
                 })
             }
+
+            fn send_operation_before(
+                &self,
+                _record: &WorkspaceServiceRecord,
+                _request: ServiceRequest,
+                _cancellation: &CancellationToken,
+                _deadline: ProviderDeadline,
+            ) -> Result<ServiceResponse, String> {
+                unreachable!("this legacy fixture does not use the prepared BSL route")
+            }
         }
 
         let context = test_context("shutting-down-record");
@@ -7009,6 +6178,16 @@ fn main() {
                     ..ServiceResponse::default()
                 })
             }
+
+            fn send_operation_before(
+                &self,
+                _record: &WorkspaceServiceRecord,
+                _request: ServiceRequest,
+                _cancellation: &CancellationToken,
+                _deadline: ProviderDeadline,
+            ) -> Result<ServiceResponse, String> {
+                unreachable!("this legacy fixture does not use the prepared BSL route")
+            }
         }
         let context = test_context("spawn-wait-shutting-down");
         let identity =
@@ -7031,7 +6210,7 @@ fn main() {
 
     /// Проводка продуктового запуска: сервисом стартует этот тестовый бинарь,
     /// libtest не понимает `--workspace-service` и сразу выходит. Запуск обязан
-    /// назвать выход до готовности, не досиживая срок готовности (#1920).
+    /// назвать выход до готовности, не досиживая срок готовности.
     #[test]
     fn spawned_service_that_exits_is_reported_before_the_readiness_timeout() {
         assert!(
@@ -7057,7 +6236,7 @@ fn main() {
     }
 
     /// Сервис, умерший до готовности, записи не напишет: ожидание обязано
-    /// прекратиться по его выходу, а не досиживать весь срок (#1920).
+    /// прекратиться по его выходу, а не досиживать весь срок.
     #[test]
     fn spawn_wait_stops_once_the_spawned_service_has_exited() {
         let context = test_context("spawn-wait-exited");
@@ -7067,7 +6246,7 @@ fn main() {
         command
             .args([
                 "--exact",
-                "infrastructure::workspace_services::tests::startup_failure_child_fixture",
+                "infrastructure::workspace_services::medium_tests::startup_failure_child_fixture",
                 "--ignored",
                 "--nocapture",
             ])
@@ -7134,7 +6313,7 @@ fn main() {
         owned_command
             .args([
                 "--exact",
-                "infrastructure::workspace_services::tests::spawn_cleanup_child_fixture",
+                "infrastructure::workspace_services::medium_tests::spawn_cleanup_child_fixture",
                 "--ignored",
                 "--nocapture",
             ])
@@ -7163,7 +6342,7 @@ fn main() {
         replaced_command
             .args([
                 "--exact",
-                "infrastructure::workspace_services::tests::spawn_cleanup_child_fixture",
+                "infrastructure::workspace_services::medium_tests::spawn_cleanup_child_fixture",
                 "--ignored",
                 "--nocapture",
             ])
@@ -7188,6 +6367,7 @@ fn main() {
         cleanup(&context);
     }
 
+    /// rule: INV.APP.WORKSPACE-SERVICE-STARTUP-DIAGNOSTIC
     #[test]
     fn startup_failure_reports_exit_status_and_bounded_stderr_tail() {
         let context = test_context("startup-failure-diagnostic");
@@ -7200,7 +6380,7 @@ fn main() {
         command
             .args([
                 "--exact",
-                "infrastructure::workspace_services::tests::startup_failure_child_fixture",
+                "infrastructure::workspace_services::medium_tests::startup_failure_child_fixture",
                 "--ignored",
                 "--nocapture",
             ])
@@ -7229,6 +6409,7 @@ fn main() {
         cleanup(&context);
     }
 
+    /// rule: INV.APP.WORKSPACE-SERVICE-STARTUP-DIAGNOSTIC
     #[test]
     fn startup_stderr_tail_stays_bounded_after_lossy_utf8_decoding() {
         let context = test_context("startup-stderr-invalid-utf8");
@@ -7250,6 +6431,7 @@ fn main() {
         cleanup(&context);
     }
 
+    /// rule: INV.APP.WORKSPACE-SERVICE-STARTUP-DIAGNOSTIC
     #[test]
     fn startup_failure_reports_live_child_without_assuming_deadline_expired() {
         let context = test_context("startup-failure-live-child");
@@ -7262,7 +6444,7 @@ fn main() {
         command
             .args([
                 "--exact",
-                "infrastructure::workspace_services::tests::spawn_cleanup_child_fixture",
+                "infrastructure::workspace_services::medium_tests::spawn_cleanup_child_fixture",
                 "--ignored",
                 "--nocapture",
             ])
@@ -7310,6 +6492,7 @@ fn main() {
         thread::sleep(Duration::from_secs(30));
     }
 
+    /// rule: INV.RUNTIME.SERVICE-LIFETIME
     #[test]
     fn service_config_uses_defaults_and_env_overrides() {
         std::env::remove_var("UNICA_WORKSPACE_SERVICE_IDLE_SECS");
@@ -7323,6 +6506,7 @@ fn main() {
         std::env::remove_var("UNICA_WORKSPACE_SERVICE_IDLE_SECS");
     }
 
+    /// rule: INV.RUNTIME.SERVICE-TOKEN
     #[test]
     fn service_protocol_rejects_invalid_token_and_accepts_ping() {
         let context = test_context("protocol");
@@ -7348,6 +6532,7 @@ fn main() {
         cleanup(&context);
     }
 
+    /// rule: INV.PERF.WORKSPACE-SERVICE-REUSE
     #[test]
     fn manager_reuses_matching_live_record_without_spawning() {
         let context = test_context("reuse");
@@ -7483,6 +6668,7 @@ fn main() {
         cleanup(&context);
     }
 
+    /// rule: INV.RUNTIME.SERVICE-STARTUP-OWNERSHIP
     #[test]
     fn manager_waits_for_peer_spawn_lock_release_before_reusing_record() {
         let context = test_context("peer-lock");
@@ -7519,6 +6705,7 @@ fn main() {
         cleanup(&context);
     }
 
+    /// rule: INV.RUNTIME.SERVICE-STARTUP-OWNERSHIP
     #[test]
     fn manager_spawn_lock_wait_observes_cancellation_and_shared_deadline() {
         let context = test_context("peer-lock-deadline");
@@ -7590,6 +6777,7 @@ fn main() {
         )));
     }
 
+    /// rule: INV.RUNTIME.SERVICE-STARTUP-OWNERSHIP
     #[test]
     fn spawn_wait_ignores_live_record_not_owned_by_spawned_child() {
         let context = test_context("spawn-wait-owned-record");
@@ -7618,8 +6806,9 @@ fn main() {
         cleanup(&context);
     }
 
+    /// rule: INV.RUNTIME.SERVICE-OPERATION-CANCELLATION
     #[test]
-    fn manager_generates_unique_uuid_operation_ids_for_bsl_and_rlm() {
+    fn manager_generates_unique_uuid_operation_ids() {
         let context = test_context("operation-ids");
         let source_root = context.workspace_root.join("src");
         let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
@@ -7648,18 +6837,12 @@ fn main() {
             )
             .unwrap();
         manager
-            .rlm_readiness(&context, &source_root, &Map::new())
-            .unwrap();
-        manager
-            .call_rlm_cancellable(
+            .call_bsl_mcp(
                 &context,
                 &source_root,
-                WorkspaceRlmOperation::Search {
-                    query: "needle".to_string(),
-                    limit: 20,
-                },
+                "search",
+                json!({}),
                 Duration::from_secs(1),
-                &CancellationToken::new(),
             )
             .unwrap();
 
@@ -7670,10 +6853,10 @@ fn main() {
             .filter_map(ServiceRequestKind::operation_id)
             .map(str::to_string)
             .collect::<Vec<_>>();
-        assert_eq!(ids.len(), 3);
+        assert_eq!(ids.len(), 2);
         assert_eq!(
             ids.iter().collect::<std::collections::HashSet<_>>().len(),
-            3
+            2
         );
         assert!(ids
             .iter()
@@ -7682,95 +6865,7 @@ fn main() {
         cleanup(&context);
     }
 
-    #[test]
-    fn rlm_request_preserves_caller_budget_above_service_default() {
-        let context = test_context("rlm-caller-budget");
-        let source_root = context.workspace_root.join("src");
-        let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
-        write_record(
-            &identity,
-            test_record(&identity, 34567, CoreIdentity::production().as_str()),
-        );
-        let connector = RecordingConnector {
-            ping_ok: true,
-            ..RecordingConnector::default()
-        };
-        let spawner = RecordingSpawner::default();
-        let manager = WorkspaceServiceManager::with_io(
-            &connector,
-            &spawner,
-            analysis_composition::service_environment(),
-        );
-
-        manager
-            .call_rlm_cancellable(
-                &context,
-                &source_root,
-                WorkspaceRlmOperation::Search {
-                    query: "needle".to_string(),
-                    limit: 20,
-                },
-                Duration::from_secs(300),
-                &CancellationToken::new(),
-            )
-            .unwrap();
-
-        let budget = *connector.budgets.borrow().last().unwrap();
-        let request = serde_json::to_value(connector.requests.borrow().last().unwrap()).unwrap();
-        let wire_timeout = Duration::new(
-            request["timeout_seconds"].as_u64().unwrap(),
-            request["timeout_nanos"].as_u64().unwrap() as u32,
-        );
-        cleanup(&context);
-        assert!(budget > Duration::from_secs(299), "{budget:?}");
-        assert!(budget <= Duration::from_secs(300), "{budget:?}");
-        assert_eq!(wire_timeout, budget);
-    }
-
-    #[test]
-    fn rlm_request_preserves_budget_beyond_u64_max_milliseconds() {
-        let context = test_context("rlm-caller-budget-beyond-u64-millis");
-        let source_root = context.workspace_root.join("src");
-        let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
-        write_record(
-            &identity,
-            test_record(&identity, 34567, CoreIdentity::production().as_str()),
-        );
-        let connector = RecordingConnector {
-            ping_ok: true,
-            ..RecordingConnector::default()
-        };
-        let spawner = RecordingSpawner::default();
-        let manager = WorkspaceServiceManager::with_io(
-            &connector,
-            &spawner,
-            analysis_composition::service_environment(),
-        );
-
-        manager
-            .call_rlm_cancellable(
-                &context,
-                &source_root,
-                WorkspaceRlmOperation::Search {
-                    query: "needle".to_string(),
-                    limit: 20,
-                },
-                Duration::from_secs(i64::MAX as u64),
-                &CancellationToken::new(),
-            )
-            .unwrap();
-
-        let budget = *connector.budgets.borrow().last().unwrap();
-        let request = serde_json::to_value(connector.requests.borrow().last().unwrap()).unwrap();
-        let wire_timeout = Duration::new(
-            request["timeout_seconds"].as_u64().unwrap(),
-            request["timeout_nanos"].as_u64().unwrap() as u32,
-        );
-        cleanup(&context);
-        assert!(wire_timeout > Duration::from_millis(u64::MAX));
-        assert_eq!(wire_timeout, budget);
-    }
-
+    /// rule: INV.PERF.SERVICE-CALLER-BUDGET
     #[test]
     fn bsl_request_preserves_budget_beyond_u64_max_milliseconds() {
         let context = test_context("bsl-caller-budget-beyond-u64-millis");
@@ -7816,204 +6911,7 @@ fn main() {
         assert_eq!(wire_timeout, budget);
     }
 
-    #[test]
-    fn rlm_readiness_preserves_caller_budget_above_service_default() {
-        let context = test_context("rlm-readiness-caller-budget");
-        let source_root = context.workspace_root.join("src");
-        let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
-        write_record(
-            &identity,
-            test_record(&identity, 34567, CoreIdentity::production().as_str()),
-        );
-        let connector = RecordingConnector {
-            ping_ok: true,
-            ..RecordingConnector::default()
-        };
-        let spawner = RecordingSpawner::default();
-        let manager = WorkspaceServiceManager::with_io(
-            &connector,
-            &spawner,
-            analysis_composition::service_environment(),
-        );
-
-        manager
-            .rlm_readiness_cancellable_with_timeout(
-                &context,
-                &source_root,
-                &Map::new(),
-                Duration::new(300, 123_456_789),
-                &CancellationToken::new(),
-            )
-            .unwrap();
-
-        let budget = *connector.budgets.borrow().last().unwrap();
-        let request = serde_json::to_value(connector.requests.borrow().last().unwrap()).unwrap();
-        let wire_timeout = Duration::new(
-            request["timeout_seconds"].as_u64().unwrap(),
-            request["timeout_nanos"].as_u64().unwrap() as u32,
-        );
-        cleanup(&context);
-        assert!(budget > Duration::from_secs(299), "{budget:?}");
-        assert!(budget <= Duration::new(300, 123_456_789), "{budget:?}");
-        assert_eq!(wire_timeout, budget);
-    }
-
-    #[test]
-    fn manager_retries_rlm_request_once_after_transport_reset() {
-        let context = test_context("rlm-transport-reset-retry");
-        let source_root = context.workspace_root.join("src");
-        let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
-        write_record(
-            &identity,
-            test_record(&identity, 34567, CoreIdentity::production().as_str()),
-        );
-        let connector = ResetRlmConnector::default();
-        let spawner = RecordingSpawner::default();
-        let manager = WorkspaceServiceManager::with_io(
-            &connector,
-            &spawner,
-            analysis_composition::service_environment(),
-        );
-
-        let output = manager
-            .call_rlm_cancellable(
-                &context,
-                &source_root,
-                WorkspaceRlmOperation::Search {
-                    query: "needle".to_string(),
-                    limit: 20,
-                },
-                Duration::from_secs(1),
-                &CancellationToken::new(),
-            )
-            .unwrap();
-
-        let WorkspaceServiceRlmCall::Output(output) = output else {
-            panic!("successful retry must return RLM output");
-        };
-        assert_eq!(output.result_text, "[]");
-        assert_eq!(*connector.calls.borrow(), 2);
-        assert_eq!(connector.operation_ids.borrow().len(), 2);
-        assert_ne!(
-            connector.operation_ids.borrow()[0],
-            connector.operation_ids.borrow()[1]
-        );
-        assert!(connector
-            .timeouts
-            .borrow()
-            .iter()
-            .all(|timeout| *timeout <= Duration::from_secs(1)));
-        cleanup(&context);
-    }
-
-    #[test]
-    fn manager_preserves_structured_post_execution_readiness() {
-        struct StaleRlmConnector;
-
-        impl ServiceConnector for StaleRlmConnector {
-            fn send_before(
-                &self,
-                _record: &WorkspaceServiceRecord,
-                _request: ServiceRequest,
-                _cancellation: &CancellationToken,
-                _deadline: OperationDeadline,
-            ) -> Result<ServiceResponse, String> {
-                unreachable!("this fixture exercises only finite legacy requests")
-            }
-
-            fn send(
-                &self,
-                _record: &WorkspaceServiceRecord,
-                request: ServiceRequest,
-                _cancellation: &CancellationToken,
-                _budget: Duration,
-            ) -> Result<ServiceResponse, String> {
-                match request.kind {
-                    ServiceRequestKind::Ping => Ok(ServiceResponse {
-                        ok: true,
-                        status: Some("alive".to_string()),
-                        ..ServiceResponse::default()
-                    }),
-                    ServiceRequestKind::RlmMcp { .. } => {
-                        Ok(ServiceResponse::unavailable_rlm_execution(
-                            IndexReadiness::Stale {
-                                status: "source generation changed".to_string(),
-                            },
-                            Vec::new(),
-                        ))
-                    }
-                    _ => panic!("unexpected request"),
-                }
-            }
-        }
-
-        let context = test_context("rlm-structured-post-readiness");
-        let source_root = context.workspace_root.join("src");
-        let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
-        write_record(
-            &identity,
-            test_record(&identity, 34567, CoreIdentity::production().as_str()),
-        );
-        let spawner = RecordingSpawner::default();
-        let manager = WorkspaceServiceManager::with_io(
-            &StaleRlmConnector,
-            &spawner,
-            analysis_composition::service_environment(),
-        );
-
-        let result = manager
-            .call_rlm_cancellable(
-                &context,
-                &source_root,
-                WorkspaceRlmOperation::Definition {
-                    name: "Needle".to_string(),
-                    module_hint: String::new(),
-                    limit: 50,
-                },
-                Duration::from_secs(1),
-                &CancellationToken::new(),
-            )
-            .unwrap();
-
-        let WorkspaceServiceRlmCall::Unready(IndexReadiness::Stale { status }) = result else {
-            panic!("stale service response must stay structured");
-        };
-        assert_eq!(status, "source generation changed");
-        cleanup(&context);
-    }
-
-    #[test]
-    fn rlm_readiness_observes_cancellation_after_transport_returns() {
-        let context = test_context("rlm-readiness-post-send-cancel");
-        let source_root = context.workspace_root.join("src");
-        let identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
-        write_record(
-            &identity,
-            test_record(&identity, 34567, CoreIdentity::production().as_str()),
-        );
-        let connector = CancelAfterRlmReadyConnector;
-        let spawner = RecordingSpawner::default();
-        let manager = WorkspaceServiceManager::with_io(
-            &connector,
-            &spawner,
-            analysis_composition::service_environment(),
-        );
-        let cancellation = CancellationToken::new();
-
-        let error = manager
-            .rlm_readiness_cancellable_with_timeout(
-                &context,
-                &source_root,
-                &Map::new(),
-                Duration::from_secs(1),
-                &cancellation,
-            )
-            .unwrap_err();
-
-        assert!(error.starts_with("cancelled:"), "{error}");
-        cleanup(&context);
-    }
-
+    /// rule: INV.RUNTIME.SERVICE-READ-RETRY
     #[test]
     fn manager_retries_bsl_request_once_after_transport_reset() {
         let context = test_context("bsl-transport-reset-retry");
@@ -8107,6 +7005,7 @@ fn main() {
         cleanup(&context);
     }
 
+    /// rule: INV.RUNTIME.SERVICE-READ-RETRY
     #[test]
     fn manager_passes_remaining_budget_and_fresh_token_to_retry_spawn() {
         let context = test_context("bsl-retry-spawn-budget-token");
@@ -8313,6 +7212,7 @@ fn main() {
         cleanup(&context);
     }
 
+    /// rule: INV.RUNTIME.SERVICE-READ-RETRY
     #[test]
     fn manager_stops_after_one_transport_retry() {
         let context = test_context("bsl-transport-reset-twice");
@@ -8350,6 +7250,7 @@ fn main() {
         cleanup(&context);
     }
 
+    /// rule: INV.RUNTIME.SERVICE-READ-RETRY
     #[test]
     fn manager_does_not_retry_unknown_bsl_tool_after_ambiguous_reset() {
         let context = test_context("unknown-bsl-tool-no-retry");
@@ -8384,6 +7285,7 @@ fn main() {
         cleanup(&context);
     }
 
+    /// rule: INV.RUNTIME.SERVICE-READ-RETRY
     #[test]
     fn manager_does_not_retry_typed_bsl_failure() {
         let context = test_context("typed-bsl-failure-no-retry");
@@ -8418,6 +7320,7 @@ fn main() {
         cleanup(&context);
     }
 
+    /// rule: INV.RUNTIME.SERVICE-READ-RETRY
     #[test]
     fn transport_retry_classifier_excludes_terminal_errors() {
         assert_eq!(duration_timeout_millis(Duration::ZERO), 1);
@@ -8475,34 +7378,8 @@ fn main() {
         let _ = fs::remove_dir_all(context.cache_root.parent().unwrap_or(&context.cache_root));
     }
 
-    fn now_secs_for_test() -> u64 {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs()
-    }
-
     fn write_record(identity: &WorkspaceServiceIdentity, record: WorkspaceServiceRecord) {
         super::write_record(identity, &record).unwrap();
-    }
-
-    pub(super) fn test_record(
-        identity: &WorkspaceServiceIdentity,
-        port: u16,
-        build: &str,
-    ) -> WorkspaceServiceRecord {
-        WorkspaceServiceRecord {
-            schema_version: SERVICE_SCHEMA_VERSION,
-            pid: std::process::id(),
-            port,
-            token: "secret".to_string(),
-            build: build.to_string(),
-            version: env!("CARGO_PKG_VERSION").to_string(),
-            workspace_root: identity.workspace_root.clone(),
-            source_root: identity.source_root.clone(),
-            started_at: now_secs_for_test(),
-            last_access_at: now_secs_for_test(),
-        }
     }
 
     #[derive(Default)]
@@ -8527,105 +7404,6 @@ fn main() {
         bsl_timeouts: std::cell::RefCell<Vec<Duration>>,
         bsl_record_tokens: std::cell::RefCell<Vec<String>>,
         bsl_request_tokens: std::cell::RefCell<Vec<String>>,
-    }
-
-    #[derive(Default)]
-    struct ResetRlmConnector {
-        calls: std::cell::RefCell<u32>,
-        operation_ids: std::cell::RefCell<Vec<String>>,
-        timeouts: std::cell::RefCell<Vec<Duration>>,
-    }
-
-    impl ServiceConnector for ResetRlmConnector {
-        fn send_before(
-            &self,
-            _record: &WorkspaceServiceRecord,
-            _request: ServiceRequest,
-            _cancellation: &CancellationToken,
-            _deadline: OperationDeadline,
-        ) -> Result<ServiceResponse, String> {
-            unreachable!("this fixture exercises only finite legacy requests")
-        }
-
-        fn send(
-            &self,
-            _record: &WorkspaceServiceRecord,
-            request: ServiceRequest,
-            _cancellation: &CancellationToken,
-            _budget: Duration,
-        ) -> Result<ServiceResponse, String> {
-            match request.kind {
-                ServiceRequestKind::Ping => Ok(ServiceResponse {
-                    ok: true,
-                    status: Some("alive".to_string()),
-                    ..ServiceResponse::default()
-                }),
-                ServiceRequestKind::RlmMcp {
-                    operation_id,
-                    timeout_seconds,
-                    timeout_nanos,
-                    ..
-                } => {
-                    self.operation_ids.borrow_mut().push(operation_id);
-                    self.timeouts
-                        .borrow_mut()
-                        .push(Duration::new(timeout_seconds, timeout_nanos));
-                    let mut calls = self.calls.borrow_mut();
-                    *calls += 1;
-                    if *calls == 1 {
-                        Err(
-                            "workspace service disconnected before responding to RLM request"
-                                .to_string(),
-                        )
-                    } else {
-                        Ok(ServiceResponse {
-                            ok: true,
-                            result_text: Some("[]".to_string()),
-                            ..ServiceResponse::default()
-                        })
-                    }
-                }
-                _ => panic!("unexpected request kind"),
-            }
-        }
-    }
-
-    struct CancelAfterRlmReadyConnector;
-
-    impl ServiceConnector for CancelAfterRlmReadyConnector {
-        fn send_before(
-            &self,
-            _record: &WorkspaceServiceRecord,
-            _request: ServiceRequest,
-            _cancellation: &CancellationToken,
-            _deadline: OperationDeadline,
-        ) -> Result<ServiceResponse, String> {
-            unreachable!("this fixture exercises only finite legacy requests")
-        }
-
-        fn send(
-            &self,
-            _record: &WorkspaceServiceRecord,
-            request: ServiceRequest,
-            cancellation: &CancellationToken,
-            _budget: Duration,
-        ) -> Result<ServiceResponse, String> {
-            match request.kind {
-                ServiceRequestKind::Ping => Ok(ServiceResponse {
-                    ok: true,
-                    status: Some("alive".to_string()),
-                    ..ServiceResponse::default()
-                }),
-                ServiceRequestKind::RlmReady { .. } => {
-                    cancellation.cancel();
-                    Ok(ServiceResponse {
-                        ok: true,
-                        ..ServiceResponse::default()
-                    })
-                }
-                _ => panic!("unexpected request kind"),
-            }
-        }
     }
 
     impl ServiceConnector for ResetBslConnector {
@@ -8708,6 +7486,16 @@ fn main() {
                 _ => panic!("unexpected request kind"),
             }
         }
+
+        fn send_operation_before(
+            &self,
+            _record: &WorkspaceServiceRecord,
+            _request: ServiceRequest,
+            _cancellation: &CancellationToken,
+            _deadline: ProviderDeadline,
+        ) -> Result<ServiceResponse, String> {
+            unreachable!("this legacy fixture does not use the prepared BSL route")
+        }
     }
 
     #[derive(Default)]
@@ -8752,6 +7540,16 @@ fn main() {
                 _ => panic!("unexpected request kind"),
             }
         }
+
+        fn send_operation_before(
+            &self,
+            _record: &WorkspaceServiceRecord,
+            _request: ServiceRequest,
+            _cancellation: &CancellationToken,
+            _deadline: ProviderDeadline,
+        ) -> Result<ServiceResponse, String> {
+            unreachable!("this legacy fixture does not use the prepared BSL route")
+        }
     }
 
     impl ServiceConnector for RecordingConnector {
@@ -8786,6 +7584,16 @@ fn main() {
             } else {
                 Err("connection refused".to_string())
             }
+        }
+
+        fn send_operation_before(
+            &self,
+            _record: &WorkspaceServiceRecord,
+            _request: ServiceRequest,
+            _cancellation: &CancellationToken,
+            _deadline: ProviderDeadline,
+        ) -> Result<ServiceResponse, String> {
+            unreachable!("this legacy fixture does not use the prepared BSL route")
         }
     }
 
@@ -8832,6 +7640,17 @@ fn main() {
             let mut record = test_record(identity, 45678, CoreIdentity::production().as_str());
             record.token = token.to_string();
             Ok(record)
+        }
+
+        fn spawn_operation_before(
+            &self,
+            _identity: &WorkspaceServiceIdentity,
+            _config: WorkspaceServiceConfig,
+            _token: &str,
+            _cancellation: &CancellationToken,
+            _deadline: ProviderDeadline,
+        ) -> Result<WorkspaceServiceRecord, String> {
+            unreachable!("this legacy fixture does not use typed provider startup")
         }
     }
 }

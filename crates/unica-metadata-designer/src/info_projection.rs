@@ -1,6 +1,6 @@
 #[cfg(any(test, feature = "test-support"))]
 use roxmltree::Document;
-use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+use unica_address::source_target::MetadataAddress;
 #[cfg(any(test, feature = "test-support"))]
 use unica_metadata::META_INFO_PROPERTY_NAMES;
 use unica_metadata::{
@@ -297,24 +297,31 @@ pub fn parse_observed_metadata_type_contents_node(
                     "existing defined type uses an unsupported namespace",
                 ));
             }
+            if local_name == "ExchangePlanRef" {
+                variants.push(ObservedMetadataTypeVariant::ReferenceFamily {
+                    type_name: local_name,
+                    namespace_uri: namespace,
+                });
+                continue;
+            }
             if let Some(chart) = local_name.strip_prefix("Characteristic.") {
                 // `cfg:Characteristic.X` is the type set of a chart of
                 // characteristic types: read it, never rewrite it.
-                let metadata_path = MetadataAddress::parse(
-                    PLATFORM_XML_8_3_27_FORMAT_2_20,
-                    &format!("ChartOfCharacteristicTypes.{chart}"),
-                )
-                .map_err(|_| {
-                    invalid_observed_type(
-                        "existing characteristic type set is not a metadata address",
-                    )
-                })?;
+                let metadata_path =
+                    MetadataAddress::parse_logical(&format!("ChartOfCharacteristicTypes.{chart}"))
+                        .map_err(|_| {
+                            invalid_observed_type(
+                                "existing characteristic type set is not a metadata address",
+                            )
+                        })?;
                 variants.push(ObservedMetadataTypeVariant::CharacteristicTypes { metadata_path });
                 continue;
             }
             let metadata_path =
-                MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &local_name).map_err(
-                    |_| invalid_observed_type("existing defined type is not a metadata address"),
+                MetadataAddress::parse_logical(&local_name).map_err(
+                    |_| invalid_observed_type(format!(
+                        "TypeSet QName {{{namespace}}}{local_name} is not supported by this format profile; complete type composition is unavailable"
+                    )),
                 )?;
             if metadata_path.segments().next() != Some("DefinedType")
                 || metadata_path.segments().count() != 2
@@ -387,31 +394,11 @@ pub fn parse_observed_metadata_type_contents_node(
                 }
                 (DATA_CORE_NAMESPACE, "ValueStorage") => ObservedMetadataTypeVariant::ValueStorage,
                 (DATA_CORE_NAMESPACE, "UUID") => ObservedMetadataTypeVariant::Uuid,
-                (CURRENT_CONFIG_NAMESPACE, raw) => {
-                    let Some((generated, name)) = raw.split_once('.') else {
-                        return Err(invalid_observed_type(
-                            "existing reference type is malformed",
-                        ));
-                    };
-                    let kind = generated.strip_suffix("Ref").ok_or_else(|| {
-                        invalid_observed_type("existing generated type is not a reference")
-                    })?;
-                    ObservedMetadataTypeVariant::Reference {
-                        metadata_path: MetadataAddress::parse(
-                            PLATFORM_XML_8_3_27_FORMAT_2_20,
-                            &format!("{kind}.{name}"),
-                        )
-                        .map_err(|_| {
-                            invalid_observed_type(
-                                "existing reference type is not a metadata address",
-                            )
-                        })?,
-                    }
-                }
+                (CURRENT_CONFIG_NAMESPACE, raw) => parse_generated_observed_type(raw)?,
                 _ => {
-                    return Err(invalid_observed_type(
-                        "existing metadata type is unsupported by typed read",
-                    ))
+                    return Err(invalid_observed_type(format!(
+                        "Type QName {{{namespace}}}{local_name} is not supported by this format profile; complete type composition is unavailable"
+                    )))
                 }
             }
         };
@@ -427,6 +414,41 @@ pub fn parse_observed_metadata_type_contents_node(
         ));
     }
     ObservedMetadataType::new(variants)
+}
+
+// The generated class remains distinct from the metadata address it names.
+// Only the read algebra grows; managers and unknown classes remain unmodelled.
+fn parse_generated_observed_type(raw: &str) -> Result<ObservedMetadataTypeVariant, MetaDiagnostic> {
+    let unsupported = || {
+        invalid_observed_type(format!(
+        "Type QName {{{CURRENT_CONFIG_NAMESPACE}}}{raw} is not supported by this format profile; complete type composition is unavailable"
+    ))
+    };
+    let (generated, name) = raw.split_once('.').ok_or_else(unsupported)?;
+    let (kind, class) = if let Some(kind) = generated.strip_suffix("Ref") {
+        (kind, "reference")
+    } else if let Some(kind) = generated.strip_suffix("Object") {
+        (kind, "object")
+    } else if let Some(kind) = generated.strip_suffix("RecordSet") {
+        (kind, "recordSet")
+    } else {
+        return Err(unsupported());
+    };
+    let metadata_path =
+        MetadataAddress::parse_logical(&format!("{kind}.{name}")).map_err(|_| unsupported())?;
+    if class != "reference" {
+        let kind = MetadataKind::parse(kind).map_err(|_| unsupported())?;
+        if !unica_metadata::identifier::is_1c_identifier(name)
+            || !crate::layout::metadata_kind_value_types(kind).contains(&generated)
+        {
+            return Err(unsupported());
+        }
+    }
+    Ok(match class {
+        "object" => ObservedMetadataTypeVariant::Object { metadata_path },
+        "recordSet" => ObservedMetadataTypeVariant::RecordSet { metadata_path },
+        _ => ObservedMetadataTypeVariant::Reference { metadata_path },
+    })
 }
 
 pub fn observed_type_is_strict_but_unmodelled(properties: roxmltree::Node<'_, '_>) -> bool {
@@ -566,14 +588,16 @@ pub fn observed_type_is_strict_but_unmodelled(properties: roxmltree::Node<'_, '_
             if namespace != CURRENT_CONFIG_NAMESPACE {
                 return false;
             }
+            if local == "ExchangePlanRef" {
+                continue;
+            }
             // Набор типов платформы (`AnyIBRef`, `CatalogRef`, `DocumentObject`,
             // `ConstantValueManager`…) синтаксически допустим, но не моделируется.
             if platform_type_set(&local) {
                 saw_unknown = true;
                 continue;
             }
-            let Ok(address) = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &local)
-            else {
+            let Ok(address) = MetadataAddress::parse_logical(&local) else {
                 return false;
             };
             if address.segments().next() != Some("DefinedType") || address.segments().count() != 2 {
@@ -596,6 +620,15 @@ pub fn observed_type_is_strict_but_unmodelled(properties: roxmltree::Node<'_, '_
             }
             _ => {}
         }
+        if namespace == CURRENT_CONFIG_NAMESPACE {
+            if let Some((generated, name)) = local.split_once('.') {
+                if (generated.ends_with("Object") || generated.ends_with("RecordSet"))
+                    && !unica_metadata::identifier::is_1c_identifier(name)
+                {
+                    return false;
+                }
+            }
+        }
         let known = match (namespace.as_str(), local.as_str()) {
             (
                 XML_SCHEMA_NAMESPACE,
@@ -606,14 +639,7 @@ pub fn observed_type_is_strict_but_unmodelled(properties: roxmltree::Node<'_, '_
                 true
             }
             (DATA_CORE_NAMESPACE, "UUID") => true,
-            (CURRENT_CONFIG_NAMESPACE, raw) => {
-                raw.split_once('.').is_some_and(|(generated, name)| {
-                    generated.strip_suffix("Ref").is_some_and(|kind| {
-                        MetadataKind::parse(kind).is_ok()
-                            && unica_metadata::identifier::is_1c_identifier(name)
-                    })
-                })
-            }
+            (CURRENT_CONFIG_NAMESPACE, raw) => parse_generated_observed_type(raw).is_ok(),
             (XML_SCHEMA_NAMESPACE | DATA_CORE_NAMESPACE, _) => false,
             _ => return false,
         };
@@ -698,7 +724,10 @@ pub fn project_meta_info_details(
                 let diagnostic = if observed_type_is_strict_but_unmodelled(properties) {
                     MetaDiagnostic::warning(
                         MetaDiagnosticCode::ValidationWarning,
-                        "metadata type is syntactically valid but not modelled by this format profile",
+                        format!(
+                            "metadata type composition is incomplete: {}",
+                            diagnostic.message
+                        ),
                     )
                 } else {
                     MetaDiagnostic::error(diagnostic.code, diagnostic.message)
@@ -802,11 +831,8 @@ pub fn project_meta_info_details(
                         );
                         return None;
                     }
-                    let metadata_path = MetadataAddress::parse(
-                        PLATFORM_XML_8_3_27_FORMAT_2_20,
-                        &format!("CommonModule.{module}"),
-                    )
-                    .ok()?;
+                    let metadata_path =
+                        MetadataAddress::parse_logical(&format!("CommonModule.{module}")).ok()?;
                     Some(MetaScheduledMethod {
                         metadata_path,
                         method: method.to_string(),
@@ -837,9 +863,7 @@ pub fn project_meta_info_details(
                     );
                     return None;
                 };
-                let Ok(register_address) = MetadataAddress::parse(
-                    PLATFORM_XML_8_3_27_FORMAT_2_20,
-                    &register,
+                let Ok(register_address) = MetadataAddress::parse_logical(&register,
                 ) else {
                     diagnostic(
                         ProjectionError::malformed(
@@ -1253,6 +1277,27 @@ pub fn project_optional_collection_item_properties(
             "Comment",
             "Type",
             "AddressingDimension",
+            "PasswordMode",
+            "Format",
+            "EditFormat",
+            "ToolTip",
+            "MarkNegatives",
+            "Mask",
+            "MultiLine",
+            "ExtendedEdit",
+            "MinValue",
+            "MaxValue",
+            "FillFromFillingValue",
+            "FillValue",
+            "FillChecking",
+            "ChoiceFoldersAndItems",
+            "ChoiceParameterLinks",
+            "ChoiceParameters",
+            "QuickChoice",
+            "CreateOnInput",
+            "ChoiceForm",
+            "LinkByType",
+            "ChoiceHistoryOnInput",
             "Indexing",
             "FullTextSearch",
             "DataHistory",
@@ -2913,15 +2958,12 @@ pub fn parse_xdto_packages(
                 expanded_type.local_name.as_str(),
             ) {
                 (READABLE_NAMESPACE, "MDObjectRef") => {
-                    let metadata_path =
-                        MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, raw).map_err(
-                            |_| {
-                                ProjectionError::malformed(
-                                    field.clone(),
-                                    "XDTO package reference is malformed".to_string(),
-                                )
-                            },
-                        )?;
+                    let metadata_path = MetadataAddress::parse_logical(raw).map_err(|_| {
+                        ProjectionError::malformed(
+                            field.clone(),
+                            "XDTO package reference is malformed".to_string(),
+                        )
+                    })?;
                     if metadata_path.segments().next() != Some("XDTOPackage")
                         || metadata_path.segments().count() != 2
                     {
@@ -3007,10 +3049,9 @@ pub fn parse_metadata_object_refs(
             }
             let raw_value = direct_text_content(item);
             let raw = raw_value.trim();
-            let address =
-                MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, raw).map_err(|_| {
-                    ProjectionError::malformed(field.clone(), "metadata reference is malformed")
-                })?;
+            let address = MetadataAddress::parse_logical(raw).map_err(|_| {
+                ProjectionError::malformed(field.clone(), "metadata reference is malformed")
+            })?;
             if address.segments().next() != Some(expected_kind) || address.segments().count() != 2 {
                 return Err(ProjectionError::malformed(
                     field,

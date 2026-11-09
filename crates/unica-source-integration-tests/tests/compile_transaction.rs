@@ -79,6 +79,7 @@ fn precommit_retry_finishes_the_recovery_directory_after_file_cleanup_recovers()
     unica_workspace::compile_transaction::contract_tests::precommit_retry_finishes_the_recovery_directory_after_file_cleanup_recovers(unica_source_designer::registration::cf_edit_add_child_object_text);
 }
 
+/// rule: INV.SOURCE.ROLLBACK-DIAGNOSTIC-CLASS
 #[test]
 fn successful_registration_cleanup_warns_and_preserves_decoy_after_parent_swap() {
     if let Err(skip) = unica_workspace::compile_transaction::contract_tests::successful_registration_cleanup_warns_and_preserves_decoy_after_parent_swap(unica_source_designer::registration::cf_edit_add_child_object_text) {
@@ -111,6 +112,7 @@ fn rollback_preserves_concurrent_registration_replacement_and_original_recovery(
     unica_workspace::compile_transaction::contract_tests::rollback_preserves_concurrent_registration_replacement_and_original_recovery(unica_source_designer::registration::cf_edit_add_child_object_text);
 }
 
+/// rule: INV.SOURCE.ROLLBACK-DIAGNOSTIC-CLASS
 #[test]
 fn registration_rollback_preserves_same_name_recovery_decoy_after_parent_swap() {
     if let Err(skip) = unica_workspace::compile_transaction::contract_tests::registration_rollback_preserves_same_name_recovery_decoy_after_parent_swap(unica_source_designer::registration::cf_edit_add_child_object_text) {
@@ -128,6 +130,7 @@ fn registration_rollback_restore_cleanup_preserves_same_name_quarantine_decoy() 
     unica_workspace::compile_transaction::contract_tests::registration_rollback_restore_cleanup_preserves_same_name_quarantine_decoy(unica_source_designer::registration::cf_edit_add_child_object_text);
 }
 
+/// rule: INV.SOURCE.ROLLBACK-DIAGNOSTIC-CLASS
 #[test]
 fn registration_rollback_validation_reports_preserved_quarantine() {
     unica_workspace::compile_transaction::contract_tests::registration_rollback_validation_reports_preserved_quarantine(unica_source_designer::registration::cf_edit_add_child_object_text);
@@ -155,4 +158,11 @@ fn symlink_targets_are_rejected() {
     unica_workspace::compile_transaction::contract_tests::symlink_targets_are_rejected(
         unica_source_designer::registration::cf_edit_add_child_object_text,
     );
+}
+
+#[test]
+fn post_validation_rollback_preserves_unix_modes() {
+    if let Err(skip) = unica_workspace::compile_transaction::contract_tests::post_validation_rollback_preserves_unix_modes(unica_source_designer::registration::cf_edit_add_child_object_text) {
+        unica_process::test_support::skip_named_host_capability(skip.capability, skip.reason);
+    }
 }

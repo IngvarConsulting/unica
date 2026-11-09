@@ -16,6 +16,7 @@ import xml.etree.ElementTree as ET
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import allure_results
+from cargo_target import cargo_target_dir
 import prepared_binary
 import ci_shadow_selector
 from workflow_routing import ADMITTED
@@ -26,18 +27,18 @@ runner = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(runner)
 LANES = ("ordinary", "receipt", "vendor")
 LINUX = "ubuntu-latest"
-HOSTS = (LINUX, "macos-14", "windows-latest")
-# The queue runs the complete suite on Linux and only the platform facades on
-# macOS: OS-specific code lives in the platform directories of
-# INV.PLATFORM.OS-BEHIND-FACADE, and `size-filters.py` derives the
-# `queue-platform` nextest profile from them. Nightly `large` and release keep
-# the complete macOS matrix; pull requests do not run macOS by default.
-PLATFORM_ONLY = {("queue", "macos-14")}
-PLATFORM_NEXTEST_PROFILE = "queue-platform"
-
-
-def platform_only(profile: str, host: str | None) -> bool:
-    return (profile, host) in PLATFORM_ONLY
+HOSTS = (LINUX, "macos-15", "windows-latest")
+# The queue runs on Linux only: a merge group never waits for a macOS runner.
+# macOS runs the complete suite nightly, in `main` and release runs and in
+# pull requests labelled `ci:full`.
+# macos-14 is comparison-only history; it is not a current HOSTS entry.
+# Removal: runners moved to macos-15 on 2026-10-31 and inventories live
+# 90 days. The macos-14 comparison here and in `rust_inventory_baseline.py`
+# goes, with its tests, once every release line has a run after 2026-10-31
+# or after 2027-01-29, whichever comes first.
+# Earlier queue inventories ran only the platform facades on macOS (profile
+# `queue-platform`); a baseline of that shape stays a narrowed selection.
+HISTORICAL_PLATFORM_ONLY = {("queue", "macos-15"), ("queue", "macos-14")}
 
 
 def lanes(profile: str, host: str | None = None) -> tuple[str, ...]:
@@ -46,7 +47,7 @@ def lanes(profile: str, host: str | None = None) -> tuple[str, ...]:
     Vendor's ureq fault cases run with the complete suites only (nightly,
     release): the queue keeps ordinary and Receipt (owner's decision, #1813).
     """
-    if platform_only(profile, host) or not set(ADMITTED[profile]) & {"medium", "large"}:
+    if not set(ADMITTED[profile]) & {"medium", "large"}:
         return ("ordinary",)
     return LANES if "large" in ADMITTED[profile] else ("ordinary", "receipt")
 
@@ -55,9 +56,9 @@ def profile_hosts(profile: str, *, full_matrix: bool = True) -> list[str]:
     """Runners of a gate profile; a pull request adds macOS only with `ci:full`."""
     if profile == "large":
         return list(HOSTS)
-    if profile == "pr" and not full_matrix:
+    if profile == "queue" or (profile == "pr" and not full_matrix):
         return [LINUX]
-    return [LINUX, "macos-14"]
+    return [LINUX, "macos-15"]
 
 
 def selection(lane: str) -> tuple[str, ...]:
@@ -72,7 +73,14 @@ def shards(profile: str, lane: str, host: str | None = None) -> int:
 
 
 def nextest_profile(profile: str, lane: str, host: str | None) -> str:
-    return PLATFORM_NEXTEST_PROFILE if platform_only(profile, host) else runner.nextest_profile(profile, selection(lane))
+    return runner.nextest_profile(profile, selection(lane))
+
+
+def historical_nextest_profile(profile: str, lane: str, host: str | None) -> str:
+    """The nextest profile a recorded plan of this shape used."""
+    if (profile, host) in HISTORICAL_PLATFORM_ONLY:
+        return "queue-platform"
+    return nextest_profile(profile, lane, host)
 
 
 def filters(lane: str) -> list[str]:
@@ -91,7 +99,7 @@ def archive_command(lane: str, archive: Path, root: Path = ROOT, target: str | N
     # list/run, never silently discarded from the execution plan.
     return ["cargo", "nextest", "archive", *selected, *([] if "--locked" in selected else ["--locked"]),
             *(["--target", target] if target is not None else []),
-            "--target-dir", str(root / "target"), "--archive-file", str(archive)]
+            "--target-dir", str(cargo_target_dir(root)), "--archive-file", str(archive)]
 
 
 def doctest_command(root: Path = ROOT, target: str | None = None) -> list[str]:
@@ -100,7 +108,7 @@ def doctest_command(root: Path = ROOT, target: str | None = None) -> list[str]:
     # the ordinary build, against the target directory the archive just filled.
     return ["cargo", "test", "--doc", "--workspace", "--locked",
             *(["--target", target] if target is not None else []),
-            "--target-dir", str(root / "target")]
+            "--target-dir", str(cargo_target_dir(root))]
 
 
 DOCTEST_OUTPUT_LIMIT = 16_000
@@ -121,8 +129,7 @@ def run_doctests(root: Path, target: str | None) -> dict:
 
 
 def doctest_problem(manifest: dict) -> str | None:
-    # Doctests are not platform facade tests; a platform-only host skips them.
-    if manifest.get("lane") != "ordinary" or platform_only(manifest.get("profile"), manifest.get("runner")):
+    if manifest.get("lane") != "ordinary":
         return None
     outcome = manifest.get("doctests")
     if not isinstance(outcome, dict) or type(outcome.get("exitCode")) is not int:
@@ -148,6 +155,15 @@ def doctest_record(manifest: dict, profile: str, host: str) -> dict:
                 "size": "small", "rust_lane": "ordinary"},
         message=problem, trace=outcome.get("output") if problem else None, start=start, stop=stop,
     )
+
+
+def extracted_target(root: Path) -> Path:
+    """Where reuse puts the archive's binaries and nextest its store: `<extract-to>/target`.
+
+    An archive carries its own build directory; `--archive-file` takes no
+    `--target-dir-remap`, so `CARGO_TARGET_DIR` does not move it.
+    """
+    return root.resolve() / "target"  # cargo-target: extracted archive
 
 
 def reuse_command(action: str, root: Path, archive: Path, lane: str, profile: str, partition: str | None = None, *, candidate: str | None = None, host: str | None = None) -> list[str]:
@@ -263,16 +279,16 @@ def fixture_binary_descriptor(root: Path, listed: dict, identity: dict) -> dict:
     metadata = listed.get("rust-build-meta", {})
     platforms = metadata.get("platforms", {})
     target = identity["target"]
-    if (metadata.get("target-directory") != str(root / "target")
+    if (metadata.get("target-directory") != str(cargo_target_dir(root))
         or platforms.get("host", {}).get("platform", {}).get("triple") != target
         or [item.get("platform", {}).get("triple") for item in platforms.get("targets", [])] != [target]):
         raise ValueError("fixture binary metadata does not describe the native archive target")
-    suite = listed.get("rust-suites", {}).get("unica-coder", {})
-    if (suite.get("package-name"), suite.get("binary-id"), suite.get("kind"), suite.get("build-platform")) != ("unica-coder", "unica-coder", "lib", "target"):
-        raise ValueError("fixture binary metadata is missing the unica-coder package")
+    suite = listed.get("rust-suites", {}).get("unica-product::bin/unica", {})
+    if (suite.get("package-name"), suite.get("binary-id"), suite.get("kind"), suite.get("build-platform")) != ("unica-product", "unica-product::bin/unica", "bin", "target"):
+        raise ValueError("fixture binary metadata is missing the unica-product package")
     package = suite.get("package-id")
     if not isinstance(package, str) or not package:
-        raise ValueError("fixture binary metadata is missing the unica-coder package identity")
+        raise ValueError("fixture binary metadata is missing the unica-product package identity")
     candidates = [entry for entry in metadata.get("non-test-binaries", {}).get(package, []) if entry.get("name") == "unica"]
     relative = fixture_binary_path(identity)
     described_path = candidates[0].get("path") if len(candidates) == 1 else None
@@ -282,7 +298,8 @@ def fixture_binary_descriptor(root: Path, listed: dict, identity: dict) -> dict:
         ("kind", "bin-exe"), ("build-platform", "target"),
     )) or described_path != relative:
         raise ValueError("archive must contain exactly one target unica non-test fixture binary")
-    binary = root.resolve() / "target" / relative
+    # Reuse extracts the archive into `<root>/target`, whatever built it.
+    binary = root.resolve() / "target" / relative  # cargo-target: extracted archive
     if not binary.is_file() or binary.resolve() != binary or binary.stat().st_size <= 0:
         raise ValueError("archive fixture binary is missing, empty or linked")
     return {"path": relative, "sha256": prepared_binary.digest(binary), "bytes": binary.stat().st_size}
@@ -298,7 +315,7 @@ def fixture_binary_environment(root: Path, document: dict) -> dict[str, str]:
     # Nextest extracts the checked archive before starting tests. The parent and
     # isolated child verify these exact extracted bytes before using the fixture.
     return {**os.environ,
-            "UNICA_CANONICAL_DELIVERY_SUCCESS_BINARY": str(root.resolve() / "target" / descriptor["path"]),
+            "UNICA_CANONICAL_DELIVERY_SUCCESS_BINARY": str(extracted_target(root) / descriptor["path"]),
             "UNICA_CANONICAL_DELIVERY_SUCCESS_SHA256": descriptor["sha256"]}
 
 
@@ -327,7 +344,7 @@ ARCHIVE_RUNNER_CAPABILITIES = frozenset({"archive-fixture-binary"})
 REQUIRED_HOST_CAPABILITIES = {
     "ubuntu-latest": UNIX_RUNNER_CAPABILITIES | ARCHIVE_RUNNER_CAPABILITIES
     | {"case-sensitive-filesystem", "non-utf8-file-names"},
-    "macos-14": UNIX_RUNNER_CAPABILITIES | ARCHIVE_RUNNER_CAPABILITIES
+    "macos-15": UNIX_RUNNER_CAPABILITIES | ARCHIVE_RUNNER_CAPABILITIES
     | {"case-insensitive-filesystem", "normalization-insensitive-filesystem"},
     # A decision, not a fact about the runner: no host capability is required
     # on Windows yet, so those skips are visible but none is refused. A red
@@ -466,7 +483,7 @@ def build(root: Path, destination: Path, lane: str, profile: str, host: str, lin
     completed.check_returncode()
     if prepared_binary.identity(root) != before:
         raise ValueError("source inputs changed while building the test archive")
-    doctests = run_doctests(root, before["target"]) if lane == "ordinary" and not platform_only(profile, host) else None
+    doctests = run_doctests(root, before["target"]) if lane == "ordinary" else None
     full_command = reuse_command("list", root, archive, lane, profile, host=host)
     completed, list_seconds = timed(full_command, root, capture=True)
     completed.check_returncode()
@@ -506,16 +523,21 @@ def result_directory(report: Path, host: str, lane: str) -> Path:
     return report / f"results-rust-{host}-{lane}-1"
 
 
-def build_host(root: Path, work: Path, report: Path, profile: str, host: str, line: str | None) -> int:
+def build_host(root: Path, work: Path, report: Path, profile: str, host: str, line: str | None,
+               only: str | None = None) -> int:
     """Build every lane archive of this runner in the job that will run it.
 
     The archive is not handed to another job: it pins the bytes the plan lists
     to the bytes the run executes, and a later lane's build (Receipt rebuilds
     `unica` with its feature) cannot replace them, because the run extracts
     its own archive. A failed lane still leaves its signed configuration.
+    `only` builds one lane of the plan: the queue's probe of the nightly path.
     """
+    planned = lanes(profile, host)
+    if only is not None and only not in planned:
+        raise ValueError(f"lane {only} is not in the {profile} plan of {host}: {', '.join(planned)}")
     failed = []
-    for lane in lanes(profile, host):
+    for lane in planned if only is None else (only,):
         try:
             build(root, work / lane, lane, profile, host, line)
         except Exception as error:  # one red lane never stops the next one
@@ -587,12 +609,13 @@ def run_archive(root: Path, prepared: Path, destination: Path, lane: str, profil
     destination.mkdir(parents=True, exist_ok=False)
     allure_results.write_plan(destination, plan)
     signature(destination, profile=profile, host=host, lane=lane, line=line, sha=current["sha"])
-    if lane == "ordinary" and index == 1 and not platform_only(profile, host):
+    if lane == "ordinary" and index == 1:
         # Written before nextest runs, so a later failure in this shard does
         # not take the doctest outcome out of the report.
         allure_results.write(destination, doctest_record(document, profile, host))
     nextest_profile = document["nextestProfile"]
-    candidates = {root / "target/nextest" / nextest_profile / "junit.xml", root / "vendor/ureq/target/nextest" / nextest_profile / "junit.xml"}
+    candidates = {extracted_target(root) / "nextest" / nextest_profile / "junit.xml",
+                  root / "vendor" / "ureq" / "target" / "nextest" / nextest_profile / "junit.xml"}  # cargo-target: extracted archive
     for path in candidates:
         path.unlink(missing_ok=True)
     command = reuse_command("run", root, archive, lane, profile, f"hash:{index}/{len(document['shards'])}", host=host)
@@ -716,7 +739,7 @@ def run_medium(root: Path, prepared: Path, destination: Path, host: str, shadow:
         "runId": os.environ.get("GITHUB_RUN_ID"), "attempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
     }
     if any(not case["ignored"] for case in plan):
-        junit = root / "target/nextest" / MEDIUM_PROFILE / "junit.xml"
+        junit = extracted_target(root) / "nextest" / MEDIUM_PROFILE / "junit.xml"
         junit.unlink(missing_ok=True)
         command = reuse_command("run", root, archive, "ordinary", MEDIUM_PROFILE, candidate=expression)
         completed, seconds = timed(command, root, env=capability_environment(destination, fixture_binary_environment(root, document)))
@@ -787,6 +810,8 @@ def inventory_summary(manifests: list[dict], *, profile: str, sha: str, jobs: li
         selected = Counter(case["binary"] for case in manifest["inventory"] if not case["ignored"])
         configurations.append({
             "runner": manifest["runner"], "lane": manifest["lane"], "shards": len(manifest["shards"]),
+            "identity": {key: manifest["identity"].get(key) for key in ("os", "target")},
+            "selection": manifest["selection"], "nextestProfile": manifest["nextestProfile"],
             "binaries": sorted(manifest["binaries"]),
             "selected": {binary: selected.get(binary, 0) for binary in sorted(manifest["binaries"])},
             "cases": [case_id(case) for case in manifest["inventory"]],
@@ -801,15 +826,94 @@ def same_selection(first: str, second: str, host: str | None = None) -> bool:
     if first not in ADMITTED or second not in ADMITTED:
         return False
     def shape(profile):
-        return (ADMITTED[profile], lanes(profile, host),
-                tuple((shards(profile, lane, host), platform_only(profile, host)) for lane in lanes(profile, host)))
+        narrowed = (profile, host) in HISTORICAL_PLATFORM_ONLY
+        return (ADMITTED[profile], ("ordinary",) if narrowed else lanes(profile, host),
+                tuple((shards(profile, lane, host), narrowed) for lane in lanes(profile, host)))
     return shape(first) == shape(second)
 
 
 def binary_of(case: str, binaries: list[str]) -> str | None:
-    # Binary ids nest (`unica-coder`, `unica-coder::daemon_receipt_ledger`):
+    # Binary ids nest (`unica-coder`, `unica-coder::role_registration`):
     # a case belongs to the longest id it starts with.
     return max((binary for binary in binaries if case.startswith(binary + "::")), key=len, default=None)
+
+
+def moved_cases(lost: list[str], arrived: list[str]) -> dict[str, str]:
+    """Lost cases that reappeared elsewhere: the same test function, one to one.
+
+    A test moved to another crate or module changes its case ID but keeps its
+    function name. A lost case counts as moved when exactly one lost case and
+    exactly one newly arrived case carry that name; any ambiguity is not a move
+    and still needs a declaration.
+    """
+    def name(case: str) -> str:
+        return case.rsplit("::", 1)[-1]
+    lost_names = Counter(name(case) for case in lost)
+    arrivals: dict[str, list[str]] = {}
+    for case in arrived:
+        arrivals.setdefault(name(case), []).append(case)
+    return {case: arrivals[name(case)][0] for case in lost
+            if lost_names[name(case)] == 1 and len(arrivals.get(name(case), ())) == 1}
+
+
+def declared_after_move(lost: list[str], old_cases: set[str], new_cases: set[str],
+                        tests: list[str]) -> dict[str, str]:
+    """Lost cases a declaration names by the ID they had after a later move.
+
+    A test can move to another crate or module after the previous inventory
+    and then be removed before the next one. The pull request that removed it
+    declares the ID it had then, which the previous inventory never saw. Such
+    an exact declaration explains the lost case with the same function name
+    when that name is lost once and the declared ID is in neither inventory.
+    """
+    def name(case: str) -> str:
+        return case.rsplit("::", 1)[-1]
+    lost_names = Counter(name(case) for case in lost)
+    declared: dict[str, list[str]] = {}
+    for pattern in tests:
+        if not pattern.endswith("*") and pattern not in old_cases and pattern not in new_cases:
+            declared.setdefault(name(pattern), []).append(pattern)
+    return {case: declared[name(case)][0] for case in lost
+            if lost_names[name(case)] == 1 and len(declared.get(name(case), ())) == 1}
+
+
+def twin_declaration(case_path: str, pattern: str, binaries: list[str] = ()) -> bool:
+    """Whether an exact declaration names this case as compiled into another target.
+
+    A crate that includes another crate's modules runs their tests under its
+    own module path: `unica-domain::apply::tests::x` was also
+    `unica-coder::domain::apply::tests::x`. The declaration's binary is a known
+    target ID, else its package alone; what follows it — at least a module and
+    the function — must end the case's path in its target.
+    """
+    if pattern.endswith("*"):
+        return False
+    binary = binary_of(pattern, list(binaries)) or pattern.split("::", 1)[0]
+    tail = pattern[len(binary) + 2:].split("::")
+    return len(tail) >= 2 and case_path.split("::")[-len(tail):] == tail
+
+
+def declared_in_another_target(lost: list[str], binaries: list[str], tests: list[str]) -> dict[str, str]:
+    """Lost cases an exact declaration names in another test target.
+
+    One source file can compile into several targets: a crate that includes
+    another crate's modules runs their tests as its own cases. When the
+    previous inventory had such a twin and the source later left one of the
+    targets, the pull request that removed the test sees only the target that
+    still had it and declares that one. The declaration explains the lost case
+    whose path in its target ends with the declared module path and function.
+    """
+    explained = {}
+    for case in lost:
+        binary = binary_of(case, binaries)
+        if binary is None:
+            continue
+        path = case[len(binary) + 2:]
+        found = [pattern for pattern in tests
+                 if pattern != case and twin_declaration(path, pattern, binaries)]
+        if found:
+            explained[case] = found[0]
+    return explained
 
 
 def explained_case(case: str, binaries: list[str], gone: set[str], tests: list[str]) -> bool:
@@ -820,6 +924,41 @@ def explained_case(case: str, binaries: list[str], gone: set[str], tests: list[s
     return any(binary_of(pattern, binaries) == binary
                and (case.startswith(pattern[:-1]) if pattern.endswith("*") else case == pattern)
                for pattern in tests)
+
+
+def macos_runner_transition(baseline: dict, old: dict, new: dict, profile: str) -> None:
+    """Admit only the evidenced ARM64 image replacement, without retagging history."""
+    previous = baseline["inventory"]
+    evidence = baseline.get("previousPlans", {})
+    source = evidence.get("source", {})
+    if (source.get("artifact") != "plan-macos-14"
+        or str(source.get("runId")) != str(previous.get("runId"))
+        or source.get("headSha") != previous.get("sha")
+        or str(source.get("attempt")) != str(previous.get("attempt"))):
+        raise ValueError("macos-14 to macos-15 requires the same verified run's previous plan")
+    matches = [plan for plan in evidence.get("plans", [])
+               if (plan.get("runner"), plan.get("lane")) == ("macos-14", old["lane"])]
+    if len(matches) != 1:
+        raise ValueError("macos-14 transition has missing or duplicate previous lane plans")
+    plan = matches[0]
+    if (plan.get("profile") != previous["profile"] or plan.get("identity", {}).get("sha") != previous["sha"]
+        or str(plan.get("runId")) != str(previous["runId"])
+        or str(plan.get("attempt")) != str(previous["attempt"])):
+        raise ValueError("macos-14 transition plan belongs to another revision, profile, run or attempt")
+    projected = inventory_summary([plan], profile=previous["profile"], sha=previous["sha"], jobs=None)["configurations"][0]
+    if any(projected[key] != old[key] for key in ("binaries", "cases", "selected", "shards")):
+        raise ValueError("macos-14 transition plan differs from the verified compact inventory")
+    identity = {"os": "Darwin", "target": "aarch64-apple-darwin"}
+    if projected["identity"] != identity or new.get("identity") != identity:
+        raise ValueError("macos-14 to macos-15 must preserve the Darwin ARM64 target")
+    if (plan.get("selection") != list(selection(old["lane"]))
+        or plan.get("nextestProfile") != historical_nextest_profile(previous["profile"], old["lane"], "macos-14")
+        or new.get("selection") != list(selection(new["lane"]))):
+        raise ValueError("macos-14 transition has an unexpected feature or test selection")
+    if same_selection(previous["profile"], profile, "macos-14"):
+        # The caller additionally compares cases only when gate profiles agree.
+        if new.get("nextestProfile") != plan["nextestProfile"]:
+            raise ValueError("macos-14 transition changed the nextest selection")
 
 
 def compare_inventory(baseline: dict, current: dict) -> tuple[list[str], dict]:
@@ -835,7 +974,7 @@ def compare_inventory(baseline: dict, current: dict) -> tuple[list[str], dict]:
     tests = list(explanations["removedTests"])
     drift = {"source": baseline.get("source"), "reset": explanations["reset"],
              "declaredBy": explanations.get("declaredBy", {}), "removedTargets": sorted(removed),
-             "removedTests": sorted(tests), "removedCases": {}}
+             "removedTests": sorted(tests), "removedCases": {}, "movedCases": {}}
     if previous is None:
         if explanations["reset"]:
             return [], drift
@@ -845,16 +984,40 @@ def compare_inventory(baseline: dict, current: dict) -> tuple[list[str], dict]:
         raise ValueError("malformed previous inventory")
     problems = []
     # Jobs depend on the profile's runners: a pull request has no macOS job.
+    transitions = {}
+    destinations = Counter(("macos-15" if item["runner"] == "macos-14" else item["runner"], item["lane"])
+                           for item in previous["configurations"])
+    blocked_lanes = {item["lane"] for item in previous["configurations"]
+                     if item["runner"] == "macos-14" and destinations[("macos-15", item["lane"])] != 1}
+    problems += [f"macos-14/{lane}: duplicate or colliding previous configurations cannot share macos-15/{lane}"
+                 for lane in sorted(blocked_lanes)]
+    for old in previous["configurations"]:
+        if old.get("runner") != "macos-14" or old["lane"] in blocked_lanes:
+            continue
+        matches = [item for item in current["configurations"]
+                   if (item.get("runner"), item.get("lane")) == ("macos-15", old.get("lane"))]
+        if not matches:
+            continue
+        try:
+            if len(matches) != 1:
+                raise ValueError("macos-15 transition has duplicate configurations")
+            macos_runner_transition(baseline, old, matches[0], current["profile"])
+            transitions[("macos-14", old["lane"])] = ("macos-15", old["lane"])
+        except (KeyError, TypeError, ValueError) as error:
+            problems.append(str(error))
+    drift["runnerTransitions"] = [{"from": old[0], "to": new[0], "lane": old[1]}
+                                  for old, new in sorted(transitions.items())]
     same_jobs = all(same_selection(previous.get("profile"), current["profile"], host) for host in HOSTS)
     if same_jobs and previous.get("jobs") is not None and current["jobs"] is not None:
-        problems += [f"job {job} disappeared since the previous inventory" for job in sorted(set(previous["jobs"]) - set(current["jobs"]))]
+        problems += [f"job {job} disappeared since the previous inventory" for job in sorted({os_job("macos-15") if job == os_job("macos-14") and transitions else job
+                                      for job in previous["jobs"]} - set(current["jobs"]))]
     present = {(item["runner"], item["lane"]): item for item in current["configurations"]}
     for old in previous["configurations"]:
         key = (old["runner"], old["lane"])
         label = f"{key[0]}/{key[1]}"
         # Comparable per host: the queue narrows macOS, not Linux.
         same_profile = same_selection(previous.get("profile"), current["profile"], key[0])
-        new = present.get(key)
+        new = present.get(transitions.get(key, key))
         if new is None:
             if same_profile or old["lane"] not in lanes(previous["profile"], key[0]):
                 problems.append(f"{label}: configuration and its results disappeared since the previous inventory")
@@ -866,9 +1029,18 @@ def compare_inventory(baseline: dict, current: dict) -> tuple[list[str], dict]:
         if not same_profile:
             continue
         lost = sorted(set(old["cases"]) - set(new["cases"]))
-        unexplained = [case for case in lost if not explained_case(case, old["binaries"], gone, tests)]
+        moved = moved_cases(lost, sorted(set(new["cases"]) - set(old["cases"])))
+        late = declared_after_move([case for case in lost if case not in moved],
+                                   set(old["cases"]), set(new["cases"]), tests)
+        late |= declared_in_another_target([case for case in lost if case not in moved and case not in late],
+                                           sorted(set(old["binaries"]) | set(new["binaries"])), tests)
+        unexplained = [case for case in lost
+                       if case not in moved and case not in late
+                       and not explained_case(case, old["binaries"], gone, tests)]
         if lost:
             drift["removedCases"][label] = lost
+        if moved:
+            drift["movedCases"][label] = moved
         for binary, count in sorted(old["selected"].items()):
             if (count and binary in new["binaries"] and not new["selected"].get(binary)
                 and any(binary_of(case, old["binaries"]) == binary for case in unexplained)):

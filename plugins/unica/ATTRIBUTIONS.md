@@ -53,7 +53,12 @@
   [GPL-3.0](third-party/licenses/bsl-analyzer/LICENSE-GPL)
 - Дополнительные условия и происхождение: [NOTICE](third-party/licenses/bsl-analyzer/NOTICE)
 
-Unica поставляет LSP-бинарник `bsl-analyzer`. Его лицензионная заметка
+Unica поставляет LSP-бинарник `bsl-analyzer` и локальный снимок описаний
+его диагностик (`crates/ide-diagnostics/docs/ru` и `en`) из той же закреплённой
+ревизии. Снимок собирает `scripts/ci/sync-diagnostic-rule-docs.py`; происхождение
+и контрольные суммы страниц входят в `diagnostic-rules.json` в исходниках
+поставщика документации. Тексты страниц сохраняются без редактирования.
+Его лицензионная заметка
 объясняет смешанную модель workspace: итоговый бинарник статически связывает
 компоненты уровня LGPL и поэтому распространяется как LGPL-3.0-or-later; там же
 перечислены архитектурные источники, тестовые данные и материалы платформы 1С
@@ -73,28 +78,6 @@ Unica поставляет LSP-бинарник `bsl-analyzer`. Его лице�
 `v8-runner` запускается Unica как отдельный внутренний процесс. На его
 распространяемый бинарник и исходный код действует AGPL-3.0-only; лицензия
 LGPL-3.0-or-later проекта Unica не заменяет эти условия.
-
-### rlm-bsl-mcp и rlm-bsl-index
-
-<!-- unica-attribution: tool rlm-bsl-mcp -->
-<!-- unica-attribution: tool rlm-bsl-index -->
-
-- Репозиторий: [Dach-Coin/rlm-tools-bsl](https://github.com/Dach-Coin/rlm-tools-bsl)
-- Автор: [Roman Starchenko](https://github.com/Dach-Coin); исходный проект
-  `rlm-tools` — [Stefan O'Shea](https://github.com/stefanoshea)
-- Закреплённая версия: `1.42.0`, commit `9a84f24f0c156630e1d4e757b30070a13a56d0e0`
-- Архив standalone runtime: `rlm-tools-bsl-v1.42.0-build.1`
-- Изменения исходного кода: патчи `patches/rlm-tools-bsl/` репозитория
-  [IngvarConsulting/unica-toolchain](https://github.com/IngvarConsulting/unica-toolchain)
-  удерживают сессию и inline-ресурсы, пока принятая работа не завершилась
-- Инструмент сборки standalone runtime: [Nuitka](https://nuitka.net/) `4.1.3`
-- Лицензия: [MIT](third-party/licenses/rlm-tools-bsl/LICENSE)
-
-Оба бинарника собираются из одного репозитория. MIT notice сохраняет
-благодарность Stefan O'Shea за исходный `rlm-tools` и Roman Starchenko за
-адаптацию `rlm-tools-bsl`.
-Nuitka применяется только как инструмент сборки и не расширяет публичный API
-Unica.
 
 ## Внешние сервисы
 
@@ -200,7 +183,7 @@ Unica адаптирует из чек-листа TemplatesNewObject1C согл�
 
 ## Благодарности
 
-Спасибо авторам и участникам BSL Analyzer, v8-runner, rlm-tools,
-rlm-tools-bsl, cc-1c-skills, ai_rules_1c и v8std, а также сообществу разработки
+Спасибо авторам и участникам BSL Analyzer, v8-runner,
+cc-1c-skills, ai_rules_1c и v8std, а также сообществу разработки
 1С за открытые инструменты, исследования форматов и практические знания, на
 которых строится Unica.

@@ -20,10 +20,10 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT_PATH = REPO_ROOT / "scripts" / "ci" / "check-receipt-harness-boundary.py"
 HARNESS_ROOT = Path(
-    "crates/unica-coder/tests/support/receipt_scenario.rs"
+    "crates/unica-daemon/tests/support/receipt_scenario.rs"
 )
 HARNESS_DIR = Path(
-    "crates/unica-coder/tests/support/receipt_scenario"
+    "crates/unica-daemon/tests/support/receipt_scenario"
 )
 CONTRACT_ROOT = Path("crates/unica-execution/src/receipt_runtime/contracts.rs")
 CONTRACT_DIR = Path("crates/unica-execution/src/receipt_runtime/contracts")
@@ -112,7 +112,10 @@ class ReceiptHarnessBoundaryTests(unittest.TestCase):
             self.assertIn("contracts/rogue/mod.rs", result.stdout)
 
     def test_live_tree_keeps_the_harness_observing(self) -> None:
-        """Живое дерево: диспетчер не пишет, писатели только у владельцев."""
+        """Живое дерево: диспетчер не пишет, писатели только у владельцев.
+
+        rule: INV.APP.RECEIPT-SCENARIO-EVIDENCE
+        """
         result = run_guard(REPO_ROOT)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 

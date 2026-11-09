@@ -14,10 +14,10 @@ use unica_workspace::paths::normalize_path_identity;
 
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
-pub(crate) struct ResolvedNamedSourceSet {
-    pub(crate) source_set: ProjectSourceSet,
-    pub(crate) lexical_path: PathBuf,
-    pub(crate) path: PathBuf,
+pub struct ResolvedNamedSourceSet {
+    pub source_set: ProjectSourceSet,
+    pub lexical_path: PathBuf,
+    pub path: PathBuf,
 }
 
 pub(crate) fn resolve_source_root(
@@ -32,7 +32,7 @@ pub(crate) fn resolve_source_root(
     result.map_err(invalid_source_root)
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 thread_local! {
     /// Counts how many times a call re-reads the project config. A scan that
     /// resolves the source set once per candidate instead of once per call is
@@ -41,11 +41,11 @@ thread_local! {
         const { std::cell::Cell::new(0) };
 }
 
-pub(crate) fn resolve_named_source_set(
+pub fn resolve_named_source_set(
     context: &WorkspaceContext,
     name: &str,
 ) -> Result<ResolvedNamedSourceSet, NamedSourceSetError> {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     NAMED_SOURCE_SET_RESOLUTIONS.with(|count| count.set(count.get() + 1));
     if name.is_empty() {
         return Err(NamedSourceSetError::new(
@@ -131,10 +131,10 @@ fn invalid_source_root(error: String) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+mod medium_tests {
     use super::{normalize_path_identity, resolve_named_source_set, resolve_source_root};
     use crate::infrastructure::workspace::discover_workspace;
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -188,6 +188,7 @@ mod tests {
         cleanup(&context);
     }
 
+    /// rule: INV.SOURCE.DEFAULT-SET-SELECTION
     #[test]
     fn selects_the_sole_configuration() {
         let context = fixture(&[
@@ -204,6 +205,7 @@ mod tests {
         cleanup(&context);
     }
 
+    /// rule: INV.SOURCE.DEFAULT-SET-SELECTION
     #[test]
     fn rejects_ambiguous_configurations_without_main() {
         let context = fixture(&[

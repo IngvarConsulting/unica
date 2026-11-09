@@ -16,6 +16,8 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKFLOWS = sorted((REPO_ROOT / ".github" / "workflows").glob("*.yml"))
+# Свои составные действия: их шаги зовут чужие действия так же, как workflow.
+LOCAL_ACTIONS = sorted((REPO_ROOT / ".github" / "actions").glob("*/action.yml"))
 OWN_ORG = "IngvarConsulting/"
 USES_LINE = re.compile(r"^\s*(?:- )?uses:\s*(?P<spec>.*?)\s*$")
 PINNED = re.compile(r"^(?P<action>\S+)@(?P<ref>\S+)(?:\s+#\s*(?P<version>\S+).*)?$")
@@ -27,10 +29,19 @@ def steps(workflow: dict) -> list[dict]:
 
 class ActionPinTests(unittest.TestCase):
     def test_every_foreign_action_is_pinned_to_a_commit_with_its_version_named(self) -> None:
-        for path in WORKFLOWS:
+        self.assertTrue(LOCAL_ACTIONS)
+        for path in WORKFLOWS + LOCAL_ACTIONS:
             for line in path.read_text(encoding="utf-8").splitlines():
                 uses = USES_LINE.match(line)
                 if not uses:
+                    continue
+                # Свой workflow в синтаксисе своего репозитория: чужого кода нет.
+                if uses["spec"].startswith("$/.github/workflows/"):
+                    continue
+                # Своё составное действие из этого дерева: его шаги проверяются здесь же.
+                if uses["spec"].startswith("./.github/actions/"):
+                    action = REPO_ROOT / uses["spec"].removeprefix("./") / "action.yml"
+                    self.assertIn(action, LOCAL_ACTIONS, line)
                     continue
                 # Строка с `uses:`, которую страж не разобрал, — отказ, а не пропуск:
                 # иначе лишний пробел перед комментарием выводил бы пин из-под проверки.

@@ -1036,7 +1036,7 @@ fn structure_patch_targets_parent_direct_group_items_and_preserves_child() {
         &target(&[], "Main"),
     );
     // Одноимённые элементы на одном уровне адреса не имеют: правка
-    // отказывает, а не выбирает первый (#1357).
+    // отказывает, а не выбирает первый.
     let ambiguous = xml.replace(
         "</t:settings>",
         "<t:item xsi:type=\"t:StructureItemGroup\"><t:name>Parent</t:name></t:item></t:settings>",
@@ -2213,7 +2213,7 @@ fn dataset_link_read_preserves_complete_literal_selectors_for_set_and_noop() {
     );
 }
 
-/// #1257: plain-string titles of new DCS nodes take the default language of
+/// Plain-string titles of new DCS nodes take the default language of
 /// the source set, here `en`; `ru` appears nowhere.
 #[test]
 fn plain_string_titles_of_new_nodes_use_the_given_default_language() {
@@ -2295,7 +2295,7 @@ fn plain_string_titles_of_new_nodes_use_the_given_default_language() {
     );
 }
 
-/// #1257: a plain-string set changes only the default-language item and
+/// A plain-string set changes only the default-language item and
 /// keeps the other translations byte for byte; an explicit object replaces
 /// the value as given.
 #[test]
@@ -2515,4 +2515,150 @@ fn plain_string_text_without_a_language_is_a_typed_refusal() {
     let intent = Primitive::FieldAdd.decode(&args, "args").unwrap();
     apply(&mut xml, &intent, &selected, None).unwrap();
     assert!(xml.contains("<v8:lang>en</v8:lang>"), "{xml}");
+}
+
+#[test]
+fn single_language_titles_retain_explicit_empty_translation() {
+    let mut xml = query_schema("SELECT 1 AS Amount")
+        .replace("<field>Amount</field></field>", "<field>Amount</field><title xsi:type='v8:LocalStringType'><v8:item><v8:lang>ru</v8:lang><v8:content>Amount before</v8:content></v8:item></title></field>")
+        .replace("<settingsVariant>", "<parameter><name>Text</name><title xsi:type='v8:LocalStringType'><v8:item><v8:lang>ru</v8:lang><v8:content>Before</v8:content></v8:item></title></parameter><settingsVariant>");
+    for primitive in [Primitive::ParameterSet, Primitive::FieldSet] {
+        let values = match primitive {
+            Primitive::ParameterSet => json!({"name":"Text","title":""}),
+            _ => json!({"field":"Amount","title":""}),
+        };
+        let args = normalized(primitive, json!({"values":values}));
+        run(&mut xml, primitive, args, &target(&["Data"], "")).unwrap();
+    }
+    let doc = Document::parse(&xml).unwrap();
+    let parameter = named(doc.root_element(), S, "parameter", "name", "Text");
+    let field = named(
+        direct(doc.root_element(), S, "dataSet"),
+        S,
+        "field",
+        "dataPath",
+        "Amount",
+    );
+    for owner in [parameter, field] {
+        let title = direct(owner, S, "title");
+        assert_value_qname(title, V, "LocalStringType");
+        assert_eq!(
+            title
+                .children()
+                .filter(|node| node.has_tag_name((V, "item")))
+                .count(),
+            1,
+            "{xml}"
+        );
+        assert_translations(title, &[("ru", "")]);
+    }
+}
+
+#[test]
+fn local_string_single_language_clear_preserves_local_type_binding_and_header() {
+    let original = format!("<q:title xmlns:q='{S}' xmlns:d='{V}' xmlns:i='{X}' i:type='d:LocalStringType'><d:item><d:lang>ru</d:lang><d:content>Текст</d:content></d:item></q:title>");
+    let doc = Document::parse(&original).unwrap();
+    let result = super::mltext_update(
+        &original,
+        Some(doc.root_element()),
+        "title",
+        &json!(""),
+        S,
+        Some("ru"),
+    )
+    .unwrap();
+    let doc = Document::parse(&result).unwrap();
+    let title = doc.root_element();
+    assert!(title.has_tag_name((S, "title")));
+    assert_eq!(title.attribute((X, "type")), Some("d:LocalStringType"));
+    assert_eq!(title.lookup_namespace_uri(Some("d")), Some(V));
+    assert!(result.starts_with(&format!(
+        "<q:title xmlns:q='{S}' xmlns:d='{V}' xmlns:i='{X}' i:type='d:LocalStringType'"
+    )));
+    assert_translations(title, &[("ru", "")]);
+    let again =
+        super::mltext_update(&result, Some(title), "title", &json!(""), S, Some("ru")).unwrap();
+    assert_eq!(
+        again, result,
+        "clearing an already empty local string is an exact no-op"
+    );
+}
+
+#[test]
+fn untyped_empty_local_string_still_acquires_its_required_type() {
+    for value in [json!(""), json!("Текст")] {
+        let original = format!("<title xmlns='{S}'/>");
+        let doc = Document::parse(&original).unwrap();
+        let result = super::mltext_update(
+            &original,
+            Some(doc.root_element()),
+            "title",
+            &value,
+            S,
+            Some("ru"),
+        )
+        .unwrap();
+        let doc = Document::parse(&result).unwrap();
+        assert_value_qname(doc.root_element(), V, "LocalStringType");
+    }
+}
+
+#[test]
+fn clearing_local_string_preserves_xml_whitespace_in_type_qname() {
+    let original = format!("<q:title xmlns:q='{S}' xmlns:d='{V}' xmlns:i='{X}' i:type=' d:LocalStringType '><d:item><d:lang>ru</d:lang><d:content>Текст</d:content></d:item></q:title>");
+    let doc = Document::parse(&original).unwrap();
+    let result = super::mltext_update(
+        &original,
+        Some(doc.root_element()),
+        "title",
+        &json!(""),
+        S,
+        Some("ru"),
+    )
+    .unwrap();
+    assert_eq!(result, original.replace("Текст", ""));
+}
+
+#[test]
+fn explicit_empty_local_string_retains_missing_or_empty_content_and_line_endings() {
+    for body in [
+        "",
+        "\r\n",
+        "<d:item><d:lang>ru</d:lang></d:item>",
+        "<d:item><d:lang>ru</d:lang><d:content/></d:item>",
+    ] {
+        let original = format!("<q:title xmlns:q='{S}' xmlns:d='{V}' xmlns:i='{X}' i:type='d:LocalStringType'>{body}</q:title>");
+        let doc = Document::parse(&original).unwrap();
+        let result = super::mltext_update(
+            &original,
+            Some(doc.root_element()),
+            "title",
+            &json!(""),
+            S,
+            Some("ru"),
+        )
+        .unwrap();
+        let doc = Document::parse(&result).unwrap();
+        assert_translations(doc.root_element(), &[("ru", "")]);
+        assert_eq!(
+            doc.root_element().attribute((X, "type")),
+            Some("d:LocalStringType")
+        );
+        let again = super::mltext_update(
+            &result,
+            Some(doc.root_element()),
+            "title",
+            &json!(""),
+            S,
+            Some("ru"),
+        )
+        .unwrap();
+        assert_eq!(again, result);
+        if body.contains("<d:content/>") {
+            assert_eq!(result, original);
+        }
+        if body.contains("\r\n") {
+            assert!(!result.replace("\r\n", "").contains('\n'));
+        }
+    }
 }
