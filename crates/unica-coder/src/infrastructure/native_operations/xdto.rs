@@ -586,8 +586,7 @@ impl XdtoResolutionError {
             (SourceTargetErrorCode::TargetKindMismatch, _) => XdtoPublicErrorCode::NotAnXdtoPackage,
             (SourceTargetErrorCode::ContainmentDenied, _) => XdtoPublicErrorCode::ContainmentDenied,
             (SourceTargetErrorCode::MetadataAddressInvalid, _)
-            | (SourceTargetErrorCode::MetadataAddressNotFound, _)
-            | (SourceTargetErrorCode::AddressProfileUnsupported, _) => {
+            | (SourceTargetErrorCode::MetadataAddressNotFound, _) => {
                 XdtoPublicErrorCode::TargetNotFound
             }
         };

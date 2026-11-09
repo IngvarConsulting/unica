@@ -427,8 +427,8 @@ pub struct MetadataReference {
 
 impl MetadataReference {
     #[cfg(test)]
-    pub fn parse(profile: &str, raw: &str) -> Result<Self, MetaDiagnostic> {
-        MetadataAddress::parse(profile, raw)
+    pub fn parse(raw: &str) -> Result<Self, MetaDiagnostic> {
+        MetadataAddress::parse_logical(raw)
             .map(|metadata_path| Self { metadata_path })
             .map_err(|error| address_diagnostic(raw, error))
     }
@@ -446,7 +446,6 @@ fn address_diagnostic(raw: &str, error: SourceTargetError) -> MetaDiagnostic {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20;
 
     /// Тип пишущего вызова и прочитанный тип реквизита сериализуются одинаково:
     /// предопределённый элемент называет ссылку `metadataPath`, как реквизит
@@ -738,11 +737,10 @@ mod tests {
     #[test]
     fn metadata_reference_reuses_the_logical_address_parser() {
         let reference =
-            MetadataReference::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Catalog.Products")
-                .expect("canonical logical reference");
+            MetadataReference::parse("Catalog.Products").expect("canonical logical reference");
         assert_eq!(reference.metadata_path.as_str(), "Catalog.Products");
 
-        let diagnostic = MetadataReference::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Catalog")
+        let diagnostic = MetadataReference::parse("Catalog")
             .expect_err("incomplete logical address must not be reparsed loosely");
         assert_eq!(diagnostic.code, MetaDiagnosticCode::InvalidArguments);
         assert_eq!(diagnostic.field.as_deref(), Some("metadataPath"));

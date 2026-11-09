@@ -485,10 +485,6 @@ fn role_resolution_failure(code: SourceTargetErrorCode) -> RoleResolutionFailure
             RoleResolutionCode::ContainmentDenied,
             "the logical role target failed containment checks",
         ),
-        SourceTargetErrorCode::AddressProfileUnsupported => RoleResolutionFailure::new(
-            RoleResolutionCode::ProfileUnsupported,
-            "the logical address profile is unsupported",
-        ),
         SourceTargetErrorCode::SourceRootNotAddressable => RoleResolutionFailure::new(
             RoleResolutionCode::ProviderUnavailable,
             "the logical source provider is unavailable",
