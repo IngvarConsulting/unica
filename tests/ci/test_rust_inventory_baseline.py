@@ -11,6 +11,7 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts/ci"))
+import ci_rust_lanes
 import rust_inventory_baseline as baseline
 
 REPOSITORY = "owner/unica"
@@ -80,6 +81,17 @@ class InventoryBaselineTests(unittest.TestCase):
         self.assertEqual(baseline.candidate_names("pr"), [["ci-rust-inventory-queue", "ci-rust-inventory-main"]])
         self.assertEqual(baseline.candidate_names("queue"), [["ci-rust-inventory-queue"]])
         self.assertEqual(baseline.candidate_names("large"), [["ci-rust-inventory-large"], ["ci-rust-inventory-queue"]])
+
+    def test_a_release_tag_falls_back_to_the_night_that_checked_its_slice(self):
+        # rc.3 found no baseline: the queue stopped publishing inventories and
+        # only the nights do. The night's plan is the release's plan.
+        self.assertEqual(
+            baseline.candidate_names("release"),
+            [["ci-rust-inventory-release"], ["ci-rust-inventory-large"], ["ci-rust-inventory-queue"]],
+        )
+        for host in ("ubuntu-latest", "macos-15", "windows-latest"):
+            with self.subTest(host=host):
+                self.assertTrue(ci_rust_lanes.same_selection("release", "large", host))
 
     def test_nearest_verified_ancestor_of_this_repository_wins(self):
         ancestors = ["head", "parent", "grandparent"]
