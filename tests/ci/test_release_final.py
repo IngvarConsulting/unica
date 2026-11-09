@@ -30,11 +30,13 @@ def load():
 
 class Fakes:
     def __init__(self, module, *, tags=("v0.15.0-rc.1", RC, "v0.14.2"), draft=False, conclusion="success",
-                 run_branch=RC, run_sha=COMMIT, in_marketplace=True, marketplace_error="404 Not Found"):
+                 run_branch=RC, run_sha=COMMIT, in_marketplace=True, marketplace_error="404 Not Found",
+                 line_exists=False, line_error="404 Not Found"):
         self.module = module
         self.tags, self.draft, self.conclusion = tags, draft, conclusion
         self.run_branch, self.run_sha, self.in_marketplace = run_branch, run_sha, in_marketplace
         self.marketplace_error = marketplace_error
+        self.line_exists, self.line_error = line_exists, line_error
         self.commands = []
 
     def gh(self, path, **_):
@@ -51,6 +53,11 @@ class Fakes:
             if not self.in_marketplace:
                 raise self.module.alpha.AlphaError(f"gh api GET ...: {self.marketplace_error}")
             return {"ref": path.rsplit("/git/", 1)[1]}
+        if path.startswith("repos/o/r/branches/"):
+            self.branch_path = path
+            if self.line_exists:
+                return {"name": path.rsplit("/", 1)[1]}
+            raise self.module.alpha.AlphaError(f"gh api GET ...: {self.line_error}")
         raise AssertionError(path)
 
     def runner(self, command, cwd=None, env=None):
@@ -84,6 +91,8 @@ class ProofTests(unittest.TestCase):
             "зелёного выпуска по тегу": Fakes(self.module, run_branch="main"),
             "зелёного выпуска по": Fakes(self.module, run_sha="e" * 40),
             "канале next": Fakes(self.module, in_marketplace=False),
+            "release-v0.15 уже есть": Fakes(self.module, line_exists=True),
+            "release-v0.15 не прочитана": Fakes(self.module, line_error="502 Bad Gateway"),
         }
         for reason, fakes in cases.items():
             with self.subTest(reason=reason), self.assertRaisesRegex(self.module.FinalError, reason):
@@ -120,7 +129,10 @@ class PublishTests(unittest.TestCase):
         push = next(index for index, command in enumerate(commands) if command[:2] == ["git", "push"])
         self.assertLess(checkout, bump)
         self.assertLess(bump, push)
-        self.assertEqual(commands[push], ["git", "push", "git@github.com:o/r.git", "refs/tags/v0.15.0"])
+        # Тег и ветка линии `release-v0.15` уходят одним атомарным push.
+        self.assertEqual(commands[push], ["git", "push", "--atomic", "git@github.com:o/r.git", "refs/tags/v0.15.0",
+                                          "HEAD:refs/heads/release-v0.15"])
+        self.assertEqual(fakes.branch_path, "repos/o/r/branches/release-v0.15")
         self.assertIn("StrictHostKeyChecking=yes", fakes.commands[push][1]["GIT_SSH_COMMAND"])
 
     def test_a_failed_version_check_stops_before_the_commit_and_the_push(self) -> None:
@@ -179,12 +191,13 @@ class WorkflowTests(unittest.TestCase):
         checkout = steps[0]
         self.assertEqual((checkout["with"]["ref"], checkout["with"]["fetch-depth"]), ("main", 0))
 
-    def test_both_release_buttons_share_one_queue(self) -> None:
+    def test_every_release_button_shares_one_queue(self) -> None:
         groups = {
             name: yaml.safe_load((ROOT / ".github/workflows" / name).read_text(encoding="utf-8"))["concurrency"]
-            for name in ("rc-from-alpha.yml", "release-from-rc.yml")
+            for name in ("rc-from-alpha.yml", "release-from-rc.yml", "release-from-line.yml")
         }
         self.assertEqual(groups["rc-from-alpha.yml"], groups["release-from-rc.yml"])
+        self.assertEqual(groups["rc-from-alpha.yml"], groups["release-from-line.yml"])
         self.assertFalse(groups["release-from-rc.yml"]["cancel-in-progress"])
 
     def test_the_tag_key_is_read_only_in_the_alpha_environment(self) -> None:
@@ -196,8 +209,8 @@ class WorkflowTests(unittest.TestCase):
                     holders.append((path.name, name, job.get("environment")))
         self.assertEqual(
             holders,
-            [("rc-from-alpha.yml", "rc", "alpha"), ("release-from-rc.yml", "final", "alpha"),
-             ("release.yml", "alpha-tag", "alpha")],
+            [("rc-from-alpha.yml", "rc", "alpha"), ("release-from-line.yml", "patch", "alpha"),
+             ("release-from-rc.yml", "final", "alpha"), ("release.yml", "alpha-tag", "alpha")],
         )
 
 

@@ -1,8 +1,9 @@
 # Release runbook
 
-How to publish a Unica version to the public marketplace, and why each step
-exists. Follow it top to bottom; every step states what to verify before moving
-on.
+How a Unica version reaches the public marketplace, and why each step exists.
+Every release is built from the previous checked stage and started by a button
+or the schedule; this runbook says what each stage checks and what to do when
+one fails.
 
 Two repositories are involved:
 
@@ -39,31 +40,89 @@ guarantee. Tags `v0.9.1` through `v0.13.0-rc.5` were created on the staging
 commit and name the previous release's catalog; they stay as they are. Earlier
 tags, `v0.7.2` through `v0.8.1`, name their own version.
 
-## One human action, one linear pipeline
+## Four stages, each built from the one before
 
-`.github/workflows/release.yml` runs the build and the whole publication as one
-run, started by the tag:
+Every release is built only from the previous checked stage, and nobody sets a
+`v*` tag by hand: the nightly run and three buttons set them with a deploy key.
 
-| You | The pipeline |
+| Release | Source | Started by | Result |
+| --- | --- | --- | --- |
+| alpha `vX.Y.0-alpha.N` | a green night on `main` | the schedule | a prerelease on GitHub |
+| RC `vX.Y.0-rc.N` | the alpha's tag | the RC button, an administrator | the tag set by the key, published on `next` |
+| final `vX.Y.0` | the RC's tag, with a successful release | the final button, an administrator | the tag set by the key, published in the main catalog, the branch `release-vX.Y` on the final commit |
+| patch `vX.Y.Z` | the head of `release-vX.Y`, with green CI | the patch button, an administrator | the patch number raised, the tag set by the key, published in the main catalog at once, a pull request back to `main` |
+
+```bash
+gh workflow run rc-from-alpha.yml --repo IngvarConsulting/unica --ref main -f alpha=v0.15.0-alpha.4
+gh workflow run release-from-rc.yml --repo IngvarConsulting/unica --ref main -f rc=v0.15.0-rc.2
+gh workflow run release-from-line.yml --repo IngvarConsulting/unica --ref main -f line=release-v0.15
+```
+
+Each tag push starts `.github/workflows/release.yml`, which runs the build and
+the whole publication as one run, with no approval on the way:
+
+| Step | The pipeline |
 | --- | --- |
-| Step 0 — set the version | |
-| Step 1 — tag the source release | build → assets → BSP assessment |
+| tag pushed | build → assets → BSP assessment |
 | | stage the payload (catalog untouched) |
 | | create the candidate anchor `candidate-vX` on the staging commit |
 | | consumer install checks from `candidate-vX`: fresh + upgrade, three hosts |
 | | green → the channel's catalogs and the tag `vX`, one atomic push → **live** |
-| Step 3 — merge the line back into `main` | |
 
-Your signed source tag is the human approval and the cryptographic anchor of
-the release. Be honest about what enforces it: the pipeline proves the tag
-exists and that the payload came from its successful push build, but it does
-not verify the signature itself — GitHub reports these signatures as
-unverified today. What keeps the tag trustworthy is write access and the
-repository's tag protection rules; keep those protections on. The marketplace
-tags are created by the pipeline: `vX` is the ref the catalog resolves,
-`candidate-vX` the ref the install checks resolve, and nothing verifies their
-signature — the runbook used to ask for a second signed tag. The linear
-pipeline removed that wait.
+### Who can press a button
+
+Only an administrator gets past the first job of any button, `admit`: it
+refuses a run not started from `main`, reads the role of the person who started
+or re-ran the run (`collaborators/<actor>/permission`) and refuses anything but
+`admin`. No name is written in the workflows. A writer can press a button, but
+the run stops there, before the job that holds the tag key starts; a re-run of
+the failed job checks the role again before its key step.
+
+The key job runs in the environment `alpha`, which admits only `main`, so a
+copy of a button kept in an old tag gets no key. The buttons share one queue.
+The tag ruleset lets only **Deploy keys** create `v*` tags: an administrator's
+own push is refused too, so the buttons are the only way a release starts. The
+tags are set by a workflow, not signed by a person: the administrator's button
+and the checks below stand in for the signature.
+
+### What each button checks
+
+`scripts/ci/release-rc.py` refuses a candidate unless:
+
+- the alpha is published and its slice — the parent of its version commit — is
+  in `main` and equals the `main@<sha>` of its release description;
+- the night that set this alpha is green and checked that very commit, so the
+  slice's tree is the tree it tested;
+- `vX.Y.Z` is not released yet.
+
+It commits `bump-version.py X.Y.Z-rc.N` on the slice, with `N` the next free
+number, tags the commit and pushes the tag.
+
+`scripts/ci/release-final.py` refuses a final version unless:
+
+- the candidate's tag exists and its GitHub release is published;
+- the release run of that tag's push (`release.yml`) is green;
+- the marketplace has the candidate's tag, which appears only together with
+  the `next` catalog that names it;
+- no later candidate of the same core exists;
+- neither `vX.Y.Z` nor the branch `release-vX.Y` exists yet.
+
+It commits `bump-version.py X.Y.Z` on the candidate's commit — the tree that
+was tested and served on `next`, with only the version changed — and one
+atomic push sets the tag and creates `release-vX.Y` on that commit.
+
+`scripts/ci/release-patch.py` refuses a patch unless:
+
+- the source is a branch `release-vX.Y` whose final version exists;
+- its head is not released yet: it is neither the commit of a `vX.Y.*` tag nor
+  the slice under one's version commit;
+- the head has a green CI run: the line's merge queue (`ci.yml`) or a check of
+  the line by the `release.yml` button.
+
+It commits `bump-version.py X.Y.Z` on the head, with `Z` the next free patch,
+and pushes only the tag: the version commit lives under the tag, and the line's
+head stays a slice. The release publishes the patch to the main catalog at once.
+The same run then opens the pull request back to `main`, described below.
 
 ### Which revision runs the pipeline
 
@@ -75,47 +134,43 @@ come from the tag is the channel: every marketplace job checks out only
 jobs checks out the tag's code. `UNICA_MARKETPLACE_TOKEN` lives in the
 `marketplace` environment, which admits only `main` and `v*` tags, so another
 branch cannot read it. The environment holds no tag key and has no reviewer:
-the publication from a tag runs to the end without waiting for a person. The jobs holding the token still come from the tagged
-commit's `release.yml`, so whoever can create a `v*` tag defines those steps. Old
-tags also run against the current `release-channel.py` from `main`, so keep its
-commands compatible with them.
+the publication from a tag runs to the end without waiting for a person. The
+jobs holding the token still come from the tagged commit's `release.yml`, so
+whoever can create a `v*` tag defines those steps. Old tags also run against
+the current `release-channel.py` from `main`, so keep its commands compatible
+with them.
+
+A tag's line — where the site files its report — is the `release-vX.Y` that
+holds its commit; a final version holds its own line from the start. A button's
+version commit lies on no branch, so the commit beneath it names the line, and
+only the line the tag's name allows: `main` for an alpha or a candidate, its own
+`release-vX.Y` for a patch. Anything else is refused
+(`scripts/ci/resolve-line.py`).
 
 The site job deploys through the `github-pages` environment, which must allow
 `main`, `release-v*` and `v*`: a ref it refuses ends the run red after the release.
-
-A release line carries its own `release.yml`. A line without it has no workflow
-that publishes: bring the workflow onto the line before tagging a patch.
 
 There is no scheduler and no waiting window: a failed stage is a red run
 attached to the release tag, and the catalog stays where it was. Rerunning the
 failed jobs resumes the publication — every stage is idempotent.
 
-## Preconditions
-
-- Write access to both repositories, and `gh` authenticated. The tag step
-  pushes over HTTPS, so run `gh auth setup-git` once in a fresh checkout.
-- A GPG key able to sign the source tag. If signing fails with `Operation
-  cancelled` in a non-interactive shell, run
-  `gpg-connect-agent updatestartuptty /bye` first, then
-  `echo test | gpg --clearsign > /dev/null` to unlock the agent.
-- The branch the release is cut from is green, and the version bump is ready
-  to verify and merge.
-
 ## Where a release is cut from
 
-A minor is cut from `main`. Patches for a minor that already shipped are cut
-from its line branch, `release-vX.Y`, and that branch is where the version bump
-lives: `main` keeps the minor's version and never takes the patch bumps. When
-0.12.3 shipped, `release-v0.12` declared 0.12.3 while `main` still declared
-0.12.0.
+A minor is cut from `main`: the night makes an alpha of a `main` slice, the RC
+button a candidate of that slice, and the final button the release of that
+candidate. The final button also opens the line `release-vX.Y` on the release
+commit.
 
-Steps 0 and 1 therefore happen on the branch the release is cut from, and the
-tag names a commit on it. Step 3 brings the line back to `main`.
+Patches for a minor that already shipped are cut from its line. A fix reaches
+`release-vX.Y` through a pull request and the merge queue, as it reaches `main`;
+the line's queue run is the green CI the patch button asks for. `main` keeps its
+own version and never takes the patch numbers.
 
-## Step 0 — prepare the version
+## Raising the version of `main`
 
-One command writes the version everywhere the package contract declares it, then
-runs the contract check:
+After a final release the night publishes no alpha of that version and says so
+("raise the version of main"), because an alpha of `X.Y.0` would be older than
+the release. Raise `main` to the next minor through a pull request:
 
 ```bash
 python3.12 scripts/dev/bump-version.py X.Y.Z
@@ -123,12 +178,11 @@ cargo update --workspace --offline
 ```
 
 The version lives in several files because each is read by a different consumer:
-Cargo compiles it into the binaries, the two host manifests ship it to Codex and
-Claude Code, and the tools lock pins it beside the third-party tools. They are
-separate artifacts, so it cannot live in one file — but it is written by one
-command and enforced by one check,
-`scripts/ci/check-version-contract.py`, which fails the build if any of them
-drift apart.
+Cargo compiles it into the binaries, the three host manifests ship it to Codex,
+Claude Code and ZCode, and the tools lock pins it beside the third-party tools.
+They are separate artifacts, so it cannot live in one file — but it is written
+by one command and enforced by one check, `scripts/ci/check-version-contract.py`,
+which fails the build if any of them drift apart.
 
 Tests that assert the current version still need updating by hand; they fail with
 an explicit diff, so run the suite before opening the pull request:
@@ -138,49 +192,28 @@ python3.12 -m pip install -r tests/ci/requirements.txt
 python3.12 -m unittest discover -s tests/ci
 ```
 
-Then merge through a pull request into the branch the release is cut from.
-Keep the bump its own pull request: step 1 tags its merge commit, so that commit
-has to carry both the bump and everything else the version ships.
+The buttons need no such pull request: each writes its version on its own
+commit under the tag.
 
-### Run the large profile on the release commit
+### Check a line before a patch
 
 Some contracts run only on the tag build and in the `large` profile: the
 Windows tool contracts in `scripts/ci/check-tool-contracts.py` and the
-Windows test lane. A pull request does not run them. The nightly checks `main`
-only, so a release line gets no check of its own until you press the button.
-Before tagging, run `large` on the branch the release is cut from, at the commit
-you are about to tag, and wait for it to finish green:
+Windows test lane. A pull request does not run them, and the nightly checks
+`main` only. A check that first fails on the tag build burns the version
+number, and the fix ships under the next one — that is how `v0.13.0-rc.6` was
+lost to a Windows-only `make` contract. Before a patch, run `large` on the line
+and wait for it to finish green; the patch button accepts that run as the
+line's CI:
 
 ```bash
 gh workflow run release.yml --ref release-vX.Y -f profile=large
-gh run list --workflow release.yml --limit 3 \
-  --json databaseId,headSha,status,conclusion
 ```
 
-For a minor cut from `main`, use `--ref main`.
+A release line carries its own `release.yml`. A line without it has no workflow
+that publishes: bring the workflow onto the line before a patch.
 
-Check that the run's `headSha` is the commit you will tag. A tag is
-immutable and the build reads its checks from the tagged commit: a check that
-first fails on the tag build burns the version number, and the fix ships
-under the next one. That is how `v0.13.0-rc.6` was lost to a Windows-only
-`make` contract after the runner moved to 0.13.
-
-## Step 1 — tag the source release
-
-Tag the merge commit of the version pull request in `unica` and push. On a
-patch that commit is on `release-vX.Y`, not on `main`. The tag starts the
-release run, and its green build moves on to the publication on its own.
-
-```bash
-git tag -s vX.Y.Z <release-commit-sha> -m "Unica vX.Y.Z"
-git push origin vX.Y.Z
-```
-
-The version must be fixed before artifacts are built: the runtime manifest
-embeds `release.tag` and derives every asset URL from it, and the bootstrap
-rejects a manifest whose URL disagrees with its declared version.
-
-## Step 2 — watch it land
+## Watching a release
 
 The tag push runs **Unica Release**: build, then stage → anchor → verify →
 promote, then the site. The site updates only from these runs and the nightly.
@@ -244,18 +277,45 @@ install from it. Those runs do not gate anything: the
 pipeline's `verify-upgrade` and `verify-fresh-install` jobs already ran on
 three hosts before `promote` moved the catalog.
 
-## Step 3 — merge the line back into `main`
+## Bringing the line back into `main`
 
-A patch leaves `main` behind, because the fix and the bump landed on the line
-branch only. Merge the line back through a `merge/release-vX.Y.Z-into-main`
-pull request once the release is live.
+A patch leaves `main` behind, because the fix landed on the line only. After the
+patch tag is pushed, the job `back-merge` of the patch button merges the line
+into a branch `merge/release-vX.Y.Z-into-main` cut from `main` and opens a pull
+request into `main`.
 
-The version contract conflicts every time. Keep `main`'s side in all five files:
-the line changed nothing there but the number. `Cargo.lock` conflicts for the
-same reason and also keeps `main`'s side, which carries the real dependency
-state while the line moved only the two workspace crate versions.
+The version contract differs every time. In all five of its files and in
+`Cargo.lock`, `main`'s side stays: the line changed nothing there but the
+number, and `main`'s `Cargo.lock` carries the real dependency state. A conflict
+in any other file stops the job with the list of files; merge the line by hand
+on that branch, keeping `main`'s side in those six files. A line already in
+`main`, or one that differs only in the version, opens nothing. The run's token
+cannot push a change to `.github/workflows`, so a line that carries one is also
+merged by hand. A rerun finds the branch of an earlier run and leaves it, with
+its pull request, as it is.
 
-## If a stage fails
+The run's token creates that pull request, so its CI does not start on its own:
+the coordinator closes and reopens it with their own token, or pushes an empty
+commit.
+
+## When a stage fails
+
+| Stage | What failed | What to do |
+| --- | --- | --- |
+| alpha | the night is red | Fix `main`; the next green night releases the alpha. `gh workflow run nightly.yml --ref main -f force=true` repeats a night on the same tip |
+| alpha | the night is green but releases nothing | Either `main` did not move, or its version is already released: raise the version of `main` |
+| RC | the button refuses | Read the refusal: an unpublished alpha, a slice outside `main`, a night that did not check it, or a released version. Take another alpha, or raise `main` |
+| RC | the release of `vX.Y.0-rc.N` is red | Rerun the failed jobs (below). A defect in the candidate's code burns its number: fix `main`, wait for the next alpha, press the RC button again |
+| final | the button refuses | The candidate's release is not green, not on `next`, or not the newest candidate of its version, or the line already exists. Finish or replace the candidate first |
+| final | the release of `vX.Y.0` is red | Rerun the failed jobs. A defect in the code burns the number; `release-vX.Y` already exists, so the fix ships as a patch from the line |
+| patch | the button refuses | The source is not a `release-*` branch with a final version, the head is already released, or it has no green CI: merge the fix through the line's queue, or run the `large` check of the line |
+| patch | the release of `vX.Y.Z` is red | Rerun the failed jobs. A defect in the code burns the number: fix the line and press the patch button again |
+| patch | `back-merge` fails | A conflict outside the version files, or a line that changes `.github/workflows`: merge the line by hand on `merge/release-vX.Y.Z-into-main`. The patch itself is already released |
+
+A tag push that started nothing at all — a red `admit` or a refused key job —
+changed nothing: press the button again once the cause is gone.
+
+### Rerunning a release run
 
 The pipeline stops before the catalog moves, so consumers are unaffected.
 Rerun the failed jobs after fixing the cause — completed stages detect
@@ -318,82 +378,10 @@ so nothing but a published tag will do — and a candidate needs testers before
 the release it becomes. A release candidate is published to the `next`
 channel of the marketplace and never to the stable catalog.
 
-### Releasing an RC and its final version
-
-A candidate from a checked alpha is one button, and the final version from a
-checked candidate is another; nothing after either waits for a person:
-
-| Step | Who | What happens |
-| --- | --- | --- |
-| Night | **Unica Nightly** | full tests on every OS, then the alpha `vX.Y.Z-alpha.N` |
-| RC button | a repository administrator | `rc-from-alpha.yml` with the alpha's tag |
-| RC tag | the deploy key | version commit on the alpha's slice, tag `vX.Y.Z-rc.N` |
-| RC release | `release.yml` on the tag push | full tests, build, install checks, the `next` channel |
-| Final button | a repository administrator | `release-from-rc.yml` with the candidate's tag |
-| Final tag | the deploy key | version commit on the candidate's commit, tag `vX.Y.Z` |
-| Final release | `release.yml` on the tag push | full tests, build, install checks, the main catalog |
-
-```bash
-gh workflow run rc-from-alpha.yml --repo IngvarConsulting/unica --ref main -f alpha=v0.15.0-alpha.4
-gh workflow run release-from-rc.yml --repo IngvarConsulting/unica --ref main -f rc=v0.15.0-rc.2
-```
-
-Only an administrator gets past the first job of either button, `admit`: it
-refuses a run not started from `main`, reads the role of the person who started
-or re-ran the run (`collaborators/<actor>/permission`) and refuses anything but
-`admin`. No name is written in the workflows. A writer can press a button, but
-the run stops there, before the job that holds the tag key starts; a re-run of
-the failed job checks the role again before its key step. That job runs in the
-environment `alpha`, which admits only `main`: a copy of a button kept in an old
-tag gets no key. The two buttons share one queue.
-
-`scripts/ci/release-rc.py` refuses a candidate unless:
-
-- the alpha is published and its slice — the parent of its version commit — is
-  in `main` and equals the `main@<sha>` of its release description;
-- the night that set this alpha is green and checked that very commit, so the
-  slice's tree is the tree it tested;
-- `vX.Y.Z` is not released yet.
-
-It commits `bump-version.py X.Y.Z-rc.N` on the slice, with `N` the next free
-number, tags the commit and pushes the tag with the deploy key from the secret
-`RELEASE_TAG_KEY`.
-
-`scripts/ci/release-final.py` refuses a final version unless:
-
-- the candidate's tag exists and its GitHub release is published;
-- the release run of that tag's push (`release.yml`) is green;
-- the marketplace has the candidate's tag, which appears only together with
-  the `next` catalog that names it;
-- no later candidate of the same core exists;
-- `vX.Y.Z` is not released yet.
-
-It commits `bump-version.py X.Y.Z` on the candidate's commit — the tree that
-was tested and served on `next`, with only the version changed — tags it and
-pushes the tag with the same key.
-
-Each key push starts the ordinary release by tag below, with no approval on the
-way. These tags are set by a workflow, not signed by a person: the
-administrator's button and the checks above stand in for the signature. A
-stable version can still be a signed tag as in step 1, for a patch from a line
-branch or a release that does not come from a candidate.
-
-Neither button leaves anything to merge back: the alpha's slice is already in
-`main`, and the version commits live only under their tags, as an alpha's does.
-Step 3 does not apply. What `main` does need after a final version is a higher
-version: until then the night publishes no alpha and says so ("raise the version
-of main"). Raise it through a version pull request as in step 0; which version
-comes next — the next minor or a patch — is a choice for a person, and the bump
-also updates the tests that assert the version by hand.
-
-A candidate can still be tagged by hand when it must not come from an alpha:
-give the version an `-rc.N` suffix and tag it as usual:
-
-```bash
-python3.12 scripts/dev/bump-version.py 0.13.0-rc.1
-cargo update --workspace --offline
-# merge, then tag as in step 1
-```
+A candidate is cut from a checked alpha by the RC button, and the final
+version from a checked candidate by the final button; the
+[four stages](#four-stages-each-built-from-the-one-before) say what each checks.
+The candidate's version carries the suffix `-rc.N`.
 
 The suffix is part of the version, not a label beside it, because the runtime
 manifest requires the tag to equal `v` + the plugin version literally.
@@ -428,8 +416,9 @@ way they received the candidate; how they join and leave the channel is in the
 
 A candidate burns its own version number, never the stable one: measure
 against `0.13.0-rc.1`, then release `0.13.0` from the same code. "The same
-code" still means a second bump pull request — the version is part of the
-package contract, so `0.13.0` is a commit, not a relabelling of `0.13.0-rc.1`.
+code" still means a second version commit, which the final button makes on the
+candidate's commit — the version is part of the package contract, so `0.13.0`
+is a commit, not a relabelling of `0.13.0-rc.1`.
 
 Two things follow from engines being named rather than republished. The
 measurement is cheaper than it looks: engine artifacts keep their own versions,
@@ -466,8 +455,8 @@ reference them by identity:
   existing tag or anchor carries the staged bytes instead of moving it.
 
 This gives the rule that replaces rollback: **never reuse a version number**. If
-anything is wrong after step 1, abandon that version and release the next patch
-instead. Re-cutting `vX.Y.Z` with different bytes breaks every consumer that
+anything is wrong after a tag is set, abandon that version and release the next
+one instead. Re-cutting `vX.Y.Z` with different bytes breaks every consumer that
 already resolved it.
 
 Whenever you abandon a version whose assets are already published, mark that
@@ -526,10 +515,12 @@ commits. The commit's parent is the slice; the release description names it as
   exclusion for alphas.
 - **Tag ruleset.** One rule covers every `v*` tag, alphas included: deletion and
   non-fast-forward updates are blocked for everyone, and creation is restricted
-  with the role admin and **Deploy keys** in the bypass list. The deploy key from
-  `RELEASE_TAG_KEY` lives only in the environment `alpha`, which admits only
-  `main`, and creates the alpha, candidate and final tags there; the app GitHub Actions gets no bypass, so a workflow run
-  from any branch cannot create a `v*` tag with the run's token.
+  with only **Deploy keys** in the bypass list — no role, the administrator's
+  included. The deploy key from `RELEASE_TAG_KEY` lives only in the environment
+  `alpha`, which admits only `main`, and creates every `v*` tag there: the alpha,
+  candidate, final and patch ones, and the branch `release-vX.Y` with a final.
+  The app GitHub Actions gets no bypass, so a workflow run from any branch cannot
+  create a `v*` tag with the run's token.
 - **Immutable releases.** Assets can be uploaded only before publication, so every
   prerelease goes up as a draft and a separate step publishes it. A failed run
   before that step can be rerun: it continues the draft. After publication a
@@ -584,7 +575,7 @@ tag by hand.
 | `stage` fails with `vX.Y.Z-rc.N is older than vA.B.C` | A newer release or candidate is already served | The candidate is stale; tag the next `-rc.N` of a newer version |
 | `anchor` or `promote` fails comparing an existing `vX` or `candidate-vX` | The version was already published with different bytes | Never move the tag; release the next patch |
 | `--ref vX` installs the previous version | `vX` is one of `v0.9.1` through `v0.13.0-rc.5`: those tags name the staging commit, whose catalog still named the previous release | Expected for those tags; add the marketplace by branch |
-| Packaging fails with `release tag vX.Y.Z != vA.B.C` | The tagged commit does not declare X.Y.Z: step 0 was not merged, or the wrong commit was tagged | Tag the merge commit of the version pull request. If the bad tag was pushed, that version is burnt — take the next patch |
+| Packaging fails with `release tag vX.Y.Z != vA.B.C` | The tagged commit does not declare X.Y.Z: the button's version commit and its tag disagree | A defect in the button script; that version is burnt — fix the script and take the next number |
 | `Verify marketplace` red after the catalog moved, at `previous-stable-upgrade` with `git clone marketplace source timed out after 30s` | Codex re-clones the whole marketplace on `plugin marketplace upgrade`; a clone that misses its own 30s budget leaves the stale local catalog, which then installs the previous version | Transient. `gh run rerun <run-id> --failed`. Consumers are unaffected: the catalog is already correct and the pipeline's own upgrade checks passed before promote |
 | Consumers still report the old version | The publish run did not finish | Check its failed stage and rerun |
 | `verify-delivery-reachable` fails with HTTP 404 | The toolchain asset the lock names is gone or was renamed | Never re-tag a toolchain release; point the lock at a published asset and cut the next patch |
@@ -596,6 +587,8 @@ tag by hand.
 - Move or delete a published tag other than an expired alpha, or force-push `main` or `next` of the
   marketplace. Consumers resolve `git-subdir` against those refs; changed bytes
   require a new version.
+- Set a `v*` tag by hand; the tag ruleset refuses it, and a release starts only
+  from a button or the night.
 - Point a catalog at a tag by hand, or point `main` at a candidate. The promote
   job is the only writer of both channels' catalog files, and it runs only
   behind green install checks.
