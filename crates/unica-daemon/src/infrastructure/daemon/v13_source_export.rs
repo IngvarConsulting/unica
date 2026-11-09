@@ -1780,6 +1780,11 @@ mod medium_tests {
             );
             assert!(!result.ok, "local={local}: {result:?}");
             assert_eq!(result.diagnostics[0]["code"], "concurrent_change");
+            assert_eq!(result.data.as_ref().unwrap()["changed"], "project");
+            assert!(
+                result.summary.contains("during its internal preview"),
+                "{result:?}"
+            );
             assert_eq!(
                 runner.call_count(),
                 1,

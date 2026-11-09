@@ -29,8 +29,8 @@ use unica_work_control::cancellation::CancellationToken;
 use unica_workspace::full_dump::{
     current_host_platform, observe_executable_permissions, ConfigInputSnapshot,
     DumpCleanupObservation, DumpTargetCapture, ExecutablePermissionObservation, FullDumpFailure,
-    FullDumpPhase, HostPlatform, PlatformAttestation, PreparationFailure, PreparedPublication,
-    RunnerProjectStore, SerializedDumpProjection, VerifiedFullDumpPublication,
+    FullDumpPhase, HostPlatform, IntegrityReason, PlatformAttestation, PreparationFailure,
+    PreparedPublication, RunnerProjectStore, SerializedDumpProjection, VerifiedFullDumpPublication,
 };
 use unica_workspace::paths::{
     metadata_is_link_or_reparse_point, normalize_leaf_path, normalize_path_identity,
@@ -848,14 +848,11 @@ pub fn attest_selected_local(
         &mut probe_cancelled,
     )
     .map_err(|error| {
-        FullDumpFailure::new(
-            if probe_cancelled {
-                FullDumpPhase::Cancelled
-            } else {
-                FullDumpPhase::Integrity
-            },
-            error,
-        )
+        if probe_cancelled {
+            FullDumpFailure::new(FullDumpPhase::Cancelled, error)
+        } else {
+            FullDumpFailure::integrity(IntegrityReason::Platform, error)
+        }
     })?;
     publication.bind_selected_attestation(executable, verified.attestation, cancellation)
 }
