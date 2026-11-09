@@ -733,7 +733,8 @@ fn canonical_style_color_edits_keep_the_export_format_of_the_set() {
             json!({"executionToken": token}),
         );
         assert!(executed.ok, "{version}: {executed:?}");
-        let written = std::fs::read_to_string(fixture.source.join("StyleItems/Accent.xml")).unwrap();
+        let written =
+            std::fs::read_to_string(fixture.source.join("StyleItems/Accent.xml")).unwrap();
         assert!(written.contains("changed"), "{version}: {written}");
         assert!(
             written.contains(&format!("version=\"{version}\"")) && !written.contains("2.20"),
@@ -757,7 +758,9 @@ fn canonical_style_color_edits_keep_the_export_format_of_the_set() {
     );
     assert!(!refused.ok, "{refused:?}");
     assert_eq!(refused.diagnostics[0]["code"], "invalid_source");
-    let message = refused.diagnostics[0]["message"].as_str().unwrap_or_default();
+    let message = refused.diagnostics[0]["message"]
+        .as_str()
+        .unwrap_or_default();
     assert!(
         message.contains("2.20") && message.contains("2.21"),
         "{message}"
