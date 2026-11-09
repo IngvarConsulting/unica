@@ -7,9 +7,10 @@
 //! byte for byte, apart from `ConfigDumpInfo.xml`, which the reference does not
 //! keep.
 //!
-//! A research test on a real platform: it runs only by hand, through
-//! `scripts/dev/run-research.py --profile platform`, and only when
-//! `UNICA_PLATFORM_LINE` names a line (`8.3.27`, `8.5.1`, `8.5.4`). Then
+//! A research test on a real platform: it is ignored in ordinary runs and runs
+//! by hand through `scripts/dev/run-research.py --profile platform`, which runs
+//! ignored tests. `UNICA_PLATFORM_LINE` names a line the format profile measured
+//! (`EXPORT_FORMAT_PLATFORM_LINES`) and that has an `all_kinds` reference. Then
 //! `V8_RUNNER` must name the v8-runner executable of the pinned version
 //! (`plugins/unica/third-party/tools.lock.json`); `UNICA_PLATFORM_BUILD` picks
 //! an exact build instead of the newest installed one of the line.
@@ -25,6 +26,7 @@ use unica_execution::runner::attempt::RuntimeWorkspaceObservation;
 use unica_execution_contract::adapter_outcome::AdapterOutcome;
 use unica_process::runner::system_process_runner;
 use unica_source_contract::workspace::WorkspaceContext;
+use unica_source_designer::format_profile::EXPORT_FORMAT_PLATFORM_LINES;
 use unica_work_control::cancellation::CancellationToken;
 
 const LINE_ENV: &str = "UNICA_PLATFORM_LINE";
@@ -33,21 +35,23 @@ const RUNNER_ENV: &str = "V8_RUNNER";
 /// Files the reference export does not keep.
 const NOT_IN_REFERENCE: &[&str] = &["ConfigDumpInfo.xml"];
 
-/// Export format written by each platform line the corpus has a reference for.
+/// Export format written by `line`, from the format profile's measured lines.
 fn line_format(line: &str) -> Option<&'static str> {
-    match line {
-        "8.3.27" => Some("2.20"),
-        "8.5.1" => Some("2.21"),
-        "8.5.4" => Some("2.22"),
-        _ => None,
-    }
+    EXPORT_FORMAT_PLATFORM_LINES
+        .iter()
+        .find(|(_, writer)| *writer == line)
+        .map(|(format, _)| *format)
 }
 
-fn repo_root() -> PathBuf {
+fn plugin_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugins/unica")
+}
+
+fn reference_export(format: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .canonicalize()
-        .expect("repository root")
+        .join("../../tests/fixtures/formats/platform_xml")
+        .join(format)
+        .join("all_kinds/src")
 }
 
 fn newest_build(line: &str) -> String {
@@ -83,7 +87,7 @@ impl RuntimeEnvironment for HostRunnerEnvironment {
     fn plugin_root(&self, cwd: &Path) -> Option<PathBuf> {
         unica_coder::infrastructure::runtime_composition::runtime_environment()
             .plugin_root(cwd)
-            .or_else(|| Some(repo_root().join("plugins/unica")))
+            .or_else(|| Some(plugin_root()))
     }
     fn resolve_v8_tool(
         &self,
@@ -294,11 +298,10 @@ fn tree_differences(expected: &Path, actual: &Path) -> Vec<String> {
 }
 
 #[test]
+#[ignore = "needs an installed 1C platform: set UNICA_PLATFORM_LINE and V8_RUNNER and run scripts/dev/run-research.py --profile platform"]
 fn platform_line_full_cycle_keeps_the_reference_export() {
-    let Ok(line) = std::env::var(LINE_ENV) else {
-        eprintln!("skipped: {LINE_ENV} names no platform line");
-        return;
-    };
+    let line = std::env::var(LINE_ENV)
+        .unwrap_or_else(|_| panic!("{LINE_ENV} must name the platform line of the cycle"));
     let format = line_format(&line)
         .unwrap_or_else(|| panic!("{LINE_ENV}={line}: no reference export for this line"));
     let program = PathBuf::from(
@@ -310,17 +313,18 @@ fn platform_line_full_cycle_keeps_the_reference_export() {
         build.starts_with(&format!("{line}.")),
         "{BUILD_ENV}={build} is not a build of {line}"
     );
-    let reference = repo_root()
-        .join("tests/fixtures/formats/platform_xml")
-        .join(format)
-        .join("all_kinds/src");
+    let reference = reference_export(format);
     let cycle = Cycle {
         environment: HostRunnerEnvironment { program },
         build,
     };
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
     let root = std::env::temp_dir().join(format!(
-        "unica-platform-line-cycle-{line}-{}",
-        uuid::Uuid::new_v4()
+        "unica-platform-line-cycle-{line}-{}-{stamp}",
+        std::process::id()
     ));
 
     // Reference → infobase → verified full export.

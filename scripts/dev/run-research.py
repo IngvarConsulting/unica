@@ -66,6 +66,10 @@ def rust_command(profile: str, issue: int | None) -> list[str]:
                "--test", target, "--no-tests=warn"]
     if issue is not None:
         command += ["-E", f"test(/^issue_{issue}(_|::|$)/)"]
+    if profile == "platform":
+        # A platform measurement needs its installed platform and is ignored in
+        # ordinary runs; this profile is the manual run that executes it.
+        command += ["--run-ignored", "all"]
     return command
 
 
