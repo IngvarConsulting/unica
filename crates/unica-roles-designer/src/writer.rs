@@ -69,10 +69,15 @@ pub fn validate_role_rights_document(text: &str, values: RoleValueScope<'_>) -> 
     if (namespace, root.tag_name().name()) != (ROLE_RIGHTS_NAMESPACE, "Rights")
         || platform_xml_publication_policy(namespace, root.tag_name().name())
             != Some(PlatformXmlPublicationPolicy::ExactRootVersion)
-        || unica_source_designer::roots::root_version_literal(text, root).as_deref() != Some("2.20")
+        || !crate::dialect::root_version::is_writable(
+            unica_source_designer::roots::root_version_literal(text, root).as_deref(),
+        )
         || root.attribute((XSI_NAMESPACE, "type")) != Some("Rights")
     {
-        return Err("Rights.xml must use exact roles format 2.20".to_string());
+        return Err(format!(
+            "Rights.xml must use exact roles format {}",
+            crate::dialect::root_version::writable()
+        ));
     }
     for flag in [
         "setForNewObjects",

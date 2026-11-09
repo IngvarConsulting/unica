@@ -5,7 +5,6 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use unica_code_intelligence::coordinator::CodeSearchExecution;
-use unica_code_intelligence::deadlines::CodeIntelligenceDeadlines;
 use unica_code_intelligence::model::CodeIntelligenceContext;
 use unica_code_intelligence::model::CodeIntelligenceProvider;
 use unica_code_intelligence::model::CodeIntelligenceRegistry;
@@ -17,6 +16,7 @@ use unica_code_intelligence::model::ProviderSearchSection;
 use unica_code_intelligence::model::SearchOrdering;
 use unica_code_intelligence::model::SearchRanking;
 use unica_code_intelligence::model::SearchRequest;
+use unica_configuration::deadlines::CodeIntelligenceDeadlines;
 use unica_navigation::result_store::SearchCursorBinding;
 use unica_source_contract::workspace::ResolvedSourceRoot;
 use unica_source_contract::workspace::WorkspaceContext;
@@ -3615,13 +3615,13 @@ fn literal_search_reads_submodules_and_embedded_repositories() {
             );
             git(workspace.path(), &["add", "src/Aaa"]);
         }
-        let corpus = unica_adapter_lexical::lines::CandidateCorpus {
+        let corpus = unica_coder::infrastructure::daemon_adapters::lexical::CandidateCorpus {
             subtree: None,
             excluded: Vec::new(),
             excluded_name_prefixes: Vec::new(),
         };
         let foreign = |root: &std::path::Path| {
-            unica_adapter_lexical::lines::holds_foreign_work_tree(
+            unica_coder::infrastructure::daemon_adapters::lexical::holds_foreign_work_tree(
                 unica_process::runner::system_process_runner(),
                 root,
                 &corpus,

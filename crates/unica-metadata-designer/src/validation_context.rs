@@ -1,8 +1,8 @@
 use super::template_catalog::metadata_generated_types_8_3_27;
+use crate::dialect::root_version;
 use crate::validation::{is_guid, meta_validate_valid_types};
 use std::fmt;
 use std::path::{Path, PathBuf};
-use unica_source_designer::format_profile::ACTIVE_FORMAT_PROFILE;
 use unica_source_designer::roots::root_version_literal;
 use uuid::Uuid;
 const MD_CLASSES_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
@@ -48,12 +48,11 @@ pub fn validate_event_source_registration(
     let root = document.root_element();
     if root.tag_name().namespace() != Some(MD_CLASSES_NS)
         || root.tag_name().name() != "MetaDataObject"
-        || root_version_literal(source, root).as_deref()
-            != Some(ACTIVE_FORMAT_PROFILE.export_format)
+        || !root_version::is_writable(root_version_literal(source, root).as_deref())
     {
         return Err(format!(
             "EventSubscription source owner must be a Platform XML MetaDataObject version {}",
-            ACTIVE_FORMAT_PROFILE.export_format
+            root_version::writable()
         ));
     }
     let artifacts = root
@@ -128,12 +127,11 @@ pub fn validate_event_source_dependency_descriptor(
     let root = document.root_element();
     if root.tag_name().namespace() != Some(MD_CLASSES_NS)
         || root.tag_name().name() != "MetaDataObject"
-        || root_version_literal(source, root).as_deref()
-            != Some(ACTIVE_FORMAT_PROFILE.export_format)
+        || !root_version::is_writable(root_version_literal(source, root).as_deref())
     {
         return Err(format!(
             "EventSubscription source descriptor must be a Platform XML MetaDataObject version {}",
-            ACTIVE_FORMAT_PROFILE.export_format
+            root_version::writable()
         ));
     }
     let artifacts = root

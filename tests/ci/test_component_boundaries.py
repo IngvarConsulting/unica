@@ -178,32 +178,32 @@ class ComponentBoundaryTests(unittest.TestCase):
     def test_lsp_service_and_its_contract_keep_their_own_boundary(self) -> None:
         """rule: INV.APP.COMPONENT-DEPENDENCIES"""
         refused = (
-            ("unica-lsp", "unica-daemon-protocol"),
-            ("unica-lsp", "unica-coder"),
-            ("unica-lsp", "unica-daemon"),
-            ("unica-lsp", "unica-execution"),
-            ("unica-lsp", "unica-forms"),
-            ("unica-lsp", "unica-adapter-bsl-analyzer"),
-            ("unica-lsp", "unica-code-intelligence"),
-            ("unica-lsp", "unica-forms-designer"),
+            ("unica-editor-analysis", "unica-daemon-protocol"),
+            ("unica-editor-analysis", "unica-coder"),
+            ("unica-editor-analysis", "unica-daemon"),
+            ("unica-editor-analysis", "unica-execution"),
+            ("unica-editor-analysis", "unica-forms"),
+            ("unica-editor-analysis", "unica-adapter-bsl-analyzer"),
+            ("unica-editor-analysis", "unica-code-intelligence"),
+            ("unica-editor-analysis", "unica-forms-designer"),
             ("unica-code-model", "unica-bsl-parser"),
             ("unica-code-model", "unica-code-intelligence"),
             ("unica-lsp-contract", "unica-daemon-protocol"),
             ("unica-lsp-contract", "unica-workspace"),
             ("unica-lsp-contract", "unica-address"),
-            ("unica-daemon-protocol", "unica-lsp"),
+            ("unica-daemon-protocol", "unica-editor-analysis"),
         )
         for kind in ("dependencies", "build-dependencies", "dev-dependencies"):
             for owner, target in refused:
                 with self.subTest(kind=kind, owner=owner, target=target):
                     self.assertTrue(checker.edge_errors(owner, target, kind))
         for owner, target in (
-            ("unica-lsp", "unica-lsp-contract"),
-            ("unica-lsp", "unica-workspace"),
-            ("unica-lsp", "unica-bsl"),
-            ("unica-lsp", "unica-source-designer"),
-            ("unica-lsp", "unica-address"),
-            ("unica-lsp", "unica-code-model"),
+            ("unica-editor-analysis", "unica-lsp-contract"),
+            ("unica-editor-analysis", "unica-workspace"),
+            ("unica-editor-analysis", "unica-bsl"),
+            ("unica-editor-analysis", "unica-source-designer"),
+            ("unica-editor-analysis", "unica-address"),
+            ("unica-editor-analysis", "unica-code-model"),
             ("unica-code-model", "unica-work-control"),
             ("unica-code-intelligence", "unica-code-model"),
             ("unica-coder", "unica-lsp-contract"),
@@ -214,7 +214,7 @@ class ComponentBoundaryTests(unittest.TestCase):
 
     def test_only_the_lsp_coordinator_reaches_the_shared_designer_layout(self) -> None:
         """rule: INV.APP.COMPONENT-DEPENDENCIES"""
-        self.assertEqual(checker.required_component("unica-lsp"), "coordinator")
+        self.assertEqual(checker.required_component("unica-editor-analysis"), "coordinator")
         self.assertEqual(checker.required_component("unica-code-model"), "abstraction")
         for owner in ("unica-application", "unica-domain", "unica-navigation", "unica-code-intelligence"):
             with self.subTest(owner=owner):

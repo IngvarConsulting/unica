@@ -13,15 +13,15 @@ tests/fixtures/unica_mcp_script_parity/cc-1c-skills/** -text -whitespace
 
 # The 8.3.27 support fixture and its CFE module are raw platform evidence.
 # Their BOM and CRLF bytes are part of the assertions and must not be normalized.
-tests/fixtures/platform_8_3_27/support-edit-bin-only/** -text -whitespace
+tests/fixtures/formats/platform_xml/2.20/support-edit-bin-only/** -text -whitespace
 tests/fixtures/unica_mcp_script_parity/cfe-patch-method/base-common-module.bsl -text -whitespace
 
 # Staged-dump root fixtures keep the BOM and CRLF an 8.3.27 dump writes.
-tests/fixtures/platform_8_3_27/staged_dump_roots/** -text -whitespace
-tests/fixtures/platform_8_3_27/exchange_plan/extension-Content.xml -text -whitespace
+tests/fixtures/formats/platform_xml/2.20/staged_dump_roots/** -text -whitespace
+tests/fixtures/formats/platform_xml/2.20/exchange_plan/extension-Content.xml -text -whitespace
 
 # The native HTML oracle retains its exact BOM and internal line ending.
-tests/fixtures/platform_8_3_27/html-template/native-ru.html -text
+tests/fixtures/formats/platform_xml/2.20/html-template/native-ru.html -text
 
 # XDTO platform-export fixtures assert BOM and CRLF as part of their byte contract.
 tests/fixtures/xdto/** -text -whitespace
@@ -44,11 +44,11 @@ plugins/unica/skills/form-patterns/SKILL.md whitespace=cr-at-eol
 tests/fixtures/acceptance/** -text whitespace=cr-at-eol
 
 # Incomplete borrowed descriptors and MCP checks preserve platform-export bytes.
-tests/fixtures/platform_8_3_27/incomplete_borrowed/** -text whitespace=cr-at-eol
+tests/fixtures/formats/platform_xml/2.20/incomplete_borrowed/** -text whitespace=cr-at-eol
 
 # Borrowing evidence is 8.3.27 export bytes; tests compare BOM and CRLF.
-tests/fixtures/platform_8_3_27/cfe_borrow/*.xml -text whitespace=cr-at-eol
-tests/fixtures/platform_8_3_27/cfe_borrow/*.bsl -text whitespace=cr-at-eol
+tests/fixtures/formats/platform_xml/2.20/cfe_borrow/*.xml -text whitespace=cr-at-eol
+tests/fixtures/formats/platform_xml/2.20/cfe_borrow/*.bsl -text whitespace=cr-at-eol
 
 # Spreadsheet edit fixtures are 8.3.27 exports; BOM and CRLF are asserted.
 tests/fixtures/acceptance/workspace-mxl/src/cf/Reports/F06Report/Templates/PlatformExport/** -text -whitespace
@@ -61,20 +61,20 @@ tests/fixtures/acceptance/workspace-whole-template-removal/** -text -whitespace
 /plugins/unica/third-party/licenses/ureq/** -text
 
 # Raw template XML exports and the complete native Report seed retain their bytes.
-/tests/fixtures/platform_8_3_27/template-new-xml/*.xml -text whitespace=cr-at-eol
-/tests/fixtures/platform_8_3_27/template-new-xml/seed/** -text whitespace=cr-at-eol
+/tests/fixtures/formats/platform_xml/2.20/template-new-xml/*.xml -text whitespace=cr-at-eol
+/tests/fixtures/formats/platform_xml/2.20/template-new-xml/seed/** -text whitespace=cr-at-eol
 
 # The empty configuration root is the same native seed without its Report.
-/tests/fixtures/platform_8_3_27/empty_configuration/src/** -text whitespace=cr-at-eol
+/tests/fixtures/formats/platform_xml/2.20/empty_configuration/src/** -text whitespace=cr-at-eol
 # The empty extension over it follows the cfe-init skill: BOM, CRLF, no role.
-/tests/fixtures/platform_8_3_27/empty_extension/** -text whitespace=cr-at-eol
+/tests/fixtures/formats/platform_xml/2.20/empty_extension/** -text whitespace=cr-at-eol
 # Metadata objects written once by the retained 8.3.27 writer for meta-info tests.
-/tests/fixtures/platform_8_3_27/meta_info_surface/** -text whitespace=cr-at-eol
+/tests/fixtures/formats/platform_xml/2.20/meta_info_surface/** -text whitespace=cr-at-eol
 # External EPF/ERF hierarchical dumps keep BOM, CRLF, LF inside query text,
 # verbatim text/binary template payloads and absent terminal newlines;
 # the README and manifest beside them simply share the rule.
-/tests/fixtures/platform_8_3_27/external_artifacts/** -text whitespace=cr-at-eol
-/tests/fixtures/platform_8_3_27/external_artifacts/**/*.bin binary
+/tests/fixtures/formats/platform_xml/2.20/external_artifacts/** -text whitespace=cr-at-eol
+/tests/fixtures/formats/platform_xml/2.20/external_artifacts/**/*.bin binary
 
 # DCS codec fixtures: tests splice them by exact text.
 crates/unica-dcs-designer/tests/fixtures/** text eol=lf
@@ -89,9 +89,16 @@ crates/unica-metadata-designer/tests/platform/dump_parity/*.xml -text -whitespac
 crates/unica-forms-designer/tests/platform/dump_parity/*.xml -text -whitespace
 
 # Spliced by tests with newline-prefixed patterns; keep their LF bytes on every host.
-/tests/fixtures/platform_8_3_27/mxl/** -text -whitespace
+/tests/fixtures/formats/platform_xml/2.20/mxl/** -text -whitespace
 /tests/fixtures/unica_mcp_script_parity/dcs-validate/** -text -whitespace
 
 
 # The meta.add source snapshot keeps the BOM and CRLF its writer produced.
 crates/unica-coder/tests/fixtures/meta-add-sources/** -text -whitespace
+# Platform exports of empty configuration and extension for formats 2.17-2.19,
+# 2.21 and 2.22 (scripts/dev/refresh-platform-corpus.py): bytes as the platform wrote them.
+/tests/fixtures/formats/platform_xml/2.17/** -text whitespace=cr-at-eol
+/tests/fixtures/formats/platform_xml/2.18/** -text whitespace=cr-at-eol
+/tests/fixtures/formats/platform_xml/2.19/** -text whitespace=cr-at-eol
+/tests/fixtures/formats/platform_xml/2.21/** -text whitespace=cr-at-eol
+/tests/fixtures/formats/platform_xml/2.22/** -text whitespace=cr-at-eol

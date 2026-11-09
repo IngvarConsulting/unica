@@ -12,7 +12,7 @@
         "ok"
       ],
       "status": "passed",
-      "diagnostic": "platformVersionUnsupported",
+      "diagnostic": "formatVersionUnverified",
       "validators": [
         "form"
       ]

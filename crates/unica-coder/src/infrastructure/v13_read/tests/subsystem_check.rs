@@ -147,7 +147,7 @@ fn canonical_subsystem_check_preserves_bom_format_warning() {
             checked
                 .diagnostics()
                 .iter()
-                .any(|diagnostic| diagnostic.code() == "platformVersionUnsupported"),
+                .any(|diagnostic| diagnostic.code() == "formatVersionUnverified"),
             version == "2.21"
         );
     }

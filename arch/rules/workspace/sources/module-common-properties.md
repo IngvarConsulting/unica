@@ -18,7 +18,7 @@ gap: https://github.com/IngvarConsulting/unica/issues/973
 имён, вложенная разметка или неверное значение `ObjectBelonging` и
 `ExtendedConfigurationObject` не открывают допуска к пропускам. Платформенная
 форма подтверждена и вторым опытом 8.3.27.2130 в
-`tests/fixtures/platform_8_3_27/incomplete_borrowed/`.
+`tests/fixtures/formats/platform_xml/2.20/incomplete_borrowed/`.
 Построитель требует сам объект свойств целиком.
 
 Если у заимствованного модуля не записан хотя бы один из четырёх флагов среды,

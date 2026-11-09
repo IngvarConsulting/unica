@@ -128,7 +128,9 @@ fn registered(owner: &[u8], kind: &str, name: &str) -> Result<bool, ApplyPlanErr
         .filter(|node| node.is_element())
         .collect::<Vec<_>>();
     if !root.has_tag_name((NS, "MetaDataObject"))
-        || root.attribute("version") != Some("2.20")
+        || !unica_source_designer::format_profile::is_writable_root_version(
+            root.attribute("version"),
+        )
         || objects.len() != 1
         || !objects[0].has_tag_name((NS, "Configuration"))
     {
@@ -1314,7 +1316,7 @@ mod tests {
     fn platform(name: &str) -> Vec<u8> {
         std::fs::read(
             Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../tests/fixtures/platform_8_3_27/cfe_borrow")
+                .join("../../tests/fixtures/formats/platform_xml/2.20/cfe_borrow")
                 .join(name),
         )
         .unwrap()

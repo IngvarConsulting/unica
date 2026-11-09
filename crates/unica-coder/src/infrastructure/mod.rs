@@ -5,6 +5,7 @@ pub mod capacity_observation;
 #[cfg(test)]
 #[path = "../../tests/platform/code_intelligence_integration.rs"]
 pub(crate) mod code_intelligence;
+pub mod daemon_adapters;
 pub mod diagnostics;
 
 pub mod engine_delivery;

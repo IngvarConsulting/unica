@@ -28,7 +28,7 @@ memchr.workspace = true
 chrono.workspace = true
 
 [package.metadata.unica]
-version-literal-baseline = 74
+version-literal-baseline = 23
 component = "codec"
 file-io = "none"
 inputs = [
@@ -37,9 +37,9 @@ inputs = [
     "tests/fixtures/acceptance/workspace-register-dimensions",
     "tests/fixtures/acceptance/workspace-tabular-attribute-copy",
     "tests/fixtures/acceptance/workspace/src/Subsystems",
-    "tests/fixtures/platform_8_3_27/cfe_borrow",
-    "tests/fixtures/platform_8_3_27/empty_configuration",
-    "tests/fixtures/platform_8_3_27/exchange_plan",
-    "tests/fixtures/platform_8_3_27/meta_info",
+    "tests/fixtures/formats/platform_xml/2.20/cfe_borrow",
+    "tests/fixtures/formats/platform_xml/2.20/empty_configuration",
+    "tests/fixtures/formats/platform_xml/2.20/exchange_plan",
+    "tests/fixtures/formats/platform_xml/2.20/meta_info",
     "tests/fixtures/unica_mcp_script_parity/bsp/meta",
 ]

@@ -1,5 +1,6 @@
 //! Existing extension Designer algorithms; publication stays with trusted composition.
 use crate::configuration::*;
+use crate::dialect::root_version::{self, RootVersionReport};
 use crate::property_states::{
     cfe_patch_direct_md_child, cfe_patch_exact_md_child, cfe_patch_precondition_error,
 };
@@ -14,9 +15,6 @@ use unica_metadata::extension::*;
 use unica_source_contract::discovery::ProjectDiscoveryRead;
 use unica_source_contract::proposal::TrackedSourceProposal;
 use unica_source_designer::configuration_layout::*;
-use unica_source_designer::format_profile::{
-    classify_root_version, FormatCompatibility, ACTIVE_FORMAT_PROFILE,
-};
 use unica_source_designer::read::{
     path_exists, path_is_dir, read_bytes, read_string, read_utf8_sig,
 };
@@ -1253,7 +1251,8 @@ pub fn cfe_borrow_form_shell(
             source_form_content
         }
     };
-    let borrowed_form_xml = cfe_borrow_form_xml(
+    let borrowed_form_xml = cfe_borrow_form_xml_in(
+        format_version,
         reader,
         &source_form_content,
         cfg_dir,
@@ -1309,20 +1308,49 @@ pub fn cfe_borrow_form_xml(
     borrow_main_attr: bool,
     log: &mut CfeBorrowLog,
 ) -> String {
+    cfe_borrow_form_xml_in(
+        root_version::writable(),
+        reader,
+        source_form_content,
+        cfg_dir,
+        type_name,
+        object_name,
+        borrow_main_attr,
+        log,
+    )
+}
+
+/// The borrowed form in the export format `version` of the extension.
+#[allow(clippy::too_many_arguments)]
+pub fn cfe_borrow_form_xml_in(
+    version: &str,
+    reader: &dyn ProjectDiscoveryRead,
+    source_form_content: &str,
+    cfg_dir: &Path,
+    type_name: &str,
+    object_name: &str,
+    borrow_main_attr: bool,
+    log: &mut CfeBorrowLog,
+) -> String {
     let source = source_form_content.trim_start_matches('\u{feff}');
-    let version = ACTIVE_FORMAT_PROFILE.export_format.to_string();
     let blocks = cfe_borrow_form_top_level_blocks(source);
     if blocks.is_empty() {
-        return cfe_borrow_form_xml_fallback(source, type_name, object_name, borrow_main_attr);
+        return cfe_borrow_form_xml_fallback(
+            source,
+            type_name,
+            object_name,
+            borrow_main_attr,
+            version,
+        );
     }
 
     let xml_decl = cfe_borrow_xml_declaration(source)
         .unwrap_or("<?xml version=\"1.0\" encoding=\"UTF-8\"?>")
         .to_string();
-    let form_tag = cfe_borrow_form_open_tag(source).unwrap_or_else(|| {
+    let form_tag = cfe_borrow_form_open_tag(source, version).unwrap_or_else(|| {
         format!(
             "<Form version=\"{}\">",
-            unica_xml_format::text::escape_xml(&version)
+            unica_xml_format::text::escape_xml(version)
         )
     });
 
@@ -1480,7 +1508,7 @@ pub fn cfe_borrow_form_xml(
     parts.push("\r\n".to_string());
     parts.push(format!(
         "\t<BaseForm version=\"{}\">\r\n",
-        unica_xml_format::text::escape_xml(&version)
+        unica_xml_format::text::escape_xml(version)
     ));
     for prop_xml in &form_props {
         parts.push(format!("\t\t{prop_xml}\r\n"));
@@ -1702,9 +1730,9 @@ pub fn cfe_borrow_form_xml_fallback(
     type_name: &str,
     object_name: &str,
     borrow_main_attr: bool,
+    version: &str,
 ) -> String {
-    let version = ACTIVE_FORMAT_PROFILE.export_format.to_string();
-    let mut content = cfe_borrow_normalize_form_root_version(source);
+    let mut content = cfe_borrow_normalize_form_root_version(source, version);
     if !borrow_main_attr {
         content = cfe_borrow_strip_simple_data_paths(&content);
     }
@@ -1730,7 +1758,7 @@ pub fn cfe_borrow_form_xml_fallback(
             "</Form>",
             &format!(
                 "\t<BaseForm version=\"{}\">\n\t\t{}\n\t</BaseForm>\n</Form>",
-                unica_xml_format::text::escape_xml(&version),
+                unica_xml_format::text::escape_xml(version),
                 main_attr
             ),
             1,
@@ -1757,25 +1785,27 @@ pub fn cfe_borrow_xml_declaration(source: &str) -> Option<&str> {
     }
 }
 
-pub fn cfe_borrow_form_open_tag(source: &str) -> Option<String> {
+pub fn cfe_borrow_form_open_tag(source: &str, version: &str) -> Option<String> {
     let start = cfe_borrow_find_start_tag(source, "Form", 0)?;
     let end = source[start..].find('>')? + start + 1;
-    Some(cfe_borrow_normalize_form_open_tag(&source[start..end]))
+    Some(cfe_borrow_normalize_form_open_tag(
+        &source[start..end],
+        version,
+    ))
 }
 
-pub fn cfe_borrow_normalize_form_root_version(source: &str) -> String {
+pub fn cfe_borrow_normalize_form_root_version(source: &str, version: &str) -> String {
     let Some(start) = cfe_borrow_find_start_tag(source, "Form", 0) else {
         return source.to_string();
     };
     let Some(end) = source[start..].find('>').map(|offset| start + offset + 1) else {
         return source.to_string();
     };
-    let normalized = cfe_borrow_normalize_form_open_tag(&source[start..end]);
+    let normalized = cfe_borrow_normalize_form_open_tag(&source[start..end], version);
     format!("{}{}{}", &source[..start], normalized, &source[end..])
 }
 
-pub fn cfe_borrow_normalize_form_open_tag(open_tag: &str) -> String {
-    let active = ACTIVE_FORMAT_PROFILE.export_format;
+pub fn cfe_borrow_normalize_form_open_tag(open_tag: &str, active: &str) -> String {
     let normalized = match cfe_borrow_version_value_range(open_tag) {
         Ok(Some((value_start, value_end))) => format!(
             "{}{}{}",
@@ -3798,12 +3828,8 @@ pub fn cfe_patch_supported_document<'a>(
     let document = Document::parse(source)
         .map_err(|error| format!("failed to parse platform XML {}: {error}", path.display()))?;
     let version_literal = root_version_literal(source, document.root_element());
-    match classify_root_version(version_literal.as_deref()).map_err(|error| error.to_string())? {
-        FormatCompatibility::Supported { .. } => Ok(document),
-        compatibility => {
-            Err(unica_source_designer::format_profile::format_compatibility_warning(&compatibility))
-        }
-    }
+    root_version::require_supported(version_literal.as_deref())?;
+    Ok(document)
 }
 
 pub fn cfe_patch_exact_md_text(
@@ -4109,14 +4135,14 @@ pub fn cfe_patch_validate_form_xml(
         .collect::<Vec<_>>();
     if base_forms.len() != 1
         || base_forms[0].tag_name().namespace() != Some(CFE_PATCH_FORM_NAMESPACE)
-        || base_forms[0].attribute("version") != Some(ACTIVE_FORMAT_PROFILE.export_format)
+        || !root_version::is_writable(base_forms[0].attribute("version"))
     {
         return Err(cfe_patch_precondition_error(
             module_path,
             format!(
                 "borrowed Form.xml {} must contain exactly one direct BaseForm version=\"{}\"",
                 path.display(),
-                ACTIVE_FORMAT_PROFILE.export_format
+                root_version::writable()
             ),
         ));
     }
@@ -4497,12 +4523,10 @@ pub fn validate_cfe_source(
         check1_ok = false;
     }
     let version_literal = root_version_literal(source, root);
-    match classify_root_version(version_literal.as_deref()) {
-        Ok(FormatCompatibility::Supported { .. }) => report.ok("Export format: 2.20"),
-        Ok(compatibility) => report.warn(
-            unica_source_designer::format_profile::format_compatibility_warning(&compatibility),
-        ),
-        Err(error) => report.error(error.to_string()),
+    match root_version::report(version_literal.as_deref()) {
+        RootVersionReport::Ok(line) => report.ok(line),
+        RootVersionReport::Warn(line) => report.warn(line),
+        RootVersionReport::Error(line) => report.error(line),
     }
     let version = version_literal.as_deref().unwrap_or("");
 
@@ -4641,7 +4665,7 @@ pub fn cfe_init_images(input: CfeInitImageInput<'_>) -> CfeInitImages {
         .map(unica_xml_format::names::stable_uuid)
         .collect::<Vec<_>>();
     let contained_objects = contained_objects_xml(&contained_object_ids);
-    let format_version_xml = ACTIVE_FORMAT_PROFILE.export_format;
+    let format_version_xml = root_version::writable();
     let purpose_xml = unica_xml_format::text::escape_xml(purpose);
     let compatibility_xml = unica_xml_format::text::escape_xml(compatibility);
     let interface_mode_xml = unica_xml_format::text::escape_xml(interface_mode);
@@ -4792,7 +4816,7 @@ pub fn cfe_borrow_plan_image(
     let format_version = ext_doc
         .root_element()
         .attribute("version")
-        .unwrap_or(ACTIVE_FORMAT_PROFILE.export_format)
+        .unwrap_or(root_version::writable())
         .to_string();
 
     let items = object_spec
@@ -5044,7 +5068,7 @@ pub fn cfe_init_derive_base(
     // a false provenance.
     derived.push(CfeInitDerivedProperty::defaulted(
         "mdClassesFormatVersion",
-        ACTIVE_FORMAT_PROFILE.export_format,
+        root_version::writable(),
     ));
     let base_lang_file = cfg_dir.join("Languages").join("Русский.xml");
     if path_exists(reader, &base_lang_file) {

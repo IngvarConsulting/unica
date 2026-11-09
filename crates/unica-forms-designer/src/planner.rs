@@ -1844,14 +1844,18 @@ const FORM_ADDRESS_SHAPE: &str =
 
 const FORM_OWNER_MD_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
 
-pub fn minimal_typed_form_content(_object_kind: &str, _object_name: &str) -> String {
-    concat!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
-        "<Form xmlns=\"http://v8.1c.ru/8.3/xcf/logform\" version=\"2.20\">\n",
-        "\t<AutoCommandBar name=\"ФормаКоманднаяПанель\" id=\"-1\"/>\n",
-        "</Form>"
+/// The initial `Form.xml` of a new form in the export format `version` of
+/// its owner's set.
+pub fn minimal_typed_form_content(_object_kind: &str, _object_name: &str, version: &str) -> String {
+    format!(
+        concat!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
+            "<Form xmlns=\"http://v8.1c.ru/8.3/xcf/logform\" version=\"{}\">\n",
+            "\t<AutoCommandBar name=\"ФормаКоманднаяПанель\" id=\"-1\"/>\n",
+            "</Form>"
+        ),
+        version
     )
-    .to_string()
 }
 
 #[cfg(test)]
@@ -1871,12 +1875,12 @@ mod form_slot_kind_tests {
             ("ChartOfAccounts", include_str!("../../unica-metadata-designer/tests/platform/dump_parity/ChartsOfAccounts.before.xml")),
             ("ChartOfCalculationTypes", include_str!("../../unica-metadata-designer/tests/platform/dump_parity/ChartsOfCalculationTypes.before.xml")),
             ("ChartOfCharacteristicTypes", include_str!("../../unica-metadata-designer/tests/platform/dump_parity/ChartsOfCharacteristicTypes.before.xml")),
-            ("Constant", include_str!("../../../tests/fixtures/platform_8_3_27/meta_info_surface/constant/Constants/MainCurrency.xml")),
-            ("Enum", include_str!("../../../tests/fixtures/platform_8_3_27/meta_info_surface/enum/Enums/PresentationEnum.xml")),
-            ("InformationRegister", include_str!("../../../tests/fixtures/platform_8_3_27/meta_info_surface/register/InformationRegisters/CommandInterfaceRegister.xml")),
-            ("Report", include_str!("../../../tests/fixtures/platform_8_3_27/template-new-xml/seed/Reports/CorpusReport.xml")),
-            ("ExternalDataProcessor", include_str!("../../../tests/fixtures/platform_8_3_27/external_artifacts/epf/SyntheticProcessor.xml")),
-            ("ExternalReport", include_str!("../../../tests/fixtures/platform_8_3_27/external_artifacts/erf/SyntheticReport.xml")),
+            ("Constant", include_str!("../../../tests/fixtures/formats/platform_xml/2.20/meta_info_surface/constant/Constants/MainCurrency.xml")),
+            ("Enum", include_str!("../../../tests/fixtures/formats/platform_xml/2.20/meta_info_surface/enum/Enums/PresentationEnum.xml")),
+            ("InformationRegister", include_str!("../../../tests/fixtures/formats/platform_xml/2.20/meta_info_surface/register/InformationRegisters/CommandInterfaceRegister.xml")),
+            ("Report", include_str!("../../../tests/fixtures/formats/platform_xml/2.20/template-new-xml/seed/Reports/CorpusReport.xml")),
+            ("ExternalDataProcessor", include_str!("../../../tests/fixtures/formats/platform_xml/2.20/external_artifacts/epf/SyntheticProcessor.xml")),
+            ("ExternalReport", include_str!("../../../tests/fixtures/formats/platform_xml/2.20/external_artifacts/erf/SyntheticReport.xml")),
         ] {
             let document = roxmltree::Document::parse(text.trim_start_matches('\u{feff}')).unwrap();
             let owner = document.root_element().first_element_child().unwrap();

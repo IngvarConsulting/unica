@@ -32,7 +32,7 @@ use unica_execution::receipt_runtime::ports::{ExecutionClass, KnownLongReason};
 use unica_work_control::clock::Clock;
 #[cfg(test)]
 type RuntimeJobService = unica_execution::runtime_jobs::RuntimeJobService<
-    unica_adapter_v8_runner::request::RuntimeJobRequest,
+    unica_coder::infrastructure::daemon_adapters::runtime::RuntimeJobRequest,
 >;
 use crate::infrastructure::source_workspace::WorkspaceActorRegistry;
 use std::sync::Arc;
@@ -1413,7 +1413,7 @@ impl DaemonServerConfig {
         let workspace_actors = Arc::new(crate::infrastructure::source_workspace::actor_registry());
         // The editor's door reaches the same actors and the same services as
         // the agent's calls.
-        let lsp_host = Arc::new(unica_lsp::UnicaLspHost::new(Arc::new(
+        let lsp_host = Arc::new(unica_editor_analysis::UnicaLspHost::new(Arc::new(
             super::lsp_workspaces::ProductLspWorkspaces::new(
                 Arc::clone(&workspace_actors),
                 read_service,

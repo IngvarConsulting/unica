@@ -1,13 +1,13 @@
 //! Служба LSP демона над рабочей областью на диске: те же актор и наборы,
 //! что у MCP, буфер виден только своей сессии и не пишется на диск.
 //! Что служба делает с сессиями, буферами и акторами сама, проверяет
-//! `crates/unica-lsp/src/service_tests.rs`; здесь — допуск и чтение продукта.
+//! `crates/unica-editor-analysis/src/service_tests.rs`; здесь — допуск и чтение продукта.
 use super::*;
 use std::fs;
 use std::path::PathBuf;
 use std::time::Duration;
 use unica_address::source_target::MetadataAddress;
-use unica_lsp::UnicaLspHost;
+use unica_editor_analysis::UnicaLspHost;
 use unica_lsp_contract::host::{LspCallContext, LspClientChannel, LspHost};
 use unica_lsp_contract::protocol::{
     V5LspCall, V5LspContentChange, V5LspNotification, V5LspOutcome, V5LspSessionId,
@@ -521,7 +521,7 @@ impl Drop for ResetDiagnosticOverride {
 fn diagnostics_run_checks_own_findings_and_its_analysis_of_the_saved_module() {
     let _reset = ResetDiagnosticOverride;
     let (provider, analyzer) =
-        unica_adapter_bsl_analyzer::diagnostics::analyze_timeout_probe::recording_provider();
+        unica_coder::infrastructure::daemon_adapters::diagnostics_probe::recording_provider();
     crate::infrastructure::application_ports::DIAGNOSTIC_PROVIDER_OVERRIDE
         .with(|slot| *slot.borrow_mut() = Some(provider));
     let workspace = diagnosed_workspace();
@@ -545,8 +545,8 @@ fn diagnostics_run_checks_own_findings_and_its_analysis_of_the_saved_module() {
 
     crate::infrastructure::application_ports::DIAGNOSTIC_PROVIDER_OVERRIDE.with(|slot| {
         *slot.borrow_mut() = Some(
-            unica_adapter_bsl_analyzer::diagnostics::analyze_timeout_probe::failing_provider(
-                unica_adapter_bsl_analyzer::adapter::AnalyzerRunFailureKind::Exited,
+            unica_coder::infrastructure::daemon_adapters::diagnostics_probe::failing_provider(
+                unica_coder::infrastructure::daemon_adapters::diagnostics_probe::AnalyzerRunFailureKind::Exited,
             ),
         )
     });

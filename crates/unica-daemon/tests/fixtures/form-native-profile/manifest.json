@@ -1,7 +1,7 @@
 {
   "platformVersion": "8.3.27.2074",
   "formatVersion": "2.20",
-  "source": "Catalog.Товары form ФормаЭлемента made by canonical form.add, attribute.add, command.add and item.add over tests/fixtures/platform_8_3_27/empty_configuration, imported by native ibcmd into a fresh file infobase and exported again. Two import/check/export rounds produced identical bytes, equal to the Unica output.",
+  "source": "Catalog.Товары form ФормаЭлемента made by canonical form.add, attribute.add, command.add and item.add over tests/fixtures/formats/platform_xml/2.20/empty_configuration, imported by native ibcmd into a fresh file infobase and exported again. Two import/check/export rounds produced identical bytes, equal to the Unica output.",
   "normalization": "none",
   "files": {
     "native-form.xml": {

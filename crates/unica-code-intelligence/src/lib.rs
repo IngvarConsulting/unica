@@ -2,7 +2,6 @@
 
 pub mod completion;
 pub mod coordinator;
-pub mod deadlines;
 pub mod model;
 pub mod name_index;
 pub mod symbols;

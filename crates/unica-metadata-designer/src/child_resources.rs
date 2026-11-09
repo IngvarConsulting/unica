@@ -28,7 +28,9 @@ pub struct TemplateSeedEmitters {
 pub struct ChildResourceBindings {
     pub observe_membership: DirectoryMembershipObserver,
     pub templates: TemplateSeedEmitters,
-    pub form_seed: fn(&str, &str) -> String,
+    /// The initial `Form.xml` of a new form: owner kind, owner name and the
+    /// export format version of its set.
+    pub form_seed: fn(&str, &str, &str) -> String,
 }
 
 pub fn plan_typed_child_resources<G>(
@@ -139,6 +141,7 @@ pub fn plan_typed_child_resources<G>(
         }
     }
 
+    let set_version = crate::dialect::root_version::of_set(post_image);
     let final_document =
         Document::parse(post_image.trim_start_matches('\u{feff}')).map_err(|_| {
             unica_metadata::request::MetaFailure::from(
@@ -266,12 +269,12 @@ pub fn plan_typed_child_resources<G>(
                     if matches!(&state.origin, Origin::Added)
                         && state.collection == MetaCollection::Templates
                     {
-                        return new_template_descriptor_image(&child_xml);
+                        return new_template_descriptor_image(&child_xml, &set_version);
                     }
                     Ok(initial_descriptor
                         .as_deref()
                         .and_then(|initial| splice_standalone_descriptor(initial, tag, &child_xml))
-                        .unwrap_or_else(|| wrap_standalone_descriptor(&child_xml)))
+                        .unwrap_or_else(|| wrap_standalone_descriptor(&child_xml, &set_version)))
                 })
                 .or_else(|failure| match &state.origin {
                     Origin::Existing(initial_name) if initial_name == final_name => {
@@ -323,7 +326,8 @@ pub fn plan_typed_child_resources<G>(
                     MetaCollection::Forms => {
                         final_payload_directories.push(PathBuf::new());
                         final_payload_directories.push(PathBuf::from("Ext"));
-                        let content = (form_seed)(object_kind, object_name).into_bytes();
+                        let content =
+                            (form_seed)(object_kind, object_name, &set_version).into_bytes();
                         final_payload.push((PathBuf::from("Ext/Form.xml"), content));
                     }
                     MetaCollection::Templates => {
@@ -333,7 +337,7 @@ pub fn plan_typed_child_resources<G>(
                             .expect("a planned template child publishes its TemplateType");
                         final_payload.push((
                             PathBuf::from(typed_template_primary_path(template_type)),
-                            typed_template_initial_content(templates, template_type),
+                            typed_template_initial_content(templates, template_type, &set_version),
                         ));
                         if template_type == unica_metadata::validation_subject::MetadataTemplateType::HtmlDocument {
                             final_payload_directories.push(PathBuf::from("Ext/Template"));
@@ -802,6 +806,7 @@ pub fn observe_typed_child_resources(
 pub fn typed_template_initial_content(
     templates: TemplateSeedEmitters,
     template_type: unica_metadata::validation_subject::MetadataTemplateType,
+    set_version: &str,
 ) -> Vec<u8> {
     let xml = match template_type {
         unica_metadata::validation_subject::MetadataTemplateType::SpreadsheetDocument => {
@@ -811,9 +816,7 @@ pub fn typed_template_initial_content(
         // `<Help>` (extrnprops), сами страницы лежат в Ext/Template/*.html.
         // Снимаемый template.add писал сюда сырой HTML — typed-канал пишет
         // форму, которую закрепил валидатор по реальным дампам 8.3.27.
-        unica_metadata::validation_subject::MetadataTemplateType::HtmlDocument => (templates.html_descriptor)(
-            unica_source_designer::format_profile::ACTIVE_FORMAT_PROFILE.export_format,
-        ),
+        unica_metadata::validation_subject::MetadataTemplateType::HtmlDocument => (templates.html_descriptor)(set_version),
         unica_metadata::validation_subject::MetadataTemplateType::DataCompositionSchema => {
             (templates.content_xml)("DataCompositionSchema", "")
                 .expect("closed template kind")
@@ -1151,6 +1154,7 @@ pub fn read_typed_child_tree(
 /// including literal LF/TAB in comments and multilingual text.
 fn new_template_descriptor_image(
     child_xml: &str,
+    set_version: &str,
 ) -> Result<Vec<u8>, unica_metadata::request::MetaFailure> {
     /// Append one template subtree, preserving leaf markup and validating structural gaps.
     fn append(
@@ -1207,7 +1211,7 @@ fn new_template_descriptor_image(
             Some("elements"),
         ))
     };
-    let wrapped = wrap_standalone_descriptor(child_xml);
+    let wrapped = wrap_standalone_descriptor(child_xml, set_version);
     let source = std::str::from_utf8(&wrapped).map_err(|_| invalid())?;
     let document = Document::parse(source).map_err(|_| invalid())?;
     let template = document
@@ -1216,8 +1220,9 @@ fn new_template_descriptor_image(
         .find(|node| node.has_tag_name(("http://v8.1c.ru/8.3/MDClasses", "Template")))
         .ok_or_else(invalid)?;
     let mut output = format!(
-        "\u{feff}<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n<MetaDataObject {} version=\"2.20\">\r\n",
-        crate::template_catalog::meta_xmlns_decl()
+        "\u{feff}<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n<MetaDataObject {} version=\"{}\">\r\n",
+        crate::template_catalog::meta_xmlns_decl(),
+        set_version
     );
     append(source, template, 1, &mut output).ok_or_else(invalid)?;
     output.push_str("\r\n</MetaDataObject>");

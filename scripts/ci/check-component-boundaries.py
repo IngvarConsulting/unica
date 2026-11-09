@@ -39,7 +39,7 @@ ABSTRACTIONS = frozenset({"address", "source-contract", "operation-contract", "w
 WORKSPACE_DEPENDENCIES = frozenset({"address", "source-contract", "operation-contract", "work-control", "refusal", "execution-contract", "xml-format", "redaction"})
 COORDINATOR_FLOOR = frozenset({
     "operations", "bindings", "navigation", "code-intelligence", "diagnostics", "documentation",
-    "analysis-services", "application", "domain", "lsp",
+    "analysis-services", "application", "domain", "editor-analysis",
 })
 # A family is ruled by its semantic dependencies, which only this guard grants.
 FAMILIES = FAMILY_FLOOR | (_declared("family") & SEMANTIC_DEPENDENCIES.keys())
@@ -142,7 +142,7 @@ def edge_errors(owner: str, dependency: str, kind: str) -> list[str]:
     if name in PORT_CALLERS and dependency.startswith("unica-"):
         # `source-designer` is the shared Designer layout, not a family codec:
         # the LSP service finds the file of a module address through it.
-        layout = name == "lsp" and target == "source-designer"
+        layout = name == "editor-analysis" and target == "source-designer"
         if target.startswith("adapter-") or (target.endswith("-designer") and not layout):
             reasons.append("coordinators invoke ports without importing their concrete implementations")
     if name == "source-designer" and dependency.startswith("unica-") and target not in ABSTRACTIONS:
@@ -189,7 +189,7 @@ def edge_errors(owner: str, dependency: str, kind: str) -> list[str]:
         # The request's cancellation token is the one the transport cancels
         # and the service's work watches; nothing else is shared.
         reasons.append("the LSP contract is a leaf shared by the transport and the service")
-    if name == "lsp" and dependency.startswith("unica-"):
+    if name == "editor-analysis" and dependency.startswith("unica-"):
         # The analysis that builds the answers (`code-model`, a shared
         # abstraction) stays with the product.
         allowed = ABSTRACTIONS | frozenset({"lsp-contract", "workspace", "bsl", "source-designer"})

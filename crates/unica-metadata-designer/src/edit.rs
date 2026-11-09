@@ -3797,14 +3797,17 @@ pub fn typed_child_descriptor_image(
     tag: &str,
     name: &str,
 ) -> Result<Vec<u8>, unica_metadata::request::MetaFailure> {
+    let version = crate::dialect::root_version::of_set(owner_xml);
     typed_child_element_xml(owner_xml, tag, name)
-        .map(|child_xml| wrap_standalone_descriptor(&child_xml))
+        .map(|child_xml| wrap_standalone_descriptor(&child_xml, &version))
 }
 
-pub fn wrap_standalone_descriptor(child_xml: &str) -> Vec<u8> {
+/// A standalone descriptor of one child in the format `version` of its set.
+pub fn wrap_standalone_descriptor(child_xml: &str, version: &str) -> Vec<u8> {
     format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<MetaDataObject {} version=\"2.20\">\n{}\n</MetaDataObject>",
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<MetaDataObject {} version=\"{}\">\n{}\n</MetaDataObject>",
         crate::template_catalog::meta_xmlns_decl(),
+        version,
         child_xml
     )
     .into_bytes()
