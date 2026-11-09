@@ -1667,7 +1667,7 @@ mod medium_tests {
             let runner = SequenceRunner::new(Vec::new());
             let cancellation = CancellationToken::new();
             let store = lock_project(root.path(), &cancellation).unwrap();
-            let guard = unica_adapter_v8_runner::full_dump::prepare_publication(
+            let guard = unica_coder::infrastructure::daemon_adapters::runtime::prepare_publication(
                 &prepared.context,
                 FullDumpSelection {
                     config_path: &config_path,
