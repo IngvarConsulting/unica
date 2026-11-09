@@ -1,0 +1,20 @@
+[package]
+name = "unica-lsp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[package.metadata.unica]
+component = "service"
+file-io = "none"
+
+[features]
+default = []
+# Внутренности двери для тестов `unica-daemon` с живым демоном.
+test-support = []
+
+[dependencies]
+unica-daemon-protocol = { path = "../unica-daemon-protocol" }
+unica-lsp-contract = { path = "../unica-lsp-contract" }
+serde_json.workspace = true

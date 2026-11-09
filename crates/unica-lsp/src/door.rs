@@ -1,18 +1,8 @@
-//! `unica lsp`: дверь редактора в тот же демон, что обслуживает MCP.
-//!
-//! Тонкий frontend: читает LSP со stdio и передаёт его демону по маршруту
-//! LSP протокола v5. Сессию открывает и держит одно соединение, по нему же
-//! по порядку идут уведомления о документах. Каждый запрос исполняется
-//! своим соединением на полосе LSP демона; отмена уходит отдельным
-//! соединением. Возможности объявляет служба демона по своей готовности.
-
-mod codec;
-#[cfg(test)]
-mod tests;
+//! Цикл двери: кадры LSP от редактора, сессия и запросы к демону.
 
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
-use std::io::{self, BufRead, Write};
+use std::io::{BufRead, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -38,9 +28,9 @@ use unica_lsp_contract::protocol::{V5LspCompletionData, V5LspCompletionItem, V5L
 // problem: неизвестно
 // on-reach: редактор получает ошибку RequestFailed с кодом unica: lsp_deadline_exceeded, работа запроса отменяется
 // issue: #2173
-const LSP_CALL_BUDGET: Duration = Duration::from_secs(5);
+pub const LSP_CALL_BUDGET: Duration = Duration::from_secs(5);
 /// Запас на обмен поверх бюджета запроса.
-const LSP_EXCHANGE_MARGIN: Duration = Duration::from_secs(1);
+pub const LSP_EXCHANGE_MARGIN: Duration = Duration::from_secs(1);
 /// Срок обмена сессии: открытие, уведомление, закрытие.
 /// Above the daemon's own budget for these steps (7 s), so the daemon
 /// answers, even with a refusal, before the frontend gives up.
@@ -55,7 +45,7 @@ const LSP_EXCHANGE_MARGIN: Duration = Duration::from_secs(1);
 // problem: неизвестно
 // on-reach: initialize отвечает RequestFailed; сбой уведомления завершает `unica lsp` с кодом 1
 // issue: #2173
-const LSP_SESSION_EXCHANGE_TIMEOUT: Duration = Duration::from_secs(8);
+pub const LSP_SESSION_EXCHANGE_TIMEOUT: Duration = Duration::from_secs(8);
 /// Ожидание уведомлений демона одним опросом.
 // resource-limit: lsp.poll-wait
 // class: deadline
@@ -68,7 +58,7 @@ const LSP_SESSION_EXCHANGE_TIMEOUT: Duration = Duration::from_secs(8);
 // problem: неизвестно
 // on-reach: опрос возвращает пустой список и повторяется
 // issue: #2173
-const LSP_POLL_WAIT_MS: u64 = 2_000;
+pub const LSP_POLL_WAIT_MS: u64 = 2_000;
 /// Подряд неудавшихся опросов, после которых сессия считается потерянной.
 // resource-limit: lsp.poll-failures
 // class: retry
@@ -81,7 +71,7 @@ const LSP_POLL_WAIT_MS: u64 = 2_000;
 // problem: неизвестно
 // on-reach: `unica lsp` пишет причину в stderr и завершается с кодом 1; редактор перезапускает сервер
 // issue: #2173
-const MAX_LSP_POLL_FAILURES: u32 = 3;
+pub const MAX_LSP_POLL_FAILURES: u32 = 3;
 /// Запросов редактора, ждущих ответа демона.
 // resource-limit: lsp.frontend-requests-in-flight
 // class: concurrency
@@ -94,49 +84,23 @@ const MAX_LSP_POLL_FAILURES: u32 = 3;
 // problem: неизвестно
 // on-reach: новый запрос сразу получает RequestFailed с кодом unica: lsp_busy
 // issue: #2173
-const MAX_LSP_REQUESTS_IN_FLIGHT: usize = 32;
+pub const MAX_LSP_REQUESTS_IN_FLIGHT: usize = 32;
 
-const PARSE_ERROR: i64 = -32700;
-const INVALID_REQUEST: i64 = -32600;
-const METHOD_NOT_FOUND: i64 = -32601;
-const INVALID_PARAMS: i64 = -32602;
-const SERVER_NOT_INITIALIZED: i64 = -32002;
-const REQUEST_FAILED: i64 = -32803;
-const CONTENT_MODIFIED: i64 = -32801;
-const REQUEST_CANCELLED: i64 = -32800;
-
-pub fn run_stdio() -> i32 {
-    let state_root = match crate::interfaces::daemon::default_user_daemon_state_root() {
-        Ok(root) => root,
-        Err(error) => {
-            eprintln!("failed to resolve unica user daemon state: {error}");
-            return 1;
-        }
-    };
-    let client = match crate::interfaces::daemon::connect_default_user_daemon(&state_root) {
-        Ok(client) => client,
-        Err(error) => {
-            eprintln!("failed to connect to unica user daemon: {error}");
-            return 1;
-        }
-    };
-    let stdin = io::stdin();
-    // The main loop waits on the editor's input. A session the daemon no
-    // longer has ends the process from the poller, so the editor restarts
-    // the server instead of getting refusals forever.
-    let session_lost: SessionLost = Arc::new(|| {
-        eprintln!("unica lsp lost its daemon session");
-        std::process::exit(1);
-    });
-    serve(stdin.lock(), io::stdout(), Arc::new(client), session_lost)
-}
+pub const PARSE_ERROR: i64 = -32700;
+pub const INVALID_REQUEST: i64 = -32600;
+pub const METHOD_NOT_FOUND: i64 = -32601;
+pub const INVALID_PARAMS: i64 = -32602;
+pub const SERVER_NOT_INITIALIZED: i64 = -32002;
+pub const REQUEST_FAILED: i64 = -32803;
+pub const CONTENT_MODIFIED: i64 = -32801;
+pub const REQUEST_CANCELLED: i64 = -32800;
 
 /// Called once the daemon no longer serves this connection's session.
-pub(crate) type SessionLost = Arc<dyn Fn() + Send + Sync>;
+pub type SessionLost = Arc<dyn Fn() + Send + Sync>;
 
 /// Обслужить одно соединение редактора до `exit` или конца ввода.
 /// Возвращает код выхода процесса.
-pub(crate) fn serve(
+pub fn serve(
     mut input: impl BufRead,
     output: impl Write + Send + 'static,
     client: Arc<V5DaemonClient>,
@@ -152,7 +116,7 @@ pub(crate) fn serve(
         unsynced: std::collections::HashSet::new(),
     };
     let code = loop {
-        let body = match codec::read_message(&mut input) {
+        let body = match crate::codec::read_message(&mut input) {
             Ok(Some(body)) => body,
             // A closed input without `exit` is an editor that went away.
             Ok(None) => break 1,
@@ -174,9 +138,9 @@ pub(crate) fn serve(
     code
 }
 
-type Output = Arc<Mutex<Box<dyn Write + Send>>>;
+pub type Output = Arc<Mutex<Box<dyn Write + Send>>>;
 
-struct Frontend {
+pub struct Frontend {
     client: Arc<V5DaemonClient>,
     session_lost: SessionLost,
     output: Output,
@@ -188,13 +152,13 @@ struct Frontend {
     unsynced: std::collections::HashSet<String>,
 }
 
-enum Phase {
+pub enum Phase {
     Uninitialized,
     Running(Box<Session>),
     ShutDown,
 }
 
-struct Session {
+pub struct Session {
     id: V5LspSessionId,
     /// The connection that owns the session; it ends the session when it closes.
     anchor: V5DaemonProcessOwner,
@@ -204,15 +168,15 @@ struct Session {
 
 /// Editor requests waiting for the daemon, keyed by their JSON-RPC id.
 /// Whoever removes an entry answers it, exactly once.
-type InFlight = Arc<Mutex<HashMap<String, PendingRequest>>>;
+pub type InFlight = Arc<Mutex<HashMap<String, PendingRequest>>>;
 
-struct PendingRequest {
+pub struct PendingRequest {
     id: Value,
     request: u64,
     uri: Option<String>,
 }
 
-enum Flow {
+pub enum Flow {
     Continue,
     Exit(i32),
     Fail(String),
@@ -585,7 +549,7 @@ impl Frontend {
     }
 }
 
-fn call_daemon(
+pub fn call_daemon(
     client: &V5DaemonClient,
     session: &V5LspSessionId,
     request: u64,
@@ -647,7 +611,7 @@ fn call_daemon(
     }
 }
 
-fn spawn_poller(
+pub fn spawn_poller(
     client: Arc<V5DaemonClient>,
     session: V5LspSessionId,
     output: Output,
@@ -702,32 +666,32 @@ fn spawn_poller(
         });
 }
 
-fn write(output: &Output, message: &Value) {
+pub fn write(output: &Output, message: &Value) {
     let mut output = lock(output);
-    if codec::write_message(&mut *output, message).is_err() {
+    if crate::codec::write_message(&mut *output, message).is_err() {
         // The editor stopped reading; its input end decides when we exit.
     }
 }
 
-fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+pub fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-fn request_key(id: &Value) -> String {
+pub fn request_key(id: &Value) -> String {
     id.to_string()
 }
 
-fn error_response(id: Value, code: i64, message: &str) -> Value {
+pub fn error_response(id: Value, code: i64, message: &str) -> Value {
     json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}})
 }
 
-fn failure_message(failure: V5LspFailure) -> String {
+pub fn failure_message(failure: V5LspFailure) -> String {
     format!("unica: {}", failure_code(failure))
 }
 
-fn failure_code(failure: V5LspFailure) -> &'static str {
+pub fn failure_code(failure: V5LspFailure) -> &'static str {
     match failure {
         V5LspFailure::NotSupported => "lsp_not_supported",
         V5LspFailure::SessionUnknown => "lsp_session_unknown",
@@ -741,7 +705,7 @@ fn failure_code(failure: V5LspFailure) -> &'static str {
     }
 }
 
-fn exchange_message(error: &V5LspExchangeError) -> String {
+pub fn exchange_message(error: &V5LspExchangeError) -> String {
     match error {
         V5LspExchangeError::Refused(failure) => failure_message(*failure),
         V5LspExchangeError::Transport(_) | V5LspExchangeError::Unexpected => {
@@ -752,7 +716,7 @@ fn exchange_message(error: &V5LspExchangeError) -> String {
 
 /// Возможности по готовности службы и пространство каждой рабочей папки
 /// в `experimental.unica.workspaces`, в порядке папок `initialize`.
-fn capabilities_json(opening: V5LspOpening) -> Value {
+pub fn capabilities_json(opening: V5LspOpening) -> Value {
     let capabilities = opening.capabilities;
     let mut result = Map::new();
     result.insert("positionEncoding".into(), json!("utf-16"));
@@ -814,7 +778,7 @@ fn capabilities_json(opening: V5LspOpening) -> Value {
 }
 
 /// LSP `CompletionItemKind` of each kind.
-const COMPLETION_KINDS: [(V5LspCompletionKind, u64); 8] = [
+pub const COMPLETION_KINDS: [(V5LspCompletionKind, u64); 8] = [
     (V5LspCompletionKind::Method, 2),
     (V5LspCompletionKind::Function, 3),
     (V5LspCompletionKind::Field, 5),
@@ -827,7 +791,7 @@ const COMPLETION_KINDS: [(V5LspCompletionKind, u64); 8] = [
 
 /// A completion item as LSP `CompletionItem`. Its document and method ride
 /// in `data`, so `completionItem/resolve` finds the description.
-fn completion_item_json(item: &V5LspCompletionItem) -> Value {
+pub fn completion_item_json(item: &V5LspCompletionItem) -> Value {
     let kind = COMPLETION_KINDS
         .iter()
         .find(|(kind, _)| *kind == item.kind)
@@ -854,7 +818,7 @@ fn completion_item_json(item: &V5LspCompletionItem) -> Value {
 
 /// The item an editor sends back to `completionItem/resolve`, if this
 /// server gave it.
-fn completion_item(params: &Value) -> Option<V5LspCompletionItem> {
+pub fn completion_item(params: &Value) -> Option<V5LspCompletionItem> {
     let number = params.get("kind")?.as_u64()?;
     let kind = COMPLETION_KINDS
         .iter()
@@ -887,12 +851,12 @@ fn completion_item(params: &Value) -> Option<V5LspCompletionItem> {
     })
 }
 
-fn call_is_valid(call: &V5LspCall) -> bool {
+pub fn call_is_valid(call: &V5LspCall) -> bool {
     unica_lsp_contract::protocol::validate_call(call).is_ok()
 }
 
 /// One finding as LSP `Diagnostic`, told by Unica.
-fn diagnostic_json(item: &V5LspDiagnostic) -> Value {
+pub fn diagnostic_json(item: &V5LspDiagnostic) -> Value {
     let severity = match item.severity {
         V5LspSeverity::Error => 1,
         V5LspSeverity::Warning => 2,
@@ -911,7 +875,10 @@ fn diagnostic_json(item: &V5LspDiagnostic) -> Value {
 /// A notification of the daemon as the editor's message. A diagnostics
 /// refresh is a server request the editor answers; a client that declared no
 /// refresh support asks for findings again by itself, on its own events.
-fn server_notification_json(notification: V5LspServerNotification, refresh: bool) -> Option<Value> {
+pub fn server_notification_json(
+    notification: V5LspServerNotification,
+    refresh: bool,
+) -> Option<Value> {
     static REFRESHES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     Some(match notification {
         V5LspServerNotification::DiagnosticsRefresh {} => {
@@ -940,7 +907,7 @@ fn server_notification_json(notification: V5LspServerNotification, refresh: bool
     })
 }
 
-fn workspace_folders(params: &Value) -> Vec<V5LspWorkspaceFolder> {
+pub fn workspace_folders(params: &Value) -> Vec<V5LspWorkspaceFolder> {
     if let Some(folders) = params.get("workspaceFolders").and_then(Value::as_array) {
         return folders
             .iter()
@@ -969,11 +936,11 @@ fn workspace_folders(params: &Value) -> Vec<V5LspWorkspaceFolder> {
         .unwrap_or_default()
 }
 
-fn document_uri(params: &Value) -> Option<String> {
+pub fn document_uri(params: &Value) -> Option<String> {
     Some(params.get("textDocument")?.get("uri")?.as_str()?.to_owned())
 }
 
-fn position(value: &Value) -> Option<V5LspPosition> {
+pub fn position(value: &Value) -> Option<V5LspPosition> {
     Some(V5LspPosition {
         line: u32::try_from(value.get("line")?.as_u64()?).ok()?,
         character: u32::try_from(value.get("character")?.as_u64()?).ok()?,
@@ -981,7 +948,7 @@ fn position(value: &Value) -> Option<V5LspPosition> {
 }
 
 /// A request about one position of a document.
-fn position_call(method: &str, params: &Value) -> Option<V5LspCall> {
+pub fn position_call(method: &str, params: &Value) -> Option<V5LspCall> {
     let uri = document_uri(params)?;
     let position = position(params.get("position")?)?;
     match method {
@@ -993,7 +960,7 @@ fn position_call(method: &str, params: &Value) -> Option<V5LspCall> {
     }
 }
 
-fn document_notification(method: &str, params: &Value) -> Option<V5LspNotification> {
+pub fn document_notification(method: &str, params: &Value) -> Option<V5LspNotification> {
     let document = params.get("textDocument")?;
     let uri = document.get("uri")?.as_str()?.to_owned();
     let version = || i32::try_from(document.get("version")?.as_i64()?).ok();

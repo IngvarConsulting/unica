@@ -185,6 +185,12 @@ def edge_errors(owner: str, dependency: str, kind: str) -> list[str]:
             allowed |= frozenset({"metadata"})
         if target not in allowed:
             reasons.append("the MCP door reaches the daemon only through the daemon protocol")
+    if name == "lsp" and dependency.startswith("unica-"):
+        # The editor's door frames LSP and passes requests over the daemon
+        # protocol; the connection to the daemon comes from `unica-product`.
+        allowed = ABSTRACTIONS | frozenset({"daemon-protocol", "lsp-contract"})
+        if target not in allowed:
+            reasons.append("the LSP door reaches the daemon only through the daemon protocol")
     if name == "lsp-contract" and dependency.startswith("unica-") and target != "work-control":
         # The request's cancellation token is the one the transport cancels
         # and the service's work watches; nothing else is shared.
