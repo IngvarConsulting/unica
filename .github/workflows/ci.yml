@@ -269,8 +269,9 @@ jobs:
   queue-acceptance:
     name: Приёмка
     needs: admission
-    if: ${{ github.event_name == 'merge_group' && needs.admission.outputs.admitted == 'true' && needs.admission.outputs.kept != 'true' }}
-    runs-on: ${{ fromJSON(vars.UNICA_SELF_HOSTED == 'true' && '["self-hosted","Linux","X64","unica-pve"]' || '["ubuntu-latest"]') }}
+    # ДЕМОНСТРАЦИЯ #2831: задание идёт и на pull request этой ветки.
+    if: ${{ needs.admission.outputs.admitted == 'true' && needs.admission.outputs.kept != 'true' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
       contents: read
@@ -293,8 +294,8 @@ jobs:
         name: Нужна ли приёмка
         env:
           QUEUE_FULL_TESTS: ${{ vars.QUEUE_FULL_TESTS }}
-          BASE_SHA: ${{ github.event.merge_group.base_sha }}
-          HEAD_SHA: ${{ github.event.merge_group.head_sha }}
+          BASE_SHA: ${{ github.event.merge_group.base_sha || github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.merge_group.head_sha || github.event.pull_request.head.sha }}
         run: python scripts/ci/queue-tests.py --base "$BASE_SHA" --head "$HEAD_SHA" --dry-run
       - name: Кэш зависимостей Rust # zizmor: ignore[cache-poisoning] restore-only; очередь читает область main и ничего не пишет
         if: ${{ steps.choice.outputs.acceptance == 'true' && runner.environment == 'github-hosted' }}
