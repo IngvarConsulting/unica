@@ -77,32 +77,38 @@ impl fmt::Display for CompatibilityMode {
 }
 
 /// An extension operation whose admission the mode of the extension decides
-/// (appendix 7.3).
+/// (appendix 7.3). The thresholds are those the platform names when it refuses
+/// the extension (`ibcmd config check`, 8.3.27.2342 and 8.5.4.2028); import
+/// accepts such an extension and only the check and apply refuse it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ExtensionOperation {
-    /// Add a child object (attribute, tabular section, form …) to a borrowed object.
+    /// Add a child object other than an attribute or a tabular section to a
+    /// borrowed object; the appendix gives the oldest threshold.
     AddChildToBorrowed,
+    /// Add an attribute to a borrowed object.
+    AddAttributeToBorrowed,
+    /// Add a tabular section to a borrowed object.
+    AddTabularSectionToBorrowed,
     /// Override a property of a borrowed object.
     OverrideBorrowedProperty,
     /// Add a catalog of the extension's own.
     AddOwnCatalog,
     /// Add an information register of the extension's own.
     AddOwnInformationRegister,
-    /// Add an attribute to a borrowed catalog.
-    AddAttributeToBorrowedCatalog,
-    /// Add a tabular section to a borrowed catalog.
-    AddTabularSectionToBorrowedCatalog,
 }
 
 impl ExtensionOperation {
     /// The oldest extension mode that admits the operation.
     const fn since(self) -> [u32; 3] {
         match self {
-            Self::AddChildToBorrowed | Self::OverrideBorrowedProperty => [8, 3, 7],
-            Self::AddOwnCatalog
-            | Self::AddOwnInformationRegister
-            | Self::AddAttributeToBorrowedCatalog
-            | Self::AddTabularSectionToBorrowedCatalog => [8, 3, 10],
+            Self::AddChildToBorrowed => [8, 3, 7],
+            Self::OverrideBorrowedProperty => [8, 3, 8],
+            // The platform refuses an attribute of a borrowed catalog
+            // "in compatibility mode 8.3.8 and below".
+            Self::AddAttributeToBorrowed | Self::AddTabularSectionToBorrowed => [8, 3, 9],
+            // "Catalogs in extensions are not allowed in compatibility mode
+            // 8.3.10 and below"; the appendix lists registers with catalogs.
+            Self::AddOwnCatalog | Self::AddOwnInformationRegister => [8, 3, 11],
         }
     }
 }
@@ -122,8 +128,9 @@ pub enum Admission {
 /// (appendix 7.2, kind (б)).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CheckRule {
-    /// A fixed-length string is at most 1024 characters.
-    FixedStringLengthAtMost1024,
+    /// A fixed-length string is at most 100 characters; only mode 8.1 allows
+    /// more. The 1024 limit of any string is the database's, not the mode's.
+    FixedStringLengthAtMost100,
     /// The applicability of an extension to its configuration is checked.
     ExtensionApplicabilityCheckRequired,
 }
@@ -167,8 +174,8 @@ impl CompatibilityRules {
     /// Kind (б): whether a configuration check or value limit applies.
     pub fn check(&self, rule: CheckRule) -> RuleState {
         let applies = match rule {
-            CheckRule::FixedStringLengthAtMost1024 => {
-                matches!(self.mode, CompatibilityMode::Version([8, minor, _]) if minor < 2)
+            CheckRule::FixedStringLengthAtMost100 => {
+                !matches!(self.mode, CompatibilityMode::Version([8, minor, _]) if minor < 2)
             }
             CheckRule::ExtensionApplicabilityCheckRequired => {
                 self.mode == CompatibilityMode::DontUse
@@ -222,33 +229,57 @@ mod tests {
 
     /// rule: INV.SOURCE.PROFILE-CAPABILITIES
     #[test]
-    fn the_mode_of_an_extension_admits_its_operations_from_the_appendix() {
+    fn the_mode_of_an_extension_admits_its_operations_where_the_platform_does() {
+        use ExtensionOperation::{
+            AddAttributeToBorrowed, AddChildToBorrowed, AddOwnCatalog, OverrideBorrowedProperty,
+        };
         let rules = |raw| CompatibilityRules::for_mode(CompatibilityMode::parse(raw).unwrap());
         let refused = |raw, since| Admission::Refused {
             mode: CompatibilityMode::parse(raw).unwrap(),
             since,
         };
-        let child = ExtensionOperation::AddChildToBorrowed;
-        let catalog = ExtensionOperation::AddOwnCatalog;
+        // The last refused and the first admitted mode of each operation, as
+        // the platform names them when it checks the extension.
+        for (operation, last_refused, first_allowed, since) in [
+            (
+                AddChildToBorrowed,
+                "Version8_3_6",
+                "Version8_3_7",
+                [8, 3, 7],
+            ),
+            (
+                OverrideBorrowedProperty,
+                "Version8_3_7",
+                "Version8_3_8",
+                [8, 3, 8],
+            ),
+            (
+                AddAttributeToBorrowed,
+                "Version8_3_8",
+                "Version8_3_9",
+                [8, 3, 9],
+            ),
+            (AddOwnCatalog, "Version8_3_10", "Version8_3_11", [8, 3, 11]),
+        ] {
+            assert_eq!(
+                rules(last_refused).extension_allows(operation),
+                refused(last_refused, since),
+                "{operation:?}"
+            );
+            assert_eq!(
+                rules(first_allowed).extension_allows(operation),
+                Admission::Allowed,
+                "{operation:?}"
+            );
+        }
+        // An older mode is refused too; no compatibility and a mode newer
+        // than the table admit everything.
         assert_eq!(
-            rules("Version8_3_6").extension_allows(child),
-            refused("Version8_3_6", [8, 3, 7])
+            rules("Version8_2_16").extension_allows(AddOwnCatalog),
+            refused("Version8_2_16", [8, 3, 11])
         );
-        assert_eq!(
-            rules("Version8_3_7").extension_allows(child),
-            Admission::Allowed
-        );
-        assert_eq!(
-            rules("Version8_3_9").extension_allows(catalog),
-            refused("Version8_3_9", [8, 3, 10])
-        );
-        assert_eq!(
-            rules("Version8_3_10").extension_allows(catalog),
-            Admission::Allowed
-        );
-        // No compatibility and a mode newer than the table admit everything.
         for raw in ["DontUse", "Version8_5_4", "Version8_9_99"] {
-            for operation in [child, catalog] {
+            for operation in [AddChildToBorrowed, AddAttributeToBorrowed, AddOwnCatalog] {
                 assert_eq!(rules(raw).extension_allows(operation), Admission::Allowed);
             }
         }
@@ -258,10 +289,12 @@ mod tests {
     #[test]
     fn a_check_rule_follows_the_mode_not_the_platform_line() {
         let rules = |raw| CompatibilityRules::for_mode(CompatibilityMode::parse(raw).unwrap());
-        let fixed = CheckRule::FixedStringLengthAtMost1024;
-        assert_eq!(rules("Version8_1").check(fixed), RuleState::Applies);
-        assert_eq!(rules("Version8_2_13").check(fixed), RuleState::DoesNotApply);
-        assert_eq!(rules("DontUse").check(fixed), RuleState::DoesNotApply);
+        // Only mode 8.1 allows a fixed-length string longer than 100.
+        let fixed = CheckRule::FixedStringLengthAtMost100;
+        assert_eq!(rules("Version8_1").check(fixed), RuleState::DoesNotApply);
+        assert_eq!(rules("Version8_2_13").check(fixed), RuleState::Applies);
+        assert_eq!(rules("Version8_3_27").check(fixed), RuleState::Applies);
+        assert_eq!(rules("DontUse").check(fixed), RuleState::Applies);
         let applicability = CheckRule::ExtensionApplicabilityCheckRequired;
         assert_eq!(rules("DontUse").check(applicability), RuleState::Applies);
         assert_eq!(
