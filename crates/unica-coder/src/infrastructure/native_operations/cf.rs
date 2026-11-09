@@ -195,7 +195,7 @@ mod medium_metadata_kind_consumer_tests {
                 .as_nanos()
         ));
         fs::create_dir_all(&root).unwrap();
-        let plan = cf_edit_set_home_page(&json!({"template": "OneColumn"}), &root).unwrap();
+        let plan = cf_edit_set_home_page(&json!({"template": "OneColumn"}), &root, "2.20").unwrap();
         let xml = String::from_utf8(plan.bytes).unwrap();
         let document = Document::parse(xml.trim_start_matches('\u{feff}')).unwrap();
 
@@ -243,6 +243,7 @@ mod medium_metadata_kind_consumer_tests {
                 "right": ["CommonForm.Right"]
             }),
             &root,
+            "2.20",
         )
         .unwrap();
         let xml = String::from_utf8(plan.bytes.clone()).unwrap();
@@ -701,7 +702,7 @@ pub(crate) mod medium_cf_edit_transaction_tests {
         let config_dir = fixture.config_path.parent().unwrap();
         let home_page_path = config_dir.join("Ext/HomePageWorkArea.xml");
         let newer_home_page = String::from_utf8(
-            cf_edit_set_home_page(&json!({"template": "OneColumn"}), config_dir)
+            cf_edit_set_home_page(&json!({"template": "OneColumn"}), config_dir, "2.20")
                 .unwrap()
                 .bytes,
         )

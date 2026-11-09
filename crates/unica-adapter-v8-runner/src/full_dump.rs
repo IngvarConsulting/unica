@@ -22,7 +22,8 @@ use unica_source_contract::{
     read::full_dump::DumpSemanticValidator, workspace::WorkspaceContext, SourceSetKind,
 };
 use unica_source_designer::format_profile::{
-    platform_xml_identity, platform_xml_line, ACTIVE_FORMAT_PROFILE,
+    platform_xml_identity, platform_xml_line, writable_platform_xml_version_of_line,
+    ACTIVE_FORMAT_PROFILE,
 };
 use unica_work_control::cancellation::CancellationToken;
 use unica_workspace::full_dump::{
@@ -34,13 +35,54 @@ use unica_workspace::full_dump::{
 use unica_workspace::paths::{
     metadata_is_link_or_reparse_point, normalize_leaf_path, normalize_path_identity,
 };
-const TARGET_EXPORT_FORMAT: &str = ACTIVE_FORMAT_PROFILE.export_format;
+/// The export format a dump writes when the target has no source set yet and
+/// the project names no platform line.
+const DEFAULT_EXPORT_FORMAT: &str = ACTIVE_FORMAT_PROFILE.export_format;
 
 /// The platform line a full dump runs: the line that writes the export format
 /// the dump produces (INV.RUNTIME.PLATFORM-LINE), not a line of its own.
-fn target_platform_line() -> PlatformLine {
-    platform_xml_line(&platform_xml_identity(TARGET_EXPORT_FORMAT))
-        .expect("the writable export format has a platform line")
+fn platform_line_of(export_format: &str) -> PlatformLine {
+    platform_xml_line(&platform_xml_identity(export_format))
+        .expect("a writable export format has a platform line")
+}
+
+/// The export format a dump writes (INV.SOURCE.WRITABLE-PROFILE): the format
+/// of the source set it replaces, so a dump never changes it; for a new
+/// target the format of the platform line the project names; else the
+/// default. A project line that would change the format is refused.
+fn target_export_format(
+    existing: Option<&'static str>,
+    configured_version: Option<&str>,
+) -> Result<&'static str, String> {
+    let configured = configured_version
+        .map(|version| {
+            let parts = version
+                .split('.')
+                .map(str::parse::<u32>)
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|_| format!("invalid tools.platform.version `{version}`"))?;
+            let line = match parts.as_slice() {
+                [major, minor, release, ..] => PlatformLine::new(*major, *minor, *release),
+                _ => return Ok(None),
+            };
+            writable_platform_xml_version_of_line(line).map(Some).ok_or_else(|| {
+                format!(
+                    "configured tools.platform.version `{version}` names platform line {line}, which writes no writable export format (2.20, 2.21 or 2.22)"
+                )
+            })
+        })
+        .transpose()?
+        .flatten();
+    match (existing, configured) {
+        (Some(existing), Some(configured)) if existing != configured => Err(format!(
+            "the dump target records export format {existing}, written by platform line {}; configured tools.platform.version names line {} with format {configured}, and a dump does not change the format of a source set",
+            platform_line_of(existing),
+            platform_line_of(configured)
+        )),
+        (Some(existing), _) => Ok(existing),
+        (None, Some(configured)) => Ok(configured),
+        (None, None) => Ok(DEFAULT_EXPORT_FORMAT),
+    }
 }
 const EFFECTIVE_CONFIG_NAME: &str = "v8project.yaml";
 const LOCAL_CONFIG_NAME: &str = "v8project.local.yaml";
@@ -102,6 +144,7 @@ pub trait PlatformResolver {
         effective_config: &YamlValue,
         config_dir: &Path,
         utility: PlatformUtility,
+        line: PlatformLine,
         runner: &dyn ProcessRunner,
         cancellation: &CancellationToken,
     ) -> Result<VerifiedPlatform, String>;
@@ -116,6 +159,7 @@ impl PlatformResolver for SystemPlatformResolver {
         effective_config: &YamlValue,
         config_dir: &Path,
         utility: PlatformUtility,
+        line: PlatformLine,
         runner: &dyn ProcessRunner,
         cancellation: &CancellationToken,
     ) -> Result<VerifiedPlatform, String> {
@@ -132,23 +176,19 @@ impl PlatformResolver for SystemPlatformResolver {
         if let Some(configured_version) =
             nested_yaml_string(effective_config, &["tools", "platform", "version"])?
         {
-            validate_configured_platform_line(configured_version)?;
+            validate_configured_platform_line(configured_version, line)?;
         }
 
         let configured_hint = nested_yaml_string(effective_config, &["tools", "platform", "path"])?
             .map(|path| absolutize(Path::new(path), config_dir));
         let candidates = if let Some(hint) = configured_hint {
             platform_candidates_from_hint(&hint, utility).map_err(|error| {
-                format!(
-                    "configured tools.platform.path cannot prove platform {}: {error}",
-                    target_platform_line()
-                )
+                format!("configured tools.platform.path cannot prove platform {line}: {error}")
             })?
         } else {
             default_platform_candidates(utility)
         };
 
-        let line = target_platform_line();
         let mut verified = Vec::new();
         let mut other_lines = Vec::new();
         let mut last_rejection = None;
@@ -205,6 +245,7 @@ fn platform_in_line(platform: &VerifiedPlatform, line: PlatformLine) -> bool {
 impl SystemPlatformResolver {
     pub fn attest_selected_local(
         executable: &Path,
+        line: PlatformLine,
         runner: &dyn ProcessRunner,
         cancellation: &CancellationToken,
         probe_cancelled: &mut bool,
@@ -223,11 +264,8 @@ impl SystemPlatformResolver {
             }
             let version = parse_exact_platform_version(&exact_version)
                 .ok_or("selected local platform version is not exact")?;
-            if !target_platform_line().contains_build(&version) {
-                return Err(format!(
-                    "selected local platform must be {}.x",
-                    target_platform_line()
-                ));
+            if !line.contains_build(&version) {
+                return Err(format!("selected local platform must be {line}.x"));
             }
             return Ok(VerifiedPlatform {
                 attestation: PlatformAttestation::capture_test_fixture(executable)?,
@@ -246,12 +284,11 @@ impl SystemPlatformResolver {
             cancellation,
             Some(probe_cancelled),
         )?;
-        if !platform_in_line(&platform, target_platform_line()) {
+        if !platform_in_line(&platform, line) {
             return Err(format!(
-                "platform version probe for {} reported {}, required {}.x",
+                "platform version probe for {} reported {}, required {line}.x",
                 platform.executable.display(),
                 platform.exact_version,
-                target_platform_line()
             ));
         }
         Ok(platform)
@@ -534,21 +571,18 @@ impl<'a> VerifiedFullDumpAdapter<'a> {
         Ok(finalize_private_outcome(
             private.cleanup_observation(),
             AdapterOutcome {
-            ok: true,
-            summary: format!(
-                "{tool_name} published a validated platform {} / export format {TARGET_EXPORT_FORMAT} full dump",
-                target_platform_line()
-            ),
-            changes: vec![format!(
-                "replaced {} with validated full dump",
-                target.display()
-            )],
-            warnings,
-            errors: Vec::new(),
-            artifacts: vec![target.display().to_string()],
-            stdout: Some(redactor(&output.stdout)),
-            stderr: Some(redactor(&output.stderr)),
-            command: Some(reported_command),
+                ok: true,
+                summary: format!("{tool_name} published a validated full dump"),
+                changes: vec![format!(
+                    "replaced {} with validated full dump",
+                    target.display()
+                )],
+                warnings,
+                errors: Vec::new(),
+                artifacts: vec![target.display().to_string()],
+                stdout: Some(redactor(&output.stdout)),
+                stderr: Some(redactor(&output.stderr)),
+                command: Some(reported_command),
             },
         ))
     }
@@ -694,15 +728,25 @@ fn prepare_selected(
         semantic_validator,
     )?;
     let platform = if !canonical {
-        let platform =
-            platform_resolver.resolve(&effective, config_dir, utility, runner, cancellation)?;
+        let export_format = target_export_format(
+            capture.existing_export_format(),
+            nested_yaml_string(&effective, &["tools", "platform", "version"])?,
+        )?;
+        let line = platform_line_of(export_format);
+        let platform = platform_resolver.resolve(
+            &effective,
+            config_dir,
+            utility,
+            line,
+            runner,
+            cancellation,
+        )?;
         let version = parse_exact_platform_version(&platform.exact_version)
             .ok_or("resolved platform version is not an exact four-part version")?;
-        if !target_platform_line().contains_build(&version) {
+        if !line.contains_build(&version) {
             return Err(format!(
-                "resolved platform {} is not supported; required {}.x",
+                "resolved platform {} is not supported; required {line}.x",
                 platform.exact_version,
-                target_platform_line()
             )
             .into());
         }
@@ -791,8 +835,14 @@ pub fn attest_selected_local(
         ));
     }
     let mut probe_cancelled = false;
+    let line = platform_line_of(
+        publication
+            .existing_export_format()
+            .unwrap_or(DEFAULT_EXPORT_FORMAT),
+    );
     let verified = SystemPlatformResolver::attest_selected_local(
         executable,
+        line,
         runner,
         cancellation,
         &mut probe_cancelled,
@@ -1372,13 +1422,12 @@ fn absolutize(path: &Path, base: &Path) -> PathBuf {
     }
 }
 
-fn validate_configured_platform_line(version: &str) -> Result<(), String> {
+fn validate_configured_platform_line(version: &str, line: PlatformLine) -> Result<(), String> {
     let parts = version
         .split('.')
         .map(str::parse::<u32>)
         .collect::<Result<Vec<_>, _>>()
         .map_err(|_| format!("invalid tools.platform.version `{version}`"))?;
-    let line = target_platform_line();
     let line_parts = line.parts();
     // `8.3`, `8.3.27` and `8.3.27.<build>` all name the required line.
     let named = parts.len().min(line_parts.len());
@@ -1810,14 +1859,49 @@ mod tests {
     /// rule: INV.RUNTIME.PLATFORM-LINE
     #[test]
     fn a_full_dump_runs_the_line_that_writes_its_export_format() {
-        assert_eq!(target_platform_line(), PlatformLine::new(8, 3, 27));
-        assert!(validate_configured_platform_line("8.3").is_ok());
-        assert!(validate_configured_platform_line("8.3.27").is_ok());
-        assert!(validate_configured_platform_line("8.3.27.2342").is_ok());
+        assert_eq!(
+            platform_line_of(DEFAULT_EXPORT_FORMAT),
+            PlatformLine::new(8, 3, 27)
+        );
+        let line = PlatformLine::new(8, 3, 27);
+        assert!(validate_configured_platform_line("8.3", line).is_ok());
+        assert!(validate_configured_platform_line("8.3.27", line).is_ok());
+        assert!(validate_configured_platform_line("8.3.27.2342", line).is_ok());
         for other in ["8.3.26", "8.5.4.1878", "8.5"] {
-            let error = validate_configured_platform_line(other).unwrap_err();
+            let error = validate_configured_platform_line(other, line).unwrap_err();
             assert!(error.contains("required 8.3.27"), "{error}");
         }
+        // The line of a 2.22 target admits its own builds.
+        let line = platform_line_of("2.22");
+        assert!(validate_configured_platform_line("8.5.4.2028", line).is_ok());
+        assert!(validate_configured_platform_line("8.3.27", line).is_err());
+    }
+
+    /// rule: INV.SOURCE.WRITABLE-PROFILE
+    /// rule: INV.RUNTIME.PLATFORM-LINE
+    #[test]
+    fn a_dump_keeps_the_format_of_its_target_and_runs_the_line_that_writes_it() {
+        use super::target_export_format;
+        // A new target takes the format of the configured line, else 2.20.
+        assert_eq!(target_export_format(None, None).unwrap(), "2.20");
+        assert_eq!(target_export_format(None, Some("8.5.1")).unwrap(), "2.21");
+        assert_eq!(
+            target_export_format(None, Some("8.5.4.2028")).unwrap(),
+            "2.22"
+        );
+        assert_eq!(platform_line_of("2.22"), PlatformLine::new(8, 5, 4));
+        // An existing target keeps its format; a line that would change it is refused.
+        assert_eq!(target_export_format(Some("2.21"), None).unwrap(), "2.21");
+        assert_eq!(
+            target_export_format(Some("2.21"), Some("8.5.1.1529")).unwrap(),
+            "2.21"
+        );
+        let error = target_export_format(Some("2.20"), Some("8.5.4")).unwrap_err();
+        assert!(error.contains("does not change the format"), "{error}");
+        // A line that writes no writable format is refused.
+        assert!(target_export_format(None, Some("8.3.24")).is_err());
+        // Two parts name no line; the default applies.
+        assert_eq!(target_export_format(None, Some("8.3")).unwrap(), "2.20");
     }
 
     /// rule: INV.RUNTIME.PLATFORM-LINE

@@ -1,0 +1,33 @@
+{
+  "format": "2.22",
+  "build": "8.5.4.2028",
+  "seed": "2.20",
+  "runner": "v8-runner 0.16.0",
+  "steps": [
+    {
+      "step": "package",
+      "tool": "ibcmd (v8-runner convert --to package)",
+      "build": "8.5.4.2028"
+    },
+    {
+      "step": "create",
+      "tool": "ibcmd infobase create",
+      "build": "8.5.4.2028"
+    },
+    {
+      "step": "load",
+      "tool": "designer (v8-runner upload)",
+      "build": "8.5.4.2028"
+    },
+    {
+      "step": "export",
+      "tool": "designer /DumpConfigToFiles (v8-runner pull --force)",
+      "build": "8.5.4.2028"
+    }
+  ],
+  "compatibilityLowered": null,
+  "excludedFiles": [
+    "empty_configuration/src/ConfigDumpInfo.xml",
+    "empty_extension/ext/ConfigDumpInfo.xml"
+  ]
+}

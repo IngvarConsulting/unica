@@ -1,6 +1,6 @@
 //! Pure descriptor planning for an object's managed form borrowed into an
 //! extension. The bytes follow the 8.3.27 export in
-//! `tests/fixtures/platform_8_3_27/cfe_borrow/` (#1982): without
+//! `tests/fixtures/formats/platform_xml/2.20/cfe_borrow/` (#1982): without
 //! `FormType` the platform silently drops the form's own `Form.xml`.
 
 use roxmltree::{Document, Node};

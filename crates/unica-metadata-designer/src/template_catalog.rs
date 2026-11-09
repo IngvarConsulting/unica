@@ -826,7 +826,7 @@ pub fn minimal_metadata_xml<G>(
     lines.push("\t\t</Properties>".to_string());
     // Содержимое объекта задаёт вызывающий через `operations`: инструмент не
     // придумывает ресурсы, измерения и значения свойств за него.
-    if crate::format_contract::meta_8_3_27_kind_declares_child_objects(kind) {
+    if crate::format_contract::kind_declares_child_objects(kind) {
         lines.push("\t\t<ChildObjects/>".to_string());
     }
     lines.push(format!("\t</{object_type}>"));
@@ -842,7 +842,7 @@ pub fn minimal_metadata_xml_for_tests(
     minimal_metadata_xml(
         kind,
         name,
-        "2.20",
+        crate::dialect::root_version::writable(),
         &MinimalTemplateContext::<()> {
             chart_of_accounts: None,
             chart_of_calculation_types: None,

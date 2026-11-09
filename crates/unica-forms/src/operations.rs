@@ -55,6 +55,7 @@ form_operations!(
     ItemRemove => ("item.remove", FormItem, Target),
     ItemMove => ("item.move", FormItem, Values),
     AttributeAdd => ("attribute.add", Form, Items),
+    AttributeRemove => ("attribute.remove", FormAttribute, Target),
     ColumnAdd => ("column.add", FormAttribute, Items),
     CommandAdd => ("command.add", Form, Items),
     EventBind => ("event.bind", FormEvent, Values),
@@ -84,6 +85,7 @@ impl FormOperation {
             | Self::ItemRemove
             | Self::ItemMove
             | Self::AttributeAdd
+            | Self::AttributeRemove
             | Self::ColumnAdd
             | Self::CommandAdd
             | Self::EventBind
@@ -99,6 +101,7 @@ impl FormOperation {
             | Self::Set
             | Self::Remove
             | Self::AttributeAdd
+            | Self::AttributeRemove
             | Self::ColumnAdd
             | Self::CommandAdd
             | Self::EventBind
@@ -247,6 +250,12 @@ mod tests {
                 "attribute.add",
                 OperationApplicability::Form,
                 OperationSkeleton::Items,
+            ),
+            (
+                FormOperation::AttributeRemove,
+                "attribute.remove",
+                OperationApplicability::FormAttribute,
+                OperationSkeleton::Target,
             ),
             (
                 FormOperation::ColumnAdd,

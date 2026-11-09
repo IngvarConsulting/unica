@@ -1,7 +1,7 @@
 # Runtime-реквизиты управляемой формы
 
 Независимая синтетическая CommonForm.RuntimeAttributes для #1865. Пустая
-конфигурация взята из platform_8_3_27/empty_configuration, описание формы
+конфигурация взята из formats/platform_xml/2.20/empty_configuration, описание формы
 составлено из существующих минимальных фикстур. Это не частный проект.
 StaticCode объявлен в Form.xml; RuntimeCode и RuntimeFlag создаются только
 через ИзменитьРеквизиты. Присваивание RuntimeFlag в другом методе объявляет

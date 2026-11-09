@@ -26,8 +26,8 @@ use super::v13_infobase_exports::{
     valid_1c_identifier, RunnerAbsence, CONFIG_NAME, LOCAL_CONFIG_NAME, RUNNER_OUTPUT_LIMIT,
 };
 use super::v13_source_set_name::{source_set_name_guidance, valid_source_set_name};
-use unica_adapter_v8_runner::full_dump::FullDumpSelection;
 use unica_artifact_delivery::engine::BundledTool;
+use unica_coder::infrastructure::daemon_adapters::runtime::FullDumpSelection;
 use unica_execution::invocation_store::ToolIdentity;
 #[cfg(test)]
 use unica_process::runner::ProcessOutput;
@@ -508,7 +508,7 @@ mod medium_tests {
     use super::*;
     use std::fs;
     use std::sync::Mutex;
-    use unica_adapter_v8_runner::full_dump::with_test_platform;
+    use unica_coder::infrastructure::daemon_adapters::runtime::with_test_platform;
     use unica_process::runner::{ProcessStreamFailure, ProcessStreamOutput};
     use unica_process::ProcessLineReply;
     use unica_refusal::Outcome;
@@ -1568,7 +1568,10 @@ mod medium_tests {
                 assert_eq!(data["validation"]["reason"], reason, "{defect}");
                 assert_eq!(data["validation"]["path"], json!(path), "{defect}");
                 let (version, qname) = match defect {
-                    "wrong_version" => (json!({"kind":"exact","literal":"2.20"}), Value::Null),
+                    "wrong_version" => (
+                        json!({"kind":"oneOf","literal":["2.20","2.21","2.22"]}),
+                        Value::Null,
+                    ),
                     "versionless_with_version" => (
                         json!({"kind":"absent"}),
                         json!("{http://v8.1c.ru/8.1/data-composition-system/schema}DataCompositionSchema"),

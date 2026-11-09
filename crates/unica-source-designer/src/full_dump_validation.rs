@@ -1,5 +1,7 @@
 //! Designer full-dump semantic validation of workspace-observed immutable bytes.
-use crate::format_profile::ACTIVE_FORMAT_PROFILE;
+use crate::format_profile::{
+    platform_line_for_export_format, writable_platform_xml_version, WRITABLE_EXPORT_FORMATS,
+};
 use crate::roots::{
     platform_xml_publication_policy as staged_root_version_policy, root_version_literal,
     PlatformXmlPublicationPolicy as StagedRootVersionPolicy,
@@ -12,13 +14,13 @@ use unica_source_contract::read::full_dump::{
 use unica_source_contract::SourceSetKind;
 use DumpValidationReason::*;
 const MD_CLASSES_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
-const TARGET_PLATFORM_LINE: &str = ACTIVE_FORMAT_PROFILE.platform_line;
-const TARGET_EXPORT_FORMAT: &str = ACTIVE_FORMAT_PROFILE.export_format;
+/// Validates the owner of a dump or of the source set it replaces and returns
+/// its export format: one of the writable formats, written literally.
 pub fn validate_required_owner_raw(
     path: &Path,
     kind: SourceSetKind,
     raw: &[u8],
-) -> Result<(), DumpValidationFailure> {
+) -> Result<&'static str, DumpValidationFailure> {
     let text = std::str::from_utf8(raw).map_err(|error| {
         DumpValidationFailure::new(
             InvalidXml,
@@ -48,13 +50,13 @@ pub fn validate_required_owner_raw(
         ));
     }
     let version = root_version_literal(source, root);
-    if version.as_deref() != Some(TARGET_EXPORT_FORMAT) {
+    let Some(format) = writable_platform_xml_version(version.as_deref()) else {
         return Err(DumpValidationFailure::new(WrongVersion, Some(path), format!(
-            "staged owner export format must be the exact raw literal {TARGET_EXPORT_FORMAT}; found {} in {}",
+            "staged owner export format must be the exact raw literal of a writable format (2.20, 2.21 or 2.22); found {} in {}",
             version.as_deref().unwrap_or("<missing>"),
             path.display()
-        )).with_version(DumpVersionRequirement::Exact(TARGET_EXPORT_FORMAT)));
-    }
+        )).with_version(DumpVersionRequirement::OneOf(&WRITABLE_EXPORT_FORMATS)));
+    };
     let children = root
         .children()
         .filter(|node| node.is_element())
@@ -70,7 +72,7 @@ pub fn validate_required_owner_raw(
     }
     let is_extension = is_configuration_extension(children[0]);
     match (kind, is_extension) {
-        (SourceSetKind::Configuration, false) | (SourceSetKind::Extension, true) => Ok(()),
+        (SourceSetKind::Configuration, false) | (SourceSetKind::Extension, true) => Ok(format),
         (SourceSetKind::Configuration, true) => Err(DumpValidationFailure::new(InvalidOwner, Some(path), format!(
             "CONFIGURATION source-set produced an extension owner: {}",
             path.display()
@@ -100,7 +102,12 @@ fn is_configuration_extension(configuration: roxmltree::Node<'_, '_>) -> bool {
         })
 }
 
-pub fn validate_xml_raw(path: &Path, raw: &[u8]) -> Result<(), DumpValidationFailure> {
+/// Validates one staged XML file of a dump whose owner records `format`.
+pub fn validate_xml_raw(
+    path: &Path,
+    raw: &[u8],
+    format: &'static str,
+) -> Result<(), DumpValidationFailure> {
     let text = std::str::from_utf8(raw).map_err(|error| {
         DumpValidationFailure::new(
             InvalidXml,
@@ -130,17 +137,18 @@ pub fn validate_xml_raw(path: &Path, raw: &[u8]) -> Result<(), DumpValidationFai
         }
         Some(StagedRootVersionPolicy::ExactRootVersion) => {
             let version = root_version_literal(source, root);
-            if version.as_deref() != Some(TARGET_EXPORT_FORMAT) {
+            if version.as_deref() != Some(format) {
                 return Err(DumpValidationFailure::new(WrongVersion, Some(path), format!(
-                    "staged XML root {{{namespace}}}{local_name} must use the exact raw version literal {TARGET_EXPORT_FORMAT}; found {} (missing means legacy format 1.0) in {}",
+                    "staged XML root {{{namespace}}}{local_name} must use the exact raw version literal {format} of its owner; found {} (missing means legacy format 1.0) in {}",
                     version.as_deref().unwrap_or("<missing>"),
                     path.display()
-                )).with_root(namespace, local_name).with_version(DumpVersionRequirement::Exact(TARGET_EXPORT_FORMAT)));
+                )).with_root(namespace, local_name).with_version(DumpVersionRequirement::Exact(format)));
             }
         }
         None => {
             return Err(DumpValidationFailure::new(UnsupportedRoot, Some(path), format!(
-                "staged XML root {{{namespace}}}{local_name} is unsupported by the closed platform {TARGET_PLATFORM_LINE} / export format {TARGET_EXPORT_FORMAT} registry: {}",
+                "staged XML root {{{namespace}}}{local_name} is unsupported by the closed platform {} / export format {format} registry: {}",
+                platform_line_for_export_format(format).unwrap_or_default(),
                 path.display()
             )).with_root(namespace, local_name));
         }
@@ -205,7 +213,7 @@ impl DumpSemanticValidator for DesignerDumpValidator {
             .map_err(|detail| {
                 DumpValidationFailure::new(UnreadableSource, Some(owner.relative_path()), detail)
             })?;
-        validate_required_owner_raw(owner.relative_path(), kind, &raw)?;
+        let format = validate_required_owner_raw(owner.relative_path(), kind, &raw)?;
         for entry in tree.entries() {
             if !entry.is_file()
                 || !entry
@@ -219,7 +227,7 @@ impl DumpSemanticValidator for DesignerDumpValidator {
             let raw = entry.read_exact("staged XML").map_err(|detail| {
                 DumpValidationFailure::new(UnreadableSource, Some(entry.relative_path()), detail)
             })?;
-            validate_xml_raw(entry.relative_path(), &raw)?;
+            validate_xml_raw(entry.relative_path(), &raw, format)?;
         }
         Ok(())
     }
@@ -227,9 +235,9 @@ impl DumpSemanticValidator for DesignerDumpValidator {
         &self,
         tree: &DumpTreeObservation<'_>,
         kind: SourceSetKind,
-    ) -> Result<(), String> {
+    ) -> Result<Option<&'static str>, String> {
         if !tree.is_directory() {
-            return Ok(());
+            return Ok(None);
         }
         let entries = tree
             .entries()
@@ -240,14 +248,14 @@ impl DumpSemanticValidator for DesignerDumpValidator {
             .map(|entry| entry.relative_path())
             .collect::<Vec<_>>();
         if files.is_empty() {
-            return Ok(());
+            return Ok(None);
         }
         let target = tree.display_root();
         match (self.classify_inventory)(kind, &files) {
             SourceFormat::PlatformXml => {
                 let owner = entries.iter().find(|entry| entry.relative_path() == Path::new("Configuration.xml"))
                     .ok_or_else(|| format!("staged source-set owner is not a file in the captured tree snapshot: {}", target.join("Configuration.xml").display()))?;
-                owner.read_exact("staged source-set owner").and_then(|raw| validate_required_owner_raw(&owner.display_path(), kind, &raw).map_err(|error| error.to_string())).map_err(|error| format!("{error}; the existing DESIGNER target is not an exact export format {TARGET_EXPORT_FORMAT} source set and will not be migrated automatically. Explicitly migrate it with platform {TARGET_PLATFORM_LINE} and retry; formats newer than {TARGET_EXPORT_FORMAT} require future platform 8.5 support"))
+                owner.read_exact("staged source-set owner").and_then(|raw| validate_required_owner_raw(&owner.display_path(), kind, &raw).map(Some).map_err(|error| error.to_string())).map_err(|error| format!("{error}; the existing DESIGNER target is not in a writable export format (2.20, 2.21 or 2.22) and will not be migrated automatically. Explicitly re-export it with platform 8.3.27, 8.5.1 or 8.5.4 and retry"))
             }
             SourceFormat::Edt => Err(format!("physical dump target is EDT and cannot be replaced by a DESIGNER YAML claim: {}", target.display())),
             SourceFormat::Invalid => Err(format!("physical dump target has mixed/invalid DESIGNER and EDT markers: {}", target.display())),
@@ -273,12 +281,48 @@ mod style_root_tests {
     #[test]
     fn a_full_dump_accepts_the_style_of_a_configuration() {
         let path = Path::new("Styles/Main/Ext/Style.xml");
-        assert!(validate_xml_raw(path, style("2.20").as_bytes()).is_ok());
+        assert!(validate_xml_raw(path, style("2.20").as_bytes(), "2.20").is_ok());
+    }
+
+    /// rule: INV.SOURCE.WRITABLE-PROFILE
+    #[test]
+    fn a_dump_of_a_writable_format_is_validated_against_its_owner_format() {
+        use super::validate_required_owner_raw;
+        use unica_source_contract::SourceSetKind;
+        let owner = |version: &str| {
+            format!(
+                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="{version}"><Configuration><Properties/></Configuration></MetaDataObject>"#
+            )
+        };
+        let path = Path::new("Configuration.xml");
+        for version in ["2.20", "2.21", "2.22"] {
+            assert_eq!(
+                validate_required_owner_raw(
+                    path,
+                    SourceSetKind::Configuration,
+                    owner(version).as_bytes()
+                )
+                .unwrap(),
+                version
+            );
+        }
+        for version in ["2.19", "2.23", "2.21.0"] {
+            assert!(validate_required_owner_raw(
+                path,
+                SourceSetKind::Configuration,
+                owner(version).as_bytes()
+            )
+            .is_err());
+        }
+        // Every versioned root of a dump follows its owner's format.
+        let style_path = Path::new("Styles/Main/Ext/Style.xml");
+        assert!(validate_xml_raw(style_path, style("2.21").as_bytes(), "2.21").is_ok());
+        assert!(validate_xml_raw(style_path, style("2.20").as_bytes(), "2.21").is_err());
     }
 
     #[test]
     fn a_style_of_another_export_format_stays_refused() {
         let path = Path::new("Styles/Main/Ext/Style.xml");
-        assert!(validate_xml_raw(path, style("2.19").as_bytes()).is_err());
+        assert!(validate_xml_raw(path, style("2.19").as_bytes(), "2.20").is_err());
     }
 }

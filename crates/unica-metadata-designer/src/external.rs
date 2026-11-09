@@ -1,11 +1,11 @@
 //! Designer external processor/report scaffold layout and descriptor encoding.
+use crate::dialect::root_version;
 use serde_json::{Map, Value};
 use std::path::{Component, Path, PathBuf};
 use unica_metadata::identifier::is_1c_identifier;
 use unica_source_contract::discovery::ProjectDiscoveryRead;
-use unica_source_designer::format_profile::ACTIVE_FORMAT_PROFILE;
 
-const FORMAT_VERSION: &str = ACTIVE_FORMAT_PROFILE.export_format;
+const FORMAT_VERSION: &str = root_version::writable();
 
 #[derive(Debug, Clone, Copy)]
 pub enum ExternalArtifactKind {

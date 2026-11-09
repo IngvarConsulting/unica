@@ -143,12 +143,15 @@ const JOURNAL_COLUMN_PROPERTIES: &[MetaMemberPropertySpec] = &[MetaMemberPropert
 }];
 
 impl MetaMemberReadProfile {
+    /// The member profile of an `owner` read from a source set of
+    /// `source_kind`; `writable_format` is whether the codec found the
+    /// descriptor in the export format it writes (its dialect decides).
     pub fn for_source(
         source_kind: SourceSetKind,
         owner: MetadataKind,
-        format: Option<&str>,
+        writable_format: bool,
     ) -> Option<Self> {
-        if source_kind != SourceSetKind::Configuration || format != Some("2.20") {
+        if source_kind != SourceSetKind::Configuration || !writable_format {
             return None;
         }
         match owner {

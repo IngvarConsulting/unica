@@ -1111,9 +1111,7 @@ pub fn meta_info_profile_errors(
     child_objects: Option<roxmltree::Node<'_, '_>>,
 ) -> Vec<ProjectionError> {
     let mut errors = Vec::new();
-    if child_objects.is_some()
-        && !super::format_contract::meta_8_3_27_kind_declares_child_objects(kind)
-    {
+    if child_objects.is_some() && !super::format_contract::kind_declares_child_objects(kind) {
         errors.push(ProjectionError::unsupported(
             "collections",
             format!(

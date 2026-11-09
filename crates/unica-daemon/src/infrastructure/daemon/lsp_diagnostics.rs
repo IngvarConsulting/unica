@@ -16,7 +16,7 @@ use unica_diagnostics::model::{
     DiagnosticProviderRegistry, DiagnosticProviderStatus, DiagnosticReadinessState,
     DiagnosticRequest, DiagnosticResult, DiagnosticSeverity,
 };
-use unica_lsp::{LspAnalysis, LspDiagnosticGap, LspFinding, LspSeverity};
+use unica_editor_analysis::{LspAnalysis, LspDiagnosticGap, LspFinding, LspSeverity};
 use unica_work_control::cancellation::CancellationToken;
 use unica_work_control::provider_deadline::ProviderDeadline;
 
@@ -35,7 +35,7 @@ pub(super) fn own_findings(text: &str) -> Vec<LspFinding> {
             start_column: range.start_column,
             end_line: range.end_line,
             end_column: range.end_column,
-            message: unica_bsl_parser::MISPLACED_VARIABLE_MESSAGE.to_owned(),
+            message: unica_diagnostics::source_ranges::MISPLACED_VARIABLE_MESSAGE.to_owned(),
         })
         .collect()
 }

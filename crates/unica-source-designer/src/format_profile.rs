@@ -16,11 +16,14 @@ pub const ACTIVE_FORMAT_PROFILE: FormatProfile = FormatProfile {
     export_format: ACTIVE_SERIALIZATION_FORMAT,
 };
 
+/// The Designer export formats codecs write (INV.SOURCE.WRITABLE-PROFILE):
+/// those with codec dialects and a reference export, oldest first.
+pub const WRITABLE_EXPORT_FORMATS: [&str; 3] = [ACTIVE_SERIALIZATION_FORMAT, "2.21", "2.22"];
+
 /// Which platform line writes each version of the Designer export format
 /// (INV.RUNTIME.PLATFORM-LINE). A line writes exactly one version, so the
-/// line follows from the version of the dump. 2.17, 2.20, 2.21 and 2.22 are
-/// measured exports of 8.3.24, 8.3.27, 8.5.1 and 8.5.4; 2.18 and 2.19 come
-/// from the platform vendor's pairing and have no measured corpus yet.
+/// line follows from the version of the dump. Every row is a measured export
+/// of its line: 8.3.24, 8.3.25, 8.3.26, 8.3.27, 8.5.1 and 8.5.4.
 pub const EXPORT_FORMAT_PLATFORM_LINES: &[(&str, &str)] = &[
     ("2.17", "8.3.24"),
     ("2.18", "8.3.25"),
@@ -68,9 +71,8 @@ pub fn compare_platform_xml(left: &FormatIdentity, right: &FormatIdentity) -> Op
     Some(version(left)?.cmp(&version(right)?))
 }
 
-/// Export format versions with a measured reference corpus. 2.18 and 2.19
-/// have a platform line in the table but no corpus yet, so they are not known.
-const MEASURED_EXPORT_FORMATS: &[&str] = &["2.17", "2.20", "2.21", "2.22"];
+/// Export format versions with a measured reference corpus, oldest first.
+const MEASURED_EXPORT_FORMATS: &[&str] = &["2.17", "2.18", "2.19", "2.20", "2.21", "2.22"];
 
 /// The Designer export as a format family (INV.APP.FORMAT-FAMILY-EXTENSION):
 /// a tuple of one export format version, its line by the table above.
@@ -236,6 +238,92 @@ pub fn classify_root_version(raw: Option<&str>) -> Result<FormatCompatibility, F
     })
 }
 
+/// Whether a root recording `raw` is in the export format codecs write.
+pub fn is_writable_root_version(raw: Option<&str>) -> bool {
+    raw == Some(ACTIVE_FORMAT_PROFILE.export_format)
+}
+
+/// How a validation report names the version of a root.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RootVersionReport {
+    Ok(String),
+    Warn(String),
+    Error(String),
+}
+
+/// The validation report line for a root recording `raw` as written.
+pub fn root_version_report(raw: Option<&str>) -> RootVersionReport {
+    match classify_root_version(raw) {
+        Ok(FormatCompatibility::Supported { .. }) => RootVersionReport::Ok(format!(
+            "Export format: {}",
+            ACTIVE_FORMAT_PROFILE.export_format
+        )),
+        // A version with a dialect of its own is read as written.
+        Ok(_) if has_own_dialect(raw) => {
+            RootVersionReport::Ok(format!("Export format: {}", raw.unwrap_or_default()))
+        }
+        Ok(compatibility) => RootVersionReport::Warn(format_compatibility_warning(&compatibility)),
+        Err(error) => RootVersionReport::Error(error.to_string()),
+    }
+}
+
+/// Whether a root recording `raw` is read by a dialect of its own version.
+fn has_own_dialect(raw: Option<&str>) -> bool {
+    resolve_platform_xml_read(raw)
+        == unica_source_contract::format_identity::ReadResolution::Dialect
+}
+
+/// The Designer export versions with a dialect of their own: 2.20, and 2.21
+/// and 2.22, whose all_kinds corpora every codec reads (#2730).
+pub fn platform_xml_dialects() -> Vec<FormatKey> {
+    [ACTIVE_FORMAT_PROFILE.export_format, "2.21", "2.22"]
+        .into_iter()
+        .map(|version| FormatKey::new([version]))
+        .collect()
+}
+
+/// The writable Designer export version a root records as `raw`, as a
+/// static literal; `None` for any other spelling or version.
+pub fn writable_platform_xml_version(raw: Option<&str>) -> Option<&'static str> {
+    WRITABLE_EXPORT_FORMATS
+        .into_iter()
+        .find(|version| raw == Some(*version))
+}
+
+/// The writable Designer export version a platform line writes.
+pub fn writable_platform_xml_version_of_line(line: PlatformLine) -> Option<&'static str> {
+    EXPORT_FORMAT_PLATFORM_LINES
+        .iter()
+        .find(|(_, writer)| PlatformLine::parse(writer) == Some(line))
+        .and_then(|(version, _)| writable_platform_xml_version(Some(version)))
+}
+
+/// Which dialect reads a root recording `raw` (INV.SOURCE.WRITABLE-PROFILE);
+/// a root without `version` is format 1.0.
+pub fn resolve_platform_xml_read(
+    raw: Option<&str>,
+) -> unica_source_contract::format_identity::ReadResolution {
+    unica_source_contract::format_identity::resolve_read(
+        &PlatformXmlFamily,
+        &FormatKey::new([raw.unwrap_or("1.0")]),
+        &platform_xml_dialects(),
+    )
+}
+
+/// The known Designer export versions, oldest first, as a refusal lists them.
+pub fn known_platform_xml_versions() -> Vec<&'static str> {
+    MEASURED_EXPORT_FORMATS.to_vec()
+}
+
+/// `Ok` for a root in the export format codecs read, else why it is not.
+pub fn require_supported_root_version(raw: Option<&str>) -> Result<(), String> {
+    match classify_root_version(raw).map_err(|error| error.to_string())? {
+        FormatCompatibility::Supported { .. } => Ok(()),
+        _ if has_own_dialect(raw) => Ok(()),
+        compatibility => Err(format_compatibility_warning(&compatibility)),
+    }
+}
+
 /// Why a write refuses a versioned platform XML root outside the writable
 /// profile: the file, the version as written, the profile and what to do.
 pub struct WritableProfileRefusal {
@@ -320,6 +408,36 @@ mod tests {
 
     /// rule: INV.SOURCE.FORMAT-IDENTITY
     #[test]
+    fn a_root_is_writable_and_reported_by_its_version() {
+        use super::{
+            is_writable_root_version, require_supported_root_version, root_version_report,
+            RootVersionReport,
+        };
+        let writable = ACTIVE_FORMAT_PROFILE.export_format;
+        assert!(is_writable_root_version(Some(writable)));
+        assert!(!is_writable_root_version(None));
+        assert!(!is_writable_root_version(Some("2.19")));
+        assert!(!is_writable_root_version(Some("2.21")));
+        assert_eq!(
+            root_version_report(Some(writable)),
+            RootVersionReport::Ok(format!("Export format: {writable}"))
+        );
+        assert!(matches!(
+            root_version_report(Some("2.19")),
+            RootVersionReport::Warn(_)
+        ));
+        assert!(matches!(
+            root_version_report(Some("latest")),
+            RootVersionReport::Error(_)
+        ));
+        assert!(require_supported_root_version(Some(writable)).is_ok());
+        // 2.21 has a dialect of its own and is read without a finding; a
+        // newer version without one is refused.
+        assert!(require_supported_root_version(Some("2.21")).is_ok());
+        assert!(require_supported_root_version(Some("2.23")).is_err());
+    }
+
+    #[test]
     fn a_designer_export_format_is_its_version_and_the_line_follows_from_it() {
         // The family's name is the wire name of `sourceFormat`.
         assert_eq!(PLATFORM_XML.name(), "platform_xml");
@@ -371,6 +489,28 @@ mod tests {
         assert!(!build_in_platform_line(&[8, 3, 26, 1656], "8.3.27"));
         assert!(!build_in_platform_line(&[8, 5, 4, 1878], "8.5.1"));
         assert!(!build_in_platform_line(&[8, 3, 27, 2342], "8.3"));
+    }
+
+    /// rule: INV.SOURCE.WRITABLE-PROFILE
+    #[test]
+    fn a_designer_export_is_read_by_the_nearest_dialect_of_its_family() {
+        use super::PlatformXmlFamily;
+        use unica_source_contract::format_identity::{resolve_read, ReadResolution};
+        let dialects = [FormatKey::new(["2.20"])];
+        let resolve =
+            |version: &str| resolve_read(&PlatformXmlFamily, &FormatKey::new([version]), &dialects);
+        let unverified = ReadResolution::Unverified {
+            read_as: FormatKey::new(["2.20"]),
+        };
+        assert_eq!(resolve("2.20"), ReadResolution::Dialect);
+        // Known without a dialect of its own, and newer than every known one.
+        for version in ["2.17", "2.18", "2.19", "2.21", "2.22", "2.23", "3.0"] {
+            assert_eq!(resolve(version), unverified, "{version}");
+        }
+        // Between known versions, older than the oldest, or not a version.
+        for version in ["2.17.5", "2.20.1", "2.16", "1.0", "latest"] {
+            assert_eq!(resolve(version), ReadResolution::Unsupported, "{version}");
+        }
     }
 
     #[test]

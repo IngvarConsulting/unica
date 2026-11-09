@@ -2555,6 +2555,7 @@ dependencies = [
  "unica-bsl",
  "unica-bsl-parser",
  "unica-code-model",
+ "unica-configuration",
  "unica-navigation",
  "unica-source-contract",
  "unica-work-control",
@@ -2617,11 +2618,11 @@ dependencies = [
  "unica-documentation",
  "unica-documentation-sources",
  "unica-domain",
+ "unica-editor-analysis",
  "unica-execution",
  "unica-execution-contract",
  "unica-forms",
  "unica-forms-designer",
- "unica-lsp",
  "unica-metadata",
  "unica-metadata-designer",
  "unica-navigation",
@@ -2658,8 +2659,6 @@ dependencies = [
  "serde",
  "serde_json",
  "toml",
- "unica-code-intelligence",
- "unica-diagnostics",
 ]
 
 [[package]]
@@ -2673,7 +2672,6 @@ dependencies = [
  "quote",
  "regex",
  "regex-syntax",
- "rmcp",
  "roxmltree",
  "serde",
  "serde_json",
@@ -2682,9 +2680,6 @@ dependencies = [
  "syn 2.0.118",
  "tempfile",
  "tokio",
- "unica-adapter-bsl-analyzer",
- "unica-adapter-lexical",
- "unica-adapter-v8-runner",
  "unica-address",
  "unica-analysis-services",
  "unica-application",
@@ -2694,15 +2689,17 @@ dependencies = [
  "unica-bsl-parser",
  "unica-code-intelligence",
  "unica-coder",
+ "unica-configuration",
  "unica-daemon-protocol",
  "unica-diagnostics",
  "unica-documentation",
- "unica-documentation-sources",
+ "unica-editor-analysis",
  "unica-execution",
  "unica-execution-contract",
  "unica-forms",
  "unica-lsp",
  "unica-lsp-contract",
+ "unica-mcp",
  "unica-metadata",
  "unica-metadata-designer",
  "unica-navigation",
@@ -2852,6 +2849,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "unica-editor-analysis"
+version = "0.15.0-rc.1"
+dependencies = [
+ "percent-encoding",
+ "sha2",
+ "tempfile",
+ "unica-address",
+ "unica-bsl",
+ "unica-code-model",
+ "unica-execution-contract",
+ "unica-lsp-contract",
+ "unica-source-contract",
+ "unica-source-designer",
+ "unica-work-control",
+ "unica-workspace",
+ "url",
+]
+
+[[package]]
 name = "unica-execution"
 version = "0.15.0-rc.1"
 dependencies = [
@@ -2936,19 +2952,9 @@ dependencies = [
 name = "unica-lsp"
 version = "0.15.0-rc.1"
 dependencies = [
- "percent-encoding",
- "sha2",
- "tempfile",
- "unica-address",
- "unica-bsl",
- "unica-code-model",
- "unica-execution-contract",
+ "serde_json",
+ "unica-daemon-protocol",
  "unica-lsp-contract",
- "unica-source-contract",
- "unica-source-designer",
- "unica-work-control",
- "unica-workspace",
- "url",
 ]
 
 [[package]]
@@ -2959,6 +2965,30 @@ dependencies = [
  "serde_json",
  "unica-work-control",
  "uuid",
+]
+
+[[package]]
+name = "unica-mcp"
+version = "0.15.0-rc.1"
+dependencies = [
+ "chrono",
+ "jsonschema",
+ "rmcp",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "unica-application",
+ "unica-bootstrap",
+ "unica-code-intelligence",
+ "unica-daemon-protocol",
+ "unica-diagnostics",
+ "unica-execution",
+ "unica-execution-contract",
+ "unica-metadata",
+ "unica-refusal",
+ "unica-work-control",
+ "unica-workspace",
 ]
 
 [[package]]
@@ -3096,6 +3126,8 @@ dependencies = [
  "unica-daemon",
  "unica-daemon-protocol",
  "unica-execution",
+ "unica-lsp",
+ "unica-mcp",
  "unica-metadata-designer",
  "unica-process",
  "unica-source-designer",
@@ -3173,6 +3205,7 @@ version = "0.15.0-rc.1"
 dependencies = [
  "roxmltree",
  "serde",
+ "serde_json",
  "serde_yaml",
  "sha2",
  "unica-address",

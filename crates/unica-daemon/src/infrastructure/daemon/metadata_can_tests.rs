@@ -1180,6 +1180,49 @@ fn canonical_unmodelled_type_is_a_localized_warning_in_check_and_view() {
     );
 }
 
+/// `check` сообщает значение, которое режим совместимости набора запрещает:
+/// строка фиксированной длины больше 100 символов вне режима 8.1 — ошибка у
+/// типа. Набор в режиме 8.1 только для чтения, но проверяется.
+/// rule: INV.SOURCE.PROFILE-CAPABILITIES
+/// rule: INV.SOURCE.WRITABLE-PROFILE
+#[test]
+fn canonical_check_reports_a_value_the_mode_of_the_set_forbids() {
+    let runtime = runtime();
+    let fixture = catalog_and_constant(&runtime);
+    let configuration = fixture.source.join("Configuration.xml");
+    rewrite(
+        &configuration,
+        "<Name>Store</Name>",
+        "<Name>Store</Name><CompatibilityMode>Version8_3_24</CompatibilityMode>",
+    );
+    let catalog = fixture.source.join("Catalogs/Products.xml");
+    rewrite(
+        &catalog,
+        "<v8:Length>10</v8:Length>",
+        "<v8:Length>150</v8:Length>",
+    );
+    rewrite(
+        &catalog,
+        "<v8:AllowedLength>Variable</v8:AllowedLength>",
+        "<v8:AllowedLength>Fixed</v8:AllowedLength>",
+    );
+
+    let (status, diagnostics) = check(&runtime, &fixture, "main:Catalog.Products");
+    assert_eq!(status, "failed", "{diagnostics:?}");
+    let error = finding(&diagnostics, "validation_failed", "type");
+    assert_eq!(error["severity"], "error");
+    let message = error["message"].as_str().unwrap();
+    assert!(
+        message.contains("150") && message.contains("Version8_3_24"),
+        "{message}"
+    );
+
+    // Mode 8.1 allows it; the set is read-only there, and check still runs.
+    rewrite(&configuration, "Version8_3_24", "Version8_1");
+    let (status, diagnostics) = check(&runtime, &fixture, "main:Catalog.Products");
+    assert_eq!(status, "passed", "{diagnostics:?}");
+}
+
 /// INV.SOURCE.OBSERVED-TYPE-CAPABILITY: повреждённый квалификатор остаётся
 /// ошибкой, а не превращается в предупреждение о неподдержанном типе.
 /// rule: INV.SOURCE.OBSERVED-TYPE-CAPABILITY
@@ -1798,7 +1841,7 @@ fn canonical_check_accepts_a_binary_template_without_data() {
     // Двоичный макет планировщик не создаёт: описание — из выгрузки платформы.
     let templates = fixture.source.join("Catalogs/Products/Templates");
     let descriptor = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(
-        "../../tests/fixtures/platform_8_3_27/template-new-xml/native-binary-descriptor.xml",
+        "../../tests/fixtures/formats/platform_xml/2.20/template-new-xml/native-binary-descriptor.xml",
     ))
     .unwrap()
     .replace("CorpusTemplate", "Empty")
@@ -1883,7 +1926,7 @@ fn canonical_check_accepts_a_common_binary_template_without_data() {
     let runtime = runtime();
     let fixture = catalog_and_constant(&runtime);
     let descriptor = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(
-        "../../tests/fixtures/platform_8_3_27/template-new-xml/native-binary-descriptor.xml",
+        "../../tests/fixtures/formats/platform_xml/2.20/template-new-xml/native-binary-descriptor.xml",
     ))
     .unwrap()
     .replace("CorpusTemplate", "Empty")
@@ -1906,6 +1949,64 @@ fn canonical_check_accepts_a_common_binary_template_without_data() {
     );
     let viewed = view(&runtime, &fixture, "main:CommonTemplate.Empty");
     assert_eq!(viewed["kind"], "CommonTemplate", "{viewed}");
+}
+
+/// #2015: a short enum can be corrected immediately; a long enum has a
+/// bounded preview and an actual readable continuation to the complete set.
+#[test]
+fn property_enum_refusals_show_bounded_domains_and_open_their_contract() {
+    let fixture = Fixture::new("workspace");
+    let runtime = runtime();
+    let before = unica_workspace::test_support::tree_snapshot(&fixture.workspace);
+    for property in ["DefaultRunMode", "CompatibilityMode"] {
+        let refused = call(
+            &runtime,
+            &fixture,
+            ToolIdentity::Apply,
+            json!({"at":"main:Configuration","ops":[{"op":"props.set","args":{"values":{property:"wrong"}}}]}),
+        );
+        assert!(!refused.ok, "{refused:?}");
+        assert_eq!(refused.diagnostics[0]["code"], "bad_value");
+        assert_eq!(
+            refused.at.as_deref(),
+            Some(format!("ops[0].args.values.{property}").as_str())
+        );
+        let message = refused.diagnostics[0]["message"].as_str().unwrap();
+        if property == "DefaultRunMode" {
+            for value in ["ManagedApplication", "OrdinaryApplication", "Auto"] {
+                assert!(message.contains(&format!("\"{value}\"")), "{message}");
+            }
+            assert!(!message.contains("list shortened"));
+        } else {
+            assert!(message.contains("list shortened"), "{message}");
+            assert!(message.len() < 400, "{message}");
+            assert!(!message.contains("Version8_3_27"), "{message}");
+        }
+        assert_eq!(refused.next[0]["tool"], "unica.view");
+        assert_eq!(
+            refused.next[0]["args"]["at"],
+            "main:Configuration.Can.props.set"
+        );
+        let opened = call(
+            &runtime,
+            &fixture,
+            ToolIdentity::View,
+            refused.next[0]["args"].clone(),
+        );
+        assert!(opened.ok, "{opened:?}");
+        let values = &opened.data.unwrap()["props"]["contract"]["argsSchema"]["properties"]
+            ["values"]["properties"][property]["enum"];
+        assert!(values.as_array().unwrap().iter().any(|v| v
+            == if property == "DefaultRunMode" {
+                "ManagedApplication"
+            } else {
+                "Version8_3_27"
+            }));
+    }
+    assert_eq!(
+        unica_workspace::test_support::tree_snapshot(&fixture.workspace),
+        before
+    );
 }
 
 /// Собственные факты Unica в `props` корня и плоские поля составных

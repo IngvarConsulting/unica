@@ -2817,7 +2817,7 @@ fn preview_effects_follow_operation_order() {
     }
     copy_tree(
         &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../tests/fixtures/platform_8_3_27/empty_configuration"),
+            .join("../../tests/fixtures/formats/platform_xml/2.20/empty_configuration"),
         &workspace,
     );
     let cwd = unica_workspace::test_support::ProcessCwdGuard::enter(&workspace).unwrap();

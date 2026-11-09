@@ -117,6 +117,45 @@ pub fn bsl_symbols(
 ) -> unica_adapter_bsl_analyzer::symbols::BslAnalyzerSymbols<'static> {
     unica_adapter_bsl_analyzer::symbols::BslAnalyzerSymbols::new(&BSL_CLIENT, context)
 }
+
+/// Members of the platform's global context from the help of the
+/// installation at `root`, for completion in the editor.
+pub fn platform_members(
+    root: &Path,
+) -> Result<Vec<unica_code_intelligence::completion::PlatformMember>, String> {
+    use unica_documentation_sources::platform_help::provider::{
+        global_context_members, GlobalContextMemberKind,
+    };
+    Ok(global_context_members(root)?
+        .into_iter()
+        .map(
+            |member| unica_code_intelligence::completion::PlatformMember {
+                method: member.kind == GlobalContextMemberKind::Method,
+                name: member.name_ru,
+                parameters: member.parameters,
+            },
+        )
+        .collect())
+}
+
+/// The host of long analysis work: one shared piece of work per engine,
+/// target and capability set, owned by the daemon for its lifetime.
+pub mod provider_host {
+    pub use unica_analysis_services::provider_host::{
+        LongWorkFailure, ProviderHostKey, ProviderHostOwner,
+    };
+}
+
+/// The engine of candidate lines for the literal text search.
+pub fn candidate_lines() -> &'static dyn unica_code_intelligence::candidate_lines::CandidateLines {
+    static LINES: std::sync::OnceLock<unica_adapter_lexical::lines::GitCandidateLines> =
+        std::sync::OnceLock::new();
+    LINES.get_or_init(|| {
+        unica_adapter_lexical::lines::GitCandidateLines::new(
+            unica_process::runner::system_process_runner(),
+        )
+    })
+}
 pub(crate) fn lexical_provider() -> unica_adapter_lexical::GitGrepProvider<'static> {
     unica_adapter_lexical::GitGrepProvider::new(source_bindings())
 }
@@ -137,4 +176,14 @@ pub fn run_workspace_service(args: &[String]) -> Result<(), String> {
         ),
         service_environment(),
     )
+}
+
+/// Diagnostics providers behind the `diagnostics` port that record or fail
+/// the analysis deadline.
+#[cfg(any(test, feature = "test-support"))]
+pub mod diagnostics_probe {
+    pub use unica_adapter_bsl_analyzer::adapter::AnalyzerRunFailureKind;
+    pub use unica_adapter_bsl_analyzer::diagnostics::analyze_timeout_probe::{
+        failing_provider, recording_provider,
+    };
 }

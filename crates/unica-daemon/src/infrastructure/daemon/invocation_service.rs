@@ -1,6 +1,8 @@
 use super::super::protocol::InvocationRequest;
 use crate::domain::apply::ApplyRequest;
-use unica_analysis_services::provider_host::{LongWorkFailure, ProviderHostKey, ProviderHostOwner};
+use crate::infrastructure::analysis_composition::provider_host::{
+    LongWorkFailure, ProviderHostKey, ProviderHostOwner,
+};
 use unica_execution::invocation::InvocationResponseDeadline;
 use unica_execution::receipt_runtime::ports::ExecutionClass;
 use unica_source_contract::{ProjectSourceSet, SourceFormat, SourceProfile, SourceSetKind};
@@ -9,7 +11,7 @@ use unica_work_control::shared_work::{SharedWorkLease, SharedWorkProducer};
 use unica_execution::runtime_jobs::RuntimeResourceOwner;
 use unica_source_contract::read::SourceDirectory;
 type RuntimeJobService = unica_execution::runtime_jobs::RuntimeJobService<
-    unica_adapter_v8_runner::request::RuntimeJobRequest,
+    unica_coder::infrastructure::daemon_adapters::runtime::RuntimeJobRequest,
 >;
 use crate::infrastructure::source_workspace::{WorkspaceActor, WorkspaceActorRegistry};
 use crate::infrastructure::v13_large_configuration::RegistrationCache;
@@ -1749,7 +1751,7 @@ mod registration_cache_tests {
         std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
         std::fs::copy(
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(
-                "../../tests/fixtures/platform_8_3_27/support-edit-bin-only/src/Ext/ParentConfigurations.bin",
+                "../../tests/fixtures/formats/platform_xml/2.20/support-edit-bin-only/src/Ext/ParentConfigurations.bin",
             ),
             &marker,
         )

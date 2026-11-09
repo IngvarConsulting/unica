@@ -570,14 +570,14 @@ fn typed_info_preserves_platform_specific_child_collections() {
         (
             include_str!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
-                "/../../tests/fixtures/platform_8_3_27/meta_info/edge/chart-of-accounts-child-kinds.xml"
+                "/../../tests/fixtures/formats/platform_xml/2.20/meta_info/edge/chart-of-accounts-child-kinds.xml"
             )),
             vec![("AccountingFlag", "Currency"), ("ExtDimensionAccountingFlag", "Amount")],
         ),
         (
             include_str!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
-                "/../../tests/fixtures/platform_8_3_27/meta_info/edge/task-addressing.xml"
+                "/../../tests/fixtures/formats/platform_xml/2.20/meta_info/edge/task-addressing.xml"
             )),
             vec![("AddressingAttribute", "Performer")],
         ),
@@ -633,7 +633,7 @@ fn typed_info_does_not_publish_a_collection_under_the_wrong_owner_kind() {
 fn typed_info_preserves_non_empty_data_lock_fields() {
     let xml = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../tests/fixtures/platform_8_3_27/meta_info/edge/task-addressing.xml"
+        "/../../tests/fixtures/formats/platform_xml/2.20/meta_info/edge/task-addressing.xml"
     ));
     let document = roxmltree::Document::parse(xml).unwrap();
     let object = document.root_element().first_element_child().unwrap();
@@ -757,7 +757,7 @@ fn registrar_scan_checkpoint_distinguishes_deadline_and_cancellation() {
 fn platform_incomplete_borrowed_metadata_keeps_local_observations() {
     use unica_metadata::MetaInfoPropertyValue;
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tests/fixtures/platform_8_3_27/incomplete_borrowed");
+        .join("../../tests/fixtures/formats/platform_xml/2.20/incomplete_borrowed");
     for (kind, file, name) in [
         (MetadataKind::Catalog, "catalog", "CorpusCatalog"),
         (MetadataKind::Document, "document", "CorpusDocument"),
@@ -817,7 +817,7 @@ fn platform_incomplete_borrowed_metadata_keeps_local_observations() {
 /// rule: INV.SOURCE.INCOMPLETE-METADATA-READ
 #[test]
 fn missing_write_mode_does_not_claim_complete_registrar_evidence() {
-    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/platform_8_3_27/incomplete_borrowed/extension-information-register.xml");
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/formats/platform_xml/2.20/incomplete_borrowed/extension-information-register.xml");
     let raw = std::fs::read_to_string(fixture).unwrap();
     let root = tempfile::tempdir().unwrap();
     // The scan refuses a root reached through a link (macOS `/var`).

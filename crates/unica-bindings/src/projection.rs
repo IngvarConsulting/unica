@@ -1,9 +1,9 @@
 use unica_bsl::event_text::RequiredEventDirective;
 use unica_bsl::projection::{
-    BodyLine, CommonModuleProperties, CompilationFacts, CompilationProjection, EventProjection,
-    EventState, ExtensionKind, ExtensionProjection, HandleProjection, InterfaceKind,
-    InterfaceProjection, MethodArea, MethodKind, MethodParameter, MethodProjection, ModuleIdentity,
-    ModuleProjectionSet, ModuleProperties, RegionProjection,
+    BodyLine, CommonModuleProperties, CompilationFacts, CompilationProjection, EventHandlerBinding,
+    EventProjection, EventState, ExtensionKind, ExtensionProjection, HandleProjection,
+    InterfaceKind, InterfaceProjection, MethodArea, MethodKind, MethodParameter, MethodProjection,
+    ModuleIdentity, ModuleProjectionSet, ModuleProperties, RegionProjection,
 };
 use unica_metadata::event::BindingFact;
 
@@ -439,7 +439,39 @@ fn project_module_events(
                 return available_module_event(at, spec, write);
             };
             let duplicate = matching.len() > 1;
-            let method = &mut methods[method_index];
+            let event_at = format!("{at}.Event.{}", spec.event_id);
+            let handlers = if duplicate {
+                let mut counts = HashMap::<_, usize>::new();
+                for &index in &matching {
+                    *counts
+                        .entry(methods[index].name.to_lowercase())
+                        .or_default() += 1;
+                }
+                matching
+                    .iter()
+                    .map(|&index| {
+                        let method = &methods[index];
+                        EventHandlerBinding {
+                            handler: method.name.clone(),
+                            call_type: None,
+                            implementation_at: (counts[&method.name.to_lowercase()] == 1)
+                                .then(|| method.at.clone()),
+                        }
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            for &index in &matching {
+                methods[index].handles.push(HandleProjection {
+                    owner: "module".to_string(),
+                    event: spec.event_id.to_string(),
+                    at: event_at.clone(),
+                    binding: BindingFact::Platform,
+                    call_type: None,
+                });
+            }
+            let method = &methods[method_index];
             let compatible = method_matches_event(
                 method.method_kind,
                 &method.signature,
@@ -448,14 +480,6 @@ fn project_module_events(
                 capability,
                 spec,
             );
-            let event_at = format!("{at}.Event.{}", spec.event_id);
-            method.handles.push(HandleProjection {
-                owner: "module".to_string(),
-                event: spec.event_id.to_string(),
-                at: event_at.clone(),
-                binding: BindingFact::Platform,
-                call_type: None,
-            });
             EventProjection {
                 at: event_at,
                 event_id: spec.event_id.to_string(),
@@ -464,14 +488,26 @@ fn project_module_events(
                 } else {
                     EventState::Invalid
                 },
-                signature: spec.signature_ru.clone(),
+                signature: if duplicate {
+                    String::new()
+                } else {
+                    spec.signature_ru.clone()
+                },
                 contexts: spec.contexts.clone(),
                 binding: spec.binding,
-                handler: spec.handler_ru.clone(),
-                handler_en: spec.handler_en.clone(),
-                implementation_at: Some(method.at.clone()),
+                handler: if duplicate {
+                    String::new()
+                } else {
+                    spec.handler_ru.clone()
+                },
+                handler_en: if duplicate {
+                    String::new()
+                } else {
+                    spec.handler_en.clone()
+                },
+                implementation_at: (!duplicate).then(|| method.at.clone()),
                 call_type: None,
-                handlers: Vec::new(),
+                handlers,
                 can: Vec::new(),
             }
         })

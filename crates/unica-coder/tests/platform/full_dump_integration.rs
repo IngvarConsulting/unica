@@ -112,6 +112,7 @@ mod tests {
             _effective_config: &serde_yaml::Value,
             _config_dir: &Path,
             _utility: PlatformUtility,
+            _line: unica_source_contract::format_identity::PlatformLine,
             _runner: &dyn ProcessRunner,
             _cancellation: &CancellationToken,
         ) -> Result<VerifiedPlatform, String> {
@@ -131,6 +132,7 @@ mod tests {
             _effective_config: &serde_yaml::Value,
             _config_dir: &Path,
             _utility: PlatformUtility,
+            _line: unica_source_contract::format_identity::PlatformLine,
             _runner: &dyn ProcessRunner,
             _cancellation: &CancellationToken,
         ) -> Result<VerifiedPlatform, String> {
@@ -1720,6 +1722,7 @@ mod tests {
                 &wrong_config,
                 &root,
                 PlatformUtility::Designer,
+                unica_source_contract::format_identity::PlatformLine::new(8, 3, 27),
                 unica_process::runner::system_process_runner(),
                 &CancellationToken::new(),
             )
@@ -1741,6 +1744,7 @@ mod tests {
                 &exact_config,
                 &root,
                 PlatformUtility::Designer,
+                unica_source_contract::format_identity::PlatformLine::new(8, 3, 27),
                 unica_process::runner::system_process_runner(),
                 &CancellationToken::new(),
             )
@@ -1830,6 +1834,7 @@ mod tests {
                 &config,
                 &root,
                 PlatformUtility::Designer,
+                unica_source_contract::format_identity::PlatformLine::new(8, 3, 27),
                 unica_process::runner::system_process_runner(),
                 &CancellationToken::new(),
             )
@@ -3656,7 +3661,7 @@ mod tests {
         ),
         (
             "ExchangePlans/Обмен/Ext/Content.xml",
-            include_bytes!("../../../../tests/fixtures/platform_8_3_27/exchange_plan/Content.xml"),
+            include_bytes!("../../../../tests/fixtures/formats/platform_xml/2.20/exchange_plan/Content.xml"),
             StagedRootVersionPolicy::ExactRootVersion,
         ),
         (
@@ -3667,21 +3672,21 @@ mod tests {
         (
             "CommonPictures/Логотип/Ext/Picture.xml",
             include_bytes!(
-                "../../../../tests/fixtures/platform_8_3_27/staged_dump_roots/Picture.xml"
+                "../../../../tests/fixtures/formats/platform_xml/2.20/staged_dump_roots/Picture.xml"
             ),
             StagedRootVersionPolicy::ExactRootVersion,
         ),
         (
             "ScheduledJobs/ОбновлениеКурсов/Ext/Schedule.xml",
             include_bytes!(
-                "../../../../tests/fixtures/platform_8_3_27/staged_dump_roots/Schedule.xml"
+                "../../../../tests/fixtures/formats/platform_xml/2.20/staged_dump_roots/Schedule.xml"
             ),
             StagedRootVersionPolicy::ExactRootVersion,
         ),
         (
             "Catalogs/Товары/Ext/Predefined.xml",
             include_bytes!(
-                "../../../../tests/fixtures/platform_8_3_27/staged_dump_roots/Predefined.xml"
+                "../../../../tests/fixtures/formats/platform_xml/2.20/staged_dump_roots/Predefined.xml"
             ),
             StagedRootVersionPolicy::ExactRootVersion,
         ),
@@ -3698,7 +3703,7 @@ mod tests {
         (
             "ConfigDumpInfo.xml",
             include_bytes!(
-                "../../../../tests/fixtures/platform_8_3_27/staged_dump_roots/ConfigDumpInfo.xml"
+                "../../../../tests/fixtures/formats/platform_xml/2.20/staged_dump_roots/ConfigDumpInfo.xml"
             ),
             StagedRootVersionPolicy::ExactRootVersion,
         ),
@@ -3720,19 +3725,19 @@ mod tests {
         (
             "CommonTemplates/ОформлениеОтчетов/Ext/Template.xml",
             include_bytes!(
-                "../../../../tests/fixtures/platform_8_3_27/staged_dump_roots/Template.xml"
+                "../../../../tests/fixtures/formats/platform_xml/2.20/staged_dump_roots/Template.xml"
             ),
             StagedRootVersionPolicy::Versionless,
         ),
         (
             "CommonTemplates/ПечатнаяФорма/Ext/Template.xml",
-            include_bytes!("../../../../tests/fixtures/platform_8_3_27/mxl/Template.xml"),
+            include_bytes!("../../../../tests/fixtures/formats/platform_xml/2.20/mxl/Template.xml"),
             StagedRootVersionPolicy::Versionless,
         ),
         (
             "WSReferences/СлужбаОбмена/Ext/WSDefinition.xml",
             include_bytes!(
-                "../../../../tests/fixtures/platform_8_3_27/staged_dump_roots/WSDefinition.xml"
+                "../../../../tests/fixtures/formats/platform_xml/2.20/staged_dump_roots/WSDefinition.xml"
             ),
             StagedRootVersionPolicy::Versionless,
         ),
