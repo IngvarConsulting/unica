@@ -26,6 +26,9 @@ EXPORTS = (
     Path("empty_extension") / "ext",
 )
 ROOT_VERSION = re.compile(rb"<MetaDataObject\b[^>]*?\sversion=\"([^\"]*)\"", re.S)
+# Версии, для которых снята выгрузка all_kinds: по одному объекту каждого вида.
+ALL_KINDS_FORMATS = ("2.20", "2.21", "2.22")
+FIRST_ELEMENT_VERSION = re.compile(rb"\A(?:\xef\xbb\xbf)?<\?xml[^>]*\?>\s*<[\w:]+\b[^>]*?\sversion=\"([^\"]*)\"", re.S)
 MEASURED = re.compile(r"const\s+MEASURED_EXPORT_FORMATS\s*:[^=]*=\s*&?\[(.*?)\];", re.S)
 
 
@@ -62,6 +65,25 @@ class PlatformCorpusTests(unittest.TestCase):
                             # Не объект метаданных, например интерфейс клиента.
                             continue
                         self.assertEqual(match.group(1).decode(), fmt, path)
+
+
+class AllKindsCorpusTests(unittest.TestCase):
+    def test_all_kinds_export_names_its_format_everywhere(self) -> None:
+        # Корень объекта и подчинённый файл, который несёт версию (форма,
+        # права, состав плана обмена, предопределённые), называют версию
+        # каталога. Файлы без версии в корне (макеты, WSDL) не проверяются.
+        for fmt in ALL_KINDS_FORMATS:
+            root = CORPUS_ROOT / fmt / "all_kinds" / "src"
+            with self.subTest(format=fmt):
+                self.assertTrue((root / "Configuration.xml").is_file(), f"нет выгрузки {root}")
+                checked = 0
+                for path in sorted(root.rglob("*.xml")):
+                    match = FIRST_ELEMENT_VERSION.search(path.read_bytes())
+                    if match is None:
+                        continue
+                    checked += 1
+                    self.assertEqual(match.group(1).decode(), fmt, path)
+                self.assertGreater(checked, 40, root)
 
 
 class PlatformCorpusDiffTests(unittest.TestCase):
