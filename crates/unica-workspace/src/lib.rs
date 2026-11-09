@@ -20,6 +20,7 @@ pub mod policy_evidence;
 mod retained_directory;
 pub mod selection_evidence;
 pub mod single_file_publisher;
+pub mod source_profile;
 pub mod state;
 pub mod state_scope;
 

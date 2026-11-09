@@ -23,50 +23,7 @@ use unica_workspace::actor::{
 };
 use unica_workspace::selection_evidence::ResolvedProjectSourceAdmission;
 
-// resource-limit: daemon.admission-root-descriptor-bytes
-// class: format
-// unit: bytes
-// scope: file
-// value: 67108864
-// resource: Размер корня набора Configuration.xml, читаемого при допуске, чтобы выбрать профиль по версии корня.
-// status: unproven
-// origin: #2730
-// problem: неизвестно
-// on-reach: набор допускается с профилем 2.20; чтение сообщает о версии корня само
-const ROOT_DESCRIPTOR_MAX_BYTES: usize = 64 * 1024 * 1024;
-const BYTE_ORDER_MARK: char = '\u{feff}';
-
-/// Профиль набора XML-выгрузки по версии его корня `Configuration.xml`:
-/// 2.20 или выпуск со своими диалектами (2.21, 2.22). Набор, чей корень не
-/// прочитан или записан в другой версии, получает профиль 2.20: чтение
-/// сообщает о версии само, а правку отклоняет охрана формата.
-fn platform_xml_source_profile(kind: SourceSetKind, root: &Path) -> SourceProfile {
-    let fallback = SourceProfile::platform_xml_8_3_27_format_2_20();
-    if !matches!(
-        kind,
-        SourceSetKind::Configuration | SourceSetKind::Extension
-    ) {
-        return fallback;
-    }
-    unica_workspace::read::open_source_directory(root)
-        .and_then(|directory| {
-            directory.read_relative_regular_bounded(
-                Path::new("Configuration.xml"),
-                ROOT_DESCRIPTOR_MAX_BYTES,
-            )
-        })
-        .ok()
-        .and_then(|raw| String::from_utf8(raw).ok())
-        .and_then(|source| root_export_format(&source))
-        .and_then(|version| SourceProfile::platform_xml_for_export_format(&version))
-        .unwrap_or(fallback)
-}
-
-fn root_export_format(source: &str) -> Option<String> {
-    let source = source.trim_start_matches(BYTE_ORDER_MARK);
-    let document = roxmltree::Document::parse(source).ok()?;
-    unica_source_designer::roots::root_version_literal(source, document.root_element())
-}
+use unica_workspace::source_profile::platform_xml_source_profile;
 
 /// Набор, допущенный к актору: что объявлено и какой корень удержан при обходе.
 #[derive(Clone)]
