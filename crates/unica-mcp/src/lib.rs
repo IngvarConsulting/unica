@@ -7,17 +7,25 @@
 //! (ADR-0002) and keeps the tool contract data-driven from operation
 //! descriptors (ADR-0001) instead of SDK macros.
 
-use super::canonical_cancellation::CanonicalCancellation;
-use super::daemon_router::{
+mod canonical_cancellation;
+mod catalog;
+mod daemon_router;
+mod in_flight;
+mod surface;
+mod task_projection;
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
+mod tool_result;
+mod transport;
+
+use crate::canonical_cancellation::CanonicalCancellation;
+use crate::daemon_router::{
     canonical_daemon_router, CanonicalCallOutcome, CanonicalDaemonRouter,
     FrontendInvocationDeadline, TOOL_EXECUTION_ERROR,
 };
-#[cfg(test)]
-use crate::interfaces::daemon_router::daemon_wait_cutoff;
 mod manual_calls;
 mod receive_pump;
-#[cfg(test)]
-use super::daemon_router::{CanonicalCallHandler, CanonicalTaskHandler, CanonicalTaskWaitHandler};
+mod server;
 use crate::application::tool_contracts::{SurfaceRelease, V13TaskProfile};
 use crate::application::{
     code_search_output_schema, input_schema_for_tool, metadata_argument_failure_result,
@@ -25,6 +33,10 @@ use crate::application::{
     strip_schema_descriptions, CodeIntelligenceOperation, OperationResult, ToolHandler, ToolSpec,
     UnicaApplication,
 };
+#[cfg(any(test, feature = "test-support"))]
+use crate::daemon_router::{CanonicalCallHandler, CanonicalTaskHandler, CanonicalTaskWaitHandler};
+use catalog::tool_definitions;
+use in_flight::{drain_stdio_frontend, InFlightGuard, InFlightRegistry};
 use manual_calls::ManualCalls;
 use rmcp::model::{
     CacheScope, CallToolRequestParams, CallToolResponse, CallToolResult, CancelTaskParams,
@@ -40,15 +52,23 @@ use rmcp::service::{NotificationContext, RequestContext, ServerInitializeError};
 use rmcp::transport::Transport;
 use rmcp::{RoleServer, ServerHandler, ServiceExt};
 use serde_json::{Map, Value};
+use server::UnicaServer;
 use std::collections::HashSet;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
+use surface::SurfaceToolRouter;
+#[cfg(any(test, feature = "test-support"))]
+use surface::ToolCallHandler;
+#[cfg(feature = "test-support")]
+use tool_result::call_tool_result_observed;
+use transport::{DiscoveryProbeTransport, ObservedServer};
+use unica_application::application;
 use unica_execution::receipt_ledger::V5ToolIdentity;
 use unica_refusal::RefusalDetail;
 use unica_work_control::cancellation::CancellationToken;
 use unica_work_control::progress::{NoopProgressSink, ProgressEvent, ProgressSink};
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use unica_daemon_protocol::client_v5::V5DaemonProcessOwner;
 use unica_daemon_protocol::client_v5::{
     TaskObservation, TaskObservationStage, TaskObservationTimer, V5DaemonClient,
@@ -57,17 +77,6 @@ use unica_daemon_protocol::client_v5::{
 use unica_daemon_protocol::protocol_v5::V5DaemonErrorCode;
 use unica_execution::receipt_runtime::response::V5DaemonTaskSnapshot;
 
-// resource-limit: mcp.eof-cancellation-grace
-// class: deadline
-// unit: ms
-// scope: process
-// value: 2000
-// resource: Срок завершения отменённых вызовов и рабочих потоков поставщиков после закрытия stdio хостом.
-// status: unproven
-// origin: коммит 5f6649325 (fix: drain accepted mcp calls on eof)
-// problem: неизвестно
-// on-reach: frontend пишет «unica mcp shutdown grace expired while tool calls or provider workers were cleaning up» и останавливает рантайм
-const EOF_CANCELLATION_GRACE: Duration = Duration::from_secs(2);
 // resource-limit: mcp.runtime-shutdown-grace
 // class: deadline
 // unit: ms
@@ -79,24 +88,6 @@ const EOF_CANCELLATION_GRACE: Duration = Duration::from_secs(2);
 // problem: неизвестно
 // on-reach: незавершённые задачи рантайма бросаются при выходе
 const RUNTIME_SHUTDOWN_GRACE: Duration = Duration::from_millis(250);
-
-/// Executes one tool call synchronously without leaking SDK types into the application.
-/// Injectable so transport tests can substitute slow or failing tools.
-type ToolCallHandler = dyn Fn(
-        &str,
-        &Map<String, Value>,
-        CancellationToken,
-        Arc<dyn ProgressSink>,
-    ) -> Result<OperationResult, (i32, String)>
-    + Send
-    + Sync;
-
-#[derive(Clone)]
-enum SurfaceToolRouter {
-    #[allow(dead_code)] // constructed only by the explicit legacy test seam
-    LegacyV12(Arc<ToolCallHandler>),
-    CanonicalV13(CanonicalDaemonRouter),
-}
 
 enum SurfaceToolOutcome {
     Legacy(Box<OperationResult>),
@@ -111,22 +102,15 @@ enum SurfaceToolOutcome {
     Task(V5DaemonTaskSnapshot),
 }
 
-pub fn run_stdio() {
+pub fn run_stdio(connect: fn() -> Result<V5DaemonClient, String>) {
     if SurfaceRelease::from_package_version() != SurfaceRelease::V13 {
         eprintln!("this package does not select the canonical v0.13 MCP surface");
         return;
     }
-    let state_root = match crate::interfaces::daemon::default_user_daemon_state_root() {
-        Ok(root) => root,
-        Err(error) => {
-            eprintln!("failed to resolve unica user daemon state: {error}");
-            return;
-        }
-    };
-    let client = match crate::interfaces::daemon::connect_default_user_daemon(&state_root) {
+    let client = match connect() {
         Ok(client) => client,
         Err(error) => {
-            eprintln!("failed to connect to unica user daemon: {error}");
+            eprintln!("{error}");
             return;
         }
     };
@@ -171,152 +155,6 @@ pub fn run_stdio() {
     runtime.shutdown_timeout(RUNTIME_SHUTDOWN_GRACE);
 }
 
-fn drain_stdio_frontend(in_flight: &InFlightRegistry, manual_calls: &ManualCalls) -> bool {
-    manual_calls.wait_manual_settled();
-    drain_mcp_shutdown(in_flight, EOF_CANCELLATION_GRACE)
-}
-
-/// `rmcp` treats its first `server/discover` as a permanent modern opener. A
-/// host may probe first and then choose `initialize`; answer only that initial
-/// probe before handing the actual opener to the SDK. Once an opener reaches
-/// the SDK, all requests and their protocol checks belong to it unchanged.
-struct DiscoveryProbeTransport<T: Transport<RoleServer>> {
-    inner: receive_pump::ReceivePump<T::Error>,
-    discovery: DiscoverResult,
-    awaiting_opener: bool,
-    manual_calls: Option<Arc<ManualCalls>>,
-}
-
-impl<T: Transport<RoleServer> + 'static> DiscoveryProbeTransport<T> {
-    fn new(inner: T, server: &UnicaServer) -> Self {
-        Self {
-            inner: receive_pump::ReceivePump::new(
-                inner,
-                server.manual_calls.clone(),
-                matches!(server.router, SurfaceToolRouter::CanonicalV13(_)),
-            ),
-            discovery: DiscoverResult::from_server_info(
-                server.supported_protocol_versions().into_owned(),
-                server.get_info(),
-            ),
-            awaiting_opener: true,
-            manual_calls: matches!(server.router, SurfaceToolRouter::CanonicalV13(_))
-                .then(|| server.manual_calls.clone()),
-        }
-    }
-}
-
-impl<T: Transport<RoleServer> + 'static> Transport<RoleServer> for DiscoveryProbeTransport<T> {
-    type Error = receive_pump::PumpError<T::Error>;
-
-    fn send(
-        &mut self,
-        item: ServerJsonRpcMessage,
-    ) -> impl std::future::Future<Output = Result<(), Self::Error>> + Send + 'static {
-        let tracked = self.manual_calls.as_ref().and_then(|calls| {
-            let id = match &item {
-                ServerJsonRpcMessage::Response(response) => Some(&response.id),
-                ServerJsonRpcMessage::Error(error) => error.id.as_ref(),
-                _ => None,
-            }?;
-            calls.get(id).map(|call| (calls.clone(), id.clone(), call))
-        });
-        if let Some((calls, _, call)) = &tracked {
-            calls.response_seen(call);
-        }
-        // Once inner.send starts it may have written part of a JSON frame.
-        // A later Cancel controls the daemon independently; it never drops
-        // this send future or leaves a truncated frame on stdout.
-        let suppressed = tracked
-            .as_ref()
-            .is_some_and(|(_, _, call)| call.cancellation.requested());
-        let sending = (!suppressed).then(|| self.inner.send(item));
-        async move {
-            let result = match sending {
-                Some(sending) => sending.await,
-                None => Ok(()),
-            };
-            if result.is_ok() {
-                if let Some((calls, id, call)) = tracked {
-                    calls.delivery_done(&id, &call);
-                }
-            }
-            result
-        }
-    }
-
-    async fn receive(&mut self) -> Option<ClientJsonRpcMessage> {
-        loop {
-            let message = self.inner.receive().await?;
-            if self.awaiting_opener {
-                if let ClientJsonRpcMessage::Request(request) = &message {
-                    match &request.request {
-                        ClientRequest::DiscoverRequest(_)
-                            if request
-                                .request
-                                .get_meta()
-                                .missing_required_keys(&ProtocolVersion::V_2026_07_28)
-                                .is_empty()
-                                && request.request.get_meta().protocol_version().is_some_and(
-                                    |version| self.discovery.supported_versions.contains(&version),
-                                ) =>
-                        {
-                            let response = ServerJsonRpcMessage::response(
-                                ServerResult::DiscoverResult(self.discovery.clone()),
-                                request.id.clone(),
-                            );
-                            if let Err(error) = self.inner.send(response).await {
-                                eprintln!("unica mcp discovery probe response failed: {error}");
-                                return None;
-                            }
-                            continue;
-                        }
-                        ClientRequest::PingRequest(_) => return Some(message),
-                        _ => {}
-                    }
-                }
-                self.awaiting_opener = false;
-            }
-            return Some(message);
-        }
-    }
-
-    fn close(&mut self) -> impl std::future::Future<Output = Result<(), Self::Error>> + Send {
-        let calls = self.manual_calls.clone();
-        async move {
-            let result = self.inner.close().await;
-            if let Some(calls) = calls {
-                calls.closed();
-            }
-            result
-        }
-    }
-}
-
-fn drain_mcp_shutdown(in_flight: &InFlightRegistry, grace: Duration) -> bool {
-    drain_mcp_shutdown_with(in_flight, grace, |remaining| {
-        let deadline = Instant::now() + remaining;
-        let code_search_idle =
-            unica_code_intelligence::coordinator::drain_code_search_workers(remaining);
-        let diagnostics_idle = unica_diagnostics::coordinator::drain_diagnostic_workers(
-            deadline.saturating_duration_since(Instant::now()),
-        );
-        code_search_idle && diagnostics_idle
-    })
-}
-
-fn drain_mcp_shutdown_with(
-    in_flight: &InFlightRegistry,
-    grace: Duration,
-    drain_providers: impl FnOnce(Duration) -> bool,
-) -> bool {
-    let deadline = Instant::now() + grace;
-    in_flight.cancel_all();
-    let calls_idle = in_flight.wait_idle(deadline.saturating_duration_since(Instant::now()));
-    let providers_idle = drain_providers(deadline.saturating_duration_since(Instant::now()));
-    calls_idle && providers_idle
-}
-
 /// Переменная, в которой загрузчик передаёт рассказ о прошлом запуске.
 ///
 /// Убитая установка своего провода не имела: он появляется только здесь, и
@@ -324,20 +162,6 @@ fn drain_mcp_shutdown_with(
 const STARTUP_NOTICE_ENV: &str = "UNICA_STARTUP_NOTICE";
 
 const CANONICAL_INSTRUCTIONS: &str = "Start with unica.view using an empty object when the workspace or logical address is unknown. Use returned addresses instead of guessing at. A qualified logical address has the form <sourceSet>:<Kind>[.<Name>...]. Use unica.check to confirm source-set admission or logical-node readability.";
-
-pub struct UnicaServer {
-    router: SurfaceToolRouter,
-    in_flight: Arc<InFlightRegistry>,
-    manual_calls: Arc<ManualCalls>,
-    structured_tools: HashSet<&'static str>,
-    /// О чём рассказать вызывающему при рукопожатии. Обычная сессия платит за
-    /// это ноль байтов поверхности: рассказывать нечего.
-    startup_notice: Option<String>,
-    /// Тестовый каталог вместо канонического: постраничный обход `tools/list`
-    /// проверяется на каталоге больше одной страницы.
-    #[cfg(test)]
-    listed_tools_for_test: Option<Arc<Vec<Tool>>>,
-}
 
 #[allow(dead_code)]
 fn assert_unica_server_implements_official_rmcp_server_handler()
@@ -353,14 +177,14 @@ fn startup_notice_from(value: Option<String>) -> Option<String> {
 }
 
 impl UnicaServer {
-    #[cfg(test)]
-    fn legacy_for_test(handler: Arc<ToolCallHandler>) -> Self {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn legacy_for_test(handler: Arc<ToolCallHandler>) -> Self {
         let notice = startup_notice_from(std::env::var(STARTUP_NOTICE_ENV).ok());
         Self::legacy_with_startup_notice_for_test(handler, notice)
     }
 
-    #[cfg(test)]
-    fn legacy_with_startup_notice_for_test(
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn legacy_with_startup_notice_for_test(
         handler: Arc<ToolCallHandler>,
         startup_notice: Option<String>,
     ) -> Self {
@@ -377,8 +201,8 @@ impl UnicaServer {
         }
     }
 
-    #[cfg(test)]
-    fn with_canonical_v13(handler: Arc<CanonicalCallHandler>) -> Self {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn with_canonical_v13(handler: Arc<CanonicalCallHandler>) -> Self {
         let unavailable: Arc<CanonicalTaskHandler> = Arc::new(|_, _| {
             Err(V5TaskExchangeError::Transport(
                 TaskObservationTimer::start(Instant::now()).failed(
@@ -391,8 +215,8 @@ impl UnicaServer {
         Self::with_canonical_v13_tasks(handler, Arc::clone(&unavailable), unavailable)
     }
 
-    #[cfg(test)]
-    fn with_canonical_v13_and_startup_notice_for_test(
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn with_canonical_v13_and_startup_notice_for_test(
         handler: Arc<CanonicalCallHandler>,
         startup_notice: Option<String>,
     ) -> Self {
@@ -403,8 +227,8 @@ impl UnicaServer {
     }
 
     /// Канонический маршрут с произвольным каталогом `tools/list`.
-    #[cfg(test)]
-    fn with_canonical_v13_tool_catalog_for_test(
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn with_canonical_v13_tool_catalog_for_test(
         handler: Arc<CanonicalCallHandler>,
         tools: Vec<Tool>,
     ) -> Self {
@@ -414,8 +238,8 @@ impl UnicaServer {
         }
     }
 
-    #[cfg(test)]
-    fn with_canonical_v13_tasks(
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn with_canonical_v13_tasks(
         call: Arc<CanonicalCallHandler>,
         get: Arc<CanonicalTaskHandler>,
         cancel: Arc<CanonicalTaskHandler>,
@@ -426,8 +250,8 @@ impl UnicaServer {
         Self::with_canonical_v13_task_handlers(call, get, wait, cancel)
     }
 
-    #[cfg(test)]
-    fn with_canonical_v13_task_handlers(
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn with_canonical_v13_task_handlers(
         call: Arc<CanonicalCallHandler>,
         get: Arc<CanonicalTaskHandler>,
         wait: Arc<CanonicalTaskWaitHandler>,
@@ -460,18 +284,42 @@ impl UnicaServer {
             manual_calls: Arc::new(ManualCalls::default()),
             structured_tools: HashSet::new(),
             startup_notice,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             listed_tools_for_test: None,
         }
     }
 
-    #[cfg(test)]
-    fn with_canonical_daemon(owner: V5DaemonProcessOwner, workspace_hint: String) -> Self {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn with_canonical_daemon(owner: V5DaemonProcessOwner, workspace_hint: String) -> Self {
         Self::canonical_v13_daemon(owner.into(), workspace_hint.into(), None)
     }
 
     fn in_flight(&self) -> Arc<InFlightRegistry> {
         Arc::clone(&self.in_flight)
+    }
+}
+
+/// Сборка сервера двери для тестов демона: маршрутизатор к живому демону
+/// и реестр вызовов, за которым тест следит.
+#[cfg(any(test, feature = "test-support"))]
+impl UnicaServer {
+    pub fn with_canonical_v13_router(router: CanonicalDaemonRouter) -> Self {
+        Self {
+            router: SurfaceToolRouter::CanonicalV13(router),
+            in_flight: Arc::new(InFlightRegistry::default()),
+            manual_calls: Arc::new(ManualCalls::default()),
+            structured_tools: HashSet::new(),
+            startup_notice: None,
+            listed_tools_for_test: None,
+        }
+    }
+
+    pub fn in_flight_registry(&self) -> Arc<InFlightRegistry> {
+        self.in_flight()
+    }
+
+    pub fn manual_calls_for_test(&self) -> Arc<ManualCalls> {
+        Arc::clone(&self.manual_calls)
     }
 }
 
@@ -617,8 +465,8 @@ fn compatibility_result_before(
     received_at: Instant,
     timing: TaskObservationTimer,
     after_projection: impl FnOnce() -> Instant,
-) -> Result<CallToolResult, crate::interfaces::task_projection::TaskProjectionError> {
-    let projected = crate::interfaces::task_projection::call_tool_result(result.result(), budget);
+) -> Result<CallToolResult, crate::task_projection::TaskProjectionError> {
+    let projected = crate::task_projection::call_tool_result(result.result(), budget);
     // Preserve an already established exchange failure, including the phase
     // and generation that localized it. Only a snapshot can become late here.
     if matches!(result, CompatibilityTaskResult::Refusal(_)) {
@@ -631,7 +479,7 @@ fn compatibility_result_before(
         let refusal = crate::application::v13::task_tools::task_tool_error_result(
             TaskToolError::TaskTransportFailed,
         );
-        return crate::interfaces::task_projection::call_tool_result(&refusal, budget);
+        return crate::task_projection::call_tool_result(&refusal, budget);
     }
     projected
 }
@@ -646,7 +494,7 @@ fn log_task_observation(observation: &TaskObservation, received_at: Instant, fai
     let since_received_ms =
         u64::try_from(failed_at.saturating_duration_since(received_at).as_millis())
             .unwrap_or(u64::MAX);
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     LOGGED_TASK_OBSERVATIONS
         .with(|logged| logged.borrow_mut().push((*observation, since_received_ms)));
     eprintln!(
@@ -655,7 +503,7 @@ fn log_task_observation(observation: &TaskObservation, received_at: Instant, fai
     );
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 thread_local! {
     static LOGGED_TASK_OBSERVATIONS: std::cell::RefCell<Vec<(TaskObservation, u64)>> =
         const { std::cell::RefCell::new(Vec::new()) };
@@ -882,59 +730,6 @@ const SUPPORTED_PROTOCOL_VERSIONS: &[ProtocolVersion] = &[
     ProtocolVersion::V_2026_07_28,
 ];
 
-/// Observe the SDK's actual dispatch completion, including validation refusal
-/// before `call_tool`, without duplicating the SDK's request dispatch rules.
-struct ObservedServer(UnicaServer);
-
-impl ObservedServer {
-    async fn serve<T: Transport<RoleServer> + 'static>(
-        self,
-        transport: T,
-    ) -> Result<rmcp::service::RunningService<RoleServer, Self>, Box<ServerInitializeError>> {
-        let calls = self.0.manual_calls.clone();
-        let result = ServiceExt::serve(self, transport).await;
-        if result.is_err() {
-            // No running SDK loop was created. Stop the input pump and await
-            // actual close before proving there is no future dispatch.
-            calls.initialization_failed().await;
-        }
-        result.map_err(Box::new)
-    }
-}
-
-impl rmcp::Service<RoleServer> for ObservedServer {
-    async fn handle_request(
-        &self,
-        request: ClientRequest,
-        context: RequestContext<RoleServer>,
-    ) -> Result<ServerResult, ErrorData> {
-        let is_call = matches!(&request, ClientRequest::CallToolRequest(_));
-        let _dispatch = is_call
-            .then(|| self.0.manual_calls.dispatch(context.id.clone()))
-            .flatten();
-        if is_call {
-            self.0.manual_calls.before_handler().await;
-        }
-        rmcp::Service::<RoleServer>::handle_request(&self.0, request, context).await
-    }
-
-    async fn handle_notification(
-        &self,
-        notification: ClientNotification,
-        context: NotificationContext<RoleServer>,
-    ) -> Result<(), ErrorData> {
-        rmcp::Service::<RoleServer>::handle_notification(&self.0, notification, context).await
-    }
-
-    fn get_info(&self) -> ServerInfo {
-        ServerHandler::get_info(&self.0)
-    }
-
-    fn supported_protocol_versions(&self) -> std::borrow::Cow<'static, [ProtocolVersion]> {
-        ServerHandler::supported_protocol_versions(&self.0)
-    }
-}
-
 impl ServerHandler for UnicaServer {
     fn supported_protocol_versions(&self) -> std::borrow::Cow<'static, [ProtocolVersion]> {
         std::borrow::Cow::Borrowed(SUPPORTED_PROTOCOL_VERSIONS)
@@ -1024,7 +819,7 @@ impl ServerHandler for UnicaServer {
                 )
             }
         };
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         let all: &[Tool] = self
             .listed_tools_for_test
             .as_deref()
@@ -1238,18 +1033,18 @@ impl ServerHandler for UnicaServer {
                     Instant::now,
                 )
                 .map(CallToolResponse::from)
-                .map_err(crate::interfaces::task_projection::projection_error)
+                .map_err(crate::task_projection::projection_error)
             }
             Ok(Ok(SurfaceToolOutcome::Canonical(result))) => {
-                crate::interfaces::task_projection::call_tool_result(&result, response_budget)
+                crate::task_projection::call_tool_result(&result, response_budget)
                     .map(CallToolResponse::from)
-                    .map_err(crate::interfaces::task_projection::projection_error)
+                    .map_err(crate::task_projection::projection_error)
             }
             Ok(Ok(SurfaceToolOutcome::Direct(result))) => Ok(CallToolResponse::from(result)),
             Ok(Ok(SurfaceToolOutcome::Task(snapshot))) => {
-                crate::interfaces::task_projection::create_task_result_v5(&snapshot)
+                crate::task_projection::create_task_result_v5(&snapshot)
                     .map(CallToolResponse::from)
-                    .map_err(crate::interfaces::task_projection::projection_error)
+                    .map_err(crate::task_projection::projection_error)
             }
             Ok(Err(error)) => Err(error),
             Err(join_error) => Err(ErrorData::new(
@@ -1276,12 +1071,12 @@ impl ServerHandler for UnicaServer {
             .map_err(|_| task_internal_error("task_worker_failed"))?
             .map_err(|error| project_task_exchange_error(error, received_at))?;
         ensure_task_identity(task_id, &snapshot)?;
-        crate::interfaces::task_projection::detailed_task_v5(
+        crate::task_projection::detailed_task_v5(
             &snapshot,
             client_response_budget(&context, &context.meta.0 .0),
         )
         .map(GetTaskResult::new)
-        .map_err(crate::interfaces::task_projection::projection_error)
+        .map_err(crate::task_projection::projection_error)
     }
 
     async fn update_task(
@@ -1531,38 +1326,6 @@ fn progress_notification(
     notification
 }
 
-/// Data-driven MCP tool definitions from the application descriptor registry.
-pub fn tool_definitions(specs: &[ToolSpec]) -> Vec<Tool> {
-    specs
-        .iter()
-        .map(|spec| {
-            // #479 §1 schema-only baseline (owner decision, 2026-08-17): the
-            // wire surface carries no prose while descriptions are reauthored;
-            // the v0.12 history keeps the previous texts.
-            let mut input_schema = input_schema_for_tool(spec);
-            strip_schema_descriptions(&mut input_schema);
-            let schema = match input_schema {
-                Value::Object(schema) => schema,
-                other => {
-                    unreachable!("tool {} produced a non-object schema: {other}", spec.name)
-                }
-            };
-            let mut tool = Tool::new(spec.name, spec.description, schema);
-            tool.description = None;
-            if let Some(mut schema) = structured_output_schema(spec) {
-                strip_schema_descriptions(&mut schema);
-                let output_schema = match schema {
-                    Value::Object(schema) => schema,
-                    other => unreachable!("OperationResult produced a non-object schema: {other}"),
-                };
-                tool.with_raw_output_schema(Arc::new(output_schema))
-            } else {
-                tool
-            }
-        })
-        .collect()
-}
-
 fn render_tool_result(
     structured: bool,
     result: OperationResult,
@@ -1593,7 +1356,7 @@ fn is_tool_execution_error(result: &OperationResult) -> bool {
         .any(|error| error.starts_with("runtime_operation_unbounded:"))
 }
 
-#[cfg(test)]
+#[cfg(feature = "test-support")]
 fn call_tool_result(
     app: &UnicaApplication,
     name: &str,
@@ -1601,131 +1364,6 @@ fn call_tool_result(
     cancellation: CancellationToken,
 ) -> Result<OperationResult, (i32, String)> {
     call_tool_result_observed(app, name, args, cancellation, Arc::new(NoopProgressSink))
-}
-
-#[allow(dead_code)] // legacy surface test support; production dispatches through daemon
-fn call_tool_result_observed(
-    app: &UnicaApplication,
-    name: &str,
-    args: &Map<String, Value>,
-    cancellation: CancellationToken,
-    progress: Arc<dyn ProgressSink>,
-) -> Result<OperationResult, (i32, String)> {
-    if let Some(result) = role_edit_argument_failure_result(name, args) {
-        return Ok(result);
-    }
-    if let Some(result) = metadata_argument_failure_result(name, args) {
-        return Ok(result);
-    }
-    app.call_tool_observed(name, args, cancellation, progress)
-        .map_err(|message| (TOOL_EXECUTION_ERROR, message))
-}
-
-#[cfg(test)]
-fn call_tool_text(
-    app: &UnicaApplication,
-    name: &str,
-    args: &Map<String, Value>,
-    cancellation: CancellationToken,
-) -> Result<String, (i32, String)> {
-    let result = call_tool_result(app, name, args, cancellation)?;
-    serde_json::to_string_pretty(&result)
-        .map_err(|error| (ErrorCode::INTERNAL_ERROR.0, error.to_string()))
-}
-
-/// Retains each running call until its owner finishes, so shutdown can cancel
-/// calls and wait without relying on SDK internals.
-#[derive(Debug, Default)]
-struct InFlightRegistry {
-    state: Mutex<InFlightState>,
-    changed: Condvar,
-}
-
-#[derive(Debug, Default)]
-struct InFlightState {
-    running: Vec<(u64, CancellationToken)>,
-    next_id: u64,
-}
-
-impl InFlightRegistry {
-    fn admit(self: &Arc<Self>) -> Result<InFlightGuard, String> {
-        let mut state = self
-            .state
-            .lock()
-            .map_err(|_| "in-flight registry lock poisoned".to_string())?;
-        let id = state
-            .next_id
-            .checked_add(1)
-            .ok_or_else(|| "in-flight call identifier overflow".to_string())?;
-        state.next_id = id;
-        let token = CancellationToken::new();
-        state.running.push((id, token.clone()));
-        Ok(InFlightGuard {
-            registry: Arc::clone(self),
-            id,
-            token,
-        })
-    }
-
-    #[cfg(test)]
-    fn running(&self) -> usize {
-        self.state
-            .lock()
-            .map(|state| state.running.len())
-            .unwrap_or(0)
-    }
-
-    fn cancel_all(&self) {
-        if let Ok(state) = self.state.lock() {
-            for (_, token) in state.running.iter() {
-                token.cancel();
-            }
-        }
-    }
-
-    fn wait_idle(&self, timeout: Duration) -> bool {
-        let Ok(mut state) = self.state.lock() else {
-            return false;
-        };
-        let deadline = Instant::now() + timeout;
-        while !state.running.is_empty() {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                return false;
-            }
-            let Ok((next, _)) = self.changed.wait_timeout(state, remaining) else {
-                return false;
-            };
-            state = next;
-        }
-        true
-    }
-
-    fn release(&self, id: u64) {
-        if let Ok(mut state) = self.state.lock() {
-            state.running.retain(|(entry, _)| *entry != id);
-        }
-        self.changed.notify_all();
-    }
-}
-
-#[derive(Debug)]
-struct InFlightGuard {
-    registry: Arc<InFlightRegistry>,
-    id: u64,
-    token: CancellationToken,
-}
-
-impl InFlightGuard {
-    fn token(&self) -> CancellationToken {
-        self.token.clone()
-    }
-}
-
-impl Drop for InFlightGuard {
-    fn drop(&mut self) {
-        self.registry.release(self.id);
-    }
 }
 
 #[cfg(test)]

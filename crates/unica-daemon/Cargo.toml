@@ -49,7 +49,6 @@ serde.workspace = true
 serde_json.workspace = true
 serde_yaml.workspace = true
 sha2.workspace = true
-rmcp.workspace = true
 chrono.workspace = true
 tokio.workspace = true
 roxmltree.workspace = true
@@ -60,6 +59,7 @@ uuid.workspace = true
 flate2.workspace = true
 
 [dev-dependencies]
+unica-mcp = { path = "../unica-mcp", features = ["test-support"] }
 unica-coder = { path = "../unica-coder", features = ["test-support"] }
 # `tests/medium_application` проверяет инструменты `unica-application` на портах продукта:
 # прямая зависимость ставит цель в очередь при правке `unica-application`.

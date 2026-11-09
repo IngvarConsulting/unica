@@ -15,7 +15,7 @@ enum Outbound<E> {
 }
 
 #[derive(Debug)]
-pub(super) enum PumpError<E> {
+pub enum PumpError<E> {
     Transport(E),
     Closed,
     Panicked,
@@ -54,14 +54,14 @@ async fn finish_send<E>(
     result
 }
 
-pub(super) struct ReceivePump<E> {
+pub struct ReceivePump<E> {
     incoming: mpsc::UnboundedReceiver<ClientJsonRpcMessage>,
     outgoing: mpsc::UnboundedSender<Outbound<E>>,
     calls: Arc<ManualCalls>,
 }
 
 impl<E: std::error::Error + Send + Sync + 'static> ReceivePump<E> {
-    pub(super) fn new<T: Transport<RoleServer, Error = E> + 'static>(
+    pub fn new<T: Transport<RoleServer, Error = E> + 'static>(
         mut inner: T,
         calls: Arc<ManualCalls>,
         canonical: bool,

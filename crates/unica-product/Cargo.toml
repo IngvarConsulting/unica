@@ -29,6 +29,7 @@ required-features = ["research"]
 
 [dependencies]
 unica-daemon = { path = "../unica-daemon" }
+unica-mcp = { path = "../unica-mcp" }
 
 [dev-dependencies]
 unica-analysis-services = { path = "../unica-analysis-services", features = ["test-support"] }
