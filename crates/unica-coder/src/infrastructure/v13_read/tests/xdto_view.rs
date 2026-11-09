@@ -229,11 +229,7 @@ fn xdto_check_preserves_complete_native_findings_and_distinguishes_profile_limit
             .join(format!("XDTOPackages/{name}/Ext/Package.bin"));
         let before = fs::read(&path).unwrap();
         let authority = fixture.read_authority();
-        let target = MetadataAddress::parse(
-            PLATFORM_XML_8_3_27_FORMAT_2_20,
-            &format!("XDTOPackage.{name}"),
-        )
-        .unwrap();
+        let target = MetadataAddress::parse_logical(&format!("XDTOPackage.{name}")).unwrap();
         let native = authority.read.xdto_payload(&target, None).unwrap();
         let (_, outcome) = authority.check_xdto(&at).unwrap();
         let checked = crate::application::v13::check::normalize_native_outcome(

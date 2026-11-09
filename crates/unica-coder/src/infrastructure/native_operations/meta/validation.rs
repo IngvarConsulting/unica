@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 #[cfg(any(test, feature = "test-support"))]
-use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+use unica_address::source_target::MetadataAddress;
 #[cfg(any(test, feature = "test-support"))]
 use unica_metadata::{MetaDiagnostic, MetaDiagnosticSeverity, MetadataKind};
 use unica_source_contract::workspace::WorkspaceContext;
@@ -83,7 +83,7 @@ mod tests {
     use super::*;
     use roxmltree::Document;
 
-    use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+    use unica_address::source_target::MetadataAddress;
     use unica_metadata::subsystem::SubsystemAddress;
     use unica_metadata::{MetaDiagnosticCode, MetaValidationStatus};
 
@@ -178,7 +178,7 @@ mod tests {
     }
 
     fn address(value: &str) -> MetadataAddress {
-        MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, value).unwrap()
+        MetadataAddress::parse_logical(value).unwrap()
     }
 
     fn image(
@@ -260,8 +260,7 @@ mod tests {
 
     #[test]
     fn child_descriptor_read_admission_preserves_structure_and_strict_publication() {
-        let owner =
-            MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Report.Sales").unwrap();
+        let owner = MetadataAddress::parse_logical("Report.Sales").unwrap();
         let body = "<Template><Properties><Name>Dcs</Name><TemplateType>DataCompositionSchema</TemplateType></Properties></Template>";
         for version in [Some("2.20"), Some("2.19"), Some("2.21"), None] {
             let version_attr = version
@@ -3350,8 +3349,7 @@ mod template_removal_owner_range_tests {
             "\u{feff}\u{feff}{}",
             original.replacen(start, &properties, 1)
         );
-        let owner =
-            MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Report.F05Report").unwrap();
+        let owner = MetadataAddress::parse_logical("Report.F05Report").unwrap();
         let identity =
             validate_template_removal_identity(&source, descriptor, &owner, "F05Schema", false)
                 .unwrap();

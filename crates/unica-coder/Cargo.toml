@@ -166,7 +166,7 @@ syn.workspace = true
 tar.workspace = true
 
 [package.metadata.unica]
-version-literal-baseline = 171
+version-literal-baseline = 53
 component = "product"
 file-io = "owned"
 # `crates`: tests compare the operation tables and codecs of other crates with their sources.

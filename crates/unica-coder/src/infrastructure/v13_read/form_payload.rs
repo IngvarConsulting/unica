@@ -50,9 +50,9 @@ impl<'a> LogicalViewReadAuthority<'a> {
             ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
         })?;
         let metadata_path =
-            MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &form.logical_path()).map_err(
-                |error| ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string()),
-            )?;
+            MetadataAddress::parse_logical(&form.logical_path()).map_err(|error| {
+                ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+            })?;
         if self
             .read
             .inherited_resource(&metadata_path, "Form.xml")?
