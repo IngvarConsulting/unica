@@ -99,6 +99,85 @@ pub trait FormatFamily: Send + Sync {
     fn platform_line(&self, key: &FormatKey) -> Option<PlatformLine>;
 }
 
+/// How a format family reads a tuple (INV.SOURCE.WRITABLE-PROFILE).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReadResolution {
+    /// The tuple has a dialect of its own.
+    Dialect,
+    /// The tuple is read by the dialect of `read_as`, and every answer says so.
+    Unverified { read_as: FormatKey },
+    /// The tuple is not read.
+    Unsupported,
+}
+
+/// Which dialect reads `key` of `family`, given the tuples that have one.
+///
+/// A known tuple (one with a reference corpus) is read by the nearest dialect
+/// not newer than it, or, when every dialect is newer, by the oldest of them.
+/// An unknown tuple newer than every known one is read by the nearest dialect
+/// not newer than it. Any other unknown tuple — older than the oldest known,
+/// between known ones, or not comparable with one — is not read: without a
+/// corpus nothing says how the dialect would misread it.
+pub fn resolve_read(
+    family: &dyn FormatFamily,
+    key: &FormatKey,
+    dialects: &[FormatKey],
+) -> ReadResolution {
+    use std::cmp::Ordering;
+    let order = |left: &FormatKey, right: &FormatKey| family.compare(left, right);
+    if dialects
+        .iter()
+        .any(|dialect| order(dialect, key) == Some(Ordering::Equal))
+    {
+        return ReadResolution::Dialect;
+    }
+    let known = family.known_keys();
+    let is_known = known
+        .iter()
+        .any(|candidate| order(candidate, key) == Some(Ordering::Equal));
+    let newer_than_every_known = !known.is_empty()
+        && known
+            .iter()
+            .all(|candidate| order(key, candidate) == Some(Ordering::Greater));
+    if !is_known && !newer_than_every_known {
+        return ReadResolution::Unsupported;
+    }
+    // The newest dialect not newer than the tuple: no other such dialect is newer.
+    let not_newer = dialects
+        .iter()
+        .filter(|dialect| order(dialect, key) == Some(Ordering::Less))
+        .collect::<Vec<_>>();
+    let nearest_older = not_newer.iter().find(|dialect| {
+        not_newer
+            .iter()
+            .all(|other| order(other, dialect) != Some(Ordering::Greater))
+    });
+    let read_as = match nearest_older {
+        Some(dialect) => Some(*dialect),
+        None if is_known => {
+            let newer = dialects
+                .iter()
+                .filter(|dialect| order(dialect, key) == Some(Ordering::Greater))
+                .collect::<Vec<_>>();
+            newer
+                .iter()
+                .find(|dialect| {
+                    newer
+                        .iter()
+                        .all(|other| order(other, dialect) != Some(Ordering::Less))
+                })
+                .copied()
+        }
+        None => None,
+    };
+    match read_as {
+        Some(read_as) => ReadResolution::Unverified {
+            read_as: read_as.clone(),
+        },
+        None => ReadResolution::Unsupported,
+    }
+}
+
 /// A line of the 1C platform, `8.3.27` or `8.5.4`: three numbers, without a
 /// build. One notion for every format family, so lines compare across them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -209,6 +288,42 @@ mod tests {
         assert_eq!(first.key_in(FAMILY_A), Some(first.key()));
         assert_eq!(first.key_in(FAMILY_B), None);
         assert_eq!(first.to_string(), "family_a(2025.1, 8.3.27)");
+    }
+
+    /// rule: INV.SOURCE.WRITABLE-PROFILE
+    #[test]
+    fn an_unknown_tuple_is_read_only_when_newer_than_every_known_one() {
+        use super::test_support::ToolLineFamily;
+        use super::{resolve_read, ReadResolution};
+        let key = |tool: &str, line: &str| FormatKey::new([tool, line]);
+        let dialects = [key("1", "8.3.27")];
+        let resolve = |tool, line| resolve_read(&ToolLineFamily, &key(tool, line), &dialects);
+
+        assert_eq!(resolve("1", "8.3.27"), ReadResolution::Dialect);
+        // Newer tool on the known line, newer line with the known tool, both:
+        // newer than every known tuple, read as the known one.
+        for (tool, line) in [("2", "8.3.27"), ("1", "8.5.1"), ("2", "8.5.1")] {
+            assert_eq!(
+                resolve(tool, line),
+                ReadResolution::Unverified {
+                    read_as: key("1", "8.3.27")
+                },
+                "{tool} {line}"
+            );
+        }
+        // Older, or newer in one part and older in the other: not read.
+        for (tool, line) in [
+            ("0", "8.3.27"),
+            ("1", "8.3.26"),
+            ("2", "8.3.26"),
+            ("x", "8.3.27"),
+        ] {
+            assert_eq!(
+                resolve(tool, line),
+                ReadResolution::Unsupported,
+                "{tool} {line}"
+            );
+        }
     }
 
     #[test]

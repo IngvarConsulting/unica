@@ -433,6 +433,28 @@ mod tests {
         assert!(!build_in_platform_line(&[8, 3, 27, 2342], "8.3"));
     }
 
+    /// rule: INV.SOURCE.WRITABLE-PROFILE
+    #[test]
+    fn a_designer_export_is_read_by_the_nearest_dialect_of_its_family() {
+        use super::PlatformXmlFamily;
+        use unica_source_contract::format_identity::{resolve_read, ReadResolution};
+        let dialects = [FormatKey::new(["2.20"])];
+        let resolve =
+            |version: &str| resolve_read(&PlatformXmlFamily, &FormatKey::new([version]), &dialects);
+        let unverified = ReadResolution::Unverified {
+            read_as: FormatKey::new(["2.20"]),
+        };
+        assert_eq!(resolve("2.20"), ReadResolution::Dialect);
+        // Known without a dialect of its own, and newer than every known one.
+        for version in ["2.17", "2.21", "2.22", "2.23", "3.0"] {
+            assert_eq!(resolve(version), unverified, "{version}");
+        }
+        // Between known versions, older than the oldest, or not a version.
+        for version in ["2.18", "2.19", "2.16", "1.0", "latest"] {
+            assert_eq!(resolve(version), ReadResolution::Unsupported, "{version}");
+        }
+    }
+
     #[test]
     fn active_profile_is_platform_8_3_27_format_2_20() {
         assert_eq!(ACTIVE_FORMAT_PROFILE.platform_line, "8.3.27");
