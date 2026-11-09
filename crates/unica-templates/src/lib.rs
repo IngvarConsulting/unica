@@ -32,6 +32,4 @@ pub mod applicability;
 pub mod contracts;
 pub mod operations;
 
-pub mod recovery;
-
 pub mod mxl;

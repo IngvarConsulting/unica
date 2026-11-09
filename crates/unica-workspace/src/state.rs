@@ -11,6 +11,16 @@ use unica_source_contract::workspace::WorkspaceContext;
 
 use crate::apply::{ApplyStagedState, ApplyStagingError};
 
+// resource-limit: workspace.cache-state-conflict-retries
+// class: retry
+// unit: count
+// scope: workspace
+// value: 64
+// resource: Число повторов атомарной публикации состояния кеша Unica при конфликте с параллельной публикацией.
+// status: unproven
+// origin: #266
+// problem: неизвестно
+// on-reach: ошибка «failed to atomically publish Unica cache state»
 pub(crate) const CACHE_STATE_CONFLICT_RETRIES: usize = 64;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -35,7 +45,6 @@ enum CacheStatus {
 
 pub struct WorkspaceStateRepository {
     state_path: PathBuf,
-    index_readiness: Option<fn(&WorkspaceContext) -> bool>,
 }
 
 struct PlannedWorkspaceStateFile {
@@ -92,14 +101,7 @@ impl WorkspaceStateRepository {
     pub fn new(context: &WorkspaceContext) -> Self {
         Self {
             state_path: context.cache_root.join("state.json"),
-            index_readiness: None,
         }
-    }
-
-    /// Readiness belongs to the provider owner; cache reporting only observes it.
-    pub fn with_index_readiness(mut self, observe: fn(&WorkspaceContext) -> bool) -> Self {
-        self.index_readiness = Some(observe);
-        self
     }
 
     pub fn report(
@@ -107,10 +109,10 @@ impl WorkspaceStateRepository {
         context: &WorkspaceContext,
         events: &[DomainEvent],
         dry_run: bool,
-        cache_access: CacheAccess,
+        _cache_access: CacheAccess,
     ) -> Result<CacheReport, String> {
         for attempt in 0..=CACHE_STATE_CONFLICT_RETRIES {
-            let plan = self.plan_report(context, events, dry_run, cache_access)?;
+            let plan = self.plan_report(context, events, dry_run)?;
             if plan.state.is_none() && plan.metadata.is_empty() {
                 return Ok(plan.report);
             }
@@ -152,9 +154,9 @@ impl WorkspaceStateRepository {
         context: &WorkspaceContext,
         events: &[DomainEvent],
         dry_run: bool,
-        cache_access: CacheAccess,
+        _cache_access: CacheAccess,
     ) -> Result<CacheReport, String> {
-        self.plan_report(context, events, dry_run, cache_access)?
+        self.plan_report(context, events, dry_run)?
             .stage(transaction)
     }
 
@@ -165,7 +167,7 @@ impl WorkspaceStateRepository {
         context: &WorkspaceContext,
         events: &[DomainEvent],
         dry_run: bool,
-        cache_access: CacheAccess,
+        _cache_access: CacheAccess,
     ) -> Result<CacheReport, ApplyStagingError> {
         let state_relative = cache_prefix.join("state.json");
         let state_preimage = state.read(&state_relative)?;
@@ -188,7 +190,6 @@ impl WorkspaceStateRepository {
                 context,
                 events,
                 dry_run,
-                cache_access,
                 state_preimage,
                 metadata_preimages,
             )
@@ -217,7 +218,6 @@ impl WorkspaceStateRepository {
         context: &WorkspaceContext,
         events: &[DomainEvent],
         dry_run: bool,
-        cache_access: CacheAccess,
     ) -> Result<PlannedWorkspaceReport, String> {
         let (_, state_preimage) = self.load_snapshot(context)?;
         let impact = CacheImpact::from_events(events);
@@ -243,7 +243,6 @@ impl WorkspaceStateRepository {
             context,
             events,
             dry_run,
-            cache_access,
             state_preimage,
             metadata_preimages,
         )
@@ -254,7 +253,6 @@ impl WorkspaceStateRepository {
         context: &WorkspaceContext,
         events: &[DomainEvent],
         dry_run: bool,
-        cache_access: CacheAccess,
         state_preimage: Option<Vec<u8>>,
         metadata_preimages: BTreeMap<String, Option<Vec<u8>>>,
     ) -> Result<PlannedWorkspaceReport, String> {
@@ -304,28 +302,6 @@ impl WorkspaceStateRepository {
         if events.is_empty() {
             invalidated.clear();
             refreshed.clear();
-        }
-
-        if events.is_empty() && !dry_run {
-            for name in cache_access.reads {
-                if *name == "bsl_index" {
-                    state.caches.insert(
-                        (*name).to_string(),
-                        CacheEntry {
-                            status: if self.index_readiness.ok_or_else(|| {
-                                "bsl_index cache read is missing its readiness observation"
-                                    .to_string()
-                            })?(context)
-                            {
-                                CacheStatus::Fresh
-                            } else {
-                                CacheStatus::Stale
-                            },
-                            epoch: context.workspace_epoch,
-                        },
-                    );
-                }
-            }
         }
 
         let mut stale = Vec::new();
@@ -486,53 +462,6 @@ pub(crate) fn is_retryable_cache_state_conflict(error: &str, paths: &[PathBuf]) 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    #[test]
-    fn cache_index_readiness_requires_an_observation_and_overrides_stored_freshness() {
-        let root = temp_root("unica-cache-readiness-port");
-        let context = WorkspaceContext {
-            cwd: root.clone(),
-            workspace_root: root.clone(),
-            cache_root: root.join(".cache"),
-            workspace_epoch: 1,
-        };
-        fs::create_dir_all(&context.cache_root).unwrap();
-        let state_path = context.cache_root.join("state.json");
-        let stored = serde_json::to_vec(&json!({
-            "workspace_root": root.display().to_string(),
-            "workspace_epoch": 1,
-            "caches": {"bsl_index": {"status": "fresh", "epoch": 1}}
-        }))
-        .unwrap();
-        fs::write(&state_path, &stored).unwrap();
-        let access = || CacheAccess {
-            reads: &["bsl_index"],
-            writes: &[],
-        };
-        let error = WorkspaceStateRepository::new(&context)
-            .report(&context, &[], false, access())
-            .unwrap_err();
-        assert!(
-            error.contains("missing its readiness observation"),
-            "{error}"
-        );
-
-        type ReadinessObservation = (fn(&WorkspaceContext) -> bool, bool);
-        let observations: [ReadinessObservation; 2] = [(|_| false, false), (|_| true, true)];
-        for (observe, ready) in observations {
-            let report = WorkspaceStateRepository::new(&context)
-                .with_index_readiness(observe)
-                .report(&context, &[], false, access())
-                .unwrap();
-            assert_eq!(report.fresh.iter().any(|name| name == "bsl_index"), ready);
-            assert_eq!(report.stale.iter().any(|name| name == "bsl_index"), !ready);
-            assert!(report.lazy_rebuilt.is_empty());
-        }
-        assert_eq!(fs::read(&state_path).unwrap(), stored);
-        let _ = fs::remove_dir_all(root);
-    }
 
     #[test]
     fn cache_conflict_classifier_requires_an_exact_planned_cache_path() {
@@ -580,13 +509,5 @@ mod tests {
             cache_cleanup_warnings(vec![format!("{} could not be removed", state.display())]);
         assert_eq!(warnings.len(), 1);
         assert!(!warnings[0].contains(state.to_string_lossy().as_ref()));
-    }
-
-    fn temp_root(prefix: &str) -> PathBuf {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        std::env::temp_dir().join(format!("{prefix}-{nanos}"))
     }
 }

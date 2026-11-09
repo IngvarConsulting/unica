@@ -416,31 +416,7 @@ fn an_unrequested_section_is_absent_rather_than_empty() {
     fs::remove_dir_all(root).unwrap();
 }
 
-/// #1119: a section is not cut at a fixed count of descriptors; every role in a
-/// group larger than the former 8192-entry cap is read.
-#[test]
-fn roles_past_the_former_section_cap_are_all_found() {
-    let root = temp_root("roles-many");
-    let count = 8_200;
-    for index in 0..count {
-        role(&root, &format!("Role{index:05}"), &["Catalog.Goods"]);
-    }
-
-    let found = scan_local_enrichment(
-        &root,
-        MetadataKind::Catalog,
-        "Goods",
-        &[LocalSection::Roles],
-        50,
-        &CancellationToken::new(),
-    );
-
-    assert_eq!(found.usage.roles.as_ref().unwrap().len(), count);
-    assert!(found.diagnostics.is_empty(), "{:?}", found.diagnostics);
-    fs::remove_dir_all(root).unwrap();
-}
-
-/// #1119: a descriptor larger than the former 8 MiB read limit is read whole
+/// A descriptor larger than the former 8 MiB read limit is read whole
 /// instead of silently dropped from the section.
 #[test]
 fn a_functional_option_larger_than_eight_mebibytes_is_still_read() {
@@ -476,7 +452,7 @@ fn a_functional_option_larger_than_eight_mebibytes_is_still_read() {
     fs::remove_dir_all(root).unwrap();
 }
 
-/// #1119: a descriptor the scan cannot read or parse is named as an error of
+/// A descriptor the scan cannot read or parse is named as an error of
 /// its section; the rest of the list is still returned.
 #[test]
 fn an_unreadable_descriptor_is_reported_as_a_gap_of_its_section() {

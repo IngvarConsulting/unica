@@ -1,0 +1,20 @@
+{
+  "area": "СКД",
+  "task": "Проверить схему компоновки данных",
+  "wire": [
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных"
+      },
+      "expect": [
+        "ok"
+      ],
+      "status": "passed",
+      "validators": [
+        "dcs"
+      ]
+    }
+  ],
+  "id": "S194"
+}

@@ -43,7 +43,7 @@ EXPECTED_PUBLIC_TOOLS = {
 }
 INDEX_WAIT_TIMEOUT_SECONDS = 300
 INDEX_POLL_INTERVAL_SECONDS = 1
-INDEXED_SEARCH_ROLES = ("semantic", "symbol")
+INDEXED_SEARCH_ROLES = ("symbol",)
 P0_LIFECYCLE_SCENARIOS = (
     "fresh_install",
     "upgrade",
@@ -719,11 +719,11 @@ def run_tool_scenario(
                 if isinstance(terminal, list)
                 else []
             )
-            if roles != ["semantic", "symbol", "lexical"] or any(
+            if roles != ["symbol", "lexical"] or any(
                 state not in {"completed", "unavailable", "failed", "timedOut", "cancelled"}
                 for state in states
             ):
-                errors.append("code search progress did not reach all three terminal roles")
+                errors.append("code search progress did not reach all terminal roles")
 
     metrics = {
         "outputBytes": response_output_size(stdout, stderr, payload),
@@ -757,7 +757,7 @@ def pending_v13_task(payload: dict[str, Any] | None) -> tuple[str, int] | None:
     data = payload.get("data") if isinstance(payload, dict) else None
     task = data.get("task") if isinstance(data, dict) else None
     # Незавершённые статусы снимка задачи — словарь `project_task_snapshot`
-    # в crates/unica-coder/src/application/v13/task_tools.rs.
+    # в crates/unica-application/src/application/v13/task_tools.rs.
     if not isinstance(task, dict) or task.get("status") not in {"queued", "working"}:
         return None
     task_id = task.get("taskId")
@@ -1030,7 +1030,7 @@ def validate_code_search(scenario: dict[str, Any], payload: dict[str, Any] | Non
         return
     data = payload.get("data")
     sections = data.get("sections") if isinstance(data, dict) else None
-    expected = ["semantic", "symbol", "lexical"]
+    expected = ["symbol", "lexical"]
     roles = (
         [section.get("role") for section in sections if isinstance(section, dict)]
         if isinstance(sections, list)
@@ -1039,7 +1039,7 @@ def validate_code_search(scenario: dict[str, Any], payload: dict[str, Any] | Non
     errors: list[str] = []
     if roles != expected:
         errors.append(
-            "code search data.sections must contain exactly semantic, symbol, lexical in that order"
+            "code search data.sections must contain exactly symbol, lexical in that order"
         )
     elif any(
         section.get("status")

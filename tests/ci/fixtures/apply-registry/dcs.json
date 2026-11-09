@@ -1,0 +1,323 @@
+{
+  "family": "Dcs",
+  "operations": [
+    {
+      "variant": "DataSourceAdd",
+      "operation": "dataSource.add",
+      "applicability": "DcsSchema",
+      "skeleton": "Items"
+    },
+    {
+      "variant": "DataSourceSet",
+      "operation": "dataSource.set",
+      "applicability": "DcsDataSource",
+      "skeleton": "Values"
+    },
+    {
+      "variant": "DataSourceRemove",
+      "operation": "dataSource.remove",
+      "applicability": "DcsDataSource",
+      "skeleton": "Target"
+    },
+    {
+      "variant": "DataSetAdd",
+      "operation": "dataSet.add",
+      "applicability": "DcsDataContainer",
+      "skeleton": "Items"
+    },
+    {
+      "variant": "DataSetSet",
+      "operation": "dataSet.set",
+      "applicability": "DcsData",
+      "skeleton": "Values"
+    },
+    {
+      "variant": "DataSetRemove",
+      "operation": "dataSet.remove",
+      "applicability": "DcsData",
+      "skeleton": "Target"
+    },
+    {
+      "variant": "FieldAdd",
+      "operation": "field.add",
+      "applicability": "DcsData",
+      "skeleton": "Items"
+    },
+    {
+      "variant": "FieldSet",
+      "operation": "field.set",
+      "applicability": "DcsField",
+      "skeleton": "Values"
+    },
+    {
+      "variant": "FieldRemove",
+      "operation": "field.remove",
+      "applicability": "DcsField",
+      "skeleton": "Target"
+    },
+    {
+      "variant": "FieldRoleSet",
+      "operation": "fieldRole.set",
+      "applicability": "DcsField",
+      "skeleton": "Values"
+    },
+    {
+      "variant": "ParameterAdd",
+      "operation": "parameter.add",
+      "applicability": "DcsSchema",
+      "skeleton": "Items"
+    },
+    {
+      "variant": "ParameterSet",
+      "operation": "parameter.set",
+      "applicability": "DcsParameter",
+      "skeleton": "Values"
+    },
+    {
+      "variant": "ParameterRemove",
+      "operation": "parameter.remove",
+      "applicability": "DcsParameter",
+      "skeleton": "Target"
+    },
+    {
+      "variant": "ParameterRename",
+      "operation": "parameter.rename",
+      "applicability": "DcsParameter",
+      "skeleton": "Values"
+    },
+    {
+      "variant": "ParameterReorder",
+      "operation": "parameter.reorder",
+      "applicability": "DcsSchema",
+      "skeleton": "Items"
+    },
+    {
+      "variant": "CalculatedFieldAdd",
+      "operation": "calculatedField.add",
+      "applicability": "DcsSchema",
+      "skeleton": "Items"
+    },
+    {
+      "variant": "CalculatedFieldRemove",
+      "operation": "calculatedField.remove",
+      "applicability": "DcsCalculatedField",
+      "skeleton": "Target"
+    },
+    {
+      "variant": "TotalAdd",
+      "operation": "total.add",
+      "applicability": "DcsSchema",
+      "skeleton": "Items"
+    },
+    {
+      "variant": "TotalRemove",
+      "operation": "total.remove",
+      "applicability": "DcsTotal",
+      "skeleton": "Target"
+    },
+    {
+      "variant": "VariantAdd",
+      "operation": "variant.add",
+      "applicability": "DcsSchema",
+      "skeleton": "Items"
+    },
+    {
+      "variant": "VariantSet",
+      "operation": "variant.set",
+      "applicability": "DcsSettings",
+      "skeleton": "Values"
+    },
+    {
+      "variant": "VariantRemove",
+      "operation": "variant.remove",
+      "applicability": "DcsSettings",
+      "skeleton": "Target"
+    },
+    {
+      "variant": "QuerySet",
+      "operation": "query.set",
+      "applicability": "DcsQuery",
+      "skeleton": "Values"
+    },
+    {
+      "variant": "QueryPatch",
+      "operation": "query.patch",
+      "applicability": "DcsQuery",
+      "skeleton": "Values"
+    },
+    {
+      "variant": "FilterAdd",
+      "operation": "filter.add",
+      "applicability": "DcsSettingsContainer",
+      "skeleton": "Items"
+    },
+    {
+      "variant": "FilterSet",
+      "operation": "filter.set",
+      "applicability": "DcsSettingsContainer",
+      "skeleton": "Values"
+    },
+    {
+      "variant": "FilterRemove",
+      "operation": "filter.remove",
+      "applicability": "DcsSettingsContainer",
+      "skeleton": "Values"
+    },
+    {
+      "variant": "FilterClear",
+      "operation": "filter.clear",
+      "applicability": "DcsSettingsContainer",
+      "skeleton": "Values"
+    },
+    {
+      "variant": "SelectionAdd",
+      "operation": "selection.add",
+      "applicability": "DcsSettingsContainer",
+      "skeleton": "Items"
+    },
+    {
+      "variant": "SelectionClear",
+      "operation": "selection.clear",
+      "applicability": "DcsSettingsContainer",
+      "skeleton": "Values"
+    },
+    {
+      "variant": "OrderAdd",
+      "operation": "order.add",
+      "applicability": "DcsSettingsContainer",
+      "skeleton": "Items"
+    },
+    {
+      "variant": "OrderClear",
+      "operation": "order.clear",
+      "applicability": "DcsSettingsContainer",
+      "skeleton": "Values"
+    },
+    {
+      "variant": "DataParameterAdd",
+      "operation": "dataParameter.add",
+      "applicability": "DcsSettings",
+      "skeleton": "Items"
+    },
+    {
+      "variant": "DataParameterSet",
+      "operation": "dataParameter.set",
+      "applicability": "DcsSettings",
+      "skeleton": "Values"
+    },
+    {
+      "variant": "OutputParameterSet",
+      "operation": "outputParameter.set",
+      "applicability": "DcsSettingsContainer",
+      "skeleton": "Values"
+    },
+    {
+      "variant": "ConditionalAppearanceAdd",
+      "operation": "conditionalAppearance.add",
+      "applicability": "DcsSettingsContainer",
+      "skeleton": "Items"
+    },
+    {
+      "variant": "ConditionalAppearanceClear",
+      "operation": "conditionalAppearance.clear",
+      "applicability": "DcsSettingsContainer",
+      "skeleton": "Values"
+    },
+    {
+      "variant": "StructureAdd",
+      "operation": "structure.add",
+      "applicability": "DcsSettingsContainer",
+      "skeleton": "Items"
+    },
+    {
+      "variant": "StructureSet",
+      "operation": "structure.set",
+      "applicability": "DcsSettings",
+      "skeleton": "Values"
+    },
+    {
+      "variant": "StructurePatch",
+      "operation": "structure.patch",
+      "applicability": "DcsStructureItem",
+      "skeleton": "Values"
+    },
+    {
+      "variant": "StructureRemove",
+      "operation": "structure.remove",
+      "applicability": "DcsStructureItem",
+      "skeleton": "Target"
+    },
+    {
+      "variant": "DataSetLinkAdd",
+      "operation": "dataSetLink.add",
+      "applicability": "DcsSchema",
+      "skeleton": "Items"
+    },
+    {
+      "variant": "CalculatedFieldSet",
+      "operation": "calculatedField.set",
+      "applicability": "DcsCalculatedField",
+      "skeleton": "Values"
+    },
+    {
+      "variant": "TotalSet",
+      "operation": "total.set",
+      "applicability": "DcsTotal",
+      "skeleton": "Values"
+    },
+    {
+      "variant": "SelectionSet",
+      "operation": "selection.set",
+      "applicability": "DcsSettingsContainer",
+      "skeleton": "Values"
+    },
+    {
+      "variant": "SelectionRemove",
+      "operation": "selection.remove",
+      "applicability": "DcsSettingsContainer",
+      "skeleton": "Values"
+    },
+    {
+      "variant": "OrderSet",
+      "operation": "order.set",
+      "applicability": "DcsSettingsContainer",
+      "skeleton": "Values"
+    },
+    {
+      "variant": "OrderRemove",
+      "operation": "order.remove",
+      "applicability": "DcsSettingsContainer",
+      "skeleton": "Values"
+    },
+    {
+      "variant": "DataParameterRemove",
+      "operation": "dataParameter.remove",
+      "applicability": "DcsSettings",
+      "skeleton": "Values"
+    },
+    {
+      "variant": "OutputParameterRemove",
+      "operation": "outputParameter.remove",
+      "applicability": "DcsSettingsContainer",
+      "skeleton": "Values"
+    },
+    {
+      "variant": "ConditionalAppearanceRemove",
+      "operation": "conditionalAppearance.remove",
+      "applicability": "DcsSettingsContainer",
+      "skeleton": "Values"
+    },
+    {
+      "variant": "DataSetLinkSet",
+      "operation": "dataSetLink.set",
+      "applicability": "DcsSchema",
+      "skeleton": "Values"
+    },
+    {
+      "variant": "DataSetLinkRemove",
+      "operation": "dataSetLink.remove",
+      "applicability": "DcsSchema",
+      "skeleton": "Values"
+    }
+  ]
+}

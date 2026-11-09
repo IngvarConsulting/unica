@@ -632,18 +632,6 @@ pub fn parse_subsystem_operation(
             "pass either `items` or `values`, not both",
         ));
     }
-    if operation == "childSubsystem.remove" {
-        if let Some(key) = ["items", "values"]
-            .into_iter()
-            .find(|key| args.contains_key(*key))
-        {
-            return Err(bad(
-                    op_index,
-                    key,
-                    "childSubsystem.remove takes the child from its address: `Subsystem.Parent.Subsystem.Child`",
-                ));
-        }
-    }
     contract
         .normalize(
             &Value::Object(args.clone()),
@@ -1754,53 +1742,4 @@ fn descriptor_format_version(descriptor: &[u8]) -> Option<String> {
     let source = source.trim_start_matches('\u{feff}');
     let document = roxmltree::Document::parse(source).ok()?;
     unica_source_designer::roots::root_version_literal(source, document.root_element())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn child_remove_retired_shapes_keep_address_guidance() {
-        for (retired, key) in [
-            (json!({"items":[]}), "items"),
-            (json!({"values":{}}), "values"),
-            (json!({"items":null}), "items"),
-            (json!({"values":null}), "values"),
-            (json!({"items":[{}]}), "items"),
-            (json!({"values":{"name":null}}), "values"),
-        ] {
-            let mut args = retired.as_object().unwrap().clone();
-            args.insert("at".into(), json!("main:Subsystem.Parent.Subsystem.Child"));
-            let error = parse_subsystem_operation(
-                "childSubsystem.remove",
-                &args,
-                2,
-                "main",
-                unica_source_contract::SourceSetKind::Configuration,
-            )
-            .unwrap_err();
-            assert_eq!(error.path(), Some(format!("ops[2].args.{key}").as_str()));
-            assert!(
-                error
-                    .to_string()
-                    .contains("Subsystem.Parent.Subsystem.Child"),
-                "{retired}: {}",
-                error
-            );
-        }
-        let args = json!({"at":"main:Subsystem.Parent.Subsystem.Child","items":[],"values":{}});
-        let error = parse_subsystem_operation(
-            "childSubsystem.remove",
-            args.as_object().unwrap(),
-            2,
-            "main",
-            unica_source_contract::SourceSetKind::Configuration,
-        )
-        .unwrap_err();
-        assert_eq!(error.path(), Some("ops[2].args.values"));
-        assert!(error
-            .to_string()
-            .contains("pass either `items` or `values`, not both"));
-    }
 }

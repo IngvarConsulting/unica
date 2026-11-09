@@ -1,0 +1,48 @@
+{
+  "area": "Создание и удаление объектов",
+  "task": "Создать регистр сведений Цены номенклатуры",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "object.create",
+            "args": {
+              "values": {
+                "kind": "InformationRegister",
+                "name": "ЦеныНоменклатуры"
+              }
+            }
+          },
+          {
+            "op": "resource.add",
+            "args": {
+              "at": "main:InformationRegister.ЦеныНоменклатуры",
+              "items": [
+                {
+                  "name": "Количество",
+                  "type": {
+                    "variants": [
+                      {
+                        "kind": "number",
+                        "digits": 10,
+                        "fraction": 0,
+                        "sign": "any"
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S106"
+}

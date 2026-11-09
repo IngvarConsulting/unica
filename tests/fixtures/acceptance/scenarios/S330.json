@@ -1,0 +1,202 @@
+{
+  "id": "S330",
+  "name": "dcs-new-template-is-scaffold-only",
+  "issue": 1310,
+  "area": "СКД",
+  "task": "Новый DCS template — каркас с Основной, без DataSet; коллекция и XML честно показывают отсутствие набора данных",
+  "workspace": "tests/fixtures/acceptance/workspace-dcs",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F05Report"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "image0": {
+          "kind": "sha256",
+          "file": "src/cf/Reports/F05Report.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F05Report",
+        "ops": [
+          {
+            "op": "template.add",
+            "args": {
+              "items": [
+                {
+                  "name": "NewSkeleton",
+                  "templateType": "DataCompositionSchema"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/cf/Reports/F05Report.xml",
+          "eq": "$capture.image0"
+        }
+      ],
+      "captures": {
+        "token0": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.token0"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/cf/Reports/F05Report.xml",
+          "notEq": "$capture.image0"
+        }
+      ],
+      "captures": {
+        "image1": {
+          "kind": "sha256",
+          "file": "src/cf/Reports/F05Report.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F05Report.Template.NewSkeleton"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches",
+          "eq": [
+            {
+              "at": "cf:Report.F05Report.Template.NewSkeleton.DataSource",
+              "count": 1
+            },
+            {
+              "at": "cf:Report.F05Report.Template.NewSkeleton.Setting",
+              "count": 1
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F05Report.Template.NewSkeleton.DataSet"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": []
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "xml",
+          "path": "src/cf/Reports/F05Report/Templates/NewSkeleton/Ext/Template.xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/schema}dataSet",
+          "eq": []
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F05Report.Template.NewSkeleton.Setting"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "at": "cf:Report.F05Report.Template.NewSkeleton.Setting.Основной",
+              "kind": "Setting",
+              "title": "Основной",
+              "props": {
+                "presentation": "Основной",
+                "filters": 0
+              },
+              "branches": [
+                {
+                  "at": "cf:Report.F05Report.Template.NewSkeleton.Setting.Основной.Item",
+                  "count": 1
+                },
+                {
+                  "at": "cf:Report.F05Report.Template.NewSkeleton.Setting.Основной.Property",
+                  "count": 1
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "cf:Report.F05Report.Template.NewSkeleton"
+      },
+      "expect": [
+        "ok"
+      ],
+      "status": "passed",
+      "validators": [
+        "dcs"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/diagnostics",
+          "eq": []
+        }
+      ]
+    }
+  ]
+}
