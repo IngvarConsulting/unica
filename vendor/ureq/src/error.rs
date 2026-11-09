@@ -144,12 +144,28 @@ impl Error {
 /// # Ok(())
 /// # }
 /// ```
-#[derive(Debug)]
 pub struct Transport {
     kind: ErrorKind,
     message: Option<String>,
     url: Option<Url>,
     source: Option<Box<dyn error::Error + Send + Sync + 'static>>,
+}
+
+impl fmt::Debug for Transport {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Transport")
+            .field("kind", &self.kind)
+            .field("message", &self.message)
+            .field(
+                "url",
+                &self
+                    .url
+                    .as_ref()
+                    .map(|url| crate::diagnostics::url(url.as_str())),
+            )
+            .field("source", &self.source)
+            .finish()
+    }
 }
 
 impl Transport {
@@ -211,9 +227,18 @@ impl Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Error::Status(status, response) => {
-                write!(f, "{}: status code {}", response.get_url(), status)?;
+                write!(
+                    f,
+                    "{}: status code {}",
+                    crate::diagnostics::url(response.get_url()),
+                    status
+                )?;
                 if let Some(original) = response.history.first() {
-                    write!(f, " (redirected from {})", original)?;
+                    write!(
+                        f,
+                        " (redirected from {})",
+                        crate::diagnostics::url(original.as_str())
+                    )?;
                 }
             }
             Error::Transport(err) => {
@@ -227,7 +252,7 @@ impl Display for Error {
 impl Display for Transport {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if let Some(url) = &self.url {
-            write!(f, "{}: ", url)?;
+            write!(f, "{}: ", crate::diagnostics::url(url.as_str()))?;
         }
         write!(f, "{}", self.kind)?;
         if let Some(message) = &self.message {

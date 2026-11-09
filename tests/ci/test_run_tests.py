@@ -32,9 +32,10 @@ MODULE_PATH = Path(__file__).resolve().parents[2] / "scripts" / "ci" / "run-test
 # Expected command is independent of the runner's production constant.
 UREQ_SELECTION = (
     "--manifest-path", "vendor/ureq/Cargo.toml", "--locked", "--lib",
+    "--test", "diagnostic_redaction",
     "--features", "json,serde_json/preserve_order,serde_json/float_roundtrip",
     "--config-file", "vendor/ureq/.config/nextest.toml", "--target-dir", "target",
-    "-E", "test(/^completed_response_recycling::/)",
+    "-E", "test(/^completed_response_recycling::/) | binary(=diagnostic_redaction)",
 )
 
 
@@ -243,10 +244,10 @@ class RunTestsSeamTests(unittest.TestCase):
                 " --test daemon_receipt_ledger"
                 " -E binary(daemon_receipt_ledger)"
                 " --profile default",
-                "cargo nextest run --manifest-path vendor/ureq/Cargo.toml --locked --lib"
+                "cargo nextest run --manifest-path vendor/ureq/Cargo.toml --locked --lib --test diagnostic_redaction"
                 " --features json,serde_json/preserve_order,serde_json/float_roundtrip"
                 " --config-file vendor/ureq/.config/nextest.toml --target-dir target"
-                " -E test(/^completed_response_recycling::/) --profile ureq-recycling",
+                " -E test(/^completed_response_recycling::/) | binary(=diagnostic_redaction) --profile ureq-recycling",
             ],
         )
 
@@ -416,6 +417,7 @@ class GateProfileTests(unittest.TestCase):
         module = load_module()
         owned = "completed_response_recycling::complete_empty_response_survives_read_reset_failure"
         cases = [
+            {"binary": "ureq::diagnostic_redaction", "name": "wire_authentication", "ignored": False},
             {"binary": "ureq", "name": owned, "ignored": False},
             {"binary": "ureq", "name": "fixture::unrelated", "ignored": False},
             {"binary": "other", "name": owned, "ignored": False},
@@ -425,15 +427,18 @@ class GateProfileTests(unittest.TestCase):
             def list_cases(_, command):
                 return [dict(case) for case in cases] if "--manifest-path" in command else []
             with patch.object(module.allure_results, "nextest_list", side_effect=list_cases):
-                self.assertEqual(module.write_rust_plan(root, "queue"), 3)
+                self.assertEqual(module.write_rust_plan(root, "queue"), 4)
             self.assertEqual(json.loads((root / "plan.json").read_text()), [
+                {"binary": "ureq::diagnostic_redaction", "name": "wire_authentication", "ignored": False, "size": "medium"},
                 {"binary": "ureq", "name": owned, "ignored": False, "size": "medium"},
                 {"binary": "ureq", "name": "fixture::unrelated", "ignored": False},
                 {"binary": "other", "name": owned, "ignored": False},
             ])
             junit = root / "junit.xml"
             junit.write_text(
-                '<testsuites><testsuite name="ureq">'
+                '<testsuites><testsuite name="ureq::diagnostic_redaction">'
+                '<testcase name="wire_authentication" time="0.1"/>'
+                '</testsuite><testsuite name="ureq">'
                 f'<testcase name="{owned}" time="0.1"/>'
                 '<testcase name="fixture::unrelated" time="0.1"/>'
                 '</testsuite><testsuite name="other">'
@@ -441,10 +446,11 @@ class GateProfileTests(unittest.TestCase):
                 '</testsuite></testsuites>', encoding="utf-8",
             )
             output = root / "results"
-            self.assertEqual(module.emit_rust(output, "queue", "linux", junit, selection=UREQ_SELECTION), 3)
+            self.assertEqual(module.emit_rust(output, "queue", "linux", junit, selection=UREQ_SELECTION), 4)
             results = [json.loads(path.read_text()) for path in output.glob("*-result.json")]
             sizes = {entry["fullName"]: next(label["value"] for label in entry["labels"] if label["name"] == "size") for entry in results}
             self.assertEqual(sizes, {
+                "ureq::diagnostic_redaction::wire_authentication": "medium",
                 "ureq::" + owned: "medium",
                 "ureq::fixture::unrelated": "small",
                 "other::" + owned: "small",

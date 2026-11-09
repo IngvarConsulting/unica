@@ -72,13 +72,14 @@ LEDGER_FEATURE_SELECTION = (
 )
 
 # A dependency's cfg(test) is not compiled by workspace tests. Its pinned
-# Content-Length fault regressions use the same plan/result path, with no retry.
+# Content-Length and diagnostic regressions use the same plan/result path, with no retry.
 UREQ_RECYCLING_PREFIX = "completed_response_recycling::"
 UREQ_RECYCLING_SELECTION = (
     "--manifest-path", "vendor/ureq/Cargo.toml", "--locked", "--lib",
+    "--test", "diagnostic_redaction",
     "--features", "json,serde_json/preserve_order,serde_json/float_roundtrip",
     "--config-file", "vendor/ureq/.config/nextest.toml", "--target-dir", "target",  # cargo-target: mapped
-    "-E", f"test(/^{UREQ_RECYCLING_PREFIX}/)",
+    "-E", f"test(/^{UREQ_RECYCLING_PREFIX}/) | binary(=diagnostic_redaction)",
 )
 
 
@@ -261,7 +262,10 @@ def write_python_plan(profile: str, results: Path, runner: str, suite: str | Non
 
 
 def rust_case_medium(selection: tuple[str, ...] | None, binary: str, name: str) -> bool:
-    return selection == UREQ_RECYCLING_SELECTION and binary == "ureq" and name.startswith(UREQ_RECYCLING_PREFIX)
+    return selection == UREQ_RECYCLING_SELECTION and (
+        (binary == "ureq" and name.startswith(UREQ_RECYCLING_PREFIX))
+        or binary == "ureq::diagnostic_redaction"
+    )
 
 
 def emit_rust(
@@ -273,7 +277,8 @@ def emit_rust(
     reasons = allure_results.ignore_reasons(REPO_ROOT)
     entries = allure_results.junit_records(junit, runner=runner, profile=profile, reasons=reasons)
     for entry in entries:
-        binary, _, name = entry["fullName"].partition("::")
+        binary = next(label["value"] for label in entry["labels"] if label["name"] == "suite")
+        name = entry["fullName"][len(binary) + 2:]
         if rust_case_medium(selection, binary, name):
             for label in entry["labels"]:
                 if label["name"] == "size":
