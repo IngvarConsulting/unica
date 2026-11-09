@@ -1,9 +1,7 @@
 pub mod daemon;
 pub mod lsp;
-pub mod mcp;
 pub mod runtime_job_worker;
 pub mod workspace_service;
 
-mod canonical_cancellation;
-mod daemon_router;
-mod task_projection;
+#[cfg(test)]
+mod medium_mcp_door_tests;

@@ -5,7 +5,7 @@ use unica_work_control::cancellation::CancellationToken;
 type Control = Arc<dyn Fn() -> Result<(), ControlFailure> + Send + Sync>;
 
 #[derive(Clone, Debug)]
-pub(super) enum ControlFailure {
+pub enum ControlFailure {
     BeforeSend(String),
     Uncertain(String),
 }
@@ -20,7 +20,7 @@ impl std::fmt::Display for ControlFailure {
 }
 
 #[derive(Clone)]
-pub(super) struct CanonicalCancellation {
+pub struct CanonicalCancellation {
     token: CancellationToken,
     state: Arc<(Mutex<State>, Condvar)>,
 }
@@ -34,7 +34,7 @@ struct State {
 }
 
 #[derive(Clone)]
-pub(super) struct ControlJob {
+pub struct ControlJob {
     cancellation: CanonicalCancellation,
     control: Control,
 }
@@ -55,11 +55,11 @@ impl From<CancellationToken> for CanonicalCancellation {
 }
 
 impl CanonicalCancellation {
-    pub(super) fn token(&self) -> CancellationToken {
+    pub fn token(&self) -> CancellationToken {
         self.token.clone()
     }
 
-    pub(super) fn request(&self) -> Option<ControlJob> {
+    pub fn request(&self) -> Option<ControlJob> {
         let mut state = self
             .state
             .0
@@ -84,7 +84,7 @@ impl CanonicalCancellation {
 
     /// Publishing the key precedes both the test observer and Submit. A manual
     /// request already present here must be durably confirmed before Submit.
-    pub(super) fn bind_control(&self, control: Control) -> Result<(), ControlFailure> {
+    pub fn bind_control(&self, control: Control) -> Result<(), ControlFailure> {
         let job = {
             let mut state = self
                 .state
@@ -112,7 +112,7 @@ impl CanonicalCancellation {
         state.settled.clone().unwrap_or(Ok(()))
     }
 
-    pub(super) fn requested(&self) -> bool {
+    pub fn requested(&self) -> bool {
         self.state
             .0
             .lock()
@@ -120,7 +120,7 @@ impl CanonicalCancellation {
             .requested
     }
 
-    pub(super) fn pending_control(&self) -> bool {
+    pub fn pending_control(&self) -> bool {
         let state = self
             .state
             .0
@@ -131,7 +131,7 @@ impl CanonicalCancellation {
 }
 
 impl ControlJob {
-    pub(super) fn run(self) -> Result<(), ControlFailure> {
+    pub fn run(self) -> Result<(), ControlFailure> {
         let mut completion = ControlCompletion {
             job: self.clone(),
             finished: false,
@@ -142,7 +142,7 @@ impl ControlJob {
         result
     }
 
-    pub(super) fn fail_before_send(&self, message: String) {
+    pub fn fail_before_send(&self, message: String) {
         self.settle(Err(ControlFailure::BeforeSend(message)));
     }
 

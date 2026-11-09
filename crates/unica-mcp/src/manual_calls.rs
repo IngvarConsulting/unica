@@ -6,12 +6,12 @@ use std::io::Write;
 use std::sync::{Arc, Condvar, Mutex};
 
 #[derive(Default)]
-pub(super) struct ManualCalls {
+pub struct ManualCalls {
     calls: Mutex<CallOwners>,
     changed: Condvar,
     transport_closed: std::sync::atomic::AtomicBool,
     close_notice: tokio::sync::Notify,
-    #[cfg(test)]
+    #[cfg(feature = "test-support")]
     before_handler: Mutex<Option<Arc<HandlerGate>>>,
 }
 
@@ -29,18 +29,18 @@ impl CallOwners {
     }
 }
 
-#[cfg(test)]
+#[cfg(feature = "test-support")]
 #[derive(Default)]
-pub(super) struct HandlerGate {
+pub struct HandlerGate {
     entered: std::sync::atomic::AtomicBool,
     released: std::sync::atomic::AtomicBool,
     entered_notice: tokio::sync::Notify,
     released_notice: tokio::sync::Notify,
 }
 
-#[cfg(test)]
+#[cfg(feature = "test-support")]
 impl HandlerGate {
-    pub(super) async fn wait(&self) -> bool {
+    pub async fn wait(&self) -> bool {
         tokio::time::timeout(std::time::Duration::from_secs(3), async {
             loop {
                 let notified = self.entered_notice.notified();
@@ -54,7 +54,7 @@ impl HandlerGate {
         .is_ok()
     }
 
-    pub(super) fn release(&self) {
+    pub fn release(&self) {
         self.released
             .store(true, std::sync::atomic::Ordering::Release);
         self.released_notice.notify_waiters();
@@ -74,13 +74,13 @@ impl HandlerGate {
     }
 }
 
-#[cfg(test)]
+#[cfg(feature = "test-support")]
 impl ManualCalls {
-    pub(super) fn install_handler_gate(&self, gate: Arc<HandlerGate>) {
+    pub fn install_handler_gate(&self, gate: Arc<HandlerGate>) {
         *self.before_handler.lock().unwrap() = Some(gate);
     }
 
-    pub(super) async fn before_handler(&self) {
+    pub async fn before_handler(&self) {
         let gate = self.before_handler.lock().unwrap().clone();
         if let Some(gate) = gate {
             gate.hold().await;
@@ -88,13 +88,13 @@ impl ManualCalls {
     }
 }
 
-#[cfg(not(test))]
+#[cfg(not(feature = "test-support"))]
 impl ManualCalls {
-    pub(super) async fn before_handler(&self) {}
+    pub async fn before_handler(&self) {}
 }
 
-pub(super) struct ManualCall {
-    pub(super) cancellation: CanonicalCancellation,
+pub struct ManualCall {
+    pub cancellation: CanonicalCancellation,
     state: Mutex<CallState>,
 }
 
@@ -108,27 +108,27 @@ struct CallState {
     admission: Option<InFlightGuard>,
 }
 
-pub(super) struct DispatchOwner {
+pub struct DispatchOwner {
     registry: Arc<ManualCalls>,
     id: RequestId,
     call: Arc<ManualCall>,
 }
 
-pub(super) struct HandlerOwner {
+pub struct HandlerOwner {
     registry: Arc<ManualCalls>,
     id: RequestId,
     call: Arc<ManualCall>,
 }
 
 impl ManualCalls {
-    pub(super) fn transport_closed(&self) {
+    pub fn transport_closed(&self) {
         self.closed();
         self.transport_closed
             .store(true, std::sync::atomic::Ordering::Release);
         self.close_notice.notify_waiters();
     }
 
-    pub(super) async fn wait_transport_closed(&self) {
+    pub async fn wait_transport_closed(&self) {
         loop {
             let closed = self.close_notice.notified();
             if self
@@ -141,7 +141,7 @@ impl ManualCalls {
         }
     }
 
-    pub(super) async fn initialization_failed(&self) {
+    pub async fn initialization_failed(&self) {
         self.wait_transport_closed().await;
         let entries: Vec<_> = {
             let calls = self
@@ -168,7 +168,7 @@ impl ManualCalls {
     /// A modern sender may reuse an ID after receiving its complete response,
     /// even while the previous send/control still owns its real completion.
     /// Keep those older owners separate from the new cancellation target.
-    pub(super) fn admit(&self, id: RequestId, track_call: bool) -> bool {
+    pub fn admit(&self, id: RequestId, track_call: bool) -> bool {
         let mut calls = self
             .calls
             .lock()
@@ -199,7 +199,7 @@ impl ManualCalls {
         true
     }
 
-    pub(super) fn get(&self, id: &RequestId) -> Option<Arc<ManualCall>> {
+    pub fn get(&self, id: &RequestId) -> Option<Arc<ManualCall>> {
         self.calls
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -208,7 +208,7 @@ impl ManualCalls {
             .cloned()
     }
 
-    pub(super) fn dispatch(self: &Arc<Self>, id: RequestId) -> Option<DispatchOwner> {
+    pub fn dispatch(self: &Arc<Self>, id: RequestId) -> Option<DispatchOwner> {
         let call = self.get(&id)?;
         Some(DispatchOwner {
             registry: self.clone(),
@@ -217,7 +217,7 @@ impl ManualCalls {
         })
     }
 
-    pub(super) fn enter(
+    pub fn enter(
         self: &Arc<Self>,
         id: RequestId,
         admission: InFlightGuard,
@@ -246,7 +246,7 @@ impl ManualCalls {
         })
     }
 
-    pub(super) fn cancel(self: &Arc<Self>, id: &RequestId) -> bool {
+    pub fn cancel(self: &Arc<Self>, id: &RequestId) -> bool {
         let (call, job) = {
             let calls = self
                 .calls
@@ -289,7 +289,7 @@ impl ManualCalls {
         true
     }
 
-    pub(super) fn delivery_done(&self, id: &RequestId, call: &Arc<ManualCall>) {
+    pub fn delivery_done(&self, id: &RequestId, call: &Arc<ManualCall>) {
         let calls = self
             .calls
             .lock()
@@ -303,7 +303,7 @@ impl ManualCalls {
         self.retire(id, call);
     }
 
-    pub(super) fn response_seen(&self, call: &Arc<ManualCall>) {
+    pub fn response_seen(&self, call: &Arc<ManualCall>) {
         let _calls = self
             .calls
             .lock()
@@ -317,7 +317,7 @@ impl ManualCalls {
 
     /// A manual request accepted before EOF still owns its actual frontend
     /// dispatch/control. Unrelated daemon background work is not waited here.
-    pub(super) fn wait_manual_settled(&self) {
+    pub fn wait_manual_settled(&self) {
         let mut calls = self
             .calls
             .lock()
@@ -345,7 +345,7 @@ impl ManualCalls {
         }
     }
 
-    pub(super) fn closed(&self) {
+    pub fn closed(&self) {
         let calls: Vec<_> = self
             .calls
             .lock()
@@ -395,7 +395,7 @@ impl ManualCalls {
 }
 
 impl HandlerOwner {
-    pub(super) fn cancellation(&self) -> CanonicalCancellation {
+    pub fn cancellation(&self) -> CanonicalCancellation {
         self.call.cancellation.clone()
     }
 }

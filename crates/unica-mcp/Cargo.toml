@@ -1,0 +1,43 @@
+[package]
+name = "unica-mcp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[package.metadata.unica]
+component = "service"
+file-io = "owned"
+
+[features]
+default = []
+# Внутренности двери для тестов `unica-daemon` с живым демоном.
+test-support = ["unica-daemon-protocol/test-support", "dep:jsonschema", "dep:tempfile", "dep:unica-workspace", "unica-workspace?/test-support"]
+
+[dependencies]
+unica-application = { path = "../unica-application" }
+unica-bootstrap = { path = "../unica-bootstrap" }
+unica-code-intelligence = { path = "../unica-code-intelligence" }
+unica-daemon-protocol = { path = "../unica-daemon-protocol" }
+unica-diagnostics = { path = "../unica-diagnostics" }
+unica-execution = { path = "../unica-execution" }
+unica-execution-contract = { path = "../unica-execution-contract" }
+unica-refusal = { path = "../unica-refusal" }
+unica-work-control = { path = "../unica-work-control" }
+chrono.workspace = true
+rmcp.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+jsonschema = { workspace = true, optional = true }
+tempfile = { workspace = true, optional = true }
+unica-workspace = { path = "../unica-workspace", optional = true }
+
+[dev-dependencies]
+unica-daemon-protocol = { path = "../unica-daemon-protocol", features = ["test-support"] }
+unica-code-intelligence = { path = "../unica-code-intelligence", features = ["test-support"] }
+unica-workspace = { path = "../unica-workspace", features = ["test-support"] }
+jsonschema.workspace = true
+tempfile.workspace = true
+unica-diagnostics = { path = "../unica-diagnostics", features = ["test-support"] }
+unica-metadata = { path = "../unica-metadata" }
