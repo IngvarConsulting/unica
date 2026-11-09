@@ -521,7 +521,7 @@ impl Drop for ResetDiagnosticOverride {
 fn diagnostics_run_checks_own_findings_and_its_analysis_of_the_saved_module() {
     let _reset = ResetDiagnosticOverride;
     let (provider, analyzer) =
-        unica_coder::infrastructure::daemon_adapters::diagnostics_probe::recording_provider();
+        unica_coder::infrastructure::analysis_composition::diagnostics_probe::recording_provider();
     crate::infrastructure::application_ports::DIAGNOSTIC_PROVIDER_OVERRIDE
         .with(|slot| *slot.borrow_mut() = Some(provider));
     let workspace = diagnosed_workspace();
@@ -545,8 +545,8 @@ fn diagnostics_run_checks_own_findings_and_its_analysis_of_the_saved_module() {
 
     crate::infrastructure::application_ports::DIAGNOSTIC_PROVIDER_OVERRIDE.with(|slot| {
         *slot.borrow_mut() = Some(
-            unica_coder::infrastructure::daemon_adapters::diagnostics_probe::failing_provider(
-                unica_coder::infrastructure::daemon_adapters::diagnostics_probe::AnalyzerRunFailureKind::Exited,
+            unica_coder::infrastructure::analysis_composition::diagnostics_probe::failing_provider(
+                unica_coder::infrastructure::analysis_composition::diagnostics_probe::AnalyzerRunFailureKind::Exited,
             ),
         )
     });
