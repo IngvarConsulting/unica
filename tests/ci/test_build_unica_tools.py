@@ -155,6 +155,65 @@ def runtime_manifest(binary: bytes = b"multidist") -> dict:
 
 
 class BuildUnicaToolsTests(unittest.TestCase):
+    def test_dev_build_publishes_repeatable_lock_bound_runtime(self) -> None:
+        module = load_build_module()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            plugin = root / "plugins/unica"
+            (plugin / "third-party").mkdir(parents=True)
+            lock_path = plugin / "third-party/tools.lock.json"
+            lock_path.write_text(json.dumps({
+                "schemaVersion": 1,
+                "targets": {"linux-x64": {"targetTriple": "x86_64-unknown-linux-gnu"}},
+                "tools": [{"name": "v8-runner"}],
+            }), encoding="utf-8")
+            source_manifest = plugin / "third-party/manifest.json"
+            source_manifest.write_text('{"sourceManifest":true,"tools":[]}', encoding="utf-8")
+
+            def build(args, lock, cfg, *, output_dir):
+                binary = output_dir / "bin/linux-x64/v8-runner"
+                binary.parent.mkdir(parents=True)
+                binary.write_bytes(b"runner")
+                (binary.parent / "runtime-library").write_bytes(b"dependency")
+                (output_dir / "tools.json").write_text(json.dumps({
+                    "targetTriple": cfg["targetTriple"],
+                    "tools": [{"name": "v8-runner", "version": "test",
+                               "binaryPath": "bin/linux-x64/v8-runner",
+                               "sha256": module.sha256(binary)}],
+                }), encoding="utf-8")
+                return 0.0, 0.0
+
+            argv = ["build-unica-tools.py", "--dev", "--target", "linux-x64",
+                    "--repo-root", str(root)]
+            with patch.object(sys, "argv", argv), patch.object(module, "assert_host"), \
+                 patch.object(module, "build_locked_bundle", side_effect=build):
+                module.main()
+                manifest_path = plugin / ".dev-tools/manifest.json"
+                first = manifest_path.read_bytes()
+                manifest = json.loads(first)
+                self.assertTrue(manifest["sourceManifest"])
+                self.assertEqual(manifest["sourceLockSha256"], module.sha256(lock_path))
+                program = plugin / manifest["tools"][0]["binaryPath"]
+                self.assertEqual(program.read_bytes(), b"runner")
+                self.assertEqual((program.parent / "runtime-library").read_bytes(), b"dependency")
+                module.main()
+                second = manifest_path.read_bytes()
+                self.assertNotEqual(first, second)
+                self.assertTrue(program.is_file())
+                with patch.object(module, "build_locked_bundle", side_effect=RuntimeError("failed")):
+                    with self.assertRaisesRegex(RuntimeError, "failed"):
+                        module.main()
+                self.assertEqual(manifest_path.read_bytes(), second)
+                def change_lock(*args, **kwargs):
+                    result = build(*args, **kwargs)
+                    lock_path.write_text(lock_path.read_text() + " ", encoding="utf-8")
+                    return result
+                with patch.object(module, "build_locked_bundle", side_effect=change_lock):
+                    with self.assertRaisesRegex(SystemExit, "lock.*changed"):
+                        module.main()
+                self.assertEqual(manifest_path.read_bytes(), second)
+            self.assertEqual(source_manifest.read_text(), '{"sourceManifest":true,"tools":[]}')
+
     def setUp(self) -> None:
         # Проверенные инструменты кешируются по сумме; тест не читает и не
         # пополняет кеш машины.
