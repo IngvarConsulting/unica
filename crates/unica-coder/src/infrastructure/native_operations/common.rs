@@ -318,6 +318,35 @@ pub(crate) fn write_utf8_bom(path: &Path, content: &str) -> Result<(), String> {
 }
 
 #[cfg(test)]
+mod owner_format_tests {
+    use super::owners_export_format;
+    use unica_source_designer::owner::{PlatformXmlOwner, PlatformXmlOwnerKind};
+
+    fn owner(version: &str) -> PlatformXmlOwner {
+        PlatformXmlOwner {
+            kind: PlatformXmlOwnerKind::Configuration,
+            path: "Configuration.xml".into(),
+            version: Some(version.to_string()),
+            raw: Vec::new(),
+        }
+    }
+
+    /// New files of a write take the export format of its owners.
+    #[test]
+    fn a_write_follows_the_export_format_of_its_owners() {
+        for version in ["2.20", "2.21", "2.22"] {
+            assert_eq!(
+                owners_export_format(&[owner(version), owner(version)]),
+                Ok(version)
+            );
+        }
+        assert_eq!(owners_export_format(&[]), Ok("2.20"));
+        let mixed = owners_export_format(&[owner("2.21"), owner("2.20")]).unwrap_err();
+        assert!(mixed.contains("2.21") && mixed.contains("2.20"), "{mixed}");
+    }
+}
+
+#[cfg(test)]
 mod medium_mutation_tests {
     use super::{guard_active_format_owner, read_utf8_sig_snapshot, write_utf8_bom};
     use std::fs;
@@ -733,8 +762,25 @@ pub(crate) fn detect_format_version(
         crate::infrastructure::platform_xml_owner::resolve_platform_xml_owners(target, context)
             .map_err(|error| error.message)?;
     require_supported_platform_xml_owners(&owners)?;
-    ExportFormatVersion::parse(ACTIVE_FORMAT_PROFILE.export_format)
-        .map_err(|error| error.to_string())
+    ExportFormatVersion::parse(owners_export_format(&owners)?).map_err(|error| error.to_string())
+}
+
+/// The export format the owners of a write target record: new files of the
+/// write follow it, so an edit keeps the format of its set. Owners recording
+/// different formats are refused; without an owner it is the writable default.
+fn owners_export_format(
+    owners: &[unica_source_designer::owner::PlatformXmlOwner],
+) -> Result<&str, String> {
+    let mut versions = owners.iter().filter_map(|owner| owner.version.as_deref());
+    let Some(first) = versions.next() else {
+        return Ok(ACTIVE_FORMAT_PROFILE.export_format);
+    };
+    match versions.find(|version| *version != first) {
+        Some(other) => Err(format!(
+            "the platform XML owners of this write record different export formats {first} and {other}; a source set keeps one export format"
+        )),
+        None => Ok(first),
+    }
 }
 
 /// Re-authorize the current version-owning XML bytes at handler planning time
