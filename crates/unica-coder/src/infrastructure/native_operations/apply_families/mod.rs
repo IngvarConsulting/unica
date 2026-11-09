@@ -24,6 +24,30 @@ use unica_workspace::apply::ApplyStagedState;
 /// mutators proved this through the dispatcher's format guard; the canonical
 /// planner proves it here, over the owner chain of the addressed node, read
 /// through the staged state so no ambient file is touched after admission.
+/// The compatibility mode the request sets when all it does is set the
+/// set's own mode property on its root (`props.set` at `Configuration`).
+fn raised_compatibility_mode(
+    request: &ApplyRequest,
+    source_kind: SourceSetKind,
+) -> Option<unica_source_contract::compatibility::CompatibilityMode> {
+    let property = unica_source_designer::extension_mode::compatibility_mode_property(source_kind)?;
+    let mut raised = None;
+    for operation in request.ops() {
+        let at_root = operation.at().segments().len() == 1
+            && operation.at().segments()[0].kind()
+                == unica_address::address::NodeKind::Configuration;
+        let values = operation.args().get("values")?.as_object()?;
+        if operation.name() != "props.set" || !at_root || values.len() != 1 {
+            return None;
+        }
+        let mode = unica_source_contract::compatibility::CompatibilityMode::parse(
+            values.get(property)?.as_str()?,
+        )?;
+        raised = Some(mode);
+    }
+    raised
+}
+
 fn refuse_targets_outside_writable_profile(
     request: &ApplyRequest,
     binding: &ProviderRootBinding,
@@ -1142,6 +1166,7 @@ pub fn plan_hidden_v13_apply(
     unica_source_designer::extension_mode::refuse_edit_below_minimum_mode(
         configuration.as_deref(),
         binding.source_kind(),
+        raised_compatibility_mode(request, binding.source_kind()),
         &request.at().to_string(),
     )?;
     refuse_targets_outside_writable_profile(request, binding, &mut staged)?;

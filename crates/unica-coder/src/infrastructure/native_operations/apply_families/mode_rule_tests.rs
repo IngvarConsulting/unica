@@ -41,7 +41,8 @@ fn add_fixed_string(length: u32) -> Value {
 }
 
 fn plan(seam: &ApplySeamFixture, op: Value) -> Result<(), ApplyPlanError> {
-    let input = json!({"at": "main:Document.First", "ops": [op], "dryRun": true});
+    let at = op["args"]["at"].clone();
+    let input = json!({"at": at, "ops": [op], "dryRun": true});
     let request = ApplyRequest::parse(input.as_object().unwrap(), &["main"]).unwrap();
     plan_hidden_v13_apply(&request, &seam.binding, &seam.admission()).map(|_| ())
 }
@@ -65,9 +66,23 @@ fn a_fixed_string_longer_than_the_mode_allows_is_refused_before_publishing() {
     plan(&seam, add_fixed_string(100)).unwrap();
 }
 
+fn set_mode(property: &str, mode: &str) -> Value {
+    json!({"op": "props.set", "args": {"at": "main:Configuration", "values": {property: mode}}})
+}
+
+fn refusal_code(error: &ApplyPlanError) -> &str {
+    error
+        .diagnostics()
+        .first()
+        .and_then(|d| d["code"].as_str())
+        .unwrap_or_else(|| panic!("{error:?}"))
+}
+
 /// rule: INV.SOURCE.WRITABLE-PROFILE
 #[test]
-fn a_set_older_than_mode_8_3_8_is_read_only() {
+fn a_set_older_than_mode_8_3_8_is_read_only_but_may_raise_its_mode() {
+    // Another edit in mode 8.3.7 is refused and names the mode, the minimum
+    // and that the mode can be raised; nothing is written.
     let refused = fixture("Version8_3_7");
     let before = tree_snapshot(&refused.source_dir());
     let error = plan(&refused, add_fixed_string(10)).expect_err("mode 8.3.7 is read-only");
@@ -76,8 +91,29 @@ fn a_set_older_than_mode_8_3_8_is_read_only() {
     assert_eq!(diagnostic["code"], "compatibilityModeUnsupported");
     assert_eq!(diagnostic["mode"], "Version8_3_7");
     assert_eq!(diagnostic["minimumMode"], "Version8_3_8");
+    assert_eq!(diagnostic["property"], "CompatibilityMode");
+    assert!(error
+        .to_string()
+        .contains("set CompatibilityMode to Version8_3_8 or newer"));
     assert_eq!(tree_snapshot(&refused.source_dir()), before);
 
+    // Raising the mode to 8.3.8 or newer is the one edit allowed.
+    for raised in ["Version8_3_8", "Version8_3_27"] {
+        plan(
+            &fixture("Version8_3_7"),
+            set_mode("CompatibilityMode", raised),
+        )
+        .unwrap_or_else(|error| panic!("{raised}: {error:?}"));
+    }
+    // Raising it to a mode still older than 8.3.8 is refused.
+    let error = plan(
+        &fixture("Version8_3_7"),
+        set_mode("CompatibilityMode", "Version8_3_6"),
+    )
+    .expect_err("8.3.6 is still read-only");
+    assert_eq!(refusal_code(&error), "compatibilityModeUnsupported");
+
+    // From 8.3.8 on every edit is allowed.
     plan(&fixture("Version8_3_8"), add_fixed_string(10)).unwrap();
 }
 
@@ -103,4 +139,14 @@ fn an_extension_is_read_only_by_its_own_mode() {
         "compatibilityModeUnsupported"
     );
     plan(&extension("Version8_3_8"), edit).unwrap();
+
+    // The extension raises its own mode; another edit of its root does not.
+    plan(
+        &extension("Version8_3_7"),
+        set_mode("ConfigurationExtensionCompatibilityMode", "Version8_3_8"),
+    )
+    .unwrap();
+    let error = plan(&extension("Version8_3_7"), set_mode("Comment", "x"))
+        .expect_err("only raising its own mode is allowed");
+    assert_eq!(refusal_code(&error), "compatibilityModeUnsupported");
 }
