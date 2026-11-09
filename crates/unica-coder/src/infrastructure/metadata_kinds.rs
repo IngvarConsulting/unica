@@ -1,10 +1,10 @@
 use unica_address::address::NodeKind;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use unica_address::module_routes::ModuleRole;
 use unica_bsl::profile::PlatformProfile;
 use unica_source_designer::layout::metadata_kind;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) fn supports_direct_module_role(tag: &str, role: &str) -> bool {
     metadata_kind(tag)
         .and_then(|layout| NodeKind::parse(layout.tag).ok())

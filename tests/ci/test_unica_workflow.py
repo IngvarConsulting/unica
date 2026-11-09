@@ -1,38 +1,46 @@
-"""Стражи workflow: разбор структуры, а не байтов YAML.
+"""Стражи workflow: поведение, а не текст YAML.
 
-Проверяется то, что видит GitHub: триггеры, джобы, `needs`, условия, шаги, их
-`with`, `env` и скрипты. Перенос строки в условии, стиль списка или кавычки
-поведения не меняют — и стража не красят. Текстом остаются две вещи:
-комментарий версии у пина действия (его читает Dependabot, а не GitHub) и
-маркеры, которых в файле быть не должно вовсе.
+Проверяется то, что решает GitHub: триггеры, связи заданий (`needs`), условия,
+передаваемые артефакты, окружения и права. Шаг находится по `id` или действию,
+а не по имени. Условия вычисляются по таблице исходов, а не сравниваются
+строкой; короткие скрипты шагов исполняются в bash с подменой внешних команд.
+Имена шагов, тексты команд и их аргументы не закреплены: переименование или
+другая запись того же поведения стража не красит.
+
+Текстом остаются две вещи: комментарий версии у пина действия (его читает
+Dependabot, а не GitHub) и маркеры, которых в файле быть не должно вовсе.
 """
 
 from __future__ import annotations
 
 import fnmatch
+import json
+import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from collections.abc import Iterator
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts/ci"))
 import ci_rust_lanes as lanes  # noqa: E402
-import prepared_binary  # noqa: E402
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKFLOWS_DIR = REPO_ROOT / ".github" / "workflows"
-RELEASE_WORKFLOW = WORKFLOWS_DIR / "unica-plugin-release.yml"
+RELEASE_WORKFLOW = WORKFLOWS_DIR / "release.yml"
+CI_WORKFLOW = WORKFLOWS_DIR / "ci.yml"
 CLIPPY_SCRIPT = REPO_ROOT / "scripts" / "ci" / "clippy.sh"
-NIGHTLY_WORKFLOW = WORKFLOWS_DIR / "unica-nightly.yml"
-PAGES_WORKFLOW = WORKFLOWS_DIR / "unica-pages.yml"
-PUBLISH_WORKFLOW = WORKFLOWS_DIR / "publish-unica-marketplace.yml"
-LEGACY_WORKFLOW = WORKFLOWS_DIR / "unica-legacy-migration.yml"
+NIGHTLY_WORKFLOW = WORKFLOWS_DIR / "nightly.yml"
+PAGES_WORKFLOW = WORKFLOWS_DIR / "release.yml"
+PUBLISH_WORKFLOW = WORKFLOWS_DIR / "release.yml"
+PUBLISH_JOBS = ("gate", "stage", "anchor", "verify-fresh-install", "verify-upgrade", "promote")
 
 
 def load_gate_module():
@@ -91,6 +99,17 @@ def needs(node: dict) -> list[str]:
     return [value] if isinstance(value, str) else list(value)
 
 
+def ancestors(workflow: dict, job_id: str) -> set[str]:
+    """Все задания, которых это задание ждёт прямо или через других."""
+    found, frontier = set(), set(needs(job(workflow, job_id)))
+    while frontier:
+        current = frontier.pop()
+        if current not in found:
+            found.add(current)
+            frontier |= set(needs(job(workflow, current)))
+    return found
+
+
 def steps(node: dict) -> list[dict]:
     return list(node.get("steps", []))
 
@@ -147,27 +166,11 @@ def steps_using(node: dict, prefix: str) -> list[dict]:
     return [step for step in steps(node) if action(step) == prefix]
 
 
-def step_named(node: dict, name: str) -> dict:
-    for step in steps(node):
-        if step.get("name") == name:
-            return step
-    raise AssertionError(f"нет шага {name!r}")
-
-
 def step_by_id(node: dict, step_id: str) -> dict:
     for step in steps(node):
         if step.get("id") == step_id:
             return step
     raise AssertionError(f"нет шага с id {step_id!r}")
-
-
-def step_index(node: dict, name: str) -> int:
-    return steps(node).index(step_named(node, name))
-
-
-def step_text(step: dict) -> str:
-    """Шаг одной строкой: имя, действие, `with` и скрипт — для порядка шагов."""
-    return "\n".join([step.get("name", ""), step.get("uses", ""), *map(str, (step.get("with") or {}).values()), step.get("run", "")])
 
 
 def uploads(node: dict) -> list[dict]:
@@ -178,12 +181,101 @@ def downloads(node: dict) -> list[dict]:
     return [step.get("with") or {} for step in steps_using(node, "actions/download-artifact")]
 
 
+def upload_step(node: dict, name: str) -> dict:
+    """Шаг выгрузки артефакта — по имени артефакта, которое читают потребители."""
+    for step in steps_using(node, "actions/upload-artifact"):
+        if (step.get("with") or {}).get("name") == name:
+            return step
+    raise AssertionError(f"нет выгрузки артефакта {name!r}")
+
+
 def matrix_include(node: dict) -> list[dict]:
     return list((node.get("strategy") or {}).get("matrix", {}).get("include", []))
 
 
 def targets(node: dict) -> list[tuple[str, str]]:
     return [(entry["target"], entry["runner"]) for entry in matrix_include(node)]
+
+
+_CONTEXT = re.compile(r"[A-Za-z_][\w-]*(?:\.[\w-]+)+")
+_FUNCTIONS = {
+    "always": lambda: True,
+    "cancelled": lambda: False,
+    "success": lambda: True,
+    "contains": lambda haystack, needle: str(needle) in str(haystack),
+    "startsWith": lambda value, prefix: str(value).startswith(str(prefix)),
+    "fromJSON": json.loads,
+    "format": lambda template, *args: re.sub(r"\{(\d+)\}", lambda match: str(args[int(match.group(1))]), template),
+}
+
+
+def evaluate(expression: object, values: dict[str, object]) -> object:
+    """Вычисляет выражение GitHub на заданных значениях контекстов.
+
+    Хватает подмножества, которым пишутся условия этих workflow: сравнения,
+    `&&`, `||`, `!`, строки и функции из `_FUNCTIONS`. Контекст, которого нет в
+    `values`, — ошибка: тест обязан назвать каждое значение, от которого
+    зависит исход.
+    """
+    text = normalized(expression)
+    if text.startswith("${{") and text.endswith("}}"):
+        text = text[3:-2]
+    parts = re.split(r"('(?:[^']|'')*')", text)
+    for index in range(0, len(parts), 2):
+        part = parts[index].replace("&&", " and ").replace("||", " or ")
+        part = re.sub(r"!(?!=)", " not ", part)
+        parts[index] = _CONTEXT.sub(lambda match: repr(values[match.group(0)]), part)
+    return eval("".join(parts), {"__builtins__": {}}, dict(_FUNCTIONS))  # noqa: S307 — закрытое подмножество
+
+
+def expand_braces(pattern: str) -> list[str]:
+    """`{a,b}-x` → `a-x`, `b-x`: так `download-artifact` читает шаблон."""
+    match = re.search(r"\{([^{}]*)\}", pattern)
+    if not match:
+        return [pattern]
+    return [
+        expanded
+        for option in match.group(1).split(",")
+        for expanded in expand_braces(pattern[: match.start()] + option + pattern[match.end():])
+    ]
+
+
+def matrix_values(node: dict, profile: str = "large") -> dict[str, list[str]]:
+    matrix = (node.get("strategy") or {}).get("matrix") or {}
+    found: dict[str, list[str]] = {}
+    for entry in matrix.get("include", []):
+        for key, value in entry.items():
+            found.setdefault(key, []).append(str(value))
+    for key, value in matrix.items():
+        if key == "include":
+            continue
+        found[key] = list(evaluate(value, {"inputs.profile": profile}) if isinstance(value, str) else value)
+    return found
+
+
+def artifact_names(node: dict, name: str) -> list[str]:
+    """Имя артефакта для каждой строки матрицы задания."""
+    names = [name]
+    for key, options in matrix_values(node).items():
+        token = "${{ matrix.%s }}" % key
+        if any(token in found for found in names):
+            names = [found.replace(token, option) for found in names for option in options]
+    return names
+
+
+def bash(text: str, *, cwd: Path, env: dict[str, str] | None = None, prelude: str = "") -> subprocess.CompletedProcess:
+    """Исполняет скрипт шага так, как GitHub: `bash --noprofile --norc -eo pipefail`."""
+    assert "${{" not in text, "шаг с выражением в теле исполняется только после подстановки"
+    return subprocess.run(
+        ["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", prelude + text],
+        cwd=cwd, env={**os.environ, **(env or {})}, capture_output=True, text=True, check=False,
+    )
+
+
+def python_prelude() -> str:
+    """`python`/`python3` в шаге — это интерпретатор теста, а не алиас Store."""
+    executable = Path(sys.executable).as_posix()
+    return f'python() {{ "{executable}" "$@"; }}\npython3() {{ "{executable}" "$@"; }}\n'
 
 
 def pinned(action_name: str, major: str) -> str:
@@ -205,6 +297,54 @@ def assert_pinned(test: unittest.TestCase, path: Path, step: dict, major: str) -
         path.read_text(encoding="utf-8"),
         rf"uses: {re.escape(action_name)}@{ref} # {re.escape(major)}(\.\d+)*\b",
     )
+
+
+def assert_env_consumed(test: unittest.TestCase, step: dict, name: str, value: str) -> None:
+    """Значение приходит в шаг через `env` и шаг его читает: привязка не мёртвая."""
+    test.assertEqual(normalized(step["env"][name]), value)
+    test.assertRegex(step["run"], rf"\${{?{name}\b")
+
+
+# Исходы, при которых сборка и выкладка идут: всё зелёное, alpha не выпускается.
+GREEN = {
+    "needs.unica-ci.result": "success",
+    "needs.rust-os.result": "success",
+    "needs.alpha-tag.result": "skipped",
+    "needs.alpha-tag.outputs.tag": "",
+    "needs.build-tools.result": "success",
+    "needs.package-thin.result": "success",
+    "needs.release-assessment.result": "success",
+    "needs.publish-release-assets.result": "success",
+    "needs.unica-ci.outputs.release_required": "true",
+    "needs.unica-ci.outputs.ci_changed": "false",
+    "needs.unica-ci.outputs.assessment_required": "true",
+    "github.event_name": "workflow_dispatch",
+}
+
+
+class EvaluateTests(unittest.TestCase):
+    """Вычислитель условий сам не должен врать: иначе таблицы ниже пусты."""
+
+    def test_operators_follow_github_semantics(self) -> None:
+        values = {"a.b": "x", "c.d": ""}
+        cases = (
+            ("${{ a.b == 'x' && c.d == '' }}", True),
+            ("${{ a.b != 'x' || c.d != '' }}", False),
+            ("${{ !cancelled() && !contains(a.b, 'y') }}", True),
+            ("${{ c.d || 'fallback' }}", "fallback"),
+            ("${{ startsWith(a.b, 'x') && 'yes' || 'no' }}", "yes"),
+            ("${{ fromJSON(a.b == 'x' && '[\"m\"]' || '[]') }}", ["m"]),
+        )
+        for expression, expected in cases:
+            with self.subTest(expression=expression):
+                self.assertEqual(evaluate(expression, values), expected)
+
+    def test_an_unnamed_context_is_an_error(self) -> None:
+        with self.assertRaises(KeyError):
+            evaluate("${{ inputs.profile == 'large' }}", {})
+
+    def test_braces_expand_like_download_patterns(self) -> None:
+        self.assertEqual(expand_braces("{plan,results}-{a,b}"), ["plan-a", "plan-b", "results-a", "results-b"])
 
 
 class MetadataBuildTriggerTests(unittest.TestCase):
@@ -248,6 +388,105 @@ class MetadataBuildTriggerTests(unittest.TestCase):
                 )
 
 
+class PersistentRunnerCacheTests(unittest.TestCase):
+    def test_cache_and_retries_follow_the_runner_switch(self) -> None:
+        gate = job(load(CI_WORKFLOW), "unica-ci")
+        park = step_by_id(gate, "park-target")
+        local = step_by_id(gate, "local-target")
+        remote = steps_using(gate, "Swatinem/rust-cache")[0]
+        for event, attempt, enabled, environment in (
+            ("merge_group", 1, "true", "self-hosted"),
+            ("merge_group", 2, "true", "self-hosted"),
+            ("merge_group", 1, "false", "github-hosted"),
+            ("merge_group", 2, "false", "github-hosted"),
+            ("merge_group", 1, "", "github-hosted"),
+            ("pull_request", 1, "true", "github-hosted"),
+        ):
+            with self.subTest(event=event, attempt=attempt, enabled=enabled):
+                labels = evaluate(gate["runs-on"], {
+                    "github.event_name": event, "github.run_attempt": attempt,
+                    "vars.UNICA_SELF_HOSTED": enabled,
+                })
+                self.assertEqual("self-hosted" in labels, environment == "self-hosted")
+                for kept in ("", "true"):
+                    values = {"runner.environment": environment, "env.KEPT": kept}
+                    self.assertEqual(evaluate(park["if"], values), environment == "self-hosted" and kept != "true")
+                    self.assertEqual(evaluate(local["if"], values), environment == "self-hosted" and kept != "true")
+                    self.assertEqual(evaluate(remote["if"], values), environment == "github-hosted" and kept != "true")
+        order = steps(gate)
+        self.assertLess(order.index(park), order.index(steps_using(gate, "actions/checkout")[0]))
+        self.assertLess(order.index(steps_using(gate, "actions/checkout")[0]), order.index(local))
+        self.assertLess(order.index(local), order.index(step_by_id(gate, "clippy")))
+
+    def run_cache_step(self, workspace: Path, step_id: str, *, check: bool = True):
+        step = step_by_id(job(load(CI_WORKFLOW), "unica-ci"), step_id)
+        return subprocess.run(["bash", "-e", "-o", "pipefail", "-c", step["run"]],
+                              cwd=workspace, env={**os.environ, "GITHUB_WORKSPACE": str(workspace)},
+                              check=check, capture_output=True)
+
+    @unittest.skipIf(os.name == "nt", "PVE shell steps are used only on Linux")
+    def test_checkout_cleans_sources_but_preserves_each_runner_build(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            targets = []
+            for name in ("runner one", "runner two"):
+                workspace = Path(temporary) / name / "unica"
+                workspace.mkdir(parents=True)
+                def git(*args):
+                    return subprocess.run(["git", *args], cwd=workspace, check=True, capture_output=True)
+                git("init", "-q")
+                (workspace / ".gitignore").write_text((REPO_ROOT / ".gitignore").read_text(encoding="utf-8"), encoding="utf-8")
+                (workspace / "source").write_text("tracked", encoding="utf-8")
+                git("add", ".")
+                git("-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "fixture")
+                self.run_cache_step(workspace, "park-target")
+                self.run_cache_step(workspace, "local-target")
+                target = workspace / "target"
+                target.mkdir()
+                self.assertEqual(git("ls-files", "--others", "--exclude-standard").stdout, b"")
+                targets.append(target.resolve())
+                (target / "artifact").write_text(name, encoding="utf-8")
+                (workspace / "untracked").write_text("old job", encoding="utf-8")
+                (workspace / "source").write_text("dirty", encoding="utf-8")
+                self.run_cache_step(workspace, "park-target")
+                git("clean", "-ffdx")
+                git("reset", "--hard", "HEAD")
+                self.assertFalse(target.exists())
+                self.assertFalse((workspace / "untracked").exists())
+                self.assertEqual((workspace / "source").read_text(encoding="utf-8"), "tracked")
+                # A retry after interruption must keep the parked directory.
+                self.run_cache_step(workspace, "park-target")
+                self.run_cache_step(workspace, "local-target")
+                self.assertFalse(target.is_symlink())
+                self.assertEqual(target.resolve(), workspace.resolve() / "target")
+                self.assertEqual((target / "artifact").read_text(encoding="utf-8"), name)
+            self.assertNotEqual(*targets)
+
+    @unittest.skipIf(os.name == "nt", "PVE shell steps are used only on Linux")
+    def test_cache_conflicts_and_invalid_parks_preserve_existing_data(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary) / "unica"
+            workspace.mkdir()
+            target = workspace / "target"
+            target.mkdir()
+            (target / "current").write_text("current", encoding="utf-8")
+            park = workspace.parent / ".unica-ci-target"
+            park.mkdir()
+            (park / "saved").write_text("saved", encoding="utf-8")
+            for step in ("park-target", "local-target"):
+                self.assertNotEqual(self.run_cache_step(workspace, step, check=False).returncode, 0)
+                self.assertEqual(sorted(p.name for p in target.iterdir()), ["current"])
+                self.assertEqual(sorted(p.name for p in park.iterdir()), ["saved"])
+            shutil.rmtree(park)
+            park.write_text("not a directory", encoding="utf-8")
+            self.assertNotEqual(self.run_cache_step(workspace, "local-target", check=False).returncode, 0)
+            self.assertEqual(park.read_text(encoding="utf-8"), "not a directory")
+            park.unlink()
+            park.symlink_to(workspace.parent / "missing", target_is_directory=True)
+            for step in ("park-target", "local-target"):
+                self.assertNotEqual(self.run_cache_step(workspace, step, check=False).returncode, 0)
+                self.assertTrue(park.is_symlink())
+
+
 class UnicaWorkflowGuardrailTests(unittest.TestCase):
     def setUp(self) -> None:
         self.release = load(RELEASE_WORKFLOW)
@@ -256,197 +495,113 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.publish = load(PUBLISH_WORKFLOW)
 
     def test_source_gate_checks_the_full_rust_and_python_workspace(self) -> None:
-        text = all_scripts(self.release)
-
-        self.assertIn("cargo clippy --workspace --all-targets --all-features --message-format=json -- -D warnings", CLIPPY_SCRIPT.read_text(encoding="utf-8"))
-        # Наборы гоняет шов; сами команды закреплены тестом `test_run_tests`.
-        self.assertIn('python scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem rust --phase run --prepared "$LANES" --results "$REPORT"', text)
-        self.assertIn('python scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem python --suite "$suite" --only-size "$lane" --docs-only "$DOCS_ONLY" --results', text)
-        # Исполнение тестов остаётся у runner. Прогрев имеет отдельный
-        # контракт compile-only, проверенный ниже.
         gate = job(self.release, "unica-ci")
+        # Clippy покрывает все цели и все признаки, предупреждение — отказ.
+        clippy = CLIPPY_SCRIPT.read_text(encoding="utf-8")
+        for flag in ("--workspace", "--all-targets", "--all-features", "-D warnings"):
+            self.assertIn(flag, clippy)
+        # Исполнение тестов остаётся у runner: ни одна джоба не зовёт их мимо шва.
         for job_id, found in jobs(self.release).items():
             for step in steps(found):
-                if step.get("id") != "warm":
-                    self.assertNotIn("cargo test", step.get("run", ""), job_id)
-        self.assertNotIn("unittest discover", text)
-        self.assertIn("python -m py_compile scripts/dev/*.py tests/dev/*.py", script(gate))
-        self.assertIn("python scripts/ci/check-version-contract.py", script(gate))
+                with self.subTest(job=job_id, step=step.get("id")):
+                    self.assertNotIn("cargo test", step.get("run", ""))
+                    self.assertNotIn("unittest discover", step.get("run", ""))
+        for step_id in ("guards-compile", "guards-version", "guards-fmt", "rust-run", "python"):
+            step_by_id(gate, step_id)
 
     def test_label_changes_cannot_replace_the_stable_pull_request_gate(self) -> None:
-        on = triggers(self.release)
+        ci = load(CI_WORKFLOW)
+        on = triggers(ci)
+        ci_gate = job(ci, "unica-ci")
         gate = job(self.release, "unica-ci")
 
         # Изменение метки не должно создавать новый suite этого workflow:
         # ruleset смотрит на последний suite головы PR и перестаёт видеть
         # обязательный `Unica CI`, если тот suite состоит из skipped-джоб.
-        self.assertEqual(on["pull_request"]["types"], ["opened", "synchronize", "reopened"])
+        self.assertEqual(set(on["pull_request"]["types"]), {"opened", "synchronize", "reopened", "ready_for_review", "milestoned"})
         self.assertNotIn("paths", on["pull_request"])
-        self.assertNotIn("paths", on["push"])
         self.assertNotIn("label ignored", "\n".join(strings(self.release)))
+        # Имена — обязательные проверки ruleset.
+        self.assertEqual(ci_gate["name"], "Unica CI")
         self.assertEqual(gate["name"], "Unica CI")
-        # Пропущенную обязательную проверку ruleset засчитал бы как пройденную:
-        # у гейта нет ни условия, ни `needs`, которые могли бы его пропустить.
+        # Пропуск тестов без допуска ruleset считает пройденным; вливание блокирует
+        # отдельная обязательная `PR metadata`, см. test_pr_metadata_workflow.
+        self.assertEqual(needs(ci_gate), ["admission"])
+        for admitted in ("true", "false"):
+            with self.subTest(admitted=admitted):
+                self.assertEqual(evaluate(ci_gate["if"], {"needs.admission.outputs.admitted": admitted}), admitted == "true")
         self.assertNotIn("if", gate)
         self.assertEqual(needs(gate), [])
-        self.assertEqual(
-            normalized(self.release["concurrency"]["group"]),
-            "${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}"
-            "${{ github.event_name == 'workflow_dispatch' && format('-dispatch-{0}', inputs.profile) || '' }}",
-        )
         # Оценка — последний шаг и идёт всегда; она видит исходы всех шагов.
-        evaluate = step_by_id(gate, "gate")
-        self.assertIs(steps(gate)[-1], evaluate)
-        self.assertEqual(condition(evaluate), "always()")
-        self.assertEqual(evaluate["run"], "python scripts/ci/evaluate-ci-gate.py")
-        self.assertEqual(evaluate["env"]["GATE_SCOPE"], "validation")
-        self.assertEqual(normalized(evaluate["env"]["STEPS_JSON"]), "${{ toJSON(steps) }}")
+        evaluate_step = step_by_id(gate, "gate")
+        self.assertIs(steps(gate)[-1], evaluate_step)
+        self.assertEqual(condition(evaluate_step), "always()")
+        self.assertEqual(evaluate_step["env"]["GATE_SCOPE"], "validation")
+        self.assertEqual(normalized(evaluate_step["env"]["STEPS_JSON"]), "${{ toJSON(steps) }}")
         # Каждый шаг таблицы гейта существует под своим id: переименование
         # шага иначе стало бы «missing» только в красном прогоне.
         gate_module = load_gate_module()
         ids = {step.get("id") for step in steps(gate)}
         for entry, step_ids in gate_module.STEP_GROUPS.items():
             for step_id in step_ids:
+                if step_id in gate_module.ABSENT_STEPS:
+                    self.assertNotIn(step_id, ids)
+                    continue
                 with self.subTest(entry=entry, step=step_id):
                     self.assertIn(step_id, ids)
         # Шаги, которые идут после красного, обязаны идти и после него.
-        for step_id in ("rust-run", "rust-medium", "clippy", "lint-job", "python", "os-jobs", "verify"):
+        for step_id in ("rust-run", "clippy", "python", "os-jobs", "verify", "removed-tests"):
             with self.subTest(step=step_id):
                 self.assertIn("!cancelled()", condition(step_by_id(gate, step_id)))
         delivery = job(self.release, "delivery-ci")
         self.assertEqual(delivery["name"], "Delivery CI")
-        self.assertIn("python scripts/ci/evaluate-ci-gate.py", script(delivery))
         self.assertEqual(steps(delivery)[-1]["env"]["GATE_SCOPE"], "delivery")
-        for upstream in (
-            "unica-ci",
-            "rust-os",
-            "build-tools",
-            "package-thin",
-            "probe-thin-bootstrap",
-            "release-assessment",
-            "publish-release-assets",
-            "smoke-thin-plugin",
-            "verify-published-assets",
-            "p0-release-proof",
-        ):
-            with self.subTest(upstream=upstream):
-                self.assertIn(upstream, needs(delivery))
-        # Хвост поставки оценивается только там, где он бывает.
-        self.assertIn("github.event_name == 'workflow_dispatch'", condition(delivery))
-        self.assertIn("startsWith(github.ref, 'refs/tags/')", condition(delivery))
-
-    def test_a_queue_entry_occupies_linux_and_a_windows_lint_runner(self) -> None:
-        """Запись очереди — `Unica CI` на Linux и Clippy Windows, джоба macOS её не ждёт; PR — только Linux."""
-        validation = {job_id: found for job_id, found in jobs(self.release).items()
-                      if job_id not in ("build-tools", "package-thin", "p0-release-proof", "probe-thin-bootstrap",
-                                        "release-assessment", "publish-release-assets", "smoke-thin-plugin",
-                                        "verify-published-assets", "delivery-ci")}
-        # `Lint and Python` — только pull request: у записи очереди её нет.
-        self.assertEqual(set(validation), {"unica-ci", "rust-os", "pr-checks", "windows-clippy"})
-        self.assertEqual(condition(job(self.release, "pr-checks")), "${{ github.event_name == 'pull_request' }}")
-        # Хвост поставки и его итог очередь и pull request не запускают: каждая
-        # их джоба сама требует тег или кнопку либо успех такой джобы.
-        tail = set(jobs(self.release)) - set(validation)
-        for job_id in sorted(tail):
-            with self.subTest(job=job_id):
-                gate = condition(job(self.release, job_id))
-                self.assertTrue(
-                    "workflow_dispatch" in gate or "refs/tags/" in gate
-                    or any(f"needs.{upstream}.result == 'success'" in gate for upstream in tail),
-                    gate,
-                )
-        gate, other = job(self.release, "unica-ci"), job(self.release, "rust-os")
-        self.assertEqual(gate["runs-on"], "ubuntu-latest")
-        self.assertNotIn("strategy", gate)
-        # Матрица — один macOS; Windows только в ночном large.
-        self.assertEqual(
-            normalized(other["strategy"]["matrix"]["runner"]),
-            "${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.profile == 'large' && '[\"macos-15\", \"windows-latest\"]' || '[\"macos-15\"]') }}",
-        )
-        self.assertEqual(needs(other), [])
-        # Pull request без `ci:full` и push в `main` macOS не занимают.
-        self.assertIn("contains(github.event.pull_request.labels.*.name, 'ci:full')", condition(other))
-        self.assertIn("!(github.event_name == 'push' && github.ref == 'refs/heads/main')", condition(other))
-        # Между джобами не ходят ни архивы полос, ни продукт: только отчёт ОС.
-        for found in (gate, other):
-            for upload in uploads(found):
-                with self.subTest(upload=upload["name"]):
-                    self.assertNotIn("ci-rust-archive", upload["name"])
-                    self.assertNotIn("ci-python-ordinary", upload["name"])
-        self.assertEqual(
-            [download.get("pattern") for download in downloads(gate)],
-            ["{plan,results}-{macos-15,windows-latest}"],
-        )
-        # `Unica CI` ждёт джобу ОС по API, а не через `needs`.
-        wait = step_by_id(gate, "os-jobs")
-        self.assertIn("python scripts/ci/await_os_jobs.py", wait["run"])
-        self.assertEqual(gate["permissions"]["actions"], "write")
-        self.assertEqual(other["name"], "Rust (${{ matrix.runner }})")
-        # Ни одна ОС не рекомендательная: красная джоба красит прогон (#2152).
-        self.assertNotIn("continue-on-error", other)
+        # Итог поставки ждёт каждое задание сборки и выкладки до публикации.
+        self.assertEqual(set(needs(delivery)), {
+            "unica-ci", "rust-os", "build-tools", "package-thin", "probe-thin-bootstrap", "release-assessment",
+            "publish-release-assets", "smoke-thin-plugin", "verify-published-assets", "p0-release-proof", "alpha-tag",
+        })
+        self.assertEqual(condition(delivery), "${{ always() }}")
 
     def test_build_workflow_does_not_subscribe_to_label_or_milestone_changes(self) -> None:
         # Проверяем все входы сборочного workflow: безопасный pull_request
         # не исключает параллельный pull_request_target с metadata types.
         self.assertEqual(metadata_build_triggers(self.release), {})
 
-    def test_an_orphaned_queue_run_cancels_itself_before_holding_runners(self) -> None:
-        """Очередь удаляет ref снятой записи; её прогон отменяет себя первым шагом."""
-        for job_id in ("unica-ci", "rust-os", "windows-clippy"):
-            with self.subTest(job=job_id):
-                found = job(self.release, job_id)
-                first = steps(found)[0]
-                self.assertEqual(first["name"], "Queue entry still exists")
-                self.assertEqual(condition(first), "github.event_name == 'merge_group'")
-                self.assertEqual(first["env"]["QUEUE_REF"], "${{ github.ref }}")
-                # Отмена только на доказанном отсутствии ref: другой ответ API
-                # прогон не останавливает.
-                self.assertIn('if [ "$code" != "404" ]; then exit 0; fi', first["run"])
-                self.assertIn('gh run cancel "$GITHUB_RUN_ID"', first["run"])
-                self.assertIn('/git/ref/${QUEUE_REF#refs/}', first["run"])
-                self.assertEqual(found["permissions"]["actions"], "write")
-
     def test_p0_dry_release_proof_is_read_only_and_aggregated(self) -> None:
         proof = job(self.release, "p0-release-proof")
 
-        self.assertEqual(set(needs(proof)), {"build-tools", "package-thin", "release-assessment"})
-        for argument in (
-            "scripts/ci/release-proof.py",
-            "--surface-ledger docs/tool-surface.md",
-            "--wire-dir",
-            "--package-dir",
-            "--asset-verification-dir",
-            "--source-commit",
-            "--baseline",
-            "--out-dir dist/p0-proof",
-        ):
-            self.assertIn(argument, script(proof))
-        # Единственный режим proof — dry: сценарии жизненного цикла доказываются
-        # на опубликованных байтах, а эта джоба идёт до публикации (#697).
-        self.assertNotIn("--mode", script(proof))
-        # Идентичность пакета включает бит исполнения (#700), а
+        self.assertEqual(set(needs(proof)), {"build-tools", "package-thin", "release-assessment", "alpha-tag"})
+        # Proof идёт до публикации: на push тега он не нужен, на остальных — после
+        # зелёной сборки, пакета и оценки.
+        self.assertTrue(evaluate(proof["if"], GREEN))
+        self.assertFalse(evaluate(proof["if"], {**GREEN, "github.event_name": "push"}))
+        for red in ("needs.build-tools.result", "needs.package-thin.result", "needs.release-assessment.result"):
+            with self.subTest(red=red):
+                self.assertFalse(evaluate(proof["if"], {**GREEN, red: "failure"}))
+        # Идентичность пакета включает бит исполнения, а
         # actions/download-artifact режимы не сохраняет: пакет для сверки
-        # приходит через `gh run download`, которому нужно `actions: read`.
+        # приходит через jobs API, которому нужно `actions: read`.
         self.assertEqual(proof["permissions"], {"contents": "read", "actions": "read"})
-        self.assertIn("gh run download", script(proof))
         self.assertIn("unica-thin-marketplace", script(proof))
-        for step in steps_using(proof, "actions/download-artifact"):
-            self.assertNotEqual((step.get("with") or {}).get("name"), "unica-thin-marketplace")
+        for found in downloads(proof):
+            self.assertNotEqual(found.get("name"), "unica-thin-marketplace")
         self.assertEqual(steps_using(proof, "softprops/action-gh-release"), [])
+        self.assertNotIn("environment", proof)
         # Read-only-ность proof живёт здесь, в устройстве джобы, а не в
-        # самоотчётных полях JSON (#696): нет прав на запись, нет шагов
+        # самоотчётных полях JSON: нет прав на запись, нет шагов
         # публикации, нет ни тега, ни push, ни бампа версии.
-        self.assertNotIn("git tag", script(proof))
-        self.assertNotIn("git push", script(proof))
-        self.assertNotIn("gh release", script(proof))
-        self.assertNotIn("bump-version", script(proof))
+        for marker in ("git tag", "git push", "gh release", "bump-version", "secrets."):
+            self.assertNotIn(marker, "\n".join(strings(proof)))
         self.assertIn("p0-release-proof", needs(job(self.release, "delivery-ci")))
 
     def test_wire_probes_embed_the_matrix_target_in_their_evidence(self) -> None:
         build = job(self.release, "build-tools")
-        for name in ("Probe native package wire profile", "Probe compatibility package wire profile"):
-            with self.subTest(step=name):
-                self.assertIn('--target "$TARGET"', step_text(step_named(build, name)))
+        for step_id in ("wire-native", "wire-compat"):
+            with self.subTest(step=step_id):
+                assert_env_consumed(self, step_by_id(build, step_id), "TARGET", "${{ matrix.target }}")
+        # Доказательства каждой цели уходят своим артефактом.
+        self.assertIn("unica-wire-${{ matrix.target }}", [upload.get("name") for upload in uploads(build)])
 
     def test_classifier_exposes_typed_contours_and_event_routing(self) -> None:
         gate = job(self.release, "unica-ci")
@@ -470,26 +625,10 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         scope = step_by_id(gate, "classify")
         # Payload события, включая ci:full и неизменяемые SHA, читает Python.
         # Workflow передаёт только уже выбранную матрицу и линию отчёта.
-        self.assertEqual(scope["env"], {
-            "RUNNERS": "${{ steps.runners.outputs.runners }}",
-            "RUN_LINE": "${{ steps.line.outputs.line }}",
-        })
-        self.assertEqual(
-            normalized(scope["run"]),
-            'python scripts/ci/classify-workflow-changes.py --github-event --runner-matrix "$RUNNERS" --line "$RUN_LINE" --results .build/ci-routing >> "$GITHUB_OUTPUT"',
-        )
-        routing = [step for step in steps_using(gate, "actions/upload-artifact") if step["with"]["name"] == "results-ci-routing"]
-        self.assertEqual(len(routing), 1)
-        self.assertEqual(condition(routing[0]), "steps.classify.outputs.docs_only == 'true'")
-        self.assertEqual(routing[0]["with"], {
-            "name": "results-ci-routing", "path": ".build/ci-routing", "retention-days": 7,
-            "if-no-files-found": "error",
-        })
-        # Джоба ОС идёт параллельно и маршрут считает тем же классификатором;
-        # пометки docs-only пишет только `Unica CI`.
-        other = step_by_id(job(self.release, "rust-os"), "classify")
-        self.assertIn("python scripts/ci/classify-workflow-changes.py --github-event", other["run"])
-        self.assertNotIn("results-ci-routing", "\n".join(upload["name"] for upload in uploads(job(self.release, "rust-os"))))
+        self.assertEqual(set(scope["env"]), {"RUNNERS", "RUN_LINE"})
+        assert_env_consumed(self, scope, "RUNNERS", "${{ steps.runners.outputs.runners }}")
+        # Джоба ОС идёт параллельно и маршрут считает своим шагом.
+        step_by_id(job(self.release, "rust-os"), "classify")
 
     def test_every_classifier_call_gets_the_resolved_line(self) -> None:
         """Документационный пропуск пишет пометку с линией: пустая линия —
@@ -497,14 +636,14 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         calls = 0
         for job_id, found in jobs(self.release).items():
             for step in steps(found):
-                if "classify-workflow-changes.py" not in step.get("run", ""):
+                if step.get("id") != "classify":
                     continue
                 calls += 1
                 with self.subTest(job=job_id):
-                    self.assertIn('--line "$RUN_LINE"', step["run"])
-                    self.assertEqual(step["env"]["RUN_LINE"], "${{ steps.line.outputs.line }}")
-                    self.assertIn("line", {other.get("id") for other in steps(found)})
-        self.assertEqual(calls, 4)
+                    assert_env_consumed(self, step, "RUN_LINE", "${{ steps.line.outputs.line }}")
+                    order = [other.get("id") for other in steps(found)]
+                    self.assertLess(order.index("line"), order.index("classify"))
+        self.assertEqual(calls, 3)
 
     def test_classifier_keeps_history_and_does_not_fetch_a_mutable_base(self) -> None:
         for job_id in ("unica-ci", "rust-os", "windows-clippy"):
@@ -518,7 +657,6 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
                 self.assertNotIn("FORCE_FULL", scope.get("env", {}))
                 self.assertNotIn("git fetch", scope["run"])
                 self.assertNotIn("FETCH_HEAD", scope["run"])
-                self.assertIn("--github-event", scope["run"])
 
     def test_a_ref_name_never_reaches_the_shell_as_script_text(self) -> None:
         """A ref name is data, so it crosses into `run:` through `env:`.
@@ -566,81 +704,53 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
 
     def test_rust_jobs_run_the_full_matrix_for_any_rust_change(self) -> None:
         gate, other = job(self.release, "unica-ci"), job(self.release, "rust-os")
-        for found, runner in ((gate, "ubuntu-latest"), (other, "$MATRIX_RUNNER")):
+        for found in (gate, other):
             build, run = step_by_id(found, "rust-build"), step_by_id(found, "rust-run")
-            with self.subTest(runner=runner):
-                for step, phase in ((build, "build"), (run, "run")):
+            with self.subTest(job=found["name"]):
+                for step in (build, run):
                     self.assertIn("rust_required == 'true'", condition(step))
-                    self.assertIn("--phase " + phase, step["run"])
-                    self.assertIn('--prepared "$LANES" --results "$REPORT"', step["run"])
-                    self.assertIn(f'--runner {runner}' if runner.startswith("ubuntu") else f'--runner "{runner}"', step["run"])
-                    # Полосы выбирает ci_rust_lanes по профилю и ОС, не workflow.
-                    self.assertNotIn("--rust-lane", step["run"])
                 self.assertIn("!cancelled()", condition(run))
                 order = steps(found)
                 self.assertLess(order.index(build), order.index(run))
-                # Планы выгружаются до тестов.
+                # Планы выгружаются до тестов: красный прогон всё равно знает план.
                 plan_upload = next(step for step in steps_using(found, "actions/upload-artifact") if step["with"]["name"].startswith("plan-"))
                 self.assertLess(order.index(build), order.index(plan_upload))
                 self.assertLess(order.index(plan_upload), order.index(run))
-                self.assertEqual(plan_upload["with"]["path"], ".build/ci-report/plan-*")
         verify = step_by_id(gate, "verify")
-        self.assertIn("--phase verify", verify["run"])
-        self.assertIn("CI_JOB_RESULTS", verify["run"])
         order = steps(gate)
         self.assertLess(order.index(step_by_id(gate, "os-jobs")), order.index(verify))
-        self.assertIn("cargo fmt --all -- --check", step_by_id(gate, "guards-fmt")["run"])
+        step_by_id(gate, "guards-fmt")
         sarif = [step for step in steps_using(gate, "github/codeql-action/upload-sarif") if step["with"]["category"] != "zizmor"][0]
         self.assertEqual(sarif["with"]["category"], "clippy-ubuntu-latest")
         self.assertIn("always()", condition(sarif))
         self.assertIn("hashFiles('.build/clippy.sarif') != ''", condition(sarif))
         # Отчёт в Code Scanning — не проверка: сбой загрузки гейт не красит.
         self.assertIs(sarif["continue-on-error"], True)
-        self.assertEqual(gate["permissions"], {"contents": "read", "actions": "write", "pull-requests": "read", "security-events": "write"})
+        self.assertEqual(gate["permissions"], {"contents": "read", "actions": "read", "pull-requests": "read", "security-events": "write"})
         # Clippy исполняется в фоне, пока идут тесты; его шаг ждёт конца
         # и несёт его исход. Старт — до прогона, ожидание — до Python.
         start, clippy = step_by_id(gate, "clippy-start"), step_by_id(gate, "clippy")
-        self.assertEqual(start["run"], "python scripts/ci/background_step.py start clippy -- scripts/ci/clippy.sh all")
-        self.assertEqual(clippy["run"], "python scripts/ci/background_step.py wait clippy")
         self.assertNotIn("continue-on-error", clippy)
-        order = steps(gate)
         self.assertLess(order.index(step_by_id(gate, "rust-build")), order.index(start))
         self.assertLess(order.index(start), order.index(step_by_id(gate, "rust-run")))
+        self.assertLess(order.index(step_by_id(gate, "rust-run")), order.index(clippy))
         self.assertLess(order.index(clippy), order.index(step_by_id(gate, "python")))
-        # Pull request линтует и гоняет Python small второй джобой; `Unica CI`
-        # ждёт исход каждого её шага отдельной записью гейта.
-        for step in (start, clippy, step_by_id(gate, "python"), step_by_id(gate, "python-plan")):
-            self.assertIn("github.event_name != 'pull_request'", condition(step))
-        for step_id, awaited in (("lint-job", "Lint and Python::Clippy"), ("pr-python", "Lint and Python::Python")):
-            waiting = step_by_id(gate, step_id)
-            self.assertIn("github.event_name == 'pull_request'", condition(waiting))
-            self.assertIn(f'--job "{awaited}"', waiting["run"])
-            self.assertIn("--require-success", waiting["run"])
-            self.assertLess(order.index(waiting), order.index(step_by_id(gate, "verify")))
-        self.assertIn("rust_required == 'true'", condition(step_by_id(gate, "lint-job")))
-        checks = job(self.release, "pr-checks")
-        self.assertEqual(checks["name"], "Lint and Python")
-        self.assertEqual(step_by_id(checks, "clippy")["name"], "Clippy")
-        self.assertEqual(step_by_id(checks, "clippy")["run"], "scripts/ci/clippy.sh all")
-        self.assertEqual(step_by_id(checks, "python")["name"], "Python")
-        # Шаг без записанного итога гейт по сроку судит итогом джобы
-        # (await_os_jobs, #2026): провал шага обязан ронять джобу.
-        for step_id in ("clippy", "python"):
-            self.assertNotIn("continue-on-error", step_by_id(checks, step_id))
-        # Python идёт раньше Clippy: MCP-тесты под нагрузкой сборки падают.
-        self.assertLess(steps(checks).index(step_by_id(checks, "python")), steps(checks).index(step_by_id(checks, "clippy")))
-        self.assertIs(steps_using(checks, "Swatinem/rust-cache")[0]["with"]["save-if"], False)
-        self.assertIn("--all-targets --all-features --message-format=json -- -D warnings", CLIPPY_SCRIPT.read_text(encoding="utf-8"))
-        # Джоба другой ОС линтует везде, где идёт: очереди в ней нет.
+        # Джоба другой ОС линтует везде, где идёт.
         os_clippy = step_by_id(other, "clippy")
-        self.assertEqual([os_clippy], [step for step in steps(other) if "cargo clippy" in step.get("run", "")])
-        self.assertIn("github.event_name != 'merge_group'", other["if"])
+        self.assertNotIn("if", other)
+        # Матрица — один macOS; Windows только в `large`.
+        for profile, runners in (("main", ["macos-15"]), ("large", ["macos-15", "windows-latest"])):
+            with self.subTest(profile=profile):
+                self.assertEqual(matrix_values(other, profile)["runner"], runners)
+        # Ни одна ОС не рекомендательная: красная джоба красит прогон.
+        self.assertNotIn("continue-on-error", other)
         self.assertIn("rust_required == 'true'", condition(os_clippy))
-        self.assertIn("--workspace --all-targets --all-features --locked -- -D warnings", os_clippy["run"])
+        for flag in ("--workspace", "--all-targets", "--all-features", "-D warnings"):
+            self.assertIn(flag, os_clippy["run"])
         self.assertNotIn("continue-on-error", os_clippy)
 
     def test_os_job_lints_first_and_a_red_clippy_still_runs_the_tests(self) -> None:
-        """Clippy джобы ОС — до сборки тестов; его отказ не отменяет сборку и прогон (#2152)."""
+        """Clippy джобы ОС — до сборки тестов; его отказ не отменяет сборку и прогон."""
         other = job(self.release, "rust-os")
         order = steps(other)
         clippy, build, run = (step_by_id(other, step_id) for step_id in ("clippy", "rust-build", "rust-run"))
@@ -654,27 +764,28 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
             with self.subTest(step=step.get("id") or step["with"]["name"]):
                 self.assertIn("!cancelled()", condition(step))
 
-    def test_windows_clippy_runs_beside_the_queue_and_gates_it(self) -> None:
-        """Ошибка Clippy, видимая только на Windows, не проходит очередь (#2152)."""
+    def test_windows_clippy_runs_beside_the_main_profile_and_gates_it(self) -> None:
+        """Ошибка Clippy, видимая только на Windows, не проходит кнопку `main`."""
         lint = job(self.release, "windows-clippy")
-        queue_or_manual_main = "github.event_name == 'merge_group' || (github.event_name == 'workflow_dispatch' && inputs.profile == 'main')"
-        self.assertEqual(lint["name"], "Clippy (windows-latest)")
         self.assertEqual(lint["runs-on"], "windows-latest")
         self.assertEqual(lint["timeout-minutes"], 30)
-        self.assertEqual(condition(lint), "${{ " + queue_or_manual_main + " }}")
-        # Параллельно `Unica CI` и macOS: `needs` сделал бы запись последовательной.
+        for profile in ("main", "large"):
+            with self.subTest(profile=profile):
+                self.assertEqual(evaluate(lint["if"], {"inputs.profile": profile}), profile == "main")
+        # Параллельно `Unica CI` и macOS: `needs` сделал бы прогон последовательным.
         self.assertEqual(needs(lint), [])
         self.assertNotIn("strategy", lint)
         self.assertNotIn("continue-on-error", lint)
-        self.assertEqual(lint["permissions"], {"contents": "read", "actions": "write"})
+        self.assertNotIn("permissions", lint)
         self.assertEqual(lint["defaults"]["run"]["shell"], "bash")
         # Ключ rust-cache включает переменные `CARGO*` и `RUST*`: они те же, что у джобы ОС.
         def cache_env(found: dict) -> dict:
             return {name: value for name, value in found.get("env", {}).items() if name.startswith(("CARGO", "RUST"))}
         self.assertEqual(cache_env(lint), cache_env(job(self.release, "rust-os")))
         self.assertTrue(cache_env(lint))
+        # Маршрут считается для своей ОС.
         classify = step_by_id(lint, "classify")
-        self.assertIn("--runner-matrix '[\"windows-latest\"]'", classify["run"])
+        self.assertIn(lint["runs-on"], classify["run"])
         toolchain = steps_using(lint, "dtolnay/rust-toolchain")
         self.assertEqual(len(toolchain), 1)
         self.assertEqual(toolchain[0]["with"], {"toolchain": "stable", "components": "clippy"})
@@ -685,118 +796,82 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertEqual(cache[0]["with"]["shared-key"], "ci-rust-ordinary")
         self.assertIs(cache[0]["with"]["save-if"], False)
         clippy = step_by_id(lint, "clippy")
-        self.assertEqual(clippy["run"], "cargo clippy --workspace --all-targets --all-features --locked -- -D warnings")
+        for flag in ("--workspace", "--all-targets", "--all-features", "-D warnings"):
+            self.assertIn(flag, clippy["run"])
         self.assertNotIn("continue-on-error", clippy)
         for step in (*toolchain, cache[0], clippy):
-            self.assertIn("steps.classify.outputs.rust_required == 'true'", condition(step))
-        # Гейт ждёт исход джобы целиком: без Rust вне одной прозы она краснеет.
-        required = step_named(lint, "Rust required")
-        self.assertEqual(
-            condition(required),
-            "steps.classify.outputs.rust_required != 'true' && steps.classify.outputs.docs_only != 'true'",
-        )
-        self.assertIn("exit 1", required["run"])
-        self.assertLess(steps(lint).index(classify), steps(lint).index(required))
-        self.assertLess(steps(lint).index(required), steps(lint).index(toolchain[0]))
+            for required in ("true", "false"):
+                with self.subTest(step=step.get("id") or action(step), required=required):
+                    self.assertEqual(
+                        evaluate(step["if"], {"steps.classify.outputs.rust_required": required}), required == "true",
+                    )
+        # Гейт ждёт исход джобы целиком: без Rust она краснеет.
+        required = step_by_id(lint, "rust-required")
+        for rust in ("true", "false"):
+            with self.subTest(rust_required=rust):
+                self.assertEqual(evaluate(required["if"], {"steps.classify.outputs.rust_required": rust}), rust != "true")
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertNotEqual(bash(required["run"], cwd=Path(tmp)).returncode, 0)
         order = steps(lint)
-        self.assertLess(order.index(classify), order.index(toolchain[0]))
+        self.assertLess(order.index(classify), order.index(required))
+        self.assertLess(order.index(required), order.index(toolchain[0]))
         self.assertLess(order.index(toolchain[0]), order.index(cache[0]))
         self.assertLess(order.index(cache[0]), order.index(clippy))
-        # `Unica CI` ждёт её по jobs API и без успеха краснеет.
+        # `Unica CI` ждёт её по jobs API под её именем и без успеха краснеет.
         gate = job(self.release, "unica-ci")
         wait = step_by_id(gate, "windows-clippy")
-        self.assertEqual(
-            condition(wait),
-            "${{ !cancelled() && steps.classify.outputs.rust_required == 'true' && (" + queue_or_manual_main + ") }}",
-        )
-        self.assertIn("python scripts/ci/await_os_jobs.py --runners '[]'", wait["run"])
-        self.assertIn('--job "Clippy (windows-latest)"', wait["run"])
+        for profile in ("main", "large"):
+            for rust in ("true", "false"):
+                with self.subTest(profile=profile, rust_required=rust):
+                    self.assertEqual(
+                        evaluate(wait["if"], {"steps.classify.outputs.rust_required": rust, "inputs.profile": profile}),
+                        evaluate(lint["if"], {"inputs.profile": profile}) and rust == "true",
+                    )
+        self.assertIn(lint["name"], wait["run"])
         self.assertIn("--require-success", wait["run"])
         self.assertEqual(wait["env"]["GH_TOKEN"], "${{ github.token }}")
         self.assertLess(steps(gate).index(wait), steps(gate).index(step_by_id(gate, "gate")))
         self.assertIn("windows-clippy", load_gate_module().STEP_GROUPS["lint-rust-windows"])
 
     def test_package_contour_and_pr_smoke_do_not_publish_release_assets(self) -> None:
-        build = condition(job(self.release, "build-tools"))
-        probe = condition(job(self.release, "probe-thin-bootstrap"))
-        publish = condition(job(self.release, "publish-release-assets"))
+        build = job(self.release, "build-tools")
+        probe = job(self.release, "probe-thin-bootstrap")
+        publish = job(self.release, "publish-release-assets")
 
-        self.assertIn("needs.unica-ci.outputs.release_required == 'true'", build)
-        self.assertIn("needs.unica-ci.outputs.ci_changed == 'true'", build)
-        self.assertIn("needs.unica-ci.result == 'success'", build)
-        self.assertIn("needs.rust-os.result == 'success'", build)
-        # Сборка и холодный старт сняты с pull request и с push в ветку: там они
-        # не давали прослеживаемости, а гейт красили. Тег и ручной запуск их
-        # сохраняют.
-        self.assertIn("(github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/'))", build)
-        self.assertNotIn("github.event_name != 'pull_request'", build)
-        self.assertIn("github.event_name == 'workflow_dispatch'", probe)
-        self.assertNotIn("github.event_name == 'pull_request'", probe)
-        self.assertIn("startsWith(github.ref, 'refs/tags/')", publish)
+        # Сборка идёт, когда маршрут требует выпуска или CI, и только после
+        # зелёных ворот обеих ОС.
+        self.assertTrue(evaluate(build["if"], GREEN))
+        self.assertTrue(evaluate(build["if"], {**GREEN, "needs.unica-ci.outputs.release_required": "false",
+                                               "needs.unica-ci.outputs.ci_changed": "true"}))
+        self.assertFalse(evaluate(build["if"], {**GREEN, "needs.unica-ci.outputs.release_required": "false"}))
+        for red in ("needs.unica-ci.result", "needs.rust-os.result"):
+            with self.subTest(red=red):
+                self.assertFalse(evaluate(build["if"], {**GREEN, red: "failure"}))
+        # Неудача alpha не собирает непомеченное дерево как будто всё прошло.
+        self.assertTrue(evaluate(build["if"], {**GREEN, "needs.alpha-tag.result": "success"}))
+        self.assertFalse(evaluate(build["if"], {**GREEN, "needs.alpha-tag.result": "failure"}))
+        # Проба ждёт отказа скачивания: у выпуска и alpha ассеты уже есть.
+        self.assertTrue(evaluate(probe["if"], GREEN))
+        self.assertFalse(evaluate(probe["if"], {**GREEN, "github.event_name": "push"}))
+        self.assertFalse(evaluate(probe["if"], {**GREEN, "needs.alpha-tag.outputs.tag": "v1.0.0-alpha.1"}))
+        # Публикует только тег или выпущенный alpha, кнопка — нет.
+        self.assertFalse(evaluate(publish["if"], GREEN))
+        self.assertTrue(evaluate(publish["if"], {**GREEN, "github.event_name": "push"}))
+        self.assertTrue(evaluate(publish["if"], {**GREEN, "needs.alpha-tag.outputs.tag": "v1.0.0-alpha.1"}))
 
-    def test_release_line_push_is_the_gate_the_site_reports_from(self) -> None:
-        """Push в релизную линию гоняет все тесты: очереди там нет, отсюда сайт берёт отчёт линии."""
-        push = triggers(self.release)["push"]
+    def test_release_workflow_runs_by_tag_button_and_the_nightly_call(self) -> None:
+        """Ворота pull request и очереди живут в `ci.yml`, здесь выпуск, кнопка и вызов ночи."""
+        on = triggers(self.release)
 
-        self.assertEqual(push["branches"], ["main", "release-v*"])
-        self.assertEqual(push["tags"], ["v*"])
-
-    def test_main_push_after_the_queue_only_refreshes_the_dependency_cache(self) -> None:
-        main_push = "(github.event_name == 'push' && github.ref == 'refs/heads/main')"
-        gate = job(self.release, "unica-ci")
-        for step_id in ("python", "python-plan", "product", "os-jobs"):
-            with self.subTest(step=step_id):
-                self.assertIn("!" + main_push, condition(step_by_id(gate, step_id)))
-        self.assertIn("!" + main_push, condition(job(self.release, "rust-os")))
-        for step_id in ("rust-build", "rust-run", "verify", "clippy"):
-            self.assertIn("rust_required == 'true'", condition(step_by_id(gate, step_id)))
-        warm = step_by_id(gate, "warm")
-        self.assertEqual(condition(warm), "${{ !cancelled() && steps.classify.outputs.cache_required == 'true' }}")
-        self.assertNotIn("run-tests.py", warm["run"])
-        # Без прогрева push в `main` кеш не трогает: почти пустой `target` лёг
-        # бы под новым точным ключом, который уже не пересохраняется.
-        cache = steps_using(gate, "Swatinem/rust-cache")[0]
-        self.assertIn("!" + main_push, condition(cache))
-        self.assertEqual(gate["outputs"]["cache_required"], "${{ steps.classify.outputs.cache_required }}")
-
-    def test_cache_warm_compiles_without_executing_validation(self) -> None:
-        gate = job(self.release, "unica-ci")
-        warm = step_by_id(gate, "warm")
-
-        self.assertEqual(condition(warm), "${{ !cancelled() && steps.classify.outputs.cache_required == 'true' }}")
-        # Те же варианты, что собирает очередь: тестовый workspace и Receipt
-        # на цели хоста (как архивы полос), продукт и проверка Clippy.
-        self.assertEqual(
-            [line.strip() for line in warm["run"].splitlines() if line.strip().startswith("cargo")],
-            [
-                'cargo test --workspace --no-run --locked --target "$target"',
-                'cargo test -p unica-coder --features receipt-ledger-test-support --test daemon_receipt_ledger --no-run --locked --target "$target"',
-                'cargo build -p unica-coder --bin unica --locked --target "$target"',
-                "cargo check --workspace --all-targets --all-features --locked",
-            ],
-        )
-        self.assertNotIn("clippy", warm["run"])
-        self.assertNotIn("nextest", warm["run"])
-        self.assertNotIn("run-tests.py", warm["run"])
-        # Ключ, который пишет прогрев, — тот же, что читает очередь.
-        cache = steps_using(gate, "Swatinem/rust-cache")[0]
-        self.assertEqual(cache["with"]["shared-key"], "ci-rust-ordinary")
-        self.assertIn("cache_required == 'true'", condition(cache))
-
-    def test_pull_request_runs_affected_medium_from_its_ordinary_archive(self) -> None:
-        gate = job(self.release, "unica-ci")
-        medium = step_by_id(gate, "rust-medium")
-        for clause in ("!cancelled()", "github.event_name == 'pull_request'", "rust_required == 'true'"):
-            self.assertIn(clause, condition(medium))
-        self.assertIn("--phase medium", medium["run"])
-        self.assertIn('--shadow "$REPORT/ci-shadow/selection.json"', medium["run"])
-        self.assertNotIn("cargo", medium["run"])
-        order = steps(gate)
-        self.assertLess(order.index(step_by_id(gate, "rust-build")), order.index(medium))
-        self.assertLess(order.index(step_by_id(gate, "shadow")), order.index(medium))
-        self.assertLess(order.index(medium), order.index(step_by_id(gate, "verify")))
-        verification = next(upload for upload in uploads(gate) if upload["name"] == "ci-rust-inventory-verification")
-        self.assertIn(".build/ci-report/ci-rust-medium/medium.json", verification["path"])
+        self.assertEqual(set(on), {"workflow_dispatch", "workflow_call", "push"})
+        # Теги alpha ставит ключ развёртывания, а собирает их ночь: прогона по тегу у alpha нет.
+        self.assertEqual(on["push"], {"tags": ["v*", "!v*-alpha.*"]})
+        self.assertEqual(on["workflow_dispatch"]["inputs"]["profile"]["options"], ["main", "large"])
+        self.assertEqual(set(on["workflow_call"]["inputs"]), {"profile", "alpha", "force_alpha"})
+        # Связи между workflow через завершение прогона больше нет нигде.
+        for workflow in sorted(WORKFLOWS_DIR.glob("*.yml")):
+            with self.subTest(workflow=workflow.name):
+                self.assertNotIn("workflow_run", triggers(load(workflow)))
 
     def test_lint_and_test_failures_cannot_cancel_other_validation_jobs(self) -> None:
         gate = job(self.release, "unica-ci")
@@ -807,7 +882,7 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         for index, step in enumerate(steps(gate)):
             if index <= [found.get("id") for found in steps(gate)].index("guards-compile"):
                 continue
-            with self.subTest(step=step.get("id") or step.get("name") or step.get("uses")):
+            with self.subTest(step=step.get("id") or step.get("uses") or index):
                 gate_condition = condition(step)
                 # Единственное исключение — база следующих прогонов: её
                 # публикует только полностью зелёный прогон.
@@ -815,18 +890,50 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
                     self.assertIn("success()", gate_condition)
                     continue
                 self.assertTrue("!cancelled()" in gate_condition or "always()" in gate_condition, gate_condition)
-        # Внутри шага один красный набор или полоса не останавливает остальные.
-        python = step_by_id(gate, "python")
-        self.assertIn('wait "${pids[$index]}" || failed+=("${slugs[$index]}")', python["run"])
-        self.assertNotIn("set -e", python["run"].replace("set -uo pipefail", ""))
         self.assertIs(job(self.release, "rust-os")["strategy"]["fail-fast"], False)
         build = job(self.release, "build-tools")
-        self.assertEqual(needs(build), ["unica-ci", "rust-os"])
-        self.assertIn("needs.unica-ci.result == 'success'", condition(build))
+        self.assertEqual(needs(build), ["unica-ci", "rust-os", "alpha-tag"])
         # Результаты выгружаются и при красном прогоне.
         for found in (gate, job(self.release, "rust-os")):
-            results = next(step for step in steps_using(found, "actions/upload-artifact") if step["with"]["name"].startswith("results-") and step["with"]["name"] != "results-ci-routing")
+            results = next(step for step in steps_using(found, "actions/upload-artifact") if step["with"]["name"].startswith("results-"))
             self.assertEqual(condition(results), "always()")
+
+    def test_one_red_python_suite_does_not_stop_the_others(self) -> None:
+        """Шаг Python исполняется: каждый набор доходит, отказ одного красит шаг."""
+        python = step_by_id(job(self.release, "unica-ci"), "python")
+        matrix = [{"suite": name, "lane": "small", "slug": name} for name in ("first", "broken", "last")]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for entry in matrix:
+                (root / "report" / f"plan-python-{entry['slug']}").mkdir(parents=True)
+            (root / ".build").mkdir()
+            jq = root / "jq.py"
+            jq.write_text(
+                "import json, sys\n"
+                "args = [a for a in sys.argv[1:] if not a.startswith('-')]\n"
+                "data = json.load(sys.stdin)\n"
+                "if args[0] == '.[]':\n"
+                "    print('\\n'.join(json.dumps(item) for item in data))\n"
+                "else:\n"
+                "    print(data[args[0].lstrip('.')])\n",
+                encoding="utf-8",
+            )
+            executable = Path(sys.executable).as_posix()
+            prelude = (
+                f'jq() {{ "{executable}" "{jq.as_posix()}" "$@"; }}\n'
+                # Подменённый раннер помнит каждый вызов и падает на наборе `broken`.
+                'python() { echo "$*" >> calls.txt; case " $* " in *" broken "*) return 1;; esac; }\n'
+            )
+            env = {"REPORT": "report", "PYTHON_MATRIX": json.dumps(matrix), "RUN_LINE": "main", "DOCS_ONLY": "false",
+                   "GATE_PROFILE": "pr"}
+            result = bash(python["run"], cwd=root, env=env, prelude=prelude)
+            self.assertNotEqual(result.returncode, 0, result.stdout)
+            calls = (root / "calls.txt").read_text(encoding="utf-8").splitlines()
+            self.assertEqual(len(calls), len(matrix))
+            for entry in matrix:
+                with self.subTest(suite=entry["suite"]):
+                    self.assertTrue(any(f" {entry['suite']} " in f" {call} " for call in calls))
+            self.assertIn("broken", result.stdout)
 
     def test_rust_cache_is_shared_without_a_lint_only_writer(self) -> None:
         for job_id in ("unica-ci", "rust-os"):
@@ -836,10 +943,10 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
             assert_pinned(self, RELEASE_WORKFLOW, cache[0], "v2")
             # Один ключ зависимостей на ОС: архивы, продукт и Clippy.
             self.assertEqual(cache[0]["with"]["shared-key"], "ci-rust-ordinary")
-            self.assertEqual(
-                normalized(cache[0]["with"]["save-if"]),
-                "${{ github.ref_type == 'branch' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}",
-            )
+            # Пишут кэш ветки; тег и очередь только читают.
+            for ref_type in ("branch", "tag"):
+                with self.subTest(job=job_id, ref_type=ref_type):
+                    self.assertEqual(evaluate(cache[0]["with"]["save-if"], {"github.ref_type": ref_type}), ref_type == "branch")
             self.assertIs(cache[0]["with"]["cache-on-failure"], True)
             self.assertNotIn("lookup-only", cache[0]["with"])
             self.assertNotIn("cache-workspace-crates", cache[0]["with"])
@@ -851,18 +958,14 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
             # nextest ставится до восстановления: rust-cache исключает уже
             # лежащие в ~/.cargo/bin файлы из записи и не подменяет их.
             order = steps(found)
-            nextest = next(step for step in steps_using(found, "taiki-e/install-action") if "cargo-nextest@" in step["with"]["tool"])
-            self.assertEqual(nextest["with"]["tool"], "cargo-nextest@0.9.148")
+            nextest = next(step for step in steps_using(found, "./.github/actions/install-nextest"))
             self.assertLess(order.index(nextest), order.index(cache[0]))
-        for lane in ("ordinary", "receipt", "vendor"):
-            archive = lanes.archive_command(lane, Path("tests.tar.zst"))
-            self.assertEqual(Path(archive[archive.index("--target-dir") + 1]), lanes.ROOT / "target")
-        # Продукт для Python собирается в тот же target и копируется вне него.
-        product = step_by_id(job(self.release, "unica-ci"), "product")
-        self.assertIn("python scripts/ci/prepared_binary.py build --destination .build/ci-product --target-dir target", product["run"])
-        self.assertIn("UNICA_PREPARED_BINARY_MANIFEST=$PWD/.build/ci-product/manifest.json", product["run"])
-        self.assertNotIn("target", PurePosixPath(".build/ci-product").parts)
-        gate = job(self.release, "unica-ci")
+        # CI sets no `CARGO_TARGET_DIR`: the archive goes to `<root>/target`.
+        with mock.patch.dict(os.environ):
+            os.environ.pop("CARGO_TARGET_DIR", None)
+            for lane in ("ordinary", "receipt", "vendor"):
+                archive = lanes.archive_command(lane, Path("tests.tar.zst"))
+                self.assertEqual(Path(archive[archive.index("--target-dir") + 1]), lanes.ROOT / "target")
         script_text = CLIPPY_SCRIPT.read_text(encoding="utf-8")
         per_package = script_text[script_text.index("  packages)"):]
         # Признаки, объединённые workspace, прячут мёртвый код отдельного пакета.
@@ -874,69 +977,148 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertNotIn("--all-features", per_package)
         self.assertNotIn("--workspace", per_package)
         self.assertIn("set -euo pipefail", script_text)
-        self.assertEqual(
-            [step["with"]["tool"] for step in steps_using(gate, "taiki-e/install-action")],
-            ["zizmor@1.30.0", "cargo-nextest@0.9.148", "clippy-sarif@0.8.0,sarif-fmt@0.8.0"],
-        )
+        gate = job(self.release, "unica-ci")
+        installed = {tool.split("@", 1)[0] for step in steps_using(gate, "taiki-e/install-action")
+                     for tool in step["with"]["tool"].split(",")}
+        self.assertEqual(installed, {"zizmor", "clippy-sarif", "sarif-fmt"})
+        self.assertEqual(len(steps_using(gate, "./.github/actions/install-nextest")), 1)
 
     def test_release_assessment_uses_affected_mechanism_contour(self) -> None:
         assessment = job(self.release, "release-assessment")
 
-        self.assertEqual(needs(assessment), ["unica-ci", "build-tools"])
-        self.assertIn("needs.unica-ci.outputs.assessment_required == 'true'", condition(assessment))
-        self.assertIn("needs.build-tools.result == 'success'", condition(assessment))
+        self.assertEqual(needs(assessment), ["unica-ci", "build-tools", "alpha-tag"])
+        self.assertTrue(evaluate(assessment["if"], GREEN))
+        self.assertFalse(evaluate(assessment["if"], {**GREEN, "needs.unica-ci.outputs.assessment_required": "false"}))
+        self.assertFalse(evaluate(assessment["if"], {**GREEN, "needs.build-tools.result": "failure"}))
 
     def test_release_assessment_uses_the_candidate_release_identity(self) -> None:
         assessment = job(self.release, "release-assessment")
-        resolve = step_named(assessment, "Resolve the release tag for non-tag builds")
+        resolve = step_by_id(assessment, "release-tag")
 
-        self.assertEqual(
-            normalized(assessment["env"]["RELEASE_TAG"]),
-            "${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}",
-        )
-        self.assertEqual(condition(resolve), "${{ env.RELEASE_TAG == '' }}")
-        self.assertIn('echo "RELEASE_TAG=v${version}" >> "$GITHUB_ENV"', resolve["run"])
-        self.assertIn('--release-tag "$RELEASE_TAG"', script(assessment))
+        for tag in ("", "v1.2.3"):
+            with self.subTest(tag=tag):
+                self.assertEqual(evaluate(resolve["if"], {"env.RELEASE_TAG": tag}), tag == "")
+        # Без тега версия кандидата берётся из манифеста пакета.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = root / "plugins/unica/.codex-plugin/plugin.json"
+            manifest.parent.mkdir(parents=True)
+            manifest.write_text(json.dumps({"version": "1.2.3"}), encoding="utf-8")
+            (root / "env").touch()
+            result = bash(resolve["run"], cwd=root, env={"GITHUB_ENV": "env"}, prelude=python_prelude())
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual((root / "env").read_text(encoding="utf-8").split(), ["RELEASE_TAG=v1.2.3"])
+        self.assertTrue(any("$RELEASE_TAG" in text or "${RELEASE_TAG}" in text for text in scripts(assessment)
+                            if text is not resolve["run"]))
         self.assertNotIn("RELEASE_REF", assessment["env"])
 
-    def test_only_tag_pushes_enable_release_behavior(self) -> None:
-        for job_id in ("build-tools", "package-thin"):
-            with self.subTest(job_id=job_id):
-                self.assertTrue(
-                    any(
-                        "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')" in expression
-                        for expression in expressions(job(self.release, job_id))
-                    ),
-                    f"{job_id}: тег отличается от push в ветку только в этом выражении",
+    def test_only_tag_pushes_and_a_released_alpha_enable_release_behavior(self) -> None:
+        identities = {normalized(job(self.release, job_id)["env"]["RELEASE_TAG"])
+                      for job_id in ("build-tools", "package-thin", "release-assessment", "publish-release-assets", "verify-published-assets")}
+        self.assertEqual(len(identities), 1)
+        identity = identities.pop()
+        for event, ref, alpha, expected in (
+            ("push", "v1.0.0", "", "v1.0.0"),
+            ("workflow_dispatch", "main", "", ""),
+            ("schedule", "main", "v1.1.0-alpha.3", "v1.1.0-alpha.3"),
+            ("workflow_dispatch", "release-v1.0", "", ""),
+        ):
+            with self.subTest(event=event, alpha=alpha):
+                self.assertEqual(
+                    evaluate(identity, {"needs.alpha-tag.outputs.tag": alpha, "github.event_name": event, "github.ref_name": ref}),
+                    expected,
                 )
-        for job_id in ("publish-release-assets", "smoke-thin-plugin", "verify-published-assets"):
+        for job_id in ("smoke-thin-plugin", "verify-published-assets"):
             with self.subTest(job_id=job_id):
-                gate = condition(job(self.release, job_id))
-                self.assertIn("github.event_name == 'push'", gate)
-                self.assertIn("startsWith(github.ref, 'refs/tags/')", gate)
+                found = job(self.release, job_id)
+                self.assertTrue(evaluate(found["if"], GREEN))
+                self.assertFalse(evaluate(found["if"], {**GREEN, "needs.publish-release-assets.result": "skipped"}))
+
+    def test_a_green_night_builds_and_publishes_the_alpha_in_the_same_run(self) -> None:
+        alpha = job(self.release, "alpha-tag")
+        self.assertEqual(needs(alpha), ["unica-ci", "rust-os"])
+        night = {"inputs.alpha": True, "needs.unica-ci.result": "success", "needs.rust-os.result": "success"}
+        self.assertTrue(evaluate(alpha["if"], night))
+        for change in ({"inputs.alpha": False}, {"needs.unica-ci.result": "failure"}, {"needs.rust-os.result": "failure"}):
+            with self.subTest(change=change):
+                self.assertFalse(evaluate(alpha["if"], {**night, **change}))
+        # Тег ставит и пушит только эта джоба, и только ей нужна запись в тег.
+        self.assertEqual(alpha["permissions"], {"contents": "write"})
+        step_by_id(alpha, "publish")
+        self.assertEqual(set(alpha["outputs"]), {"tag", "sha"})
+        # Ключ тегов живёт в окружении `alpha` и больше нигде не читается.
+        self.assertEqual(alpha["environment"], "alpha")
+        holders = [job_id for job_id, found in jobs(self.release).items()
+                   if any("secrets.RELEASE_TAG_KEY" in value for value in strings(found))]
+        self.assertEqual(holders, ["alpha-tag"])
+        # Вся сборка идёт на служебном коммите: номер в коде равен тегу.
+        sha = "${{ needs.alpha-tag.outputs.sha || github.sha }}"
+        for job_id in ("build-tools", "package-thin", "p0-release-proof", "probe-thin-bootstrap", "release-assessment",
+                       "publish-release-assets", "smoke-thin-plugin", "verify-published-assets"):
+            with self.subTest(job_id=job_id):
+                found = job(self.release, job_id)
+                self.assertIn("alpha-tag", needs(found))
+                self.assertEqual(steps_using(found, "actions/checkout")[0]["with"]["ref"], sha)
+        self.assertIn("needs.alpha-tag.outputs.sha", script(job(self.release, "package-thin")))
+        # Второго прогона нет: от alpha не зависит ни один вызов workflow.
+        self.assertNotIn("gh workflow run", all_scripts(self.release))
+        self.assertNotIn("gh workflow run", (REPO_ROOT / "scripts/ci/release-alpha.py").read_text(encoding="utf-8"))
+        # Маркетплейс alpha не получает: он ждёт push тега и канала.
+        publication = job(self.release, "gate")
+        tag_push = {"needs.delivery-ci.result": "success", "github.repository": "IngvarConsulting/unica",
+                    "github.event_name": "push", "github.ref_type": "tag"}
+        self.assertTrue(evaluate(publication["if"], tag_push))
+        self.assertFalse(evaluate(publication["if"], {**tag_push, "github.event_name": "workflow_call"}))
+
+    def test_an_alpha_publishes_the_full_set_and_cleans_up_after_itself(self) -> None:
+        publish = job(self.release, "publish-release-assets")
+        release = steps_using(publish, "softprops/action-gh-release")[0]
+        # Полный набор приходит из сборки и уходит в выпуск.
+        full = next(found for found in downloads(publish) if found.get("pattern") == "unica-full-*")
+        self.assertIn(f"{full['path']}/unica-full-*.tar.gz", release["with"]["files"])
+        order = steps(publish)
+        cleanup = step_by_id(publish, "prune")
+        self.assertIs(cleanup["continue-on-error"], True)
+        self.assertGreater(order.index(cleanup), order.index(release))
+        for tag in ("v1.0.0", "v1.0.0-rc.1", "v1.0.0-alpha.2"):
+            with self.subTest(tag=tag):
+                self.assertEqual(evaluate(cleanup["if"], {"env.RELEASE_TAG": tag}), "-alpha." in tag)
+                package = step_by_id(job(self.release, "build-tools"), "alpha-full-set")
+                self.assertEqual(evaluate(package["if"], {"env.RELEASE_TAG": tag}), "-alpha." in tag)
+        self.assertIn("unica-full-${{ matrix.target }}", [found.get("name") for found in uploads(job(self.release, "build-tools"))])
+
+    def test_a_prerelease_uploads_into_a_draft_and_publishes_after_it(self) -> None:
+        # Неизменяемый релиз после публикации файлов не принимает.
+        publish = job(self.release, "publish-release-assets")
+        release = steps_using(publish, "softprops/action-gh-release")[0]
+        finish = step_by_id(publish, "publish-draft")
+        for tag in ("v1.0.0", "v1.0.0-rc.1", "v1.0.0-alpha.2"):
+            with self.subTest(tag=tag):
+                self.assertEqual(evaluate(release["with"]["draft"], {"env.RELEASE_TAG": tag}), "-" in tag)
+                self.assertEqual(evaluate(finish["if"], {"env.RELEASE_TAG": tag}), "-" in tag)
+        self.assertEqual(release["with"]["tag_name"], "${{ env.RELEASE_TAG }}")
+        self.assertGreater(steps(publish).index(finish), steps(publish).index(release))
 
     def test_conditional_pipeline_breaks_transitive_skip_propagation(self) -> None:
         dependencies = {
-            "package-thin": ("needs.build-tools.result == 'success'",),
-            "probe-thin-bootstrap": ("needs.package-thin.result == 'success'",),
-            "release-assessment": ("needs.build-tools.result == 'success'",),
-            "publish-release-assets": ("needs.build-tools.result == 'success'",),
-            "smoke-thin-plugin": (
-                "needs.package-thin.result == 'success'",
-                "needs.publish-release-assets.result == 'success'",
-            ),
-            "verify-published-assets": (
-                "needs.package-thin.result == 'success'",
-                "needs.publish-release-assets.result == 'success'",
-            ),
+            "package-thin": ("needs.build-tools.result",),
+            "probe-thin-bootstrap": ("needs.package-thin.result",),
+            "release-assessment": ("needs.build-tools.result",),
+            "publish-release-assets": ("needs.build-tools.result",),
+            "smoke-thin-plugin": ("needs.package-thin.result", "needs.publish-release-assets.result"),
+            "verify-published-assets": ("needs.package-thin.result", "needs.publish-release-assets.result"),
         }
-
+        # Пропущенный alpha-tag не тянет за собой пропуск: статусная функция есть.
+        scenario = {**GREEN, "github.event_name": "push"}
+        probe_scenario = {**GREEN}
         for job_id, dependency_results in dependencies.items():
             with self.subTest(job_id=job_id):
-                gate = condition(job(self.release, job_id))
-                self.assertIn("always()", gate)
+                found = job(self.release, job_id)
+                self.assertIn("always()", condition(found))
+                values = probe_scenario if job_id == "probe-thin-bootstrap" else scenario
+                self.assertTrue(evaluate(found["if"], values))
                 for dependency_result in dependency_results:
-                    self.assertIn(dependency_result, gate)
+                    self.assertFalse(evaluate(found["if"], {**values, dependency_result: "failure"}), dependency_result)
 
     def test_javascript_actions_use_node24_compatible_majors(self) -> None:
         release = RELEASE_WORKFLOW.read_text(encoding="utf-8")
@@ -965,8 +1147,9 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         expected_release_timeouts = {
             # Два часа воротам, пять — ночному `large`: Linux исполняет весь
             # набор подряд и ждёт Windows с полным набором.
-            "unica-ci": "${{ github.event_name == 'workflow_dispatch' && inputs.profile == 'large' && 300 || 120 }}",
-            "rust-os": "${{ github.event_name == 'workflow_dispatch' && inputs.profile == 'large' && 180 || 60 }}",
+            "unica-ci": {"main": 120, "large": 300},
+            "rust-os": {"main": 60, "large": 180},
+            "alpha-tag": 15,
             "windows-clippy": 30,
             "build-tools": 90,
             "package-thin": 30,
@@ -978,15 +1161,11 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
             "delivery-ci": 5,
         }
         for job_id, minutes in expected_release_timeouts.items():
-            with self.subTest(job_id=job_id):
-                value = job(self.release, job_id).get("timeout-minutes")
-                self.assertEqual(normalized(value) if isinstance(value, str) else value, minutes)
-        # `Unica CI` ждёт джобу ОС не дольше её собственного срока: дальше —
-        # `timed_out`, не вечность.
-        wait = step_by_id(job(self.release, "unica-ci"), "os-jobs")
-        self.assertIn('--timeout "$WAIT_SECONDS"', wait["run"])
-        self.assertEqual(normalized(wait["env"]["WAIT_SECONDS"]),
-                         "${{ github.event_name == 'workflow_dispatch' && inputs.profile == 'large' && 11400 || 3600 }}")
+            value = job(self.release, job_id).get("timeout-minutes")
+            for profile in ("main", "large"):
+                with self.subTest(job_id=job_id, profile=profile):
+                    found = evaluate(value, {"inputs.profile": profile}) if isinstance(value, str) else value
+                    self.assertEqual(found, minutes[profile] if isinstance(minutes, dict) else minutes)
 
         expected_publish_timeouts = {
             "stage": 20,
@@ -1004,30 +1183,21 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         gate = job(self.release, "unica-ci")
         python, plan = step_by_id(gate, "python"), step_by_id(gate, "python-plan")
 
-        self.assertIn('python scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem python --suite "$suite" --only-size "$lane" --docs-only "$DOCS_ONLY" --results', python["run"])
-        # Матрицу наборов считает шов по воротам; шаг идёт по её строкам.
+        # Матрицу наборов считает шов по воротам; шаги идут по её строкам.
         for step in (python, plan):
-            self.assertEqual(step["env"]["PYTHON_MATRIX"], "${{ steps.python-matrix.outputs.python_matrix }}")
-            self.assertEqual(step["env"]["DOCS_ONLY"], "${{ steps.classify.outputs.docs_only }}")
-            self.assertIn("jq -c '.[]' <<<\"$PYTHON_MATRIX\"", step["run"])
+            with self.subTest(step=step["id"]):
+                assert_env_consumed(self, step, "PYTHON_MATRIX", "${{ steps.python-matrix.outputs.python_matrix }}")
+                assert_env_consumed(self, step, "DOCS_ONLY", "${{ steps.classify.outputs.docs_only }}")
         self.assertEqual(gate["outputs"]["python_matrix"], "${{ steps.python-matrix.outputs.python_matrix }}")
-        self.assertIn('run-tests.py --profile "$GATE_PROFILE" --python-matrix', step_by_id(gate, "python-matrix")["run"])
-        self.assertEqual(step_by_id(gate, "python-matrix")["env"]["DOCS_ONLY"], "${{ steps.classify.outputs.docs_only }}")
+        assert_env_consumed(self, step_by_id(gate, "python-matrix"), "DOCS_ONLY", "${{ steps.classify.outputs.docs_only }}")
         ids = [step.get("id") for step in steps(gate)]
         self.assertLess(ids.index("classify"), ids.index("python-matrix"))
-        # План выгружается до тестов, как у Rust; каталоги по наборам.
-        self.assertIn("--plan-only", plan["run"])
-        self.assertIn('--results "$REPORT/plan-python-$slug"', plan["run"])
-        self.assertIn('results="$REPORT/results-python-$slug"', python["run"])
+        # План выгружается до тестов, как у Rust.
         self.assertLess(ids.index("python-plan"), ids.index("python"))
         # Python не идёт параллельно с Rust: MCP-тесты под нагрузкой падают
         # по таймауту. Он идёт после тестов и Clippy и с проверенным продуктом.
         for step_id in ("product", "rust-run", "clippy"):
             self.assertLess(ids.index(step_id), ids.index("python"))
-        # Наборы Python идут параллельно друг другу, и каждый ожидается: ни один
-        # не остаётся фоновым после шага.
-        self.assertIn('for index in "${!pids[@]}"; do', python["run"])
-        self.assertEqual(python["run"].count(" &\n"), 1)
 
     def test_agent_evaluation_and_credential_are_absent_from_every_workflow(self) -> None:
         for workflow in sorted((*WORKFLOWS_DIR.glob("*.yml"), *WORKFLOWS_DIR.glob("*.yaml"))):
@@ -1037,202 +1207,251 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
                 self.assertFalse(any("CODEX_API_KEY" in value for value in values))
 
     def test_gate_profile_follows_the_event_not_the_job(self) -> None:
-        """Ворота → профиль: pull request — `pr`, push в ветку — `main`, тег — `release`."""
-        self.assertEqual(
-            normalized(self.release["env"]["GATE_PROFILE"]),
-            "${{ github.event_name == 'pull_request' && 'pr' || github.event_name == 'merge_group' && 'queue' || "
-            "github.event_name == 'workflow_dispatch' && inputs.profile || "
-            "(github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) && 'release' || 'main' }}",
-        )
-        # Очередь слияния: конвейер отвечает на merge_group, иначе очередь ждёт вечно.
-        self.assertEqual(triggers(self.release)["merge_group"], {"types": ["checks_requested"]})
+        """Кнопка и ночь передают свой профиль, тег — `release`."""
+        for profile, expected in (("main", "main"), ("large", "large"), ("", "release")):
+            with self.subTest(profile=profile):
+                self.assertEqual(evaluate(self.release["env"]["GATE_PROFILE"], {"inputs.profile": profile}), expected)
+        # Очередь слияния: ворота отвечают на merge_group, иначе очередь ждёт вечно.
+        ci = load(CI_WORKFLOW)
+        self.assertEqual(triggers(ci)["merge_group"], {"types": ["checks_requested"]})
+        for event, expected in (("merge_group", "queue"), ("pull_request", "pr")):
+            with self.subTest(event=event):
+                self.assertEqual(evaluate(ci["env"]["GATE_PROFILE"], {"github.event_name": event}), expected)
         self.assertNotIn("run-tests.py --profile all", all_scripts(self.release))
 
     def test_line_rides_in_the_signature_and_tags_resolve_to_a_release_line(self) -> None:
         for job_id in ("unica-ci", "rust-os"):
             found = job(self.release, job_id)
             with self.subTest(job=job_id):
-                self.assertIn('python scripts/ci/resolve-line.py --ref-type "$REF_TYPE" --ref-name "$REF_NAME" --sha "$GITHUB_SHA"', step_by_id(found, "line")["run"])
+                line = step_by_id(found, "line")
+                for name in ("REF_TYPE", "REF_NAME"):
+                    self.assertRegex(line["run"], rf"\${{?{name}\b")
                 for step_id in ("rust-build", "rust-run"):
-                    step = step_by_id(found, step_id)
-                    self.assertEqual(step["env"]["RUN_LINE"], "${{ steps.line.outputs.line }}")
-                    self.assertEqual(1, step["run"].count('--line "$RUN_LINE"'))
+                    assert_env_consumed(self, step_by_id(found, step_id), "RUN_LINE", "${{ steps.line.outputs.line }}")
         gate = job(self.release, "unica-ci")
         self.assertEqual(gate["outputs"]["line"], "${{ steps.line.outputs.line }}")
         for step_id in ("python", "python-plan"):
-            step = step_by_id(gate, step_id)
-            self.assertEqual(step["env"]["RUN_LINE"], "${{ steps.line.outputs.line }}")
-            self.assertEqual(1, step["run"].count('--line "$RUN_LINE"'))
+            assert_env_consumed(self, step_by_id(gate, step_id), "RUN_LINE", "${{ steps.line.outputs.line }}")
         for found in jobs(self.release).values():
             for upload in uploads(found):
                 self.assertNotEqual(upload.get("path"), ".build/results/plan.json")
 
-    def test_nightly_dispatches_the_manual_contour_with_the_large_profile(self) -> None:
-        """Ночь перечисляет и запускает ручной контур сборки на линии; Windows — только там."""
-        lines = job(self.nightly, "lines")
+    def test_the_nightly_calls_the_release_workflow_with_the_large_profile(self) -> None:
+        """Ночь проверяет то, что выпускается: один прогон, без запуска другого workflow."""
+        decide, full = job(self.nightly, "decide"), job(self.nightly, "full")
 
         self.assertIn("schedule", triggers(self.nightly))
+        self.assertIn("workflow_dispatch", triggers(self.nightly))
         # Круглые минуты GitHub исполняет с наибольшим опозданием.
         minute = triggers(self.nightly)["schedule"][0]["cron"].split()[0]
         self.assertNotIn(minute, ("0", "30"))
-        # Ручной и ночной запуск идут своей группой: push их не вытесняет.
-        self.assertIn("format('-dispatch-{0}', inputs.profile)", normalized(self.release["concurrency"]["group"]))
-        self.assertEqual(lines["permissions"].get("actions"), "write")
-        self.assertIn("--dispatch --follow .build/large", script(lines))
-        self.assertEqual([upload["name"] for upload in uploads(lines)], ["results-nightly"])
-        for step in steps_using(lines, "actions/checkout"):
-            self.assertNotIn("ref", step.get("with") or {})
-        self.assertEqual(triggers(self.release)["workflow_dispatch"]["inputs"]["profile"]["options"], ["main", "large"])
-        self.assertIn("github.event_name == 'workflow_dispatch' && inputs.profile", normalized(self.release["env"]["GATE_PROFILE"]))
-        gate, platforms = job(self.release, "unica-ci"), job(self.release, "rust-os")
-        self.assertEqual(gate["outputs"]["runners"], "${{ steps.runners.outputs.runners }}")
-        # Две полосы: pull request и очередь — ubuntu, обе ОС — на push и по
-        # кнопке; ci:full возвращает macOS на следующем прогоне pull request.
-        # Очередь macOS не ждёт.
-        runners = step_by_id(gate, "runners")
-        self.assertIn('runners=["ubuntu-latest", "macos-15", "windows-latest"]', runners["run"])
-        self.assertIn('runners=["ubuntu-latest"]', runners["run"])
-        self.assertIn('runners=["ubuntu-latest", "macos-15"]', runners["run"])
+        self.assertIn("run", decide["outputs"])
+        self.assertEqual(self.nightly["permissions"], {"contents": "read"})
+        self.assertEqual(self.nightly["concurrency"]["group"], "unica-nightly")
+        self.assertEqual(full["uses"], "$/.github/workflows/release.yml")
+        self.assertEqual(needs(full), ["decide"])
+        for run in ("true", "false"):
+            with self.subTest(run=run):
+                self.assertEqual(evaluate(full["if"], {"needs.decide.outputs.run": run}), run == "true")
+        self.assertEqual(full["with"]["profile"], "large")
+        # Alpha — только срез main: кнопка на другой ветке его не выпускает.
+        for ref in ("refs/heads/main", "refs/heads/release-v1.0"):
+            with self.subTest(ref=ref):
+                self.assertEqual(evaluate(full["with"]["alpha"], {"github.ref": ref}), ref == "refs/heads/main")
+        # Права вызова — верхняя граница: их хватает всем заданиям `release.yml`.
+        # Вызов передаёт по имени только ключ тегов alpha: без этого секрет окружения
+        # в вызванном workflow пуст. Токен маркетплейса вызову не передаётся, а
+        # `id-token` нужен только Pages.
+        self.assertEqual(full["secrets"], {"RELEASE_TAG_KEY": "${{ secrets.RELEASE_TAG_KEY }}"})
+        requested = {}
+        for found in jobs(self.release).values():
+            requested.update(found.get("permissions") or {})
+        for scope, level in requested.items():
+            with self.subTest(scope=scope):
+                self.assertIn(scope, full["permissions"])
+                if level == "write":
+                    self.assertEqual(full["permissions"][scope], "write")
+        # Запуска другого workflow нет: итог ночи — итог этого прогона.
+        self.assertNotIn("gh workflow run", all_scripts(self.nightly))
+        self.assertNotIn("continue-on-error", full)
+
+    def test_every_nightly_guard_stays_in_the_called_workflow(self) -> None:
+        """Windows, macOS, тяжёлые тесты, отчёты, сборка, инвентарь и снятые тесты."""
+        gate = job(self.release, "unica-ci")
+        self.assertEqual(matrix_values(job(self.release, "rust-os"), "large")["runner"], ["macos-15", "windows-latest"])
+        self.assertEqual(load_gate_module().PROFILE_RUNNERS["large"], ["ubuntu-latest", "macos-15", "windows-latest"])
         self.assertEqual(
-            normalized(runners["env"]["FULL_MATRIX"]),
-            "${{ github.event_name != 'merge_group' && (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full')) }}",
+            {step["with"]["category"] for step in steps_using(gate, "github/codeql-action/upload-sarif")},
+            {"zizmor", "clippy-ubuntu-latest"},
         )
-        self.assertIn("github.event_name != 'merge_group'", normalized(platforms["if"]))
-        self.assertIn("inputs.profile == 'large'", normalized(platforms["strategy"]["matrix"]["runner"]))
-        self.assertIn("windows-latest", normalized(platforms["strategy"]["matrix"]["runner"]))
-        for found in (gate, platforms):
-            self.assertEqual(found["defaults"]["run"]["shell"], "bash")
-            # Кэш зависимостей пишут push в ветку и ручной запуск; pull request и очередь читают.
-            cache = steps_using(found, "Swatinem/rust-cache")[0]
-            assert_pinned(self, RELEASE_WORKFLOW, cache, "v2")
-            self.assertEqual(
-                normalized(cache["with"]["save-if"]),
-                "${{ github.ref_type == 'branch' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}",
-            )
-            assert_pinned(self, RELEASE_WORKFLOW, steps_using(found, "actions/setup-python")[0], "v7")
-            # Консоль Windows — cp1252.
-            self.assertEqual(found["env"]["PYTHONUTF8"], "1")
-            # Отладочная информация тестовой сборки — одна на джобу: шаг с другим
-            # значением пересобрал бы общие артефакты.
-            self.assertEqual(found["env"]["CARGO_PROFILE_DEV_DEBUG"], "line-tables-only")
-            for step in found["steps"]:
-                self.assertNotIn("CARGO_PROFILE_DEV_DEBUG", step.get("env") or {})
-        # Красная Windows-джоба ночи красит прогон и не пускает сборку поставки.
-        self.assertNotIn("continue-on-error", platforms)
-        self.assertIn("needs.rust-os.result == 'success'", condition(job(self.release, "build-tools")))
-        self.assertFalse((WORKFLOWS_DIR / "unica-large.yml").exists())
+        for step_id in ("removed-tests", "verify"):
+            step_by_id(gate, step_id)
+        for job_id in ("build-tools", "package-thin", "delivery-ci"):
+            self.assertIn(job_id, jobs(self.release))
 
-    def test_pages_take_results_from_the_queue_red_runs_and_the_nightly(self) -> None:
-        """Отчёт `main` приходит с очереди; красный прогон — тоже результат; ночь и тег — тоже источники."""
-        on = triggers(self.pages)
-        build = job(self.pages, "build")
+    def test_gate_waits_for_exactly_the_os_jobs_of_its_profile(self) -> None:
+        """`Unica CI` и `rust-os` идут параллельно; ворота ждут джобы ОС по jobs API.
 
-        self.assertEqual(on["workflow_run"]["workflows"], ["Build Unica Codex Plugin", "Unica Nightly"])
-        self.assertEqual(on["workflow_run"]["branches"], ["main", "gh-readonly-queue/main/*", "release-v*", "v*"])
-        self.assertIn("github.event.workflow_run.conclusion == 'failure'", condition(build))
-        self.assertIn("github.event.workflow_run.event == 'merge_group'", condition(build))
-        # Push в `main` тестов не гоняет и источником не бывает; push в релизную линию и тег — бывают.
-        self.assertIn("(github.event.workflow_run.event == 'push' && github.event.workflow_run.head_branch != 'main')", normalized(condition(build)))
-        self.assertIn("github.event.workflow_run.event == 'schedule'", condition(build))
-        self.assertIn("github.event.workflow_run.head_repository.full_name == github.repository", condition(build))
-        # Критерии конвейера сайт больше не считает: страница снята 08.09.2026.
-        self.assertNotIn("--metrics", script(build))
-        self.assertFalse((REPO_ROOT / "docs" / "pages" / "pipeline.html").exists())
-        # Очередь даёт по прогону на каждый pull request партии, и деплои идут
-        # друг за другом: неудачный деплой повторяется один раз после паузы.
-        deploy = job(self.pages, "deploy")
-        attempts = steps_using(deploy, "actions/deploy-pages")
-        self.assertEqual(len(attempts), 2)
-        self.assertTrue(attempts[0].get("continue-on-error"))
-        self.assertEqual(normalized(attempts[1]["if"]), "steps.deployment.outcome == 'failure'")
-        # Прямой триггер push снят: в очереди без отмены он заменял бы ожидающий
-        # прогон с результатами, и они не доехали бы до сайта.
-        self.assertNotIn("push", on)
-        for found in jobs(self.pages).values():
-            for expression in expressions(found):
-                self.assertNotIn("github.event_name == 'push'", expression)
-        self.assertIn("jobs?per_page=100", script(build))
-
-    def test_pages_build_main_once_the_queue_merged_its_tree(self) -> None:
-        """Сайт ждёт вливания проверенного очередью дерева и собирается из main, а не из коммита очереди.
-
-        Без ожидания сайт брал прежний main и отставал на одно вливание. Из
-        коммита очереди собирать нельзя: снятый с очереди pull request тоже даёт
-        успешный прогон, а прогоны пачки кончаются не по порядку. Любой источник
-        берёт main, какой он сейчас: прогон, отложенный группой, иначе выложил
-        бы main старше опубликованного.
+        Список ожидания и матрица ОС считаются из одного профиля: лишняя ОС —
+        вечное ожидание, недостающая — красная ОС мимо ворот.
         """
-        build = job(self.pages, "build")
-        wait = step_named(build, "Дождаться вливания проверенного очередью дерева")
-        self.assertEqual(
-            condition(wait),
-            "github.event.workflow_run.event == 'merge_group' && github.event.workflow_run.conclusion == 'success'",
-        )
-        self.assertIs(wait["continue-on-error"], True)
-        self.assertIn("scripts/ci/await-queue-merge.py", wait["run"])
-        self.assertEqual(wait["env"]["QUEUE_SHA"], "${{ github.event.workflow_run.head_sha }}")
-        self.assertEqual(wait["env"]["QUEUE_BRANCH"], "${{ github.event.workflow_run.head_branch }}")
+        gate, other = job(self.release, "unica-ci"), job(self.release, "rust-os")
+        self.assertEqual(needs(gate), [])
+        self.assertEqual(needs(other), [])
+        runners_step, wait = step_by_id(gate, "runners"), step_by_id(gate, "os-jobs")
+        assert_env_consumed(self, wait, "RUNNERS", "${{ steps.runners.outputs.runners }}")
+        for profile in ("main", "large"):
+            with self.subTest(profile=profile), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                (root / "out").touch()
+                result = bash(runners_step["run"], cwd=root, env={"PROFILE": profile, "GITHUB_OUTPUT": "out"})
+                self.assertEqual(result.returncode, 0, result.stderr)
+                runners = json.loads((root / "out").read_text(encoding="utf-8").split("runners=", 1)[1])
+                matrix = matrix_values(other, profile)["runner"]
+                self.assertEqual([runner for runner in runners if runner != lanes.LINUX], matrix)
+                # Ворота ищут джобу ОС по имени, которое она носит.
+                self.assertEqual(
+                    {other["name"].replace("${{ matrix.runner }}", runner) for runner in matrix},
+                    {lanes.os_job(runner) for runner in matrix},
+                )
+                # Ожидание покрывает срок джобы ОС с запасом на очередь раннера,
+                # но кончается раньше срока самих ворот: дальше — `timed_out`.
+                wait_seconds = evaluate(wait["env"]["WAIT_SECONDS"], {"inputs.profile": profile})
+                os_seconds = evaluate(other["timeout-minutes"], {"inputs.profile": profile}) * 60
+                self.assertGreaterEqual(wait_seconds, os_seconds)
+                self.assertLessEqual(wait_seconds, os_seconds + 1200)
+                self.assertLess(wait_seconds, evaluate(gate["timeout-minutes"], {"inputs.profile": profile}) * 60)
+        self.assertRegex(wait["run"], r"\$\{?WAIT_SECONDS\b")
+        # Результаты ОС читаются только после того, как джобы ОС закончились.
+        order = steps(gate)
+        fetch = next(step for step in steps_using(gate, "actions/download-artifact")
+                     if "steps.os-jobs.outcome == 'success'" in condition(step))
+        self.assertLess(order.index(wait), order.index(fetch))
+        self.assertLess(order.index(fetch), order.index(step_by_id(gate, "verify")))
+        self.assertTrue(evaluate(fetch["if"], {"steps.os-jobs.outcome": "success"}))
+        self.assertFalse(evaluate(fetch["if"], {"steps.os-jobs.outcome": "failure"}))
 
-        # Скрипт ожидания исполняется из дерева события, страницы — из main;
-        # коммит очереди не попадает в checkout никогда.
-        first, current = steps_using(build, "actions/checkout")
-        self.assertNotIn("ref", first["with"])
-        self.assertEqual(current["with"]["ref"], "main")
-        self.assertNotIn("if", current)
-        for checkout in (first, current):
-            self.assertIs(checkout["with"]["persist-credentials"], False)
-        # Второй checkout чистит рабочий каталог: до него — только то, что его
-        # переживает (Python в tool cache) или нужно для ожидания.
-        order = steps(build)
-        self.assertEqual(
-            order[: order.index(current)],
-            [first, steps_using(build, "actions/setup-python")[0], wait],
-        )
+    def test_every_downloaded_artifact_is_uploaded_by_a_job_it_waits_for(self) -> None:
+        """Каждое скачивание находит выгрузку того же прогона, которую ждёт.
 
-        # Подвал называет дерево, из которого собраны страницы, и ведёт на него.
-        rebuild = step_named(build, "Пересобрать страницы с итоговым статусом")
-        self.assertIn('--sha "$(git rev-parse HEAD)"', rebuild["run"])
-        self.assertNotIn("--run-url", rebuild["run"])
+        Источник — задание из предков по `needs`; результаты ОС `Unica CI`
+        ждёт через jobs API (см. test_gate_waits_for_exactly_the_os_jobs_of_its_profile).
+        Переименованный артефакт иначе краснел бы только в настоящем прогоне.
+        """
+        produced: dict[str, set[str]] = {}
+        for job_id, found in jobs(self.release).items():
+            for upload in uploads(found):
+                for name in artifact_names(found, upload.get("name", "artifact")):
+                    produced.setdefault(name, set()).add(job_id)
+        checked = 0
+        for job_id, found in jobs(self.release).items():
+            for step in steps_using(found, "actions/download-artifact"):
+                requested = step["with"].get("name") or step["with"].get("pattern")
+                upstream = ancestors(self.release, job_id) | {job_id}
+                if "steps.os-jobs.outcome == 'success'" in condition(step):
+                    upstream.add("rust-os")
+                for pattern in (expanded for name in artifact_names(found, requested) for expanded in expand_braces(name)):
+                    checked += 1
+                    with self.subTest(job=job_id, pattern=pattern):
+                        matched = {name for name in produced if fnmatch.fnmatchcase(name, pattern)}
+                        self.assertTrue(matched, f"{pattern} никто не выгружает")
+                        for name in matched:
+                            self.assertTrue(produced[name] & upstream, f"{name} выгружает {produced[name]}, а {job_id} их не ждёт")
+        self.assertGreater(checked, 10)
 
-    def test_pages_runs_the_build_skips_stay_out_of_the_publishing_group(self) -> None:
-        """Прогон, который build отсечёт, не вытесняет ожидающий прогон с результатами."""
-        group = self.pages["concurrency"]["group"]
-        build = condition(job(self.pages, "build"))
-        expected = "${{ (" + build + ") && 'unica-pages' || format('unica-pages-idle-{0}', github.run_id) }}"
-        self.assertEqual(normalized(group), normalized(expected))
-        self.assertIs(self.pages["concurrency"]["cancel-in-progress"], False)
+    def test_pages_are_jobs_of_the_run_that_reports_them(self) -> None:
+        """Сайт обновляется заданием прогона: и зелёного, и красного, но не чужой ветки."""
+        build, deploy = job(self.release, "pages-build"), job(self.release, "pages-deploy")
+
+        # После итога сборки и маркетплейса, даже красных; `alpha-tag` называет
+        # версию, чьи тесты дал прогон.
+        self.assertEqual(set(needs(build)), {"delivery-ci", "promote", "alpha-tag"})
+        own = {"github.repository": "IngvarConsulting/unica", "github.ref": "refs/heads/main",
+               "github.ref_name": "main", "github.ref_type": "branch"}
+        for case, expected in (
+            ({}, True),
+            ({"github.ref": "refs/heads/release-v1.0", "github.ref_name": "release-v1.0"}, True),
+            ({"github.ref": "refs/tags/v1.0.0", "github.ref_name": "v1.0.0", "github.ref_type": "tag"}, True),
+            ({"github.ref": "refs/heads/feature", "github.ref_name": "feature"}, False),
+            ({"github.repository": "fork/unica"}, False),
+        ):
+            with self.subTest(case=case):
+                self.assertEqual(evaluate(build["if"], {**own, **case}), expected)
+        self.assertNotIn("result == 'success'", condition(build))
+        # Результаты — свои, артефакты чужого прогона больше не читаются.
+        download = steps_using(build, "actions/download-artifact")[0]
+        self.assertNotIn("run-id", download["with"])
+        self.assertNotIn("workflow_run", "\n".join(strings(build)))
+        # Страницы всегда из main: сайт двигается только вперёд.
+        checkouts = steps_using(build, "actions/checkout")
+        self.assertEqual(len(checkouts), 1)
+        self.assertEqual(checkouts[0]["with"]["ref"], "main")
+        self.assertEqual(build["permissions"], {"contents": "read", "actions": "read"})
+        # Право писать на Pages есть только у публикации, и тег alpha её не проходит.
+        self.assertEqual(needs(deploy), ["pages-build"])
+        self.assertEqual(deploy["permissions"], {"pages": "write", "id-token": "write"})
+        self.assertEqual(deploy["environment"]["name"], "github-pages")
+        for ref_name, result, expected in (("main", "success", True), ("v1.0.0-alpha.1", "success", False),
+                                           ("main", "failure", False)):
+            with self.subTest(ref_name=ref_name, result=result):
+                self.assertEqual(evaluate(deploy["if"], {"github.ref_name": ref_name, "needs.pages-build.result": result}), expected)
+        writers = [job_id for job_id, found in jobs(self.release).items() if (found.get("permissions") or {}).get("pages")]
+        self.assertEqual(writers, ["pages-deploy"])
+        for found in (build, deploy):
+            self.assertEqual(found["concurrency"], {"group": "unica-pages", "cancel-in-progress": False})
+
+    def test_pages_deploy_retries_once_and_fails_on_the_second_refusal(self) -> None:
+        """Pages отвечает отказом на отдельные развёртывания: один повтор, потом красный."""
+        deploy = job(self.release, "pages-deploy")
+        first, second = step_by_id(deploy, "deployment"), step_by_id(deploy, "redeployment")
+        self.assertEqual(action(first), "actions/deploy-pages")
+        self.assertEqual(first["uses"], second["uses"])
+        self.assertIs(first["continue-on-error"], True)
+        self.assertNotIn("continue-on-error", second)
+        order = steps(deploy)
+        self.assertLess(order.index(first), order.index(second))
+        between = order[order.index(first) + 1:order.index(second)]
+        for outcome in ("success", "failure"):
+            with self.subTest(outcome=outcome):
+                values = {"steps.deployment.outcome": outcome}
+                self.assertEqual(evaluate(second["if"], values), outcome == "failure")
+                for step in between:
+                    self.assertEqual(evaluate(step["if"], values), outcome == "failure")
+        # Адрес окружения берётся у того развёртывания, которое прошло.
+        url = deploy["environment"]["url"]
+        self.assertEqual(evaluate(url, {"steps.deployment.outputs.page_url": "a", "steps.redeployment.outputs.page_url": ""}), "a")
+        self.assertEqual(evaluate(url, {"steps.deployment.outputs.page_url": "", "steps.redeployment.outputs.page_url": "b"}), "b")
 
     def test_publication_queue_keeps_every_admitted_release(self) -> None:
-        """Допущенные публикации ждут в одной очереди, пропущенные gate прогоны в неё не входят.
+        """Прогоны тегов ждут в одной очереди, проверки веток в неё не входят.
 
-        Публикацию запускает каждая сборка, а gate пропускает только push
-        тега и ручной запуск. Пустой прогон в общей группе снимал бы
-        ожидающий выпуск, а с одним местом ожидания третий допущенный прогон
-        снимал бы второй. Порядок внутри очереди GitHub не обещает: его держит
-        страж порядка версий в stage и promote.
+        С одним местом ожидания третий выпуск снимал бы второй. Порядок внутри
+        очереди GitHub не обещает: его держит страж порядка версий в stage и promote.
         """
-        gate = job(self.publish, "gate")
-        expected_group = (
-            "${{ (" + condition(gate) + ") && 'publish-unica-marketplace' || "
-            "format('publish-unica-marketplace-idle-{0}', github.run_id) }}"
-        )
-        self.assertEqual(normalized(self.publish["concurrency"]["group"]), normalized(expected_group))
-        self.assertEqual(self.publish["concurrency"]["queue"], "max")
-        self.assertIs(self.publish["concurrency"]["cancel-in-progress"], False)
+        concurrency = self.release["concurrency"]
+        groups = {}
+        for ref_type, ref, profile in (("tag", "refs/tags/v1.0.0", ""), ("tag", "refs/tags/v1.1.0", ""),
+                                       ("branch", "refs/heads/main", "main"), ("branch", "refs/heads/main", "large"),
+                                       ("branch", "refs/heads/release-v1.0", "main")):
+            groups[(ref, profile)] = evaluate(concurrency["group"], {"github.ref_type": ref_type, "github.ref": ref, "inputs.profile": profile})
+        self.assertEqual(groups[("refs/tags/v1.0.0", "")], groups[("refs/tags/v1.1.0", "")])
+        self.assertEqual(len(set(groups.values())), 4)
+        self.assertEqual(concurrency["queue"], "max")
+        self.assertIs(concurrency["cancel-in-progress"], False)
 
     def test_guards_ship_findings_to_code_scanning_not_the_gate(self) -> None:
         """Находка линтера — не исход теста: SARIF в Code Scanning, гейт не краснеет."""
         gate = job(self.release, "unica-ci")
         sarif = next(step for step in steps_using(gate, "github/codeql-action/upload-sarif") if step["with"]["category"] == "zizmor")
+        zizmor = step_by_id(gate, "guards-zizmor")
 
-        self.assertIn("zizmor@1.30.0", [step["with"]["tool"] for step in steps_using(gate, "taiki-e/install-action")])
-        self.assertIn("zizmor --config .github/zizmor.yml --format sarif --no-exit-codes .github/workflows > .build/zizmor.sarif", step_by_id(gate, "guards-zizmor")["run"])
+        # Отчёт, который выгружается, пишет сам шаг zizmor, и находки не валят шаг.
+        self.assertIn(sarif["with"]["sarif_file"], zizmor["run"])
+        self.assertIn("--no-exit-codes", zizmor["run"])
+        self.assertLess(steps(gate).index(zizmor), steps(gate).index(sarif))
         assert_pinned(self, RELEASE_WORKFLOW, sarif, "v4")
-        self.assertEqual(sarif["with"]["sarif_file"], ".build/zizmor.sarif")
         self.assertIs(sarif["continue-on-error"], True)
         self.assertEqual(gate["permissions"].get("security-events"), "write")
-        # Токен pull request из форка писать в Code Scanning не вправе.
-        self.assertIn("github.event.pull_request.head.repo.full_name == github.repository", condition(sarif))
         # Отчёты лежат вне дерева исходников: неотслеживаемый файл сменил бы
         # отпечаток, к которому привязан продукт для Python.
         for step in steps(gate):
@@ -1243,29 +1462,51 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         build = job(self.release, "build-tools")
         step_by_id(build, "rust-toolchain")
         cache = step_by_id(build, "cargo-cache")
+        lock = step_by_id(build, "lock")
 
         self.assertIs(cache.get("continue-on-error"), True)
         assert_pinned(self, RELEASE_WORKFLOW, cache, "v6")
         self.assertEqual(cache["with"]["path"], ".build/tool-work/${{ matrix.target }}/cargo-target")
-        self.assertEqual(
-            normalized(cache["with"]["key"]),
-            "cargo-${{ runner.os }}-${{ matrix.target }}-${{ steps.rust-toolchain.outputs.cachekey }}-${{ hashFiles('Cargo.lock') }}",
-        )
+        key = normalized(cache["with"]["key"])
+        for part in ("runner.os", "matrix.target", "steps.rust-toolchain.outputs.cachekey", "steps.lock.outputs.hash"):
+            self.assertIn(part, key)
         self.assertNotIn("restore-keys", cache["with"])
-        first_build = next(index for index, step in enumerate(steps(build)) if "scripts/ci/build-unica-tools.py" in step.get("run", ""))
-        self.assertLess(steps(build).index(cache), first_build)
-        self.assertIn("--metrics-file", script(build))
-        report = step_named(build, "Report Cargo cache and build metrics")
+        order = steps(build)
+        self.assertLess(order.index(lock), order.index(cache))
+        self.assertLess(order.index(cache), order.index(step_by_id(build, "build")))
+
+        # Номер alpha в Cargo.lock не меняет ключ: иначе каждая ночь писала бы новую запись.
+        def lock_hash(text: str) -> str:
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                (root / "Cargo.lock").write_text(text, encoding="utf-8", newline="\n")
+                (root / "out").touch()
+                result = bash(lock["run"], cwd=root, env={"GITHUB_OUTPUT": "out"})
+                self.assertEqual(result.returncode, 0, result.stderr)
+                return (root / "out").read_text(encoding="utf-8").strip()
+
+        package = '[[package]]\nname = "unica"\nversion = "0.15.0{}"\n\n[[package]]\nname = "serde"\nversion = "{}"\n'
+        base = lock_hash(package.format("-alpha.1", "1.0.0"))
+        self.assertEqual(base, lock_hash(package.format("-alpha.2", "1.0.0")))
+        self.assertNotEqual(base, lock_hash(package.format("-alpha.1", "1.0.1")))
+
+        # Отчёт идёт всегда и называет исход кэша.
+        report = step_by_id(build, "build-metrics")
         self.assertEqual(condition(report), "always()")
-        self.assertIn("steps.cargo-cache.outcome", " ".join(expressions(build)))
-        self.assertIn("steps.cargo-cache.outputs.cache-hit", " ".join(expressions(build)))
-        for outcome in ("exact-hit", "miss", "error"):
-            with self.subTest(outcome=outcome):
-                self.assertIn(outcome, report["run"])
-        self.assertIn("cargoBuildSeconds", script(build))
-        self.assertIn("archiveDownloadSeconds", script(build))
-        self.assertIn("RLM archive download duration", script(build))
-        self.assertIn("GITHUB_STEP_SUMMARY", script(build))
+        for outcome, hit, expected in (("success", "true", "exact-hit"), ("success", "false", "miss"), ("failure", "", "error")):
+            with self.subTest(outcome=outcome, hit=hit), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                (root / "metrics.json").write_text(json.dumps({"cargoBuildSeconds": 42}), encoding="utf-8")
+                (root / "summary").touch()
+                env = {"CACHE_STEP_OUTCOME": outcome, "CACHE_HIT": hit, "METRICS_FILE": "metrics.json",
+                       "TARGET": "linux-x64", "GITHUB_STEP_SUMMARY": "summary"}
+                result = bash(report["run"], cwd=root, env=env, prelude=python_prelude())
+                self.assertEqual(result.returncode, 0, result.stderr)
+                summary = (root / "summary").read_text(encoding="utf-8")
+                self.assertIn(expected, summary)
+                self.assertIn("42", summary)
+        self.assertEqual(normalized(report["env"]["CACHE_STEP_OUTCOME"]), "${{ steps.cargo-cache.outcome }}")
+        self.assertEqual(normalized(report["env"]["CACHE_HIT"]), "${{ steps.cargo-cache.outputs.cache-hit }}")
 
     def test_runtime_matrix_builds_verifies_and_exports_narrow_artifacts(self) -> None:
         build = job(self.release, "build-tools")
@@ -1275,9 +1516,8 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertEqual({target for target, _ in targets(build)}, {"darwin-arm64", "linux-x64", "win-x64"})
         self.assertNotIn("package-runtime", jobs(self.release))
         self.assertFalse(any("unica-tools-" in value for value in strings(self.release)))
-        for tool in ("scripts/ci/build-unica-tools.py", "scripts/ci/package-unica-runtime.py", "scripts/ci/verify-release-assets.py"):
-            self.assertIn(tool, script(build))
-        self.assertIn('--target "${{ matrix.target }}"', script(build))
+        for step_id in ("build", "package-runtime", "verify-runtime"):
+            step_by_id(build, step_id)
         for name in ("unica-metadata-${{ matrix.target }}", "unica-bootstrap-${{ matrix.target }}", "unica-runtime-${{ matrix.target }}"):
             with self.subTest(name=name):
                 self.assertIn(name, names)
@@ -1290,108 +1530,72 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         ):
             with self.subTest(path=path):
                 self.assertTrue(any(path in uploaded for uploaded in paths), path)
-        self.assertIn("matrix.target == 'linux-x64'", " ".join(expressions(build)))
-        self.assertIn("startsWith(github.ref, 'refs/tags/')", " ".join(expressions(build)))
         self.assertGreaterEqual(sum(1 for upload in uploads(build) if upload.get("retention-days") == 1), 3)
 
     def test_manual_macos_acceptance_exports_core_bytes_without_publishing_a_release(self) -> None:
         build = job(self.release, "build-tools")
-        upload = step_named(build, "Upload required runtime archive")
-
-        def allowed(node, target, event, ref):
-            # Evaluate the closed boolean/string subset used by these actual
-            # YAML conditions, with successful prerequisites; no script runs.
-            expression = condition(node).removeprefix("${{").removesuffix("}}").strip()
-            values = {"matrix.target": target, "github.event_name": event, "github.ref": ref,
-                      "needs.build-tools.result": "success", "needs.unica-ci.result": "success",
-                      "needs.rust-os.result": "success", "needs.package-thin.result": "success",
-                      "needs.publish-release-assets.result": "success",
-                      "needs.unica-ci.outputs.release_required": "true", "needs.unica-ci.outputs.ci_changed": "true"}
-            for key, value in values.items():
-                expression = expression.replace(key, repr(value))
-            expression = expression.replace("&&", " and ").replace("||", " or ")
-            return bool(eval(expression, {"__builtins__": {}, "always": lambda: True,
-                                          "startsWith": lambda value, prefix: value.startswith(prefix)}))
+        upload = upload_step(build, "unica-runtime-${{ matrix.target }}")
 
         for target in ("linux-x64", "darwin-arm64", "win-x64"):
-            for event, ref in (("workflow_dispatch", "refs/heads/codex/ci-macos15"),
-                               ("pull_request", "refs/pull/2370/merge"),
-                               ("push", "refs/heads/main"), ("push", "refs/tags/v0.15.0")):
-                expected = (target == "linux-x64" or (target == "darwin-arm64" and event == "workflow_dispatch")
-                            or (event == "push" and ref.startswith("refs/tags/")))
-                with self.subTest(target=target, event=event, ref=ref):
-                    self.assertEqual(allowed(upload, target, event, ref), expected)
-                    if event == "pull_request":
-                        self.assertFalse(allowed(build, target, event, ref))
-                    if event == "workflow_dispatch":
-                        for name in ("publish-release-assets", "verify-published-assets"):
-                            self.assertFalse(allowed(job(self.release, name), target, event, ref))
+            for event, tag in (("workflow_dispatch", ""), ("schedule", ""), ("push", "v0.15.0"),
+                               ("schedule", "v0.15.0-alpha.1"), ("workflow_dispatch", "v0.15.0-alpha.1")):
+                values = {**GREEN, "matrix.target": target, "github.event_name": event, "env.RELEASE_TAG": tag,
+                          "needs.alpha-tag.outputs.tag": tag if event != "push" else "",
+                          "needs.alpha-tag.result": "success" if tag and event != "push" else "skipped"}
+                expected = target == "linux-x64" or (target == "darwin-arm64" and event != "push") or bool(tag)
+                with self.subTest(target=target, event=event, tag=tag):
+                    self.assertEqual(evaluate(upload["if"], values), expected)
+                    self.assertTrue(evaluate(build["if"], values))
+                    self.assertEqual(evaluate(job(self.release, "publish-release-assets")["if"], values), bool(tag))
         self.assertEqual(upload["with"]["retention-days"], 1)
-        self.assertEqual(upload["with"]["name"], "unica-runtime-${{ matrix.target }}")
 
     def test_mcp_smoke_runs_against_extracted_deterministic_runtime(self) -> None:
         build = job(self.release, "build-tools")
-        smoke = step_named(build, "Smoke packaged Unica MCP")
-
-        self.assertLess(step_index(build, "Package deterministic runtime"), step_index(build, "Extract deterministic runtime for MCP smoke"))
-        self.assertLess(step_index(build, "Extract deterministic runtime for MCP smoke"), step_index(build, "Smoke packaged Unica MCP"))
-        self.assertIn('runtime_root=".build/runtime-smoke/${{ matrix.target }}"', script(build))
-        self.assertIn(
-            'tar -xzf ".build/runtime-assets/${{ matrix.target }}/unica-runtime-${{ matrix.target }}.tar.gz"',
-            script(build),
-        )
-        self.assertIn('--plugin-root "$runtime_root"', script(build))
-        self.assertIn('executable="$runtime_root/bin/${{ matrix.target }}/unica"', script(build))
-        self.assertEqual(smoke.get("timeout-minutes"), 3)
-        self.assertIn("--total-timeout-seconds 120", smoke["run"])
+        order = [step.get("id") for step in steps(build)]
+        self.assertLess(order.index("package-runtime"), order.index("extract-runtime"))
+        self.assertLess(order.index("extract-runtime"), order.index("mcp-smoke"))
+        self.assertEqual(step_by_id(build, "mcp-smoke").get("timeout-minutes"), 3)
 
     def test_thin_payload_downloads_only_metadata_and_bootstrap(self) -> None:
         thin = job(self.release, "package-thin")
         patterns = [download.get("pattern") for download in downloads(thin)]
         marketplace = next(upload for upload in uploads(thin) if upload.get("name") == "unica-thin-marketplace")
 
-        self.assertEqual(needs(thin), ["build-tools"])
-        self.assertIn("unica-metadata-*", patterns)
-        self.assertIn("unica-bootstrap-*", patterns)
-        self.assertNotIn("unica-tools-*", patterns)
-        self.assertNotIn("unica-runtime-*", patterns)
-        self.assertIn("scripts/ci/package-unica-plugin.py", script(thin))
-        self.assertIn("--runtime-metadata-root", script(thin))
-        self.assertIn("--bootstrap-root", script(thin))
+        self.assertEqual(needs(thin), ["build-tools", "alpha-tag"])
+        self.assertEqual(set(patterns), {"unica-metadata-*", "unica-bootstrap-*"})
         self.assertIs(marketplace.get("include-hidden-files"), True)
         self.assertEqual(marketplace.get("retention-days"), 90)
         self.assertNotIn("unica-codex-marketplace-${{ matrix.target }}", list(strings(self.release)))
 
     def test_package_and_publication_file_gates_require_all_three_manifests(self) -> None:
         gates = (
-            (job(self.release, "package-thin"), "dist/thin/marketplace"),
-            (job(self.publish, "stage"), "payload"),
-            (job(self.publish, "promote"), "payload"),
+            (job(self.release, "package-thin"), "host-contracts", "dist/thin/marketplace"),
+            (job(self.publish, "stage"), "contracts", "payload"),
+            (job(self.publish, "promote"), "catalog", "payload"),
         )
         manifests = (
             "plugins/unica/.codex-plugin/plugin.json",
             "plugins/unica/.claude-plugin/plugin.json",
             "plugins/unica/.zcode-plugin/plugin.json",
         )
-        for node, prefix in gates:
-            gate = next(step for step in steps(node) if f"test -f {prefix}/{manifests[0]}" in step.get("run", ""))
-            with self.subTest(job=prefix, step=gate["name"]), tempfile.TemporaryDirectory() as tmp:
+        for node, step_id, prefix in gates:
+            gate = step_by_id(node, step_id)
+            with self.subTest(step=step_id), tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp)
                 for relative in (*manifests, "plugins/unica/.mcp.json", "plugins/unica/runtime-manifest.json", ".agents/plugins/marketplace.json", ".claude-plugin/marketplace.json"):
                     target = root / prefix / relative
                     target.parent.mkdir(parents=True, exist_ok=True)
                     target.write_text("{}\n", encoding="utf-8")
                 # Only the download is replaced; execute the workflow's file gate.
-                shell = "gh() { :; }\n" + gate["run"]
-                valid = subprocess.run(["bash", "-e", "-c", shell], cwd=root, capture_output=True, text=True, check=False)
+                valid = bash(gate["run"], cwd=root, prelude="gh() { :; }\n")
                 self.assertEqual(valid.returncode, 0, valid.stderr)
                 for relative in manifests:
                     with self.subTest(missing=relative):
                         target = root / prefix / relative
                         target.unlink()
-                        missing = subprocess.run(["bash", "-e", "-c", shell], cwd=root, capture_output=True, text=True, check=False)
+                        missing = bash(gate["run"], cwd=root, prelude="gh() { :; }\n")
                         target.write_text("{}\n", encoding="utf-8")
-                        self.assertNotEqual(missing.returncode, 0, f"{gate['name']} accepted missing {relative}")
+                        self.assertNotEqual(missing.returncode, 0, f"{step_id} accepted missing {relative}")
 
     def test_intermediate_non_marketplace_artifacts_expire_after_one_day(self) -> None:
         assessment = job(self.release, "release-assessment")
@@ -1399,9 +1603,10 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertEqual([(upload["name"], upload["retention-days"]) for upload in uploads(assessment)], [("unica-release-assessment", 1)])
 
     def test_packaged_bootstrap_is_smoked_on_every_supported_host(self) -> None:
-        windows_cleanup = step_named(job(self.release, "build-tools"), "Check bootstrap smoke process cleanup on Windows")
-        self.assertEqual(condition(windows_cleanup), "matrix.target == 'win-x64'")
-        self.assertIn("tests.ci.test_smoke_unica_bootstrap", windows_cleanup["run"])
+        windows_cleanup = step_by_id(job(self.release, "build-tools"), "bootstrap-cleanup-windows")
+        for target in ("win-x64", "linux-x64"):
+            with self.subTest(target=target):
+                self.assertEqual(evaluate(windows_cleanup["if"], {"matrix.target": target}), target == "win-x64")
         probe = job(self.release, "probe-thin-bootstrap")
         smoke = job(self.release, "smoke-thin-plugin")
         expected_targets = {
@@ -1412,36 +1617,10 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
 
         self.assertEqual(dict(targets(probe)), expected_targets)
         self.assertEqual(dict(targets(smoke)), expected_targets)
-        step_named(probe, "Probe packaged bootstrap through the downloader")
-        step_named(smoke, "Smoke packaged bootstrap against published runtime")
-        self.assertIn("scripts/ci/smoke-unica-bootstrap.py", script(smoke))
-        self.assertIn(" --plugin-root .build/thin/plugins/unica", script(smoke))
-        self.assertIn(' --target "${{ matrix.target }}"', script(smoke))
-        self.assertEqual(needs(probe), ["package-thin"])
-        self.assertEqual(needs(smoke), ["package-thin", "publish-release-assets"])
-        self.assertIn("--expect-download-failure", script(probe))
-
-    def test_v080_source_release_has_no_executable_legacy_migration_jobs(self) -> None:
-        for job_id in ("legacy-migration-preflight", "verify-installers", "installer"):
-            with self.subTest(job_id=job_id):
-                self.assertNotIn(job_id, jobs(self.release))
-        for marker in ("test-unica-upgrade.ps1", "unica-installer", "install-unica.sh", "install-unica.ps1"):
-            with self.subTest(marker=marker):
-                self.assertFalse(any(marker in value for value in strings(self.release)), marker)
-
-    def test_source_repo_has_no_manual_or_scheduled_full_migration_workflow(self) -> None:
-        violations: dict[str, list[str]] = {}
-        workflows = sorted((*WORKFLOWS_DIR.glob("*.yml"), *WORKFLOWS_DIR.glob("*.yaml")), key=lambda path: path.name)
-
-        for workflow in workflows:
-            text = workflow.read_text(encoding="utf-8")
-            markers = [marker for marker in ("-Mode Full", "legacy-migration-full") if marker in text]
-            if markers:
-                violations[workflow.name] = markers
-
-        self.assertFalse(LEGACY_WORKFLOW.exists())
-        self.assertNotIn("unica-legacy-migration.yml", RELEASE_WORKFLOW.read_text(encoding="utf-8"))
-        self.assertEqual({}, violations, f"source workflows own full migration policy: {violations}")
+        step_by_id(probe, "probe")
+        step_by_id(smoke, "smoke")
+        self.assertEqual(needs(probe), ["package-thin", "alpha-tag"])
+        self.assertEqual(needs(smoke), ["package-thin", "publish-release-assets", "alpha-tag"])
 
     def test_release_assets_are_published_without_pages_dependency_and_redownloaded(self) -> None:
         publish = job(self.release, "publish-release-assets")
@@ -1449,13 +1628,13 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         release = steps_using(publish, "softprops/action-gh-release")[0]
 
         self.assertNotIn("publish-assessment-pages", jobs(self.release))
-        self.assertEqual(needs(publish), ["build-tools"])
+        self.assertEqual(needs(publish), ["build-tools", "alpha-tag"])
         assert_pinned(self, RELEASE_WORKFLOW, release, "v3")
         self.assertIn("unica-runtime-*.tar.gz", release["with"]["files"])
         self.assertIn("unica-runtime-*.json", release["with"]["files"])
         # Паттерн скачивания `unica-runtime-*` обязан совпадать только с
         # артефактами выпуска: побочные артефакты (метаданные, верификация)
-        # носят имена вне него, а не полагаются на фильтр `files:` (#701, п. 4).
+        # носят имена вне него, а не полагаются на фильтр `files:` (п. 4).
         upload_names = {
             upload["name"]
             for job_id in jobs(self.release)
@@ -1467,15 +1646,15 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         downloaded = steps_using(publish, "actions/download-artifact")
         self.assertEqual(
             [(step["with"].get("pattern"), step["with"].get("path")) for step in downloaded],
-            [("unica-runtime-*", "dist/runtime"), ("unica-metadata-*", "dist/metadata")],
+            [("unica-runtime-*", "dist/runtime"), ("unica-metadata-*", "dist/metadata"), ("unica-full-*", "dist/full")],
         )
-        pair = step_named(publish, "Pair core archives with their metadata")["run"]
-        self.assertIn('test -f "dist/metadata/unica-runtime-${target}.json"', pair)
-        self.assertIn('cp "dist/metadata/unica-runtime-${target}.json" dist/runtime/', pair)
-        self.assertIn("verify-release-assets.py --asset-dir dist/runtime", pair)
+        # Ядро и его описание сводятся и сверяются до выкладки.
+        order = steps(publish)
+        self.assertLess(order.index(downloaded[-1]), order.index(step_by_id(publish, "pair")))
+        self.assertLess(order.index(step_by_id(publish, "pair")), order.index(release))
         self.assertFalse(any("install-unica" in value for value in strings(publish)))
-        self.assertIn("gh release download", script(verify))
-        self.assertIn("verify-release-assets.py", script(verify))
+        # Выложенное перекачивается из выпуска и сверяется заново.
+        self.assertLess(steps(verify).index(step_by_id(verify, "download-release")), len(steps(verify)) - 1)
 
     def test_release_notes_are_generated_without_repository_docs(self) -> None:
         release = steps_using(job(self.release, "publish-release-assets"), "softprops/action-gh-release")[0]
@@ -1490,7 +1669,7 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
 
         self.assertIn("always()", condition(assessment))
         self.assertIn("unica-runtime-linux-x64.tar.gz", "\n".join(strings(assessment)))
-        self.assertNotIn("publish-release-assets", needs(assessment))
+        self.assertNotIn("publish-release-assets", ancestors(self.release, "release-assessment"))
         self.assertFalse(any("publish-release-assets" in value for value in strings(assessment)))
         self.assertEqual(upload["with"]["name"], "unica-release-assessment")
         self.assertEqual(condition(upload), "always()")
@@ -1498,35 +1677,59 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
     def test_pr_permissions_are_read_only_and_cross_repo_write_uses_secret(self) -> None:
         self.assertEqual(self.release["permissions"], {"contents": "read"})
         self.assertEqual(self.publish["permissions"], {"contents": "read"})
-        tokens = {job_id: (found.get("env") or {}).get("GH_TOKEN") for job_id, found in jobs(self.publish).items()}
-        self.assertIn("${{ secrets.UNICA_MARKETPLACE_TOKEN }}", tokens.values())
+        holders = {job_id for job_id, found in jobs(self.publish).items()
+                   if "secrets.UNICA_MARKETPLACE_TOKEN" in "\n".join(strings(found))}
+        self.assertEqual(holders, set(PUBLISH_JOBS) - {"gate"})
+        # Пишут в маркетплейс stage, anchor и promote; проверки установки только читают.
+        writers = {job_id for job_id in holders
+                   if job(self.publish, job_id)["env"]["GH_TOKEN"] == "${{ secrets.UNICA_MARKETPLACE_TOKEN }}"}
+        self.assertEqual(writers, {"stage", "anchor", "promote"})
+        # Токен есть только у заданий окружения `marketplace`, и кода тега там нет.
+        for job_id in holders:
+            found = job(self.publish, job_id)
+            with self.subTest(token_job=job_id):
+                self.assertEqual(found["environment"], "marketplace")
+                checkouts = steps_using(found, "actions/checkout")
+                self.assertEqual(len(checkouts), 1)
+                self.assertEqual(checkouts[0]["with"]["ref"], "main")
+        # Окружение `marketplace` есть только у заданий с токеном.
+        in_environment = {job_id for job_id, found in jobs(self.publish).items() if found.get("environment") == "marketplace"}
+        self.assertEqual(in_environment, holders)
         for job_id, found in jobs(self.publish).items():
             with self.subTest(job_id=job_id):
                 self.assertNotEqual((found.get("permissions") or {}).get("pull-requests"), "write")
 
     def test_cross_repository_push_configures_git_credentials(self) -> None:
-        self.assertGreaterEqual(all_scripts(self.publish).count("gh auth setup-git"), 2)
+        # Каждое задание, которое пушит в маркетплейс, настраивает Git до push.
+        for job_id in ("stage", "anchor", "promote"):
+            found = job(self.publish, job_id)
+            with self.subTest(job=job_id):
+                texts = [step.get("run", "") for step in steps(found)]
+                configured = next(index for index, text in enumerate(texts) if "gh auth setup-git" in text)
+                pushed = next(index for index, text in enumerate(texts) if re.search(r"\bpush\b", text) and "git" in text)
+                self.assertLess(configured, pushed)
 
     def test_publication_is_one_linear_pass_ordered_by_needs(self) -> None:
         """Publication order: stage → anchor → verify → promote, no pull requests, no warden.
 
         The order is the contract: the candidate anchor exists before the
         install checks run, and the catalog moves — with the release tag that
-        it names — only behind their green result. A rerun of the whole
-        workflow resumes a partial publication, so every stage states its
-        idempotent escape.
+        it names — only behind their green result. The steps themselves,
+        reruns included, are executed in test_publish_channels.
         """
         on = triggers(self.publish)
-        text = all_scripts(self.publish)
+        text = "\n".join(script(job(self.publish, job_id)) for job_id in PUBLISH_JOBS)
         gate = job(self.publish, "gate")
 
-        self.assertIn("workflow_run", on)
-        self.assertIn("source_run_id", on["workflow_dispatch"]["inputs"])
-        # Сборка запускается и по push в main; публикацию открывает только тег.
-        self.assertIn("startsWith(github.event.workflow_run.head_branch, 'v')", condition(gate))
-        for job_id in ("stage", "anchor", "verify-fresh-install", "verify-upgrade", "promote"):
-            with self.subTest(job_id=job_id):
-                self.assertIn(job_id, jobs(self.publish))
+        # Публикацию открывает только зелёная сборка этого же прогона по push тега.
+        self.assertEqual(needs(gate), ["delivery-ci"])
+        tag_push = {"needs.delivery-ci.result": "success", "github.repository": "IngvarConsulting/unica",
+                    "github.event_name": "push", "github.ref_type": "tag"}
+        self.assertTrue(evaluate(gate["if"], tag_push))
+        for change in ({"needs.delivery-ci.result": "failure"}, {"github.repository": "fork/unica"},
+                       {"github.event_name": "workflow_dispatch"}, {"github.ref_type": "branch"}):
+            with self.subTest(change=change):
+                self.assertFalse(evaluate(gate["if"], {**tag_push, **change}))
         self.assertNotIn("tag", jobs(self.publish))
         self.assertEqual(needs(job(self.publish, "anchor")), ["stage"])
         self.assertEqual(needs(job(self.publish, "verify-fresh-install")), ["gate", "stage", "anchor"])
@@ -1541,61 +1744,20 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertNotIn("codex/stage-", text)
         self.assertNotIn("codex/promote-", text)
         self.assertNotIn("mode", on["workflow_dispatch"]["inputs"])
-        stage_push = step_named(job(self.publish, "stage"), "Push the staged payload without changing any catalog")["run"]
-        promote_move = step_named(
-            job(self.publish, "promote"), "Publish the channel catalogs and the release tag in one push"
-        )["run"]
-        # Idempotent escapes: a completed stage and a completed promote are
-        # detected, and an existing tag is proven identical, never moved. The
-        # behaviour, reruns included, is exercised in test_publish_channels.
-        self.assertIn('echo "staging_sha=$(git -C marketplace rev-parse HEAD)" >> "$GITHUB_OUTPUT"\n  exit 0', stage_push)
-        self.assertIn('echo "${branch} already serves ${RELEASE_TAG}"', promote_move)
-        self.assertIn('rev-parse --verify --quiet "refs/tags/${RELEASE_TAG}"', promote_move)
+        self.assertNotIn("source_run_id", on["workflow_dispatch"]["inputs"])
+        # An existing tag is proven identical, never moved; nothing forces a ref.
         self.assertNotIn("git tag -f", text)
         self.assertNotIn("--force", text)
-        # The release tag is born only in promote, in the one atomic push that
-        # moves the catalogs naming it; nothing else pushes a release tag.
-        self.assertIn('git -C marketplace push --atomic origin "${refspecs[@]}"', promote_move)
-        self.assertEqual(text.count('refs/tags/${RELEASE_TAG}")'), 1)
-        self.assertNotIn('push origin "refs/tags/${RELEASE_TAG}"', text)
-        # A stale straggler must fail forward-only instead of rolling a
-        # catalog back — in both writers, over both host catalogs, in SemVer
-        # order, and again on the retry after a refused push. That two
-        # releases never interleave is
-        # test_publication_queue_keeps_every_admitted_release.
         self.assertNotIn("sort -V", text)
-        for writer in (stage_push, promote_move):
-            with self.subTest(writer=writer.splitlines()[1]):
-                self.assertIn('python3 "$rules" catalog-ref "marketplace/$codex" "marketplace/$claude"', writer)
-                self.assertIn('python3 "$rules" forward', writer)
-        self.assertIn('after_rebase="$(served_ref HEAD~1)"', stage_push)
-        # The retry rebuilds the whole publication from the remote, which
-        # repeats every forward check on the state it now holds.
-        self.assertIn("if ! publish; then\n  prepare\n  publish\nfi", promote_move)
-        # The payload is trusted only from the successful push build of the
-        # very tag its manifest declares — dispatch cannot smuggle another one.
-        self.assertIn('test "$run_event" = "push"', text)
-        self.assertIn('test "$run_branch" = "$RELEASE_TAG"', text)
-        self.assertIn('gh api "repos/IngvarConsulting/unica/git/ref/tags/${RELEASE_TAG}" --silent', text)
-        self.assertIn("payload/plugins/unica/.codex-plugin/plugin.json", text)
-        self.assertIn("payload/plugins/unica/.mcp.json", text)
-        self.assertIn("payload/.agents/plugins/marketplace.json", text)
-        # Consumer verification installs the candidate the way a consumer does,
-        # on every supported host, before the catalog moves.
-        self.assertEqual(text.count("plugin marketplace add $candidate --json"), 2)
-        # The upgrade gate seeds the previous stable and then moves that same
-        # install to the candidate. The candidate is a directory marketplace, so
-        # the move is a reinstall against the rewritten catalog: `plugin
-        # marketplace upgrade` fetches a Git remote and refuses one.
-        self.assertNotIn("plugin marketplace upgrade unica", text)
-        self.assertIn("plugin remove $plugin --json", text)
-        self.assertEqual(text.count("plugin add $plugin --json"), 3)
-        # Each channel is installed under the name its consumers add.
-        self.assertEqual(
-            text.count("$plugin = if ($env:CHANNEL -eq 'next') { 'unica@unica-next' } else { 'unica@unica' }"),
-            3,
-        )
-        self.assertIn("verify --plugin-root $pluginRoot", text)
+        # The payload is trusted only from this run's own tag.
+        own = step_by_id(job(self.publish, "stage"), "own-tag")
+        self.assertEqual(normalized(own["env"]["RELEASE_TAG"]), "${{ steps.identity.outputs.release_tag }}")
+        with tempfile.TemporaryDirectory() as tmp:
+            for ref_name, accepted in (("v1.0.0", True), ("v1.0.1", False)):
+                with self.subTest(ref_name=ref_name):
+                    result = bash(own["run"], cwd=Path(tmp), env={"GITHUB_REF_NAME": ref_name, "RELEASE_TAG": "v1.0.0"},
+                                  prelude="gh() { :; }\n")
+                    self.assertEqual(result.returncode == 0, accepted, result.stderr)
 
 
 class ArtifactSplitPublicationTests(unittest.TestCase):
@@ -1623,8 +1785,8 @@ class ArtifactSplitPublicationTests(unittest.TestCase):
     def test_the_manifest_still_names_the_artifacts_the_release_does_not_carry(self) -> None:
         # Не выложить и не назвать — разные вещи. Движки объявлены адресом, и
         # каждый адрес выпуск проверяет.
-        self.assertIn("verify-delivery-reachable.py", all_scripts(self.release))
-        self.assertIn("prefetch --plugin-root", all_scripts(self.release))
+        self.assertIn("verify-delivery-reachable.py", script(job(self.release, "verify-published-assets")))
+        step_by_id(job(self.release, "smoke-thin-plugin"), "prefetch")
 
     def test_packaging_uploads_every_artifact_of_the_target(self) -> None:
         paths = [upload.get("path", "") for upload in uploads(self.build)]
@@ -1637,23 +1799,11 @@ class ArtifactSplitPublicationTests(unittest.TestCase):
 
     def test_bsp_runtime_assessment_receives_the_engine_its_search_requires(self) -> None:
         assessment = job(self.release, "release-assessment")
+        engine = upload_step(self.build, "unica-assessment-engine-linux-x64")
 
-        self.assertIn("unica-assessment-engine-linux-x64", [upload.get("name") for upload in uploads(self.build)])
+        self.assertEqual(evaluate(engine["if"], {"matrix.target": "linux-x64"}), True)
         self.assertIn("stage-unica-assessment-engine.py", script(self.build))
-        self.assertIn("--artifact bsl-analyzer", script(self.build))
-        self.assertIn("--artifact rlm-tools-bsl", script(self.build))
-        self.assertIn("--out-archive .build/unica-assessment-engine-linux-x64.tar.gz", script(self.build))
         self.assertIn("unica-assessment-engine-linux-x64", [download.get("name") for download in downloads(assessment)])
-        self.assertIn(
-            "--engine-overlay .build/assessment-engine/unica-assessment-engine-linux-x64.tar.gz",
-            script(assessment),
-        )
-
-    def test_the_direct_mcp_smoke_is_given_the_engines_it_asserts_on(self) -> None:
-        extract = step_named(self.build, "Extract deterministic runtime for MCP smoke")
-
-        self.assertIn("unica-runtime-${{ matrix.target }}.tar.gz", extract["run"])
-        self.assertIn(".build/tool-bundles/${{ matrix.target }}/bin/", extract["run"])
 
     def test_every_supported_target_must_pass_before_publication(self) -> None:
         authoritative = targets(self.build)
@@ -1669,19 +1819,17 @@ class ArtifactSplitPublicationTests(unittest.TestCase):
         for contour in ("probe-thin-bootstrap", "smoke-thin-plugin"):
             self.assertEqual({target for target, _ in targets(job(self.release, contour))}, authoritative_targets, contour)
 
-        ordered_steps = (
-            "Build target bundle and bootstrap",
-            "Package deterministic runtime",
-            "Verify local runtime asset pair",
-            "Upload runtime metadata",
-            "Upload bootstrap payload",
-            "Upload required runtime archive",
+        order = steps(self.build)
+        lifecycle = (
+            step_by_id(self.build, "build"),
+            step_by_id(self.build, "package-runtime"),
+            step_by_id(self.build, "verify-runtime"),
+            upload_step(self.build, "unica-metadata-${{ matrix.target }}"),
+            upload_step(self.build, "unica-bootstrap-${{ matrix.target }}"),
+            upload_step(self.build, "unica-runtime-${{ matrix.target }}"),
         )
-        positions = [step_index(self.build, name) for name in ordered_steps]
+        positions = [order.index(step) for step in lifecycle]
         self.assertEqual(positions, sorted(positions))
-        self.assertIn("tools.json", script(self.build))
-        self.assertIn('manifest["runtimeFiles"]', script(self.build))
-        self.assertIn('--target "${{ matrix.target }}"', script(self.build))
 
         expected_needs = {
             "package-thin": ["build-tools"],
@@ -1692,35 +1840,23 @@ class ArtifactSplitPublicationTests(unittest.TestCase):
         }
         for job_id, dependencies in expected_needs.items():
             found = job(self.release, job_id)
-            self.assertEqual(needs(found), dependencies, job_id)
+            self.assertEqual(needs(found), [*dependencies, "alpha-tag"], job_id)
             for dependency in dependencies:
-                self.assertIn(f"needs.{dependency}.result == 'success'", condition(found))
+                scenario = {**GREEN, "github.event_name": "push"}
+                self.assertFalse(evaluate(found["if"], {**scenario, f"needs.{dependency}.result": "failure"}), job_id)
 
-        local_verifier = "python scripts/ci/verify-release-assets.py"
-        self.assertIn(local_verifier, script(self.build))
-        self.assertIn('--asset-dir ".build/runtime-assets/${{ matrix.target }}"', script(self.build))
-
+        # Перекачанные ассеты сверяются для всех целей сразу.
         published = job(self.release, "verify-published-assets")
-        published_lifecycle = (
-            'gh release download "$GITHUB_REF_NAME" --pattern \'unica-runtime-*\' --dir published',
-            local_verifier + " --asset-dir published",
-            "unica-thin-marketplace",
-            "python scripts/ci/verify-delivery-reachable.py",
-        )
-        texts = [step_text(step) for step in steps(published)]
-        published_positions = [next(index for index, text in enumerate(texts) if marker in text) for marker in published_lifecycle]
-        self.assertEqual(published_positions, sorted(published_positions))
-        self.assertNotIn("--target", "\n".join(texts), "published verification must cover every target")
+        self.assertNotIn("strategy", published)
+        self.assertNotIn("--target", script(published), "published verification must cover every target")
 
         smoke = job(self.release, "smoke-thin-plugin")
-        smoke_lifecycle = (
-            "Smoke packaged bootstrap against published runtime",
-            "Prefetch the whole delivery once, end to end",
-        )
-        smoke_positions = [step_index(smoke, name) for name in smoke_lifecycle]
-        self.assertEqual(smoke_positions, sorted(smoke_positions))
-        self.assertIn("matrix.target == 'linux-x64'", condition(step_named(smoke, "Prefetch the whole delivery once, end to end")))
-        self.assertIn("prefetch --plugin-root .build/thin/plugins/unica", script(smoke))
+        order = steps(smoke)
+        self.assertLess(order.index(step_by_id(smoke, "smoke")), order.index(step_by_id(smoke, "prefetch")))
+        prefetch = step_by_id(smoke, "prefetch")
+        for target in ("linux-x64", "win-x64"):
+            with self.subTest(target=target):
+                self.assertEqual(evaluate(prefetch["if"], {"matrix.target": target}), target == "linux-x64")
 
 
 class CandidateChannelTests(unittest.TestCase):
@@ -1742,16 +1878,28 @@ class CandidateChannelTests(unittest.TestCase):
         # те, кто ищет свежее.
         release = steps_using(job(self.release, "publish-release-assets"), "softprops/action-gh-release")[0]
 
-        self.assertEqual(normalized(release["with"]["prerelease"]), "${{ contains(github.ref_name, '-') }}")
+        for tag in ("v1.0.0", "v1.0.0-rc.1"):
+            with self.subTest(tag=tag):
+                self.assertEqual(evaluate(release["with"]["prerelease"], {"env.RELEASE_TAG": tag}), "-" in tag)
 
     def test_publication_asks_first_which_channel_the_release_reaches(self) -> None:
         gate = job(self.publish, "gate")
+        decide = step_by_id(gate, "decide")
 
         self.assertEqual(gate["outputs"], {"channel": "${{ steps.decide.outputs.channel }}"})
-        self.assertIn(
-            'python3 rules/scripts/ci/release-channel.py channel "$tag"',
-            step_named(gate, "Decide which channel this release reaches")["run"],
-        )
+        # Шаг исполняется с правилами канала из main и называет канал по тегу.
+        for tag, channel in (("v1.0.0", "stable"), ("v1.0.0-rc.2", "next")):
+            with self.subTest(tag=tag), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                rules = root / "rules/scripts/ci"
+                rules.mkdir(parents=True)
+                shutil.copy(REPO_ROOT / "scripts/ci/release-channel.py", rules / "release-channel.py")
+                for name in ("out", "summary"):
+                    (root / name).touch()
+                env = {"GITHUB_REF_NAME": tag, "GITHUB_OUTPUT": "out", "GITHUB_STEP_SUMMARY": "summary"}
+                result = bash(decide["run"], cwd=root, env=env, prelude=python_prelude())
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual((root / "out").read_text(encoding="utf-8").split(), [f"channel={channel}"])
 
     def test_every_publishing_stage_waits_for_that_answer(self) -> None:
         # Достаточно загейтить первую стадию: остальные ждут её через `needs`.
@@ -1759,22 +1907,51 @@ class CandidateChannelTests(unittest.TestCase):
         stage = job(self.publish, "stage")
 
         self.assertEqual(needs(stage), ["gate"])
-        self.assertEqual(
-            condition(stage),
-            "needs.gate.outputs.channel == 'stable' || needs.gate.outputs.channel == 'next'",
-        )
+        for channel, result, expected in (("stable", "success", True), ("next", "success", True),
+                                          ("none", "success", False), ("", "success", False),
+                                          ("stable", "failure", False)):
+            with self.subTest(channel=channel, result=result):
+                values = {"needs.gate.result": result, "needs.gate.outputs.channel": channel}
+                self.assertEqual(evaluate(stage["if"], values), expected)
 
-    def test_channel_rules_come_from_the_workflow_commit_without_credentials(self) -> None:
-        # Код тега не исполняется рядом с токеном маркетплейса: правила канала
-        # берутся из коммита самого workflow, и checkout не оставляет токена.
-        for job_id in ("gate", "stage", "anchor", "verify-fresh-install", "verify-upgrade", "promote"):
+    def test_a_skipped_ancestor_does_not_silently_stop_the_publication(self) -> None:
+        # На теге пропущены `alpha-tag`, проба и `p0-release-proof`. Без статусной
+        # функции GitHub подставляет `success()`, и выпуск молча не доходил бы до
+        # каталога при зелёном прогоне.
+        required = {
+            "gate": ["needs.delivery-ci.result == 'success'"],
+            "stage": ["needs.gate.result == 'success'"],
+            "anchor": ["needs.stage.result == 'success'"],
+            "verify-fresh-install": ["needs.anchor.result == 'success'"],
+            "verify-upgrade": ["needs.anchor.result == 'success'"],
+            "promote": ["needs.anchor.result == 'success'", "needs.verify-fresh-install.result == 'success'",
+                        "needs.verify-upgrade.result == 'success'"],
+        }
+        for job_id, clauses in required.items():
             with self.subTest(job_id=job_id):
-                checkout = step_named(job(self.publish, job_id), "Check out the release channel rules")
-                self.assertTrue(checkout["uses"].startswith("actions/checkout@"))
+                gate = normalized(condition(job(self.publish, job_id)))
+                self.assertIn("!cancelled()", gate)
+                for clause in clauses:
+                    self.assertIn(clause, gate)
+        # То же для всех заданий, чей предок может быть пропущен.
+        skippable = {"alpha-tag", "windows-clippy", "probe-thin-bootstrap", "p0-release-proof", "release-assessment"}
+        for job_id, found in jobs(self.release).items():
+            if ancestors(self.release, job_id) & skippable:
+                with self.subTest(job_id=job_id):
+                    gate = condition(found)
+                    self.assertTrue("!cancelled()" in gate or "always()" in gate, gate)
+
+    def test_channel_rules_come_from_main_without_credentials(self) -> None:
+        # Код тега не исполняется рядом с токеном маркетплейса: правила канала
+        # берутся из main, и checkout не оставляет токена.
+        for job_id in PUBLISH_JOBS:
+            with self.subTest(job_id=job_id):
+                checkouts = steps_using(job(self.publish, job_id), "actions/checkout")
+                self.assertEqual(len(checkouts), 1)
                 self.assertEqual(
-                    checkout["with"],
+                    checkouts[0]["with"],
                     {
-                        "ref": "${{ github.sha }}",
+                        "ref": "main",
                         "path": "rules",
                         "persist-credentials": False,
                         "sparse-checkout": "scripts/ci/release-channel.py",

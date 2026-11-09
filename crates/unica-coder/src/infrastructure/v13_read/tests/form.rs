@@ -946,7 +946,7 @@ fn form_metadata_has_its_own_descriptor_properties_and_resource_identity() {
         let root_data = root_view.data.unwrap();
         assert_eq!(root_data["kind"], "Form");
         assert!(root_data["props"].get("Comment").is_none());
-        // #2159: the form shows its declaration next to its structure; the
+        // The form shows its declaration next to its structure; the
         // `Metadata` branch is where it is changed.
         let declaration = &root_data["props"]["declaration"];
         assert_eq!(
@@ -997,7 +997,7 @@ fn form_metadata_has_its_own_descriptor_properties_and_resource_identity() {
     }
 }
 
-/// #2159: an unreadable or oversized declaration is named in `limits`; the
+/// An unreadable or oversized declaration is named in `limits`; the
 /// form's structure stays readable.
 #[test]
 fn form_declaration_never_hides_the_form() {
@@ -1072,7 +1072,7 @@ fn inherited_form_metadata_is_local_without_claiming_a_local_form_payload() {
     }
 }
 
-/// A form borrowed with its own `Form.xml` (#1982) carries local content:
+/// A form borrowed with its own `Form.xml` carries local content:
 /// view does not report it as inherited, so its content writers stay open.
 /// rule: INV.SOURCE.BORROWED-OBJECT-INHERITED-CONTENT
 #[test]
@@ -1379,7 +1379,7 @@ fn dynamic_list_no_context_rule_keeps_incompatible_bindings_invalid() {
 #[test]
 fn contextual_form_event_does_not_accept_server_no_context() {
     // The module is checked with both line endings: a Windows checkout used
-    // to hand it over with CRLF (#1970), and the directive reading must not
+    // to hand it over with CRLF, and the directive reading must not
     // depend on that.
     for (directive, state, eol) in [
         ("&НаСервере", "implemented", "\n"),
@@ -1398,7 +1398,7 @@ fn contextual_form_event_does_not_accept_server_no_context() {
             "&НаСервере\nПроцедура СоздатьФорму",
             &format!("{directive}\nПроцедура СоздатьФорму"),
         );
-        // A silent no-op here once tested the original directive (#1970).
+        // A silent no-op here once tested the original directive.
         assert!(
             source.contains(&format!("{directive}\nПроцедура СоздатьФорму")),
             "{directive}: the handler directive must be substituted"

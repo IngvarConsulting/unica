@@ -1,0 +1,18 @@
+{
+  "area": "Навигация и чтение",
+  "task": "Найти регистры сведений по виду",
+  "wire": [
+    {
+      "tool": "unica.search",
+      "args": {
+        "corpus": "names",
+        "query": "Иерархия",
+        "kind": "InformationRegister"
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S022"
+}

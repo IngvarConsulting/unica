@@ -1,0 +1,59 @@
+{
+  "id": "S296",
+  "area": "Объекты метаданных",
+  "task": "Опубликовать удаление объекта без ссылок — результат несёт событие и влияние на кеш",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Enum.LanguageAware",
+        "ops": [
+          {
+            "op": "supportRule.set",
+            "args": {
+              "values": {
+                "rule": "off-support"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Enum.LanguageAware",
+        "ops": [
+          {
+            "op": "object.remove",
+            "args": {}
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ]
+}

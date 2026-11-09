@@ -1,5 +1,8 @@
 use std::cmp::Ordering;
 use std::fmt;
+use unica_source_contract::format_identity::{
+    FormatFamily, FormatFamilyId, FormatIdentity, FormatKey, PlatformLine,
+};
 use unica_source_contract::{ACTIVE_PLATFORM_LINE, ACTIVE_SERIALIZATION_FORMAT};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -12,6 +15,96 @@ pub const ACTIVE_FORMAT_PROFILE: FormatProfile = FormatProfile {
     platform_line: ACTIVE_PLATFORM_LINE,
     export_format: ACTIVE_SERIALIZATION_FORMAT,
 };
+
+/// Which platform line writes each version of the Designer export format
+/// (INV.RUNTIME.PLATFORM-LINE). A line writes exactly one version, so the
+/// line follows from the version of the dump. 2.17, 2.20, 2.21 and 2.22 are
+/// measured exports of 8.3.24, 8.3.27, 8.5.1 and 8.5.4; 2.18 and 2.19 come
+/// from the platform vendor's pairing and have no measured corpus yet.
+pub const EXPORT_FORMAT_PLATFORM_LINES: &[(&str, &str)] = &[
+    ("2.17", "8.3.24"),
+    ("2.18", "8.3.25"),
+    ("2.19", "8.3.26"),
+    ("2.20", "8.3.27"),
+    ("2.21", "8.5.1"),
+    ("2.22", "8.5.4"),
+];
+
+/// The platform line that writes `export_format`, or `None` for a version
+/// outside the table.
+pub fn platform_line_for_export_format(export_format: &str) -> Option<&'static str> {
+    EXPORT_FORMAT_PLATFORM_LINES
+        .iter()
+        .find(|(format, _)| *format == export_format)
+        .map(|(_, line)| *line)
+}
+
+/// The Designer export format family; its wire name is `sourceFormat`'s.
+pub const PLATFORM_XML: FormatFamilyId = FormatFamilyId::new("platform_xml");
+
+/// The format of a Designer export recording `export_format` in its roots
+/// (INV.SOURCE.FORMAT-IDENTITY): the tuple has the one version of the dump.
+pub fn platform_xml_identity(export_format: &str) -> FormatIdentity {
+    FormatIdentity::new(PLATFORM_XML, FormatKey::new([export_format]))
+}
+
+/// The platform line of a Designer export format: it follows from the version
+/// by the table above. `None` for another family or a version outside it.
+pub fn platform_xml_line(identity: &FormatIdentity) -> Option<PlatformLine> {
+    let [version] = identity.key_in(PLATFORM_XML)?.parts() else {
+        return None;
+    };
+    PlatformLine::parse(platform_line_for_export_format(version)?)
+}
+
+/// The order of two Designer export formats; `None` when either belongs to
+/// another family or its version does not parse. Only the family orders its
+/// tuples (INV.SOURCE.FORMAT-IDENTITY).
+pub fn compare_platform_xml(left: &FormatIdentity, right: &FormatIdentity) -> Option<Ordering> {
+    let version = |identity: &FormatIdentity| match identity.key_in(PLATFORM_XML)?.parts() {
+        [version] => ExportFormatVersion::parse(version).ok(),
+        _ => None,
+    };
+    Some(version(left)?.cmp(&version(right)?))
+}
+
+/// Export format versions with a measured reference corpus. 2.18 and 2.19
+/// have a platform line in the table but no corpus yet, so they are not known.
+const MEASURED_EXPORT_FORMATS: &[&str] = &["2.17", "2.20", "2.21", "2.22"];
+
+/// The Designer export as a format family (INV.APP.FORMAT-FAMILY-EXTENSION):
+/// a tuple of one export format version, its line by the table above.
+pub struct PlatformXmlFamily;
+
+impl FormatFamily for PlatformXmlFamily {
+    fn id(&self) -> FormatFamilyId {
+        PLATFORM_XML
+    }
+
+    fn compare(&self, left: &FormatKey, right: &FormatKey) -> Option<Ordering> {
+        compare_platform_xml(
+            &FormatIdentity::new(PLATFORM_XML, left.clone()),
+            &FormatIdentity::new(PLATFORM_XML, right.clone()),
+        )
+    }
+
+    fn known_keys(&self) -> Vec<FormatKey> {
+        MEASURED_EXPORT_FORMATS
+            .iter()
+            .map(|version| FormatKey::new([*version]))
+            .collect()
+    }
+
+    fn platform_line(&self, key: &FormatKey) -> Option<PlatformLine> {
+        platform_xml_line(&FormatIdentity::new(PLATFORM_XML, key.clone()))
+    }
+}
+
+/// Whether the four-part platform build `build` belongs to `line`
+/// (`8.3.27.2342` to `8.3.27`).
+pub fn build_in_platform_line(build: &[u32; 4], line: &str) -> bool {
+    PlatformLine::parse(line).is_some_and(|line| line.contains_build(build))
+}
 
 #[derive(Debug, Clone)]
 pub struct ExportFormatVersion {
@@ -215,8 +308,70 @@ pub fn format_compatibility_warning(compatibility: &FormatCompatibility) -> Stri
 #[cfg(test)]
 mod tests {
     use super::{
-        classify_root_version, ExportFormatVersion, FormatCompatibility, ACTIVE_FORMAT_PROFILE,
+        build_in_platform_line, classify_root_version, compare_platform_xml,
+        platform_line_for_export_format, platform_xml_identity, platform_xml_line,
+        ExportFormatVersion, FormatCompatibility, ACTIVE_FORMAT_PROFILE,
+        EXPORT_FORMAT_PLATFORM_LINES, PLATFORM_XML,
     };
+    use std::cmp::Ordering;
+    use unica_source_contract::format_identity::{
+        FormatFamilyId, FormatIdentity, FormatKey, PlatformLine,
+    };
+
+    /// rule: INV.SOURCE.FORMAT-IDENTITY
+    #[test]
+    fn a_designer_export_format_is_its_version_and_the_line_follows_from_it() {
+        // The family's name is the wire name of `sourceFormat`.
+        assert_eq!(PLATFORM_XML.name(), "platform_xml");
+        let current = platform_xml_identity("2.20");
+        assert_eq!(
+            platform_xml_line(&current),
+            Some(PlatformLine::new(8, 3, 27))
+        );
+        assert_eq!(
+            platform_xml_line(&platform_xml_identity("2.22")),
+            Some(PlatformLine::new(8, 5, 4))
+        );
+        assert_eq!(platform_xml_line(&platform_xml_identity("2.16")), None);
+        assert_ne!(current, platform_xml_identity("2.21"));
+
+        // Another family's tuple with the same version is another format:
+        // this family neither reads its line nor orders it.
+        let foreign =
+            FormatIdentity::new(FormatFamilyId::new("family_b"), FormatKey::new(["2.20"]));
+        assert_ne!(current, foreign);
+        assert_eq!(platform_xml_line(&foreign), None);
+        assert_eq!(compare_platform_xml(&current, &foreign), None);
+        assert_eq!(
+            compare_platform_xml(&platform_xml_identity("2.17"), &current),
+            Some(Ordering::Less)
+        );
+    }
+
+    /// rule: INV.RUNTIME.PLATFORM-LINE
+    #[test]
+    fn each_export_format_is_written_by_one_platform_line_and_back() {
+        assert_eq!(
+            platform_line_for_export_format(ACTIVE_FORMAT_PROFILE.export_format),
+            Some(ACTIVE_FORMAT_PROFILE.platform_line)
+        );
+        for (index, (format, line)) in EXPORT_FORMAT_PLATFORM_LINES.iter().enumerate() {
+            for (other_format, other_line) in &EXPORT_FORMAT_PLATFORM_LINES[index + 1..] {
+                assert_ne!(format, other_format);
+                assert_ne!(line, other_line);
+            }
+        }
+        assert_eq!(platform_line_for_export_format("2.22"), Some("8.5.4"));
+        assert_eq!(platform_line_for_export_format("2.16"), None);
+    }
+
+    #[test]
+    fn a_build_belongs_to_its_three_part_line_only() {
+        assert!(build_in_platform_line(&[8, 3, 27, 2342], "8.3.27"));
+        assert!(!build_in_platform_line(&[8, 3, 26, 1656], "8.3.27"));
+        assert!(!build_in_platform_line(&[8, 5, 4, 1878], "8.5.1"));
+        assert!(!build_in_platform_line(&[8, 3, 27, 2342], "8.3"));
+    }
 
     #[test]
     fn active_profile_is_platform_8_3_27_format_2_20() {

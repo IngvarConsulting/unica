@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use std::sync::atomic::AtomicBool;
 use unica_analysis_services::backend::BslBackend;
 use unica_process::transport_failure::PrivateFailureSnapshot;
+use unica_workspace::test_support as testing;
 
 type SourceImage = BTreeMap<PathBuf, Vec<u8>>;
 
@@ -100,9 +101,6 @@ impl RunningStartup {
             let result = unica_analysis_services::run_workspace_service_from_args(
                 &args,
                 backend,
-                Arc::new(RlmWorkspaceBackend::new(Arc::new(
-                    analysis_composition::AnalysisEnvironment,
-                ))),
                 analysis_composition::service_environment(),
             );
             let _ = completion.send(result);

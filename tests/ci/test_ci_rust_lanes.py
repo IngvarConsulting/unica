@@ -16,6 +16,23 @@ from xml.etree import ElementTree as ET
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts/ci"))
 import ci_rust_lanes as lanes
+import os
+from unittest import mock
+
+# The fixtures describe the CI layout, where the build directory is the
+# workspace's own `target`. A session sets `CARGO_TARGET_DIR`; the scripts
+# under test would follow it, so this module's tests run without the variable.
+_CARGO_ENV = mock.patch.dict(os.environ)
+
+
+def setUpModule() -> None:
+    _CARGO_ENV.start()
+    os.environ.pop("CARGO_TARGET_DIR", None)
+
+
+def tearDownModule() -> None:
+    _CARGO_ENV.stop()
+
 
 
 def manifest(lane="ordinary", host="ubuntu-latest", profile="queue"):
@@ -106,7 +123,10 @@ class RustLaneTests(unittest.TestCase):
             for action in ("list", "run"):
                 command = lanes.reuse_command(action, Path("/repo"), Path("tests.tar.zst"), lane, "queue", "hash:1/2")
                 self.assertIn("--archive-file", command)
-                for forbidden in ("--workspace", "--features", "--lib", "--test", "--manifest-path"):
+                # nextest refuses build-directory options with `--archive-file`:
+                # the archive carries its own and extracts into `<extract-to>/target`.
+                for forbidden in ("--workspace", "--features", "--lib", "--test", "--manifest-path",
+                                  "--target-dir", "--target-dir-remap"):
                     self.assertNotIn(forbidden, command)
                 self.assertIn("hash:1/2", command)
 
@@ -147,7 +167,7 @@ class RustLaneTests(unittest.TestCase):
             write_configurations(root)
             report = lanes.verify_union(root, "queue", ["ubuntu-latest"], "a" * 40)
             self.assertTrue(report["mandatoryComplete"])
-            # Один вердикт на все ОС: второго, «рекомендательного» списка нет (#2152).
+            # Один вердикт на все ОС: второго, «рекомендательного» списка нет.
             self.assertNotIn("fullMatrixPassed", report)
             self.assertNotIn("advisoryFailures", report)
             self.assertFalse(report["affectedAdmission"])
@@ -256,9 +276,11 @@ class ArchiveFixtureBinaryTests(unittest.TestCase):
         return {
             "rust-build-meta": {"target-directory": str(root / "target"),
                 "platforms": {"host": {"platform": {"triple": target}}, "targets": [{"platform": {"triple": target}}]},
-                "non-test-binaries": {"exact-coder-package": [{"name": "unica", "kind": "bin-exe", "build-platform": "target", "path": target + "/debug/unica"}]}},
+                "non-test-binaries": {"exact-product-package": [{"name": "unica", "kind": "bin-exe", "build-platform": "target", "path": target + "/debug/unica"}]}},
             "rust-suites": {"unica-coder": {"package-name": "unica-coder", "package-id": "exact-coder-package", "kind": "lib",
-                "binary-id": "unica-coder", "build-platform": "target", "testcases": {"selected": {"ignored": False}}}},
+                "binary-id": "unica-coder", "build-platform": "target", "testcases": {"selected": {"ignored": False}}},
+                "unica-product::bin/unica": {"package-name": "unica-product", "package-id": "exact-product-package", "kind": "bin",
+                "binary-id": "unica-product::bin/unica", "build-platform": "target", "testcases": {}}},
         }
 
     def test_native_mac_and_windows_metadata_bind_the_target_specific_executable(self):
@@ -269,7 +291,7 @@ class ArchiveFixtureBinaryTests(unittest.TestCase):
                 metadata = listed["rust-build-meta"]
                 metadata["platforms"] = {"host": {"platform": {"triple": target}}, "targets": [{"platform": {"triple": target}}]}
                 relative = f"{target}/debug/{name}"
-                metadata["non-test-binaries"]["exact-coder-package"][0]["path"] = relative.replace("/", "\\") if system == "Windows" else relative
+                metadata["non-test-binaries"]["exact-product-package"][0]["path"] = relative.replace("/", "\\") if system == "Windows" else relative
                 binary = root / "target" / relative
                 binary.parent.mkdir(parents=True)
                 binary.write_bytes(b"native archive fixture")
@@ -380,17 +402,17 @@ class ArchiveFixtureBinaryTests(unittest.TestCase):
             binary.write_bytes(b"archive binary")
             mutations = [
                 lambda row: row["rust-build-meta"].pop("non-test-binaries"),
-                lambda row: row["rust-suites"]["unica-coder"].update({"package-id": "another-package"}),
-                lambda row: row["rust-suites"]["unica-coder"].update({"package-name": "another-package"}),
+                lambda row: row["rust-suites"]["unica-product::bin/unica"].update({"package-id": "another-package"}),
+                lambda row: row["rust-suites"]["unica-product::bin/unica"].update({"package-name": "another-package"}),
                 lambda row: row["rust-build-meta"]["platforms"]["host"]["platform"].update({"triple": "another-host"}),
                 lambda row: row["rust-build-meta"]["platforms"]["targets"].append({"platform": {"triple": "another-target"}}),
                 lambda row: row["rust-build-meta"].update({"target-directory": str(root / "elsewhere")}),
             ]
             for changes in ({"kind": "bin"}, {"build-platform": "host"}, {"name": "unica-bootstrap"},
                             {"path": "../unica"}, {"path": "/tmp/unica"}, {"path": "x86_64-unknown-linux-gnu/debug/deps/unica"}):
-                mutations.append(lambda row, changes=changes: row["rust-build-meta"]["non-test-binaries"]["exact-coder-package"][0].update(changes))
-            mutations.append(lambda row: row["rust-build-meta"]["non-test-binaries"]["exact-coder-package"].append(
-                copy.deepcopy(row["rust-build-meta"]["non-test-binaries"]["exact-coder-package"][0])))
+                mutations.append(lambda row, changes=changes: row["rust-build-meta"]["non-test-binaries"]["exact-product-package"][0].update(changes))
+            mutations.append(lambda row: row["rust-build-meta"]["non-test-binaries"]["exact-product-package"].append(
+                copy.deepcopy(row["rust-build-meta"]["non-test-binaries"]["exact-product-package"][0])))
             for index, mutate in enumerate(mutations):
                 row = copy.deepcopy(original)
                 mutate(row)
@@ -852,7 +874,7 @@ class PreviousInventoryTests(unittest.TestCase):
             with self.subTest(outcome=outcome), \
                  self.assertRaisesRegex(ValueError, rf"Rust \(macos-15\) did not finish as success: {outcome}"):
                 self.verify(self.previous(), jobs=jobs)
-        # In the nightly Windows blocks like macOS (#2152).
+        # In the nightly Windows blocks like macOS.
         hosts = ["ubuntu-latest", "macos-15", "windows-latest"]
         previous = self.previous("large", hosts=hosts)
         self.assertTrue(self.verify(previous, "large", hosts=hosts)["mandatoryComplete"])
@@ -949,6 +971,72 @@ class PreviousInventoryTests(unittest.TestCase):
         # A declared target removal explains nothing while the target is still archived.
         with self.assertRaisesRegex(ValueError, "test result"):
             self.verify(self.previous(removed=["package-ordinary", "package-receipt", "package-vendor"]), mutate=rename)
+
+    def test_a_test_moved_to_another_target_or_module_is_not_a_vanished_result(self):
+        def move(plan):
+            for part in plan["shards"]:
+                for case in part:
+                    case["name"] = "relocated::" + case["name"]
+            plan["inventory"] = sum(plan["shards"], [])
+        report = self.verify(self.previous(), mutate=move)
+        self.assertEqual(report["previousInventory"]["movedCases"]["ubuntu-latest/ordinary"],
+                         {"package-ordinary::case_0": "package-ordinary::relocated::case_0"})
+
+    def test_a_move_is_one_function_name_lost_and_arrived_once(self):
+        lost = ["old::a::kept_name", "old::b::twice", "old::c::twice", "old::d::two_arrivals", "old::e::gone"]
+        arrived = ["new::kept_name", "new::x::twice", "new::y::two_arrivals", "new::z::two_arrivals", "new::renamed"]
+        self.assertEqual(lanes.moved_cases(lost, arrived), {"old::a::kept_name": "new::kept_name"})
+        self.assertEqual(lanes.moved_cases(lost, []), {})
+
+    def test_a_test_moved_after_the_previous_inventory_and_then_removed_is_explained_by_its_moved_id(self):
+        def remove(plan):
+            if plan["lane"] != "ordinary":
+                return
+            for part in plan["shards"]:
+                for case in part:
+                    if case["name"] == "case_0":
+                        case["name"] = "unrelated"
+            plan["inventory"] = sum(plan["shards"], [])
+        report = self.verify(self.previous(tests=["package-moved::relocated::case_0"]), mutate=remove)
+        self.assertIn("ubuntu-latest/ordinary", report["previousInventory"]["removedCases"])
+        with self.assertRaisesRegex(ValueError, "package-ordinary::case_0"):
+            self.verify(self.previous(tests=["package-moved::relocated::case_0", "package-other::case_0"]),
+                        mutate=remove)
+
+    def test_a_removal_declared_by_the_id_after_a_later_move_explains_the_lost_case(self):
+        lost = ["unica-coder::old::moved_then_removed", "unica-coder::old::twice", "unica-coder::other::twice",
+                "unica-coder::old::still_named"]
+        old_cases = set(lost)
+        tests = ["unica-application::new::moved_then_removed", "unica-application::new::twice",
+                 "unica-coder::old::still_named", "unica-application::new::*"]
+        self.assertEqual(lanes.declared_after_move(lost, old_cases, set(), tests),
+                         {"unica-coder::old::moved_then_removed": "unica-application::new::moved_then_removed"})
+        # An ID that still runs or was already in the previous inventory is not a later move.
+        self.assertEqual(lanes.declared_after_move(lost, old_cases, {"unica-application::new::moved_then_removed"}, tests), {})
+        # Two declarations of one name are ambiguous.
+        self.assertEqual(lanes.declared_after_move(lost, old_cases, set(),
+                                                   tests + ["unica-workspace::x::moved_then_removed"]), {})
+
+    def test_a_declaration_explains_the_same_case_compiled_into_another_target(self):
+        binaries = ["unica-application", "unica-coder", "unica-coder::role_registration"]
+        lost = ["unica-coder::application::v13::tool_catalog::tests::retired",
+                "unica-coder::application::v13::other::tests::retired",
+                "unica-coder::role_registration::kept"]
+        tests = ["unica-application::application::v13::tool_catalog::tests::retired",
+                 "unica-application::application::*", "unknown-target::kept"]
+        self.assertEqual(lanes.declared_in_another_target(lost, binaries, tests),
+                         {"unica-coder::application::v13::tool_catalog::tests::retired":
+                          "unica-application::application::v13::tool_catalog::tests::retired"})
+        # The including crate adds its own module in front: `domain::` here.
+        self.assertEqual(lanes.declared_in_another_target(
+            ["unica-coder::domain::apply::tests::gone", "unica-coder::other::tests::gone"], binaries,
+            ["unica-domain::apply::tests::gone"]),
+            {"unica-coder::domain::apply::tests::gone": "unica-domain::apply::tests::gone"})
+        # A bare function name is not enough to call two cases one test.
+        self.assertFalse(lanes.twin_declaration("domain::x::gone", "unica-domain::gone"))
+        self.assertTrue(lanes.twin_declaration("tests::gone", "unica-domain::integration::tests::gone",
+                                               ["unica-domain::integration"]))
+        self.assertFalse(lanes.twin_declaration("other::tests::gone", "unica-domain::apply::tests::gone"))
 
     def test_cases_belong_to_the_longest_nested_target_id(self):
         binaries = ["unica-coder", "unica-coder::daemon_receipt_ledger"]

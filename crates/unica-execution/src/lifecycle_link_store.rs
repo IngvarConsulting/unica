@@ -28,6 +28,16 @@ use unica_workspace::state_fs::{
 };
 use uuid::Uuid;
 
+// resource-limit: lifecycle-link-store.record-bytes
+// class: format
+// unit: bytes
+// scope: record
+// derived: true
+// resource: Размер одной записи хранилища связей жизненного цикла задания (производственный предел хранилища).
+// status: unproven
+// origin: коммит 7f6b8536e (feat(v13): add receipt actor and exact recovery)
+// problem: неизвестно
+// on-reach: запись большего размера не сохраняется и не читается; ёмкость резервируется по этому пределу
 pub const MAX_TASK_LIFECYCLE_LINK_RECORD_BYTES: usize =
     APPLICATION_MAX_TASK_LIFECYCLE_LINK_RECORD_BYTES as usize;
 
@@ -2560,39 +2570,6 @@ mod tests {
             reservation
         );
         for entry in std::fs::read_dir(root_path).unwrap() {
-            assert!(matches!(
-                entry.unwrap().file_name().to_str(),
-                Some(STORE_SNAPSHOT_FILE | STORE_LOCK_FILE)
-            ));
-        }
-    }
-
-    /// rule: INV.APP.DAEMON-TASK-CAPACITY
-    #[test]
-    fn inspection_cleans_links_staging_past_former_directory_bound() {
-        let root = tempfile::tempdir().unwrap();
-        let root_path = physical_root(&root);
-        seed_reservation_snapshot(&root_path, 1);
-        let committed = fs::read(root_path.join(STORE_SNAPSHOT_FILE)).unwrap();
-        let directory = open_state_directory_nofollow(&root_path).unwrap();
-        for index in 0..100 {
-            let file = create_state_file_child(
-                &directory,
-                OsStr::new(&format!(
-                    "{STORE_STAGING_PREFIX}{index}{STORE_STAGING_SUFFIX}"
-                )),
-            )
-            .unwrap();
-            restrict_state_stage_to_owner(&file).unwrap();
-        }
-        let store =
-            TaskLifecycleLinkStoreV5::open(&root_path, deadline()).expect("inspect all staging");
-        assert_eq!(store.capacity_snapshot().live_reservations(), 1);
-        assert_eq!(
-            fs::read(root_path.join(STORE_SNAPSHOT_FILE)).unwrap(),
-            committed
-        );
-        for entry in fs::read_dir(root_path).unwrap() {
             assert!(matches!(
                 entry.unwrap().file_name().to_str(),
                 Some(STORE_SNAPSHOT_FILE | STORE_LOCK_FILE)

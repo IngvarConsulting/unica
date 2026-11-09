@@ -1,0 +1,113 @@
+{
+  "id": "S428",
+  "name": "form-element-add-into-routes-to-the-container-address",
+  "issue": 1355,
+  "area": "Формы",
+  "task": "Неизвестный items[].into у item.add отказывает без записи; next ведёт к контракту item.add на форме, а вызов на адресе контейнера (командная панель таблицы — через таблицу) строит предпросмотр",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Валюты.Form.ФормаСписка"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Валюты/Forms/ФормаСписка/Ext/Form.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты.Form.ФормаСписка",
+        "ops": [
+          {
+            "op": "item.add",
+            "args": {
+              "items": [
+                {
+                  "name": "КнопкаОбновить",
+                  "type": "Button",
+                  "stdCommand": "List.Refresh",
+                  "into": "ListCommandBar"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: ops[0].args.items[0].into: unknown argument; `item.add` writes only the arguments listed at `main:Catalog.Валюты.Form.ФормаСписка.Can.item.add`",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.items[0].into"
+        },
+        {
+          "pointer": "/next/0/args/at",
+          "eq": "main:Catalog.Валюты.Form.ФормаСписка.Can.item.add"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Валюты/Forms/ФормаСписка/Ext/Form.xml",
+          "eq": "$capture.before"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Валюты.Form.ФормаСписка.Item.List.Item.ListCommandBar"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/can",
+          "contains": {
+            "op": "item.add",
+            "args": "items"
+          }
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты.Form.ФормаСписка.Item.List.Item.ListCommandBar",
+        "ops": [
+          {
+            "op": "item.add",
+            "args": {
+              "items": [
+                {
+                  "name": "КнопкаОбновить",
+                  "type": "Button",
+                  "stdCommand": "List.Refresh"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ]
+    }
+  ]
+}
