@@ -1,0 +1,38 @@
+{
+  "area": "СКД",
+  "task": "Задать значение параметра по умолчанию",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных",
+        "ops": [
+          {
+            "op": "parameter.add",
+            "args": {
+              "items": [
+                {
+                  "name": "Период",
+                  "type": "StandardPeriod"
+                }
+              ]
+            }
+          },
+          {
+            "op": "parameter.set",
+            "args": {
+              "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.Parameter.Период",
+              "values": {
+                "value": "ThisMonth"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S185"
+}

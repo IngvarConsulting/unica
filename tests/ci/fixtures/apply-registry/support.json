@@ -1,0 +1,23 @@
+{
+  "family": "Support",
+  "operations": [
+    {
+      "variant": "CapabilitySet",
+      "operation": "supportCapability.set",
+      "applicability": "Configuration",
+      "skeleton": "Values"
+    },
+    {
+      "variant": "RuleSet",
+      "operation": "supportRule.set",
+      "applicability": "SupportRule",
+      "skeleton": "Values"
+    },
+    {
+      "variant": "RuleRestore",
+      "operation": "supportRule.restore",
+      "applicability": "SupportRestore",
+      "skeleton": "Target"
+    }
+  ]
+}

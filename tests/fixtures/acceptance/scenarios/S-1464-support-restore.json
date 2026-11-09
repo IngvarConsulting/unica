@@ -17,7 +17,7 @@
       "assertions": [
         {
           "pointer": "/data/props/support",
-          "eq": "supported"
+          "eq": "editableWithSupport"
         }
       ],
       "captures": {

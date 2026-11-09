@@ -10,6 +10,9 @@ import unittest
 from tests.ci.support_restore_fixture import NATIVE, PRODUCER
 
 
+MEDIUM = ("SupplierProducerTests",)
+
+
 class SupplierProducerTests(unittest.TestCase):
     def refused(self, *, command="convert", change_cf=False):
         with tempfile.TemporaryDirectory(prefix="unica-supplier-test-") as raw:

@@ -1,0 +1,402 @@
+#[path = "support/frontend_process.rs"]
+mod frontend_process;
+use frontend_process::*;
+
+#[path = "daemon_process/endpoint_ownership.rs"]
+mod endpoint_ownership;
+#[path = "platform/daemon_endpoint_security.rs"]
+mod endpoint_security;
+
+use serde_json::Value;
+use std::fs::OpenOptions;
+use std::io::Write;
+use std::net::TcpListener;
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
+
+const PROCESS_FIXTURE_ENV: &str = "UNICA_DAEMON_PROCESS_FIXTURE";
+const PROCESS_FIXTURE_IDLE_GRACE_MS: u64 = 2_000;
+const STALE_ENDPOINT_INITIAL_IDLE_GRACE_MS: u64 = 500;
+
+// Keep one actual MCP stdio process alive across daemon replacement. Recreating
+// the frontend would discard the stale endpoint and conceal the regression.
+#[test]
+fn same_stdio_frontend_reconnects_to_external_successor() {
+    let root = tempfile::tempdir().unwrap();
+    let state = std::fs::canonicalize(root.path()).unwrap().join("state");
+    let workspace = make_stdio_workspace(root.path());
+    let mut initial = spawn_owned_daemon(&state);
+    let mut frontend = StdioFrontend::spawn(&state, &workspace);
+    frontend.check(2);
+    let frontend_pid = frontend.process.0.id();
+    initial.stop();
+    let successor = spawn_owned_daemon(&state);
+    frontend.check(3);
+    assert_eq!(frontend.process.0.id(), frontend_pid);
+    assert!(frontend.process.0.try_wait().unwrap().is_none());
+    assert_eq!(
+        read_endpoint(&state, production_identity())["pid"],
+        successor.0.id()
+    );
+}
+
+#[test]
+fn same_stdio_frontend_spawns_and_retains_successor_anchor() {
+    let root = tempfile::tempdir().unwrap();
+    let state = std::fs::canonicalize(root.path()).unwrap().join("state");
+    let workspace = make_stdio_workspace(root.path());
+    let mut initial = spawn_owned_daemon(&state);
+    let mut frontend = StdioFrontend::spawn(&state, &workspace);
+    frontend.check(2);
+    let old = read_endpoint(&state, production_identity());
+    initial.stop();
+    frontend.check(3);
+    let successor = read_endpoint(&state, production_identity());
+    assert_ne!(successor["instanceId"], old["instanceId"]);
+    // This is an observation window, not a readiness delay: the request session
+    // has closed and only the frontend's retained anchor can prevent idle exit.
+    thread::sleep(Duration::from_millis(1_200));
+    assert_eq!(read_endpoint(&state, production_identity()), successor);
+    frontend.check(4);
+    assert_eq!(read_endpoint(&state, production_identity()), successor);
+    drop(frontend);
+    wait_until(
+        Duration::from_secs(5),
+        || !endpoint_path(&state, production_identity()).exists(),
+        "self-spawned successor shutdown after frontend exit",
+    );
+}
+
+#[test]
+#[ignore = "helper process: spawned by the daemon frontend tests with PROCESS_FIXTURE_ENV; not a standalone test"]
+fn daemon_frontend_process_fixture() {
+    std::env::var_os(PROCESS_FIXTURE_ENV)
+        .expect("helper process: the parent test sets the fixture marker");
+    let state_root = PathBuf::from(std::env::var("UNICA_DAEMON_TEST_STATE_ROOT").unwrap());
+    let identity = std::env::var("UNICA_DAEMON_TEST_CORE_IDENTITY").unwrap();
+    let executable = PathBuf::from(std::env::var("UNICA_DAEMON_TEST_EXECUTABLE").unwrap());
+    let ready = PathBuf::from(std::env::var("UNICA_DAEMON_TEST_READY").unwrap());
+    let go = PathBuf::from(std::env::var("UNICA_DAEMON_TEST_GO").unwrap());
+    let result = PathBuf::from(std::env::var("UNICA_DAEMON_TEST_RESULT").unwrap());
+    let release = PathBuf::from(std::env::var("UNICA_DAEMON_TEST_RELEASE").unwrap());
+    std::fs::write(&ready, b"ready").unwrap();
+    wait_until(
+        Duration::from_secs(10),
+        || go.exists(),
+        "race release marker",
+    );
+
+    let mut owner = unica_daemon::interfaces::daemon::connect_owner_for_protocol_test(
+        &state_root,
+        &identity,
+        &executable,
+        PROCESS_FIXTURE_IDLE_GRACE_MS,
+    )
+    .unwrap();
+    owner.ping().unwrap();
+    std::fs::write(&result, owner.daemon_pid().to_string()).unwrap();
+    wait_until(
+        Duration::from_secs(10),
+        || release.exists(),
+        "owner release marker",
+    );
+    // A loaded runner can stall the daemon's authority probe past one ping
+    // budget; the proof is that the daemon still answers after the competitor
+    // left, so a fresh session gets a bounded number of tries.
+    let mut last_error = None;
+    for _ in 0..3 {
+        match owner.ping() {
+            Ok(()) => return,
+            Err(error) => last_error = Some(error),
+        }
+        owner = unica_daemon::interfaces::daemon::connect_owner_for_protocol_test(
+            &state_root,
+            &identity,
+            &executable,
+            PROCESS_FIXTURE_IDLE_GRACE_MS,
+        )
+        .unwrap();
+    }
+    panic!("daemon stopped answering after the competitor left: {last_error:?}");
+}
+
+/// rule: INV.APP.HIDDEN-SERVICES
+#[test]
+fn two_frontend_processes_race_to_one_daemon_pid_record_and_endpoint() {
+    let root = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(root.path()).unwrap();
+    let go = state_root.join("go");
+    let release = state_root.join("release");
+    let executable = PathBuf::from(env!("CARGO_BIN_EXE_unica"));
+    let mut first = spawn_frontend(
+        &state_root,
+        production_identity(),
+        &executable,
+        "first",
+        &go,
+        &release,
+    );
+    let mut second = spawn_frontend(
+        &state_root,
+        production_identity(),
+        &executable,
+        "second",
+        &go,
+        &release,
+    );
+    wait_for_frontend_ready(&state_root, &["first", "second"]);
+    std::fs::write(&go, b"go").unwrap();
+    wait_for_frontend_results(&state_root, &["first", "second"]);
+
+    let first_pid = read_pid(state_root.join("first.result"));
+    let second_pid = read_pid(state_root.join("second.result"));
+    assert_eq!(first_pid, second_pid);
+    let endpoint = read_endpoint(&state_root, production_identity());
+    assert_eq!(endpoint["pid"], first_pid);
+    assert_eq!(endpoint["host"], "127.0.0.1");
+    assert!(endpoint["port"].as_u64().is_some_and(|port| port > 0));
+    let competing = Command::new(&executable)
+        .args([
+            "--daemon",
+            "--state-root",
+            state_root.to_str().unwrap(),
+            "--core-identity",
+            production_identity(),
+            "--idle-grace-ms",
+            "350",
+        ])
+        .output()
+        .unwrap();
+    assert!(!competing.status.success());
+    assert!(
+        String::from_utf8_lossy(&competing.stderr)
+            .contains("timed out waiting for stable receipt authority"),
+        "{}",
+        String::from_utf8_lossy(&competing.stderr)
+    );
+    assert_eq!(read_endpoint(&state_root, production_identity()), endpoint);
+
+    std::fs::write(&release, b"release").unwrap();
+    assert_child_success(&mut first);
+    assert_child_success(&mut second);
+    wait_until(
+        Duration::from_secs(5),
+        || !endpoint_path(&state_root, production_identity()).exists(),
+        "owned endpoint removal",
+    );
+}
+
+#[test]
+fn v5_frontend_process_spawns_the_same_binary_and_pings_the_v5_runtime() {
+    let root = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(root.path()).unwrap();
+    let executable = PathBuf::from(env!("CARGO_BIN_EXE_unica"));
+
+    let mut owner = unica_daemon::interfaces::daemon::connect_owner_for_protocol_test(
+        &state_root,
+        production_identity(),
+        &executable,
+        PROCESS_FIXTURE_IDLE_GRACE_MS,
+    )
+    .expect("spawn and connect exact protocol-v5 daemon");
+    owner.ping().expect("ping exact protocol-v5 daemon");
+    let endpoint = read_endpoint(&state_root, production_identity());
+    assert_eq!(endpoint["protocolVersion"], 5);
+    assert_eq!(endpoint["coreIdentity"], production_identity());
+    assert_eq!(endpoint["pid"], owner.daemon_pid());
+    drop(owner);
+
+    wait_until(
+        Duration::from_secs(5),
+        || !endpoint_path(&state_root, production_identity()).exists(),
+        "v5 owned endpoint removal",
+    );
+}
+
+#[test]
+fn stale_v5_endpoint_probe_preserves_budget_to_spawn_a_replacement() {
+    let root = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(root.path()).unwrap();
+    let executable = PathBuf::from(env!("CARGO_BIN_EXE_unica"));
+
+    let owner = unica_daemon::interfaces::daemon::connect_owner_for_protocol_test(
+        &state_root,
+        production_identity(),
+        &executable,
+        STALE_ENDPOINT_INITIAL_IDLE_GRACE_MS,
+    )
+    .expect("spawn the initial exact protocol-v5 daemon");
+    let initial_pid = owner.daemon_pid();
+    let blackhole = TcpListener::bind(("127.0.0.1", 0)).expect("bind stale endpoint blackhole");
+    let mut stale_endpoint = read_endpoint(&state_root, production_identity());
+    let stale_instance = stale_endpoint["instanceId"].clone();
+    stale_endpoint["port"] = Value::from(blackhole.local_addr().expect("blackhole address").port());
+    let endpoint_record_path = endpoint_path(&state_root, production_identity());
+    let mut stale_bytes = serde_json::to_vec(&stale_endpoint).expect("serialize stale endpoint");
+    stale_bytes.push(b'\n');
+    let mut endpoint_file = OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .open(&endpoint_record_path)
+        .expect("open the production-created owner-only endpoint");
+    endpoint_file
+        .write_all(&stale_bytes)
+        .and_then(|()| endpoint_file.sync_all())
+        .expect("persist stale endpoint on the same owner-only file identity");
+    drop(endpoint_file);
+    drop(owner);
+    thread::sleep(Duration::from_millis(
+        STALE_ENDPOINT_INITIAL_IDLE_GRACE_MS + 250,
+    ));
+    assert_eq!(
+        read_endpoint(&state_root, production_identity()),
+        stale_endpoint,
+        "the original daemon removed a stale endpoint record it no longer owned"
+    );
+
+    let started = Instant::now();
+    let replacement = unica_daemon::interfaces::daemon::connect_owner_for_protocol_test(
+        &state_root,
+        production_identity(),
+        &executable,
+        PROCESS_FIXTURE_IDLE_GRACE_MS,
+    );
+    let elapsed = started.elapsed();
+    drop(blackhole);
+    let mut replacement = replacement.expect(
+        "a stale endpoint handshake must leave enough of the single startup deadline to spawn",
+    );
+
+    replacement
+        .ping()
+        .expect("ping the replacement exact protocol-v5 daemon");
+    assert_ne!(replacement.daemon_pid(), initial_pid);
+    let replacement_endpoint = read_endpoint(&state_root, production_identity());
+    assert_ne!(replacement_endpoint["instanceId"], stale_instance);
+    assert_ne!(replacement_endpoint["port"], stale_endpoint["port"]);
+    assert!(
+        elapsed < Duration::from_secs(4),
+        "stale endpoint probes consumed the spawn budget for {elapsed:?}"
+    );
+    drop(replacement);
+
+    wait_until(
+        Duration::from_secs(5),
+        || !endpoint_path(&state_root, production_identity()).exists(),
+        "replacement v5 endpoint removal",
+    );
+}
+
+#[test]
+fn read_pid_waits_for_the_record_content_and_not_just_the_file() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("late.result");
+    std::fs::write(&path, b"").unwrap();
+    let writer = {
+        let path = path.clone();
+        thread::spawn(move || {
+            thread::sleep(Duration::from_millis(200));
+            std::fs::write(&path, b"4242").unwrap();
+        })
+    };
+
+    assert_eq!(read_pid(path), 4242);
+    writer.join().unwrap();
+}
+
+fn spawn_frontend(
+    state_root: &Path,
+    identity: &str,
+    executable: &Path,
+    name: &str,
+    go: &Path,
+    release: &Path,
+) -> Child {
+    Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "daemon_frontend_process_fixture",
+            "--ignored",
+            "--nocapture",
+        ])
+        .env(PROCESS_FIXTURE_ENV, "1")
+        .env("UNICA_DAEMON_TEST_STATE_ROOT", state_root)
+        .env("UNICA_DAEMON_TEST_CORE_IDENTITY", identity)
+        .env("UNICA_DAEMON_TEST_EXECUTABLE", executable)
+        .env(
+            "UNICA_DAEMON_TEST_READY",
+            state_root.join(format!("{name}.ready")),
+        )
+        .env("UNICA_DAEMON_TEST_GO", go)
+        .env(
+            "UNICA_DAEMON_TEST_RESULT",
+            state_root.join(format!("{name}.result")),
+        )
+        .env("UNICA_DAEMON_TEST_RELEASE", release)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap()
+}
+
+fn wait_for_frontend_ready(state_root: &Path, names: &[&str]) {
+    wait_until(
+        Duration::from_secs(10),
+        || {
+            names
+                .iter()
+                .all(|name| state_root.join(format!("{name}.ready")).exists())
+        },
+        "frontend readiness",
+    );
+}
+
+fn wait_for_frontend_results(state_root: &Path, names: &[&str]) {
+    wait_until(
+        Duration::from_secs(10),
+        || {
+            names
+                .iter()
+                .all(|name| state_root.join(format!("{name}.result")).exists())
+        },
+        "frontend daemon results",
+    );
+}
+
+fn read_pid(path: PathBuf) -> u64 {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let record = std::fs::read_to_string(&path).unwrap_or_default();
+        if let Ok(pid) = record.trim().parse() {
+            return pid;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for a pid record in {}",
+            path.display()
+        );
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+fn assert_child_success(child: &mut Child) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            if !status.success() {
+                let stderr = child
+                    .stderr
+                    .take()
+                    .map(|stderr| std::io::read_to_string(stderr).unwrap_or_default())
+                    .unwrap_or_default();
+                panic!("frontend fixture failed with {status}: {stderr}");
+            }
+            return;
+        }
+        assert!(Instant::now() < deadline, "frontend fixture did not exit");
+        thread::sleep(Duration::from_millis(20));
+    }
+}

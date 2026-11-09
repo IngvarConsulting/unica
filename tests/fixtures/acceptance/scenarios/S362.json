@@ -1,0 +1,479 @@
+{
+  "id": "S362",
+  "name": "dcs-schema-parameters-calculations-totals",
+  "issue": 1310,
+  "area": "СКД",
+  "task": "Параметры, вычисления и итоги имеют отдельные операции; rename сохраняет ссылки, reorder сохраняет чужие элементы, удаления проверены после положительных эффектов",
+  "workspace": "tests/fixtures/acceptance/workspace-dcs",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F05Report",
+        "ops": [
+          {
+            "op": "template.add",
+            "args": {
+              "items": [
+                {
+                  "name": "PrimitiveParameters",
+                  "templateType": "DataCompositionSchema"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveParameters/Ext/Template.xml",
+          "kind": "exists",
+          "eq": false
+        }
+      ],
+      "captures": {
+        "createToken": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.createToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveParameters/Ext/Template.xml",
+          "kind": "exists",
+          "eq": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveParameters"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "phase2Before": {
+          "file": "src/cf/Reports/F05Report/Templates/PrimitiveParameters/Ext/Template.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveParameters",
+        "ops": [
+          {
+            "op": "parameter.add",
+            "args": {
+              "items": [
+                {
+                  "name": "First",
+                  "type": "string",
+                  "value": "literal @on [шт] => text",
+                  "title": {
+                    "ru": "Первый",
+                    "en": "First"
+                  }
+                },
+                {
+                  "name": "Second",
+                  "type": "date",
+                  "value": "2026-01-01T00:00:00",
+                  "expression": "&First"
+                }
+              ]
+            }
+          },
+          {
+            "op": "calculatedField.add",
+            "args": {
+              "items": [
+                {
+                  "name": "Double",
+                  "expression": "2 * 3",
+                  "title": "Вычисление @on",
+                  "useRestriction": {
+                    "condition": true,
+                    "order": true
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "op": "total.add",
+            "args": {
+              "items": [
+                {
+                  "field": "Amount",
+                  "expression": "Сумма(Amount)",
+                  "group": "ByAmount"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveParameters/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.phase2Before"
+        }
+      ],
+      "captures": {
+        "phase2Token": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.phase2Token"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveParameters/Ext/Template.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}parameter/{http://v8.1c.ru/8.1/data-composition-system/schema}name",
+          "eq": [
+            "First",
+            "Second"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveParameters/Ext/Template.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}parameter[{http://v8.1c.ru/8.1/data-composition-system/schema}name='First']/{http://v8.1c.ru/8.1/data-composition-system/schema}value",
+          "eq": [
+            "literal @on [шт] => text"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveParameters/Ext/Template.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}calculatedField/{http://v8.1c.ru/8.1/data-composition-system/schema}expression",
+          "eq": [
+            "2 * 3"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveParameters/Ext/Template.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}totalField/{http://v8.1c.ru/8.1/data-composition-system/schema}group",
+          "eq": [
+            "ByAmount"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveParameters/Ext/Template.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}calculatedField/{http://v8.1c.ru/8.1/data-composition-system/schema}useRestriction/{http://v8.1c.ru/8.1/data-composition-system/schema}condition",
+          "eq": [
+            "true"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveParameters/Ext/Template.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}calculatedField/{http://v8.1c.ru/8.1/data-composition-system/schema}useRestriction/{http://v8.1c.ru/8.1/data-composition-system/schema}order",
+          "eq": [
+            "true"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveParameters"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "phase4Before": {
+          "file": "src/cf/Reports/F05Report/Templates/PrimitiveParameters/Ext/Template.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveParameters",
+        "ops": [
+          {
+            "op": "parameter.set",
+            "args": {
+              "at": "cf:Report.F05Report.Template.PrimitiveParameters.Parameter.First",
+              "values": {
+                "title": {
+                  "ru": "Изменённый",
+                  "en": "Updated"
+                },
+                "value": "unchanged language semantics",
+                "useRestriction": true,
+                "availableAsField": false,
+                "valueListAllowed": true
+              }
+            }
+          },
+          {
+            "op": "parameter.rename",
+            "args": {
+              "at": "cf:Report.F05Report.Template.PrimitiveParameters.Parameter.First",
+              "values": {
+                "newName": "Renamed"
+              }
+            }
+          },
+          {
+            "op": "parameter.reorder",
+            "args": {
+              "items": [
+                {
+                  "name": "Second"
+                },
+                {
+                  "name": "Renamed"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveParameters/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.phase4Before"
+        }
+      ],
+      "captures": {
+        "phase4Token": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.phase4Token"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveParameters/Ext/Template.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}parameter/{http://v8.1c.ru/8.1/data-composition-system/schema}name",
+          "eq": [
+            "Second",
+            "Renamed"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveParameters/Ext/Template.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}parameter[{http://v8.1c.ru/8.1/data-composition-system/schema}name='Second']/{http://v8.1c.ru/8.1/data-composition-system/schema}expression",
+          "eq": [
+            "&First"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveParameters/Ext/Template.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}parameter[{http://v8.1c.ru/8.1/data-composition-system/schema}name='Renamed']/{http://v8.1c.ru/8.1/data-composition-system/schema}title/{http://v8.1c.ru/8.1/data/core}item[{http://v8.1c.ru/8.1/data/core}lang='en']/{http://v8.1c.ru/8.1/data/core}content",
+          "eq": [
+            "Updated"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveParameters/Ext/Template.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}parameter[{http://v8.1c.ru/8.1/data-composition-system/schema}name='Renamed']/{http://v8.1c.ru/8.1/data-composition-system/schema}title/{http://v8.1c.ru/8.1/data/core}item[{http://v8.1c.ru/8.1/data/core}lang='ru']/{http://v8.1c.ru/8.1/data/core}content",
+          "eq": [
+            "Изменённый"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveParameters/Ext/Template.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}parameter[{http://v8.1c.ru/8.1/data-composition-system/schema}name='Renamed']/{http://v8.1c.ru/8.1/data-composition-system/schema}availableAsField",
+          "eq": [
+            "false"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveParameters/Ext/Template.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}calculatedField/{http://v8.1c.ru/8.1/data-composition-system/schema}expression",
+          "eq": [
+            "2 * 3"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveParameters"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "phase6Before": {
+          "file": "src/cf/Reports/F05Report/Templates/PrimitiveParameters/Ext/Template.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveParameters",
+        "ops": [
+          {
+            "op": "parameter.remove",
+            "args": {
+              "at": "cf:Report.F05Report.Template.PrimitiveParameters.Parameter.Renamed"
+            }
+          },
+          {
+            "op": "calculatedField.remove",
+            "args": {
+              "at": "cf:Report.F05Report.Template.PrimitiveParameters.CalculatedField.Double"
+            }
+          },
+          {
+            "op": "total.remove",
+            "args": {
+              "at": "cf:Report.F05Report.Template.PrimitiveParameters.Total.Amount"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveParameters/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.phase6Before"
+        }
+      ],
+      "captures": {
+        "phase6Token": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.phase6Token"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveParameters/Ext/Template.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}parameter/{http://v8.1c.ru/8.1/data-composition-system/schema}name",
+          "eq": [
+            "Second"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveParameters/Ext/Template.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}calculatedField",
+          "eq": []
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveParameters/Ext/Template.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}totalField",
+          "eq": []
+        }
+      ]
+    }
+  ]
+}

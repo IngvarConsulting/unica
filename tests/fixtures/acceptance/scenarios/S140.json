@@ -1,0 +1,26 @@
+{
+  "area": "Формы",
+  "task": "Настроить условное оформление на форме",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты.Form.ФормаСписка.Event.OnCreateAtServer",
+        "ops": [
+          {
+            "op": "event.bind",
+            "args": {
+              "values": {
+                "handler": "ПриСозданииНаСервере"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S140"
+}

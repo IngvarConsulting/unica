@@ -17,8 +17,38 @@ use std::thread;
 use std::time::{Duration, Instant};
 use unica_work_control::cancellation::{cancelled_error, CancellationToken};
 
+// resource-limit: process.poll-interval
+// class: step
+// unit: ms
+// scope: process
+// value: 25
+// resource: Интервал опроса состояния дерева дочерних процессов.
+// status: unproven
+// origin: коммит 5a75ae9f1 (feat: add bounded managed child process)
+// problem: неизвестно
+// on-reach: после паузы состояние проверяется снова до срока
 const PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(25);
+// resource-limit: process.termination-wait-limit
+// class: deadline
+// unit: ms
+// scope: process
+// value: 500
+// resource: Ожидание завершения дочернего процесса после сигнала остановки.
+// status: unproven
+// origin: коммит 5a75ae9f1 (feat: add bounded managed child process)
+// problem: неизвестно
+// on-reach: процесс остаётся неподобранным, вывод собирается со статусом «termination pending»
 const TERMINATION_WAIT_LIMIT: Duration = Duration::from_millis(500);
+// resource-limit: process.reader-wait-limit
+// class: deadline
+// unit: ms
+// scope: process
+// value: 500
+// resource: Ожидание потока чтения stdout или stderr после завершения процесса.
+// status: unproven
+// origin: коммит 5a75ae9f1 (feat: add bounded managed child process)
+// problem: неизвестно
+// on-reach: тихо: захват потока считается пустым; построчное чтение возвращает Pending
 const READER_WAIT_LIMIT: Duration = Duration::from_millis(500);
 pub const STREAM_LINE_TOO_LONG_ERROR: &str = "line exceeds configured byte limit";
 pub const STREAM_RECORD_UNTERMINATED_ERROR: &str = "output ends inside a record";
@@ -144,7 +174,27 @@ fn wait_at_job_attach_gate_for_test(process: &Command) {
         }
     }
 }
+// resource-limit: process.stdout-capture-bytes
+// class: retention
+// unit: bytes
+// scope: process
+// value: 1048576
+// resource: Объём захватываемого stdout дочернего процесса по умолчанию.
+// status: unproven
+// origin: коммит 2e4e3d7f1 (fix: bound managed process tree output)
+// problem: неизвестно
+// on-reach: сохраняется хвост, флаг stdout_truncated, вызов неуспешен с пометкой «stdout capture truncated; result is not parseable»
 pub const STDOUT_CAPTURE_LIMIT: usize = 1024 * 1024;
+// resource-limit: process.stderr-capture-bytes
+// class: retention
+// unit: bytes
+// scope: process
+// value: 262144
+// resource: Объём захватываемого stderr дочернего процесса по умолчанию.
+// status: unproven
+// origin: коммит 2e4e3d7f1 (fix: bound managed process tree output)
+// problem: неизвестно
+// on-reach: сохраняется хвост, флаг stderr_truncated и пометка «earlier stderr diagnostics omitted»
 pub const STDERR_CAPTURE_LIMIT: usize = 256 * 1024;
 
 #[derive(Debug)]
@@ -962,6 +1012,16 @@ pub enum ProcessLineReply {
     Stop,
 }
 
+// resource-limit: process.stdin-reply-bytes
+// class: format
+// unit: bytes
+// scope: line
+// value: 4096
+// resource: Размер одной строки ответа в stdin дочернего процесса.
+// status: unproven
+// origin: #1734
+// problem: неизвестно
+// on-reach: ответ отвергается: «process stdin reply must be one LF-terminated UTF-8 line of at most 4096 bytes»
 const STREAM_REPLY_LIMIT: usize = 4096;
 
 /// Only the pipe writer runs off-thread. ManagedChild remains the sole owner
@@ -3371,6 +3431,17 @@ enum StreamFraming {
 }
 
 /// One read of a byte stream: a step of the stream, not a bound of its size.
+// resource-limit: process.byte-stream-chunk-bytes
+// class: step
+// unit: bytes
+// scope: process
+// value: 65536
+// resource: Размер одного чтения потока байтов stdout, который отдаётся потребителю целиком, например сканеру EOL большого staged-блоба.
+// status: unproven
+// origin: #1119
+// problem: неизвестно
+// on-reach: кусок передаётся потребителю и читается следующий; общий объём потока не ограничивается
+// issue: #1119
 const BYTE_STREAM_CHUNK_BYTES: usize = 64 * 1024;
 
 fn start_chunk_reader<R>(pipe: Option<R>) -> Option<Receiver<LineMessage>>
@@ -3973,7 +4044,7 @@ mod medium_tests {
         }
     }
 
-    /// Ревью #549: незапуском программы называется только отказ ОС создать
+    /// Незапуском программы называется только отказ ОС создать
     /// процесс. Отсутствующий рабочий каталог программу не пробовал, хотя ОС
     /// ответила бы на него той же ошибкой, что на отсутствующий файл.
     /// rule: INV.WIRE.MISSING-ENGINE-REFUSAL

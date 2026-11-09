@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 
-use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+use unica_address::source_target::MetadataAddress;
 use unica_source_contract::proposal::{
     ApplyPlanError, ApplyPlanErrorKind, ApplyProposal, ApplyStagingError,
 };
@@ -336,8 +336,7 @@ pub fn read_restore_object_image(
     {
         return Err(invalid());
     }
-    let owner = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &format!("{kind}.{name}"))
-        .map_err(|_| invalid())?;
+    let owner = MetadataAddress::parse_logical(&format!("{kind}.{name}")).map_err(|_| invalid())?;
     let owner_path = unica_source_designer::layout::metadata_descriptor_relative(
         &owner,
         SourceSetKind::Configuration,
@@ -556,12 +555,9 @@ mod tests {
     use std::collections::BTreeMap;
     use unica_source_contract::proposal::{ProposalBinding, SourceProposal, StagedApplyChange};
 
-    const EDITABLE: &[u8] =
-        include_bytes!("../../../tests/fixtures/platform_8_3_27/support-markers/editable.bin");
-    const LOCKED: &[u8] =
-        include_bytes!("../../../tests/fixtures/platform_8_3_27/support-markers/locked.bin");
-    const OFF: &[u8] =
-        include_bytes!("../../../tests/fixtures/platform_8_3_27/support-markers/off.bin");
+    const EDITABLE: &[u8] = include_bytes!("../tests/fixtures/support-markers/editable.bin");
+    const LOCKED: &[u8] = include_bytes!("../tests/fixtures/support-markers/locked.bin");
+    const OFF: &[u8] = include_bytes!("../tests/fixtures/support-markers/off.bin");
 
     #[test]
     fn native_markers_retain_supplier_records_and_original_rule_spans() {
@@ -898,7 +894,7 @@ mod tests {
     }
 
     fn target() -> MetadataAddress {
-        MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "DataProcessor.ТестHTML").unwrap()
+        MetadataAddress::parse_logical("DataProcessor.ТестHTML").unwrap()
     }
 
     #[test]
@@ -951,11 +947,7 @@ mod tests {
 
     #[test]
     fn registered_form_captures_only_its_complete_companion_tree() {
-        let target = MetadataAddress::parse(
-            PLATFORM_XML_8_3_27_FORMAT_2_20,
-            "DataProcessor.ТестHTML.Form.Форма",
-        )
-        .unwrap();
+        let target = MetadataAddress::parse_logical("DataProcessor.ТестHTML.Form.Форма").unwrap();
         let mut read = object_fixture();
         let image = read_restore_object_image(&mut read, &target, "2.20").unwrap();
         assert_eq!(image.files.len(), 3);
