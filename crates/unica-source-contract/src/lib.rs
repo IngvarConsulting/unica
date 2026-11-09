@@ -289,4 +289,5 @@ pub mod proposal;
 
 pub mod discovery;
 
+pub mod compatibility;
 pub mod format_identity;
