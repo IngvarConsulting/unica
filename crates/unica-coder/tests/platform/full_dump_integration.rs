@@ -16,8 +16,8 @@ use unica_source_designer::roots::{
 };
 use unica_workspace::full_dump::test_support::*;
 use unica_workspace::full_dump::{
-    FullDumpPhase, PlatformAttestation, RunnerProjectLockFailure, RunnerProjectStore,
-    VerifiedFullDumpPublication,
+    FullDumpPhase, IntegrityReason, PlatformAttestation, RunnerProjectLockFailure,
+    RunnerProjectStore, VerifiedFullDumpPublication,
 };
 use unica_workspace::paths::normalize_path_identity;
 use unica_workspace::read::{FileIdentity, ReadFile};
@@ -4065,6 +4065,44 @@ mod tests {
         });
     }
 
+    /// rule: INV.WIRE.SOURCE-EXPORT-TARGET-STAYS-INSIDE-THE-WORKSPACE
+    #[test]
+    fn integrity_failure_names_the_input_that_changed() {
+        for (case, expected) in [
+            ("project", super::IntegrityReason::Project),
+            ("private-config", super::IntegrityReason::PrivateConfig),
+            ("target", super::IntegrityReason::Target),
+        ] {
+            let (root, context, config) = workspace(&format!("integrity-reason-{case}"));
+            seed_valid_target(&context.cwd.join("src"));
+            let runner = DumpRunner::valid();
+            let publication =
+                canonical_publication(&context, &config, &root.join("projection"), &runner);
+            publication.recheck_before_dispatch().unwrap();
+            match case {
+                "project" => {
+                    let mut text = std::fs::read_to_string(&config).unwrap();
+                    text.push_str("\n# changed after preparation\n");
+                    std::fs::write(&config, text).unwrap();
+                }
+                "private-config" => {
+                    let private = publication.effective_config().to_path_buf();
+                    let mut bytes = std::fs::read(&private).unwrap();
+                    bytes.extend_from_slice(b"\n# changed after preparation\n");
+                    std::fs::write(&private, bytes).unwrap();
+                }
+                _ => std::fs::write(context.cwd.join("src/appeared.txt"), b"late").unwrap(),
+            }
+            let failure = publication.recheck_before_dispatch().unwrap_err();
+            assert!(
+                matches!(failure.phase, super::FullDumpPhase::Integrity),
+                "{case}"
+            );
+            assert_eq!(failure.integrity_reason, Some(expected), "{case}");
+            let _ = publication.abort();
+        }
+    }
+
     #[test]
     fn canonical_preparation_creates_an_empty_owner_only_held_stage_before_dispatch() {
         let (root, context, config) = workspace("canonical-created-empty-stage");
@@ -4161,6 +4199,10 @@ mod tests {
         if let Some(cleanup) = cleanup {
             let failure = cleanup.unwrap_err();
             assert!(matches!(failure.phase, super::FullDumpPhase::Integrity));
+            assert_eq!(
+                failure.integrity_reason,
+                Some(super::IntegrityReason::Stage)
+            );
             assert!(matches!(&failure.recovery, Ok(Some(_))));
         }
         std::fs::remove_dir_all(root).unwrap();
@@ -4241,6 +4283,10 @@ mod tests {
         if let Some(cleanup) = cleanup {
             let failure = cleanup.unwrap_err();
             assert!(matches!(failure.phase, super::FullDumpPhase::Integrity));
+            assert_eq!(
+                failure.integrity_reason,
+                Some(super::IntegrityReason::Stage)
+            );
             assert_eq!(failure.recovery, Ok(Some(private_root)));
         }
         std::fs::remove_dir_all(root).unwrap();
@@ -4276,10 +4322,12 @@ mod tests {
         std::fs::rename(&stage, &displaced).unwrap();
         std::fs::create_dir(&stage).unwrap();
         std::fs::write(stage.join("foreign.txt"), b"foreign stage replacement").unwrap();
-        assert!(matches!(
-            publication.recheck_before_dispatch().unwrap_err().phase,
-            super::FullDumpPhase::Integrity
-        ));
+        let replaced = publication.recheck_before_dispatch().unwrap_err();
+        assert!(matches!(replaced.phase, super::FullDumpPhase::Integrity));
+        assert_eq!(
+            replaced.integrity_reason,
+            Some(super::IntegrityReason::Stage)
+        );
         assert!(matches!(
             publication.publish(&cancellation).unwrap_err().phase,
             super::FullDumpPhase::Integrity
@@ -4291,6 +4339,10 @@ mod tests {
         );
         let cleanup = publication.abort().unwrap_err();
         assert!(matches!(cleanup.phase, super::FullDumpPhase::Integrity));
+        assert_eq!(
+            cleanup.integrity_reason,
+            Some(super::IntegrityReason::Stage)
+        );
         assert_eq!(cleanup.recovery, Ok(Some(private_root)));
         assert_eq!(
             std::fs::read(stage.join("foreign.txt")).unwrap(),
@@ -5577,6 +5629,12 @@ mod tests {
                 super::FullDumpPhase::Integrity if platform_changed
             ) || matches!(failure.phase, super::FullDumpPhase::Validation) && !platform_changed
         );
+        if platform_changed {
+            assert_eq!(
+                failure.integrity_reason,
+                Some(super::IntegrityReason::Platform)
+            );
+        }
         assert!(publication.test_observation().writer_completion_pending);
         assert!(!cancellation.protected_process_started());
         assert_eq!(
@@ -5656,10 +5714,12 @@ mod tests {
             || publication.publish(&cancellation),
         );
         assert!(result.is_err(), "a replaced Ready root cannot publish");
-        assert!(matches!(
-            result.unwrap_err().phase,
-            super::FullDumpPhase::Integrity
-        ));
+        let replaced = result.unwrap_err();
+        assert!(matches!(replaced.phase, super::FullDumpPhase::Integrity));
+        assert_eq!(
+            replaced.integrity_reason,
+            Some(super::IntegrityReason::Stage)
+        );
         let foreign_before = TreeSnapshot::capture_target(&stage).unwrap();
         assert!(publication.test_observation().writer_completion_pending);
         assert!(!cancellation.protected_process_started());
@@ -5671,6 +5731,10 @@ mod tests {
             Ok(_) => unreachable!(),
         };
         assert!(matches!(failure.phase, super::FullDumpPhase::Integrity));
+        assert_eq!(
+            failure.integrity_reason,
+            Some(super::IntegrityReason::Stage)
+        );
         assert_eq!(
             TreeSnapshot::capture_target(&stage).unwrap(),
             foreign_before

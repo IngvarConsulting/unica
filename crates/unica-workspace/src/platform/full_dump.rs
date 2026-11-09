@@ -1756,6 +1756,61 @@ pub enum FullDumpPhase {
     Cleanup,
 }
 
+/// What a recheck before publication found changed (`FullDumpPhase::Integrity`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IntegrityReason {
+    /// The project file, its local supplement or the declared source sets.
+    Project,
+    /// The private effective configuration of the export.
+    PrivateConfig,
+    /// The private staged dump tree or its execution location.
+    Stage,
+    /// The target source directory or its parents.
+    Target,
+    /// The attested platform executable or its installation.
+    Platform,
+}
+
+impl IntegrityReason {
+    /// The stable code a refusal names.
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::Project => "project",
+            Self::PrivateConfig => "private_config",
+            Self::Stage => "stage",
+            Self::Target => "target",
+            Self::Platform => "platform",
+        }
+    }
+}
+
+/// A recheck failure together with the check that found it.
+pub(crate) struct IntegrityError {
+    reason: IntegrityReason,
+    detail: String,
+}
+
+impl IntegrityError {
+    fn new(reason: IntegrityReason, detail: impl Into<String>) -> Self {
+        Self {
+            reason,
+            detail: detail.into(),
+        }
+    }
+}
+
+impl From<IntegrityError> for String {
+    fn from(error: IntegrityError) -> Self {
+        error.detail
+    }
+}
+
+impl From<IntegrityError> for FullDumpFailure {
+    fn from(error: IntegrityError) -> Self {
+        FullDumpFailure::integrity(error.reason, error.detail)
+    }
+}
+
 #[derive(Default, Debug)]
 pub struct FullDumpFailureReport {
     pub validation: Option<DumpValidationFailure>,
@@ -1765,6 +1820,8 @@ pub struct FullDumpFailureReport {
 
 pub struct FullDumpFailure {
     pub phase: FullDumpPhase,
+    /// Set for `FullDumpPhase::Integrity`: the check that found the change.
+    pub integrity_reason: Option<IntegrityReason>,
     pub recovery: Result<Option<PathBuf>, String>,
     pub publication_uncertain: bool,
     detail: String,
@@ -1776,6 +1833,7 @@ impl std::fmt::Debug for FullDumpFailure {
         formatter
             .debug_struct("FullDumpFailure")
             .field("phase", &self.phase)
+            .field("integrity_reason", &self.integrity_reason)
             .field("recovery", &self.recovery)
             .field("publication_uncertain", &self.publication_uncertain)
             .field("detail", &self.detail)
@@ -1787,11 +1845,18 @@ impl FullDumpFailure {
     pub fn new(phase: FullDumpPhase, detail: String) -> Self {
         Self {
             phase,
+            integrity_reason: None,
             recovery: Ok(None),
             publication_uncertain: false,
             detail,
             report: Box::default(),
         }
+    }
+    /// An integrity failure naming the check that found the change.
+    pub fn integrity(reason: IntegrityReason, detail: String) -> Self {
+        let mut failure = Self::new(FullDumpPhase::Integrity, detail);
+        failure.integrity_reason = Some(reason);
+        failure
     }
     fn validation(error: DumpValidationFailure) -> Self {
         let mut failure = Self::new(FullDumpPhase::Validation, error.to_string());
@@ -1861,7 +1926,7 @@ impl VerifiedFullDumpPublication {
     pub fn recheck_before_dispatch(&self) -> Result<(), FullDumpFailure> {
         self.prepared
             .recheck_inputs()
-            .map_err(|error| FullDumpFailure::new(FullDumpPhase::Integrity, error))
+            .map_err(FullDumpFailure::from)
     }
 
     /// Attests exactly the provider selected by the runner. This never resolves
@@ -1879,11 +1944,11 @@ impl VerifiedFullDumpPublication {
             ));
         }
         if normalize_leaf_path(selected_executable)
-            .map_err(|error| FullDumpFailure::new(FullDumpPhase::Integrity, error))?
+            .map_err(|error| FullDumpFailure::integrity(IntegrityReason::Platform, error))?
             != attestation.executable_path
         {
-            return Err(FullDumpFailure::new(
-                FullDumpPhase::Integrity,
+            return Err(FullDumpFailure::integrity(
+                IntegrityReason::Platform,
                 "selected local executable differs from its retained attestation".into(),
             ));
         }
@@ -1899,8 +1964,8 @@ impl VerifiedFullDumpPublication {
         cancellation: &CancellationToken,
     ) -> Result<(), FullDumpFailure> {
         if self.prepared.platform_attestation.is_none() {
-            return Err(FullDumpFailure::new(
-                FullDumpPhase::Integrity,
+            return Err(FullDumpFailure::integrity(
+                IntegrityReason::Platform,
                 "actual local provider was not attested before dispatch parent preparation".into(),
             ));
         }
@@ -1927,8 +1992,8 @@ impl VerifiedFullDumpPublication {
             return Ok(());
         }
         if self.prepared.platform_attestation.is_none() {
-            return Err(FullDumpFailure::new(
-                FullDumpPhase::Integrity,
+            return Err(FullDumpFailure::integrity(
+                IntegrityReason::Platform,
                 "actual local provider was not attested before Ready capture".into(),
             ));
         }
@@ -1936,14 +2001,14 @@ impl VerifiedFullDumpPublication {
             .private
             .verify_execution_location()
             .and_then(|()| self.prepared.recheck_canonical_stage())
-            .map_err(|error| FullDumpFailure::new(FullDumpPhase::Integrity, error))?;
+            .map_err(|error| FullDumpFailure::integrity(IntegrityReason::Stage, error))?;
         let stage = self
             .prepared
             .canonical_stage_anchor
             .as_ref()
             .ok_or_else(|| {
-                FullDumpFailure::new(
-                    FullDumpPhase::Integrity,
+                FullDumpFailure::integrity(
+                    IntegrityReason::Stage,
                     "canonical Ready capture has no held stage".into(),
                 )
             })?;
@@ -1964,10 +2029,10 @@ impl VerifiedFullDumpPublication {
             .private
             .verify_execution_location()
             .and_then(|()| self.prepared.recheck_canonical_stage())
-            .map_err(|error| FullDumpFailure::new(FullDumpPhase::Integrity, error))?;
+            .map_err(|error| FullDumpFailure::integrity(IntegrityReason::Stage, error))?;
         if snapshot.root_identity() != self.prepared.canonical_stage_identity {
-            return Err(FullDumpFailure::new(
-                FullDumpPhase::Integrity,
+            return Err(FullDumpFailure::integrity(
+                IntegrityReason::Stage,
                 "canonical staged dump root changed during Ready capture".into(),
             ));
         }
@@ -1987,16 +2052,18 @@ impl VerifiedFullDumpPublication {
             return Ok(published.clone());
         }
         if self.prepared.platform_attestation.is_none() {
-            return Err(FullDumpFailure::new(
-                FullDumpPhase::Integrity,
+            return Err(FullDumpFailure::integrity(
+                IntegrityReason::Platform,
                 "actual local provider was not attested before publication".into(),
             ));
         }
         self.capture_ready_staged_tree()?;
         self.prepared
             .recheck_platform()
-            .and_then(|()| self.prepared.recheck_canonical_stage())
-            .map_err(|error| FullDumpFailure::new(FullDumpPhase::Integrity, error))?;
+            .map_err(|error| FullDumpFailure::integrity(IntegrityReason::Platform, error))?;
+        self.prepared
+            .recheck_canonical_stage()
+            .map_err(|error| FullDumpFailure::integrity(IntegrityReason::Stage, error))?;
         let staged = self
             .ready_staged_snapshot
             .as_ref()
@@ -2009,8 +2076,8 @@ impl VerifiedFullDumpPublication {
         )
         .map_err(FullDumpFailure::validation)?;
         if self.prepared.canonical_stage_identity != staged.root_identity() {
-            return Err(FullDumpFailure::new(
-                FullDumpPhase::Integrity,
+            return Err(FullDumpFailure::integrity(
+                IntegrityReason::Stage,
                 "canonical staged dump root changed during validation".into(),
             ));
         }
@@ -2120,6 +2187,9 @@ impl VerifiedFullDumpPublication {
                     errors.join("; ")
                 },
             );
+            if stage_integrity_failed {
+                failure.integrity_reason = Some(IntegrityReason::Stage);
+            }
             failure.publication_uncertain = self.prepared.private.publication_uncertain;
             failure.report.cleanup_reasons = cleanup_reasons;
             failure.report.recovery_origin = Some(self.prepared.private.root.clone());
@@ -2260,8 +2330,7 @@ impl PreparedPublication {
         &mut self,
         cancellation: &CancellationToken,
     ) -> Result<(), FullDumpFailure> {
-        self.recheck_inputs()
-            .map_err(|error| FullDumpFailure::new(FullDumpPhase::Integrity, error))?;
+        self.recheck_inputs().map_err(FullDumpFailure::from)?;
         for index in self.created_target_parents.len()..self.target_missing_parents.len() {
             if cancellation.is_cancelled() {
                 return Err(FullDumpFailure::new(
@@ -2294,8 +2363,7 @@ impl PreparedPublication {
                     .map_err(|error| FullDumpFailure::new(FullDumpPhase::Preparation, error))?,
             );
         }
-        self.recheck_inputs()
-            .map_err(|error| FullDumpFailure::new(FullDumpPhase::Integrity, error))
+        self.recheck_inputs().map_err(FullDumpFailure::from)
     }
 
     fn cleanup_created_target_parents(&mut self) -> Result<(), String> {
@@ -2372,14 +2440,24 @@ impl PreparedPublication {
         }
     }
 
-    fn recheck_inputs(&self) -> Result<(), String> {
-        self.recheck_canonical_stage()?;
+    fn recheck_inputs(&self) -> Result<(), IntegrityError> {
+        self.recheck_canonical_stage()
+            .map_err(|error| IntegrityError::new(IntegrityReason::Stage, error))?;
         if let Some(store) = &self.config_store {
-            store.verify()?;
+            store
+                .verify()
+                .map_err(|error| IntegrityError::new(IntegrityReason::PrivateConfig, error))?;
         }
         for snapshot in &self.config_inputs {
-            snapshot.recheck()?;
+            snapshot
+                .recheck()
+                .map_err(|error| IntegrityError::new(IntegrityReason::Project, error))?;
         }
+        self.recheck_target()
+            .map_err(|error| IntegrityError::new(IntegrityReason::Target, error))
+    }
+
+    fn recheck_target(&self) -> Result<(), String> {
         self.workspace_anchor.verify_descendant_identity(
             &self.target_parent_relative,
             self.target_parent.identity,
