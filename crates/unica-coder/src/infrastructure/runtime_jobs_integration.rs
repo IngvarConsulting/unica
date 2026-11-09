@@ -35,7 +35,7 @@ use unica_process::runtime_job::{
 };
 use unica_process::STDOUT_CAPTURE_LIMIT;
 
-use unica_runner::{
+use unica_execution::runner::{
     attempt::{RuntimeAttemptScope, RuntimeJobRunner},
     operation::RuntimeJobOperation,
 };
@@ -3546,7 +3546,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    pub(crate) fn runtime_resource_tree_lease_contract() {
+    pub(crate) fn medium_runtime_resource_tree_lease_contract() {
         let supervisor_scope = TestSupervisorScope::enter();
         runtime_shared_work_joins_only_the_exact_active_resource_and_lease();
         runtime_shared_work_separates_physical_resources_and_distinct_v4_leases();

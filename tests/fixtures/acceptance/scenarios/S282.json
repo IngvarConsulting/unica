@@ -1,0 +1,29 @@
+{
+  "id": "S282",
+  "area": "Поддержка поставщика",
+  "task": "Добавить значение перечислению поставщика на замке — отказ стража поддержки",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Enum.НастройкиПоставщика",
+        "ops": [
+          {
+            "op": "enumValue.add",
+            "args": {
+              "items": [
+                {
+                  "name": "НовоеЗначение"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "invalid_state: `main:Enum.НастройкиПоставщика` is a vendor object with the support rule `locked`; allow editing with `supportRule.set` in a separate apply before ordinary edit"
+    }
+  ]
+}

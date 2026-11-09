@@ -1,0 +1,105 @@
+{
+  "id": "S407",
+  "name": "element-add-into-auto-command-bar",
+  "issue": 1392,
+  "area": "Формы",
+  "task": "Кнопка, добавленная по адресу корневой или табличной автоматической командной панели, ложится в её ChildItems как CommandBarButton",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Item.ФормаКоманднаяПанель",
+        "ops": [
+          {
+            "op": "item.add",
+            "args": {
+              "items": [
+                {
+                  "name": "КнопкаЗакрытьФорму",
+                  "type": "Button",
+                  "stdCommand": "Close"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/xcf/logform}AutoCommandBar[@name='ФормаКоманднаяПанель']/{http://v8.1c.ru/8.3/xcf/logform}ChildItems/{http://v8.1c.ru/8.3/xcf/logform}Button[@name='КнопкаЗакрытьФорму']/{http://v8.1c.ru/8.3/xcf/logform}Type",
+          "eq": [
+            "CommandBarButton"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты.Form.ФормаСписка.Item.List.Item.ListCommandBar",
+        "ops": [
+          {
+            "op": "item.add",
+            "args": {
+              "items": [
+                {
+                  "name": "КнопкаОбновитьСписок",
+                  "type": "Button",
+                  "stdCommand": "List.Refresh"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Валюты/Forms/ФормаСписка/Ext/Form.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/xcf/logform}ChildItems/{http://v8.1c.ru/8.3/xcf/logform}Table[@name='List']/{http://v8.1c.ru/8.3/xcf/logform}AutoCommandBar[@name='ListCommandBar']/{http://v8.1c.ru/8.3/xcf/logform}ChildItems/{http://v8.1c.ru/8.3/xcf/logform}Button[@name='КнопкаОбновитьСписок']/{http://v8.1c.ru/8.3/xcf/logform}Type",
+          "eq": [
+            "CommandBarButton"
+          ]
+        }
+      ]
+    }
+  ]
+}

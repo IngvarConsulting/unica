@@ -15,6 +15,12 @@ from pathlib import Path
 
 from scripts.ci.prepared_binary import ensure_binary
 
+# Размер тестов модуля (scripts/ci/python_sizes.py).
+# Дым MCP: продукт через `ensure_binary`.
+MEDIUM = ("UnicaMcpSmokeTests",)
+# Очередь исполняет при выборе тестов: смоук продукта.
+QUEUE_KEEPS_MEDIUM = ("UnicaMcpSmokeTests",)
+
 
 MCP_HANDSHAKE_ID = "unica-ci-handshake"
 MCP_INITIALIZE_PARAMS = {

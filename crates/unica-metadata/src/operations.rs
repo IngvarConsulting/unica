@@ -1549,11 +1549,8 @@ impl MetadataFieldPath {
             ));
         }
         validate_name(parts[3], "fieldPath")?;
-        let owner = MetadataAddress::parse(
-            unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
-            &format!("{}.{}", parts[0], parts[1]),
-        )
-        .map_err(|_| invalid_operation("fieldPath", "field path owner is invalid"))?;
+        let owner = MetadataAddress::parse_logical(&format!("{}.{}", parts[0], parts[1]))
+            .map_err(|_| invalid_operation("fieldPath", "field path owner is invalid"))?;
         let kind = match parts[2] {
             "Attribute" => MetadataFieldKind::Attribute,
             "StandardAttribute" => MetadataFieldKind::StandardAttribute,
@@ -2866,11 +2863,7 @@ mod tests {
 
     #[test]
     fn event_source_set_rejects_duplicate_logical_identities() {
-        let address = MetadataAddress::parse(
-            unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
-            "Catalog.Items",
-        )
-        .unwrap();
+        let address = MetadataAddress::parse_logical("Catalog.Items").unwrap();
         let duplicate = MetaEditOperation::edit_relation_targets(
             MetaRelation::Source,
             RelationEditMode::Replace,
@@ -2889,19 +2882,10 @@ mod tests {
 
     #[test]
     fn event_source_profile_correlates_kind_and_metadata_path() {
-        let owner = MetadataAddress::parse(
-            unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
-            "EventSubscription.Notify",
-        )
-        .unwrap();
+        let owner = MetadataAddress::parse_logical("EventSubscription.Notify").unwrap();
         let source = |source| MetaRelationTarget::EventSource(source);
-        let address = |path: &str| -> MetadataAddress {
-            MetadataAddress::parse(
-                unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
-                path,
-            )
-            .unwrap()
-        };
+        let address =
+            |path: &str| -> MetadataAddress { MetadataAddress::parse_logical(path).unwrap() };
 
         for event_source in [
             MetaEventSource::Object {
@@ -2972,23 +2956,11 @@ mod tests {
 
     #[test]
     fn relation_capability_validation_rejects_cross_kind_and_cross_owner_targets() {
-        let catalog = MetadataAddress::parse(
-            unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
-            "Catalog.Items",
-        )
-        .unwrap();
-        let document = MetadataAddress::parse(
-            unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
-            "Document.Order",
-        )
-        .unwrap();
+        let catalog = MetadataAddress::parse_logical("Catalog.Items").unwrap();
+        let document = MetadataAddress::parse_logical("Document.Order").unwrap();
         let object_target = |path: &str| {
             MetaRelationTarget::Object(MetadataReference {
-                metadata_path: MetadataAddress::parse(
-                    unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
-                    path,
-                )
-                .unwrap(),
+                metadata_path: MetadataAddress::parse_logical(path).unwrap(),
             })
         };
 
@@ -3071,11 +3043,7 @@ mod tests {
         .is_err());
         assert!(validate_metadata_relation_target_profile(
             MetadataKind::Enum,
-            &MetadataAddress::parse(
-                unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
-                "Enum.State",
-            )
-            .unwrap(),
+            &MetadataAddress::parse_logical("Enum.State",).unwrap(),
             MetaRelation::BasedOn,
             &object_target("Enum.Other"),
         )
@@ -3186,13 +3154,7 @@ mod tests {
         .unwrap_err();
         assert_eq!(error.field.as_deref(), Some("fillValue"));
 
-        let address = |value| {
-            MetadataAddress::parse(
-                unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
-                value,
-            )
-            .unwrap()
-        };
+        let address = |value| MetadataAddress::parse_logical(value).unwrap();
         for (variant, field) in [
             (
                 MetadataTypeVariant::Reference {
@@ -3566,11 +3528,7 @@ mod dimension_flag_tests {
 
     #[test]
     fn dimension_flags_conversion_false_and_owner_matrix() {
-        let owner_address = MetadataAddress::parse(
-            unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
-            "InformationRegister.Prices",
-        )
-        .unwrap();
+        let owner_address = MetadataAddress::parse_logical("InformationRegister.Prices").unwrap();
         for key in ["master", "mainFilter", "denyIncompleteValues"] {
             let mut value = json!({"name":"Item"});
             value[key] = json!(false);
@@ -3692,11 +3650,8 @@ mod reduction_tests {
                 MetadataKind::InformationRegister,
                 MetadataKind::AccumulationRegister,
             ] {
-                let owner = MetadataAddress::parse(
-                    unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
-                    &format!("{}.Facts", kind.as_str()),
-                )
-                .unwrap();
+                let owner =
+                    MetadataAddress::parse_logical(&format!("{}.Facts", kind.as_str())).unwrap();
                 let op = MetaEditOperation::Update {
                     collection: MetaCollection::Dimensions,
                     scope: None,

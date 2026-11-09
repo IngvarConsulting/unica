@@ -818,7 +818,7 @@ mod tests {
     }
 
     /// Ключ, которого писатель вида не пишет, отказывает по точному пути,
-    /// а не по общему «ни одна альтернатива не подошла» (#1447).
+    /// а не по общему «ни одна альтернатива не подошла».
     #[test]
     fn item_add_refuses_a_key_of_another_kind_at_its_exact_path() {
         let contract = form(FormOperation::ItemAdd);
@@ -899,7 +899,7 @@ mod tests {
         }
     }
 
-    /// #2144: the contract at an owner offers exactly that kind's form slots
+    /// The contract at an owner offers exactly that kind's form slots
     /// and takes an empty string to clear one.
     #[test]
     fn form_set_contract_is_narrowed_to_the_owner_kind() {

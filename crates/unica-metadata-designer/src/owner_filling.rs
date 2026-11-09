@@ -1,3 +1,4 @@
+// module: private
 //! A local patch of the catalog's standard Owner, within the ordinary metadata plan.
 use std::ops::Range;
 use unica_metadata::{MetaDiagnostic, MetaDiagnosticCode, MetaObservedPropertyValue};

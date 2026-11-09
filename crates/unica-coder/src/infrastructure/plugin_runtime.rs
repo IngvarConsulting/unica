@@ -66,8 +66,7 @@ fn plugin_root_from_base(base: &Path) -> Option<PathBuf> {
 mod tests {
     use super::find_plugin_root_with_exe;
     use std::fs;
-    use std::path::{Path, PathBuf};
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::path::Path;
 
     #[test]
     fn packaged_executable_plugin_root_wins_over_cwd_source_checkout() {
@@ -120,14 +119,11 @@ mod tests {
         );
     }
 
-    fn temp_root(name: &str) -> PathBuf {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!("unica-plugin-root-{name}-{nanos}"));
-        fs::create_dir_all(&root).unwrap();
-        root
+    fn temp_root(name: &str) -> crate::infrastructure::temp_test_root::TempTestRoot {
+        crate::infrastructure::temp_test_root::TempTestRoot::new(
+            &format!("unica-plugin-root-{name}"),
+            "",
+        )
     }
 
     fn create_plugin_root(path: &Path) {

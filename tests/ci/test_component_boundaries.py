@@ -15,12 +15,52 @@ class ComponentBoundaryTests(unittest.TestCase):
     def test_real_workspace_retains_component_direction(self) -> None:
         """rule: INV.APP.COMPONENT-DEPENDENCIES"""
         self.assertEqual(checker.check(ROOT), [])
+        self.assertEqual(checker.declaration_errors(checker.manifests(ROOT)), [])
+
+    def test_a_crate_that_declares_no_known_component_is_refused_with_a_hint(self) -> None:
+        def members(**unica):
+            return {"unica-new": (Path("crates/unica-new"), {"package": {"name": "unica-new", "metadata": {"unica": unica}}})}
+
+        for undeclared in (members(), members(component="whatever")):
+            errors = checker.declaration_errors(undeclared)
+            self.assertEqual(len(errors), 1)
+            self.assertIn("unica-new: declare component under [package.metadata.unica]", errors[0])
+            for kind in checker.COMPONENT_KINDS:
+                self.assertIn(kind, errors[0])
+        self.assertEqual(checker.declaration_errors(members(component="service")), [])
+
+    def test_a_declared_kind_must_be_the_one_the_rules_apply(self) -> None:
+        def members(name, component):
+            return {name: (Path("x"), {"package": {"name": name, "metadata": {"unica": {"component": component}}}})}
+
+        # A new crate restricts itself by its declaration alone.
+        self.assertEqual(checker.declaration_errors(members("unica-new", "coordinator")), [])
+        # A crate of a floor cannot lift its restriction by declaring a looser kind.
+        self.assertIn("treat it as coordinator", checker.declaration_errors(members("unica-navigation", "service"))[0])
+        self.assertIn("treat it as family", checker.declaration_errors(members("unica-forms", "service"))[0])
+        self.assertEqual(checker.declaration_errors(members("unica-navigation", "coordinator")), [])
+        # Permissions stay closed: a crate does not make itself a shared contract,
+        # nor a family without semantic dependencies this guard grants.
+        self.assertIn("treat it as service", checker.declaration_errors(members("unica-new", "abstraction"))[0])
+        self.assertIn("treat it as service", checker.declaration_errors(members("unica-new", "family"))[0])
+
+    def test_restriction_sets_are_their_floors_and_the_declarations(self) -> None:
+        self.assertLessEqual(checker.FAMILY_FLOOR, checker.FAMILIES)
+        self.assertLessEqual(checker.COORDINATOR_FLOOR, checker.PORT_CALLERS)
+        self.assertEqual(checker.required_component("unica-new", "coordinator"), "coordinator")
+        self.assertEqual(checker.required_component("unica-new"), "service")
 
     def test_owner_edges_reject_hidden_concrete_dependencies(self) -> None:
         """rule: INV.APP.COMPONENT-DEPENDENCIES"""
         invalid = (
             ("unica-operations", "unica-forms"),
-            ("unica-analysis-services", "unica-adapter-rlm"),
+            ("unica-analysis-services", "unica-adapter-bsl-analyzer"),
+            ("unica-application", "unica-adapter-lexical"),
+            ("unica-application", "unica-metadata-designer"),
+            ("unica-application", "unica-coder"),
+            ("unica-domain", "unica-adapter-lexical"),
+            ("unica-domain", "unica-metadata-designer"),
+            ("unica-domain", "unica-coder"),
             ("unica-analysis-services", "unica-adapter-bsl-analyzer"),
             ("unica-code-intelligence", "unica-adapter-lexical"),
             ("unica-diagnostics", "unica-adapter-bsl-analyzer"),
@@ -36,17 +76,18 @@ class ComponentBoundaryTests(unittest.TestCase):
             ("unica-workspace", "unica-forms-designer"),
             ("unica-project-health", "unica-execution"),
             ("unica-project-health", "unica-metadata-designer"),
-            ("unica-project-health", "unica-adapter-rlm"),
+            ("unica-project-health", "unica-adapter-bsl-analyzer"),
             ("unica-execution", "unica-adapter-v8-runner"),
-            ("unica-execution", "unica-daemon"),
+            ("unica-execution", "unica-daemon-protocol"),
             ("unica-execution", "unica-bootstrap"),
             ("unica-execution", "unica-metadata-designer"),
-            ("unica-daemon", "unica-forms"),
-            ("unica-daemon", "unica-adapter-rlm"),
-            ("unica-daemon", "unica-project-health"),
+            ("unica-daemon-protocol", "unica-forms"),
+            ("unica-daemon-protocol", "unica-adapter-bsl-analyzer"),
+            ("unica-daemon-protocol", "unica-project-health"),
             ("unica-bsl-parser", "unica-bsl"),
             ("unica-roles", "unica-coder"),
             ("unica-bootstrap", "rmcp"),
+            ("unica-coder", "rmcp"),
             ("unica-coder", "bsl-syntax"),
             ("unica-code-intelligence", "syntax"),
         )
@@ -62,7 +103,7 @@ class ComponentBoundaryTests(unittest.TestCase):
             ("unica-bindings", "unica-metadata"),
             ("unica-bindings", "unica-bsl"),
             ("unica-analysis-services", "unica-workspace"),
-            ("unica-adapter-rlm", "unica-analysis-services"),
+            ("unica-adapter-bsl-analyzer", "unica-analysis-services"),
             ("unica-adapter-bsl-analyzer", "unica-diagnostics"),
             ("unica-adapter-lexical", "unica-code-intelligence"),
             ("unica-dcs", "unica-templates"),
@@ -78,20 +119,21 @@ class ComponentBoundaryTests(unittest.TestCase):
             ("unica-execution", "unica-runner"),
             ("unica-execution", "unica-workspace"),
             ("unica-execution", "unica-execution-contract"),
-            ("unica-daemon", "unica-execution"),
-            ("unica-daemon", "unica-workspace"),
-            ("unica-daemon", "unica-bootstrap"),
-            ("unica-daemon", "unica-artifact-delivery"),
-            ("unica-daemon", "unica-process"),
+            ("unica-daemon-protocol", "unica-execution"),
+            ("unica-daemon-protocol", "unica-workspace"),
+            ("unica-daemon-protocol", "unica-bootstrap"),
+            ("unica-daemon-protocol", "unica-artifact-delivery"),
+            ("unica-daemon-protocol", "unica-process"),
+            ("unica-daemon-protocol", "unica-lsp-contract"),
             ("unica-adapter-v8-runner", "unica-execution"),
-            ("unica-coder", "rmcp"),
+            ("unica-daemon", "rmcp"),
             ("unica-bsl-parser", "bsl-syntax"),
         ):
             with self.subTest(owner=owner, target=target):
                 self.assertEqual(checker.edge_errors(owner, target, "dependencies"), [])
 
     def test_dcs_family_and_its_codec_keep_their_own_boundary(self) -> None:
-        # Пилот семейного порта (#1826): семейство не видит свой кодек, раскладку,
+        # Пилот семейного порта: семейство не видит свой кодек, раскладку,
         # workspace, другие семейства и composition; кодек — только своё
         # семейство и нейтральные порты. Workspace и кодек вместе видит лишь
         # пакет межкомпонентных тестов семьи.
@@ -107,6 +149,8 @@ class ComponentBoundaryTests(unittest.TestCase):
             ("unica-dcs-designer", "unica-templates-designer"),
             ("unica-dcs-designer", "unica-coder"),
             ("unica-dcs-integration-tests", "unica-coder"),
+            ("unica-dcs-integration-tests", "unica-product"),
+            ("unica-coder", "unica-product"),
         )
         for kind in ("dependencies", "build-dependencies", "dev-dependencies"):
             for owner, target in refused:
@@ -122,6 +166,58 @@ class ComponentBoundaryTests(unittest.TestCase):
         ):
             with self.subTest(owner=owner, target=target, kind=kind):
                 self.assertEqual(checker.edge_errors(owner, target, kind), [])
+
+    def test_lsp_service_and_its_contract_keep_their_own_boundary(self) -> None:
+        """rule: INV.APP.COMPONENT-DEPENDENCIES"""
+        refused = (
+            ("unica-lsp", "unica-daemon-protocol"),
+            ("unica-lsp", "unica-coder"),
+            ("unica-lsp", "unica-daemon"),
+            ("unica-lsp", "unica-execution"),
+            ("unica-lsp", "unica-forms"),
+            ("unica-lsp", "unica-adapter-bsl-analyzer"),
+            ("unica-lsp", "unica-code-intelligence"),
+            ("unica-lsp", "unica-forms-designer"),
+            ("unica-code-model", "unica-bsl-parser"),
+            ("unica-code-model", "unica-code-intelligence"),
+            ("unica-lsp-contract", "unica-daemon-protocol"),
+            ("unica-lsp-contract", "unica-workspace"),
+            ("unica-lsp-contract", "unica-address"),
+            ("unica-daemon-protocol", "unica-lsp"),
+        )
+        for kind in ("dependencies", "build-dependencies", "dev-dependencies"):
+            for owner, target in refused:
+                with self.subTest(kind=kind, owner=owner, target=target):
+                    self.assertTrue(checker.edge_errors(owner, target, kind))
+        for owner, target in (
+            ("unica-lsp", "unica-lsp-contract"),
+            ("unica-lsp", "unica-workspace"),
+            ("unica-lsp", "unica-bsl"),
+            ("unica-lsp", "unica-source-designer"),
+            ("unica-lsp", "unica-address"),
+            ("unica-lsp", "unica-code-model"),
+            ("unica-code-model", "unica-work-control"),
+            ("unica-code-intelligence", "unica-code-model"),
+            ("unica-coder", "unica-lsp-contract"),
+            ("unica-lsp-contract", "unica-work-control"),
+        ):
+            with self.subTest(owner=owner, target=target):
+                self.assertEqual(checker.edge_errors(owner, target, "dependencies"), [])
+
+    def test_only_the_lsp_coordinator_reaches_the_shared_designer_layout(self) -> None:
+        """rule: INV.APP.COMPONENT-DEPENDENCIES"""
+        self.assertEqual(checker.required_component("unica-lsp"), "coordinator")
+        self.assertEqual(checker.required_component("unica-code-model"), "abstraction")
+        for owner in ("unica-application", "unica-domain", "unica-navigation", "unica-code-intelligence"):
+            with self.subTest(owner=owner):
+                self.assertTrue(checker.edge_errors(owner, "unica-source-designer", "dependencies"))
+
+    def test_only_the_product_composition_depends_on_the_composition(self) -> None:
+        """rule: INV.APP.COMPONENT-DEPENDENCIES"""
+        for kind in ("dependencies", "dev-dependencies"):
+            for owner, target in (("unica-product", "unica-daemon"), ("unica-daemon", "unica-coder")):
+                with self.subTest(kind=kind, owner=owner, target=target):
+                    self.assertEqual(checker.edge_errors(owner, target, kind), [])
 
     def test_composition_selects_the_dcs_codec_in_one_place(self) -> None:
         """rule: INV.APP.COMPONENT-DEPENDENCIES"""
@@ -143,6 +239,21 @@ class ComponentBoundaryTests(unittest.TestCase):
                 self.assertEqual(checker.codec_selection_errors(path, call), [])
         self.assertEqual(checker.codec_selection_errors(
             "crates/unica-coder/src/lib.rs", "use unica_dcs::codec::DcsCodec;\n"), [])
+
+    def test_metadata_read_code_reaches_the_codec_through_the_family_port(self) -> None:
+        """rule: INV.APP.COMPONENT-DEPENDENCIES"""
+        call = "let code = unica_metadata_designer::language_code::read_code(&descriptor)?;\n"
+        port = "let code = metadata_read_codec().language_code(&descriptor)?;\n"
+        for path in (
+            "crates/unica-coder/src/infrastructure/v13_read.rs",
+            "crates/unica-coder/src/infrastructure/v13_read_port/new_kind.rs",
+            "crates/unica-coder/src/infrastructure/v13_read/tests.rs",
+        ):
+            with self.subTest(path=path):
+                self.assertTrue(checker.metadata_read_codec_errors(path, call))
+                self.assertEqual(checker.metadata_read_codec_errors(path, port), [])
+        self.assertEqual(checker.metadata_read_codec_errors(
+            "crates/unica-coder/src/infrastructure/native_operations/meta.rs", call), [])
 
     def test_target_specific_alias_cannot_hide_a_composition_backedge(self) -> None:
         """rule: INV.APP.COMPONENT-DEPENDENCIES"""
@@ -168,7 +279,7 @@ class ComponentBoundaryTests(unittest.TestCase):
                 self.assertTrue(checker.edge_errors("unica-workspace", "unica-process", kind))
         # Components that did not exist when the list was written are refused too.
         for target in ("unica-runner", "unica-bootstrap", "unica-artifact-delivery", "unica-project-health",
-                       "unica-operations", "unica-adapter-rlm", "unica-execution", "unica-daemon",
+                       "unica-operations", "unica-adapter-bsl-analyzer", "unica-execution", "unica-daemon-protocol",
                        "unica-coder", "unica-future-index"):
             for kind in ("dependencies", "build-dependencies", "dev-dependencies"):
                 with self.subTest(target=target, kind=kind):

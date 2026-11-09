@@ -756,7 +756,7 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::{mpsc, Arc, Barrier, Condvar, Mutex};
     use std::thread;
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
     use unica_source_contract::location::SourceLocation;
     use unica_source_contract::workspace::ResolvedSourceRoot;
     use unica_source_contract::workspace::WorkspaceContext;
@@ -888,7 +888,7 @@ mod tests {
         let (started_tx, started_rx) = mpsc::channel();
         let release = Arc::new(Barrier::new(4));
         let providers = [
-            (ProviderId::Rlm, ProviderSectionStatus::Ok),
+            (ProviderId::SemanticFixture, ProviderSectionStatus::Ok),
             (ProviderId::BslAnalyzer, ProviderSectionStatus::Empty),
             (ProviderId::GitGrep, ProviderSectionStatus::Ok),
         ]
@@ -939,7 +939,7 @@ mod tests {
                 .map(|section| section.identity.role)
                 .collect::<Vec<_>>(),
             vec![
-                ProviderId::Rlm.role(),
+                ProviderId::SemanticFixture.role(),
                 ProviderId::BslAnalyzer.role(),
                 ProviderId::GitGrep.role()
             ]
@@ -990,7 +990,7 @@ mod tests {
         let sink = RecordingProgressSink::default();
         let coordinator = CodeSearchCoordinator::new(
             CodeIntelligenceRegistry::new(vec![Arc::new(SlowProvider {
-                id: ProviderId::Rlm,
+                id: ProviderId::SemanticFixture,
                 delay: Duration::from_millis(80),
             })])
             .unwrap(),
@@ -1097,7 +1097,7 @@ mod tests {
         let partial = CodeSearchCoordinator::new(
             CodeIntelligenceRegistry::new(vec![
                 static_provider(
-                    ProviderId::Rlm,
+                    ProviderId::SemanticFixture,
                     ProviderSectionStatus::Unavailable,
                     "index building",
                 ),
@@ -1124,7 +1124,7 @@ mod tests {
         let failed = CodeSearchCoordinator::new(
             CodeIntelligenceRegistry::new(vec![
                 static_provider(
-                    ProviderId::Rlm,
+                    ProviderId::SemanticFixture,
                     ProviderSectionStatus::Unavailable,
                     "index building",
                 ),
@@ -1152,11 +1152,11 @@ mod tests {
     #[test]
     fn malformed_provider_subset_remains_useful_without_claiming_complete_coverage() {
         let section = ProviderSearchSection::partial(
-            ProviderId::Rlm.identity(),
+            ProviderId::SemanticFixture.identity(),
             SearchRanking::Provider,
             SearchOrdering::Provider,
             vec![test_hit(0)],
-            vec!["ignored malformed RLM result #1".to_string()],
+            vec!["ignored malformed provider result #1".to_string()],
         )
         .unwrap();
         let provider = Arc::new(StaticProvider { section });
@@ -1276,7 +1276,7 @@ mod tests {
     #[test]
     fn coordinator_applies_provider_budgets_and_renders_from_canonical_sections() {
         let providers = [
-            (ProviderId::Rlm, Duration::from_secs(300)),
+            (ProviderId::SemanticFixture, Duration::from_secs(300)),
             (ProviderId::BslAnalyzer, Duration::from_secs(300)),
             (ProviderId::GitGrep, Duration::from_secs(30)),
         ]
@@ -1306,7 +1306,11 @@ mod tests {
                 .iter()
                 .map(|section| (section.identity.provider.as_str(), section.hits.len()))
                 .collect::<Vec<_>>(),
-            vec![("rlm", 0), ("bsl-analyzer", 0), ("git-grep", 0)]
+            vec![
+                ("semantic-fixture", 0),
+                ("bsl-analyzer", 0),
+                ("git-grep", 0)
+            ]
         );
         assert_eq!(
             execution
@@ -1316,7 +1320,7 @@ mod tests {
                 .map(|section| section.identity.role)
                 .collect::<Vec<_>>(),
             vec![
-                ProviderId::Rlm.role(),
+                ProviderId::SemanticFixture.role(),
                 ProviderId::BslAnalyzer.role(),
                 ProviderId::GitGrep.role()
             ]
@@ -1341,7 +1345,7 @@ mod tests {
             Duration::from_secs(100)
         );
         assert_eq!(
-            coordinator.provider_budget(ProviderId::Rlm.role()),
+            coordinator.provider_budget(ProviderId::SemanticFixture.role()),
             Duration::from_secs(30)
         );
         assert_eq!(
@@ -1402,7 +1406,7 @@ mod tests {
         }
 
         fn capabilities(&self) -> &[ProviderCapability] {
-            &[ProviderCapability::Search, ProviderCapability::Definition]
+            &[ProviderCapability::Search, ProviderCapability::CallGraph]
         }
 
         fn search(
@@ -1423,7 +1427,7 @@ mod tests {
             _deadline: ProviderDeadline,
             _cancellation: &CancellationToken,
         ) -> Result<ProviderReadOutcome, String> {
-            let CodeIntelligenceReadRequest::Definition { name, .. } = request else {
+            let CodeIntelligenceReadRequest::CallGraph { id: name, .. } = request else {
                 panic!("definition fixture");
             };
             self.wait_for_release(name);
@@ -1439,102 +1443,6 @@ mod tests {
                 data: None,
             })
         }
-    }
-
-    fn exercise_calls_past_provider_quota(read: bool) {
-        for id in [
-            ProviderId::BslAnalyzer,
-            ProviderId::Rlm,
-            ProviderId::GitGrep,
-        ] {
-            let (entered_tx, entered_rx) = mpsc::channel();
-            let release = Arc::new((Mutex::new(false), Condvar::new()));
-            let provider: Arc<dyn CodeIntelligenceProvider> = Arc::new(CountQuotaProvider {
-                id,
-                entered: entered_tx,
-                release: Arc::clone(&release),
-            });
-            let mut calls = Vec::new();
-            for index in 0..33 {
-                let provider = Arc::clone(&provider);
-                calls.push(thread::spawn(move || {
-                    let name = format!("call-{index}");
-                    if read {
-                        super::execute_provider_read(
-                            provider,
-                            CodeIntelligenceReadRequest::Definition {
-                                name: name.clone(),
-                                module_hint: String::new(),
-                                limit: 50,
-                            },
-                            context(),
-                            Duration::from_secs(30),
-                            &CancellationToken::new(),
-                        )
-                        .map(|outcome| (outcome.ok, outcome.summary))
-                    } else {
-                        CodeSearchCoordinator::with_deadlines(
-                            CodeIntelligenceRegistry::new(vec![provider]).unwrap(),
-                            CodeIntelligenceDeadlines::for_test(Duration::from_secs(30)),
-                        )
-                        .search(
-                            &SearchRequest {
-                                query: name.clone(),
-                                limit: 20,
-                            },
-                            &context(),
-                            &CancellationToken::new(),
-                        )
-                        .map(|outcome| {
-                            (
-                                outcome.ok
-                                    && outcome.result.sections[0].status
-                                        == ProviderSectionStatus::Empty,
-                                name,
-                            )
-                        })
-                    }
-                }));
-            }
-            let cutoff = Instant::now() + Duration::from_secs(5);
-            let mut entered = std::collections::BTreeSet::new();
-            while entered.len() < 33 {
-                match entered_rx.recv_timeout(cutoff.saturating_duration_since(Instant::now())) {
-                    Ok(name) => {
-                        entered.insert(name);
-                    }
-                    Err(_) => break,
-                }
-            }
-            // Complete every caller and retained worker before asserting the old boundary.
-            *release.0.lock().unwrap() = true;
-            release.1.notify_all();
-            let results: Vec<_> = calls.into_iter().map(|call| call.join().unwrap()).collect();
-            assert!(super::drain_code_search_workers(Duration::from_secs(5)));
-            let expected = (0..33).map(|index| format!("call-{index}")).collect();
-            assert_eq!(entered, expected, "not every {id:?} worker entered");
-            let completed: std::collections::BTreeSet<_> = results
-                .into_iter()
-                .map(|result| {
-                    let (ok, name) = result.expect("worker count must not refuse execution");
-                    assert!(ok, "{id:?} rejected {name}");
-                    name
-                })
-                .collect();
-            assert_eq!(completed, entered);
-        }
-    }
-
-    /// rule: INV.APP.PROVIDER-WORKER-CONCURRENCY
-    #[test]
-    fn search_executes_all_workers_past_the_former_provider_quota() {
-        exercise_calls_past_provider_quota(false);
-    }
-
-    /// rule: INV.APP.PROVIDER-WORKER-CONCURRENCY
-    #[test]
-    fn read_executes_all_workers_past_the_former_provider_quota() {
-        exercise_calls_past_provider_quota(true);
     }
 
     /// rule: INV.APP.PROVIDER-WORKER-CONCURRENCY
@@ -1646,11 +1554,11 @@ mod tests {
 
     impl CodeIntelligenceProvider for StaticReadProvider {
         fn identity(&self) -> crate::model::ProviderIdentity {
-            ProviderId::Rlm.identity()
+            ProviderId::SemanticFixture.identity()
         }
 
         fn capabilities(&self) -> &[ProviderCapability] {
-            &[ProviderCapability::Definition, ProviderCapability::Outline]
+            &[ProviderCapability::CallGraph]
         }
 
         fn search(
@@ -1671,7 +1579,7 @@ mod tests {
             _cancellation: &CancellationToken,
         ) -> Result<ProviderReadOutcome, String> {
             Ok(ProviderReadOutcome {
-                provider: ProviderId::Rlm.identity(),
+                provider: ProviderId::SemanticFixture.identity(),
                 ok: true,
                 summary: "read".to_string(),
                 warnings: Vec::new(),
@@ -1691,7 +1599,7 @@ mod tests {
         let (entered_tx, entered_rx) = mpsc::channel();
         let release = Arc::new((Mutex::new(false), Condvar::new()));
         let provider: Arc<dyn CodeIntelligenceProvider> = Arc::new(CountQuotaProvider {
-            id: ProviderId::Rlm,
+            id: ProviderId::SemanticFixture,
             entered: entered_tx,
             release: Arc::clone(&release),
         });
@@ -1699,9 +1607,9 @@ mod tests {
         for name in ["Post", "Again"] {
             results.push(execute_provider_read_with_policy(
                 Arc::clone(&provider),
-                CodeIntelligenceReadRequest::Definition {
-                    name: name.to_string(),
-                    module_hint: String::new(),
+                CodeIntelligenceReadRequest::CallGraph {
+                    id: name.to_string(),
+                    direction: crate::model::CallGraphDirection::Callers,
                     limit: 50,
                 },
                 context(),
@@ -1734,9 +1642,9 @@ mod tests {
 
         let outcome = execute_provider_read_with_policy(
             Arc::new(StaticReadProvider),
-            CodeIntelligenceReadRequest::Definition {
-                name: "Post".to_string(),
-                module_hint: String::new(),
+            CodeIntelligenceReadRequest::CallGraph {
+                id: "Post".to_string(),
+                direction: crate::model::CallGraphDirection::Callers,
                 limit: 50,
             },
             context(),
@@ -1756,7 +1664,7 @@ mod tests {
         let worker_cancellation = cancellation.linked_child();
         cancellation.cancel();
         let result = Ok(ProviderReadOutcome {
-            provider: ProviderId::Rlm.identity(),
+            provider: ProviderId::SemanticFixture.identity(),
             ok: true,
             summary: "result published after parent cancellation".to_string(),
             warnings: Vec::new(),
@@ -1777,7 +1685,7 @@ mod tests {
 
     impl CodeIntelligenceProvider for PanickingProvider {
         fn identity(&self) -> crate::model::ProviderIdentity {
-            ProviderId::Rlm.identity()
+            ProviderId::SemanticFixture.identity()
         }
 
         fn capabilities(&self) -> &[ProviderCapability] {
@@ -1829,7 +1737,7 @@ mod tests {
 
     impl CodeIntelligenceProvider for CancellingProvider {
         fn identity(&self) -> crate::model::ProviderIdentity {
-            ProviderId::Rlm.identity()
+            ProviderId::SemanticFixture.identity()
         }
 
         fn capabilities(&self) -> &[ProviderCapability] {
@@ -1845,7 +1753,7 @@ mod tests {
         ) -> ProviderSearchSection {
             cancellation.cancel();
             test_section(
-                ProviderId::Rlm,
+                ProviderId::SemanticFixture,
                 ProviderSectionStatus::Empty,
                 Vec::new(),
                 "",

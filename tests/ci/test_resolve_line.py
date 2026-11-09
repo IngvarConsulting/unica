@@ -18,6 +18,15 @@ def load_module():
 
 
 class ResolveLineTests(unittest.TestCase):
+    def test_an_alpha_tag_outside_every_branch_belongs_to_main(self) -> None:
+        module = load_module()
+        self.assertEqual(module.resolve("tag", "v0.15.0-alpha.3", "abc", branches_containing=lambda sha: []), "main")
+
+    def test_a_measurement_tag_outside_a_release_line_is_still_refused(self) -> None:
+        module = load_module()
+        with self.assertRaises(SystemExit):
+            module.resolve("tag", "v0.15.0-beta.1", "abc", branches_containing=lambda sha: [])
+
     def test_branch_push_is_its_own_line(self) -> None:
         module = load_module()
 
