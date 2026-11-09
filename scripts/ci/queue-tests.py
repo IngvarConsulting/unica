@@ -13,6 +13,12 @@
 набора не требует: сами крейты выбраны по своим файлам. Остальное исполняет ночь; правило для красной ночи и откат —
 в `.agents/skills/unica-testing/references/ci-pipeline.md`.
 
+Приёмка `source` замораживает ответы продукта. Правка крейта, из которого собирается
+`unica` (`unica-product` и всё, от чего он зависит), или самой приёмки — сценариев,
+её подготовки и драйвера — запускает её отдельным заданием очереди «Приёмка»,
+параллельно тестам Rust (выход `acceptance`). При полном наборе приёмку исполняют
+Python medium этой записи, и отдельное задание не нужно.
+
 На Linux временные каталоги тестов очередь держит в памяти (`TMPDIR` в `/dev/shm`): журнал
 квитанций и рабочие области публикуют каждую запись через `fsync`, и на диске раннера каждый
 вызов продукта ждёт его. Те же системные вызовы выполняются, ждать им нечего. Ночь и выпуск идут
@@ -45,6 +51,10 @@ DEPENDENT_FILTER = "kind(test) & not binary(daemon_receipt_ledger)"
 MENTIONED = re.compile(r"^(tests/fixtures/(?!acceptance/scenario-manifest/)|scripts/(?!ci/|research/))")
 # Rust их не читает, а наборы `site`, стражи правил и навыков идут в Python очереди всегда.
 NO_RUST = re.compile(r"^(docs/pages/|docs/visual-kit/|arch/rules/|\.agents/|scripts/research/|[^/]+\.md$)")
+# Бинарник, ответы которого заморожены в приёмке.
+PRODUCT = "unica-product"
+# Сценарии приёмки, её подготовка и драйвер.
+ACCEPTANCE = re.compile(r"^(tests/fixtures/acceptance/|tests/ci/acceptance_[^/]*\.py$|tests/ci/test_acceptance_scenarios\.py$)")
 # Крейт, который собирает путь к данным из частей, читает любой их каталог.
 ASSEMBLED_FIXTURES = '"tests/fixtures"'
 MEMORY_TEMP_ROOT = Path("/dev/shm")
@@ -147,6 +157,25 @@ def choose(paths: list[str], directories: dict[str, str], dependents: dict[str, 
     return Choice(False, tuple(sorted(selected)), f"medium: {sorted(selected) or 'нет'}, цели зависимых: {reached or 'нет'}", tuple(reached))
 
 
+def product_crates(dependents: dict[str, set[str]], product: str = PRODUCT) -> set[str]:
+    """`product` и все крейты, от которых он зависит прямо или транзитивно."""
+    found = {product}
+    changed = True
+    while changed:
+        changed = False
+        for crate, users in dependents.items():
+            if crate not in found and users & found:
+                found.add(crate)
+                changed = True
+    return found
+
+
+def needs_acceptance(paths: list[str], directories: dict[str, str], dependents: dict[str, set[str]]) -> bool:
+    """Меняет ли запись ответы, замороженные в приёмке, или саму приёмку."""
+    product = product_crates(dependents)
+    return any(ACCEPTANCE.match(path) or crate_of(path, directories) in product for path in paths)
+
+
 def memory_temp(root: Path = MEMORY_TEMP_ROOT, min_free: int = MEMORY_TEMP_MIN_FREE_BYTES,
                 platform: str = sys.platform) -> tuple[Path | None, str]:
     """Каталог для `TMPDIR` тестов очереди в памяти и почему он выбран или нет."""
@@ -226,13 +255,17 @@ def main(argv: list[str] | None = None) -> int:
         paths = [path for path in paths if path]
         lock_is_internal = "Cargo.lock" in paths and lock_keeps_external(args.base, args.head, set(directories.values()))
         choice = choose(paths, directories, dependents, force_full=os.environ.get("QUEUE_FULL_TESTS") == "true", lock_is_internal=lock_is_internal)
+        acceptance = not choice.full and needs_acceptance(paths, directories, dependents)
     except (subprocess.CalledProcessError, OSError, ValueError) as error:
         choice = Choice(True, (), f"выбор не определён: {error}")
+        acceptance = False
     print(f"{'полный набор' if choice.full else 'выбор'}: {choice.reason}", flush=True)
+    print(f"приёмка отдельным заданием: {'да' if acceptance else 'нет'}", flush=True)
     outputs = os.environ.get("GITHUB_OUTPUT")
     if outputs:
         with open(outputs, "a", encoding="utf-8") as stream:
             stream.write(f"full={str(choice.full).lower()}\n")
+            stream.write(f"acceptance={str(acceptance).lower()}\n")
     if args.dry_run:
         return 0
     runner = load_runner()
