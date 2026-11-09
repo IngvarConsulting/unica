@@ -35,11 +35,11 @@ use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use unica_adapter_lexical::lines::{
+use unica_address::address::{NodeKind, QualifiedAddress};
+use unica_coder::infrastructure::daemon_adapters::lexical::{
     holds_foreign_work_tree, inside_work_tree, stream_candidate_lines, CandidateCorpus,
     CandidateEnd, CandidatePattern,
 };
-use unica_address::address::{NodeKind, QualifiedAddress};
 use unica_execution_contract::view_error::ViewError;
 use unica_navigation::result_store::SearchResume;
 use unica_process::runner::system_process_runner;
