@@ -6,6 +6,7 @@ import importlib.util
 import json
 import os
 import tarfile
+import shutil
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -13,6 +14,7 @@ from pathlib import Path
 
 import yaml
 
+from collector_rules import without_repository_rule_index
 
 SCRIPTS = Path(__file__).resolve().parents[2] / "scripts" / "ci"
 WORKFLOWS = Path(__file__).resolve().parents[2] / ".github" / "workflows"
@@ -33,7 +35,9 @@ class CollectResultsTests(unittest.TestCase):
     def setUp(self) -> None:
         self.allure = load("allure_results")
         self.collect = load("collect-results")
+        without_repository_rule_index(self, self.collect)
         self.root = Path(tempfile.mkdtemp(prefix="collect-"))
+        self.addCleanup(shutil.rmtree, self.root)
         self.artifacts = self.root / "artifacts"
         self.run = {
             "sha": "abcdef0123456789", "ref": "release-v0.12", "run_id": "42", "run_attempt": "2",

@@ -78,7 +78,7 @@ pub(crate) fn evaluate_format_guard(
 /// run the same owner resolution the retired `*.validate` tools ran before
 /// their handler: a root outside the active profile answers a warning
 /// diagnostic, never a silent pass (`DEC.2026-08-21.SINGLE-WRITABLE-PLATFORM-XML-PROFILE`).
-pub(crate) fn evaluate_read_format_guard(
+pub fn evaluate_read_format_guard(
     operation: &str,
     args: &Map<String, Value>,
     context: &WorkspaceContext,
@@ -142,7 +142,7 @@ pub(crate) fn evaluate_retained_template_format_guard(
 
 /// Mutation-side guard by operation name, for tests that prove a writer
 /// refuses before its handler without a public v0.12 tool record.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) fn evaluate_mutation_format_guard(
     operation: &str,
     args: &Map<String, Value>,
@@ -956,6 +956,16 @@ fn absolutize(raw: &str, cwd: &Path) -> PathBuf {
         cwd.join(path)
     }
 }
+
+/// The application on the infrastructure ports, for the shared format-gate calls.
+#[cfg(test)]
+fn application() -> crate::application::UnicaApplication {
+    crate::composition::testing::application()
+}
+
+#[cfg(test)]
+#[path = "format_gate.rs"]
+mod format_gate;
 
 #[cfg(test)]
 mod medium_tests {
@@ -2502,7 +2512,7 @@ mod medium_tests {
     /// `#[test]` сделала бы из этого ещё один прогон уже сделанной работы.
     fn format_evidence_payload() {
         single_writable_platform_xml_profile_is_exact();
-        crate::application::tool_contracts::tests::native_mutation_surface_has_exact_operations_and_schemas();
+        unica_application::application::application_tests::check_native_mutation_surface();
         public_platform_xml_mutators_have_closed_pre_side_effect_format_refusal();
         staged_dcs_owner_is_outside_the_old_external_source_set_profile();
         older_extension_dump_recommends_platform_reexport();
@@ -2603,8 +2613,8 @@ mod medium_tests {
         // diagnostic route, so exercise all three of those public calls
         // separately. Together these close the exact two handler variants
         // without pretending their public diagnostics match.
-        crate::application::tests::incompatible_format_blocks_before_native_handler();
-        crate::application::tests::public_metadata_mutators_refuse_old_and_new_profiles_without_side_effects();
+        super::format_gate::incompatible_format_blocks_before_native_handler();
+        super::format_gate::public_metadata_mutators_refuse_old_and_new_profiles_without_side_effects();
         std::fs::remove_dir_all(workspace_root).unwrap();
     }
 

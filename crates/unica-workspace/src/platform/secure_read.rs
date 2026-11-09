@@ -1849,7 +1849,7 @@ mod tests {
         assert_eq!(checkpoints.get(), 6);
     }
 
-    /// #1119: the visit keeps only fingerprints, so bytes changed in place
+    /// The visit keeps only fingerprints, so bytes changed in place
     /// after their visit still fail the final proof.
     #[test]
     fn visited_tree_proof_rejects_bytes_changed_after_their_visit() {
@@ -1878,7 +1878,7 @@ mod tests {
         );
     }
 
-    /// #1119: a retained read keeps a fingerprint, not the bytes; reading the
+    /// A retained read keeps a fingerprint, not the bytes; reading the
     /// same file again re-reads it and must find the same content.
     #[test]
     fn retained_session_rereads_a_registered_file_and_rejects_changed_bytes() {

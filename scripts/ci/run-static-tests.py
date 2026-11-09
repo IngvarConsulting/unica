@@ -2,9 +2,10 @@
 """Быстрые Python-проверки уровня PR: правила и контракты без сборки продукта.
 
 Модули `tests/ci` и `tests/dev` идут параллельно, каждый в своём процессе.
-Не идут `medium` и модули из `[pr] skip` в `.config/python-sizes.toml`: им нужен
-`cargo` или они дольше десяти секунд. Всё это исполняет очередь. Новый модуль
-попадает сюда сам; модуль дольше бюджета виден предупреждением.
+Не идут `medium` и модули, объявившие `PR_SKIP` (`scripts/ci/python_sizes.py`):
+их малым тестам нужен `cargo` или продукт, или они дольше бюджета. Всё это
+исполняет очередь. Новый модуль попадает сюда сам; модуль дольше бюджета виден
+предупреждением.
 """
 
 from __future__ import annotations
@@ -18,23 +19,24 @@ from pathlib import Path
 import subprocess
 import sys
 import time
-import tomllib
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
-MANIFEST = ROOT / ".config" / "python-sizes.toml"
+sys.path.insert(0, str(ROOT / "scripts" / "ci"))
+import python_sizes  # noqa: E402
+
 SUITES = ("tests/ci", "tests/dev")
 WORKERS = 4
 MODULE_BUDGET = 15.0
 
 
-def skipped_modules(manifest: Path = MANIFEST) -> set[str]:
-    return set(tomllib.loads(manifest.read_text(encoding="utf-8"))["pr"]["skip"])
+def skipped_modules(root: Path = ROOT) -> set[str]:
+    return set(python_sizes.collect(root).pr_skip)
 
 
-def kept_medium(manifest: Path = MANIFEST) -> list[str]:
+def kept_medium(root: Path = ROOT) -> list[str]:
     """`medium`, которые очередь оставляет себе: смоук продукта и снимки контрактов."""
-    return tomllib.loads(manifest.read_text(encoding="utf-8"))["queue"]["keep-medium"]
+    return list(python_sizes.collect(root).keep_medium)
 
 
 def modules(root: Path = ROOT, skip: set[str] | None = None) -> list[str]:
@@ -64,7 +66,7 @@ def run_module(name: str, keep: tuple[str, ...] = ()) -> int:
     spec.loader.exec_module(runner)
     # Как `discover`: каталог набора в пути, его помощники импортируются по имени.
     sys.path[:0] = [str(ROOT), str(ROOT / name.rsplit(".", 1)[0].replace(".", "/"))]
-    suite = small_tests(unittest.defaultTestLoader.loadTestsFromName(name), runner.Sizes.load(MANIFEST), keep)
+    suite = small_tests(unittest.defaultTestLoader.loadTestsFromName(name), runner.Sizes(list(python_sizes.collect(ROOT).medium)), keep)
     result = unittest.TextTestRunner(stream=sys.stdout, verbosity=0).run(suite)
     print(json.dumps({"tests": result.testsRun}))
     return 0 if result.wasSuccessful() else 1
@@ -98,7 +100,7 @@ def main(argv: list[str] | None = None) -> int:
             failed.append(name)
             print(f"::group::{name}\n{output}\n::endgroup::")
         if seconds > MODULE_BUDGET and not args.queue:
-            print(f"::warning::{name}: {seconds:.0f} с, бюджет {MODULE_BUDGET:.0f} с; такому модулю место в [pr] skip")
+            print(f"::warning::{name}: {seconds:.0f} с, бюджет {MODULE_BUDGET:.0f} с; такому модулю место в PR_SKIP")
     for name, _, seconds, _ in sorted(results, key=lambda item: -item[2])[:5]:
         print(f"{seconds:6.1f} с {name}")
     print(f"модулей {len(results)}, тестов {tests}, {time.monotonic() - started:.0f} с")

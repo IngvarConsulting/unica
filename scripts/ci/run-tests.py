@@ -17,11 +17,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import allure_results  # noqa: E402
+from cargo_target import cargo_target_dir, vendor_target_arg, vendor_target_dir  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 RUN_UNITTEST = Path(__file__).with_name("run-unittest.py")
-PYTHON_SIZES = REPO_ROOT / ".config" / "python-sizes.toml"
-NEXTEST_JUNIT = REPO_ROOT / "target" / "nextest" / "default" / "junit.xml"
 
 from workflow_routing import (  # noqa: E402
     ADMITTED, LANED_SUITES, PROFILES, PYTHON_SUITES, SIZES,
@@ -49,9 +48,9 @@ def nextest_profile(profile: str, selection: tuple[str, ...] | None = None) -> s
 
 
 def nextest_junit(profile: str, selection: tuple[str, ...] | None = None) -> Path:
-    """Nextest хранит JUnit относительно корня выбранного workspace."""
-    workspace = REPO_ROOT / "vendor" / "ureq" if selection == UREQ_RECYCLING_SELECTION else REPO_ROOT
-    return workspace / "target" / "nextest" / nextest_profile(profile, selection) / "junit.xml"
+    """Nextest хранит JUnit в каталоге сборки выбранного workspace."""
+    target = vendor_target_dir(REPO_ROOT, "ureq") if selection == UREQ_RECYCLING_SELECTION else cargo_target_dir(REPO_ROOT)
+    return target / "nextest" / nextest_profile(profile, selection) / "junit.xml"
 
 
 # Контракт ReceiptLedger (`tests/daemon_receipt_ledger.rs`) собирается только с
@@ -64,7 +63,7 @@ def nextest_junit(profile: str, selection: tuple[str, ...] | None = None) -> Pat
 #
 # Проверки обвязки сценариев идут в том же бинаре: их тела живут в библиотеке
 # под признаком, а `#[test]` им приставляет контракт. Поэтому вызову не нужен
-# `--lib` — тестовая сборка всего `unica-coder` ради них. Библиотека
+# `--lib` — тестовая сборка всего `unica-daemon` ради них. Библиотека
 # собирается один раз, обычной, для контракта и бинаря `unica`.
 LEDGER_FEATURE_SELECTION = (
     "-p", "unica-product", "--features", "receipt-ledger-test-support",
@@ -78,7 +77,7 @@ UREQ_RECYCLING_PREFIX = "completed_response_recycling::"
 UREQ_RECYCLING_SELECTION = (
     "--manifest-path", "vendor/ureq/Cargo.toml", "--locked", "--lib",
     "--features", "json,serde_json/preserve_order,serde_json/float_roundtrip",
-    "--config-file", "vendor/ureq/.config/nextest.toml", "--target-dir", "target",
+    "--config-file", "vendor/ureq/.config/nextest.toml", "--target-dir", "target",  # cargo-target: mapped
     "-E", f"test(/^{UREQ_RECYCLING_PREFIX}/)",
 )
 
@@ -126,11 +125,20 @@ def rust_selections(profile: str) -> list[tuple[str, ...]]:
     return selections
 
 
+def targeted(selection: tuple[str, ...]) -> list[str]:
+    """Отбор с каталогом сборки сессии: `--target-dir target` вендорного workspace
+    уходит в `CARGO_TARGET_DIR`, если переменная задана."""
+    arguments = list(selection)
+    if "--target-dir" in arguments and selection == UREQ_RECYCLING_SELECTION:
+        arguments[arguments.index("--target-dir") + 1] = vendor_target_arg(REPO_ROOT, "ureq")
+    return arguments
+
+
 def rust_command(profile: str, selection: tuple[str, ...]) -> list[str]:
     # nextest: процесс на тест и JUnit из коробки. Число потоков, повторы
     # и отчёт описаны в `.config/nextest.toml`, а не здесь: конвейер и
     # локальный прогон обязаны идти одной настройкой.
-    return ["cargo", "nextest", "run", *selection, "--profile", nextest_profile(profile, selection)]
+    return ["cargo", "nextest", "run", *targeted(selection), "--profile", nextest_profile(profile, selection)]
 
 
 def rust_commands(profile: str) -> list[list[str]]:
@@ -141,7 +149,7 @@ def rust_commands(profile: str) -> list[list[str]]:
 def rust_list_commands(profile: str) -> list[list[str]]:
     """Состав тех же отборов: план обязан перечислять то, что прогон гоняет."""
     return [
-        ["cargo", "nextest", "list", *selection, "--profile", nextest_profile(profile, selection),
+        ["cargo", "nextest", "list", *targeted(selection), "--profile", nextest_profile(profile, selection),
          "--run-ignored", "all", "--message-format", "json"]
         for selection in rust_selections(profile)
     ]
@@ -182,20 +190,20 @@ def python_commands(
         lane_sizes = [size for size in admitted if size == only_size]
         if not lane_sizes:
             return []
-    # Размер набора — умолчание; манифест поднимает отдельные классы и тесты
-    # до `medium`. Ворота, допускающие не все размеры, получают `--admit`;
+    # Размер набора — умолчание; объявления модулей поднимают отдельные классы
+    # и тесты до `medium` (`scripts/ci/python_sizes.py`). Ворота, допускающие не все размеры, получают `--admit`;
     # `all` без записи результатов повторяет прежнюю команду один в один.
     def tail(size: str) -> list[str]:
         sizing: list[str] = []
         if set(lane_sizes) != set(SIZES):
-            sizing = ["--sizes", str(PYTHON_SIZES), "--admit", ",".join(lane_sizes)]
+            sizing = ["--admit", ",".join(lane_sizes)]
         if only_size:
             sizing += ["--lane", only_size]
         if docs_only and "medium" in ADMITTED[profile]:
             sizing += ["--scope-skip-medium"]
         if results is None:
             return (["--profile", profile] if docs_only else []) + ([] if size == "small" else ["--size", size]) + sizing
-        return ["--results", str(results), "--runner", runner, "--profile", profile, "--size", size, "--sizes", str(PYTHON_SIZES), *sizing]
+        return ["--results", str(results), "--runner", runner, "--profile", profile, "--size", size, *sizing]
 
     return [
         [interpreter, str(RUN_UNITTEST), "-s", name, *extra, *tail(size)]
@@ -313,9 +321,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--runners", default="[]", help="JSON runner matrix for complete inventory verification")
     parser.add_argument("--shadow", type=Path, help="shadow decision; mandatory selection remains full")
     parser.add_argument("--baseline", type=Path, help="previous Rust inventory of the same configuration")
+    parser.add_argument("--lane", help="build one lane of the runner's plan (--phase build)")
     args = parser.parse_args(argv)
     args.docs_only = args.docs_only == "true"
     only_size = args.only_size or None
+    if args.lane is not None and args.phase != "build":
+        parser.error("--lane applies to --phase build only")
 
     if args.phase:
         import ci_rust_lanes
@@ -330,7 +341,8 @@ def main(argv: list[str] | None = None) -> int:
         # Every lane of this runner, in the job that runs it: archives stay in
         # `--prepared`, plans and results go to the report directory.
         if args.phase == "build":
-            return ci_rust_lanes.build_host(REPO_ROOT, args.prepared, args.results, args.profile, args.runner, args.line)
+            return ci_rust_lanes.build_host(REPO_ROOT, args.prepared, args.results, args.profile, args.runner, args.line,
+                                            args.lane)
         if args.phase == "medium":
             return ci_rust_lanes.run_medium(REPO_ROOT, args.prepared / "ordinary", args.results / "ci-rust-medium", args.runner, args.shadow)
         return ci_rust_lanes.run_host(REPO_ROOT, args.prepared, args.results, args.profile, args.runner, args.line, args.shadow)

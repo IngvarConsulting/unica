@@ -190,7 +190,7 @@ fn template_format_filter_reads_the_template_added_in_the_same_request() {
 }
 
 /// Область создаёт только `area.add` на макете, а `mxl.set` пишет только
-/// в существующую область по её адресу (#1354): опечатка в имени области
+/// в существующую область по её адресу: опечатка в имени области
 /// не заводит новую, повтор имени в `area.add` не перекрывает ячейки.
 /// rule: INV.WIRE.OPERATION-CREATION-PARENT
 #[test]
@@ -392,7 +392,7 @@ fn misplaced_form_operations_refuse_instead_of_writing_elsewhere() {
         .expect("an unknown element property refuses");
     assert_eq!(error.path(), Some("ops[0].args.items[0].titel"), "{error}");
     // Путь привязки, которого писатель вида не пишет (`headerDataPath`
-    // у обычной группы), отказывает по контракту вида до записи (#1447).
+    // у обычной группы), отказывает по контракту вида до записи.
     let request = seam_request(
         "main:Document.First.Form.Main",
         "item.add",
@@ -407,7 +407,7 @@ fn misplaced_form_operations_refuse_instead_of_writing_elsewhere() {
         "{error}"
     );
     // Элемент и событие названы адресом: перенаправить событие или
-    // удаление на другой узел аргументом нельзя (#1355).
+    // удаление на другой узел аргументом нельзя.
     for (at, op, args, path) in [
         (
             "main:Document.First.Form.Main.Item.Header.Event.OnChange",
@@ -1015,7 +1015,7 @@ fn locked_vendor_objects_refuse_every_family_before_staging() {
     }
     // Both fixture documents carry uuid 1111…; the marker locks it. The
     // vendor marks it "changes not recommended" (`-1`), as 1C deliveries
-    // do: the lock still holds (#1976).
+    // do: the lock still holds.
     std::fs::write(
             ext.join("ParentConfigurations.bin"),
             "\u{feff}{6,0,1,dddddddd-dddd-4ddd-8ddd-dddddddddddd,0,11111111-1111-4111-8111-111111111111,\"1.0\",\"Vendor\",\"VendorConf\",3,1,0,44444444-4444-4444-8444-444444444444,44444444-4444-4444-8444-444444444444,0,-1,11111111-1111-4111-8111-111111111111,11111111-1111-4111-8111-111111111111}",

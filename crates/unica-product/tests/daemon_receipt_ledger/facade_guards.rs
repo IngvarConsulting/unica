@@ -8,11 +8,11 @@ use proc_macro2::{TokenStream, TokenTree};
 use std::collections::{BTreeMap, BTreeSet};
 use syn::parse::Parser;
 use syn::visit::Visit;
-use unica_coder::receipt_ledger_test_support::*;
+use unica_daemon::receipt_ledger_test_support::*;
 
 const FACADE_PRODUCTION_SOURCES: &[(&str, &str)] = &[(
     "receipt_ledger_test_support.rs",
-    include_str!("../../../unica-coder/src/receipt_ledger_test_support.rs"),
+    include_str!("../../../unica-daemon/src/receipt_ledger_test_support.rs"),
 )];
 
 // Бегунок сценариев целиком: корень и все модули, которые он подключает из
@@ -22,22 +22,22 @@ const FACADE_PRODUCTION_SOURCES: &[(&str, &str)] = &[(
 const OWNER_HELPER_PRODUCTION_SOURCES: &[(&str, &str)] = &[
     (
         "../tests/support/receipt_scenario.rs",
-        include_str!("../../../unica-coder/tests/support/receipt_scenario.rs"),
+        include_str!("../../../unica-daemon/tests/support/receipt_scenario.rs"),
     ),
     (
         "../tests/support/receipt_scenario/dispatch.rs",
-        include_str!("../../../unica-coder/tests/support/receipt_scenario/dispatch.rs"),
+        include_str!("../../../unica-daemon/tests/support/receipt_scenario/dispatch.rs"),
     ),
     (
         "../tests/support/receipt_scenario/tests.rs",
-        include_str!("../../../unica-coder/tests/support/receipt_scenario/tests.rs"),
+        include_str!("../../../unica-daemon/tests/support/receipt_scenario/tests.rs"),
     ),
 ];
 
 /// Every `.rs` file of the scenario runner on disk, as the closed list names it.
 fn scenario_runner_files_on_disk() -> BTreeSet<String> {
     let support =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../unica-coder/tests/support");
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../unica-daemon/tests/support");
     let mut found = BTreeSet::from(["../tests/support/receipt_scenario.rs".to_owned()]);
     let mut pending = vec![support.join("receipt_scenario")];
     while let Some(directory) = pending.pop() {
@@ -756,7 +756,7 @@ fn facade_authority_guard_scans_every_named_production_source() {
             r#"
                 use unica_execution::receipt_ledger::ReceiptLedgerPort;
                 use unica_execution::receipt_ledger_actor::ReceiptLedgerActor;
-                use unica_daemon::identity::DaemonStateDirectory;
+                use unica_daemon_protocol::identity::DaemonStateDirectory;
                 use unica_execution::receipt_store::ReceiptLedgerStore;
 
                 fn bypass_the_owner() {}
@@ -1059,7 +1059,7 @@ fn facade_authority_guard_ignores_exact_cfg_test_associated_items() {
 /// rule: INV.APP.RECEIPT-TEST-SUPPORT-AUTHORITY
 #[test]
 fn facade_source_keeps_the_exact_abi_and_has_no_production_authority() {
-    let source = include_str!("../../../unica-coder/src/receipt_ledger_test_support.rs");
+    let source = include_str!("../../../unica-daemon/src/receipt_ledger_test_support.rs");
     let syntax = syn::parse_file(source).expect("facade source parses");
     let public_functions = syntax
         .items

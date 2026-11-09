@@ -29,4 +29,6 @@ unica-process = { path = "../unica-process", features = ["test-support"] }
 tempfile.workspace = true
 
 [package.metadata.unica]
-read-outside-baseline = 1
+component = "integration-tests"
+file-io = "owned"
+inputs = ["crates/unica-source-designer/src/project_sources.rs"]

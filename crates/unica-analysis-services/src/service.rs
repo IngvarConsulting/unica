@@ -75,16 +75,130 @@ use uuid::Uuid;
 
 /// v5: a record names the build that serves it, not the package version.
 pub const SERVICE_SCHEMA_VERSION: u32 = 5;
+// resource-limit: service.idle
+// class: deadline
+// unit: s
+// scope: process
+// value: 7200
+// resource: Простой workspace-сервиса по умолчанию, после которого он завершает работу.
+// status: unproven
+// origin: коммит d4df0e67a (Release Unica 0.4.4 workspace services)
+// problem: неизвестно
+// on-reach: сервис без запросов завершается и удаляет свою запись; значение меняется через UNICA_WORKSPACE_SERVICE_IDLE_SECS или --idle-secs
+// decision: закреплено правилом INV.RUNTIME.SERVICE-LIFETIME
+// decision-date: 2026-10-06
+// decision-source: arch/rules/runtime/service-lifetime.md
 pub const DEFAULT_IDLE_SECS: u64 = 7200;
+// resource-limit: service.connect-timeout
+// class: deadline
+// unit: ms
+// scope: connection
+// value: 5000
+// resource: Срок подключения к внутреннему workspace-сервису и ожидания его готовности для рабочего запроса.
+// status: unproven
+// origin: коммит d4df0e67a (Release Unica 0.4.4 workspace services)
+// problem: неизвестно
+// on-reach: подключение или ожидание записи сервиса прерывается с ошибкой; срок не больше остатка срока вызова
 pub const SERVICE_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+// resource-limit: service.control-connect-timeout
+// class: deadline
+// unit: ms
+// scope: connection
+// value: 500
+// resource: Срок подключения к workspace-сервису для управляющего запроса (отмена, остановка).
+// status: unproven
+// origin: коммит 40677b6d4 (cancel workspace service operations)
+// problem: неизвестно
+// on-reach: «workspace service control request failed» с ошибкой подключения
 pub const SERVICE_CONTROL_CONNECT_TIMEOUT: Duration = Duration::from_millis(500);
+// resource-limit: service.request-timeout
+// class: deadline
+// unit: ms
+// scope: request
+// value: 120000
+// resource: Внутреннее умолчание срока рабочего запроса к workspace-сервису (анализатор BSL) без явного срока вызывающего.
+// status: unproven
+// origin: коммит d4df0e67a (Release Unica 0.4.4 workspace services)
+// problem: неизвестно
+// on-reach: запрос прерывается ошибкой срока; больший срок вызывающего не сокращается
+// decision: закреплено правилом
+// decision-date: 2026-10-21
+// decision-source: arch/rules/runtime/service-caller-budget.md
 pub const SERVICE_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
+// resource-limit: service.shutdown-grace
+// class: deadline
+// unit: ms
+// scope: process
+// value: 2000
+// resource: Срок дождаться завершения обработчиков соединений при остановке workspace-сервиса.
+// status: unproven
+// origin: коммит 5a89e7161 (feat: keep workspace control path responsive)
+// problem: неизвестно
+// on-reach: незавершённые обработчики больше не ждут: сервис удаляет свою запись и выходит
 pub const SERVICE_SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
+// resource-limit: service.response-line-bytes
+// class: result
+// unit: bytes
+// scope: line
+// value: 8388608
+// resource: Размер одной строки JSONL-ответа внутреннего workspace-сервиса клиенту.
+// status: unproven
+// origin: коммит 8b71938a7 (bound workspace service protocol io)
+// problem: ответ сервиса по всей конфигурации может расти с корпусом
+// on-reach: отказ «invalid workspace service response: response line exceeds 8388608 bytes»
+// issue: #1119
+// review: #1119 PR9
 pub const SERVICE_RESPONSE_LINE_LIMIT: usize = 8 * 1024 * 1024;
+// resource-limit: service.request-line-bytes
+// class: format
+// unit: bytes
+// scope: line
+// value: 8388608
+// resource: Размер одной строки запроса к внутреннему workspace-сервису.
+// status: unproven
+// origin: коммит df4e74044 (bound service protocol concurrency)
+// problem: незавершённый запрос не удерживает сервис бесконечно
+// on-reach: ответ-ошибка «request line exceeds 8388608 bytes», следующая строка разбирается отдельно
+// decision: закреплено правилом
+// decision-date: 2026-10-21
+// decision-source: arch/rules/runtime/service-request-framing.md
 pub const SERVICE_REQUEST_LINE_LIMIT: usize = 8 * 1024 * 1024;
+// resource-limit: service.request-header-timeout
+// class: deadline
+// unit: ms
+// scope: connection
+// value: 5000
+// resource: Срок чтения строки запроса workspace-сервисом от принятия соединения.
+// status: unproven
+// origin: коммит df4e74044 (bound service protocol concurrency)
+// problem: незавершённый запрос не удерживает сервис бесконечно
+// on-reach: соединение закрывается по сроку, другие соединения не затрагиваются
+// decision: закреплено правилом
+// decision-date: 2026-10-21
+// decision-source: arch/rules/runtime/service-request-framing.md
 pub const SERVICE_REQUEST_HEADER_TIMEOUT: Duration = Duration::from_secs(5);
+// resource-limit: service.session-teardown-grace
+// class: deadline
+// unit: ms
+// scope: process
+// value: 3000
+// resource: Срок остановки сессий поставщиков при выходе workspace-сервиса.
+// status: unproven
+// origin: #231
+// problem: неизвестно
+// on-reach: выход завершается ошибкой «workspace provider sessions or maintenance tasks did not stop within 3000 ms»
 pub const SESSION_TEARDOWN_GRACE: Duration = Duration::from_secs(3);
 pub const SERVICE_SPAWN_CLEANUP_WAIT: Duration = Duration::from_secs(2);
+// resource-limit: service.startup-stderr-tail-bytes
+// class: retention
+// unit: bytes
+// scope: process
+// value: 16384
+// resource: Хвост журнала stderr workspace-сервиса, включаемый в сообщение о его падении при старте.
+// status: unproven
+// origin: коммит 67a4e74b1 (report workspace service startup exits)
+// problem: неизвестно
+// on-reach: тихо: в сообщение попадают только последние 16 КиБ stderr
 pub const SERVICE_STARTUP_STDERR_TAIL_LIMIT: u64 = 16 * 1024;
 pub const SERVICE_RECORD_LOCK_FILE: &str = "service.record.lock";
 pub const WORKSPACE_SERVICE_PROVIDER_PROFILE: &str = "bsl";
