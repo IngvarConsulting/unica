@@ -446,9 +446,13 @@ fn root_comment_edits_preserve_a_foreign_default_namespace_in_either_declaration
     for foreign_first in [false, true] {
         let fixture = Fixture::blank();
         let runtime = runtime();
-        publish(&runtime, &fixture, json!({"at":"main:Configuration","ops":[
-            {"op":"object.create","args":{"values":{"kind":"Catalog","name":"A"}}}
-        ]}));
+        publish(
+            &runtime,
+            &fixture,
+            json!({"at":"main:Configuration","ops":[
+                {"op":"object.create","args":{"values":{"kind":"Catalog","name":"A"}}}
+            ]}),
+        );
         let path = fixture.source.join("Catalogs/A.xml");
         let original = std::fs::read_to_string(&path).unwrap();
         let declaration = format!("xmlns:md=\"{MD}\"");
