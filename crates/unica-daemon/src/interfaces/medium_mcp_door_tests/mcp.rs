@@ -834,7 +834,6 @@ struct ManualFlushGate {
     armed: AtomicBool,
     entered: AtomicBool,
     released: AtomicBool,
-    flush_completed: AtomicBool,
     observed: tokio::sync::Notify,
     waiter: Mutex<Option<std::task::Waker>>,
     partial_write: AtomicBool,
@@ -906,7 +905,6 @@ impl ManualFlushGate {
 struct ManualFlushWriter {
     writer: tokio::io::WriteHalf<tokio::io::DuplexStream>,
     gate: Arc<ManualFlushGate>,
-    initialize_flush_pause: Option<Arc<ManualFlushGate>>,
 }
 
 impl tokio::io::AsyncWrite for ManualFlushWriter {
@@ -960,15 +958,6 @@ impl tokio::io::AsyncWrite for ManualFlushWriter {
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<std::io::Result<()>> {
-        let initialize_frame_written = self.initialize_flush_pause.is_some()
-            && self.gate.written.lock().unwrap().contains(&b'\n');
-        if initialize_frame_written {
-            if let Some(pause) = &self.initialize_flush_pause {
-                if !pause.flush_completed.load(Ordering::Acquire) && pause.poll_held(cx) {
-                    return std::task::Poll::Pending;
-                }
-            }
-        }
         if self.gate.poll_held(cx) {
             return std::task::Poll::Pending;
         }
@@ -976,11 +965,6 @@ impl tokio::io::AsyncWrite for ManualFlushWriter {
         if matches!(&result, std::task::Poll::Ready(Ok(()))) {
             self.gate.unflushed.store(false, Ordering::Release);
             self.gate.observed.notify_waiters();
-        }
-        if initialize_frame_written && matches!(&result, std::task::Poll::Ready(Ok(()))) {
-            if let Some(pause) = &self.initialize_flush_pause {
-                pause.flush_completed.store(true, Ordering::Release);
-            }
         }
         result
     }
@@ -1142,25 +1126,13 @@ fn spawn_manual_flush_server(
     server: UnicaServer,
     gate: Arc<ManualFlushGate>,
 ) -> (McpClient, Arc<InFlightRegistry>) {
-    spawn_manual_flush_server_with_initialize_pause(server, gate, None)
-}
-
-fn spawn_manual_flush_server_with_initialize_pause(
-    server: UnicaServer,
-    gate: Arc<ManualFlushGate>,
-    initialize_flush_pause: Option<Arc<ManualFlushGate>>,
-) -> (McpClient, Arc<InFlightRegistry>) {
     let (client_io, server_io) = tokio::io::duplex(4 * 1024 * 1024);
     let in_flight = server.in_flight_registry();
     let server = tokio::spawn(async move {
         let (read, writer) = tokio::io::split(server_io);
         let transport = rmcp::transport::async_rw::AsyncRwTransport::new_server(
             read,
-            ManualFlushWriter {
-                writer,
-                gate,
-                initialize_flush_pause,
-            },
+            ManualFlushWriter { writer, gate },
         );
         let transport = DiscoveryProbeTransport::new(transport, &server);
         match ObservedServer(server).serve(transport).await {
@@ -2341,47 +2313,17 @@ async fn canonical_manual_cancellation_reused_id_keeps_old_control_and_targets_n
     let anchor = daemon.owner();
     let (server, keys) = manual_daemon_server(daemon.owner(), daemon.workspace_hint.clone());
     let calls = server.manual_calls_for_test();
-    let initialize_flush_pause = Arc::new(ManualFlushGate::default());
-    initialize_flush_pause.arm().await;
-    let initialize_flush_release = ManualFlushRelease(initialize_flush_pause.clone());
-    let (mut client, in_flight) = spawn_manual_flush_server_with_initialize_pause(
-        server,
-        flush.clone(),
-        Some(initialize_flush_pause.clone()),
-    );
-    client.send(json!({"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2026-07-28","capabilities":{},"clientInfo":{"name":"unica-tests","version":"1"}}})).await;
-    let initialized = client.receive().await;
-    assert_eq!(
-        initialized["result"]["protocolVersion"], "2026-07-28",
-        "{initialized}"
-    );
-    assert_eq!(initialized["id"], 0, "{initialized}");
-    assert!(
-        initialize_flush_pause.wait().await,
-        "causal fixture must pause the complete initialize frame before its flush"
-    );
-    client
-        .send(json!({"jsonrpc":"2.0","method":"notifications/initialized"}))
-        .await;
+    let (mut client, in_flight) = spawn_manual_flush_server(server, flush.clone());
+    // Direct 2026-07-28 requests: each carries its own protocol metadata.
     client.send(json!({"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"unica.run","arguments":{"op":"test.long-work","args":{"label":"reuse-original"}},"_meta":modern_meta()}})).await;
-    drop(initialize_flush_release);
     let original_entered = service.wait("reuse-original", false).await;
     let receipt_count = keys.lock().unwrap().len();
     assert!(
-            original_entered,
-            "initial execute not observed: init_pause_entered={}, init_pause_released={}, initialize_flush_completed={}, response_flush_entered={}, receipt_keys={}, executions={}",
-            initialize_flush_pause.entered.load(Ordering::Acquire),
-            initialize_flush_pause.released.load(Ordering::Acquire),
-            initialize_flush_pause.flush_completed.load(Ordering::Acquire),
-            flush.entered.load(Ordering::Acquire),
-            receipt_count,
-            service.executions("reuse-original")
-        );
-    assert!(
-        initialize_flush_pause
-            .flush_completed
-            .load(Ordering::Acquire),
-        "original execute must follow the completed initialize flush"
+        original_entered,
+        "initial execute not observed: response_flush_entered={}, receipt_keys={}, executions={}",
+        flush.entered.load(Ordering::Acquire),
+        receipt_count,
+        service.executions("reuse-original")
     );
     flush.arm().await;
     service.release("reuse-original");
@@ -2688,12 +2630,7 @@ async fn canonical_manual_cancellation_native_reuse_does_not_inherit_old_suppres
     };
     let (server, _) = manual_daemon_server(daemon.owner(), daemon.workspace_hint.clone());
     let (mut client, _) = spawn_manual_flush_server(server, flush.clone());
-    client.send(json!({"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2026-07-28","capabilities":{},"clientInfo":{"name":"unica-tests","version":"1"}}})).await;
-    let initialization = client.receive().await;
-    assert_eq!(initialization["result"]["protocolVersion"], "2026-07-28");
-    client
-        .send(json!({"jsonrpc":"2.0","method":"notifications/initialized"}))
-        .await;
+    // Direct 2026-07-28 requests: each carries its own protocol metadata.
     flush.arm().await;
     client.send(json!({"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"unica.run","arguments":{"op":"test.long-work","args":{"label":"native-reuse-original"}},"_meta":modern_meta()}})).await;
     assert!(service.wait("native-reuse-original", false).await);

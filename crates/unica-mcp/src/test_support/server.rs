@@ -392,8 +392,9 @@ pub async fn surface_profiles_case() {
     );
     legacy.shutdown().await;
 
-    // A legitimately negotiated modern session selects from its own
-    // capabilities and never from another client's previous list.
+    // 2026-07-28 has no initialize handshake: offering it there with the
+    // Tasks capability yields a 2025-11-25 session on the compatibility
+    // profile. Native tasks belong to direct 2026-07-28 requests below.
     let (mut modern_native, _) = spawn_unica_server(canonical_profile_server());
     modern_native
         .send(json!({
@@ -405,8 +406,11 @@ pub async fn surface_profiles_case() {
             }
         }))
         .await;
-    modern_native.receive().await;
-    assert_v13_profile_names(&listed_tool_names(&mut modern_native, 1, None).await, true);
+    assert_eq!(
+        modern_native.receive().await["result"]["protocolVersion"],
+        "2025-11-25"
+    );
+    assert_v13_profile_names(&listed_tool_names(&mut modern_native, 1, None).await, false);
     modern_native.shutdown().await;
 
     let (mut modern_compat, _) = spawn_unica_server(canonical_profile_server());
@@ -420,7 +424,10 @@ pub async fn surface_profiles_case() {
             }
         }))
         .await;
-    modern_compat.receive().await;
+    assert_eq!(
+        modern_compat.receive().await["result"]["protocolVersion"],
+        "2025-11-25"
+    );
     assert_v13_profile_names(&listed_tool_names(&mut modern_compat, 1, None).await, false);
     modern_compat.shutdown().await;
 

@@ -44,8 +44,8 @@ mod prelude {
         InitializeRequestParams, InitializeResult, ListPromptsResult, ListResourceTemplatesResult,
         ListResourcesResult, ListToolsResult, NotificationMetaObject, PaginatedRequestParams,
         ProgressNotificationParam, ProgressToken, ProtocolVersion, RequestMetaObject,
-        ServerCapabilities, ServerInfo, ServerJsonRpcMessage, ServerResult, Tool, UpdateTaskParams,
-        TASKS_EXTENSION_ID,
+        ServerCapabilities, ServerConfig, ServerJsonRpcMessage, ServerResult, Tool,
+        UpdateTaskParams, TASKS_EXTENSION_ID,
     };
     pub(super) use unica_mcp::test_support::rmcp::service::{
         NotificationContext, RequestContext, ServerInitializeError,
