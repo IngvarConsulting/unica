@@ -63,6 +63,74 @@ fn a_killed_lsp_client_leaves_the_same_daemon_serving_mcp_and_a_new_editor() {
     mcp.close();
 }
 
+/// rule: INV.LSP.DOCUMENT-ADDRESS
+#[test]
+fn unica_lsp_opens_a_module_by_the_address_of_its_body() {
+    let workspace = catalog_workspace();
+    let module = workspace
+        .path()
+        .join("src/Catalogs/Items/Ext/ObjectModule.bsl");
+    std::fs::create_dir_all(module.parent().unwrap()).unwrap();
+    std::fs::write(&module, "Procedure Disk() EndProcedure\n").unwrap();
+    let state = workspace.path().join(".unica-test-state");
+    std::fs::create_dir_all(&state).unwrap();
+    let _teardown = Teardown(state.clone());
+    let mut lsp = Frontend::start(workspace.path(), &state, &["lsp"]);
+
+    let opened = lsp.lsp_request(1, "initialize", initialize_params(workspace.path()));
+    assert_eq!(
+        opened["result"]["capabilities"]["workspace"]["textDocumentContent"]["schemes"],
+        json!(["unica"]),
+        "{opened}"
+    );
+    lsp.lsp_send(json!({"jsonrpc": "2.0", "method": "initialized", "params": {}}));
+    let uri = "unica://work/main/Catalog.Items.Module.Object.Body";
+    let content = |frontend: &mut Frontend, id| {
+        frontend.lsp_request(id, "workspace/textDocumentContent", json!({"uri": uri}))
+    };
+
+    let disk = content(&mut lsp, 2);
+    assert_eq!(
+        disk["result"]["text"], "Procedure Disk() EndProcedure\n",
+        "{disk}"
+    );
+
+    lsp.lsp_send(json!({
+        "jsonrpc": "2.0",
+        "method": "textDocument/didOpen",
+        "params": {"textDocument": {
+            "uri": uri, "languageId": "bsl", "version": 1,
+            "text": "Procedure Buffer() EndProcedure\n",
+        }},
+    }));
+    let buffer = content(&mut lsp, 3);
+    assert_eq!(
+        buffer["result"]["text"], "Procedure Buffer() EndProcedure\n",
+        "{buffer}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&module).unwrap(),
+        "Procedure Disk() EndProcedure\n",
+        "an open buffer is never written to the source"
+    );
+
+    // A file path names no document, even of a module of this workspace.
+    let file = url::Url::from_file_path(std::fs::canonicalize(&module).unwrap()).unwrap();
+    let refused = lsp.lsp_request(
+        4,
+        "workspace/textDocumentContent",
+        json!({"uri": file.as_str()}),
+    );
+    assert_eq!(
+        refused["error"]["message"], "unica: lsp_document_unknown",
+        "{refused}"
+    );
+
+    lsp.lsp_request(5, "shutdown", Value::Null);
+    lsp.lsp_send(json!({"jsonrpc": "2.0", "method": "exit"}));
+    assert_eq!(lsp.wait(), Some(0));
+}
+
 #[test]
 fn an_unknown_subcommand_fails_at_once_instead_of_starting_mcp() {
     let workspace = catalog_workspace();
@@ -267,7 +335,7 @@ fn initialize_params(workspace: &Path) -> Value {
         "processId": null,
         "capabilities": {},
         "workspaceFolders": [{
-            "uri": format!("file://{}", std::fs::canonicalize(workspace).unwrap().display()),
+            "uri": url::Url::from_file_path(std::fs::canonicalize(workspace).unwrap()).unwrap().as_str(),
             "name": "work",
         }],
     })

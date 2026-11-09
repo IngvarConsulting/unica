@@ -337,7 +337,7 @@ class ReferenceFormatProfileTests(unittest.TestCase):
         # `current-config` разрешается из объектов самой конфигурации, и для
         # отдельного пакета `ibcmd` отвергает модель XDTO с
         # `Undefined '{...current-config}AnyRef'`; ни один из 394 пакетов
-        # эталонной выгрузки его не импортирует (ищью #358).
+        # эталонной выгрузки его не импортирует.
         self.assertIn("http://v8.1c.ru/8.1/data/core", imports)
         self.assertNotIn(
             "http://v8.1c.ru/8.1/data/enterprise/current-config", imports

@@ -1,0 +1,29 @@
+{
+  "area": "СКД",
+  "task": "Добавить вычисляемое поле",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных",
+        "ops": [
+          {
+            "op": "calculatedField.add",
+            "args": {
+              "items": [
+                {
+                  "name": "РазмерКБ",
+                  "expression": "РазмерДанных / 1024"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S190"
+}

@@ -1,0 +1,33 @@
+# Исследовательские тесты: воспроизведения нерешённых issue (`repro`) и замеры
+# платформы 1С, скорости и окружения (`platform`). Запускаются только вручную:
+# `python3.12 scripts/dev/run-research.py --profile research --issue <номер>`
+# или `--profile platform`.
+#
+# Крейт вне рабочего пространства (`exclude` в корневом Cargo.toml). Каждая
+# команда конвейера собирает `--workspace`, и член пространства попал бы в
+# сборку, clippy и опись; его `test-support` вдобавок включился бы у крейтов
+# продукта в обычных прогонах. От этого крейта не зависит никто, а он видит
+# внутренности крейтов продукта только через их признак `test-support`.
+# Свой корень пространства: Cargo не ищет пространство выше по дереву.
+[workspace]
+
+[package]
+name = "unica-research"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+test = false
+doctest = false
+
+[[test]]
+name = "repro"
+path = "repro/main.rs"
+
+[[test]]
+name = "platform"
+path = "platform/main.rs"
+
+[dependencies]

@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
-use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+use unica_address::source_target::MetadataAddress;
 use unica_metadata::MetadataKind;
 use unica_metadata_designer::usage_scan::{
     scan_local_enrichment as scan_local_enrichment_by_address, LocalEnrichment, LocalSection,
@@ -37,11 +37,8 @@ fn scan_local_enrichment(
     limit: usize,
     cancellation: &CancellationToken,
 ) -> LocalEnrichment {
-    let metadata_path = MetadataAddress::parse(
-        PLATFORM_XML_8_3_27_FORMAT_2_20,
-        &format!("{}.{name}", kind.as_str()),
-    )
-    .unwrap();
+    let metadata_path =
+        MetadataAddress::parse_logical(&format!("{}.{name}", kind.as_str())).unwrap();
     scan_local_enrichment_by_address(
         &unica_workspace::discovery::ProjectDiscoveryReader::new(source_root),
         &super::predefined::PredefinedResourceReadBinding,
@@ -348,8 +345,7 @@ fn predefined_items_are_validated_against_the_owner_code_type() {
         "Catalogs/Goods/Ext/Predefined.xml",
         r#"<PredefinedData xmlns="http://v8.1c.ru/8.3/xcf/predef" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="CatalogPredefinedItems" version="2.20"><Item id="a7d2e6fc-3824-4b56-b4be-ae6be4944c0e"><Name>Main</Name><Code>ABC</Code></Item></PredefinedData>"#,
     );
-    let metadata_path =
-        MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Catalog.Goods").unwrap();
+    let metadata_path = MetadataAddress::parse_logical("Catalog.Goods").unwrap();
     let found = scan_local_enrichment_by_address(
         &unica_workspace::discovery::ProjectDiscoveryReader::new(&root),
         &super::predefined::PredefinedResourceReadBinding,
@@ -416,31 +412,7 @@ fn an_unrequested_section_is_absent_rather_than_empty() {
     fs::remove_dir_all(root).unwrap();
 }
 
-/// #1119: a section is not cut at a fixed count of descriptors; every role in a
-/// group larger than the former 8192-entry cap is read.
-#[test]
-fn roles_past_the_former_section_cap_are_all_found() {
-    let root = temp_root("roles-many");
-    let count = 8_200;
-    for index in 0..count {
-        role(&root, &format!("Role{index:05}"), &["Catalog.Goods"]);
-    }
-
-    let found = scan_local_enrichment(
-        &root,
-        MetadataKind::Catalog,
-        "Goods",
-        &[LocalSection::Roles],
-        50,
-        &CancellationToken::new(),
-    );
-
-    assert_eq!(found.usage.roles.as_ref().unwrap().len(), count);
-    assert!(found.diagnostics.is_empty(), "{:?}", found.diagnostics);
-    fs::remove_dir_all(root).unwrap();
-}
-
-/// #1119: a descriptor larger than the former 8 MiB read limit is read whole
+/// A descriptor larger than the former 8 MiB read limit is read whole
 /// instead of silently dropped from the section.
 #[test]
 fn a_functional_option_larger_than_eight_mebibytes_is_still_read() {
@@ -476,7 +448,7 @@ fn a_functional_option_larger_than_eight_mebibytes_is_still_read() {
     fs::remove_dir_all(root).unwrap();
 }
 
-/// #1119: a descriptor the scan cannot read or parse is named as an error of
+/// A descriptor the scan cannot read or parse is named as an error of
 /// its section; the rest of the list is still returned.
 #[test]
 fn an_unreadable_descriptor_is_reported_as_a_gap_of_its_section() {

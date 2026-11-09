@@ -13,7 +13,7 @@ mod tests {
     use std::io;
     use std::path::Path;
     use std::rc::Rc;
-    use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+    use unica_address::source_target::MetadataAddress;
     use unica_workspace::read::{with_secure_tree_test_hook, SecureTreePhase};
     use unica_workspace::test_support::{
         create_directory_link_fixture_for_test, create_file_link_fixture_for_test,
@@ -182,11 +182,8 @@ mod tests {
         let source_root = root.path().canonicalize().unwrap();
 
         let topology = capture_registered_subsystem_topology(&source_root, checkpoint).unwrap();
-        let metadata_address = MetadataAddress::parse(
-            PLATFORM_XML_8_3_27_FORMAT_2_20,
-            "InformationRegister.Ledger",
-        )
-        .unwrap();
+        let metadata_address =
+            MetadataAddress::parse_logical("InformationRegister.Ledger").unwrap();
         assert_eq!(
             topology.roots[0].content,
             vec![
@@ -209,11 +206,7 @@ mod tests {
         );
 
         let different_target = MetadataObjectIdentity {
-            address: MetadataAddress::parse(
-                PLATFORM_XML_8_3_27_FORMAT_2_20,
-                "InformationRegister.Other",
-            )
-            .unwrap(),
+            address: MetadataAddress::parse_logical("InformationRegister.Other").unwrap(),
             uuid: Uuid::parse_str("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee").unwrap(),
         };
         assert!(topology
@@ -301,8 +294,7 @@ mod tests {
         );
         let source_root = root.path().canonicalize().unwrap();
         let topology = capture_registered_subsystem_topology(&source_root, checkpoint).unwrap();
-        let common =
-            MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "CommonModule.Common").unwrap();
+        let common = MetadataAddress::parse_logical("CommonModule.Common").unwrap();
 
         let memberships = topology
             .memberships_of(&common, None)
@@ -509,32 +501,6 @@ mod tests {
             .expect("an unregistered directory symlink branch must not be classified");
 
         assert_eq!(actual, expected);
-    }
-
-    /// #1119: a registered descriptor past the former 64 MiB budget is read;
-    /// its size is no reason to refuse the topology.
-    /// rule: INV.SOURCE.SUBSYSTEM-REGISTRATION
-    #[test]
-    fn registered_descriptor_past_the_former_byte_budget_is_read() {
-        let root = tempfile::tempdir().unwrap();
-        write_configuration(root.path(), &["Registered"]);
-        write_subsystem(root.path(), &[], "Registered", "true", &[], &[]);
-        let source_root = root.path().canonicalize().unwrap();
-        let expected = capture_registered_subsystem_topology(&source_root, checkpoint).unwrap();
-        let descriptor = root.path().join("Subsystems/Registered.xml");
-        let text = fs::read_to_string(&descriptor).unwrap().replace(
-            "</MetaDataObject>",
-            &format!("<!--{}--></MetaDataObject>", "x".repeat(65 * 1024 * 1024)),
-        );
-        fs::write(descriptor, text).unwrap();
-
-        let actual = capture_registered_subsystem_topology(&source_root, checkpoint)
-            .expect("a large registered descriptor is read whole");
-
-        // Compare the structure only: the dependency documents now carry the
-        // large descriptor and must not be printed on failure.
-        assert!(actual.roots == expected.roots);
-        assert!(actual.dependency_paths == expected.dependency_paths);
     }
 
     #[test]

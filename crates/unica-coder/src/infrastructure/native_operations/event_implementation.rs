@@ -1,4 +1,4 @@
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use crate::infrastructure::event_sources::PropertyEventSource;
 use crate::infrastructure::event_sources::{
     resolve_event_source, resolve_event_source_for_form_evidence, LogicalEventSource,
@@ -264,7 +264,7 @@ fn projection_error(error: EventProjectionError) -> ApplyPlanError {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) fn plan_event_implement_batch_owned_for_test(
     mut staged: unica_workspace::apply::ApplyStagedState,
     source_set: &str,

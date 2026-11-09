@@ -6,7 +6,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use unica_address::address::{NodeKind, QualifiedAddress};
-use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+use unica_address::source_target::MetadataAddress;
 use unica_metadata_designer::support::{
     parse_support_state_compat_bytes, support_root_uuid_from_bytes,
 };
@@ -303,17 +303,14 @@ fn staged_xdto_package(
         _ => None,
     }
     .ok_or_else(|| bad_xdto_argument(at_path, "at does not identify the required XDTO node"))?;
-    let metadata = MetadataAddress::parse(
-        PLATFORM_XML_8_3_27_FORMAT_2_20,
-        &format!("XDTOPackage.{package_name}"),
-    )
-    .map_err(|_| {
-        ApplyPlanError::new(
-            ApplyPlanErrorKind::Postcondition,
-            "logical XDTO address did not map to a metadata identity",
-        )
-        .at_path(at_path)
-    })?;
+    let metadata =
+        MetadataAddress::parse_logical(&format!("XDTOPackage.{package_name}")).map_err(|_| {
+            ApplyPlanError::new(
+                ApplyPlanErrorKind::Postcondition,
+                "logical XDTO address did not map to a metadata identity",
+            )
+            .at_path(at_path)
+        })?;
     let descriptor_relative =
         metadata_descriptor_relative(&metadata, source_kind).map_err(|_| {
             ApplyPlanError::new(

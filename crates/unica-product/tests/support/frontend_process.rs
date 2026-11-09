@@ -192,7 +192,7 @@ impl StdioFrontend {
     }
 }
 pub fn endpoint_path(state_root: &Path, identity: &str) -> PathBuf {
-    unica_coder::interfaces::daemon::endpoint_path_for_protocol_test(state_root, identity)
+    unica_daemon::interfaces::daemon::endpoint_path_for_protocol_test(state_root, identity)
 }
 
 pub fn read_endpoint(state_root: &Path, identity: &str) -> Value {

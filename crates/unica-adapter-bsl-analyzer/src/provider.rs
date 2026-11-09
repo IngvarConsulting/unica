@@ -26,8 +26,30 @@ const BSL_ANALYZER_CAPABILITIES: &[ProviderCapability] = &[
 /// поднимая движок.
 /// Бюджет вывода `search_code`. Страницы ответа нарезает сама Unica, поэтому
 /// анализатор не должен резать окно раньше своего предела в 50 попаданий.
+// resource-limit: bsl-analyzer.search-output-budget-tokens
+// class: step
+// unit: count
+// scope: request
+// value: 50000
+// resource: Бюджет вывода одного запроса search_code к анализатору
+// status: unproven
+// origin: умолчание анализатора 6000 токенов срезало окно до 9–10 попаданий на настоящей конфигурации
+// problem: без явного бюджета анализатор обрезал результат раньше своего предела в 50 попаданий
+// on-reach: секция сообщает limitReached и нижнюю оценку, причина остаётся в диагностике
+// review: 50 попаданий на Бухгалтерии для Казахстана заняли 25 КБ текста; предел проверен на одной конфигурации
 const BSL_ANALYZER_SEARCH_OUTPUT_BUDGET: u64 = 50_000;
 /// Предел длины причины из stderr анализатора в символах.
+// resource-limit: bsl-analyzer.stderr-reason-chars
+// class: step
+// unit: chars
+// scope: request
+// value: 300
+// resource: Длина причины из stderr анализатора в ответе поиска
+// status: unproven
+// origin: журнал сборки индекса занимал страницу ответа и вытеснял попадания
+// problem: журнал процесса растёт вместе с процессом, а в ответ нужна короткая причина
+// on-reach: строка обрезается; журнал в ответ не попадает
+// review: предел одной строки причины; журнал отсекается независимо от него
 const BSL_ANALYZER_STDERR_REASON_MAX_CHARS: usize = 300;
 
 pub trait BslToolClient: Send + Sync {
@@ -517,6 +539,16 @@ pub fn parse_bsl_analyzer_search(
     bindings: SearchSourceBindings,
 ) -> ProviderSearchSection {
     // The pinned bsl-analyzer clamps search_code's requested limit to 50.
+    // resource-limit: bsl-analyzer.search-limit
+    // class: step
+    // unit: count
+    // scope: request
+    // value: 50
+    // resource: Число результатов search_code, которое отдаёт закреплённая версия bsl-analyzer за запрос.
+    // status: external
+    // origin: #1041; закреплённый bsl-analyzer сам ограничивает limit search_code значением 50
+    // problem: скрытый предел апстрима должен быть виден, а не выдан за полный ответ
+    // on-reach: запрошенный limit урезается до 50, превышение сообщается как предел поставщика
     const BSL_ANALYZER_SEARCH_MAX_LIMIT: usize = 50;
     let effective_limit = requested_limit.min(BSL_ANALYZER_SEARCH_MAX_LIMIT);
     let trimmed = text.trim();

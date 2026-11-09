@@ -2,12 +2,22 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
-use unica_runner::attempt::RuntimeWorkspaceObservation;
+use unica_execution::runner::attempt::RuntimeWorkspaceObservation;
 use unica_source_contract::workspace::WorkspaceContext;
 use unica_workspace::paths::normalize_path_identity;
 use unica_workspace::paths::path_lock_identity;
 use unica_workspace::read::read_root_relative_regular_file;
 
+// resource-limit: v8-runner.runtime-config-bytes
+// class: format
+// unit: bytes
+// scope: file
+// value: 67108864
+// resource: Размер файла настроек проекта v8project.yaml и v8project.local.yaml, читаемого перед сборкой.
+// status: unproven
+// origin: #483
+// problem: неизвестно
+// on-reach: отказ «runtime build config … must be a bounded regular file»
 const RUNTIME_CONFIG_MAX_BYTES: usize = 64 * 1024 * 1024;
 const LOCAL_RUNTIME_CONFIG_FILE_NAME: &str = "v8project.local.yaml";
 

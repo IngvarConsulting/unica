@@ -1,0 +1,17 @@
+{
+  "family": "Mxl",
+  "operations": [
+    {
+      "variant": "Set",
+      "operation": "mxl.set",
+      "applicability": "MxlArea",
+      "skeleton": "Values"
+    },
+    {
+      "variant": "AreaAdd",
+      "operation": "area.add",
+      "applicability": "Mxl",
+      "skeleton": "Items"
+    }
+  ]
+}

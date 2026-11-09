@@ -757,7 +757,7 @@ def pending_v13_task(payload: dict[str, Any] | None) -> tuple[str, int] | None:
     data = payload.get("data") if isinstance(payload, dict) else None
     task = data.get("task") if isinstance(data, dict) else None
     # Незавершённые статусы снимка задачи — словарь `project_task_snapshot`
-    # в crates/unica-coder/src/application/v13/task_tools.rs.
+    # в crates/unica-application/src/application/v13/task_tools.rs.
     if not isinstance(task, dict) or task.get("status") not in {"queued", "working"}:
         return None
     task_id = task.get("taskId")

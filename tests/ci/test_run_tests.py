@@ -4,9 +4,27 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
+import os
+from unittest import mock
+
+# The fixtures describe the CI layout, where the build directory is the
+# workspace's own `target`. A session sets `CARGO_TARGET_DIR`; the scripts
+# under test would follow it, so this module's tests run without the variable.
+_CARGO_ENV = mock.patch.dict(os.environ)
+
+
+def setUpModule() -> None:
+    _CARGO_ENV.start()
+    os.environ.pop("CARGO_TARGET_DIR", None)
+
+
+def tearDownModule() -> None:
+    _CARGO_ENV.stop()
+
 
 
 MODULE_PATH = Path(__file__).resolve().parents[2] / "scripts" / "ci" / "run-tests.py"
@@ -144,6 +162,7 @@ class RunTestsSeamTests(unittest.TestCase):
 
         module = load_module()
         out = P(tempfile.mkdtemp(prefix="run-tests-"))
+        self.addCleanup(shutil.rmtree, out)
         calls = []
 
         code = module.execute("all", "all", out, "ubuntu-latest",
@@ -165,6 +184,7 @@ class RunTestsSeamTests(unittest.TestCase):
 
         module = load_module()
         out = P(tempfile.mkdtemp(prefix="run-tests-"))
+        self.addCleanup(shutil.rmtree, out)
 
         code = module.execute("all", "rust", out, "macos-14",
                               run_commands=lambda planned: 101,
@@ -181,6 +201,7 @@ class RunTestsSeamTests(unittest.TestCase):
 
         module = load_module()
         out = P(tempfile.mkdtemp(prefix="run-tests-"))
+        self.addCleanup(shutil.rmtree, out)
         stale = out / "junit.xml"
         stale.write_text(
             '<testsuites name="unica"><testsuite name="unica-coder">'
@@ -318,6 +339,7 @@ class GateProfileTests(unittest.TestCase):
 
         module = load_module()
         out = P(tempfile.mkdtemp(prefix="run-tests-"))
+        self.addCleanup(shutil.rmtree, out)
         junit = out / "junit.xml"
         seen = []
 
@@ -372,6 +394,7 @@ class GateProfileTests(unittest.TestCase):
         """Отчёт идёт перед пересборкой с признаком, а не перед workspace-вызовом."""
         module = load_module()
         out = Path(tempfile.mkdtemp(prefix="run-tests-"))
+        self.addCleanup(shutil.rmtree, out)
         events = []
 
         def run_commands(planned):
@@ -520,6 +543,7 @@ class GateProfileTests(unittest.TestCase):
         """Состав набора — до запуска, тем же швом: джоба, умершая на середине, его не унесёт."""
         module = load_module()
         results = Path(tempfile.mkdtemp(prefix="plan-py-"))
+        self.addCleanup(shutil.rmtree, results)
 
         code = module.main(["--profile", "pr", "--ecosystem", "python", "--suite", "tests/dev", "--plan-only", "--results", str(results), "--runner", "ubuntu-latest"])
 

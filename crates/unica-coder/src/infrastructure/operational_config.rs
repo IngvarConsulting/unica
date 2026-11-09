@@ -17,14 +17,11 @@ const OPERATIONAL_SECTIONS: &[&str] = &["code_intelligence", "code_diagnostics"]
 const CODE_INTELLIGENCE_FIELDS: &[&str] = &[
     "search_total_timeout_seconds",
     "search_semantic_timeout_seconds",
-    // Прежнее имя того же срока: файлы проектов продолжают читаться.
-    "search_rlm_timeout_seconds",
-    "search_git_grep_timeout_seconds",
     "provider_read_timeout_seconds",
 ];
 const CODE_DIAGNOSTICS_FIELDS: &[&str] = &["analyze_timeout_seconds"];
 
-pub(crate) fn load_operational_config(
+pub fn load_operational_config(
     workspace_root: &Path,
 ) -> Result<OperationalConfig, OperationalConfigDiagnostic> {
     let shared = read_layer(
@@ -100,22 +97,8 @@ fn parse_layer(
         )?;
         parse_timeout(
             code_intelligence,
-            "search_rlm_timeout_seconds",
-            OperationalConfigField::SearchSemantic,
-            source,
-            &mut layer,
-        )?;
-        parse_timeout(
-            code_intelligence,
             "search_semantic_timeout_seconds",
             OperationalConfigField::SearchSemantic,
-            source,
-            &mut layer,
-        )?;
-        parse_timeout(
-            code_intelligence,
-            "search_git_grep_timeout_seconds",
-            OperationalConfigField::SearchGitGrep,
             source,
             &mut layer,
         )?;
@@ -349,7 +332,6 @@ pub(crate) mod tests {
             r#"[operational.code_intelligence]
 search_total_timeout_seconds = 100
 search_semantic_timeout_seconds = 40
-search_git_grep_timeout_seconds = 45
 provider_read_timeout_seconds = 35
 
 [operational.code_diagnostics]
@@ -362,7 +344,6 @@ analyze_timeout_seconds = 900
 
         assert_eq!(code.search_total_timeout(), Duration::from_secs(100));
         assert_eq!(code.search_semantic_timeout(), Duration::from_secs(40));
-        assert_eq!(code.search_git_grep_timeout(), Duration::from_secs(45));
         assert_eq!(code.provider_read_timeout(), Duration::from_secs(35));
         assert_eq!(
             config.code_diagnostics().analyze_timeout(),
@@ -442,7 +423,6 @@ search_total_timeout_seconds = 90
             r#"[operational.code_intelligence]
 search_total_timeout_seconds = 120
 search_semantic_timeout_seconds = 45
-search_git_grep_timeout_seconds = 120
 provider_read_timeout_seconds = 45
 [operational.code_diagnostics]
 analyze_timeout_seconds = 3600
@@ -459,10 +439,6 @@ analyze_timeout_seconds = 3600
             Duration::from_secs(45)
         );
         assert_eq!(
-            maximum.code_intelligence().search_git_grep_timeout(),
-            Duration::from_secs(120)
-        );
-        assert_eq!(
             maximum.code_intelligence().provider_read_timeout(),
             Duration::from_secs(45)
         );
@@ -477,7 +453,6 @@ analyze_timeout_seconds = 3600
             r#"[operational.code_intelligence]
 search_total_timeout_seconds = 1
 search_semantic_timeout_seconds = 1
-search_git_grep_timeout_seconds = 1
 provider_read_timeout_seconds = 1
 [operational.code_diagnostics]
 analyze_timeout_seconds = 30
@@ -486,6 +461,11 @@ analyze_timeout_seconds = 30
         let minimum = load_operational_config(workspace.path()).expect("load minimum boundaries");
         assert_eq!(
             minimum.code_intelligence().search_total_timeout(),
+            Duration::from_secs(1)
+        );
+        // Срок git grep из файлов не задаётся и не выходит за общий срок поиска.
+        assert_eq!(
+            minimum.code_intelligence().search_git_grep_timeout(),
             Duration::from_secs(1)
         );
         assert_eq!(
@@ -499,7 +479,6 @@ analyze_timeout_seconds = 30
             r#"[operational.code_intelligence]
 search_total_timeout_seconds = 7200
 search_semantic_timeout_seconds = 3600
-search_git_grep_timeout_seconds = 1800
 provider_read_timeout_seconds = 7200
 [operational.code_diagnostics]
 analyze_timeout_seconds = 7200
@@ -515,10 +494,6 @@ analyze_timeout_seconds = 7200
         assert_eq!(
             code_intelligence.search_semantic_timeout(),
             Duration::from_secs(3_600)
-        );
-        assert_eq!(
-            code_intelligence.search_git_grep_timeout(),
-            Duration::from_secs(1_800)
         );
         assert_eq!(
             code_intelligence.provider_read_timeout(),
@@ -587,6 +562,7 @@ analyze_timeout_seconds = 7200
         );
     }
 
+    /// rule: INV.CONFIG.OPERATIONAL-TIMEOUT-RANGE
     #[test]
     fn structure_errors_are_typed_with_exact_paths() {
         let cases = [
@@ -652,18 +628,6 @@ analyze_timeout_seconds = 7200
                 "search_semantic_timeout_seconds",
                 "0",
                 "operational.code_intelligence.search_semantic_timeout_seconds",
-                "code_intelligence",
-            ),
-            (
-                "search_git_grep_timeout_seconds",
-                "-1",
-                "operational.code_intelligence.search_git_grep_timeout_seconds",
-                "code_intelligence",
-            ),
-            (
-                "search_git_grep_timeout_seconds",
-                "0",
-                "operational.code_intelligence.search_git_grep_timeout_seconds",
                 "code_intelligence",
             ),
             (
@@ -781,16 +745,10 @@ analyze_timeout_seconds = 7200
     /// rule: INV.CONFIG.OPERATIONAL-TIMEOUT-RANGE
     #[test]
     fn final_snapshot_enforces_provider_deadlines_not_exceeding_total() {
-        let cases = [
-            (
-                "search_semantic_timeout_seconds = 30",
-                "operational.code_intelligence.search_semantic_timeout_seconds",
-            ),
-            (
-                "search_semantic_timeout_seconds = 20\nsearch_git_grep_timeout_seconds = 30",
-                "operational.code_intelligence.search_git_grep_timeout_seconds",
-            ),
-        ];
+        let cases = [(
+            "search_semantic_timeout_seconds = 30",
+            "operational.code_intelligence.search_semantic_timeout_seconds",
+        )];
 
         for (provider_line, expected_path) in cases {
             let workspace = tempdir().expect("workspace tempdir");

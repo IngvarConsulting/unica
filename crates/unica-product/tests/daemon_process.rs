@@ -88,7 +88,7 @@ fn daemon_frontend_process_fixture() {
         "race release marker",
     );
 
-    let mut owner = unica_coder::interfaces::daemon::connect_owner_for_protocol_test(
+    let mut owner = unica_daemon::interfaces::daemon::connect_owner_for_protocol_test(
         &state_root,
         &identity,
         &executable,
@@ -111,7 +111,7 @@ fn daemon_frontend_process_fixture() {
             Ok(()) => return,
             Err(error) => last_error = Some(error),
         }
-        owner = unica_coder::interfaces::daemon::connect_owner_for_protocol_test(
+        owner = unica_daemon::interfaces::daemon::connect_owner_for_protocol_test(
             &state_root,
             &identity,
             &executable,
@@ -194,7 +194,7 @@ fn v5_frontend_process_spawns_the_same_binary_and_pings_the_v5_runtime() {
     let state_root = std::fs::canonicalize(root.path()).unwrap();
     let executable = PathBuf::from(env!("CARGO_BIN_EXE_unica"));
 
-    let mut owner = unica_coder::interfaces::daemon::connect_owner_for_protocol_test(
+    let mut owner = unica_daemon::interfaces::daemon::connect_owner_for_protocol_test(
         &state_root,
         production_identity(),
         &executable,
@@ -221,7 +221,7 @@ fn stale_v5_endpoint_probe_preserves_budget_to_spawn_a_replacement() {
     let state_root = std::fs::canonicalize(root.path()).unwrap();
     let executable = PathBuf::from(env!("CARGO_BIN_EXE_unica"));
 
-    let owner = unica_coder::interfaces::daemon::connect_owner_for_protocol_test(
+    let owner = unica_daemon::interfaces::daemon::connect_owner_for_protocol_test(
         &state_root,
         production_identity(),
         &executable,
@@ -257,7 +257,7 @@ fn stale_v5_endpoint_probe_preserves_budget_to_spawn_a_replacement() {
     );
 
     let started = Instant::now();
-    let replacement = unica_coder::interfaces::daemon::connect_owner_for_protocol_test(
+    let replacement = unica_daemon::interfaces::daemon::connect_owner_for_protocol_test(
         &state_root,
         production_identity(),
         &executable,

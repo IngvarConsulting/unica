@@ -69,8 +69,9 @@
   `python scripts/ci/check-discovered-modules-format.py` (модули, которые объявляет
   `build.rs`; формат правит `rustfmt --edition 2021 <файл>`) и
   `cargo clippy --workspace --all-targets --all-features -- -D warnings`.
-  Если изменение снимает или переименовывает `#[test]`, объявите это строками
-  `Removes-test:` в описании PR и проверьте до push:
+  Если изменение снимает или переименовывает `#[test]` или тест Python
+  (`tests/**/test_*.py`: `Removes-test: tests.ci.test_x.Класс.тест` или префикс
+  с `*`), объявите это строками `Removes-test:` в описании PR и проверьте до push:
   `python3.12 scripts/ci/removed_tests.py --base origin/main --description-file <описание>`
   (нужен Python 3.11+; на Windows — по
   [командам на разных ОС](../SKILL.md#команды-на-разных-ос)).
