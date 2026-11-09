@@ -179,7 +179,7 @@ pub(super) fn plan(
 ) -> Result<
     (
         Vec<ProvisionalApplyEffect>,
-        unica_source_contract::proposal::BorrowPlanDetail,
+        unica_metadata::BorrowPlanDetail,
     ),
     ApplyPlanError,
 > {
@@ -216,7 +216,7 @@ fn plan_object(
 ) -> Result<
     (
         Vec<ProvisionalApplyEffect>,
-        unica_source_contract::proposal::BorrowPlanDetail,
+        unica_metadata::BorrowPlanDetail,
     ),
     ApplyPlanError,
 > {
@@ -384,7 +384,7 @@ fn plan_object(
         .into_iter()
         .filter(|key| previous_properties.get(key) != next_properties.get(key))
         .collect();
-    let detail = unica_source_contract::proposal::BorrowPlanDetail {
+    let detail = unica_metadata::BorrowPlanDetail {
         index,
         at: result_at,
         from: parent.to_string(),
@@ -454,7 +454,7 @@ fn plan_form(
 ) -> Result<
     (
         Vec<ProvisionalApplyEffect>,
-        unica_source_contract::proposal::BorrowPlanDetail,
+        unica_metadata::BorrowPlanDetail,
     ),
     ApplyPlanError,
 > {
@@ -705,7 +705,7 @@ fn plan_form(
         .filter(|(key, value)| previous_properties.get(*key) != Some(*value))
         .map(|(key, _)| key.clone())
         .collect();
-    let detail = unica_source_contract::proposal::BorrowPlanDetail {
+    let detail = unica_metadata::BorrowPlanDetail {
         index,
         at,
         from,

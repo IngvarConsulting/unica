@@ -165,18 +165,6 @@ pub fn hidden_apply_family_unimplemented(op_index: usize) -> ApplyPlanError {
     .at_path(format!("ops[{op_index}].op"))
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct BorrowPlanDetail {
-    pub index: usize,
-    pub at: String,
-    pub from: String,
-    pub parent_uuid: String,
-    pub created: bool,
-    pub changed_properties: Vec<String>,
-    pub protected_overrides: Vec<String>,
-}
-
 /// Key of one family's section of plan details in the apply answer. A family
 /// declares its key as a constant; the product composition registers every
 /// key and publishes each non-empty section under it.
@@ -206,7 +194,6 @@ pub struct PlannedApplyEffects {
     warnings: Vec<serde_json::Value>,
     /// Request operations that attached a warning, by their index in `ops`.
     warned_operations: std::collections::BTreeSet<usize>,
-    borrowing: Vec<BorrowPlanDetail>,
     /// Facts a family reports about the final plan, by the family's key. The
     /// contract carries the section without knowing its rows.
     details: std::collections::BTreeMap<PlanDetailKey, Vec<serde_json::Value>>,
@@ -237,13 +224,6 @@ impl PlannedApplyEffects {
         self.details
             .iter()
             .map(|(key, rows)| (*key, rows.as_slice()))
-    }
-
-    pub fn borrowing(&self) -> &[BorrowPlanDetail] {
-        &self.borrowing
-    }
-    pub fn set_borrowing(&mut self, details: Vec<BorrowPlanDetail>) {
-        self.borrowing = details;
     }
 
     pub fn events(&self) -> &[DomainEvent] {

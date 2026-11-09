@@ -1003,6 +1003,7 @@ fn owning_metadata_address(address: &QualifiedAddress) -> String {
 const PLAN_DETAIL_KEYS: &[unica_source_contract::proposal::PlanDetailKey] = &[
     unica_xdto::results::XDTO_OBJECTS,
     unica_metadata::EXCHANGE_CONTENT,
+    unica_metadata::BORROWING,
 ];
 
 /// Fields the apply answer writes itself; a family section cannot take them.
@@ -1015,7 +1016,6 @@ const APPLY_DATA_FIELDS: &[&str] = &[
     "planHash",
     "effects",
     "cache",
-    "borrowing",
     "executionToken",
 ];
 
@@ -2941,6 +2941,7 @@ mod medium_plan_detail_key_tests {
 
     #[test]
     fn registered_plan_detail_sections_are_unique_and_leave_answer_fields_alone() {
+        assert!(PLAN_DETAIL_KEYS.contains(&PlanDetailKey::new("borrowing")));
         assert_eq!(
             plan_detail_key_errors(PLAN_DETAIL_KEYS),
             Vec::<String>::new()

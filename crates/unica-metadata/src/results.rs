@@ -309,6 +309,22 @@ pub struct MetaMutationEffect {
     pub after: Option<Value>,
 }
 
+/// Plan-detail section of `object.borrow`, published in `data.borrowing`.
+pub const BORROWING: unica_source_contract::proposal::PlanDetailKey =
+    unica_source_contract::proposal::PlanDetailKey::new("borrowing");
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BorrowPlanDetail {
+    pub index: usize,
+    pub at: String,
+    pub from: String,
+    pub parent_uuid: String,
+    pub created: bool,
+    pub changed_properties: Vec<String>,
+    pub protected_overrides: Vec<String>,
+}
+
 /// Plan-detail section of `content.set`: the final composition of every
 /// ExchangePlan the batch names, as published in `data.exchangeContent`.
 pub const EXCHANGE_CONTENT: unica_source_contract::proposal::PlanDetailKey =
