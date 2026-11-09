@@ -23,6 +23,14 @@ impl MetadataAddress {
         AddressProfile::new(profile)?.parse(raw)
     }
 
+    /// A logical metadata address, `Kind.Name[.Kind.Name…]`. Its syntax and its
+    /// vocabulary of kinds do not depend on the format version or the format
+    /// family (INV.SOURCE.FORMAT-IDENTITY); whether a kind exists in a source
+    /// set is a question for the set's profile, not for the address.
+    pub fn parse_logical(raw: &str) -> Result<Self, SourceTargetError> {
+        LOGICAL.parse(raw)
+    }
+
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -50,6 +58,11 @@ pub struct MetadataAddressPrefix(String);
 impl MetadataAddressPrefix {
     pub fn parse(profile: &str, raw: &str) -> Result<Self, SourceTargetError> {
         AddressProfile::new(profile)?.parse_prefix(raw)
+    }
+
+    /// A logical address prefix; see [`MetadataAddress::parse_logical`].
+    pub fn parse_logical(raw: &str) -> Result<Self, SourceTargetError> {
+        LOGICAL.parse_prefix(raw)
     }
 }
 
@@ -142,6 +155,11 @@ impl std::error::Error for SourceTargetError {}
 pub struct AddressProfile {
     id: &'static str,
 }
+
+/// The grammar of logical addresses; one for every format.
+const LOGICAL: AddressProfile = AddressProfile {
+    id: PLATFORM_XML_8_3_27_FORMAT_2_20,
+};
 
 impl AddressProfile {
     pub fn new(id: &str) -> Result<Self, SourceTargetError> {
@@ -974,6 +992,29 @@ mod tests {
             "{}",
             unknown.message
         );
+    }
+
+    /// rule: INV.SOURCE.FORMAT-IDENTITY
+    #[test]
+    fn a_logical_address_parses_without_a_format_version() {
+        for raw in [
+            "Catalog.Items",
+            "Справочник.Items.Реквизит.Code",
+            "Catalog.Items.Form.Main.Module",
+            "ManagedApplicationModule",
+        ] {
+            assert_eq!(
+                MetadataAddress::parse_logical(raw),
+                MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, raw),
+                "{raw}"
+            );
+        }
+        assert_eq!(
+            MetadataAddressPrefix::parse_logical("Catalog").map(|prefix| prefix.0),
+            MetadataAddressPrefix::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Catalog")
+                .map(|prefix| prefix.0)
+        );
+        assert!(MetadataAddress::parse_logical("Catalog..Items").is_err());
     }
 
     #[test]

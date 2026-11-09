@@ -453,7 +453,7 @@ mod tests {
     /// .
     #[test]
     fn a_metadata_type_serializes_like_the_observed_attribute_type() {
-        let address = |raw| MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, raw).unwrap();
+        let address = |raw| MetadataAddress::parse_logical(raw).unwrap();
         for variant in [
             MetadataTypeVariant::String {
                 length: 10,
@@ -544,18 +544,12 @@ mod tests {
     fn reference_like_types_require_top_level_metadata_addresses() {
         for variant in [
             MetadataTypeVariant::Reference {
-                metadata_path: MetadataAddress::parse(
-                    PLATFORM_XML_8_3_27_FORMAT_2_20,
-                    "Catalog.Products.Form.Main",
-                )
-                .unwrap(),
+                metadata_path: MetadataAddress::parse_logical("Catalog.Products.Form.Main")
+                    .unwrap(),
             },
             MetadataTypeVariant::DefinedType {
-                metadata_path: MetadataAddress::parse(
-                    PLATFORM_XML_8_3_27_FORMAT_2_20,
-                    "DefinedType.Code.Form.Main",
-                )
-                .unwrap(),
+                metadata_path: MetadataAddress::parse_logical("DefinedType.Code.Form.Main")
+                    .unwrap(),
             },
         ] {
             let error = MetadataType::new(vec![variant]).unwrap_err();
@@ -644,8 +638,7 @@ mod tests {
 
     #[test]
     fn metadata_type_identity_uses_domain_discriminants_and_logical_addresses() {
-        let catalog =
-            MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Catalog.Products").unwrap();
+        let catalog = MetadataAddress::parse_logical("Catalog.Products").unwrap();
         assert_eq!(
             variant_identity(&MetadataTypeVariant::String {
                 length: 10,
@@ -695,11 +688,8 @@ mod tests {
 
     #[test]
     fn event_source_serialization_uses_the_public_typed_shape() {
-        let record_set =
-            MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "InformationRegister.Facts")
-                .unwrap();
-        let manager =
-            MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Catalog.Products").unwrap();
+        let record_set = MetadataAddress::parse_logical("InformationRegister.Facts").unwrap();
+        let manager = MetadataAddress::parse_logical("Catalog.Products").unwrap();
         assert_eq!(
             serde_json::to_value(MetaEventSource::Manager {
                 metadata_path: manager,
@@ -723,11 +713,7 @@ mod tests {
         );
         assert_eq!(
             serde_json::to_value(MetaEventSource::Manager {
-                metadata_path: MetadataAddress::parse(
-                    PLATFORM_XML_8_3_27_FORMAT_2_20,
-                    "Constant.Mode",
-                )
-                .unwrap(),
+                metadata_path: MetadataAddress::parse_logical("Constant.Mode",).unwrap(),
                 source_class: Some(EventSourceClass::ConstantManager),
             })
             .unwrap(),

@@ -61,6 +61,7 @@ unica-xdto = { path = "../unica-xdto", features = ["test-support"] }
 jsonschema.workspace = true
 
 [package.metadata.unica]
+version-literal-baseline = 3
 component = "coordinator"
 file-io = "owned"
 inputs = ["tests/fixtures/v013"]

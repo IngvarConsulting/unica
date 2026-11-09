@@ -7,7 +7,7 @@ use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
-use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+use unica_address::source_target::MetadataAddress;
 use unica_metadata::{
     MetaCollection, MetaEditOperation, MetaElementInput, MetaElementUpdateInput, MetaTemplateKind,
     MetaValidationStatus,
@@ -464,8 +464,7 @@ fn retained_publish(
         cache_root: root.join(".build/unica"),
         workspace_epoch: 0,
     };
-    let target =
-        MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Report.CorpusReport").unwrap();
+    let target = MetadataAddress::parse_logical("Report.CorpusReport").unwrap();
     let request =
         unica_metadata::request::MetadataRequest::Edit(unica_metadata::request::MetaEditRequest {
             source_set: "main".into(),
