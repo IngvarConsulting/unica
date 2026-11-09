@@ -411,7 +411,10 @@ mod tests {
             RootVersionReport::Error(_)
         ));
         assert!(require_supported_root_version(Some(writable)).is_ok());
-        assert!(require_supported_root_version(Some("2.21")).is_err());
+        // 2.21 has a dialect of its own and is read without a finding; a
+        // newer version without one is refused.
+        assert!(require_supported_root_version(Some("2.21")).is_ok());
+        assert!(require_supported_root_version(Some("2.23")).is_err());
     }
 
     #[test]
