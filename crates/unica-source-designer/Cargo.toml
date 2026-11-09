@@ -22,6 +22,6 @@ roxmltree.workspace = true
 unica-source-contract = { path = "../unica-source-contract" }
 
 [package.metadata.unica]
-version-literal-baseline = 6
+version-literal-baseline = 5
 component = "service"
 file-io = "none"

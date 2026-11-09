@@ -58,6 +58,9 @@ mod tests {
         assert!(!is_writable(None));
         assert!(!is_writable(Some("2.19")));
         assert!(!is_writable(Some("2.21")));
+        // Numerically equal spellings are not the writable format.
+        assert!(!is_writable(Some("02.20")));
+        assert!(!is_writable(Some("2.20.0")));
     }
 
     /// rule: INV.SOURCE.WRITABLE-PROFILE
