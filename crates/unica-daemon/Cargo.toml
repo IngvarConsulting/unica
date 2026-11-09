@@ -14,6 +14,7 @@ default = []
 receipt-ledger-test-support = ["unica-execution/receipt-ledger-test-support", "unica-daemon-protocol/receipt-ledger-test-support"]
 
 [dependencies]
+unica-metadata-designer = { path = "../unica-metadata-designer" }
 unica-coder = { path = "../unica-coder" }
 unica-daemon-protocol = { path = "../unica-daemon-protocol" }
 unica-lsp-contract = { path = "../unica-lsp-contract" }

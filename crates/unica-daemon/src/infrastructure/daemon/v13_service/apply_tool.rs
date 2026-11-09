@@ -160,7 +160,20 @@ impl CanonicalV13ReadService {
                 )
             }),
         );
-        let (staged, mut effects) = match plan_hidden_v13_apply(&request, &binding, &admission) {
+        let mut supplier_reader = if request
+            .ops()
+            .iter()
+            .any(|operation| operation.name() == "supportRule.restore")
+        {
+            Some(super::super::v13_support_restore::SupplierReader::new(
+                invocation.workspace_context(),
+                binding.source_root(),
+                cancellation,
+            ))
+        } else {
+            None
+        };
+        let (staged, mut effects) = match crate::infrastructure::native_operations::apply_families::plan_hidden_v13_apply_with_restore(&request, &binding, &admission, supplier_reader.as_ref().map(|reader| reader as &dyn unica_metadata_designer::support_restore::RestoreSupplierRead)) {
             Err(error)
                 if error.kind() == ApplyPlanErrorKind::ProviderUnavailable
                     && error.to_string().contains("not implemented") =>
@@ -172,6 +185,13 @@ impl CanonicalV13ReadService {
                 )
             }
             Err(error) => {
+                if let Some(absence) = supplier_reader.as_mut().and_then(
+                    super::super::v13_support_restore::SupplierReader::take_absence
+                ) {
+                    return super::super::v13_infobase_exports::missing_runner_rejection(
+                        Some(request.at().to_string()), absence,
+                    );
+                }
                 let refusal = apply_plan_error_result(&error);
                 let node_exists = |at: &QualifiedAddress| {
                     crate::infrastructure::native_operations::apply_families::staged_node_existence(

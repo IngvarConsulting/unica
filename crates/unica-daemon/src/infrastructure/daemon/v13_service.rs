@@ -67,7 +67,6 @@ use {
 
 use crate::domain::call_graph_identity::{CallGraphIdentity, CallGraphIdentityError};
 use crate::infrastructure::capacity_observation::CapacityObserver;
-use crate::infrastructure::native_operations::apply_families::plan_hidden_v13_apply;
 use crate::infrastructure::v13_find::{
     FindBuildError, LayoutFindSource, WorkspaceFindDirectoryBuilder,
 };
@@ -1003,6 +1002,7 @@ fn owning_metadata_address(address: &QualifiedAddress) -> String {
 const PLAN_DETAIL_KEYS: &[unica_source_contract::proposal::PlanDetailKey] = &[
     unica_xdto::results::XDTO_OBJECTS,
     unica_metadata::EXCHANGE_CONTENT,
+    unica_metadata::support::SUPPORT_RESTORATION,
 ];
 
 /// Fields the apply answer writes itself; a family section cannot take them.

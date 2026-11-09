@@ -509,8 +509,12 @@ fn support_state_classification_preserves_names_across_targets_and_profiles() {
         ] {
             let target = raw_target.and_then(|raw| QualifiedAddress::parse(raw).ok());
             for name in &names {
-                // The previous name-only gate exempted exactly these two operations.
-                let expected = matches!(*name, "supportCapability.set" | "supportRule.set");
+                // Support-only classification is independent of whether
+                // an operation's address is admissible for this profile.
+                let expected = matches!(
+                    *name,
+                    "supportCapability.set" | "supportRule.set" | "supportRule.restore"
+                );
                 assert_eq!(
                     super::changes_support_state(name, target.as_ref(), &binding),
                     expected,

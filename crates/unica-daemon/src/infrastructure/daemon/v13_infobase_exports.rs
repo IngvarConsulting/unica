@@ -38,7 +38,7 @@ pub(super) const LOCAL_CONFIG_NAME: &str = "v8project.local.yaml";
 // status: unproven
 // origin: 8a85591e3 (#693)
 // problem: неизвестно
-// on-reach: stdout сверх предела — отказ invalid_result «v8-runner returned an unreadable or oversized JSON result»; кадр протокола публикации pull сверх предела не читается — отказ invalid_result с пределом и причиной; отказ после публикации сообщает, что исходники опубликованы, а заменённые сохранены в recovery; stderr тихо сохраняет хвост с пометкой об усечении.
+// on-reach: stdout сверх предела — отказ invalid_result «v8-runner returned an unreadable or oversized JSON result»; кадр протокола публикации pull сверх предела не читается — отказ invalid_result с пределом и причиной; отказ после публикации сообщает, что исходники опубликованы, а заменённые сохранены в recovery; stderr тихо сохраняет хвост с пометкой об усечении. При восстановлении поддержки усечённый stdout отклоняет план до изменения маркера.
 pub(super) const RUNNER_OUTPUT_LIMIT: usize = 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -1011,6 +1011,9 @@ def run_corpus(test_case, corpus, plugin=None, scenario_driver=None, fixture_cle
         state = home / "state"
         state.mkdir()
         environment = isolated_environment(plugin, state) if plugin else None
+        if workspace_relative == "tests/fixtures/acceptance/workspace-support-restore":
+            from tests.ci.support_restore_fixture import prepare_workspace
+            environment = prepare_workspace(workspace, state)
         if workspace_relative == HOST_CONTEXT_MISSING_WORKSPACE:
             environment = missing_host_context_environment(environment)
         server_type = DeliveredAcceptanceServer if plugin else AcceptanceServer
@@ -1055,7 +1058,10 @@ def run_corpus(test_case, corpus, plugin=None, scenario_driver=None, fixture_cle
                             )
                         response = call_step(
                             server, step, arguments, label,
-                            delivery=bool(plugin) or wanted == "tests/fixtures/acceptance/workspace-search-wide",
+                            delivery=bool(plugin) or wanted in {
+                                "tests/fixtures/acceptance/workspace-search-wide",
+                                "tests/fixtures/acceptance/workspace-support-restore",
+                            },
                         )
                     except (TimeoutError, OSError, ValueError) as error:
                         # The session is gone: record the step with the

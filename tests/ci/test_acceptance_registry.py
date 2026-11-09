@@ -130,7 +130,7 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
             if filename not in sources:
                 sources[filename] = self.family_source(family.title())
         if complete_support:
-            table += "\n(SupportOperation::CapabilitySet), (SupportOperation::RuleSet),"
+            table += "\n(SupportOperation::CapabilitySet), (SupportOperation::RuleSet), (SupportOperation::RuleRestore),"
         if complete_context:
             table += "\n" + self.CONTEXT_REGISTRATIONS
         if complete_mxl_event:
@@ -344,8 +344,8 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
                 [row for row in registry if row[1] == "Metadata"],
                 [row for row in self.CONTEXT_ROWS if row[1] == "Metadata"],
             )
-            self.assertEqual(len(registry), 130)
-            self.assertEqual(len({row[0] for row in registry}), 126)
+            self.assertEqual(len(registry), 131)
+            self.assertEqual(len({row[0] for row in registry}), 127)
             registration = f"({operation}::ObjectBorrow),"
             self.assertEqual(original.count(registration), 1)
             replacements = {
@@ -491,7 +491,7 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
         rendered = module.render_document()
         for operation, _, _, skeleton in declared_rows("Support"):
             self.assertIn(operation, implemented)
-            self.assertIn(f"| `{operation}` | `{skeleton.lower()}` | ", rendered)
+            self.assertIn(f"| `{operation}` | {module.ARGS_TITLES[skeleton]} | ", rendered)
 
     def test_typed_rows_preserve_colliding_names_and_raw_neighbors(self) -> None:
         metadata = (REPO_ROOT / "crates/unica-roles/src/operations.rs").read_text(encoding="utf-8")
@@ -549,6 +549,7 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
             ("props.set", "Form", "FormProperties", "Values"),
             ("supportCapability.set", "Support", "Configuration", "Values"),
             ("supportRule.set", "Support", "SupportRule", "Values"),
+            ("supportRule.restore", "Support", "SupportRestore", "Target"),
         ] + self.MXL_EVENT_ROWS + self.DCS_FIXTURE_ROWS + self.PROPERTIES_ROWS + self.XDTO_ROWS + self.SOURCE_ROWS)
 
     def test_fully_typed_metadata_and_form_keep_registry_rows(self) -> None:
@@ -566,8 +567,8 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
             self.assertLessEqual(migrated_names, implemented)
         self.assertIn(("content.set", "Metadata", "ExchangePlan", "Items"), registry)
         self.assertIn("content.set", implemented)
-        self.assertEqual(len(registry), 130)
-        self.assertEqual(len({entry[0] for entry in registry}), 126)
+        self.assertEqual(len(registry), 131)
+        self.assertEqual(len({entry[0] for entry in registry}), 127)
 
     def test_dcs_rows_keep_their_declared_metadata_and_family_order(self) -> None:
         module = self.renderer()
@@ -596,6 +597,7 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
             ("dataSource.add", "Dcs", "DcsSchema", "Items"),
             ("supportCapability.set", "Support", "Configuration", "Values"),
             ("supportRule.set", "Support", "SupportRule", "Values"),
+            ("supportRule.restore", "Support", "SupportRestore", "Target"),
         ] + self.CONTEXT_ROWS + self.MXL_EVENT_ROWS + self.PROPERTIES_ROWS + self.XDTO_ROWS + self.SOURCE_ROWS)
 
     def test_dcs_metadata_and_registrations_are_complete_and_fail_closed(self) -> None:
@@ -780,6 +782,7 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
             ("probe.replace", "Probe", "Code", "Text"),
             ("supportCapability.set", "Support", "Configuration", "Values"),
             ("supportRule.set", "Support", "SupportRule", "Values"),
+            ("supportRule.restore", "Support", "SupportRestore", "Target"),
         ] + self.CONTEXT_ROWS + self.MXL_EVENT_ROWS + self.DCS_FIXTURE_ROWS + self.PROPERTIES_ROWS + self.XDTO_ROWS + self.SOURCE_ROWS)
 
     def test_role_metadata_survives_split_impls_and_unrelated_helpers(self) -> None:
@@ -804,6 +807,7 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
             ("right.set", "Role", "RoleRight", "Values"),
             ("supportCapability.set", "Support", "Configuration", "Values"),
             ("supportRule.set", "Support", "SupportRule", "Values"),
+            ("supportRule.restore", "Support", "SupportRestore", "Target"),
         ] + self.CONTEXT_ROWS + self.MXL_EVENT_ROWS + self.DCS_FIXTURE_ROWS + self.PROPERTIES_ROWS + self.XDTO_ROWS + self.SOURCE_ROWS)
 
     def test_unknown_or_incomplete_typed_metadata_cannot_silently_drop_a_role(self) -> None:
@@ -839,7 +843,7 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
         metadata = (REPO_ROOT / "crates/unica-roles/src/operations.rs").read_text(encoding="utf-8")
         support_metadata = (REPO_ROOT / "crates/unica-metadata/src/support.rs").read_text(encoding="utf-8")
         roles = "(RoleOperation::Create), (RoleOperation::RightAdd), (RoleOperation::RightSet),\n"
-        table = roles + "(SupportOperation::CapabilitySet), (SupportOperation::RuleSet),"
+        table = roles + "(SupportOperation::CapabilitySet), (SupportOperation::RuleSet), (SupportOperation::RuleRestore),"
         last_row = '    RuleSet => ("supportRule.set", SupportRule, Values),\n'
         self.assertIn(last_row, support_metadata)
         cases = {
@@ -886,12 +890,13 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
         self.assertEqual([entry for entry in registry if entry[1] == "Support"], [
             ("supportCapability.set", "Support", "Configuration", "Values"),
             ("supportRule.set", "Support", "SupportRule", "Values"),
+            ("supportRule.restore", "Support", "SupportRestore", "Target"),
         ])
 
     def test_raw_typed_family_rows_cannot_bypass_complete_typed_registrations(self) -> None:
         metadata = (REPO_ROOT / "crates/unica-roles/src/operations.rs").read_text(encoding="utf-8")
         roles = self.ROLE_REGISTRATIONS
-        support = "(SupportOperation::CapabilitySet), (SupportOperation::RuleSet),"
+        support = "(SupportOperation::CapabilitySet), (SupportOperation::RuleSet), (SupportOperation::RuleRestore),"
         raw_roles = (
             '("role.create", Role, Configuration, Values),'
             '("right.add", Role, Role, Items),'

@@ -12,6 +12,12 @@
       "operation": "supportRule.set",
       "applicability": "SupportRule",
       "skeleton": "Values"
+    },
+    {
+      "variant": "RuleRestore",
+      "operation": "supportRule.restore",
+      "applicability": "SupportRestore",
+      "skeleton": "Target"
     }
   ]
 }

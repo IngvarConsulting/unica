@@ -111,6 +111,7 @@ pub(crate) fn parse_form_resource_plan_operation_in(
                         object,
                         op_index,
                         binding.source_set_name(),
+                        binding.source_kind(),
                     )?)
                 }
                 None => return Err(hidden_apply_family_unimplemented(op_index)),
@@ -139,11 +140,28 @@ pub(crate) fn parse_form_resource_plan_operation_in(
     })
 }
 
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) fn plan_form_resource_batch(
     staged: &mut ApplyProposal<'_>,
     authority: &dyn ApplySourceAuthority,
     operations: &[IndexedPlanOperation<FormResourcePlanOperation>],
 ) -> Result<Vec<ProvisionalApplyEffect>, ApplyPlanError> {
+    plan_form_resource_batch_with_restore(staged, authority, operations, None)
+        .map(|(effects, _)| effects)
+}
+
+pub(crate) fn plan_form_resource_batch_with_restore(
+    staged: &mut ApplyProposal<'_>,
+    authority: &dyn ApplySourceAuthority,
+    operations: &[IndexedPlanOperation<FormResourcePlanOperation>],
+    restore_supplier: Option<&dyn unica_metadata_designer::support_restore::RestoreSupplierRead>,
+) -> Result<
+    (
+        Vec<ProvisionalApplyEffect>,
+        Vec<unica_metadata::support::SupportRestorationData>,
+    ),
+    ApplyPlanError,
+> {
     if operations.is_empty() {
         return Err(empty_apply_family_batch());
     }
@@ -155,6 +173,7 @@ pub(crate) fn plan_form_resource_batch(
         .at_path("ops"));
     }
     let mut provisional = Vec::new();
+    let mut restorations = Vec::new();
     for operation in operations {
         let op_index = operation.index();
         match &operation.operation().kind {
@@ -195,17 +214,20 @@ pub(crate) fn plan_form_resource_batch(
                 )?;
             }
             FormResourcePlanKind::Metadata(plan) => {
-                resource_planner::stage_metadata_resource_plan(
+                if let Some(detail) = resource_planner::stage_metadata_resource_plan(
                     staged,
                     authority,
                     plan,
                     op_index,
                     &mut provisional,
-                )?;
+                    restore_supplier,
+                )? {
+                    restorations.push(detail);
+                }
             }
         }
     }
-    Ok(provisional)
+    Ok((provisional, restorations))
 }
 
 #[cfg(any(test, feature = "test-support"))]
