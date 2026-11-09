@@ -201,7 +201,7 @@ pub fn patch_form_event(
     let root = document.root_element();
     if root.tag_name().namespace() != Some(FORM_NS)
         || root.tag_name().name() != "Form"
-        || root.attribute("version") != Some("2.20")
+        || !crate::dialect::root_version::is_writable(root.attribute("version"))
     {
         return Err(invalid_source(
             "Form.xml has the wrong root namespace or version",
