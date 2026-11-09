@@ -30,10 +30,11 @@ def load():
 
 class Fakes:
     def __init__(self, module, *, tags=("v0.15.0-rc.1", RC, "v0.14.2"), draft=False, conclusion="success",
-                 run_branch=RC, run_sha=COMMIT, in_marketplace=True):
+                 run_branch=RC, run_sha=COMMIT, in_marketplace=True, marketplace_error="404 Not Found"):
         self.module = module
         self.tags, self.draft, self.conclusion = tags, draft, conclusion
         self.run_branch, self.run_sha, self.in_marketplace = run_branch, run_sha, in_marketplace
+        self.marketplace_error = marketplace_error
         self.commands = []
 
     def gh(self, path, **_):
@@ -48,7 +49,7 @@ class Fakes:
                                        "html_url": "https://run.invalid/7"}]}
         if path.startswith("repos/IngvarConsulting/unica-marketplace/git/ref/tags/"):
             if not self.in_marketplace:
-                raise self.module.alpha.AlphaError("gh api GET ...: 404 Not Found")
+                raise self.module.alpha.AlphaError(f"gh api GET ...: {self.marketplace_error}")
             return {"ref": path.rsplit("/git/", 1)[1]}
         raise AssertionError(path)
 
@@ -88,6 +89,14 @@ class ProofTests(unittest.TestCase):
             with self.subTest(reason=reason), self.assertRaisesRegex(self.module.FinalError, reason):
                 self.prove(fakes)
 
+    def test_an_unreadable_marketplace_is_not_reported_as_an_unpublished_candidate(self) -> None:
+        with self.assertRaisesRegex(self.module.FinalError, "не прочитан: .*rate limit"):
+            self.prove(Fakes(self.module, in_marketplace=False, marketplace_error="403 API rate limit exceeded"))
+
+    def test_a_later_candidate_of_another_core_does_not_block(self) -> None:
+        proof = self.prove(Fakes(self.module, tags=(RC, "v0.16.0-rc.5", "v0.14.9-rc.7")))
+        self.assertEqual(proof.rc, RC)
+
     def test_a_tag_that_is_not_a_candidate_is_refused(self) -> None:
         for tag in ("v0.15.0", "v0.15.0-alpha.4", "0.15.0-rc.2"):
             with self.subTest(tag=tag), self.assertRaisesRegex(self.module.FinalError, "не тег кандидата"):
@@ -114,11 +123,28 @@ class PublishTests(unittest.TestCase):
         self.assertEqual(commands[push], ["git", "push", "git@github.com:o/r.git", "refs/tags/v0.15.0"])
         self.assertIn("StrictHostKeyChecking=yes", fakes.commands[push][1]["GIT_SSH_COMMAND"])
 
+    def test_a_failed_version_check_stops_before_the_commit_and_the_push(self) -> None:
+        fakes = Fakes(self.module)
+        original = fakes.runner
+
+        def runner(command, cwd=None, env=None):
+            if "scripts/ci/check-version-contract.py" in command:
+                fakes.commands.append((command, env))
+                raise self.module.alpha.AlphaError("version contract drift")
+            return original(command, cwd, env)
+
+        with self.assertRaises(self.module.alpha.AlphaError):
+            self.module.publish(Path("."), "o/r", RC, dry_run=False, gh=fakes.gh, runner=runner)
+        self.assertFalse(any(command[0] == "git" and {"commit", "tag", "push"} & set(command)
+                             for command, _ in fakes.commands))
+
     def test_a_dry_run_proves_and_names_the_version_without_touching_anything(self) -> None:
         fakes = Fakes(self.module)
-        self.assertEqual(self.module.publish(Path("."), "o/r", RC, dry_run=True, gh=fakes.gh, runner=fakes.runner),
-                         "v0.15.0")
-        self.assertFalse(any(command[:2] in (["git", "commit"], ["git", "push"], ["git", "checkout"])
+        with tempfile.TemporaryDirectory() as directory,              mock.patch.dict(os.environ, {"GITHUB_OUTPUT": str(Path(directory) / "out")}):
+            self.assertEqual(self.module.publish(Path("."), "o/r", RC, dry_run=True, gh=fakes.gh, runner=fakes.runner),
+                             "v0.15.0")
+            self.assertFalse((Path(directory) / "out").exists())
+        self.assertFalse(any(command[0] == "git" and {"commit", "tag", "push", "checkout"} & set(command)
                              for command, _ in fakes.commands))
 
     def test_without_the_key_nothing_is_pushed(self) -> None:

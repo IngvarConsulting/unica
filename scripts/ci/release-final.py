@@ -86,10 +86,15 @@ def prove(repo: str, rc_tag: str, gh, git) -> Proof:
              and run.get("conclusion") == "success"]
     if not green:
         raise FinalError(f"зелёного выпуска по тегу {rc_tag} нет")
+    # Зелёный итог прогона говорит о его последней попытке. Публикацию
+    # подтверждают отдельно: тег кандидата в маркетплейсе появляется только
+    # атомарным push вместе с каталогом `next`, который его называет.
     try:
         gh(f"repos/{MARKETPLACE}/git/ref/tags/{rc_tag}")
     except alpha.AlphaError as error:
-        raise FinalError(f"{rc_tag} не опубликован в канале next маркетплейса: {error}") from error
+        if "Not Found" in str(error) or "404" in str(error):
+            raise FinalError(f"{rc_tag} не опубликован в канале next маркетплейса") from error
+        raise FinalError(f"тег {rc_tag} в маркетплейсе не прочитан: {error}") from error
     newest = max(green, key=lambda run: run.get("created_at", ""))
     return Proof(rc_tag, commit, newest.get("html_url", ""))
 
