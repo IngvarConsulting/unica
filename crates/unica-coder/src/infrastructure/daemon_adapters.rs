@@ -1,8 +1,10 @@
 //! The implementations the daemon reaches, chosen by the composition.
 //!
 //! The daemon routes requests; which engine does the work is decided here,
-//! so the daemon names no adapter crate. Replacing an engine changes this
-//! module and the composition beside it, not the daemon's manifest.
+//! so the daemon names no adapter crate. The items are the adapters' own,
+//! re-exported: replacing an engine changes this module and the composition
+//! beside it, not the daemon's manifest, though a changed item still reaches
+//! the daemon's code.
 
 /// Candidate lines of the literal text search.
 pub mod lexical {
