@@ -1,5 +1,5 @@
 use roxmltree::Document;
-use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+use unica_address::source_target::MetadataAddress;
 use unica_metadata::*;
 pub fn typed_properties(
     properties: Option<roxmltree::Node<'_, '_>>,
@@ -179,7 +179,7 @@ pub fn typed_relations(
                 let valid = if kind == "field" {
                     unica_metadata::MetadataFieldPath::parse(normalized).is_ok()
                 } else {
-                    MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, normalized).is_ok()
+                    MetadataAddress::parse_logical(normalized).is_ok()
                 };
                 if !valid {
                     diagnostics.push(
@@ -1152,9 +1152,7 @@ mod dimension_flag_tests {
             r#"<ChildObjects xmlns="http://v8.1c.ru/8.3/MDClasses"><Dimension uuid="22222222-2222-4222-8222-222222222222"><Properties><Name>Item</Name>{flags}</Properties></Dimension></ChildObjects>"#
         );
         let document = Document::parse(&xml).unwrap();
-        let target =
-            MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "InformationRegister.Facts")
-                .unwrap();
+        let target = MetadataAddress::parse_logical("InformationRegister.Facts").unwrap();
         let mut diagnostics = Vec::new();
         let mut elements = typed_elements_with_diagnostics(
             &xml,

@@ -1,0 +1,21 @@
+{
+  "id": "S291",
+  "area": "Расширения конфигурации",
+  "task": "Проверить роль расширения — валидатор role работает и в наборе-расширении",
+  "workspace": "tests/fixtures/acceptance/workspace-format",
+  "wire": [
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "ext:Role.ПР_ОсновнаяРоль"
+      },
+      "expect": [
+        "ok"
+      ],
+      "status": "passed",
+      "validators": [
+        "role"
+      ]
+    }
+  ]
+}

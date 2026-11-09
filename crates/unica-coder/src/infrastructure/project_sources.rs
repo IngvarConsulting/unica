@@ -3,14 +3,12 @@ use std::path::Path;
 use unica_source_contract::ProjectSourceMap;
 use unica_workspace::discovery::{ProjectDiscoveryReader, ProjectSourceMapProvenance};
 
-pub(crate) fn discover_project_source_map(
-    workspace_root: &Path,
-) -> Result<ProjectSourceMap, String> {
+pub fn discover_project_source_map(workspace_root: &Path) -> Result<ProjectSourceMap, String> {
     unica_source_designer::project_sources::discover_project_source_map(
         &ProjectDiscoveryReader::new(workspace_root),
     )
 }
-pub(crate) fn discover_project_source_map_controlled(
+pub fn discover_project_source_map_controlled(
     workspace_root: &Path,
     checkpoint: &mut dyn FnMut() -> Result<(), String>,
 ) -> Result<ProjectSourceMap, String> {

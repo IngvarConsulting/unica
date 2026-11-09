@@ -33,9 +33,7 @@ use std::fs;
 use std::sync::Mutex;
 use std::time::Duration;
 use tempfile::TempDir;
-use unica_address::source_target::{
-    MetadataAddress, ResolvedTarget, TargetKind, PLATFORM_XML_8_3_27_FORMAT_2_20,
-};
+use unica_address::source_target::{MetadataAddress, ResolvedTarget, TargetKind};
 use unica_source_contract::workspace::ResolvedSourceRoot;
 
 struct ProviderFixture {
@@ -67,9 +65,7 @@ impl ProviderFixture {
             .unwrap();
         fs::write(&module, "Procedure Probe()\nEndProcedure").unwrap();
         let module = unica_workspace::paths::normalize_path_identity(&module).unwrap();
-        let metadata_path =
-            MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "CommonModule.Smoke.Module")
-                .unwrap();
+        let metadata_path = MetadataAddress::parse_logical("CommonModule.Smoke.Module").unwrap();
         let workspace = WorkspaceContext {
             cwd: root.clone(),
             workspace_root: root.clone(),
@@ -216,7 +212,7 @@ fn no_deadline_analyze_dispatches_the_analyzer_without_a_timeout() {
 
 /// Each place an analyzer run stops keeps its own closed code instead of
 /// one "provider is unavailable", and the backend's text stays inside
-/// (#1338).
+/// .
 /// rule: INV.APP.DIAGNOSTIC-PROVIDERS
 #[test]
 fn backend_failure_keeps_where_the_run_stopped_and_drops_its_text() {

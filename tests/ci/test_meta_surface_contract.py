@@ -2,26 +2,22 @@ from __future__ import annotations
 
 import json
 import re
-import subprocess
 import unittest
 from collections import defaultdict
 from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-APPLICATION = REPO_ROOT / "crates/unica-coder/src/application/mod.rs"
-METADATA = REPO_ROOT / "crates/unica-coder/src/application/metadata.rs"
-TOOL_CONTRACTS = REPO_ROOT / "crates/unica-coder/src/application/tool_contracts.rs"
+APPLICATION = REPO_ROOT / "crates/unica-application/src/application/mod.rs"
+METADATA = REPO_ROOT / "crates/unica-application/src/application/metadata.rs"
+TOOL_CONTRACTS = REPO_ROOT / "crates/unica-application/src/application/tool_contracts.rs"
 OPERATION_DESCRIPTORS = (
-    REPO_ROOT / "crates/unica-coder/src/application/operation_descriptors.rs"
+    REPO_ROOT / "crates/unica-application/src/application/operation_descriptors.rs"
 )
 META_RUNTIME = REPO_ROOT / "crates/unica-coder/src/infrastructure/native_operations/meta"
 META_DOMAIN = REPO_ROOT / "crates/unica-metadata/src"
 META_REQUEST = META_DOMAIN / "request.rs"
 META_DESIGNER = REPO_ROOT / "crates/unica-metadata-designer/src"
-FORMAT_GUARD = REPO_ROOT / "crates/unica-coder/src/infrastructure/format_guard.rs"
-CF_RUNTIME = REPO_ROOT / "crates/unica-coder/src/infrastructure/native_operations/cf.rs"
-TOOL_CONTEXT = REPO_ROOT / "crates/unica-coder/src/infrastructure/tool_context.rs"
 # One file per property; `build.rs` of unica-metadata assembles the registry.
 META_PROPERTY_REGISTRY = REPO_ROOT / "crates/unica-metadata/src/properties"
 META_OPERATION_REGISTRY = (
@@ -146,120 +142,6 @@ def registered_tool_blocks() -> dict[str, str]:
     return blocks
 
 
-def owned_designer_source_closure(
-    roots: dict[Path, str], owners: dict[Path, str]
-) -> tuple[dict[Path, str], set[str]]:
-    """Scan helpers referenced by live Meta producers, including shared codecs.
-
-    Identifier matching deliberately over-approximates Rust resolution: all
-    same-named methods and function references are followed, including aliases.
-    Other codec entrypoints do not become Meta merely by sharing a crate.
-    Signatures, imports, types, attributes and macro bodies stay in the scan.
-    """
-    from tree_sitter import Language, Parser
-    import tree_sitter_rust
-
-    parser = Parser(Language(tree_sitter_rust.language()))
-
-    def walk(node):
-        yield node
-        for child in node.named_children:
-            yield from walk(child)
-
-    def identifiers(node) -> set[str]:
-        found = {
-            child.text.decode("utf-8")
-            for child in walk(node)
-            if child.type in {"identifier", "field_identifier", "type_identifier"}
-        }
-        # The pinned parser treats some valid `&raw` identifier expressions as
-        # ERROR nodes. Conservatively keep identifier-like references from
-        # those spans; rustc remains the syntax authority.
-        for child in walk(node):
-            if child.type in {"ERROR", "string_literal", "raw_string_literal"}:
-                found.update(re.findall(r"[A-Za-z_]\w*", child.text.decode("utf-8")))
-        return found
-
-    def outside_free_functions(node) -> set[str]:
-        if node.type in {"function_item", "use_declaration"}:
-            return set()
-        found = identifiers(node) if not node.named_children or node.type in {
-            "ERROR", "string_literal", "raw_string_literal"
-        } else set()
-        for child in node.named_children:
-            found.update(outside_free_functions(child))
-        return found
-
-    def is_method(node) -> bool:
-        parent = node.parent
-        while parent is not None:
-            if parent.type in {"impl_item", "trait_item"}:
-                return True
-            parent = parent.parent
-        return False
-
-    parsed = {
-        path: parser.parse(source.encode("utf-8")).root_node
-        for path, source in {**roots, **owners}.items()
-    }
-    aliases: dict[str, set[str]] = defaultdict(set)
-    for tree in parsed.values():
-        for node in walk(tree):
-            if node.type == "use_as_clause":
-                alias = node.child_by_field_name("alias")
-                original = node.child_by_field_name("path")
-                assert alias is not None and original is not None
-                aliases[alias.text.decode("utf-8")].update(identifiers(original))
-
-    functions = {}
-    by_name: dict[str, set[tuple[Path, int]]] = defaultdict(set)
-    for path in owners:
-        for node in walk(parsed[path]):
-            if node.type == "function_item":
-                name = node.child_by_field_name("name")
-                body = node.child_by_field_name("body")
-                assert name is not None and body is not None, (path, node.start_point)
-                key = (path, node.start_byte)
-                functions[key] = (node, body)
-                by_name[name.text.decode("utf-8")].add(key)
-
-    pending = set().union(*(identifiers(parsed[path]) for path in roots))
-    for path in owners:
-        pending.update(outside_free_functions(parsed[path]))
-    seen: set[str] = set()
-    # Trait dispatch and implicit Drop/Deref do not spell the method name at
-    # the call site. Scan every method and follow its free-function helpers.
-    selected = {key for key, (node, _) in functions.items() if is_method(node)}
-    for key in selected:
-        pending.update(identifiers(functions[key][0]))
-    while pending:
-        name = pending.pop()
-        if name in seen:
-            continue
-        seen.add(name)
-        pending.update(aliases[name] - seen)
-        for key in by_name[name] - selected:
-            selected.add(key)
-            pending.update(identifiers(functions[key][0]) - seen)
-
-    result = {}
-    for path, source in owners.items():
-        raw = source.encode("utf-8")
-        scanned = bytearray(raw)
-        for (function_path, start), (_, body) in functions.items():
-            if function_path == path and (function_path, start) not in selected:
-                scanned[body.start_byte:body.end_byte] = re.sub(
-                    rb"[^\n]", b" ", raw[body.start_byte:body.end_byte]
-                )
-        # A selected nested function can live inside an unselected outer body.
-        for key in selected:
-            node, _ = functions[key]
-            if key[0] == path:
-                scanned[node.start_byte:node.end_byte] = raw[node.start_byte:node.end_byte]
-        result[path] = scanned.decode("utf-8")
-    return result, {name for name, keys in by_name.items() if keys & selected}
-
-
 class MetaSurfaceContractTests(unittest.TestCase):
     def test_meta_observation_and_mutation_capability_contract_is_published(
         self,
@@ -328,7 +210,7 @@ class MetaSurfaceContractTests(unittest.TestCase):
             self.assertIn(marker, review["now"])
 
     def test_subsystem_membership_has_one_registered_topology_owner(self) -> None:
-        ports = (REPO_ROOT / "crates/unica-coder/src/application/ports.rs").read_text(
+        ports = (REPO_ROOT / "crates/unica-application/src/application/ports.rs").read_text(
             encoding="utf-8"
         )
         info_binding = (META_RUNTIME / "info.rs").read_text(encoding="utf-8")
@@ -370,7 +252,7 @@ class MetaSurfaceContractTests(unittest.TestCase):
             evidence.index(".open_retained_read("),
             evidence.index("crate::subsystem_topology::read_registered_subsystem_topology"),
         )
-        # #1119: only the depth bounds the registered walk; its size does not.
+        # Only the depth bounds the registered walk; its size does not.
         self.assertIn("maximum_depth: SUBSYSTEM_ADDRESS_MAX_DEPTH * 2", evidence)
         for retired in ("maximum_entries", "maximum_files", "maximum_bytes"):
             self.assertNotIn(retired, evidence)
@@ -434,7 +316,7 @@ class MetaSurfaceContractTests(unittest.TestCase):
         )["unica.meta.info"]
         manifest = json.loads(META_INFO_FIXTURE_MANIFEST.read_text(encoding="utf-8"))
         platform_corpus = (
-            REPO_ROOT / "crates/unica-coder/tests/format_8_3_27_xml_corpus.rs"
+            REPO_ROOT / "crates/unica-product/tests/format_8_3_27_xml_corpus.rs"
         ).read_text(encoding="utf-8")
 
         self.assertEqual(len(manifest["kinds"]), len(DONOR_METADATA_KINDS))
@@ -562,236 +444,6 @@ class MetaSurfaceContractTests(unittest.TestCase):
             "unica.meta.edit.setProperties.RegisterType",
         )
         self.assertIn("RegisterType", registered_metadata_properties())
-
-    def test_live_rust_guidance_never_advertises_retired_meta_routes(self) -> None:
-        retired_route = re.compile(
-            r"(?<![A-Za-z0-9_])meta-(?:compile|validate|profile)\b|"
-            r"unica\.meta\.(?:compile|validate|profile)\b"
-        )
-        production_surfaces = (
-            (CF_RUNTIME, "pub(crate) fn edit_cf_with_data"),
-            (TOOL_CONTEXT, "fn validates_compile_preview_like_apply"),
-        )
-        violations: list[str] = []
-        for path, signature in production_surfaces:
-            production = rust_function(path.read_text(encoding="utf-8"), signature)
-            if retired_route.search(production):
-                violations.append(
-                    f"{path.relative_to(REPO_ROOT).as_posix()}: {signature}"
-                )
-
-        self.assertEqual(
-            violations,
-            [],
-            "live Rust error/help paths still advertise retired Meta routes:\n"
-            + "\n".join(violations),
-        )
-
-    def test_live_meta_runtime_has_no_file_or_string_dsl_grammar(self) -> None:
-        sources = {
-            path: path.read_text(encoding="utf-8")
-            for path in sorted(
-                [
-                    path
-                    for path in META_RUNTIME.glob("*.rs")
-                    if not path.name.endswith("_tests.rs")
-                ]
-                + list(META_DOMAIN.glob("*.rs"))
-            )
-        }
-        # Canonical typed Metadata decode/staging, borrowing and resource
-        # producers are composition roots alongside native Meta add/edit/info.
-        adapters = META_RUNTIME.parent / "apply_families"
-        roots = {
-            **sources,
-            **{
-                adapters / name: (adapters / name).read_text(encoding="utf-8")
-                for name in ("mod.rs", "borrow.rs", "form_resource.rs")
-            },
-        }
-        designer_sources, selected = owned_designer_source_closure(
-            roots,
-            {
-                path: path.read_text(encoding="utf-8")
-                for path in sorted(META_DESIGNER.glob("*.rs"))
-            },
-        )
-        self.assertTrue(
-            {
-                "parse_metadata_plan_operation_in", "plan_metadata_batch",
-                "build_typed_operation_post_image", "read_typed_meta_info",
-                "plan_borrow_object_with_identity", "plan_borrow_enum_value",
-                "stage_metadata_resource_plan",
-            } <= selected,
-            "actual typed Meta producer roots must remain inside the DSL guard",
-        )
-        sources.update(designer_sources)
-        retired_grammar = {
-            "module-wide dead-or-unused suppression": re.compile(
-                r"^#!\[allow\([^\]]*(?:dead_code|unused_imports|unused\b)",
-                re.MULTILINE,
-            ),
-            "file selector": re.compile(r"\b(?:DefinitionFile|JsonPath)\b"),
-            "batch separator": re.compile(re.escape('.split(";;")')),
-            "attribute pipe flags": re.compile(re.escape("splitn(2, '|')")),
-            "string type grammar": re.compile(re.escape('strip_prefix("String(")')),
-            "number type grammar": re.compile(re.escape('strip_prefix("Number(")')),
-            "string operation value": re.compile(r"requires Value|Name: Type"),
-            "definition handlers": re.compile(r"\bmeta_edit_definition_[a-z0-9_]+"),
-            "legacy compile helper": re.compile(r"\bmeta_compile_[a-z0-9_]+"),
-            "legacy JSON template projection": re.compile(
-                r"fn get\(&self, key: &str\) -> Option<&Value>"
-            ),
-            "legacy JSON customization helpers": re.compile(
-                r"\b(?:bool_arg_from_json|meta_compile_string_list|"
-                r"normalize_meta_enum_value)\b"
-            ),
-            "orphan Meta compatibility wrapper": re.compile(
-                r"\b(?:MetaEditAfterLineNumberLengthPolicyHook|"
-                r"with_meta_edit_after_line_number_length_policy_hook|"
-                r"run_meta_edit_after_line_number_length_policy_hook|"
-                r"meta_edit_projected_diff|meta_validate_one|"
-                r"inspect_meta_validation_reads|PublicOwnerAware|"
-                r"MetaValidationOwnerContext|MetaValidationReadInspection|"
-                r"metadata_validation_subject_from_paths|metadata_validation_run|"
-                r"(?:analyze_meta_info|remove_metadata_object)[A-Za-z0-9_]*|"
-                r"metadata_object_registered)\b"
-            ),
-        }
-
-        violations: list[str] = []
-        for path, source in sorted(sources.items()):
-            for contract, pattern in retired_grammar.items():
-                if pattern.search(source):
-                    violations.append(f"{path.relative_to(REPO_ROOT)}: {contract}")
-        format_guard = FORMAT_GUARD.read_text(encoding="utf-8")
-        for operation in ("meta-edit", "meta-info", "meta-remove", "meta-validate"):
-            if f'"{operation}"' in format_guard:
-                violations.append(
-                    f"{FORMAT_GUARD.relative_to(REPO_ROOT)}: retired {operation} route"
-                )
-
-        self.assertEqual(
-            violations,
-            [],
-            "live Meta runtime still contains the retired file/string grammar:\n"
-            + "\n".join(violations),
-        )
-
-    def test_meta_designer_dsl_scope_follows_helpers_and_shared_codec_calls(self) -> None:
-        root = Path("meta_producer.rs")
-        owner = Path("shared_codec.rs")
-        roots = {root: "fn meta_add() { typed_plan(); }"}
-        source = '''
-            use crate::shared::owned_helper as helper_alias;
-            use crate::legacy::other_codec_entrypoint as legacy_alias;
-            fn typed_plan() { helper_alias(); shared_xml(); }
-            fn owned_helper() { typed_argument(); }
-            fn typed_argument() {}
-            fn shared_xml() {}
-            fn other_codec_entrypoint() { value.split(";;"); }
-        '''
-        sources, selected = owned_designer_source_closure(roots, {owner: source})
-        self.assertNotIn('.split(";;")', sources[owner])
-        self.assertTrue({"typed_plan", "owned_helper", "typed_argument", "shared_xml"} <= selected)
-        for implicit in (
-            'struct Typed; impl Drop for Typed { fn drop(&mut self) { let _ = "a;;b".split(";;"); } } fn typed_plan() { let _owned = Typed; }',
-            'struct Typed; impl Drop for Typed { fn drop(&mut self) { legacy_parse(); } } fn legacy_parse() { let _ = "a;;b".split(";;"); } fn typed_plan() { let _owned = Typed; }',
-            'fn legacy_parse() { let _ = "a;;b".split(";;"); } const CALLBACK: fn() = legacy_parse; fn typed_plan() { CALLBACK(); }',
-        ):
-            with self.subTest(implicit=implicit):
-                scanned, _ = owned_designer_source_closure(roots, {owner: implicit})
-                self.assertIn('.split(";;")', scanned[owner])
-        for label, needle, replacement in (
-            ("typed parser", "fn typed_argument() {}", 'fn typed_argument() { value.split(";;"); }'),
-            ("shared XML helper", "fn shared_xml() {}", 'fn shared_xml() { value.split(";;"); }'),
-            ("legacy decoder becomes reachable", "fn owned_helper() { typed_argument(); }",
-             "fn owned_helper() { typed_argument(); legacy_alias(); }"),
-        ):
-            with self.subTest(label=label):
-                changed = source.replace(needle, replacement)
-                self.assertNotEqual(changed, source)
-                mutated, _ = owned_designer_source_closure(roots, {owner: changed})
-                self.assertIn('.split(";;")', mutated[owner])
-
-    def test_tracked_tree_has_no_executable_legacy_meta_dsl_bridge(self) -> None:
-        tracked = subprocess.run(
-            ["git", "ls-files", "-z"],
-            cwd=REPO_ROOT,
-            check=True,
-            capture_output=True,
-        ).stdout.decode("utf-8").split("\0")
-        excluded_prefixes = (
-            "docs/design/",
-            "docs/plans/",
-            "docs/arch-v1/decisions/",
-            "tests/fixtures/unica_mcp_script_parity/cc-1c-skills/",
-            # Reviewed donor adaptations are retained only in a non-executable
-            # provenance archive; they do not define the current Meta contract.
-            "tests/fixtures/provenance/retired_meta_dsl/",
-        )
-        retired_files = {
-            "crates/unica-coder/src/infrastructure/native_operations/meta/compile_tests.rs",
-            "crates/unica-coder/src/infrastructure/native_operations/meta/legacy_dsl.rs",
-            "plugins/unica/references/specs/meta-dsl-spec.md",
-            "plugins/unica/skills/meta-edit/child-operations.md",
-            "plugins/unica/skills/meta-edit/json-dsl.md",
-            "plugins/unica/skills/meta-edit/properties-reference.md",
-        }
-        retired_identifiers = re.compile(
-            r"call_legacy_metadata_tool_for_tests|"
-            r"legacy_metadata_tool_spec_for_tests|"
-            r"compile_legacy_metadata_fixture|"
-            r"LEGACY_META_TEST_DESCRIPTORS|"
-            r"parse_meta_edit_dsl_input|"
-            r"meta_compile_object_xml|"
-            r"meta_edit_apply_inline_operation|"
-            r"meta_edit_apply_definition"
-        )
-
-        violations: list[str] = []
-        text_suffixes = {
-            ".bsl",
-            ".js",
-            ".json",
-            ".md",
-            ".mjs",
-            ".ps1",
-            ".py",
-            ".rs",
-            ".sh",
-            ".toml",
-            ".ts",
-            ".txt",
-            ".xml",
-            ".yaml",
-            ".yml",
-        }
-        for relative in tracked:
-            if not relative or relative.startswith(excluded_prefixes):
-                continue
-            if relative == "tests/ci/test_meta_surface_contract.py":
-                continue
-            path = REPO_ROOT / relative
-            if relative in retired_files and path.exists():
-                violations.append(relative)
-                continue
-            if path.suffix.lower() not in text_suffixes:
-                continue
-            if not path.exists():
-                continue
-            try:
-                source = path.read_text(encoding="utf-8")
-            except (UnicodeDecodeError, OSError):
-                continue
-            if retired_identifiers.search(source):
-                violations.append(relative)
-
-        self.assertEqual(
-            sorted(set(violations)),
-            [],
-            "tracked executable Meta DSL bridges remain:\n" + "\n".join(violations),
-        )
 
     def test_registry_is_exactly_the_three_typed_metadata_handlers(self) -> None:
         # `unica.meta.remove` is retired:

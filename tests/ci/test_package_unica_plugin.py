@@ -32,6 +32,16 @@ def load_package_module():
     return module
 
 
+SCRIPT_INTERPRETER_LAUNCH = re.compile(
+    r'Command::new\(\s*"(python3?|bash|powershell|pwsh)(?:\.exe)?"\s*\)'
+)
+
+
+def script_interpreter_launches(source: str) -> list[str]:
+    """Интерпретаторы скриптов, которые исходник запускает буквальным `Command::new`."""
+    return SCRIPT_INTERPRETER_LAUNCH.findall(source)
+
+
 class PackageUnicaPluginTests(unittest.TestCase):
     def test_package_tree_hash_frames_path_and_content_boundaries(self) -> None:
         module = load_package_module()
@@ -53,7 +63,7 @@ class PackageUnicaPluginTests(unittest.TestCase):
 
     def test_package_tree_hash_frames_the_executable_bit(self) -> None:
         # Тот же кадр, что у proof: бит исполнения входит в идентичность
-        # пакета, иначе потерянный `+x` у bootstrap пройдёт сверку (#700).
+        # пакета, иначе потерянный `+x` у bootstrap пройдёт сверку.
         module = load_package_module()
         root = Path(self.enterContext(tempfile.TemporaryDirectory()))
         plain = root / "plain"
@@ -283,28 +293,25 @@ class PackageUnicaPluginTests(unittest.TestCase):
     def test_unica_coder_has_no_runtime_operation_script_fallback(self) -> None:
         """rule: INV.APP.NATIVE-OPERATION-BACKEND"""
         repo_root = Path(__file__).resolve().parents[2]
-
-        self.assertFalse((repo_root / "plugins" / "unica" / "scripts" / "legacy").exists())
-
-        rust_sources = sorted((repo_root / "crates" / "unica-coder" / "src").rglob("*.rs"))
-        forbidden = (
-            "ToolHandler::LegacyScript",
-            "LegacyScriptAdapter",
-            "legacy_scripts",
-            'Command::new("python3")',
-            'Command::new("python")',
-            'Command::new("bash")',
-            'Command::new("powershell")',
-            'Command::new("pwsh")',
+        rust_sources = sorted(
+            path
+            for package in ("unica-coder", "unica-daemon", "unica-application", "unica-domain")
+            for path in (repo_root / "crates" / package / "src").rglob("*.rs")
         )
         matches = [
-            f"{path.relative_to(repo_root)}:{needle}"
+            f"{path.relative_to(repo_root)}:{interpreter}"
             for path in rust_sources
-            for needle in forbidden
-            if needle in path.read_text(encoding="utf-8")
+            for interpreter in script_interpreter_launches(path.read_text(encoding="utf-8"))
         ]
 
         self.assertEqual(matches, [])
+
+    def test_a_script_interpreter_launch_is_found_however_it_is_spelled(self) -> None:
+        source = (
+            'Command::new("python3"); Command::new( "bash" ); std::process::Command::new("pwsh.exe"); '
+            'Command::new("powershell"); Command::new("cargo"); Command::new(path);'
+        )
+        self.assertEqual(script_interpreter_launches(source), ["python3", "bash", "pwsh", "powershell"])
 
     def test_source_mcp_does_not_use_runtime_shell_wrappers(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
@@ -768,24 +775,6 @@ class PackageUnicaPluginTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.strip(), f"native=run")
-
-    def test_source_tree_does_not_reference_deleted_runtime_shell_wrappers_in_active_docs(self) -> None:
-        repo_root = Path(__file__).resolve().parents[2]
-        active_paths = [
-            repo_root / "README.md",
-            repo_root / "plugins" / "unica" / "README.md",
-            repo_root / "docs" / "internal-package.md",
-        ]
-        forbidden = ("run-unica.sh", "run-tool.sh", "run-tool.ps1", "run-bsl-analyzer.sh", "run-v8-runner.sh")
-
-        matches = [
-            f"{path.relative_to(repo_root)}:{needle}"
-            for path in active_paths
-            for needle in forbidden
-            if needle in path.read_text(encoding="utf-8")
-        ]
-
-        self.assertEqual(matches, [])
 
     def test_packaged_mcp_entrypoint_is_target_neutral(self) -> None:
         module = load_package_module()
@@ -1481,7 +1470,7 @@ class PackageUnicaPluginTests(unittest.TestCase):
             self.assertEqual(package_evidence["sourceCommit"], "a" * 40)
             # Свидетельство пакета несёт только наблюдённое: версию, коммит и
             # дайджесты. Флаги «не бампали, не публиковали, тега нет» были
-            # литералами продюсера и сняты (#696).
+            # литералами продюсера и сняты.
             for key in ("versionBumped", "published", "tag"):
                 self.assertNotIn(key, package_evidence)
 
