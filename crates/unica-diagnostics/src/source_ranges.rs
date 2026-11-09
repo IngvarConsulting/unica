@@ -1,4 +1,5 @@
 //! Exact projection of pinned current-source BSL findings into diagnostic ranges.
+
 /// The message of a misplaced variable declaration, as the parser words it.
 pub use unica_bsl_parser::MISPLACED_VARIABLE_MESSAGE;
 

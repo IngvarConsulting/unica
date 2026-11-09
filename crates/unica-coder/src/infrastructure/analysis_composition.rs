@@ -117,6 +117,7 @@ pub fn bsl_symbols(
 ) -> unica_adapter_bsl_analyzer::symbols::BslAnalyzerSymbols<'static> {
     unica_adapter_bsl_analyzer::symbols::BslAnalyzerSymbols::new(&BSL_CLIENT, context)
 }
+
 /// Members of the platform's global context from the help of the
 /// installation at `root`, for completion in the editor.
 pub fn platform_members(
@@ -137,8 +138,8 @@ pub fn platform_members(
         .collect())
 }
 
-/// The host of long analysis providers: one process per provider and root,
-/// owned by the daemon for its lifetime.
+/// The host of long analysis work: one shared piece of work per engine,
+/// target and capability set, owned by the daemon for its lifetime.
 pub mod provider_host {
     pub use unica_analysis_services::provider_host::{
         LongWorkFailure, ProviderHostKey, ProviderHostOwner,
