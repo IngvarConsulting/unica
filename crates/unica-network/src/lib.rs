@@ -54,10 +54,40 @@ pub const USER_AGENT: &str = user_agent!();
 pub const DOCS_USER_AGENT: &str = user_agent!("docs");
 
 /// Сколько редиректов проходим. Столько же разрешал прежний агент.
+// resource-limit: network.max-redirects
+// class: format
+// unit: count
+// scope: request
+// value: 5
+// resource: Число переходов по редиректам одного сетевого запроса.
+// status: unproven
+// origin: #1266
+// problem: Столько же разрешал прежний агент.
+// on-reach: ошибка «<url>: more than 5 redirects»
 const MAX_REDIRECTS: usize = 5;
+// resource-limit: network.connect-timeout
+// class: deadline
+// unit: ms
+// scope: connection
+// value: 30000
+// resource: Срок установления сетевого соединения агента загрузки.
+// status: unproven
+// origin: #1266
+// problem: неизвестно
+// on-reach: запрос завершается ошибкой соединения по сроку
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 /// Ожидание следующей порции данных, а не всей передачи: медленный, но живой
 /// канал не обрывается.
+// resource-limit: network.read-timeout
+// class: deadline
+// unit: ms
+// scope: connection
+// value: 60000
+// resource: Ожидание следующей порции данных сетевого ответа, а не всей передачи.
+// status: unproven
+// origin: #1266
+// problem: Медленный, но живой канал не должен обрываться.
+// on-reach: запрос завершается ошибкой чтения по сроку
 const READ_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// HTTP-клиент процесса: одна конфигурация TLS, одни настройки прокси.
@@ -292,7 +322,7 @@ fn tls_config() -> Result<(Arc<rustls::ClientConfig>, TrustSource), NetworkError
 }
 
 #[cfg(test)]
-mod tests {
+mod medium_tests {
     use super::*;
     use std::io::{BufRead, BufReader, Write};
     use std::net::TcpListener;
@@ -399,6 +429,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.PKG.NETWORK-TRUST-AND-PROXY
     #[test]
     fn a_redirect_from_https_to_plain_http_is_refused_at_any_step() {
         let current = url::Url::parse("https://github.com/release").expect("url");
@@ -414,6 +445,7 @@ mod tests {
         assert!(next_hop(&plain, "https://github.com/a").is_ok());
     }
 
+    /// rule: INV.PKG.NETWORK-PROXY-ROUTING
     #[test]
     fn each_redirect_step_chooses_its_own_route() {
         // Первый узел в NO_PROXY, второй — нет: второй шаг обязан пойти
@@ -452,6 +484,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.PKG.NETWORK-TRUST-AND-PROXY
     #[test]
     fn an_empty_os_store_falls_back_to_bundled_roots_and_nothing_else_does() {
         // Пустое хранилище ОС — единственный повод взять вшитый набор.
@@ -466,6 +499,7 @@ mod tests {
         assert_eq!(select_trust::<()>(Err(other.clone())), Err(other));
     }
 
+    /// rule: INV.PKG.NETWORK-TRUST-AND-PROXY
     #[test]
     fn the_fallback_trusts_exactly_the_bundled_mozilla_roots() {
         let roots = bundled_roots();

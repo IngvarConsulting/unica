@@ -118,7 +118,7 @@ fn terminal(
 }
 
 #[test]
-fn raw_frame_exact_result_bound_reopens_and_rejects_corruption() {
+fn medium_raw_frame_exact_result_bound_reopens_and_rejects_corruption() {
     let (_temp, root, spec, mut store, mut model) = fixture();
     let key = key();
     let overhead = serde_json::to_vec(&DomainResult::success(""))
@@ -594,6 +594,7 @@ fn valid_shared_read_metadata_with_both_roles_fits_the_closed_bound() {
     store.close_quiescent().unwrap();
 }
 
+/// rule: INV.APP.EXECUTION-AUTHORITY
 #[test]
 fn physical_cas_readback_redecides_the_same_factual_outcome() {
     let (_temp, _root, _spec, mut store, mut first) = fixture();

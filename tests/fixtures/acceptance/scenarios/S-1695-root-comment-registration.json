@@ -1,0 +1,214 @@
+{
+  "id": "S-1695-root-comment-registration",
+  "issue": 1695,
+  "area": "Изменение метаданных",
+  "task": "Отклонить чтение, контракт и запись Comment у дескриптора без регистрации владельца: changed и equal Comment не выдают токен и не меняют исходники или карту выгрузки. Фикстура производная от native workspace-root-comments: ChildObjects пуст, файл CommonAttribute сохранён.",
+  "workspace": "tests/fixtures/acceptance/workspace-root-comment-registration",
+  "profile": "source",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonAttribute.Probe"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "not_found: metadata owner `CommonAttribute.Probe` is not registered",
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "not_found"
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        },
+        {
+          "pointer": "/changed",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "v8project.yaml",
+          "eq": "6fa50678d415c16f6fc4127bd3e86d1e262428d161c7bc00e3e808f5b69fbe41"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "5081cfe341032873dbec96c70135faff38cf1d183a920e5fe274d2cd50262362"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonAttributes/Probe.xml",
+          "eq": "5de4ef9c1d8e97ba65703fac1f0f0bc4f3d30abea1185771243b5e00910a40de"
+        },
+        {
+          "kind": "exists",
+          "path": "src/ConfigDumpInfo.xml",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonAttribute.Probe.Can.props.set"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "not_found: metadata owner `CommonAttribute.Probe` is not registered",
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "not_found"
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        },
+        {
+          "pointer": "/changed",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "v8project.yaml",
+          "eq": "6fa50678d415c16f6fc4127bd3e86d1e262428d161c7bc00e3e808f5b69fbe41"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "5081cfe341032873dbec96c70135faff38cf1d183a920e5fe274d2cd50262362"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonAttributes/Probe.xml",
+          "eq": "5de4ef9c1d8e97ba65703fac1f0f0bc4f3d30abea1185771243b5e00910a40de"
+        },
+        {
+          "kind": "exists",
+          "path": "src/ConfigDumpInfo.xml",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:CommonAttribute.Probe",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "orphan"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "not_found: metadata owner is not registered",
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "not_found"
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        },
+        {
+          "pointer": "/changed",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "v8project.yaml",
+          "eq": "6fa50678d415c16f6fc4127bd3e86d1e262428d161c7bc00e3e808f5b69fbe41"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "5081cfe341032873dbec96c70135faff38cf1d183a920e5fe274d2cd50262362"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonAttributes/Probe.xml",
+          "eq": "5de4ef9c1d8e97ba65703fac1f0f0bc4f3d30abea1185771243b5e00910a40de"
+        },
+        {
+          "kind": "exists",
+          "path": "src/ConfigDumpInfo.xml",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:CommonAttribute.Probe",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": ""
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "not_found: metadata owner is not registered",
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "not_found"
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        },
+        {
+          "pointer": "/changed",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "v8project.yaml",
+          "eq": "6fa50678d415c16f6fc4127bd3e86d1e262428d161c7bc00e3e808f5b69fbe41"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "5081cfe341032873dbec96c70135faff38cf1d183a920e5fe274d2cd50262362"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonAttributes/Probe.xml",
+          "eq": "5de4ef9c1d8e97ba65703fac1f0f0bc4f3d30abea1185771243b5e00910a40de"
+        },
+        {
+          "kind": "exists",
+          "path": "src/ConfigDumpInfo.xml",
+          "eq": false
+        }
+      ]
+    }
+  ]
+}

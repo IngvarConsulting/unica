@@ -284,7 +284,7 @@ fn render_segments(segments: &[AddressSegment]) -> String {
 /// WebSocketClient module, a mismatched name) has no address rather than a
 /// guessed one. Registration of the owner is proved later by `view`; this
 /// mapping reads nothing.
-pub(crate) fn module_address_for_relative(
+pub fn module_address_for_relative(
     source_set: &str,
     source_set_kind: SourceSetKind,
     profile: PlatformProfile,

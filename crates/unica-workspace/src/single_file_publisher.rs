@@ -31,6 +31,16 @@ use crate::platform::filesystem::{
     retain_regular_child_for_cleanup, FileIdentity, PortablePermissions,
 };
 
+// resource-limit: workspace.publisher-stage-attempts
+// class: retry
+// unit: count
+// scope: file
+// value: 16
+// resource: Число попыток создать уникальный промежуточный файл при публикации одного файла.
+// status: unproven
+// origin: #163
+// problem: неизвестно
+// on-reach: ошибка StageCollisionsExhausted с путём цели и числом попыток
 const STAGE_ATTEMPTS: usize = 16;
 static STAGE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static PUBLICATION_PROCESS_LOCKS: OnceLock<Mutex<HashMap<String, Weak<Mutex<()>>>>> =
@@ -1674,7 +1684,7 @@ impl Drop for StageGuard {
 }
 
 #[cfg(test)]
-mod tests {
+mod medium_tests {
     use super::{
         cleanup_publication_artifact, create_stage_with_candidates, publish,
         with_before_bound_cleanup_hook, with_before_commit_hook,
@@ -1982,6 +1992,7 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    /// rule: INV.SOURCE.ATOMIC-PUBLISH
     #[test]
     fn precommit_failpoints_preserve_target_and_remove_stage() {
         let cases = [

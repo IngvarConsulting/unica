@@ -13,7 +13,7 @@ use unica_source_contract::ProjectSourceSet;
 use unica_source_contract::{SourceFormat, SourceSetKind};
 
 use crate::infrastructure::source_roots::{resolve_named_source_set, ResolvedNamedSourceSet};
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use std::cell::RefCell;
 use std::fmt;
 use std::fs;
@@ -35,7 +35,7 @@ use unica_workspace::paths::{
 
 const MD_CLASSES_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 thread_local! {
     static NAVIGATION_PROVIDER_ENTRY_HOOK: RefCell<Option<Box<dyn FnOnce()>>> =
         RefCell::new(None);
@@ -43,7 +43,7 @@ thread_local! {
         RefCell::new(None);
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn set_navigation_provider_entry_hook_for_test(hook: impl FnOnce() + 'static) {
     NAVIGATION_PROVIDER_ENTRY_HOOK.with(|slot| {
         let previous = slot.replace(Some(Box::new(hook)));
@@ -51,7 +51,7 @@ fn set_navigation_provider_entry_hook_for_test(hook: impl FnOnce() + 'static) {
     });
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn run_navigation_provider_entry_hook_for_test() {
     NAVIGATION_PROVIDER_ENTRY_HOOK.with(|slot| {
         if let Some(hook) = slot.borrow_mut().take() {
@@ -60,7 +60,7 @@ fn run_navigation_provider_entry_hook_for_test() {
     });
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn set_object_descriptor_content_read_hook_for_test(hook: impl FnOnce() + 'static) {
     OBJECT_DESCRIPTOR_CONTENT_READ_HOOK.with(|slot| {
         let previous = slot.replace(Some(Box::new(hook)));
@@ -71,7 +71,7 @@ fn set_object_descriptor_content_read_hook_for_test(hook: impl FnOnce() + 'stati
     });
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn run_object_descriptor_content_read_hook_for_test() {
     OBJECT_DESCRIPTOR_CONTENT_READ_HOOK.with(|slot| {
         if let Some(hook) = slot.borrow_mut().take() {
@@ -1237,7 +1237,7 @@ fn resolve_platform_xml_object(
             ),
         ));
     };
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     run_object_descriptor_content_read_hook_for_test();
     let descriptor = read_navigation_descriptor(&target_path)
         .map_err(|_| metadata_owner_evidence_error(target))?;
@@ -1787,7 +1787,7 @@ fn ensure_no_link_components(source_root: &Path, path: &Path) -> Result<(), Stri
 }
 
 #[cfg(test)]
-mod tests {
+mod medium_tests {
     use super::{revalidate_platform_xml_target, set_object_descriptor_content_read_hook_for_test};
 
     use std::fs;
@@ -2076,6 +2076,7 @@ mod tests {
         cleanup(&context);
     }
 
+    /// rule: INV.SOURCE.WRITE-TARGET-KIND
     #[test]
     fn platform_xml_source_target_revalidation_rejects_changed_descriptor_identity() {
         let context = fixture(
@@ -2459,6 +2460,7 @@ mod tests {
 
     /// The complete `(target kind, policy)` table, so widening one cell cannot
     /// pass unnoticed because only its own scenario was covered.
+    /// rule: INV.SOURCE.WRITE-TARGET-KIND
     #[test]
     fn platform_xml_target_kind_policy_table_is_closed() {
         let context = fixture(
@@ -2550,6 +2552,7 @@ mod tests {
 
     /// A handle revalidates under the policy that issued it, so a source-root
     /// handle keeps resolving while a module handle can never widen into one.
+    /// rule: INV.SOURCE.WRITE-TARGET-KIND
     #[test]
     fn platform_xml_source_root_handle_revalidates_without_widening() {
         let context = fixture(
@@ -3364,6 +3367,7 @@ mod tests {
         cleanup(&context);
     }
 
+    /// rule: INV.SOURCE.WRITABLE-PROFILE
     #[test]
     fn platform_xml_object_target_rejects_xml_decoded_version_equality() {
         let context = fixture(

@@ -1,0 +1,26 @@
+{
+  "area": "Реквизиты и состав",
+  "task": "Изменить свойства табличной части по её адресу",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты.TabularSection.Представления",
+        "ops": [
+          {
+            "op": "tabularSection.set",
+            "args": {
+              "values": {
+                "synonym": "Языковые представления"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S074"
+}

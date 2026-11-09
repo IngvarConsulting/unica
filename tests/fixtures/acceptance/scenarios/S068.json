@@ -1,0 +1,39 @@
+{
+  "area": "Реквизиты и состав",
+  "task": "Добавить обязательный реквизит с комментарием (превью)",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Document.АктОбУничтоженииПерсональныхДанных",
+        "ops": [
+          {
+            "op": "attribute.add",
+            "args": {
+              "items": [
+                {
+                  "name": "ВнешнийКод",
+                  "type": {
+                    "variants": [
+                      {
+                        "kind": "string",
+                        "length": 20,
+                        "allowedLength": "variable"
+                      }
+                    ]
+                  },
+                  "required": true,
+                  "comment": "Код из внешней системы"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S068"
+}

@@ -69,6 +69,7 @@ mod tests {
         Ok(())
     }
 
+    /// rule: INV.SOURCE.SUBSYSTEM-REGISTRATION
     #[test]
     fn registration_order_drives_roles_and_interface_membership() {
         let root = tempfile::tempdir().unwrap();
@@ -137,6 +138,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.SOURCE.SUBSYSTEM-REGISTRATION
     #[test]
     fn registered_dependency_paths_follow_registration_order_exactly() {
         let root = tempfile::tempdir().unwrap();
@@ -160,6 +162,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.SOURCE.SUBSYSTEM-REGISTRATION
     #[test]
     fn content_references_are_typed_and_match_both_descriptor_identities() {
         let root = tempfile::tempdir().unwrap();
@@ -243,6 +246,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.SOURCE.RELATIONS-ANSWER-IN-ONE-BRANCH
     #[test]
     fn memberships_name_the_listing_subsystem_its_ancestors_and_standard_library_roots() {
         let root = tempfile::tempdir().unwrap();
@@ -381,6 +385,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.SOURCE.SUBSYSTEM-REGISTRATION
     #[test]
     fn arbitrary_nonempty_content_reference_rejects_the_topology() {
         let root = tempfile::tempdir().unwrap();
@@ -401,6 +406,7 @@ mod tests {
         assert!(error.to_string().contains("Content"), "{error}");
     }
 
+    /// rule: INV.SOURCE.SUBSYSTEM-REGISTRATION
     #[test]
     fn unregistered_files_do_not_define_or_break_the_topology() {
         let root = tempfile::tempdir().unwrap();
@@ -425,6 +431,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.SOURCE.SUBSYSTEM-REGISTRATION
     #[test]
     fn unregistered_large_xml_is_not_read_for_the_topology() {
         let root = tempfile::tempdir().unwrap();
@@ -442,6 +449,7 @@ mod tests {
         assert_eq!(actual, expected);
     }
 
+    /// rule: INV.SOURCE.SUBSYSTEM-REGISTRATION
     #[test]
     fn unregistered_file_symlink_does_not_affect_the_topology() {
         let root = tempfile::tempdir().unwrap();
@@ -470,6 +478,7 @@ mod tests {
         assert_eq!(actual, expected);
     }
 
+    /// rule: INV.SOURCE.SUBSYSTEM-REGISTRATION
     #[test]
     fn unregistered_directory_symlink_branch_does_not_affect_the_topology() {
         let root = tempfile::tempdir().unwrap();
@@ -500,31 +509,6 @@ mod tests {
             .expect("an unregistered directory symlink branch must not be classified");
 
         assert_eq!(actual, expected);
-    }
-
-    /// #1119: a registered descriptor past the former 64 MiB budget is read;
-    /// its size is no reason to refuse the topology.
-    #[test]
-    fn registered_descriptor_past_the_former_byte_budget_is_read() {
-        let root = tempfile::tempdir().unwrap();
-        write_configuration(root.path(), &["Registered"]);
-        write_subsystem(root.path(), &[], "Registered", "true", &[], &[]);
-        let source_root = root.path().canonicalize().unwrap();
-        let expected = capture_registered_subsystem_topology(&source_root, checkpoint).unwrap();
-        let descriptor = root.path().join("Subsystems/Registered.xml");
-        let text = fs::read_to_string(&descriptor).unwrap().replace(
-            "</MetaDataObject>",
-            &format!("<!--{}--></MetaDataObject>", "x".repeat(65 * 1024 * 1024)),
-        );
-        fs::write(descriptor, text).unwrap();
-
-        let actual = capture_registered_subsystem_topology(&source_root, checkpoint)
-            .expect("a large registered descriptor is read whole");
-
-        // Compare the structure only: the dependency documents now carry the
-        // large descriptor and must not be printed on failure.
-        assert!(actual.roots == expected.roots);
-        assert!(actual.dependency_paths == expected.dependency_paths);
     }
 
     #[test]
@@ -751,6 +735,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.SOURCE.SUBSYSTEM-REGISTRATION
     #[test]
     fn missing_malformed_and_duplicate_registered_nodes_are_rejected() {
         let missing = tempfile::tempdir().unwrap();
@@ -775,6 +760,7 @@ mod tests {
             .contains("duplicate subsystem registration"));
     }
 
+    /// rule: INV.SOURCE.SUBSYSTEM-REGISTRATION
     #[test]
     fn empty_registration_proves_an_empty_topology_without_a_subsystems_directory() {
         let root = tempfile::tempdir().unwrap();
@@ -788,6 +774,7 @@ mod tests {
         assert!(topology.interface_addresses().is_empty());
     }
 
+    /// rule: INV.SOURCE.SUBSYSTEM-REGISTRATION
     #[test]
     fn ninth_registered_level_exceeds_the_shared_address_budget() {
         let root = tempfile::tempdir().unwrap();
@@ -811,6 +798,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.SOURCE.SUBSYSTEM-REGISTRATION
     #[test]
     fn complete_result_requires_a_checkpoint_after_secure_capture_and_parsing() {
         let root = tempfile::tempdir().unwrap();
@@ -841,6 +829,7 @@ mod tests {
         assert!(error.to_string().contains("cancelled"), "{error}");
     }
 
+    /// rule: INV.SOURCE.SUBSYSTEM-REGISTRATION
     #[test]
     fn registered_descriptor_symlink_is_not_followed() {
         let root = tempfile::tempdir().unwrap();

@@ -1,0 +1,26 @@
+{
+  "area": "Свойства объектов",
+  "task": "Увеличить длину наименования справочника до 200 (превью)",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "DescriptionLength": 200
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S044"
+}

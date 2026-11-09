@@ -1,5 +1,6 @@
 use super::*;
 
+/// rule: INV.SOURCE.EVENT-IMPLEMENTATION-PAIR
 #[test]
 fn implementation_shape_uses_typed_owner_leaf_and_the_selected_catalog_record() {
     let form_xml = r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20">

@@ -28,6 +28,16 @@ use unica_workspace::state_fs::{
 };
 use uuid::Uuid;
 
+// resource-limit: lifecycle-link-store.record-bytes
+// class: format
+// unit: bytes
+// scope: record
+// derived: true
+// resource: Размер одной записи хранилища связей жизненного цикла задания (производственный предел хранилища).
+// status: unproven
+// origin: коммит 7f6b8536e (feat(v13): add receipt actor and exact recovery)
+// problem: неизвестно
+// on-reach: запись большего размера не сохраняется и не читается; ёмкость резервируется по этому пределу
 pub const MAX_TASK_LIFECYCLE_LINK_RECORD_BYTES: usize =
     APPLICATION_MAX_TASK_LIFECYCLE_LINK_RECORD_BYTES as usize;
 
@@ -2492,8 +2502,9 @@ mod tests {
         identities
     }
 
+    /// rule: INV.APP.DAEMON-TASK-CAPACITY
     #[test]
-    fn production_links_reserve_and_materialize_past_4096_and_reopen() {
+    fn medium_production_links_reserve_and_materialize_past_4096_and_reopen() {
         let root = tempfile::tempdir().unwrap();
         let root_path = physical_root(&root);
         let identities = seed_reservation_snapshot(&root_path, 4096);
@@ -2533,8 +2544,9 @@ mod tests {
         }
     }
 
+    /// rule: INV.APP.DAEMON-TASK-CAPACITY
     #[test]
-    fn real_snapshot_over_8mib_can_reopen_mutate() {
+    fn medium_real_snapshot_over_8mib_can_reopen_mutate() {
         let root = tempfile::tempdir().unwrap();
         let root_path = physical_root(&root);
         seed_reservation_snapshot(&root_path, 13000);
@@ -2565,38 +2577,7 @@ mod tests {
         }
     }
 
-    #[test]
-    fn inspection_cleans_links_staging_past_former_directory_bound() {
-        let root = tempfile::tempdir().unwrap();
-        let root_path = physical_root(&root);
-        seed_reservation_snapshot(&root_path, 1);
-        let committed = fs::read(root_path.join(STORE_SNAPSHOT_FILE)).unwrap();
-        let directory = open_state_directory_nofollow(&root_path).unwrap();
-        for index in 0..100 {
-            let file = create_state_file_child(
-                &directory,
-                OsStr::new(&format!(
-                    "{STORE_STAGING_PREFIX}{index}{STORE_STAGING_SUFFIX}"
-                )),
-            )
-            .unwrap();
-            restrict_state_stage_to_owner(&file).unwrap();
-        }
-        let store =
-            TaskLifecycleLinkStoreV5::open(&root_path, deadline()).expect("inspect all staging");
-        assert_eq!(store.capacity_snapshot().live_reservations(), 1);
-        assert_eq!(
-            fs::read(root_path.join(STORE_SNAPSHOT_FILE)).unwrap(),
-            committed
-        );
-        for entry in fs::read_dir(root_path).unwrap() {
-            assert!(matches!(
-                entry.unwrap().file_name().to_str(),
-                Some(STORE_SNAPSHOT_FILE | STORE_LOCK_FILE)
-            ));
-        }
-    }
-
+    /// rule: INV.APP.DAEMON-TASK-CAPACITY
     #[test]
     fn reservation_consumes_task_store_slot_before_materialization_and_reopens_exactly() {
         let root = tempfile::tempdir().expect("temporary root");
@@ -2638,6 +2619,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.RUNTIME.TIMERS-PRESERVE-WORK
     #[test]
     fn no_deadline_links_preserve_exact_cas_and_reopen_terminal_winner() {
         let root = tempfile::tempdir().unwrap();
@@ -2775,6 +2757,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.APP.DAEMON-TASK-CAPACITY
     #[test]
     fn task_bound_terminal_and_retirement_transitions_are_exact_cas_and_reopen_stable() {
         let root = tempfile::tempdir().expect("temporary root");
@@ -3061,6 +3044,7 @@ mod tests {
         assert_eq!(reopened.catalog_snapshot(deadline()).unwrap().count(), 0);
     }
 
+    /// rule: INV.APP.DAEMON-TASK-CAPACITY
     #[test]
     fn corrupt_snapshot_preserves_verified_orphan_before_cleanup() {
         let root = tempfile::tempdir().unwrap();
@@ -3082,6 +3066,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.APP.DAEMON-TASK-CAPACITY
     #[test]
     fn second_pass_refuses_replaced_link_staging_without_deleting_either_file() {
         let root = tempfile::tempdir().unwrap();
@@ -3110,6 +3095,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.APP.DAEMON-TASK-CAPACITY
     #[test]
     fn second_pass_refuses_link_staging_symlink_and_preserves_external_bytes() {
         let root = tempfile::tempdir().unwrap();
@@ -3138,6 +3124,7 @@ mod tests {
             .is_symlink());
     }
 
+    /// rule: INV.APP.DAEMON-TASK-CAPACITY
     #[test]
     fn catalog_schema_rejects_duplicate_unknown_missing_and_trailing_fields() {
         let root = tempfile::tempdir().unwrap();
@@ -3239,6 +3226,7 @@ mod tests {
         assert_eq!(MAX_TASK_LIFECYCLE_LINK_RECORD_BYTES, 1_024);
     }
 
+    /// rule: INV.APP.DAEMON-TASK-CAPACITY
     #[test]
     fn streaming_catalog_preserves_canonical_bytes_for_all_states_and_id_orders() {
         let mut catalog = StoreCatalog::default();

@@ -18,9 +18,29 @@ use std::time::{Duration, Instant};
 use unica_execution_contract::invocation::SafeIdentityHash;
 use unica_work_control::operation_deadline::OperationDeadline;
 
+// resource-limit: receipt.ledger-actor-queue
+// class: concurrency
+// unit: count
+// scope: daemon
+// value: 64
+// resource: Ёмкость очереди команд к актору журнала квитанций.
+// status: unproven
+// origin: коммит 7f6b8536e (feat(v13): add receipt actor and exact recovery)
+// problem: неизвестно
+// on-reach: отправитель ждёт места в очереди до своего срока, затем DeadlineExceeded
 const RECEIPT_LEDGER_CHANNEL_CAPACITY: usize = 64;
 const READY: u8 = 0;
 const RECOVERY_REQUIRED: u8 = 1;
+// resource-limit: receipt.ledger-enqueue-retry
+// class: step
+// unit: ms
+// scope: daemon
+// value: 1
+// resource: Пауза перед повторной постановкой команды в заполненную очередь актора журнала квитанций.
+// status: unproven
+// origin: коммит 7f6b8536e (feat(v13): add receipt actor and exact recovery)
+// problem: неизвестно
+// on-reach: попытки повторяются до срока операции, затем ReceiptLedgerError::DeadlineExceeded
 const ENQUEUE_RETRY_SLICE: Duration = Duration::from_millis(1);
 
 struct HeavyResultSlot {
@@ -3158,6 +3178,7 @@ mod tests {
             .expect("worker exits and releases the port without self-join");
     }
 
+    /// rule: INV.RUNTIME.TIMERS-PRESERVE-WORK
     #[test]
     fn no_deadline_actor_queue_waits_for_running_port_then_returns_success() {
         let (entered, observed_entry) = mpsc::channel();
@@ -3212,6 +3233,7 @@ mod tests {
         assert!(!actor.restart_required());
     }
 
+    /// rule: INV.RUNTIME.TIMERS-PRESERVE-WORK
     #[test]
     fn no_deadline_mutation_keeps_late_successful_completion_authority() {
         let health = ActorHealth::ready(Duration::ZERO);
@@ -3818,6 +3840,7 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
+    /// rule: INV.APP.DAEMON-STORE-FAIL-STOP
     #[test]
     fn expired_command_queued_behind_running_reserve_never_reaches_the_port() {
         let (entered, entered_wait) = mpsc::channel();
@@ -3920,10 +3943,11 @@ mod tests {
         }
     }
 
-    /// #1387: a step queued behind a slow one starts with little of its
+    /// A step queued behind a slow one starts with little of its
     /// caller's deadline left. Once begun it is held to the actor's running
     /// floor from its own start, not to the caller's remainder: overrunning
     /// the caller's deadline is neither uncertain nor a fail-stop.
+    /// rule: INV.APP.DAEMON-STORE-FAIL-STOP
     #[test]
     fn step_begun_late_in_its_deadline_gets_the_running_floor_from_its_start() {
         let floor = Duration::from_secs(3);
@@ -3987,6 +4011,7 @@ mod tests {
         assert!(!actor.restart_required(), "no fail-stop");
     }
 
+    /// rule: INV.APP.DAEMON-STORE-FAIL-STOP
     #[test]
     fn running_reserve_deadline_is_commit_uncertain_and_fail_stops_actor() {
         let (entered, entered_wait) = mpsc::channel();
@@ -4035,6 +4060,7 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
+    /// rule: INV.APP.DAEMON-STORE-FAIL-STOP
     #[test]
     fn reserve_panic_is_commit_uncertain_and_fail_stops_actor() {
         let actor = ReceiptLedgerActor::spawn(PanickingPort);
@@ -4410,6 +4436,7 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), 0);
     }
 
+    /// rule: INV.APP.DAEMON-STORE-FAIL-STOP
     #[test]
     fn expired_direct_terminal_queued_behind_running_reserve_never_reaches_the_port() {
         let (entered, entered_wait) = mpsc::channel();

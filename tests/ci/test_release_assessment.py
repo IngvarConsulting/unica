@@ -68,7 +68,7 @@ class ReleaseAssessmentTests(unittest.TestCase):
     def test_unica_version_names_the_manifest_that_lacks_the_unica_entry(self) -> None:
         # Манифест есть, записи `unica` нет — так устроен исходный
         # `plugins/unica/third-party/manifest.json` с пустым `tools`. Отказ
-        # обязан назвать файл, а не абстрактного «кандидата» (#701, п. 5).
+        # обязан назвать файл, а не абстрактного «кандидата» (п. 5).
         module = load_assessment_module()
         runtime = Path(self.enterContext(tempfile.TemporaryDirectory()))
         manifest = runtime / "third-party" / "manifest.json"
@@ -137,11 +137,10 @@ class ReleaseAssessmentTests(unittest.TestCase):
             "diagnostics": ["index build failed"],
         }
 
-    def search_payload(self, *, semantic: dict | None = None, symbol: dict | None = None) -> dict:
+    def search_payload(self, *, symbol: dict | None = None) -> dict:
         return {
             "data": {
                 "sections": [
-                    semantic or self.building_section("semantic", "rlm"),
                     symbol or self.building_section("symbol", "bsl-analyzer"),
                     {
                         "role": "lexical",
@@ -507,7 +506,7 @@ for raw in sys.stdin:
         # Демон v5 сам восстанавливает потерянный submit-response по точному
         # ключу квитанции; до провода `-32000` доходит только когда не
         # уложились и в окно восстановления. Оценка обязана показать это как
-        # отказ сценария, а не прятать одним повтором (#698).
+        # отказ сценария, а не прятать одним повтором.
         module = load_assessment_module()
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -972,14 +971,13 @@ for raw in sys.stdin:
                 "data": {
                     "sections": [
                         {"provider": "git-grep", "status": "ok"},
-                        {"provider": "rlm", "status": "empty"},
                     ]
                 },
             },
         )
         self.assertEqual(scenario["status"], "failed")
         self.assertTrue(
-            any("semantic, symbol, lexical" in error for error in scenario["errors"]),
+            any("symbol, lexical" in error for error in scenario["errors"]),
             scenario,
         )
 
@@ -1061,7 +1059,6 @@ for raw in sys.stdin:
                     blocking=True,
                 )
                 sections = [
-                    section("semantic", "rlm", "provider", "provider"),
                     section("symbol", "bsl-analyzer", "provider", "provider"),
                     section("lexical", "git-grep", "none", "providerTraversal"),
                 ]
@@ -1110,7 +1107,6 @@ for raw in sys.stdin:
                     blocking=True,
                 )
                 sections = [
-                    section("semantic", "rlm", "provider", "provider"),
                     section("symbol", "bsl-analyzer", "provider", "provider"),
                     section("lexical", "git-grep", "none", "providerTraversal"),
                 ]
@@ -1157,11 +1153,11 @@ for raw in sys.stdin:
             [
                 (
                     self.search_scenario(status="failed", errors=["no role served the request"]),
-                    self.search_payload(semantic=self.building_section("semantic", "rlm")),
+                    self.search_payload(symbol=self.building_section("symbol", "bsl-analyzer")),
                 ),
                 (
                     self.search_scenario(status="passed"),
-                    self.search_payload(semantic=self.ready_section("semantic", "rlm")),
+                    self.search_payload(symbol=self.ready_section("symbol", "bsl-analyzer")),
                 ),
             ]
         )
@@ -1180,16 +1176,6 @@ for raw in sys.stdin:
         self.assertEqual([2], sleeps)
         self.assertEqual("ready", module.indexed_code_search_state(payload))
 
-    def test_indexed_code_search_waits_while_one_role_can_still_become_ready(self) -> None:
-        """A permanently failed role does not settle the search on its own."""
-        module = load_assessment_module()
-        payload = self.search_payload(
-            semantic=self.building_section("semantic", "rlm"),
-            symbol=self.failed_section("symbol", "bsl-analyzer"),
-        )
-
-        self.assertEqual("building", module.indexed_code_search_state(payload))
-
     def test_indexed_code_search_treats_a_non_retryable_pending_role_as_terminal(self) -> None:
         """`dependencyPending` promises a retry; without one there is none.
 
@@ -1199,11 +1185,10 @@ for raw in sys.stdin:
         deadline before failing on something already known to be broken.
         """
         module = load_assessment_module()
-        pending = self.building_section("semantic", "rlm")
+        pending = self.building_section("symbol", "bsl-analyzer")
         pending["termination"]["retryable"] = False
         payload = self.search_payload(
-            semantic=pending,
-            symbol=self.failed_section("symbol", "bsl-analyzer"),
+            symbol=pending,
         )
         sleeps: list[float] = []
 
@@ -1222,7 +1207,6 @@ for raw in sys.stdin:
     def test_indexed_code_search_fails_when_no_role_can_become_ready(self) -> None:
         module = load_assessment_module()
         terminal_payload = self.search_payload(
-            semantic=self.failed_section("semantic", "rlm"),
             symbol=self.failed_section("symbol", "bsl-analyzer"),
         )
         sleeps: list[float] = []
@@ -1253,13 +1237,11 @@ for raw in sys.stdin:
         """
         module = load_assessment_module()
         payload = self.search_payload(
-            semantic=self.failed_section("semantic", "rlm"),
             symbol=self.failed_section("symbol", "bsl-analyzer"),
         )
 
         described = module.describe_indexed_roles(payload)
 
-        self.assertIn("semantic=failed/providerFailed", described)
         self.assertIn("symbol=failed/providerFailed", described)
         self.assertIn("index build failed", described)
 
@@ -1270,7 +1252,7 @@ for raw in sys.stdin:
         )
 
         self.assertTrue(
-            any("semantic=failed/providerFailed" in error for error in scenario["errors"]),
+            any("symbol=failed/providerFailed" in error for error in scenario["errors"]),
             scenario["errors"],
         )
 
@@ -1278,7 +1260,6 @@ for raw in sys.stdin:
         """Retrying must not buy another full per-attempt timeout."""
         module = load_assessment_module()
         pending_payload = self.search_payload(
-            semantic=self.building_section("semantic", "rlm"),
             symbol=self.building_section("symbol", "bsl-analyzer"),
         )
         now = [0.0]
@@ -1914,20 +1895,20 @@ for raw in sys.stdin:
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            source = root / "rlm-bsl-mcp"
-            source.write_bytes(b"rlm")
+            source = root / "engine-mcp"
+            source.write_bytes(b"engine")
             source.chmod(0o755)
             archive = root / "engine.tar.gz"
             with tarfile.open(archive, "w:gz") as packaged:
-                packaged.add(source, arcname="bin/linux-x64/rlm-bsl-mcp")
+                packaged.add(source, arcname="bin/linux-x64/engine-mcp")
 
             overlay = module.prepare_runtime_overlay(
                 archive,
                 root / "extracted-overlay",
             )
 
-            engine = overlay / "bin/linux-x64/rlm-bsl-mcp"
-            self.assertEqual(engine.read_bytes(), b"rlm")
+            engine = overlay / "bin/linux-x64/engine-mcp"
+            self.assertEqual(engine.read_bytes(), b"engine")
             self.assertEqual(stat.S_IMODE(engine.stat().st_mode), 0o755)
 
 

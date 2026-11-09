@@ -211,7 +211,7 @@ class ReceiptTerminalCodecBoundaryTests(unittest.TestCase):
     def test_direct_write_slot_can_only_be_minted_by_store_or_codec(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
-            rogue_path = Path("crates/unica-coder/src/infrastructure/daemon/server.rs")
+            rogue_path = Path("crates/unica-daemon/src/infrastructure/daemon/server.rs")
             write_tree(
                 root,
                 {
@@ -314,7 +314,7 @@ class ReceiptTerminalCodecBoundaryTests(unittest.TestCase):
     def test_direct_json_literals_are_forbidden_in_every_production_module(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
-            rogue_path = Path("crates/unica-coder/src/infrastructure/daemon/server.rs")
+            rogue_path = Path("crates/unica-daemon/src/infrastructure/daemon/server.rs")
             write_tree(
                 root,
                 {
@@ -346,7 +346,7 @@ class ReceiptTerminalCodecBoundaryTests(unittest.TestCase):
     def test_direct_json_macros_are_forbidden_in_every_production_module(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
-            rogue_path = Path("crates/unica-coder/src/infrastructure/daemon/server.rs")
+            rogue_path = Path("crates/unica-daemon/src/infrastructure/daemon/server.rs")
             write_tree(
                 root,
                 {
@@ -687,6 +687,29 @@ class ReceiptTerminalCodecBoundaryTests(unittest.TestCase):
                     STORE_PATH: "fn publish() {\n"
                     "    let _slot = DirectReceiptWriteSlot::new(key);\n}\n"
                     "#[cfg(test)]\nmod tests;\n",
+                    store_tests: "fn fixture() {\n"
+                    "    let _ = canonical_v5_terminal(outcome);\n"
+                    "    let _ = serde_json::to_vec(&record);\n}\n",
+                },
+            )
+
+            result = run_guard(root)
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_a_test_module_file_named_by_path_attribute_is_test_code(self) -> None:
+        """`#[cfg(test)] #[path = "…"] mod medium_tests;` — файл по `#[path]` тестовый."""
+        store_tests = Path(
+            "crates/unica-execution/src/receipt_store/tests.rs"
+        )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            write_tree(
+                root,
+                {
+                    STORE_PATH: "fn publish() {\n"
+                    "    let _slot = DirectReceiptWriteSlot::new(key);\n}\n"
+                    '#[cfg(test)]\n#[path = "receipt_store/tests.rs"]\nmod medium_tests;\n',
                     store_tests: "fn fixture() {\n"
                     "    let _ = canonical_v5_terminal(outcome);\n"
                     "    let _ = serde_json::to_vec(&record);\n}\n",

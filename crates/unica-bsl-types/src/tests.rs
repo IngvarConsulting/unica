@@ -39,6 +39,7 @@ fn english() -> Vec<(String, String)> {
     ]
 }
 
+/// rule: INV.ANALYSIS.PLATFORM-TYPE-CATALOG
 #[test]
 fn one_record_per_type_and_member_in_both_languages_with_types_by_page() {
     let catalog = build_catalog("8.3.27.0", &russian(), &english());
@@ -235,7 +236,7 @@ fn the_catalog_of_an_installation() {
     assert_eq!(template.variants[0].params[0].en, "Template");
 }
 
-/// The applied seam (#2238, stage 2): an applied type keeps its facet through
+/// The applied seam (stage 2): an applied type keeps its facet through
 /// serialization and orders after the platform names, and a source of the
 /// configuration answers through the trait object inference holds.
 #[test]

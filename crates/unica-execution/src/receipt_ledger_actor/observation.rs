@@ -7,6 +7,7 @@ use std::io;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+// resource-limit-excluded: тестовый крючок: буфер причинного наблюдения, продукт его не устанавливает (RefCell/TLS)
 const CAPACITY: usize = 256;
 #[derive(Clone, Copy, Debug)]
 struct Cause {

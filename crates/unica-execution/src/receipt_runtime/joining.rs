@@ -26,9 +26,29 @@ use unica_execution_contract::invocation::{InvocationId, TaskId};
 /// Сколько разных чтений одновременно ждут возможных присоединений. При
 /// переполнении забывается самое старое: оно теряет только возможность
 /// присоединения, а не работу.
+// resource-limit: join.joinable-leaders
+// class: retention
+// unit: count
+// scope: daemon
+// value: 256
+// resource: Число разных чтений, одновременно ожидающих возможных присоединений.
+// status: unproven
+// origin: #1376 (#1388)
+// problem: неизвестно
+// on-reach: забывается самое старое ведущее чтение: оно теряет только возможность присоединения
 pub(super) const MAX_JOINABLE_LEADERS: usize = 256;
 /// Сколько присоединившихся вызовов демон помнит одновременно. Сверх этого
 /// новый вызов исполняется сам, как до присоединения.
+// resource-limit: join.joined-holders
+// class: retention
+// unit: count
+// scope: daemon
+// value: 1024
+// resource: Число присоединившихся вызовов, которые демон помнит одновременно.
+// status: unproven
+// origin: #1376 (#1388)
+// problem: неизвестно
+// on-reach: новый вызов не присоединяется и исполняется сам
 pub(super) const MAX_JOINED_HOLDERS: usize = 1024;
 
 /// Сколько после начала ведущего чтения к нему можно присоединиться.
@@ -40,10 +60,33 @@ pub(super) const MAX_JOINED_HOLDERS: usize = 1024;
 /// окон: агенту хватает времени прочитать ошибку и повторить вызов, а
 /// результат обхода, начатого раньше, не выдаётся за свежий надолго. Вне окна
 /// одинаковое чтение начинает свой обход.
+// resource-limit: join.window
+// class: deadline
+// unit: ms
+// scope: operation
+// value: 30000
+// resource: Время после начала ведущего чтения, в которое к нему можно присоединиться.
+// status: unproven
+// origin: #1376 (#1388)
+// problem: Ошибка потерянного ответа доходит до агента примерно через 8 с; около четырёх таких окон хватает на повтор, а старый результат не выдаётся за свежий надолго.
+// on-reach: одинаковое чтение начинает свой обход
+// decision: закреплено правилом
+// decision-date: 2026-10-12
+// decision-source: arch/rules/runtime/read-call-joining.md
 pub(super) const JOIN_WINDOW: Duration = Duration::from_secs(30);
 
 /// Сколько квитанций без задания демон помнит по их `taskId`. Это вызовы,
 /// чей прямой ответ ещё не подтверждён: идущие и потерявшие ответ.
+// resource-limit: join.receipt-handles
+// class: retention
+// unit: count
+// scope: daemon
+// value: 4096
+// resource: Число квитанций без задания, которые демон помнит по их taskId.
+// status: unproven
+// origin: #1376 (#1388)
+// problem: неизвестно
+// on-reach: забывается самая старая; lookup её taskId далее даёт task_not_found
 pub(super) const MAX_RECEIPT_HANDLES: usize = 4096;
 
 /// Присоединяются только инструменты, не меняющие исходники, базу и
@@ -724,9 +767,32 @@ impl ReceiptHandles {
 /// Обработчик соединения читает кадр сразу после рукопожатия, а резерв
 /// квитанции ограничен бюджетом вызова (до 7 с). Десять минут с запасом
 /// перекрывают это время даже под нагрузкой.
+// resource-limit: join.submit-fence-retention
+// class: retention
+// unit: ms
+// scope: daemon
+// value: 600000
+// resource: Срок, в течение которого демон помнит преграду для кадра потерянного submit.
+// status: unproven
+// origin: #1376 (#1388)
+// problem: Резерв квитанции ограничен бюджетом вызова до 7 с; десять минут перекрывают его с запасом (комментарий в joining.rs).
+// on-reach: преграда истекает; опоздавший кадр больше не останавливается
+// decision: закреплено правилом INV.WIRE.LOST-SUBMIT-TASK-ID
+// decision-date: 2026-10-12
+// decision-source: arch/rules/mcp/lost-submit-refusal.md
 pub(super) const SUBMIT_FENCE_RETENTION: Duration = Duration::from_secs(600);
 /// Сколько преград демон держит одновременно. Сверх этого преграда не
 /// ставится, и frontend честно отвечает, что вызов ещё может идти.
+// resource-limit: join.submit-fences
+// class: retention
+// unit: count
+// scope: daemon
+// value: 4096
+// resource: Число одновременно стоящих преград для кадров потерянного submit.
+// status: unproven
+// origin: #1376 (#1388)
+// problem: неизвестно
+// on-reach: после чистки истёкших преграда не ставится, frontend отвечает, что вызов ещё может идти
 pub(super) const MAX_SUBMIT_FENCES: usize = 4096;
 const SUBMIT_FENCE_STRIPES: usize = 64;
 
@@ -841,6 +907,7 @@ mod tests {
         (registry, leader, joiner)
     }
 
+    /// rule: INV.APP.READ-CALL-JOINING
     #[test]
     fn a_stale_working_read_cannot_replace_an_observed_shared_terminal_with_cancelled() {
         for leader_holder in [true, false] {
@@ -869,6 +936,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.APP.READ-CALL-JOINING
     #[test]
     fn a_stale_alias_read_keeps_the_holder_cancellation_after_shared_completion() {
         for leader_holder in [true, false] {
@@ -892,6 +960,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.APP.READ-CALL-JOINING
     #[test]
     fn a_working_snapshot_from_before_the_cancel_request_must_reload() {
         for leader_holder in [true, false] {
@@ -917,6 +986,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.APP.READ-CALL-JOINING
     #[test]
     fn retired_or_foreign_holder_contexts_never_project_or_cancel_a_new_alias() {
         let (registry, leader, joiner) = joined_pair();
@@ -966,6 +1036,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.APP.READ-CALL-JOINING
     #[test]
     fn reply_membership_capture_detects_attach_retire_aba_and_revision_overflow() {
         let registry = JoinRegistry::default();
@@ -1041,6 +1112,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.WIRE.LOST-SUBMIT-TASK-ID
     #[test]
     fn a_fence_stays_bounded_and_ends_after_its_retention() {
         let fences = SubmitFences::default();
@@ -1063,6 +1135,7 @@ mod tests {
         assert!(fences.fence(digest(MAX_SUBMIT_FENCES)));
     }
 
+    /// rule: INV.APP.READ-CALL-JOINING
     #[test]
     fn only_tools_that_change_nothing_are_joinable() {
         for tool in V5ToolIdentity::ALL {
@@ -1081,6 +1154,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.APP.READ-CALL-JOINING
     #[test]
     fn only_the_exact_request_identity_finds_its_leader() {
         let registry = JoinRegistry::default();
@@ -1102,6 +1176,7 @@ mod tests {
         assert!(registry.candidate(&other_tool.request_identity()).is_none());
     }
 
+    /// rule: INV.APP.READ-CALL-JOINING
     #[test]
     fn a_mutation_closes_joins_to_reads_started_before_it() {
         let registry = JoinRegistry::default();
@@ -1127,6 +1202,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.APP.READ-CALL-JOINING
     #[test]
     fn an_identical_read_joins_only_within_the_window_after_the_leader_started() {
         let clock = Arc::new(ManualClock(Mutex::new(std::time::Instant::now())));
@@ -1156,6 +1232,7 @@ mod tests {
         assert!(registry.alias(inside.reserved_task_id()).is_some());
     }
 
+    /// rule: INV.APP.READ-CALL-JOINING
     #[test]
     fn a_read_checked_before_a_mutation_never_leads_after_it() {
         let registry = JoinRegistry::default();
@@ -1177,6 +1254,7 @@ mod tests {
         assert!(registry.register_leader(&after, deadline(), registry.mutation_epoch()));
     }
 
+    /// rule: INV.APP.READ-CALL-JOINING
     #[test]
     fn shared_work_is_cancelled_only_when_every_holder_cancelled() {
         let registry = JoinRegistry::default();
@@ -1251,6 +1329,7 @@ mod tests {
         assert!(registry.candidate(&identity).is_none());
     }
 
+    /// rule: INV.APP.READ-CALL-JOINING
     #[test]
     fn the_joinable_index_and_the_holders_stay_bounded() {
         let registry = JoinRegistry::default();

@@ -1,0 +1,42 @@
+{
+  "area": "Роли и права",
+  "task": "Настроить RLS на чтение по подразделению",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Role.SalesReader",
+        "ops": [
+          {
+            "op": "right.add",
+            "args": {
+              "at": "main:Role.SalesReader",
+              "items": [
+                {
+                  "object": "InformationRegister.АдминистративнаяИерархия",
+                  "rights": {
+                    "Read": true
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "op": "right.set",
+            "args": {
+              "at": "main:Role.SalesReader.Right.InformationRegister_АдминистративнаяИерархия",
+              "values": {
+                "right": "Read",
+                "rls": "ГДЕ КодСубъектаРФ = &Код"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S171"
+}

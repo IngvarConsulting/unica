@@ -8,6 +8,7 @@ use super::filesystem::open_directory_nofollow;
 #[cfg(any(test, feature = "test-support"))]
 pub use super::filesystem::remove_dir_symlink_for_test;
 pub use super::filesystem::{create_dir_symlink_for_test, create_file_symlink_for_test};
+pub use super::filesystem::{extended_length_spelling_for_test, other_letter_case_for_test};
 use super::filesystem::{file_identity, hard_link_count};
 
 pub fn normalize_path_text_for_test(value: &str) -> String {
@@ -495,7 +496,7 @@ pub fn clear_execute_permission_for_test(_path: &Path) -> io::Result<()> {
 }
 
 #[cfg(test)]
-mod tests {
+mod medium_tests {
     use super::{
         classify_file_link_fixture_result, create_file_link_fixture_for_test,
         file_identity_for_test, path_identity_for_test, set_unix_mode_for_test, unix_mode_for_test,

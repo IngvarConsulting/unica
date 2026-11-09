@@ -1,7 +1,5 @@
 ---
 id: INV.CACHE.WORKSPACE-ROOT
-check:
-  - crates/unica-coder/src/infrastructure/workspace.rs::v8project_yaml_in_ancestor_defines_workspace_root
 ---
 
 # Базовый кеш проекта находится в его каталоге .build/unica

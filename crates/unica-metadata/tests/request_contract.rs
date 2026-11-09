@@ -623,6 +623,7 @@ fn common_module_ordinary_client_property_is_shared_by_add_and_edit() {
     }
 }
 
+/// rule: INV.WIRE.COMMON-MODULE-ORDINARY-CLIENT
 #[test]
 fn add_and_edit_report_the_same_supported_common_module_properties() {
     let calls = [
@@ -650,7 +651,7 @@ fn add_and_edit_report_the_same_supported_common_module_properties() {
             }),
         ),
     ];
-    let expected = "unknown metadata property `ClientOrdinaryApplications`; supported properties for CommonModule: Synonym, Comment, ClientManagedApplication, ClientOrdinaryApplication, ExternalConnection, Global, Privileged, ReturnValuesReuse, Server, ServerCall";
+    let expected = "unknown metadata property `ClientOrdinaryApplications`; supported properties for CommonModule: ClientManagedApplication, ClientOrdinaryApplication, Comment, ExternalConnection, Global, Privileged, ReturnValuesReuse, Server, ServerCall, Synonym";
 
     for (operation, call) in calls {
         let error = diagnostic(operation, call);
@@ -1649,6 +1650,7 @@ fn raw_event_source_manager_keeps_optional_class_before_domain_correlation() {
     assert_eq!(error.message, "unsupported event source class `unknown`");
 }
 
+/// rule: INV.APP.EVENT-SOURCE
 #[test]
 fn source_parser_accepts_the_closed_nonempty_logical_event_source_algebra() {
     let call = |targets: Value| {

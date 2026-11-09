@@ -30,19 +30,18 @@ pub mod test_support {
         write_record_unlocked, write_record_with_hook, write_service_response, write_with_deadline,
         AnalyzerLane, AnalyzerLanePermit, BoundedServiceLine, ConnectorClock, ConnectorIo,
         ConnectorRequestDeadline, ConnectorStream, Deadline, InvalidationDispatchHook,
-        ServiceConnector, ServiceElapsedBudget, ServiceSpawner, SessionTeardownLifecycle,
-        SystemClock, SystemConnectorIo, SystemServiceConnector,
-        SystemWorkspaceServiceOperationExecutor, WorkspaceCallerMonitorPoint,
-        WorkspaceServiceCallDeadline, WorkspaceServiceOperationExecutor, WorkspaceServicesState,
-        SYSTEM_SERVICE_CONNECTOR,
+        ServiceConnector, ServiceSpawner, SessionTeardownLifecycle, SystemClock, SystemConnectorIo,
+        SystemServiceConnector, SystemWorkspaceServiceOperationExecutor,
+        WorkspaceCallerMonitorPoint, WorkspaceServiceCallDeadline,
+        WorkspaceServiceOperationExecutor, WorkspaceServicesState, SYSTEM_SERVICE_CONNECTOR,
     };
     pub use crate::service::{
-        DEFAULT_IDLE_SECS, LEGACY_WORKSPACE_SERVICE_PROVIDER_PROFILE,
-        LEGACY_WORKSPACE_SERVICE_SOURCE_SET, SERVICE_CONNECT_TIMEOUT,
+        DEFAULT_IDLE_SECS, LEGACY_WORKSPACE_SERVICE_SOURCE_SET, SERVICE_CONNECT_TIMEOUT,
         SERVICE_CONTROL_CONNECT_TIMEOUT, SERVICE_RECORD_LOCK_FILE, SERVICE_REQUEST_HEADER_TIMEOUT,
         SERVICE_REQUEST_LINE_LIMIT, SERVICE_REQUEST_TIMEOUT, SERVICE_RESPONSE_LINE_LIMIT,
         SERVICE_SCHEMA_VERSION, SERVICE_SHUTDOWN_GRACE, SERVICE_SPAWN_CLEANUP_WAIT,
         SERVICE_STARTUP_STDERR_TAIL_LIMIT, SESSION_TEARDOWN_GRACE,
+        WORKSPACE_SERVICE_PROVIDER_PROFILE,
     };
 }
 
