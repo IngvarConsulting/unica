@@ -227,7 +227,7 @@ fn the_session_is_told_when_the_analysis_it_lacked_is_ready() {
     *workspaces.diagnostics.answer.lock().unwrap() = analysis_finding();
     let release = workspaces.diagnostics.hold();
     let session = V5LspSessionId::new();
-    let (client, inbox) = LspClientChannel::pair();
+    let (client, inbox) = LspClientChannel::pair(false);
     host.open(
         &session,
         &[folder(workspace.path(), "Work")],
@@ -252,6 +252,52 @@ fn the_session_is_told_when_the_analysis_it_lacked_is_ready() {
         inbox.take_before(soon()).unwrap(),
         [unica_lsp_contract::protocol::V5LspServerNotification::DiagnosticsRefresh {}]
     );
+}
+
+/// rule: INV.LSP.PARTIAL-ANSWERS
+#[test]
+fn an_editor_that_hears_the_refresh_is_answered_without_waiting_for_the_analysis() {
+    let workspace = workspace();
+    let (host, workspaces) = service();
+    *workspaces.diagnostics.answer.lock().unwrap() = analysis_finding();
+    let release = workspaces.diagnostics.hold();
+    let session = V5LspSessionId::new();
+    let (client, inbox) = LspClientChannel::pair(true);
+    host.open(
+        &session,
+        &[folder(workspace.path(), "Work")],
+        client,
+        soon(),
+    )
+    .unwrap();
+
+    // The deadline is far: the answer still goes before the analysis ends.
+    let asked = Instant::now();
+    let early = items(diagnostic(
+        &host,
+        &session,
+        &LspCallContext::for_test(Instant::now() + Duration::from_secs(60)),
+    ));
+    assert!(
+        asked.elapsed() < Duration::from_secs(5),
+        "{:?}",
+        asked.elapsed()
+    );
+    assert_eq!(codes(&early), ["unica.diagnostics_incomplete"]);
+    assert!(early[0].message.contains("analysis_not_ready"), "{early:?}");
+
+    release.send(()).unwrap();
+    assert_eq!(
+        inbox.take_before(soon()).unwrap(),
+        [unica_lsp_contract::protocol::V5LspServerNotification::DiagnosticsRefresh {}]
+    );
+    let late = items(diagnostic(
+        &host,
+        &session,
+        &LspCallContext::for_test(soon()),
+    ));
+    assert_eq!(codes(&late), ["bsl.style.line_length"]);
+    assert_eq!(workspaces.diagnostics.runs.load(Ordering::SeqCst), 1);
 }
 
 /// rule: INV.LSP.MCP-PRIORITY

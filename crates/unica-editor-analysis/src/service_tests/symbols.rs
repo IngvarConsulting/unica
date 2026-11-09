@@ -207,7 +207,7 @@ fn nothing_found_while_a_source_is_not_ready_is_refused_and_a_partial_list_is_an
     let workspace = workspace();
     let (host, workspaces) = service();
     let session = V5LspSessionId::new();
-    let (client, inbox) = LspClientChannel::pair();
+    let (client, inbox) = LspClientChannel::pair(false);
     host.open(
         &session,
         &[folder(workspace.path(), "Work")],

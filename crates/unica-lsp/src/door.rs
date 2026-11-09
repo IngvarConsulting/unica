@@ -338,13 +338,17 @@ impl Frontend {
 
     fn initialize(&mut self, id: Value, params: &Value) -> Flow {
         let deadline = Instant::now() + LSP_SESSION_EXCHANGE_TIMEOUT;
+        let refresh = params
+            .pointer("/capabilities/workspace/diagnostics/refreshSupport")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         let opened = self
             .client
             .connect_peer_before(deadline)
             .map_err(|error| V5LspExchangeError::Transport(error.to_string()))
             .and_then(|mut anchor| {
                 let (session, opening) =
-                    anchor.lsp_open_before(workspace_folders(params), deadline)?;
+                    anchor.lsp_open_before(workspace_folders(params), refresh, deadline)?;
                 Ok((anchor, session, opening))
             });
         let (anchor, session, opening) = match opened {
@@ -359,10 +363,6 @@ impl Frontend {
             }
         };
         let poll_stop = Arc::new(AtomicBool::new(false));
-        let refresh = params
-            .pointer("/capabilities/workspace/diagnostics/refreshSupport")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
         spawn_poller(
             Arc::clone(&self.client),
             session.clone(),
