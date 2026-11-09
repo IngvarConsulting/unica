@@ -117,6 +117,34 @@ pub fn bsl_symbols(
 ) -> unica_adapter_bsl_analyzer::symbols::BslAnalyzerSymbols<'static> {
     unica_adapter_bsl_analyzer::symbols::BslAnalyzerSymbols::new(&BSL_CLIENT, context)
 }
+/// Members of the platform's global context from the help of the
+/// installation at `root`, for completion in the editor.
+pub fn platform_members(
+    root: &Path,
+) -> Result<Vec<unica_code_intelligence::completion::PlatformMember>, String> {
+    use unica_documentation_sources::platform_help::provider::{
+        global_context_members, GlobalContextMemberKind,
+    };
+    Ok(global_context_members(root)?
+        .into_iter()
+        .map(
+            |member| unica_code_intelligence::completion::PlatformMember {
+                method: member.kind == GlobalContextMemberKind::Method,
+                name: member.name_ru,
+                parameters: member.parameters,
+            },
+        )
+        .collect())
+}
+
+/// The host of long analysis providers: one process per provider and root,
+/// owned by the daemon for its lifetime.
+pub mod provider_host {
+    pub use unica_analysis_services::provider_host::{
+        LongWorkFailure, ProviderHostKey, ProviderHostOwner,
+    };
+}
+
 /// The engine of candidate lines for the literal text search.
 pub fn candidate_lines() -> &'static dyn unica_code_intelligence::candidate_lines::CandidateLines {
     static LINES: std::sync::OnceLock<unica_adapter_lexical::lines::GitCandidateLines> =

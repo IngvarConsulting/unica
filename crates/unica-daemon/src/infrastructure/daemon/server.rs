@@ -24,8 +24,8 @@ pub(crate) use self::invocation_service::{
 };
 use super::protocol::InvocationRequest;
 use crate::application::tool_contracts::SurfaceRelease;
+use crate::infrastructure::analysis_composition::provider_host::ProviderHostOwner;
 pub(super) use invocation_service::workspace_admission::admit_editor_folder;
-use unica_analysis_services::provider_host::ProviderHostOwner;
 use unica_execution::clock::TokioClock;
 use unica_execution::invocation::InvocationResponseDeadline;
 use unica_execution::receipt_runtime::ports::{ExecutionClass, KnownLongReason};
