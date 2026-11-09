@@ -1,8 +1,8 @@
 use std::fs;
 use std::path::Path;
 use toml::{Table, Value};
-use unica_configuration::operational::OperationalConfig;
-use unica_configuration::operational::OperationalConfigDiagnostic;
+pub use unica_configuration::operational::OperationalConfig;
+pub use unica_configuration::operational::OperationalConfigDiagnostic;
 use unica_configuration::operational::OperationalConfigDiagnosticCode;
 use unica_configuration::operational::OperationalConfigDiagnosticSource;
 use unica_configuration::operational::OperationalConfigField;
@@ -24,16 +24,21 @@ const CODE_DIAGNOSTICS_FIELDS: &[&str] = &["analyze_timeout_seconds"];
 pub fn load_operational_config(
     workspace_root: &Path,
 ) -> Result<OperationalConfig, OperationalConfigDiagnostic> {
-    let shared = read_layer(
-        &workspace_root.join(SHARED_CONFIG_FILENAME),
-        OperationalConfigDiagnosticSource::Shared,
-    )?;
-    let local = read_layer(
-        &workspace_root.join(LOCAL_CONFIG_FILENAME),
-        OperationalConfigDiagnosticSource::Local,
-    )?;
+    let result = (|| {
+        let shared = read_layer(
+            &workspace_root.join(SHARED_CONFIG_FILENAME),
+            OperationalConfigDiagnosticSource::Shared,
+        )?;
+        let local = read_layer(
+            &workspace_root.join(LOCAL_CONFIG_FILENAME),
+            OperationalConfigDiagnosticSource::Local,
+        )?;
 
-    OperationalConfig::from_layers(shared.as_ref(), local.as_ref())
+        OperationalConfig::from_layers(shared.as_ref(), local.as_ref())
+    })();
+    #[cfg(any(test, feature = "test-support"))]
+    load_observer::completed(workspace_root, result.is_err());
+    result
 }
 
 fn read_layer(
@@ -845,4 +850,9 @@ analyze_timeout_seconds = 7200
         assert!(rendered.contains(SHARED_CONFIG_FILENAME));
         assert!(!rendered.contains(&workspace.path().display().to_string()));
     }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub mod load_observer {
+    include!("operational_load_observer.rs");
 }

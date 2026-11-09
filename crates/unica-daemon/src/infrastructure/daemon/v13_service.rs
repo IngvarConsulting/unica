@@ -3,6 +3,15 @@ use crate::domain::apply::OperationDescriptorExt;
 use crate::domain::apply::SourceSetWriteSupport;
 use crate::domain::engine::MissingEngineRefusal;
 use unica_work_control::provider_deadline::ProviderDeadline;
+// A view may be composed into a diff. Its graph reads share the public
+// invocation's lazy snapshot, while ordinary views never load settings.
+type ViewOperationalSnapshot = std::cell::OnceCell<
+    Result<
+        crate::infrastructure::operational_config::OperationalConfig,
+        crate::infrastructure::operational_config::OperationalConfigDiagnostic,
+    >,
+>;
+
 /// Потолок страницы ветви графа: объявленный максимум поверхности.
 // resource-limit: view.call-graph-initial-page
 // class: step

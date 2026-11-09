@@ -70,7 +70,12 @@ impl CanonicalV13ReadService {
                     prepare_xdto_check(invocation, &address, cancellation)
                 }
                 _ => (
-                    self.execute_view_arguments(invocation, &view_arguments, cancellation),
+                    self.execute_view_arguments(
+                        invocation,
+                        &view_arguments,
+                        &ViewOperationalSnapshot::new(),
+                        cancellation,
+                    ),
                     None,
                 ),
             };
@@ -285,9 +290,11 @@ impl CanonicalV13ReadService {
             };
             return diff_page_result(&request, self.diff.continue_saved(&request));
         }
+        let operational_snapshot = ViewOperationalSnapshot::new();
         let left_result = self.execute_view_arguments(
             invocation,
             &Map::from_iter([("at".to_string(), Value::String(left.to_string()))]),
+            &operational_snapshot,
             cancellation,
         );
         if !left_result.ok {
@@ -296,6 +303,7 @@ impl CanonicalV13ReadService {
         let right_result = self.execute_view_arguments(
             invocation,
             &Map::from_iter([("at".to_string(), Value::String(right.to_string()))]),
+            &operational_snapshot,
             cancellation,
         );
         if !right_result.ok {
