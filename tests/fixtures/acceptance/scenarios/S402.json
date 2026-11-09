@@ -1,0 +1,80 @@
+{
+  "id": "S402",
+  "name": "operation-contract-by-can-address",
+  "issue": 1374,
+  "area": "Навигация и чтение",
+  "task": "Словарь операций приходит в каждом ответе узла, контракт одной операции читается адресом <узел>.Can.<op>, а diff сравнивает данные узлов без словаря",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Валюты"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/can",
+          "contains": {
+            "op": "attribute.add",
+            "args": "items"
+          }
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Валюты.Can.attribute.add"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "main:Catalog.Валюты.Can.attribute.add"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "Can"
+        },
+        {
+          "pointer": "/data/props/op",
+          "eq": "attribute.add"
+        },
+        {
+          "pointer": "/data/props/implemented",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/required",
+          "eq": [
+            "items"
+          ]
+        },
+        {
+          "pointer": "/data/can",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.diff",
+      "args": {
+        "left": "main:Enum.LanguageAware",
+        "right": "main:Enum.ВажностьПроблемыУчета"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/equal",
+          "eq": false
+        }
+      ]
+    }
+  ]
+}

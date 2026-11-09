@@ -1,6 +1,6 @@
 use super::*;
+use crate::runner::attempt::RetryStartFailure;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use unica_runner::attempt::RetryStartFailure;
 
 #[derive(Debug, Clone, Copy)]
 enum ForeignScope {

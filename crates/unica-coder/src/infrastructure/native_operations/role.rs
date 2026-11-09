@@ -28,7 +28,6 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use unica_address::source_target::{
     MetadataAddress, SourceTarget, SourceTargetErrorCode, TargetKind,
-    PLATFORM_XML_8_3_27_FORMAT_2_20,
 };
 use unica_execution_contract::adapter_outcome::AdapterOutcome;
 use unica_forms::facts::*;
@@ -68,7 +67,7 @@ use unica_workspace::compile_transaction::{
     CommitFailure, CommitFailureKind, CompileTransaction, RegistrationStatus,
 };
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 thread_local! {
     static ROLE_EDIT_BEFORE_NATIVE_GUARD_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
         const { std::cell::RefCell::new(None) };
@@ -81,7 +80,7 @@ thread_local! {
     };
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn with_role_edit_before_native_guard_hook<T>(
     hook: impl FnOnce() + 'static,
     action: impl FnOnce() -> T,
@@ -100,7 +99,7 @@ fn with_role_edit_before_native_guard_hook<T>(
     action()
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn run_role_edit_before_native_guard_hook() {
     ROLE_EDIT_BEFORE_NATIVE_GUARD_HOOK.with(|slot| {
         if let Some(hook) = slot.borrow_mut().take() {
@@ -109,7 +108,7 @@ fn run_role_edit_before_native_guard_hook() {
     });
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn with_role_edit_before_publish_hook<T>(
     hook: impl FnOnce() + 'static,
     action: impl FnOnce() -> T,
@@ -127,7 +126,7 @@ fn with_role_edit_before_publish_hook<T>(
     action()
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn run_role_edit_before_publish_hook() {
     ROLE_EDIT_BEFORE_PUBLISH_HOOK.with(|slot| {
         if let Some(hook) = slot.borrow_mut().take() {
@@ -136,7 +135,7 @@ fn run_role_edit_before_publish_hook() {
     });
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn with_role_edit_after_rights_reread_hook<T>(
     hook: impl FnOnce() + 'static,
     action: impl FnOnce() -> T,
@@ -155,7 +154,7 @@ fn with_role_edit_after_rights_reread_hook<T>(
     action()
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn run_role_edit_after_rights_reread_hook() {
     ROLE_EDIT_AFTER_RIGHTS_REREAD_HOOK.with(|slot| {
         if let Some(hook) = slot.borrow_mut().take() {
@@ -164,7 +163,7 @@ fn run_role_edit_after_rights_reread_hook() {
     });
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn with_role_edit_post_validation_failure<T>(action: impl FnOnce() -> T) -> T {
     struct Reset(bool);
     impl Drop for Reset {
@@ -486,10 +485,6 @@ fn role_resolution_failure(code: SourceTargetErrorCode) -> RoleResolutionFailure
             RoleResolutionCode::ContainmentDenied,
             "the logical role target failed containment checks",
         ),
-        SourceTargetErrorCode::AddressProfileUnsupported => RoleResolutionFailure::new(
-            RoleResolutionCode::ProfileUnsupported,
-            "the logical address profile is unsupported",
-        ),
         SourceTargetErrorCode::SourceRootNotAddressable => RoleResolutionFailure::new(
             RoleResolutionCode::ProviderUnavailable,
             "the logical source provider is unavailable",
@@ -571,7 +566,7 @@ fn edit_with_data(
     let mut events = Vec::new();
     let mut recorded_cache = None;
     if !preview && data.changed {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         run_role_edit_before_native_guard_hook();
         match publish_role_edit(&target, &postimage, context) {
             Ok(publication) => {
@@ -769,7 +764,7 @@ fn publish_role_edit(
     postimage: &[u8],
     context: &WorkspaceContext,
 ) -> Result<RoleEditPublication, (&'static str, Option<String>)> {
-    let address = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &target.metadata_path)
+    let address = MetadataAddress::parse_logical(&target.metadata_path)
         .map_err(|_| ("concurrent_modification", None))?;
     let (current_handle, current_evidence) =
         resolve_role_descriptor(&target.source_set, &address, context).map_err(|failure| {
@@ -799,7 +794,7 @@ fn publish_role_edit(
         return Err(("concurrent_modification", None));
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     run_role_edit_after_rights_reread_hook();
 
     let mut transaction = CompileTransaction::new();
@@ -855,10 +850,10 @@ fn publish_role_edit(
     let descriptor = target.descriptor_path.clone();
     let rights = target.rights_path.clone();
     let role_name = role_name.to_string();
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     run_role_edit_before_publish_hook();
     let report = transaction.commit_with_classified_post_validation(|| {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         if ROLE_EDIT_POST_VALIDATION_FAILURE.with(|slot| slot.get()) {
             return Err(CommitFailure::provider(
                 "injected role.edit post-validation failure",
@@ -1425,9 +1420,7 @@ pub(crate) mod medium_role_edit_contract_tests {
         let support = WorkspaceSupportStateReader::new(&context)
             .object_support(&unica_address::source_target::ResolvedTarget {
                 source_set: "main".to_string(),
-                metadata_path: Some(
-                    MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Role.Demo").unwrap(),
-                ),
+                metadata_path: Some(MetadataAddress::parse_logical("Role.Demo").unwrap()),
                 target_kind: TargetKind::MetadataObject,
             })
             .unwrap();

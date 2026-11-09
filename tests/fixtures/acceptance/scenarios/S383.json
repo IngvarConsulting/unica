@@ -1,0 +1,34 @@
+{
+  "id": "S383",
+  "name": "docs-refuse-an-unknown-key-of-a-known-provider",
+  "issue": 1892,
+  "area": "Документация и стандарты",
+  "task": "Ключ, которого политика документации не знает, в секции известного поставщика не игнорируется: unica.docs отказывает без поиска и называет ключ",
+  "workspace": "tests/fixtures/acceptance/workspace-docs-unknown-key",
+  "wire": [
+    {
+      "tool": "unica.docs",
+      "args": {
+        "query": "Overview",
+        "source": "platform-help"
+      },
+      "expect": [
+        "provider"
+      ],
+      "assertions": [
+        {
+          "pointer": "/ok",
+          "eq": false
+        },
+        {
+          "pointer": "/diagnostics/0/detailCode",
+          "eq": "provider_absent"
+        },
+        {
+          "pointer": "/diagnostics/0/message",
+          "contains": "неизвестный ключ [providers.v8std].retry"
+        }
+      ]
+    }
+  ]
+}

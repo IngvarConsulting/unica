@@ -196,9 +196,6 @@ impl MetadataOperation {
 }
 
 impl unica_operations::FamilyOperation for MetadataOperation {
-    fn retired_arguments(self) -> &'static [unica_operations::recovery::RetiredArgument] {
-        crate::recovery::RETIRED_ARGUMENTS
-    }
     type Observation = ();
     fn family(self) -> unica_operations::OperationFamily {
         unica_operations::OperationFamily::Metadata
@@ -752,8 +749,7 @@ mod tests {
         let update = |owner| {
             crate::validate_metadata_operation_capabilities(
                 owner,
-                &unica_address::source_target::MetadataAddress::parse(
-                    unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+                &unica_address::source_target::MetadataAddress::parse_logical(
                     "InformationRegister.Prices",
                 )
                 .unwrap(),

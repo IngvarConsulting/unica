@@ -1,9 +1,9 @@
 # Приёмочный корпус поверхности v0.13
 
-Корпус — сценарии реальных задач разработчика конфигурации. Сценарии
-`S001`–`S440` лежат в `scenario-corpus.json` вместе с общими полями корпуса;
-этот блок закрыт для новых номеров. Каждый новый сценарий — отдельный файл
-`scenarios/<id>.json` с идентификатором `S-<issue>-<slug>`. Шаги каждого
+Корпус — сценарии реальных задач разработчика конфигурации. Каждый сценарий —
+отдельный файл `scenarios/<id>.json`; `scenario-corpus.json` держит только общие
+поля корпуса. Сценарии `S001`–`S440` сохраняют свои номера, этот блок закрыт
+для новых. Новый сценарий получает идентификатор `S-<issue>-<slug>`. Шаги каждого
 сценария заморожены в `scenario-manifest/<id>.steps`; загрузку, порядок
 и сверку с манифестом задаёт `scripts/ci/acceptance_corpus.py`. У общего
 корпуса пока есть исполняемые профили `source` и `delivery/bsl-analyzer`.
@@ -226,7 +226,7 @@ S396 исполняет драйвер `fault-injection/analyzer-delivery-failur
 воспроизводит: для этого нужен управляемый медленный источник выпуска. Его
 проверяет Rust-тест
 `call_graph_branch_answers_working_while_the_analyzer_is_being_delivered`
-в `crates/unica-coder/src/infrastructure/daemon/server.rs`.
+в `crates/unica-daemon/src/infrastructure/daemon/server.rs`.
 
 S347–S348 используют синтетическое `workspace-metadata-warning/`:
 публичный журнал документов с пустыми RegisteredDocuments возвращает

@@ -10,6 +10,16 @@ use unica_refusal::RefusalCode;
 /// заголовок, словарь операций и ревизия. Настоящий конверт меньше (проверка
 /// по проводу); по этому запасу одинаково решаются отказ и пометка
 /// `overBudget` в сводке модуля.
+// resource-limit: view.source-text-envelope-reserve-bytes
+// class: format
+// unit: bytes
+// scope: request
+// value: 2048
+// resource: Запас на конверт ответа с текстом Body при сверке с бюджетом ответа клиента.
+// status: unproven
+// origin: #1458 (#1478)
+// problem: неизвестно
+// on-reach: текст, не помещающийся в бюджет вместе с запасом, не отдаётся: отказ или пометка overBudget в сводке модуля
 const ENVELOPE_RESERVE_BYTES: usize = 2 * 1024;
 
 /// Что именно не поместилось в предел.
@@ -380,7 +390,7 @@ fn text_fits(bytes: u64, budget: usize) -> bool {
 mod tests {
     use super::*;
 
-    /// #2229: a refusal names every cause that fits the client's budget;
+    /// A refusal names every cause that fits the client's budget;
     /// past it, the answer names how many there are and how many it shows,
     /// and the refusal itself always stays.
     /// rule: INV.SOURCE.CODE-TEXT-SYNTAX-ERRORS

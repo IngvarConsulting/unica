@@ -1,0 +1,683 @@
+use serde_json::{json, Map, Value};
+use unica_execution::invocation_store_v5::V5SafeFailureReason;
+use unica_execution_contract::invocation::{DomainResult, InvocationStatus, TaskId};
+use unica_refusal::{RefusalCode, RefusalDetail};
+
+// resource-limit: task-tools.result-wait-ms
+// class: deadline
+// unit: ms
+// scope: request
+// value: 7000
+// resource: Наибольшее и стандартное ожидание waitMs в совместимом unica.task.result.
+// status: unproven
+// origin: коммит 850507d1c (feat(mcp): emulate tasks for clients without the extension)
+// problem: неизвестно
+// on-reach: waitMs больше 7000 отвергается; по истечении ожидания возвращается текущее состояние задания
+// decision: закреплено правилом CTR.WIRE.COMPATIBILITY-TASK-TOOLS
+// decision-date: 2026-09-22
+// decision-source: arch/rules/mcp/compatibility-task-observation.md
+pub(crate) const DEFAULT_TASK_RESULT_WAIT_MS: u64 = 7_000;
+
+#[derive(Debug)]
+pub struct CompatibilityToolContract {
+    pub name: &'static str,
+    pub description: &'static str,
+    pub input_schema: Value,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskToolAction {
+    Get,
+    Result { wait_ms: u64 },
+    Cancel,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TaskToolRequest {
+    pub task_id: TaskId,
+    pub action: TaskToolAction,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskToolError {
+    InvalidTaskId,
+    BadWaitMs,
+    BadArguments,
+    TaskNotFound,
+    TaskExpired,
+    /// Демон отказал по протоколу; уточнение говорит, занят он, несовместим
+    /// или сломан, и выбирает исход вместо умолчания кода.
+    TaskBackendFailed(RefusalDetail),
+    TaskTransportFailed,
+    TaskSessionClosed,
+    TaskProtocolFailed,
+    ProjectionFailed,
+}
+
+impl TaskToolError {
+    pub(crate) const fn code(self) -> RefusalCode {
+        match self {
+            Self::InvalidTaskId => RefusalCode::InvalidTaskId,
+            Self::BadWaitMs => RefusalCode::BadWaitMs,
+            Self::BadArguments => RefusalCode::BadTaskArguments,
+            Self::TaskNotFound => RefusalCode::TaskNotFound,
+            Self::TaskExpired => RefusalCode::TaskExpired,
+            Self::TaskBackendFailed(_) => RefusalCode::TaskBackendFailed,
+            Self::TaskTransportFailed => RefusalCode::TaskTransportFailed,
+            Self::TaskSessionClosed => RefusalCode::TaskSessionClosed,
+            Self::TaskProtocolFailed => RefusalCode::TaskProtocolFailed,
+            Self::ProjectionFailed => RefusalCode::TaskProjectionFailed,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompatibilityProjection {
+    State,
+    TerminalResult,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CompatibilityTaskSnapshot {
+    pub(crate) task_id: TaskId,
+    pub(crate) status: InvocationStatus,
+    pub(crate) result: Option<DomainResult>,
+    /// Failure prose is fixed locally; the daemon supplies only its closed reason.
+    pub(crate) failure_reason: Option<V5SafeFailureReason>,
+    pub(crate) cancel_requested: bool,
+    pub(crate) created_at_epoch_ms: u64,
+    pub(crate) updated_at_epoch_ms: u64,
+    pub(crate) ttl_ms: u64,
+    pub(crate) poll_interval_ms: u64,
+}
+
+impl CompatibilityTaskSnapshot {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        task_id: TaskId,
+        status: InvocationStatus,
+        result: Option<DomainResult>,
+        failure_reason: Option<V5SafeFailureReason>,
+        cancel_requested: bool,
+        created_at_epoch_ms: u64,
+        updated_at_epoch_ms: u64,
+        ttl_ms: u64,
+        poll_interval_ms: u64,
+    ) -> Self {
+        Self {
+            task_id,
+            status,
+            result,
+            failure_reason,
+            cancel_requested,
+            created_at_epoch_ms,
+            updated_at_epoch_ms,
+            ttl_ms,
+            poll_interval_ms,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompatibilityProjectionError {
+    InvalidStatusPayload,
+    ReverseTimestampOrder,
+}
+
+pub fn compatibility_tool_contracts() -> Vec<CompatibilityToolContract> {
+    let task_id = || {
+        json!({
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "description": "Opaque Task identifier returned by Unica"
+        })
+    };
+    vec![
+        CompatibilityToolContract {
+            name: "task.get",
+            description: "Read the current durable Task state immediately without waiting or re-running the subject tool.",
+            input_schema: task_schema(json!({"taskId": task_id()})),
+        },
+        CompatibilityToolContract {
+            name: "task.result",
+            description: "Wait for a Task result for a bounded interval; returns the canonical result or a new working receipt without re-running the subject tool.",
+            input_schema: task_schema(json!({
+                "taskId": task_id(),
+                "waitMs": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": DEFAULT_TASK_RESULT_WAIT_MS,
+                    "default": DEFAULT_TASK_RESULT_WAIT_MS,
+                    "description": "Bounded wait in milliseconds; defaults to 7000"
+                }
+            })),
+        },
+        CompatibilityToolContract {
+            name: "task.cancel",
+            description: "Idempotently request cancellation and return the current durable Task state without re-running the subject tool.",
+            input_schema: task_schema(json!({"taskId": task_id()})),
+        },
+    ]
+}
+
+fn task_schema(properties: Value) -> Value {
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": properties,
+        "required": ["taskId"]
+    })
+}
+
+pub fn parse_task_tool_call(
+    name: &str,
+    arguments: &Map<String, Value>,
+) -> Option<Result<TaskToolRequest, TaskToolError>> {
+    let action = match name {
+        "unica.task.get" => TaskToolAction::Get,
+        "unica.task.result" => TaskToolAction::Result {
+            wait_ms: DEFAULT_TASK_RESULT_WAIT_MS,
+        },
+        "unica.task.cancel" => TaskToolAction::Cancel,
+        _ => return None,
+    };
+    Some(parse_known_task_call(action, arguments))
+}
+
+fn parse_known_task_call(
+    mut action: TaskToolAction,
+    arguments: &Map<String, Value>,
+) -> Result<TaskToolRequest, TaskToolError> {
+    let expected_len = usize::from(matches!(action, TaskToolAction::Result { .. })) + 1;
+    if arguments.len() > expected_len
+        || arguments
+            .keys()
+            .any(|key| key != "taskId" && key != "waitMs")
+        || (!matches!(action, TaskToolAction::Result { .. }) && arguments.contains_key("waitMs"))
+    {
+        return Err(TaskToolError::BadArguments);
+    }
+    let task_id = arguments
+        .get("taskId")
+        .and_then(Value::as_str)
+        .ok_or(TaskToolError::InvalidTaskId)?
+        .parse()
+        .map_err(|_| TaskToolError::InvalidTaskId)?;
+    if let TaskToolAction::Result { .. } = action {
+        let wait_ms = match arguments.get("waitMs") {
+            None => DEFAULT_TASK_RESULT_WAIT_MS,
+            Some(Value::Number(number)) => number.as_u64().ok_or(TaskToolError::BadWaitMs)?,
+            Some(_) => return Err(TaskToolError::BadWaitMs),
+        };
+        if wait_ms > DEFAULT_TASK_RESULT_WAIT_MS {
+            return Err(TaskToolError::BadWaitMs);
+        }
+        action = TaskToolAction::Result { wait_ms };
+    }
+    Ok(TaskToolRequest { task_id, action })
+}
+
+pub fn project_task_snapshot(
+    snapshot: &CompatibilityTaskSnapshot,
+    projection: CompatibilityProjection,
+) -> Result<DomainResult, CompatibilityProjectionError> {
+    let valid_shape = matches!(
+        (
+            snapshot.status,
+            snapshot.result.is_some(),
+            snapshot.failure_reason.is_some()
+        ),
+        (InvocationStatus::Queued, false, false)
+            | (InvocationStatus::Working, false, false)
+            | (InvocationStatus::Completed, true, false)
+            | (InvocationStatus::Failed, false, true)
+            | (InvocationStatus::Cancelled, false, false)
+    );
+    if !valid_shape {
+        return Err(CompatibilityProjectionError::InvalidStatusPayload);
+    }
+    if snapshot.updated_at_epoch_ms < snapshot.created_at_epoch_ms {
+        return Err(CompatibilityProjectionError::ReverseTimestampOrder);
+    }
+    if projection == CompatibilityProjection::TerminalResult
+        && snapshot.status == InvocationStatus::Completed
+    {
+        return snapshot
+            .result
+            .clone()
+            .ok_or(CompatibilityProjectionError::InvalidStatusPayload);
+    }
+
+    let (ok, summary, code) = match snapshot.status {
+        InvocationStatus::Queued | InvocationStatus::Working => {
+            (true, "Task is still working", None)
+        }
+        InvocationStatus::Completed => (true, "Task completed", None),
+        InvocationStatus::Failed => (false, "Task failed", Some("task_failed")),
+        InvocationStatus::Cancelled => (false, "Task was cancelled", Some("task_cancelled")),
+    };
+    let status = match snapshot.status {
+        InvocationStatus::Queued => "queued",
+        InvocationStatus::Working => "working",
+        InvocationStatus::Completed => "completed",
+        InvocationStatus::Failed => "failed",
+        InvocationStatus::Cancelled => "cancelled",
+    };
+    let mut data = json!({
+        "task": {
+            "taskId": snapshot.task_id.to_string(),
+            "status": status,
+            "createdAtEpochMs": snapshot.created_at_epoch_ms,
+            "updatedAtEpochMs": snapshot.updated_at_epoch_ms,
+            "ttlMs": snapshot.ttl_ms,
+            "pollIntervalMs": snapshot.poll_interval_ms
+        }
+    });
+    if snapshot.cancel_requested {
+        data["task"]["cancelRequested"] = json!(true);
+    }
+    let mut result = DomainResult::success(summary);
+    result.ok = ok;
+    result.data = Some(data);
+    // The error code travels in `diagnostics[]` like everywhere else on the
+    // canonical surface; `data` stays a pure task snapshot.
+    if let Some(code) = code {
+        let mut diagnostic = json!({"code": code, "message": summary});
+        if let Some(reason) = snapshot.failure_reason {
+            let (wire_name, message) = closed_task_failure(reason);
+            diagnostic["failureReason"] = json!(wire_name);
+            diagnostic["message"] = json!(message);
+        }
+        result.diagnostics = vec![diagnostic];
+    }
+    if matches!(
+        snapshot.status,
+        InvocationStatus::Queued | InvocationStatus::Working
+    ) {
+        result.next.push(json!({
+            "tool": "unica.task.result",
+            "args": {
+                "taskId": snapshot.task_id.to_string(),
+                "waitMs": snapshot.poll_interval_ms.min(DEFAULT_TASK_RESULT_WAIT_MS)
+            }
+        }));
+    }
+    Ok(result)
+}
+
+pub fn task_tool_error_result(error: TaskToolError) -> DomainResult {
+    // The closed code answers through `diagnostics[]` exactly like every other
+    // canonical refusal; task errors get no private `data.code` channel.
+    let message = match error {
+        TaskToolError::InvalidTaskId => "Task identifier is not canonical",
+        TaskToolError::BadWaitMs => "Task wait must be within 0..=7000 milliseconds",
+        TaskToolError::BadArguments => "Task tool arguments are invalid",
+        TaskToolError::TaskNotFound => "Task was not found",
+        TaskToolError::TaskExpired => "Task has expired",
+        TaskToolError::TaskBackendFailed(_) => "Task state is unavailable",
+        TaskToolError::TaskTransportFailed => "Task transport is unavailable",
+        TaskToolError::TaskSessionClosed => "Task session is closed",
+        TaskToolError::TaskProtocolFailed => "Task response failed validation",
+        TaskToolError::ProjectionFailed => "Task state cannot be projected safely",
+    };
+    match error {
+        TaskToolError::TaskBackendFailed(detail) => {
+            DomainResult::canonical_rejection_detailed(None, detail, message)
+        }
+        other => DomainResult::canonical_rejection(None, other.code(), message),
+    }
+}
+
+/// The closed failure vocabulary of the v5 daemon and its fixed host-facing
+/// text. The daemon never sends prose for a failure, so this table is the only
+/// place a failed invocation gets words.
+pub fn closed_task_failure(reason: V5SafeFailureReason) -> (&'static str, &'static str) {
+    match reason {
+        V5SafeFailureReason::InvocationFailed => (
+            "invocation_failed",
+            "daemon invocation stopped without a result. Repeat the call; if the problem persists, report this reason.",
+        ),
+        V5SafeFailureReason::ResultTooLarge => (
+            "result_too_large",
+            "daemon invocation result exceeded the canonical byte limit",
+        ),
+        V5SafeFailureReason::Interrupted => ("interrupted", "daemon invocation was interrupted"),
+        V5SafeFailureReason::ResumeUnsupported => (
+            "resume_unsupported",
+            "daemon invocation cannot be resumed after restart",
+        ),
+        V5SafeFailureReason::PersistenceFailed => (
+            "persistence_failed",
+            "daemon invocation terminal state could not be persisted",
+        ),
+        V5SafeFailureReason::OutcomeUncertain => (
+            "outcome_uncertain",
+            "daemon invocation outcome is uncertain",
+        ),
+        V5SafeFailureReason::TaskCapacity => (
+            "task_capacity",
+            "daemon Task capacity was exhausted before execution",
+        ),
+        V5SafeFailureReason::WorkspaceCapacity => {
+            ("workspace_capacity", "workspace capacity was exhausted")
+        }
+        V5SafeFailureReason::WorkspaceRegistryFailed => (
+            "workspace_registry_failed",
+            "workspace registry is unavailable",
+        ),
+        V5SafeFailureReason::WorkspaceChanged => (
+            "workspace_changed",
+            "the workspace changed while the call ran, so its result was not published. Repeat the call.",
+        ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        compatibility_tool_contracts, parse_task_tool_call, project_task_snapshot,
+        task_tool_error_result, CompatibilityProjection, CompatibilityTaskSnapshot, TaskToolAction,
+        TaskToolError,
+    };
+    use serde_json::{json, Map, Value};
+    use unica_execution::invocation_store_v5::V5SafeFailureReason;
+    use unica_execution_contract::invocation::{DomainResult, InvocationStatus, TaskId};
+    use unica_refusal::RefusalDetail;
+
+    fn arguments(value: Value) -> Map<String, Value> {
+        value.as_object().expect("argument object").clone()
+    }
+
+    fn snapshot(status: InvocationStatus) -> CompatibilityTaskSnapshot {
+        CompatibilityTaskSnapshot::new(
+            "f741d562-9d42-4a4f-a626-fcd5c3fb9bc4"
+                .parse::<TaskId>()
+                .unwrap(),
+            status,
+            None,
+            (status == InvocationStatus::Failed).then_some(V5SafeFailureReason::InvocationFailed),
+            false,
+            1_777_012_345_678,
+            1_777_012_346_789,
+            3_600_000,
+            250,
+        )
+    }
+
+    /// rule: CTR.WIRE.COMPATIBILITY-TASK-TOOLS
+    #[test]
+    fn compatibility_contracts_are_exact_and_teach_bounded_wait() {
+        let contracts = compatibility_tool_contracts();
+        assert_eq!(
+            contracts
+                .iter()
+                .map(|contract| contract.name)
+                .collect::<Vec<_>>(),
+            ["task.get", "task.result", "task.cancel"]
+        );
+        for (name, required, fields) in [
+            ("task.get", json!(["taskId"]), vec!["taskId"]),
+            ("task.result", json!(["taskId"]), vec!["taskId", "waitMs"]),
+            ("task.cancel", json!(["taskId"]), vec!["taskId"]),
+        ] {
+            let contract = contracts.iter().find(|entry| entry.name == name).unwrap();
+            assert_eq!(contract.input_schema["additionalProperties"], false);
+            assert_eq!(contract.input_schema["required"], required);
+            assert_eq!(
+                contract.input_schema["properties"]
+                    .as_object()
+                    .unwrap()
+                    .keys()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>(),
+                fields
+            );
+        }
+        let result = contracts
+            .iter()
+            .find(|entry| entry.name == "task.result")
+            .unwrap();
+        assert_eq!(
+            result.input_schema["properties"]["waitMs"]["type"],
+            "integer"
+        );
+        assert_eq!(result.input_schema["properties"]["waitMs"]["minimum"], 0);
+        assert_eq!(
+            result.input_schema["properties"]["waitMs"]["maximum"],
+            7_000
+        );
+        assert_eq!(
+            result.input_schema["properties"]["waitMs"]["default"],
+            7_000
+        );
+    }
+
+    /// rule: CTR.WIRE.COMPATIBILITY-TASK-TOOLS
+    #[test]
+    fn compatibility_parser_accepts_only_canonical_ids_and_wait_zero_through_7000() {
+        let task_id = "f741d562-9d42-4a4f-a626-fcd5c3fb9bc4";
+        for (args, expected_wait) in [
+            (json!({"taskId": task_id}), 7_000),
+            (json!({"taskId": task_id, "waitMs": 0}), 0),
+            (json!({"taskId": task_id, "waitMs": 7_000}), 7_000),
+        ] {
+            let request = parse_task_tool_call("unica.task.result", &arguments(args))
+                .expect("known compatibility tool")
+                .expect("valid result request");
+            assert_eq!(
+                request.action,
+                TaskToolAction::Result {
+                    wait_ms: expected_wait
+                }
+            );
+        }
+        for (args, code) in [
+            (json!({"taskId": task_id, "waitMs": 7_001}), "bad_wait_ms"),
+            (json!({"taskId": task_id, "waitMs": -1}), "bad_wait_ms"),
+            (json!({"taskId": task_id, "waitMs": "7"}), "bad_wait_ms"),
+            (json!({"taskId": "not-canonical"}), "invalid_task_id"),
+            (
+                json!({"taskId": task_id.to_ascii_uppercase()}),
+                "invalid_task_id",
+            ),
+            (
+                json!({"taskId": task_id, "extra": true}),
+                "bad_task_arguments",
+            ),
+        ] {
+            let error = parse_task_tool_call("unica.task.result", &arguments(args))
+                .expect("known compatibility tool")
+                .expect_err("invalid request must fail closed");
+            assert_eq!(error.code().as_str(), code);
+        }
+        assert!(parse_task_tool_call("unica.check", &Map::new()).is_none());
+    }
+
+    /// rule: CTR.WIRE.COMPATIBILITY-TASK-TOOLS
+    #[test]
+    fn compatibility_receipt_is_closed_and_terminal_result_reuses_domain_json() {
+        let working = project_task_snapshot(
+            &snapshot(InvocationStatus::Working),
+            CompatibilityProjection::State,
+        )
+        .expect("working receipt");
+        assert_eq!(
+            serde_json::to_value(&working).unwrap(),
+            json!({
+                "ok": true,
+                "summary": "Task is still working",
+                "data": {
+                    "task": {
+                        "taskId": "f741d562-9d42-4a4f-a626-fcd5c3fb9bc4",
+                        "status": "working",
+                        "createdAtEpochMs": 1_777_012_345_678u64,
+                        "updatedAtEpochMs": 1_777_012_346_789u64,
+                        "ttlMs": 3_600_000,
+                        "pollIntervalMs": 250
+                    }
+                },
+                "next": [{
+                    "tool": "unica.task.result",
+                    "args": {
+                        "taskId": "f741d562-9d42-4a4f-a626-fcd5c3fb9bc4",
+                        "waitMs": 250
+                    }
+                }]
+            })
+        );
+        let serialized_value = serde_json::to_value(&working).unwrap();
+        for forbidden in ["job", "work"] {
+            assert!(
+                serialized_value.get(forbidden).is_none(),
+                "leaked {forbidden} slot"
+            );
+        }
+        let serialized = serde_json::to_string(&serialized_value).unwrap();
+        for forbidden_text in ["/private/", "bearer-secret", "runtime-secret"] {
+            assert!(
+                !serialized.contains(forbidden_text),
+                "leaked {forbidden_text}"
+            );
+        }
+
+        let subject = DomainResult {
+            ok: false,
+            at: Some("main:Catalog.Товары".into()),
+            summary: "subject validation failed".into(),
+            data: Some(json!({"code":"bad_value"})),
+            changed: Vec::new(),
+            warnings: Vec::new(),
+            diagnostics: vec![json!({"code":"bad_value"})],
+            artifacts: Vec::new(),
+            next: Vec::new(),
+            rev: Some("rev-7".into()),
+            cursor: None,
+            page: None,
+            source_text: None,
+            source_text_read_hint: None,
+        };
+        let mut completed = snapshot(InvocationStatus::Completed);
+        completed.result = Some(subject.clone());
+        assert_eq!(
+            project_task_snapshot(&completed, CompatibilityProjection::TerminalResult).unwrap(),
+            subject,
+            "ok:false subject result remains a completed canonical result"
+        );
+        assert_ne!(
+            project_task_snapshot(&completed, CompatibilityProjection::State).unwrap(),
+            subject,
+            "get projects state while result projects the subject payload"
+        );
+    }
+
+    /// rule: CTR.WIRE.COMPATIBILITY-TASK-TOOLS
+    #[test]
+    fn late_cancel_request_is_visible_in_task_state_without_changing_subject_result() {
+        let mut state = snapshot(InvocationStatus::Working);
+        state.cancel_requested = true;
+        let working = project_task_snapshot(&state, CompatibilityProjection::State).unwrap();
+        assert_eq!(
+            working.data.as_ref().unwrap()["task"]["cancelRequested"],
+            true
+        );
+
+        state.status = InvocationStatus::Completed;
+        state.result = Some(DomainResult::success("provider completed"));
+        let completed = project_task_snapshot(&state, CompatibilityProjection::State).unwrap();
+        assert_eq!(
+            completed.data.as_ref().unwrap()["task"]["cancelRequested"],
+            true
+        );
+        let result =
+            project_task_snapshot(&state, CompatibilityProjection::TerminalResult).unwrap();
+        assert_eq!(result.summary, "provider completed");
+        assert!(
+            result.data.is_none(),
+            "task state must not alter the subject result"
+        );
+    }
+
+    #[test]
+    fn compatibility_failure_cancel_and_lookup_errors_are_distinct_and_safe() {
+        for (status, code) in [
+            (InvocationStatus::Failed, "task_failed"),
+            (InvocationStatus::Cancelled, "task_cancelled"),
+        ] {
+            let projected =
+                project_task_snapshot(&snapshot(status), CompatibilityProjection::TerminalResult)
+                    .unwrap();
+            assert!(!projected.ok);
+            assert_eq!(projected.diagnostics[0]["code"], code);
+            assert!(
+                projected.data.as_ref().unwrap().get("code").is_none(),
+                "the closed code answers through diagnostics, not data"
+            );
+        }
+        for error in [
+            TaskToolError::InvalidTaskId,
+            TaskToolError::TaskNotFound,
+            TaskToolError::TaskExpired,
+            TaskToolError::TaskBackendFailed(RefusalDetail::BackendBroken),
+        ] {
+            let projected = task_tool_error_result(error);
+            assert!(!projected.ok);
+            assert_eq!(projected.diagnostics[0]["code"], error.code().as_str());
+            if let TaskToolError::TaskBackendFailed(detail) = error {
+                // The backend refusal names why: the agent chooses between
+                // retrying a busy daemon and calling a human for a broken one.
+                assert_eq!(projected.diagnostics[0]["detailCode"], detail.as_str());
+                assert_eq!(
+                    projected.diagnostics[0]["outcome"],
+                    detail.outcome().as_str()
+                );
+            }
+            assert!(
+                projected.data.is_none(),
+                "a task tool refusal carries no data payload"
+            );
+        }
+
+        let mut reversed = snapshot(InvocationStatus::Working);
+        reversed.updated_at_epoch_ms = reversed.created_at_epoch_ms - 1;
+        assert!(project_task_snapshot(&reversed, CompatibilityProjection::State).is_err());
+    }
+
+    #[test]
+    fn compatibility_projection_accepts_only_the_complete_status_result_failure_matrix() {
+        let hostile = DomainResult::success("hostile result /private/secret bearer-secret");
+        for status in [
+            InvocationStatus::Queued,
+            InvocationStatus::Working,
+            InvocationStatus::Completed,
+            InvocationStatus::Failed,
+            InvocationStatus::Cancelled,
+        ] {
+            for has_result in [false, true] {
+                for has_failure in [false, true] {
+                    let valid = matches!(
+                        (status, has_result, has_failure),
+                        (InvocationStatus::Queued, false, false)
+                            | (InvocationStatus::Working, false, false)
+                            | (InvocationStatus::Completed, true, false)
+                            | (InvocationStatus::Failed, false, true)
+                            | (InvocationStatus::Cancelled, false, false)
+                    );
+                    let mut candidate = snapshot(status);
+                    candidate.result = has_result.then(|| hostile.clone());
+                    candidate.failure_reason =
+                        has_failure.then_some(V5SafeFailureReason::InvocationFailed);
+                    for projection in [
+                        CompatibilityProjection::State,
+                        CompatibilityProjection::TerminalResult,
+                    ] {
+                        assert_eq!(
+                            project_task_snapshot(&candidate, projection).is_ok(),
+                            valid,
+                            "status={status:?} result={has_result} failure={has_failure} projection={projection:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}

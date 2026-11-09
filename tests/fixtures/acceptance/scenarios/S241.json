@@ -1,0 +1,20 @@
+{
+  "area": "Документация и стандарты",
+  "task": "Неизвестный источник документации — закрытый список источников",
+  "wire": [
+    {
+      "tool": "unica.docs",
+      "args": {
+        "query": "что угодно",
+        "source": "wikipedia"
+      },
+      "expect": [
+        "ok",
+        "provider",
+        "task",
+        "unsupported"
+      ]
+    }
+  ],
+  "id": "S241"
+}
