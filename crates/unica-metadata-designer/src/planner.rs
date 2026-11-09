@@ -2093,17 +2093,18 @@ fn stage_exchange_content(
         .read(&relative)
         .map_err(|e| ApplyPlanError::staging(e, path.clone()))?;
     let template = if borrowed {
-        crate::exchange_content::EMPTY_EXTENSION_CONTENT.as_bytes()
+        crate::exchange_content::empty_extension_content()
     } else {
-        crate::exchange_content::EMPTY_CONTENT.as_bytes()
+        crate::exchange_content::empty_content()
     };
-    let text = std::str::from_utf8(before.as_deref().unwrap_or(template)).map_err(|_| {
-        ApplyPlanError::new(
-            ApplyPlanErrorKind::InvalidSource,
-            "ExchangePlan Content.xml is not UTF-8",
-        )
-        .at_path(path.clone())
-    })?;
+    let text =
+        std::str::from_utf8(before.as_deref().unwrap_or(template.as_bytes())).map_err(|_| {
+            ApplyPlanError::new(
+                ApplyPlanErrorKind::InvalidSource,
+                "ExchangePlan Content.xml is not UTF-8",
+            )
+            .at_path(path.clone())
+        })?;
     let after = crate::exchange_content::update_content(text, items, borrowed)
         .map_err(|e| {
             ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, e).at_path(path.clone())
@@ -2111,7 +2112,7 @@ fn stage_exchange_content(
         .into_bytes();
     let changed = match before {
         Some(before) if before != after => staged.replace(&relative, &before, after).map(|()| true),
-        None if after != template => staged.create(&relative, after).map(|()| true),
+        None if after != template.as_bytes() => staged.create(&relative, after).map(|()| true),
         _ => Ok(false),
     };
     let changed = changed.map_err(|e| ApplyPlanError::staging(e, path))?;
@@ -2156,8 +2157,7 @@ pub fn final_exchange_content(
             .read(&content)
             .map_err(|e| ApplyPlanError::staging(e, "ops"))?;
         // An absent file is the platform's empty composition.
-        let bytes =
-            bytes.unwrap_or_else(|| crate::exchange_content::EMPTY_CONTENT.as_bytes().to_vec());
+        let bytes = bytes.unwrap_or_else(|| crate::exchange_content::empty_content().into_bytes());
         let text = std::str::from_utf8(&bytes).map_err(|e| fail(e.to_string()))?;
         let observed = crate::exchange_content::read_content(text).map_err(fail)?;
         if !observed.errors.is_empty() {

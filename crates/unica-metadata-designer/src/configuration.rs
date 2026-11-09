@@ -9,7 +9,6 @@ use unica_metadata::support_state::ConfigurationSupportData;
 use unica_metadata::MetadataKind;
 use unica_source_contract::discovery::ProjectDiscoveryRead;
 use unica_source_designer::configuration_layout::*;
-use unica_source_designer::format_profile::ACTIVE_FORMAT_PROFILE;
 use unica_source_designer::layout::metadata_kind;
 use unica_source_designer::read::{path_exists, path_is_dir, read_string, read_utf8_sig};
 use unica_source_designer::roots::root_version_literal;
@@ -1453,7 +1452,7 @@ pub fn cf_edit_set_home_page(
          \t<WorkingAreaTemplate>{template}</WorkingAreaTemplate>\r\n\
          {columns_xml}\r\n\
          </HomePageWorkArea>",
-        format_version = ACTIVE_FORMAT_PROFILE.export_format
+        format_version = root_version::writable()
     );
     Ok(CfEditExternalFilePlan {
         path: config_dir.join("Ext/HomePageWorkArea.xml"),
@@ -2636,7 +2635,7 @@ pub fn cf_init_images(
         );
     let mobile_xml = mobile_functionality_xml();
     let contained_objects = contained_objects_xml(&contained_object_ids);
-    let format_version = ACTIVE_FORMAT_PROFILE.export_format;
+    let format_version = root_version::writable();
 
     let config_xml = format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>

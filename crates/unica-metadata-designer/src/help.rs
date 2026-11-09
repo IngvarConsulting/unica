@@ -142,7 +142,6 @@ use unica_source_designer::read::{path_exists, path_is_dir, read_utf8_sig_snapsh
 
 use std::path::Path;
 use unica_address::source_target::MetadataAddress;
-use unica_source_designer::format_profile::ACTIVE_FORMAT_PROFILE;
 
 fn failure(
     owner: &MetadataAddress,
@@ -198,7 +197,7 @@ pub fn plan_help_resource_after_descriptor_edit<G>(
             ));
         }
     }
-    let format_version = ACTIVE_FORMAT_PROFILE.export_format.to_string();
+    let format_version = root_version::writable().to_string();
     let help_xml = help_metadata_xml(lang, &format_version);
     validate_help_xml(&help_xml_path, &help_xml)
         .map_err(|message| failure(owner, MetaDiagnosticCode::ValidationFailed, message))?;

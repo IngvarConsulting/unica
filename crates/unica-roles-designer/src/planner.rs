@@ -302,15 +302,17 @@ pub fn parse_role_operation(
     }
 }
 fn minimal_rights_xml() -> String {
-    concat!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
-        "<Rights xmlns=\"http://v8.1c.ru/8.2/roles\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xsi:type=\"Rights\" version=\"2.20\">\n",
-        "\t<setForNewObjects>false</setForNewObjects>\n",
-        "\t<setForAttributesByDefault>true</setForAttributesByDefault>\n",
-        "\t<independentRightsOfChildObjects>false</independentRightsOfChildObjects>\n",
-        "</Rights>\n",
+    format!(
+        concat!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
+            "<Rights xmlns=\"http://v8.1c.ru/8.2/roles\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xsi:type=\"Rights\" version=\"{}\">\n",
+            "\t<setForNewObjects>false</setForNewObjects>\n",
+            "\t<setForAttributesByDefault>true</setForAttributesByDefault>\n",
+            "\t<independentRightsOfChildObjects>false</independentRightsOfChildObjects>\n",
+            "</Rights>\n",
+        ),
+        crate::dialect::root_version::writable()
     )
-    .to_string()
 }
 /// Ensures `<object><name>X</name></object>` exists in the rights document.
 /// Читает права роли, применяет правку и стадирует результат с проверкой

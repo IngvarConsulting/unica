@@ -5,7 +5,7 @@
 use unica_source_designer::format_profile::{is_writable_root_version, ACTIVE_FORMAT_PROFILE};
 
 /// The export format version the codec writes.
-pub(crate) fn writable() -> &'static str {
+pub(crate) const fn writable() -> &'static str {
     ACTIVE_FORMAT_PROFILE.export_format
 }
 

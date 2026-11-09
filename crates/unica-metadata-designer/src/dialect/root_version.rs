@@ -10,7 +10,7 @@ use unica_source_designer::format_profile::{
 };
 
 /// The export format version the codec writes.
-pub(crate) fn writable() -> &'static str {
+pub(crate) const fn writable() -> &'static str {
     ACTIVE_FORMAT_PROFILE.export_format
 }
 

@@ -15,7 +15,6 @@ use unica_metadata::extension::*;
 use unica_source_contract::discovery::ProjectDiscoveryRead;
 use unica_source_contract::proposal::TrackedSourceProposal;
 use unica_source_designer::configuration_layout::*;
-use unica_source_designer::format_profile::ACTIVE_FORMAT_PROFILE;
 use unica_source_designer::read::{
     path_exists, path_is_dir, read_bytes, read_string, read_utf8_sig,
 };
@@ -1309,7 +1308,7 @@ pub fn cfe_borrow_form_xml(
     log: &mut CfeBorrowLog,
 ) -> String {
     let source = source_form_content.trim_start_matches('\u{feff}');
-    let version = ACTIVE_FORMAT_PROFILE.export_format.to_string();
+    let version = root_version::writable().to_string();
     let blocks = cfe_borrow_form_top_level_blocks(source);
     if blocks.is_empty() {
         return cfe_borrow_form_xml_fallback(source, type_name, object_name, borrow_main_attr);
@@ -1702,7 +1701,7 @@ pub fn cfe_borrow_form_xml_fallback(
     object_name: &str,
     borrow_main_attr: bool,
 ) -> String {
-    let version = ACTIVE_FORMAT_PROFILE.export_format.to_string();
+    let version = root_version::writable().to_string();
     let mut content = cfe_borrow_normalize_form_root_version(source);
     if !borrow_main_attr {
         content = cfe_borrow_strip_simple_data_paths(&content);
@@ -1774,7 +1773,7 @@ pub fn cfe_borrow_normalize_form_root_version(source: &str) -> String {
 }
 
 pub fn cfe_borrow_normalize_form_open_tag(open_tag: &str) -> String {
-    let active = ACTIVE_FORMAT_PROFILE.export_format;
+    let active = root_version::writable();
     let normalized = match cfe_borrow_version_value_range(open_tag) {
         Ok(Some((value_start, value_end))) => format!(
             "{}{}{}",
@@ -4634,7 +4633,7 @@ pub fn cfe_init_images(input: CfeInitImageInput<'_>) -> CfeInitImages {
         .map(unica_xml_format::names::stable_uuid)
         .collect::<Vec<_>>();
     let contained_objects = contained_objects_xml(&contained_object_ids);
-    let format_version_xml = ACTIVE_FORMAT_PROFILE.export_format;
+    let format_version_xml = root_version::writable();
     let purpose_xml = unica_xml_format::text::escape_xml(purpose);
     let compatibility_xml = unica_xml_format::text::escape_xml(compatibility);
     let interface_mode_xml = unica_xml_format::text::escape_xml(interface_mode);
@@ -4785,7 +4784,7 @@ pub fn cfe_borrow_plan_image(
     let format_version = ext_doc
         .root_element()
         .attribute("version")
-        .unwrap_or(ACTIVE_FORMAT_PROFILE.export_format)
+        .unwrap_or(root_version::writable())
         .to_string();
 
     let items = object_spec
@@ -5037,7 +5036,7 @@ pub fn cfe_init_derive_base(
     // a false provenance.
     derived.push(CfeInitDerivedProperty::defaulted(
         "mdClassesFormatVersion",
-        ACTIVE_FORMAT_PROFILE.export_format,
+        root_version::writable(),
     ));
     let base_lang_file = cfg_dir.join("Languages").join("Русский.xml");
     if path_exists(reader, &base_lang_file) {
