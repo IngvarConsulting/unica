@@ -93,11 +93,9 @@ pub(crate) fn elicitation_params(choice: &HumanChoice) -> ElicitRequestParams {
 /// option carries only its label.
 pub(crate) fn question_text(choice: &HumanChoice) -> String {
     let mut text = choice.question.clone();
-    text.push('
-');
+    text.push('\n');
     for option in &choice.options {
-        text.push_str(&format!("
-{}: {}.", option.title, option.description));
+        text.push_str(&format!("\n{}: {}.", option.title, option.description));
     }
     text
 }
@@ -254,10 +252,9 @@ mod tests {
         assert_eq!(form["mode"], "form");
         assert_eq!(
             form["message"],
-            "push of source set `main` loaded nothing
-
-Overwrite the infobase: infobase changes are lost.
-Take the infobase into the set: unsaved file edits are lost."
+            "push of source set `main` loaded nothing\n\n\
+             Overwrite the infobase: infobase changes are lost.\n\
+             Take the infobase into the set: unsaved file edits are lost."
         );
         let one_of = &form["requestedSchema"]["properties"][CHOICE_FIELD]["oneOf"];
         let ids: Vec<&str> = one_of
@@ -289,9 +286,8 @@ Take the infobase into the set: unsaved file edits are lost."
 
         assert_eq!(
             form["message"],
-            "База «origin» и исходники набора «main» разошлись.
-
-             Перезаписать базу: изменения, сделанные в базе, пропадут.
+            "База «origin» и исходники набора «main» разошлись.\n\n\
+             Перезаписать базу: изменения, сделанные в базе, пропадут.\n\
              Перезаписать исходники: несохранённые правки файлов пропадут."
         );
         let titles: Vec<&str> = form["requestedSchema"]["properties"][CHOICE_FIELD]["oneOf"]
