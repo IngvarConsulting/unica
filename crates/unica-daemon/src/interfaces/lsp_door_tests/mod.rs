@@ -751,7 +751,7 @@ fn a_vanished_lsp_client_leaves_the_daemon_and_mcp_serving() {
     let deadline = || Instant::now() + WAIT;
     let mut anchor = owner.connect_peer_before(deadline()).unwrap();
     let (session, _) = anchor
-        .lsp_open_before(vec![], deadline())
+        .lsp_open_before(vec![], false, deadline())
         .expect("open an LSP session");
     let in_flight = {
         let mut peer = owner.connect_peer_before(deadline()).unwrap();
