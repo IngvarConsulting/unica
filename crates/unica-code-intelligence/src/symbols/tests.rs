@@ -1,6 +1,7 @@
 use super::*;
 use std::sync::Mutex;
 use std::time::Duration;
+use unica_work_control::provider_deadline::ProviderDeadline;
 
 const MODULE_AT: &str = "main:Catalog.Валюты.Module.Manager";
 const MODULE_PATH: &str = "Catalogs/Валюты/Ext/ManagerModule.bsl";
@@ -540,7 +541,7 @@ fn caller_document() -> SymbolDocument<'static> {
     }
 }
 
-/// #2190: other modules' uses come from the modules the name index lists,
+/// Other modules' uses come from the modules the name index lists,
 /// each parsed and its paths resolved, in any letter case; until the index is
 /// built the answer is the module's own places, marked not indexed.
 #[test]

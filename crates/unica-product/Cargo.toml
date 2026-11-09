@@ -1,0 +1,68 @@
+[package]
+name = "unica-product"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[[bin]]
+name = "unica"
+path = "src/main.rs"
+
+[features]
+default = []
+receipt-ledger-test-support = ["unica-daemon/receipt-ledger-test-support"]
+# Исследования — не тесты: их цели собираются только с этой функцией, в
+# конвейера их нет. Запуск — scripts/research/.
+research = []
+
+[[test]]
+name = "daemon_receipt_ledger"
+path = "tests/daemon_receipt_ledger.rs"
+required-features = ["receipt-ledger-test-support"]
+
+[[test]]
+name = "research_xml_corpus"
+path = "tests/research/xml_corpus.rs"
+required-features = ["research"]
+
+[dependencies]
+unica-daemon = { path = "../unica-daemon" }
+
+[dev-dependencies]
+unica-analysis-services = { path = "../unica-analysis-services", features = ["test-support"] }
+unica-artifact-delivery = { path = "../unica-artifact-delivery", features = ["test-support"] }
+unica-bootstrap = { path = "../unica-bootstrap" }
+unica-daemon-protocol = { path = "../unica-daemon-protocol", features = ["test-support"] }
+unica-execution = { path = "../unica-execution", features = ["test-support"] }
+unica-metadata-designer = { path = "../unica-metadata-designer", features = ["test-support"] }
+unica-process = { path = "../unica-process", features = ["test-support"] }
+unica-source-designer = { path = "../unica-source-designer" }
+unica-workspace = { path = "../unica-workspace", features = ["test-support"] }
+unica-xml-format = { path = "../unica-xml-format" }
+chrono.workspace = true
+flate2.workspace = true
+
+roxmltree.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+url.workspace = true
+proc-macro2.workspace = true
+quote.workspace = true
+syn.workspace = true
+tempfile.workspace = true
+uuid.workspace = true
+
+[target.'cfg(unix)'.dev-dependencies]
+libc.workspace = true
+
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys.workspace = true
+
+[package.metadata.unica]
+component = "product"
+file-io = "owned"
+inputs = ["crates/unica-daemon/src/receipt_ledger_test_support.rs", "crates/unica-daemon/tests/support", "tests/fixtures/acceptance", "tests/fixtures/platform_8_3_27", "tests/fixtures/mcp", "tests/fixtures/xdto"]
+read-outside-baseline = 1

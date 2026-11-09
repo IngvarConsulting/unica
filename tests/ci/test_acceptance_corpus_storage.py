@@ -1,8 +1,9 @@
 """Acceptance corpus storage: parallel additions merge, losses are caught.
 
-The corpus is split so that two changes, each adding its own scenario, touch
-disjoint files (#1489).  These tests prove it on a real Git merge and show
-that the per-scenario manifest still catches a dropped scenario or step.
+The corpus is split so that two changes, each adding or editing its own
+scenario, touch disjoint files (#1489).  These tests prove it on a real Git
+merge and show that the per-scenario manifest still catches a dropped scenario
+or step.
 """
 from __future__ import annotations
 
@@ -32,10 +33,9 @@ class CorpusStorageTestCase(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name) / "acceptance"
         self.root.mkdir()
-        shutil.copy2(STORAGE.ROOT / STORAGE.LEGACY_FILE, self.root / STORAGE.LEGACY_FILE)
+        shutil.copy2(STORAGE.ROOT / STORAGE.HEADER_FILE, self.root / STORAGE.HEADER_FILE)
         shutil.copytree(STORAGE.ROOT / STORAGE.MANIFEST_DIR, self.root / STORAGE.MANIFEST_DIR)
-        if (STORAGE.ROOT / STORAGE.SCENARIO_DIR).is_dir():
-            shutil.copytree(STORAGE.ROOT / STORAGE.SCENARIO_DIR, self.root / STORAGE.SCENARIO_DIR)
+        shutil.copytree(STORAGE.ROOT / STORAGE.SCENARIO_DIR, self.root / STORAGE.SCENARIO_DIR)
 
     def problems(self) -> list[str]:
         return STORAGE.manifest_problems(STORAGE.load(self.root), STORAGE.read_manifest(self.root))
@@ -44,33 +44,37 @@ class CorpusStorageTestCase(unittest.TestCase):
         template = STORAGE.load(self.root)["scenarios"][0]
         return {**json.loads(json.dumps(template)), "id": identifier, "task": task}
 
-    def legacy(self) -> dict:
-        return json.loads((self.root / STORAGE.LEGACY_FILE).read_text(encoding="utf-8"))
+    def scenario_path(self, identifier: str) -> Path:
+        return self.root / STORAGE.SCENARIO_DIR / f"{identifier}.json"
 
-    def write_legacy(self, corpus: dict) -> None:
-        (self.root / STORAGE.LEGACY_FILE).write_text(
-            json.dumps(corpus, ensure_ascii=False, indent=1) + "\n", encoding="utf-8"
-        )
+    def scenario(self, identifier: str) -> dict:
+        return json.loads(self.scenario_path(identifier).read_text(encoding="utf-8"))
 
 
 class ManifestCatchesLossTests(CorpusStorageTestCase):
     def test_the_copied_corpus_matches_its_manifest(self) -> None:
         self.assertEqual(self.problems(), [])
 
+    def test_the_header_holds_no_scenarios(self) -> None:
+        header = json.loads((self.root / STORAGE.HEADER_FILE).read_text(encoding="utf-8"))
+        self.assertNotIn("scenarios", header)
+        (self.root / STORAGE.HEADER_FILE).write_text(
+            json.dumps({**header, "scenarios": [self.scenario("S001")]}), encoding="utf-8"
+        )
+        with self.assertRaisesRegex(STORAGE.CorpusError, "the header holds no scenarios"):
+            STORAGE.load(self.root)
+
     def test_dropped_historical_scenario_is_caught(self) -> None:
-        corpus = self.legacy()
-        corpus["scenarios"] = [s for s in corpus["scenarios"] if s["id"] != "S047"]
-        self.write_legacy(corpus)
+        self.scenario_path("S047").unlink()
         problems = self.problems()
         self.assertEqual(len(problems), 1, problems)
         self.assertTrue(problems[0].startswith("S047: the manifest freezes a scenario"), problems)
 
     def test_dropped_step_is_caught(self) -> None:
-        corpus = self.legacy()
-        scenario = next(s for s in corpus["scenarios"] if s["id"] == "S001")
+        scenario = self.scenario("S001")
         self.assertGreater(len(scenario["wire"]), 1)
         scenario["wire"].pop()
-        self.write_legacy(corpus)
+        scenario_file(self.root, scenario)
         problems = self.problems()
         self.assertEqual(len(problems), 1, problems)
         self.assertTrue(problems[0].startswith("S001: the manifest freezes 2 steps"), problems)
@@ -90,23 +94,22 @@ class ManifestCatchesLossTests(CorpusStorageTestCase):
         self.assertIn("--freeze S-9001-unfrozen", problems[0])
 
     def test_deliberate_removal_edits_the_manifest(self) -> None:
-        corpus = self.legacy()
-        corpus["scenarios"] = [s for s in corpus["scenarios"] if s["id"] != "S047"]
-        self.write_legacy(corpus)
+        self.scenario_path("S047").unlink()
         (self.root / STORAGE.MANIFEST_DIR / "S047.steps").unlink()
         self.assertEqual(self.problems(), [])
 
 
 class StableIdentifierTests(CorpusStorageTestCase):
     def test_the_historical_block_is_closed(self) -> None:
-        corpus = self.legacy()
-        corpus["scenarios"].append({**corpus["scenarios"][0], "id": f"S{STORAGE.LEGACY_LAST + 1:03d}"})
-        self.write_legacy(corpus)
-        with self.assertRaisesRegex(STORAGE.CorpusError, "outside the closed block"):
-            STORAGE.load(self.root)
+        for identifier in (f"S{STORAGE.LEGACY_LAST + 1:03d}", "S000"):
+            with self.subTest(identifier=identifier):
+                path = scenario_file(self.root, {**self.scenario("S001"), "id": identifier})
+                with self.assertRaisesRegex(STORAGE.CorpusError, "outside the closed block"):
+                    STORAGE.load(self.root)
+                path.unlink()
 
     def test_new_identifier_and_file_name_are_checked(self) -> None:
-        for identifier in ["S441", "S-1489", "S-0-name", "S-12-name", "S-440-name", "S-1489-Name", "S-1489-name_x", "1489-name"]:
+        for identifier in ["S-1489", "S-0-name", "S-12-name", "S-440-name", "S-1489-Name", "S-1489-name_x", "1489-name"]:
             with self.subTest(identifier=identifier):
                 path = scenario_file(self.root, self.new_scenario(identifier, "Неверный идентификатор"))
                 with self.assertRaises(STORAGE.CorpusError):
@@ -218,20 +221,22 @@ class ParallelAdditionMergeTests(CorpusStorageTestCase):
         identifiers = [scenario["id"] for scenario in STORAGE.load(self.root)["scenarios"]]
         self.assertLess(identifiers.index("S-901485-first-task"), identifiers.index("S-901486-second-task"))
 
-    def test_appending_to_the_shared_file_is_what_used_to_conflict(self) -> None:
+    def test_two_branches_editing_neighbouring_historical_scenarios_merge(self) -> None:
+        # Adjacent historical scenarios used to sit a few lines apart in one
+        # shared file, so two changes to their expectations conflicted.
         self.git("init", "-q")
         self.commit_all("base")
-        for branch, task in [("first", "Первая"), ("second", "Вторая")]:
+        for branch, identifier in [("first", "S001"), ("second", "S002")]:
             self.git("switch", "-q", "-c", branch, "main")
-            corpus = self.legacy()
-            corpus["scenarios"].append({**corpus["scenarios"][0], "id": "S441", "task": task})
-            self.write_legacy(corpus)
-            self.commit_all(f"append {task}")
+            scenario_file(self.root, {**self.scenario(identifier), "task": f"Задача ветки {branch}"})
+            self.commit_all(f"edit {identifier}")
         self.git("switch", "-q", "main")
         self.git("merge", "-q", "--no-edit", "first")
         merged = self.git("merge", "--no-edit", "second", check=False)
-        self.assertNotEqual(merged.returncode, 0, "the counterexample must reproduce the old conflict")
-        self.git("merge", "--abort")
+        self.assertEqual(merged.returncode, 0, merged.stdout + merged.stderr)
+        self.assertEqual(self.scenario("S001")["task"], "Задача ветки first")
+        self.assertEqual(self.scenario("S002")["task"], "Задача ветки second")
+        self.assertEqual(self.problems(), [])
 
 
 if __name__ == "__main__":

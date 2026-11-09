@@ -1,0 +1,318 @@
+{
+  "id": "S431",
+  "name": "dcs-schema-nodes-and-structure-items-by-address",
+  "issue": 1357,
+  "area": "СКД",
+  "task": "Источник данных и именованная группа варианта читаются своими адресами и правятся на них; операции на чужом узле отказывают без записи с next к словарю узла, неизвестный group — с next к контракту filter.add, исправленный вызов проходит предпросмотр и публикуется",
+  "workspace": "tests/fixtures/acceptance/workspace-dcs",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F05Report.Template.F05Schema.DataSource"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "cf:Report.F05Report.Template.F05Schema.DataSource.LocalSource"
+        }
+      ],
+      "captures": {
+        "before": {
+          "file": "src/cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F05Report.Template.F05Schema.DataSource.LocalSource.Can.dataSource.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/op",
+          "eq": "dataSource.set"
+        },
+        {
+          "pointer": "/data/props/implemented",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F05Report.Template.F05Schema",
+        "ops": [
+          {
+            "op": "dataSource.set",
+            "args": {
+              "values": {
+                "name": "LocalSource",
+                "kind": "Local"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: apply operation `dataSource.set` does not apply to Template `cf:Report.F05Report.Template.F05Schema`; it addresses `Kind.Name.Template.T.DataSource.S`",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[0].at"
+        },
+        {
+          "pointer": "/next/0/args/at",
+          "eq": "cf:Report.F05Report.Template.F05Schema"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.before"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F05Report.Template.F05Schema.DataSource.LocalSource",
+        "ops": [
+          {
+            "op": "dataSource.set",
+            "args": {
+              "values": {
+                "kind": "Local"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.before"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F05Report.Template.F05Schema.Setting.F05Variant.Item.F05Group"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/kind",
+          "eq": "Group"
+        },
+        {
+          "pointer": "/data/props/groupBy",
+          "eq": [
+            "Category"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F05Report.Template.F05Schema.Setting.F05Variant",
+        "ops": [
+          {
+            "op": "structure.patch",
+            "args": {
+              "values": {
+                "name": "F05Group",
+                "groupBy": [
+                  "Amount"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: apply operation `structure.patch` does not apply to Setting `cf:Report.F05Report.Template.F05Schema.Setting.F05Variant`; it addresses `Kind.Name.Template.T.Sett",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[0].at"
+        },
+        {
+          "pointer": "/next/0/args/at",
+          "eq": "cf:Report.F05Report.Template.F05Schema.Setting.F05Variant"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.before"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F05Report.Template.F05Schema.Setting.F05Variant",
+        "ops": [
+          {
+            "op": "filter.add",
+            "args": {
+              "items": [
+                {
+                  "field": "Amount",
+                  "group": "F05Group"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: ops[0].args.items[0].group: unknown argument",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.items[0].group"
+        },
+        {
+          "pointer": "/next/0/args/at",
+          "eq": "cf:Report.F05Report.Template.F05Schema.Setting.F05Variant.Can.filter.add"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.before"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F05Report.Template.F05Schema.Setting.F05Variant.Item.F05Group",
+        "ops": [
+          {
+            "op": "structure.patch",
+            "args": {
+              "values": {
+                "groupBy": [
+                  "Amount"
+                ]
+              }
+            }
+          },
+          {
+            "op": "filter.add",
+            "args": {
+              "items": [
+                {
+                  "field": "Amount",
+                  "comparison": "Greater",
+                  "value": 0
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.before"
+        }
+      ],
+      "captures": {
+        "token": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.token"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}item[{http://v8.1c.ru/8.1/data-composition-system/settings}name='F05Group']/{http://v8.1c.ru/8.1/data-composition-system/settings}groupItems/{http://v8.1c.ru/8.1/data-composition-system/settings}item/{http://v8.1c.ru/8.1/data-composition-system/settings}field",
+          "eq": [
+            "Amount"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}item[{http://v8.1c.ru/8.1/data-composition-system/settings}name='F05Group']/{http://v8.1c.ru/8.1/data-composition-system/settings}filter/{http://v8.1c.ru/8.1/data-composition-system/settings}item/{http://v8.1c.ru/8.1/data-composition-system/settings}left",
+          "eq": [
+            "Amount"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "cf:Report.F05Report.Template.F05Schema"
+      },
+      "expect": [
+        "ok"
+      ],
+      "status": "passed",
+      "validators": [
+        "dcs"
+      ]
+    }
+  ]
+}

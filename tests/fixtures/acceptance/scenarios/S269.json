@@ -1,0 +1,22 @@
+{
+  "id": "S269",
+  "area": "Проверки качества",
+  "task": "Проверить роль в выгрузке 2.21 — предупреждение о формате рядом с вердиктом",
+  "wire": [
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "newer:Role.SalesReader"
+      },
+      "expect": [
+        "ok"
+      ],
+      "status": "passed",
+      "diagnostic": "platformVersionUnsupported",
+      "validators": [
+        "role"
+      ]
+    }
+  ],
+  "workspace": "tests/fixtures/acceptance/workspace-format"
+}

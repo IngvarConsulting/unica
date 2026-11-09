@@ -22,7 +22,6 @@
     "mcp",
     "codex",
     "v8-runner",
-    "rlm",
     "code-analysis"
   ],
   "skills": "./skills/",

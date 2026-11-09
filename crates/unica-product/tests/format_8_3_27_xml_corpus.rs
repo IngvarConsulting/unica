@@ -1,0 +1,5237 @@
+use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
+use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+use roxmltree::Document;
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Map, Value};
+use sha2::{Digest, Sha256};
+
+#[path = "platform/daemon_teardown.rs"]
+mod daemon_teardown;
+#[path = "format_8_3_27_xml_corpus/empty_child_objects.rs"]
+mod empty_child_objects;
+#[path = "platform/format_8_3_27_xml_corpus.rs"]
+mod platform_support;
+#[path = "format_8_3_27_xml_corpus/template_new_xml.rs"]
+mod template_new_xml;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum XmlImpactClass {
+    None,
+    CreateOrModify,
+    RemoveOrModify,
+}
+
+/// Семейство кейсов корпуса: метка `operation` в манифесте и канонические
+/// операции `unica.apply`, из которых состоит целевой вызов кейса.
+#[derive(Debug, Clone, Copy)]
+struct MutatorRegistryEntry {
+    operation: &'static str,
+    ops: &'static [&'static str],
+    impact: XmlImpactClass,
+    case_ids: &'static [&'static str],
+    required_branches: &'static [&'static str],
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ExecutableCase {
+    id: &'static str,
+    tool: &'static str,
+    branch: &'static str,
+}
+
+static MUTATOR_REGISTRY: &[MutatorRegistryEntry] = &[
+    MutatorRegistryEntry {
+        operation: "object-borrow",
+        ops: &["object.borrow"],
+        impact: XmlImpactClass::CreateOrModify,
+        case_ids: &["cfe-borrow-object"],
+        required_branches: &["metadata-object"],
+    },
+    MutatorRegistryEntry {
+        operation: "code-insert",
+        ops: &["code.insert"],
+        impact: XmlImpactClass::None,
+        case_ids: &["code-patch-bsl-only"],
+        required_branches: &["bsl-only"],
+    },
+    MutatorRegistryEntry {
+        operation: "xdto-edit",
+        ops: &["property.add"],
+        impact: XmlImpactClass::CreateOrModify,
+        case_ids: &["xdto-add-nested-property"],
+        required_branches: &["nested-property"],
+    },
+    MutatorRegistryEntry {
+        operation: "dcs-component-create",
+        ops: &["template.add"],
+        impact: XmlImpactClass::CreateOrModify,
+        case_ids: &["dcs-compile-owned-template"],
+        required_branches: &["owned-template"],
+    },
+    MutatorRegistryEntry {
+        operation: "dcs-component-modify",
+        ops: &[
+            "field.add",
+            "selection.add",
+            "parameter.add",
+            "structure.set",
+            "field.set",
+            "fieldRole.set",
+        ],
+        impact: XmlImpactClass::CreateOrModify,
+        case_ids: &[
+            "dcs-edit-owned-template",
+            "dcs-edit-add-parameter-after-settings",
+            "dcs-edit-set-structure-after-settings",
+            "dcs-edit-modify-field-role-restriction",
+        ],
+        required_branches: &[
+            "owned-template",
+            "add-parameter-after-settings",
+            "set-structure-after-settings",
+            "modify-field-role-restriction",
+        ],
+    },
+    MutatorRegistryEntry {
+        operation: "form-add",
+        ops: &["form.add"],
+        impact: XmlImpactClass::CreateOrModify,
+        case_ids: &["form-add-managed"],
+        required_branches: &["managed-form"],
+    },
+    MutatorRegistryEntry {
+        operation: "form-compose",
+        ops: &["props.set", "attribute.add", "command.add", "item.add"],
+        impact: XmlImpactClass::CreateOrModify,
+        case_ids: &["form-compile-managed"],
+        required_branches: &["managed-form"],
+    },
+    MutatorRegistryEntry {
+        operation: "form-attribute-add",
+        ops: &["attribute.add"],
+        impact: XmlImpactClass::CreateOrModify,
+        case_ids: &["form-edit-managed"],
+        required_branches: &["managed-form"],
+    },
+    MutatorRegistryEntry {
+        operation: "form-remove",
+        ops: &["form.remove"],
+        impact: XmlImpactClass::RemoveOrModify,
+        case_ids: &["form-remove-managed"],
+        required_branches: &["remove-managed-form"],
+    },
+    MutatorRegistryEntry {
+        operation: "help-create",
+        ops: &["help.create"],
+        impact: XmlImpactClass::CreateOrModify,
+        case_ids: &["help-add-object"],
+        required_branches: &["object-help"],
+    },
+    MutatorRegistryEntry {
+        operation: "command-visibility-set",
+        ops: &["commandVisibility.set"],
+        impact: XmlImpactClass::CreateOrModify,
+        case_ids: &["interface-edit-subsystem"],
+        required_branches: &["subsystem-command-interface"],
+    },
+    MutatorRegistryEntry {
+        operation: "object-create",
+        ops: &[
+            "object.create",
+            "dimension.add",
+            "resource.add",
+            "props.set",
+        ],
+        impact: XmlImpactClass::CreateOrModify,
+        case_ids: &[
+            "meta-compile-catalog",
+            "meta-compile-document",
+            "meta-compile-enum",
+            "meta-compile-constant",
+            "meta-compile-information-register",
+            "meta-compile-accumulation-register",
+            "meta-compile-accounting-register",
+            "meta-compile-calculation-register",
+            "meta-compile-chart-of-accounts",
+            "meta-compile-chart-of-characteristic-types",
+            "meta-compile-chart-of-calculation-types",
+            "meta-compile-business-process",
+            "meta-compile-task",
+            "meta-compile-exchange-plan",
+            "meta-compile-document-journal",
+            "meta-compile-report",
+            "meta-compile-data-processor",
+            "meta-compile-common-module",
+            "meta-compile-scheduled-job",
+            "meta-compile-event-subscription",
+            "meta-compile-http-service",
+            "meta-compile-web-service",
+            "meta-compile-defined-type",
+        ],
+        required_branches: &[
+            "Catalog",
+            "Document",
+            "Enum",
+            "Constant",
+            "InformationRegister",
+            "AccumulationRegister",
+            "AccountingRegister",
+            "CalculationRegister",
+            "ChartOfAccounts",
+            "ChartOfCharacteristicTypes",
+            "ChartOfCalculationTypes",
+            "BusinessProcess",
+            "Task",
+            "ExchangePlan",
+            "DocumentJournal",
+            "Report",
+            "DataProcessor",
+            "CommonModule",
+            "ScheduledJob",
+            "EventSubscription",
+            "HTTPService",
+            "WebService",
+            "DefinedType",
+        ],
+    },
+    MutatorRegistryEntry {
+        operation: "metadata-edit",
+        ops: &[
+            "props.set",
+            "predefinedItem.add",
+            "relation.replace",
+            "resource.add",
+        ],
+        impact: XmlImpactClass::CreateOrModify,
+        case_ids: &[
+            "meta-edit-predefined-items",
+            "meta-edit-property",
+            "meta-edit-event-source",
+            "meta-edit-resource-append",
+            "meta-edit-resource-position-after",
+        ],
+        required_branches: &[
+            "predefined-items",
+            "modify-property",
+            "event-source",
+            "resource-append",
+            "resource-position-after",
+        ],
+    },
+    MutatorRegistryEntry {
+        operation: "meta-remove",
+        ops: &["object.remove"],
+        impact: XmlImpactClass::RemoveOrModify,
+        case_ids: &["meta-remove-object"],
+        required_branches: &["remove-object"],
+    },
+    MutatorRegistryEntry {
+        operation: "right-set",
+        ops: &["right.set"],
+        impact: XmlImpactClass::CreateOrModify,
+        case_ids: &["role-edit-set-right"],
+        required_branches: &["set-right"],
+    },
+    MutatorRegistryEntry {
+        operation: "child-subsystem-add",
+        ops: &["childSubsystem.add"],
+        impact: XmlImpactClass::CreateOrModify,
+        case_ids: &["subsystem-edit-add-child"],
+        required_branches: &["add-child"],
+    },
+    MutatorRegistryEntry {
+        operation: "support-edit",
+        ops: &["supportCapability.set"],
+        impact: XmlImpactClass::None,
+        case_ids: &["support-edit-bin-only"],
+        required_branches: &["parent-configurations-bin-only"],
+    },
+    MutatorRegistryEntry {
+        operation: "template-add",
+        ops: &["template.add"],
+        impact: XmlImpactClass::CreateOrModify,
+        case_ids: &["template-add-spreadsheet-document"],
+        required_branches: &["SpreadsheetDocument"],
+    },
+    MutatorRegistryEntry {
+        operation: "template-remove",
+        ops: &["template.remove"],
+        impact: XmlImpactClass::RemoveOrModify,
+        case_ids: &["template-remove-object-template"],
+        required_branches: &["remove-object-template"],
+    },
+];
+
+/// Каждый кейс публикуется каноническим `unica.apply` собранного бинаря.
+/// Кейсы без канонической операции сняты: инициализаторы и перехват метода
+/// расширения (#1813), правка корня конфигурации (#1981), заимствование
+/// формы (#1982), макеты TextDocument/HTMLDocument/BinaryData (#992) и
+/// повтор первой публикации `dcs-compile-owned-template`.
+pub(crate) static EXECUTABLE_CASES: &[ExecutableCase] = &[
+    ExecutableCase {
+        id: "cfe-borrow-object",
+        tool: CANONICAL_APPLY_TOOL,
+        branch: "metadata-object",
+    },
+    ExecutableCase {
+        id: "code-patch-bsl-only",
+        tool: CANONICAL_APPLY_TOOL,
+        branch: "bsl-only",
+    },
+    ExecutableCase {
+        id: "xdto-add-nested-property",
+        tool: CANONICAL_APPLY_TOOL,
+        branch: "nested-property",
+    },
+    ExecutableCase {
+        id: "dcs-compile-owned-template",
+        tool: CANONICAL_APPLY_TOOL,
+        branch: "owned-template",
+    },
+    ExecutableCase {
+        id: "dcs-edit-owned-template",
+        tool: CANONICAL_APPLY_TOOL,
+        branch: "owned-template",
+    },
+    ExecutableCase {
+        id: "dcs-edit-add-parameter-after-settings",
+        tool: CANONICAL_APPLY_TOOL,
+        branch: "add-parameter-after-settings",
+    },
+    ExecutableCase {
+        id: "dcs-edit-set-structure-after-settings",
+        tool: CANONICAL_APPLY_TOOL,
+        branch: "set-structure-after-settings",
+    },
+    ExecutableCase {
+        id: "dcs-edit-modify-field-role-restriction",
+        tool: CANONICAL_APPLY_TOOL,
+        branch: "modify-field-role-restriction",
+    },
+    ExecutableCase {
+        id: "form-add-managed",
+        tool: CANONICAL_APPLY_TOOL,
+        branch: "managed-form",
+    },
+    ExecutableCase {
+        id: "form-compile-managed",
+        tool: CANONICAL_APPLY_TOOL,
+        branch: "managed-form",
+    },
+    ExecutableCase {
+        id: "form-edit-managed",
+        tool: CANONICAL_APPLY_TOOL,
+        branch: "managed-form",
+    },
+    ExecutableCase {
+        id: "form-remove-managed",
+        tool: CANONICAL_APPLY_TOOL,
+        branch: "remove-managed-form",
+    },
+    ExecutableCase {
+        id: "help-add-object",
+        tool: CANONICAL_APPLY_TOOL,
+        branch: "object-help",
+    },
+    ExecutableCase {
+        id: "interface-edit-subsystem",
+        tool: CANONICAL_APPLY_TOOL,
+        branch: "subsystem-command-interface",
+    },
+    ExecutableCase {
+        id: "meta-compile-catalog",
+        tool: CANONICAL_APPLY_TOOL,
+        branch: "Catalog",
+    },
+    ExecutableCase {
+        id: "meta-compile-document",
+        tool: CANONICAL_APPLY_TOOL,
+        branch: "Document",
+    },
+    ExecutableCase {
+        id: "meta-compile-enum",
+        tool: CANONICAL_APPLY_TOOL,
+        branch: "Enum",
+    },
+    ExecutableCase {
+        id: "meta-compile-constant",
+        tool: CANONICAL_APPLY_TOOL,
+        branch: "Constant",
+    },
+    ExecutableCase {
+        id: "meta-compile-information-register",
+        tool: CANONICAL_APPLY_TOOL,
+        branch: "InformationRegister",
+    },
+    ExecutableCase {
+        id: "meta-compile-accumulation-register",
+        tool: CANONICAL_APPLY_TOOL,
+        branch: "AccumulationRegister",
+    },
+    ExecutableCase {
+        id: "meta-compile-accounting-register",
+        tool: CANONICAL_APPLY_TOOL,
+        branch: "AccountingRegister",
+    },
+    ExecutableCase {
+        id: "meta-compile-calculation-register",
+        tool: CANONICAL_APPLY_TOOL,
+        branch: "CalculationRegister",
+    },
+    ExecutableCase {
+        id: "meta-compile-chart-of-accounts",
+        tool: CANONICAL_APPLY_TOOL,
+        branch: "ChartOfAccounts",
+    },
+    ExecutableCase {
+        id: "meta-compile-chart-of-characteristic-types",
+        tool: CANONICAL_APPLY_TOOL,
+        branch: "ChartOfCharacteristicTypes",
+    },
+    ExecutableCase {
+        id: "meta-compile-chart-of-calculation-types",
+        tool: CANONICAL_APPLY_TOOL,
+        branch: "ChartOfCalculationTypes",
+    },
+    ExecutableCase {
+        id: "meta-compile-business-process",
+        tool: CANONICAL_APPLY_TOOL,
+        branch: "BusinessProcess",
+    },
+    ExecutableCase {
+        id: "meta-compile-task",
+        tool: CANONICAL_APPLY_TOOL,
+        branch: "Task",
+    },
+    ExecutableCase {
+        id: "meta-compile-exchange-plan",
+        tool: CANONICAL_APPLY_TOOL,
+        branch: "ExchangePlan",
+    },
+    ExecutableCase {
+        id: "meta-compile-document-journal",
+        tool: CANONICAL_APPLY_TOOL,
+        branch: "DocumentJournal",
+    },
+    ExecutableCase {
+        id: "meta-compile-report",
+        tool: CANONICAL_APPLY_TOOL,
+        branch: "Report",
+    },
+    ExecutableCase {
+        id: "meta-compile-data-processor",
+        tool: CANONICAL_APPLY_TOOL,
+        branch: "DataProcessor",
+    },
+    ExecutableCase {
+        id: "meta-compile-common-module",
+        tool: CANONICAL_APPLY_TOOL,
+        branch: "CommonModule",
+    },
+    ExecutableCase {
+        id: "meta-compile-scheduled-job",
+        tool: CANONICAL_APPLY_TOOL,
+        branch: "ScheduledJob",
+    },
+    ExecutableCase {
+        id: "meta-compile-event-subscription",
+        tool: CANONICAL_APPLY_TOOL,
+        branch: "EventSubscription",
+    },
+    ExecutableCase {
+        id: "meta-compile-http-service",
+        tool: CANONICAL_APPLY_TOOL,
+        branch: "HTTPService",
+    },
+    ExecutableCase {
+        id: "meta-compile-web-service",
+        tool: CANONICAL_APPLY_TOOL,
+        branch: "WebService",
+    },
+    ExecutableCase {
+        id: "meta-compile-defined-type",
+        tool: CANONICAL_APPLY_TOOL,
+        branch: "DefinedType",
+    },
+    ExecutableCase {
+        id: "meta-edit-predefined-items",
+        tool: CANONICAL_APPLY_TOOL,
+        branch: "predefined-items",
+    },
+    ExecutableCase {
+        id: "meta-edit-property",
+        tool: CANONICAL_APPLY_TOOL,
+        branch: "modify-property",
+    },
+    ExecutableCase {
+        id: "meta-edit-event-source",
+        tool: CANONICAL_APPLY_TOOL,
+        branch: "event-source",
+    },
+    ExecutableCase {
+        id: "meta-edit-resource-append",
+        tool: CANONICAL_APPLY_TOOL,
+        branch: "resource-append",
+    },
+    ExecutableCase {
+        id: "meta-edit-resource-position-after",
+        tool: CANONICAL_APPLY_TOOL,
+        branch: "resource-position-after",
+    },
+    ExecutableCase {
+        id: "meta-remove-object",
+        tool: CANONICAL_APPLY_TOOL,
+        branch: "remove-object",
+    },
+    ExecutableCase {
+        id: "role-edit-set-right",
+        tool: CANONICAL_APPLY_TOOL,
+        branch: "set-right",
+    },
+    ExecutableCase {
+        id: "subsystem-edit-add-child",
+        tool: CANONICAL_APPLY_TOOL,
+        branch: "add-child",
+    },
+    ExecutableCase {
+        id: "support-edit-bin-only",
+        tool: CANONICAL_APPLY_TOOL,
+        branch: "parent-configurations-bin-only",
+    },
+    ExecutableCase {
+        id: "template-add-spreadsheet-document",
+        tool: CANONICAL_APPLY_TOOL,
+        branch: "SpreadsheetDocument",
+    },
+    ExecutableCase {
+        id: "template-remove-object-template",
+        tool: CANONICAL_APPLY_TOOL,
+        branch: "remove-object-template",
+    },
+];
+
+type XmlSnapshot = BTreeMap<String, String>;
+type XmlPayloadSnapshot = BTreeMap<String, Vec<u8>>;
+type NonXmlSnapshot = BTreeMap<String, String>;
+type NonXmlPayloadSnapshot = BTreeMap<String, Vec<u8>>;
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+struct XmlDelta {
+    created: Vec<String>,
+    modified: Vec<String>,
+    removed: Vec<String>,
+    unchanged: Vec<String>,
+}
+
+fn classify_xml_delta(before: &XmlSnapshot, after: &XmlSnapshot) -> XmlDelta {
+    let mut delta = XmlDelta::default();
+    for (path, before_hash) in before {
+        match after.get(path) {
+            None => delta.removed.push(path.clone()),
+            Some(after_hash) if after_hash != before_hash => delta.modified.push(path.clone()),
+            Some(_) => delta.unchanged.push(path.clone()),
+        }
+    }
+    for path in after.keys() {
+        if !before.contains_key(path) {
+            delta.created.push(path.clone());
+        }
+    }
+    delta
+}
+
+fn enforce_xml_impact(
+    impact: XmlImpactClass,
+    before: &XmlSnapshot,
+    after: &XmlSnapshot,
+) -> Result<XmlDelta, String> {
+    let delta = classify_xml_delta(before, after);
+    match impact {
+        XmlImpactClass::None if before != after => {
+            Err("XML impact None changed the complete XML map".to_string())
+        }
+        XmlImpactClass::CreateOrModify if delta.created.is_empty() && delta.modified.is_empty() => {
+            Err("CreateOrModify case produced no XML create/modify delta".to_string())
+        }
+        XmlImpactClass::RemoveOrModify if delta.removed.is_empty() || delta.modified.is_empty() => {
+            Err("RemoveOrModify case must remove XML and modify a surviving owner".to_string())
+        }
+        _ => Ok(delta),
+    }
+}
+
+#[derive(Debug, Default)]
+struct SequentialCallGate {
+    target_call_active: bool,
+    completed_target_calls: usize,
+}
+
+impl SequentialCallGate {
+    fn begin(&mut self) -> Result<(), String> {
+        if self.target_call_active {
+            return Err("overlapping target calls are forbidden".to_string());
+        }
+        self.target_call_active = true;
+        Ok(())
+    }
+
+    fn finish(&mut self) -> Result<(), String> {
+        if !self.target_call_active {
+            return Err("target call was not active".to_string());
+        }
+        self.target_call_active = false;
+        self.completed_target_calls += 1;
+        Ok(())
+    }
+}
+
+fn common_args(workspace: &Path) -> Map<String, Value> {
+    Map::from_iter([
+        (
+            "cwd".to_string(),
+            Value::String(workspace.display().to_string()),
+        ),
+        ("dryRun".to_string(), Value::Bool(false)),
+    ])
+}
+
+const CANONICAL_APPLY_TOOL: &str = "unica.apply";
+
+/// Состояние поставщика одного канонического вызова. Пауза простоя не
+/// останавливает его демона: после apply он держит результат для повтора
+/// (`arch/rules/workspace/actor-retention.md`) и переживает MCP. На Windows
+/// живой демон держит `target\debug\unica.exe`, и следующая сборка с другими
+/// признаками не может заменить файл. Поэтому демон останавливается, а
+/// состояние удаляется на любом выходе из вызова, в том числе по ошибке.
+struct CanonicalCallState(PathBuf);
+
+impl Drop for CanonicalCallState {
+    fn drop(&mut self) {
+        daemon_teardown::stop_daemons_under(&self.0);
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+/// Runs one canonical `unica.apply` publication over the packaged stdio
+/// surface: the same production path a host uses, with the daemon state kept
+/// outside the case workspace so the platform checkpoint boundary stays clean.
+fn call_canonical_apply(args: &Map<String, Value>) -> Result<String, String> {
+    call_canonical_tool(CANONICAL_APPLY_TOOL, args)
+}
+
+/// Один канонический вызов по stdio: рабочее пространство берётся из `cwd`,
+/// состояние поставщика живёт вне него, ответ проверяется на ok и ошибки.
+fn call_canonical_tool(tool: &str, args: &Map<String, Value>) -> Result<String, String> {
+    call_canonical_tool_response(tool, args).map(|structured| {
+        structured["summary"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string()
+    })
+}
+
+/// То же, но с полным `structuredContent` ответа: тестам жизненного цикла
+/// нужны данные предпросмотра и публикации, а не только сводка.
+fn call_canonical_tool_response(tool: &str, args: &Map<String, Value>) -> Result<Value, String> {
+    use std::io::{BufRead, BufReader, Write};
+    use std::process::{Command, Stdio};
+
+    static STATE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+    let workspace = args
+        .get("cwd")
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("canonical {tool} corpus call has no workspace"))?;
+    let workspace = fs::canonicalize(workspace).map_err(|error| error.to_string())?;
+    let state = std::env::temp_dir().join(format!(
+        "unica-corpus-apply-state-{}-{}",
+        std::process::id(),
+        STATE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::create_dir_all(&state).map_err(|error| error.to_string())?;
+    let state = CanonicalCallState(fs::canonicalize(&state).map_err(|error| error.to_string())?);
+    let mut request = args.clone();
+    request.remove("cwd");
+    let publish_apply =
+        tool == CANONICAL_APPLY_TOOL && request.remove("dryRun") != Some(Value::Bool(true));
+    if tool == CANONICAL_APPLY_TOOL {
+        request.remove("ifRev");
+    }
+    let mut child = Command::new(env!("CARGO_BIN_EXE_unica"))
+        .current_dir(&workspace)
+        .env("UNICA_PROVIDER_STATE_DIR", &state.0)
+        // Демон переживает MCP: без назначенной паузы он остаётся на
+        // четверть часа, и к концу прогона их набирается столько же,
+        // сколько было тестов.
+        .env("UNICA_DAEMON_IDLE_GRACE_MS", "5000")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .map_err(|error| format!("cannot start canonical unica: {error}"))?;
+    let mut stdin = child.stdin.take().ok_or("canonical unica has no stdin")?;
+    let stdout = child.stdout.take().ok_or("canonical unica has no stdout")?;
+    let mut reader = BufReader::new(stdout);
+    fn exchange(
+        stdin: &mut std::process::ChildStdin,
+        reader: &mut BufReader<std::process::ChildStdout>,
+        request: Value,
+    ) -> Result<Value, String> {
+        let id = request["id"].clone();
+        serde_json::to_writer(&mut *stdin, &request).map_err(|error| error.to_string())?;
+        stdin.write_all(b"\n").map_err(|error| error.to_string())?;
+        stdin.flush().map_err(|error| error.to_string())?;
+        loop {
+            let mut line = String::new();
+            let read = reader
+                .read_line(&mut line)
+                .map_err(|error| error.to_string())?;
+            if read == 0 {
+                return Err("canonical unica closed stdout before answering".to_string());
+            }
+            let response: Value = match serde_json::from_str(line.trim()) {
+                Ok(response) => response,
+                Err(_) => continue,
+            };
+            if response.get("id") == Some(&id) {
+                return Ok(response);
+            }
+        }
+    }
+    exchange(
+        &mut stdin,
+        &mut reader,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": {"name": "format-corpus", "version": "0"}
+            }
+        }),
+    )?;
+    serde_json::to_writer(
+        &mut stdin,
+        &json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
+    )
+    .map_err(|error| error.to_string())?;
+    stdin.write_all(b"\n").map_err(|error| error.to_string())?;
+    let mut response = exchange(
+        &mut stdin,
+        &mut reader,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {"name": tool, "arguments": Value::Object(request)}
+        }),
+    )?;
+    fn completed_response(
+        stdin: &mut std::process::ChildStdin,
+        reader: &mut BufReader<std::process::ChildStdout>,
+        mut response: Value,
+        phase: &str,
+    ) -> Result<Value, String> {
+        let mut expected_task_id = None;
+        for poll in 0..=10 {
+            let structured = &response["result"]["structuredContent"];
+            if structured["ok"] != true || structured["data"]["task"].is_null() {
+                return Ok(response);
+            }
+            let task_id = structured["data"]["task"]["taskId"]
+                .as_str()
+                .ok_or_else(|| format!("task has no id: {response}"))?
+                .to_string();
+            if expected_task_id
+                .as_ref()
+                .is_some_and(|expected| expected != &task_id)
+            {
+                return Err(format!("task identity changed: {response}"));
+            }
+            expected_task_id = Some(task_id.clone());
+            if poll == 10 {
+                return Err(format!("canonical {phase} task did not finish: {response}"));
+            }
+            response = exchange(
+                stdin,
+                reader,
+                json!({
+                    "jsonrpc":"2.0","id":format!("{phase}-task-{poll}"),"method":"tools/call",
+                    "params":{"name":"unica.task.result","arguments":{"taskId":task_id,"waitMs":7000}}
+                }),
+            )?;
+        }
+        unreachable!()
+    }
+    response = completed_response(&mut stdin, &mut reader, response, "preview")?;
+    if publish_apply && response["result"]["structuredContent"]["ok"] == true {
+        let token = response["result"]["structuredContent"]["data"]["executionToken"]
+            .as_str()
+            .ok_or_else(|| {
+                format!("canonical apply preview returned no executionToken: {response}")
+            })?;
+        response = exchange(
+            &mut stdin,
+            &mut reader,
+            json!({
+                "jsonrpc": "2.0", "id": 3, "method": "tools/call",
+                "params": {"name": tool, "arguments": {"executionToken": token}}
+            }),
+        )?;
+    }
+    response = completed_response(&mut stdin, &mut reader, response, "execute")?;
+    drop(stdin);
+    let _ = child.wait();
+    drop(state);
+    let structured = response
+        .get("result")
+        .and_then(|result| result.get("structuredContent"))
+        .cloned()
+        .ok_or_else(|| format!("canonical apply answered without structuredContent: {response}"))?;
+    let ok = structured["ok"].as_bool().unwrap_or(false);
+    let summary = structured["summary"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    let errors = structured["diagnostics"]
+        .as_array()
+        .map(|diagnostics| {
+            diagnostics
+                .iter()
+                .map(|diagnostic| {
+                    format!(
+                        "{}: {}",
+                        diagnostic["code"].as_str().unwrap_or("?"),
+                        diagnostic["message"].as_str().unwrap_or("")
+                    )
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if !ok || !errors.is_empty() {
+        return Err(format!("{tool} failed: {summary}; errors={errors:?}"));
+    }
+    Ok(structured)
+}
+
+/// Публикующий вызов корпуса: предпросмотр с последующим исполнением.
+fn call_public_tool(tool: &str, args: &Map<String, Value>) -> Result<String, String> {
+    assert_eq!(args.get("dryRun"), Some(&Value::Bool(false)));
+    assert_eq!(
+        tool, CANONICAL_APPLY_TOOL,
+        "corpus cases publish through unica.apply"
+    );
+    call_canonical_apply(args)
+}
+
+fn call_target_tool(
+    gate: &mut SequentialCallGate,
+    tool: &str,
+    args: &Map<String, Value>,
+) -> Result<String, String> {
+    gate.begin()?;
+    let result = call_public_tool(tool, args);
+    gate.finish()?;
+    result
+}
+
+fn sha256_file(path: &Path) -> Result<String, String> {
+    let bytes =
+        fs::read(path).map_err(|error| format!("cannot read {}: {error}", path.display()))?;
+    Ok(format!("{:x}", Sha256::digest(bytes)))
+}
+
+fn generated_uuid_lexeme(payload: &[u8], offset: usize) -> Option<String> {
+    const UUID_LEN: usize = 36;
+    let candidate = payload.get(offset..offset + UUID_LEN)?;
+    if (offset > 0 && payload[offset - 1].is_ascii_hexdigit())
+        || payload
+            .get(offset + UUID_LEN)
+            .is_some_and(u8::is_ascii_hexdigit)
+    {
+        return None;
+    }
+    for (index, byte) in candidate.iter().enumerate() {
+        let expected_hyphen = matches!(index, 8 | 13 | 18 | 23);
+        if (*byte == b'-') != expected_hyphen || (!expected_hyphen && !byte.is_ascii_hexdigit()) {
+            return None;
+        }
+    }
+    // Версия 4 — случайные идентичности, версия 8 — выведенные из корня
+    // набора (заимствование): обе меняются от порождения к порождению.
+    if !matches!(candidate[14], b'4' | b'8')
+        || !matches!(
+            candidate[19].to_ascii_lowercase(),
+            b'8' | b'9' | b'a' | b'b'
+        )
+    {
+        return None;
+    }
+    Some(std::str::from_utf8(candidate).ok()?.to_ascii_lowercase())
+}
+
+fn normalize_generated_uuids(payloads: &BTreeMap<String, Vec<u8>>) -> BTreeMap<String, Vec<u8>> {
+    let mut identities = BTreeMap::<String, Vec<u8>>::new();
+    for payload in payloads.values() {
+        let text = std::str::from_utf8(payload)
+            .expect("captured corpus XML must be UTF-8")
+            .trim_start_matches('\u{feff}');
+        let document = Document::parse(text).expect("captured corpus XML must remain parseable");
+        for element in document.descendants().filter(|node| node.is_element()) {
+            let element_name = element.tag_name().name();
+            for attribute in element.attributes() {
+                if !matches!(attribute.name(), "uuid" | "id")
+                    || (element_name == "panelDef" && attribute.name() == "id")
+                {
+                    continue;
+                }
+                let value = attribute.value();
+                let Some(identity) = (value.len() == 36)
+                    .then(|| generated_uuid_lexeme(value.as_bytes(), 0))
+                    .flatten()
+                else {
+                    continue;
+                };
+                let next = identities.len() + 1;
+                identities
+                    .entry(identity)
+                    .or_insert_with(|| format!("__UNICA_UUID_{next:06}__").into_bytes());
+            }
+            if !matches!(element_name, "TypeId" | "ValueId" | "ObjectId" | "ThisNode") {
+                continue;
+            }
+            let value = element.text().unwrap_or_default().trim();
+            let Some(identity) = (value.len() == 36)
+                .then(|| generated_uuid_lexeme(value.as_bytes(), 0))
+                .flatten()
+            else {
+                continue;
+            };
+            let next = identities.len() + 1;
+            identities
+                .entry(identity)
+                .or_insert_with(|| format!("__UNICA_UUID_{next:06}__").into_bytes());
+        }
+    }
+    let mut normalized = BTreeMap::new();
+    for (path, payload) in payloads {
+        let mut bytes = Vec::with_capacity(payload.len());
+        let mut offset = 0;
+        while offset < payload.len() {
+            if let Some(identity) = generated_uuid_lexeme(payload, offset) {
+                if let Some(token) = identities.get(&identity) {
+                    bytes.extend_from_slice(token);
+                    offset += 36;
+                    continue;
+                }
+            }
+            bytes.push(payload[offset]);
+            offset += 1;
+        }
+        normalized.insert(path.clone(), bytes);
+    }
+    normalized
+}
+
+#[test]
+fn isolated_corpus_transition_normalization_only_alpha_renames_declared_identities() {
+    let declared_a = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    let declared_b = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    let mut first = BTreeMap::new();
+    first.insert(
+        "a.xml".to_string(),
+        format!(
+            "<r uuid=\"{declared_a}\"><ref>{declared_a}</ref><TypeId>{declared_a}</TypeId></r>"
+        )
+        .into_bytes(),
+    );
+    let mut renamed = BTreeMap::new();
+    renamed.insert(
+        "a.xml".to_string(),
+        format!(
+            "<r uuid=\"{declared_b}\"><ref>{declared_b}</ref><TypeId>{declared_b}</TypeId></r>"
+        )
+        .into_bytes(),
+    );
+    assert_eq!(
+        normalize_generated_uuids(&first),
+        normalize_generated_uuids(&renamed)
+    );
+
+    let fixed_a = b"<r><ClassId>aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa</ClassId><panelDef id=\"cccccccc-cccc-4ccc-8ccc-cccccccccccc\"/><value>dddddddd-dddd-4ddd-8ddd-dddddddddddd</value></r>";
+    let fixed_b = b"<r><ClassId>bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb</ClassId><panelDef id=\"eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee\"/><value>ffffffff-ffff-4fff-8fff-ffffffffffff</value></r>";
+    let fixed_first = BTreeMap::from([("a.xml".to_string(), fixed_a.to_vec())]);
+    let fixed_changed = BTreeMap::from([("a.xml".to_string(), fixed_b.to_vec())]);
+    assert_ne!(
+        normalize_generated_uuids(&fixed_first),
+        normalize_generated_uuids(&fixed_changed),
+        "fixed UUID contexts must remain significant"
+    );
+}
+
+fn normalized_xml_transition(
+    pre: &XmlPayloadSnapshot,
+    post: &XmlPayloadSnapshot,
+) -> BTreeMap<String, Vec<u8>> {
+    let mut transition = BTreeMap::new();
+    transition.extend(
+        pre.iter()
+            .map(|(path, payload)| (format!("0-pre/{path}"), payload.clone())),
+    );
+    transition.extend(
+        post.iter()
+            .map(|(path, payload)| (format!("1-post/{path}"), payload.clone())),
+    );
+    normalize_generated_uuids(&transition)
+}
+
+fn is_xml_payload_path(path: &Path) -> bool {
+    if path
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("xml"))
+    {
+        return true;
+    }
+    // The XDTO package grammar grants `Package.bin` its XML reading through the XDTO package
+    // layout, not through the file name. Mirrored by `_is_xml_payload_path` in
+    // scripts/dev/verify-8-3-27-platform.py.
+    let components = path
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy().to_string())
+        .collect::<Vec<_>>();
+    let [.., collection, _package, ext, name] = components.as_slice() else {
+        return false;
+    };
+    collection == "XDTOPackages" && ext == "Ext" && name == "Package.bin"
+}
+
+fn visit_xml_files(
+    root: &Path,
+    directory: &Path,
+    snapshot: &mut XmlSnapshot,
+) -> Result<(), String> {
+    let mut entries = fs::read_dir(directory)
+        .map_err(|error| format!("cannot read {}: {error}", directory.display()))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("cannot enumerate {}: {error}", directory.display()))?;
+    entries.sort_by_key(|entry| entry.file_name());
+    for entry in entries {
+        let path = entry.path();
+        let file_type = entry
+            .file_type()
+            .map_err(|error| format!("cannot inspect {}: {error}", path.display()))?;
+        if file_type.is_symlink() {
+            return Err(format!(
+                "workspace symlink is forbidden: {}",
+                path.display()
+            ));
+        }
+        if file_type.is_dir() {
+            visit_xml_files(root, &path, snapshot)?;
+        } else if file_type.is_file() && is_xml_payload_path(&path) {
+            let relative = path
+                .strip_prefix(root)
+                .map_err(|error| format!("XML path escaped workspace: {error}"))?
+                .to_string_lossy()
+                .replace('\\', "/");
+            snapshot.insert(relative, sha256_file(&path)?);
+        }
+    }
+    Ok(())
+}
+
+fn snapshot_xml(workspace: &Path) -> Result<XmlSnapshot, String> {
+    let mut snapshot = XmlSnapshot::new();
+    visit_xml_files(workspace, workspace, &mut snapshot)?;
+    Ok(snapshot)
+}
+
+fn capture_empty_directory_paths(root: &Path) -> Result<Vec<String>, String> {
+    fn visit(root: &Path, directory: &Path, paths: &mut Vec<String>) -> Result<(), String> {
+        let mut entries = fs::read_dir(directory)
+            .map_err(|error| format!("cannot read {}: {error}", directory.display()))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("cannot enumerate {}: {error}", directory.display()))?;
+        entries.sort_by_key(|entry| entry.file_name());
+        if entries.is_empty() && directory != root {
+            paths.push(
+                directory
+                    .strip_prefix(root)
+                    .map_err(|error| format!("empty directory escaped root: {error}"))?
+                    .to_string_lossy()
+                    .replace('\\', "/"),
+            );
+        }
+        for entry in entries {
+            let path = entry.path();
+            let file_type = entry
+                .file_type()
+                .map_err(|error| format!("cannot inspect {}: {error}", path.display()))?;
+            if file_type.is_symlink() {
+                return Err(format!(
+                    "workspace symlink is forbidden: {}",
+                    path.display()
+                ));
+            }
+            if file_type.is_dir() {
+                visit(root, &path, paths)?;
+            } else if !file_type.is_file() {
+                return Err(format!(
+                    "special workspace entry is forbidden: {}",
+                    path.display()
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    let mut paths = Vec::new();
+    visit(root, root, &mut paths)?;
+    paths.sort();
+    Ok(paths)
+}
+
+fn capture_xml_payloads_recursive(
+    workspace: &Path,
+    directory: &Path,
+    payloads: &mut XmlPayloadSnapshot,
+) -> Result<(), String> {
+    let mut entries = fs::read_dir(directory)
+        .map_err(|error| format!("cannot read {}: {error}", directory.display()))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("cannot enumerate {}: {error}", directory.display()))?;
+    entries.sort_by_key(|entry| entry.file_name());
+    for entry in entries {
+        let source = entry.path();
+        let file_type = entry
+            .file_type()
+            .map_err(|error| format!("cannot inspect {}: {error}", source.display()))?;
+        if file_type.is_symlink() {
+            return Err(format!(
+                "workspace symlink is forbidden: {}",
+                source.display()
+            ));
+        }
+        if file_type.is_dir() {
+            capture_xml_payloads_recursive(workspace, &source, payloads)?;
+        } else if file_type.is_file() && is_xml_payload_path(&source) {
+            platform_support::require_single_link(&source)?;
+            let relative = source
+                .strip_prefix(workspace)
+                .map_err(|error| format!("pre-snapshot XML escaped workspace: {error}"))?;
+            let relative_text = relative.to_string_lossy().replace('\\', "/");
+            let payload = fs::read(&source)
+                .map_err(|error| format!("cannot read {}: {error}", source.display()))?;
+            payloads.insert(relative_text, payload);
+        } else if !file_type.is_file() {
+            return Err(format!(
+                "special workspace entry is forbidden: {}",
+                source.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn capture_xml_payloads(workspace: &Path) -> Result<XmlPayloadSnapshot, String> {
+    let mut payloads = XmlPayloadSnapshot::new();
+    capture_xml_payloads_recursive(workspace, workspace, &mut payloads)?;
+    Ok(payloads)
+}
+
+fn hashes_for_xml_payloads(payloads: &XmlPayloadSnapshot) -> XmlSnapshot {
+    payloads
+        .iter()
+        .map(|(relative, payload)| (relative.clone(), format!("{:x}", Sha256::digest(payload))))
+        .collect()
+}
+
+fn materialize_pre_xml(pre_root: &Path, payloads: &XmlPayloadSnapshot) -> Result<(), String> {
+    if let Some(parent) = pre_root.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("cannot create {}: {error}", parent.display()))?;
+    }
+    // The snapshot leaf must be new, even when its parents are newly created.
+    fs::create_dir(pre_root)
+        .map_err(|error| format!("cannot create {}: {error}", pre_root.display()))?;
+    for (relative, payload) in payloads {
+        let destination = pre_root.join(relative);
+        if let Some(parent) = destination.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|error| format!("cannot create {}: {error}", parent.display()))?;
+        }
+        fs::write(&destination, payload)
+            .map_err(|error| format!("cannot write {}: {error}", destination.display()))?;
+    }
+    let copied = snapshot_xml(pre_root)?;
+    if copied != hashes_for_xml_payloads(payloads) {
+        return Err("copied pre-snapshot XML bytes do not match the captured source".to_string());
+    }
+    Ok(())
+}
+
+fn materialize_pre_non_xml(
+    case: &ExecutableCase,
+    pre_root: &Path,
+    payloads: &NonXmlPayloadSnapshot,
+) -> Result<(), String> {
+    fs::create_dir(pre_root)
+        .map_err(|error| format!("cannot create {}: {error}", pre_root.display()))?;
+    for (relative, payload) in payloads {
+        let destination = pre_root.join(relative);
+        if let Some(parent) = destination.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|error| format!("cannot create {}: {error}", parent.display()))?;
+        }
+        fs::write(&destination, payload)
+            .map_err(|error| format!("cannot write {}: {error}", destination.display()))?;
+    }
+    let copied = capture_non_xml_payloads(case, pre_root)?;
+    if copied != *payloads {
+        return Err(
+            "copied pre-snapshot non-XML bytes do not match the captured source".to_string(),
+        );
+    }
+    Ok(())
+}
+
+fn require_xml_payloads_unchanged(
+    root: &Path,
+    expected: &XmlPayloadSnapshot,
+    label: &str,
+) -> Result<(), String> {
+    let current = capture_xml_payloads(root)?;
+    if &current != expected {
+        return Err(format!(
+            "{label} XML changed after its immutable byte snapshot"
+        ));
+    }
+    Ok(())
+}
+
+fn safe_workspace_relative_path(workspace: &Path, path: &Path) -> Result<String, String> {
+    let relative = path
+        .strip_prefix(workspace)
+        .map_err(|error| format!("platform payload escaped workspace: {error}"))?;
+    let mut parts = Vec::new();
+    for component in relative.components() {
+        let Component::Normal(component) = component else {
+            return Err(format!("unsafe platform payload path: {}", path.display()));
+        };
+        let component = component.to_str().ok_or_else(|| {
+            format!(
+                "non-UTF-8 platform payload path is forbidden: {}",
+                path.display()
+            )
+        })?;
+        if component.contains('\\') {
+            return Err(format!(
+                "non-portable platform payload path is forbidden: {}",
+                path.display()
+            ));
+        }
+        parts.push(component);
+    }
+    if parts.is_empty() {
+        return Err(format!("empty platform payload path: {}", path.display()));
+    }
+    Ok(parts.join("/"))
+}
+
+fn capture_non_xml_payloads_recursive(
+    workspace: &Path,
+    directory: &Path,
+    payloads: &mut NonXmlPayloadSnapshot,
+) -> Result<(), String> {
+    let mut entries = fs::read_dir(directory)
+        .map_err(|error| format!("cannot read {}: {error}", directory.display()))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("cannot enumerate {}: {error}", directory.display()))?;
+    entries.sort_by_key(|entry| entry.file_name());
+    for entry in entries {
+        let source = entry.path();
+        let file_type = entry
+            .file_type()
+            .map_err(|error| format!("cannot inspect {}: {error}", source.display()))?;
+        if file_type.is_symlink() {
+            return Err(format!(
+                "platform source symlink is forbidden: {}",
+                source.display()
+            ));
+        }
+        if file_type.is_dir() {
+            capture_non_xml_payloads_recursive(workspace, &source, payloads)?;
+        } else if file_type.is_file() && !is_xml_payload_path(&source) {
+            platform_support::require_single_link(&source)?;
+            let relative = safe_workspace_relative_path(workspace, &source)?;
+            let payload = fs::read(&source)
+                .map_err(|error| format!("cannot read {}: {error}", source.display()))?;
+            if payloads.insert(relative.clone(), payload).is_some() {
+                return Err(format!(
+                    "duplicate platform non-XML payload path: {relative}"
+                ));
+            }
+        } else if !file_type.is_file() {
+            return Err(format!(
+                "special platform source entry is forbidden: {}",
+                source.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn capture_non_xml_payloads(
+    case: &ExecutableCase,
+    workspace: &Path,
+) -> Result<NonXmlPayloadSnapshot, String> {
+    let mut payloads = NonXmlPayloadSnapshot::new();
+    for relative_root in platform_source_root_relatives(case)? {
+        let root = workspace.join(relative_root);
+        match fs::symlink_metadata(&root) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(format!(
+                    "platform source root symlink is forbidden: {}",
+                    root.display()
+                ));
+            }
+            Ok(metadata) if metadata.is_dir() => {
+                capture_non_xml_payloads_recursive(workspace, &root, &mut payloads)?;
+            }
+            Ok(_) => {
+                return Err(format!(
+                    "platform source root is not a directory: {}",
+                    root.display()
+                ));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!("cannot inspect {}: {error}", root.display()));
+            }
+        }
+    }
+    Ok(payloads)
+}
+
+fn capture_auxiliary_payloads(
+    case: &ExecutableCase,
+    workspace: &Path,
+) -> Result<NonXmlPayloadSnapshot, String> {
+    let mut payloads = NonXmlPayloadSnapshot::new();
+    capture_non_xml_payloads_recursive(workspace, workspace, &mut payloads)?;
+    let platform_roots = platform_source_root_relatives(case)?;
+    payloads.retain(|relative, _| {
+        !platform_roots
+            .iter()
+            .any(|root| relative == root || relative.starts_with(&format!("{root}/")))
+    });
+    Ok(payloads)
+}
+
+fn remove_internal_workspace_cache(workspace: &Path) -> Result<(), String> {
+    let build_root = workspace.join(".build");
+    let cache_root = build_root.join("unica");
+    for path in [&build_root, &cache_root] {
+        match fs::symlink_metadata(path) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(format!(
+                    "internal workspace cache symlink is forbidden: {}",
+                    path.display()
+                ));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => {
+                return Err(format!("cannot inspect {}: {error}", path.display()));
+            }
+        }
+    }
+    if !cache_root.is_dir() {
+        return Err(format!(
+            "internal workspace cache is not a directory: {}",
+            cache_root.display()
+        ));
+    }
+    fs::remove_dir_all(&cache_root)
+        .map_err(|error| format!("cannot remove {}: {error}", cache_root.display()))
+}
+
+fn hashes_for_non_xml_payloads(payloads: &NonXmlPayloadSnapshot) -> NonXmlSnapshot {
+    payloads
+        .iter()
+        .map(|(relative, payload)| (relative.clone(), format!("{:x}", Sha256::digest(payload))))
+        .collect()
+}
+
+fn require_non_xml_payloads_unchanged(
+    case: &ExecutableCase,
+    workspace: &Path,
+    expected: &NonXmlPayloadSnapshot,
+    label: &str,
+) -> Result<(), String> {
+    let current = capture_non_xml_payloads(case, workspace)?;
+    if &current != expected {
+        return Err(format!(
+            "{label} non-XML changed after its immutable byte inventory"
+        ));
+    }
+    Ok(())
+}
+
+fn registry_entry_for_case(case_id: &str) -> &'static MutatorRegistryEntry {
+    MUTATOR_REGISTRY
+        .iter()
+        .find(|entry| entry.case_ids.contains(&case_id))
+        .unwrap_or_else(|| panic!("case is absent from registry: {case_id}"))
+}
+
+fn effective_xml_impact(case_id: &str) -> XmlImpactClass {
+    registry_entry_for_case(case_id).impact
+}
+
+static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+fn unique_temp_dir(label: &str) -> PathBuf {
+    std::env::temp_dir().join(format!(
+        "unica-xml-corpus-{label}-{}-{}",
+        std::process::id(),
+        TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+    ))
+}
+
+fn remove_temp_tree(root: &Path) {
+    platform_support::remove_temp_tree(root);
+}
+
+fn write_designer_project(
+    workspace: &Path,
+    source_sets: &[(&str, &str, &str)],
+) -> Result<(), String> {
+    let mut text = "format: DESIGNER\nsource-set:\n".to_string();
+    for (name, kind, path) in source_sets {
+        text.push_str(&format!(
+            "  - name: {name}\n    type: {kind}\n    path: {path}\n"
+        ));
+    }
+    fs::write(workspace.join("v8project.yaml"), text)
+        .map_err(|error| format!("cannot write v8project.yaml: {error}"))
+}
+
+fn copy_fixture_tree(source: &Path, destination: &Path) -> Result<(), String> {
+    let metadata = fs::symlink_metadata(source)
+        .map_err(|error| format!("cannot inspect fixture {}: {error}", source.display()))?;
+    if metadata.file_type().is_symlink() {
+        return Err(format!(
+            "fixture symlink is forbidden: {}",
+            source.display()
+        ));
+    }
+    if metadata.is_file() {
+        platform_support::require_single_link(source)?;
+        if let Some(parent) = destination.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|error| format!("cannot create {}: {error}", parent.display()))?;
+        }
+        let payload = fs::read(source)
+            .map_err(|error| format!("cannot read fixture {}: {error}", source.display()))?;
+        return fs::write(destination, payload)
+            .map_err(|error| format!("cannot copy fixture to {}: {error}", destination.display()));
+    }
+    if !metadata.is_dir() {
+        return Err(format!(
+            "special fixture entry is forbidden: {}",
+            source.display()
+        ));
+    }
+    fs::create_dir(destination)
+        .map_err(|error| format!("cannot create {}: {error}", destination.display()))?;
+    let mut entries = fs::read_dir(source)
+        .map_err(|error| format!("cannot read fixture {}: {error}", source.display()))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("cannot enumerate fixture {}: {error}", source.display()))?;
+    entries.sort_by_key(|entry| entry.file_name());
+    for entry in entries {
+        copy_fixture_tree(&entry.path(), &destination.join(entry.file_name()))?;
+    }
+    Ok(())
+}
+
+fn seed_platform_support_fixture(workspace: &Path) -> Result<(), String> {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures/platform_8_3_27/support-edit-bin-only/src");
+    let destination = workspace.join("src");
+    copy_fixture_tree(&fixture, &destination)?;
+    write_designer_project(workspace, &[("main", "CONFIGURATION", "src")])?;
+    for required in [
+        destination.join("Configuration.xml"),
+        destination.join("Ext/ParentConfigurations.bin"),
+        destination.join("Ext/ParentConfigurations"),
+    ] {
+        if !required.exists() {
+            return Err(format!(
+                "platform support fixture is incomplete: {}",
+                required.display()
+            ));
+        }
+    }
+    let vendor_payload_count = fs::read_dir(destination.join("Ext/ParentConfigurations"))
+        .map_err(|error| format!("cannot enumerate support vendor payloads: {error}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("cannot enumerate support vendor payloads: {error}"))?
+        .into_iter()
+        .filter(|entry| {
+            entry
+                .path()
+                .extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("cf"))
+        })
+        .count();
+    if vendor_payload_count == 0 {
+        return Err("platform support fixture has no Ext/ParentConfigurations/*.cf".to_string());
+    }
+    Ok(())
+}
+
+/// Canonical `unica.apply` arguments that add one object form: the owner is
+/// addressed logically and the default-form property follows the purpose.
+fn canonical_form_add_args(
+    workspace: &Path,
+    owner_at: &str,
+    form_name: &str,
+) -> Map<String, Value> {
+    let mut args = common_args(workspace);
+    args.insert("at".to_string(), Value::String(owner_at.to_string()));
+    args.insert(
+        "ops".to_string(),
+        json!([{
+            "op": "form.add",
+            "args": {"items": [{"name": form_name, "type": "ObjectForm"}]}
+        }]),
+    );
+    args
+}
+
+fn form_add_args(workspace: &Path) -> Map<String, Value> {
+    canonical_form_add_args(workspace, "main:Catalog.CorpusCatalog", "CorpusForm")
+}
+
+fn report_form_add_args(workspace: &Path) -> Map<String, Value> {
+    canonical_form_add_args(workspace, "main:Report.CorpusReport", "CorpusForm")
+}
+
+fn event_handlers_module(include_record_set_handler: bool) -> String {
+    let mut module = concat!(
+        "\u{feff}Procedure RunJob() Export\r\n",
+        "EndProcedure\r\n\r\n",
+        "Procedure OnBeforeWrite(Source, Cancel) Export\r\n",
+        "EndProcedure\r\n"
+    )
+    .to_string();
+    if include_record_set_handler {
+        module.push_str(concat!(
+            "\r\nProcedure OnBeforeWriteRecordSet(Source, Cancel, Replacing) Export\r\n",
+            "EndProcedure\r\n"
+        ));
+    }
+    module
+}
+
+fn canonical_dcs_template_add_args(workspace: &Path, name: &str) -> Map<String, Value> {
+    let mut args = common_args(workspace);
+    args.insert("at".to_string(), json!("main:Report.CorpusReport"));
+    args.insert("ops".to_string(), json!([{
+        "op":"template.add", "args":{"items":[{"name":name,"templateType":"DataCompositionSchema"}]}
+    }]));
+    args
+}
+
+fn seed_dcs_template(workspace: &Path) -> Result<(), String> {
+    call_canonical_apply(&canonical_dcs_template_add_args(workspace, "CorpusDcs"))?;
+    call_canonical_apply(&dcs_component_args(workspace, "CorpusDcs"))?;
+    Ok(())
+}
+
+/// Корневую подсистему для правок состава и командного интерфейса заводит
+/// канонический `subsystem.create`.
+fn seed_parent_subsystem(workspace: &Path) -> Result<(), String> {
+    let mut args = common_args(workspace);
+    args.insert("at".to_string(), json!("main:Configuration"));
+    args.insert(
+        "ops".to_string(),
+        json!([{
+            "op": "subsystem.create",
+            "args": {"at": "main:Configuration", "values": {"name": "CorpusParent"}}
+        }]),
+    );
+    call_canonical_apply(&args)?;
+    Ok(())
+}
+
+/// Explicit component composition. The scaffold source is part of template.add's
+/// tested initial content; fields never imply a variant selection.
+fn dcs_component_ops(template: &str) -> Vec<Value> {
+    let base = format!("main:Report.CorpusReport.Template.{template}");
+    let mut ops = Vec::new();
+    let mut add = |suffix: &str, op: &str, mut args: Value| {
+        args["at"] = json!(format!("{base}{suffix}"));
+        ops.push(json!({"op":op,"args":args}));
+    };
+    add(
+        "",
+        "dataSet.add",
+        json!({"items":[
+            {"name":"Main","kind":"Query","dataSource":"ИсточникДанных1","query":"SELECT 1 AS Value, 10 AS Amount"},
+            {"name":"CatalogObject","kind":"Object","dataSource":"ИсточникДанных1","objectName":"Catalog.CorpusCatalog"},
+            {"name":"Combined","kind":"Union"}
+        ]}),
+    );
+    add(
+        ".DataSet.Main",
+        "field.add",
+        json!({"items":[{"dataPath":"Value"},{"dataPath":"Amount"}]}),
+    );
+    add(
+        ".DataSet.CatalogObject",
+        "field.add",
+        json!({"items":[{"dataPath":"Description","field":"Description","type":"String","presentationExpression":"Description"}]}),
+    );
+    add(
+        ".DataSet.Combined",
+        "field.add",
+        json!({"items":[{"dataPath":"Value","type":"String"}]}),
+    );
+    add(
+        ".DataSet.Combined",
+        "dataSet.add",
+        json!({"items":[
+            {"name":"UnionFirst","kind":"Query","dataSource":"ИсточникДанных1","query":"SELECT 1 AS Value"},
+            {"name":"UnionSecond","kind":"Query","dataSource":"ИсточникДанных1","query":"SELECT 2 AS Value"}
+        ]}),
+    );
+    for member in ["UnionFirst", "UnionSecond"] {
+        add(
+            &format!(".DataSet.Combined.DataSet.{member}"),
+            "field.add",
+            json!({"items":[{"dataPath":"Value"}]}),
+        );
+    }
+    add(
+        "",
+        "dataSetLink.add",
+        json!({"items":[{
+            "source":"Main","destination":"CatalogObject","sourceExpression":"Value","destinationExpression":"Description",
+            "parameter":"Режим","parameterListAllowed":true,"condition":"Value = Description","startExpression":"Value","required":true
+        }]}),
+    );
+    // Both legacy restriction aliases contributed to this one platform node.
+    add(
+        "",
+        "calculatedField.add",
+        json!({"items":[{
+            "name":"CalculatedAmount","expression":"Amount * 2","title":"Calculated amount","type":"decimal(15,2)",
+            "useRestriction":{"condition":true,"group":true,"field":true,"order":true}
+        }]}),
+    );
+    add(
+        "",
+        "parameter.add",
+        json!({"items":[
+            {"name":"Период","type":"StandardPeriod","value":"LastMonth"},
+            {"name":"ДатаНачала","title":"Начало периода","type":"dateTime","value":"0001-01-01T00:00:00","expression":"&Период.ДатаНачала","useRestriction":true},
+            {"name":"ДатаОкончания","title":"Конец периода","type":"dateTime","value":"0001-01-01T00:00:00","expression":"&Период.ДатаОкончания","useRestriction":true},
+            {"name":"ТипКорпуса","type":"string(16)","availableAsField":false,"use":"Always"},
+            {"name":"Режим","title":"Mode","type":"string(16)","value":"A","useRestriction":true,"expression":"&Source.Mode",
+             "availableValues":[{"value":"A","presentation":"Alpha"},{"value":"B","presentation":"Beta"}],
+             "valueListAllowed":true,"availableAsField":false,"denyIncompleteValues":true,"use":"Always"}
+        ]}),
+    );
+    add(".Setting.Основной", "variant.remove", json!({}));
+    add(
+        "",
+        "variant.add",
+        json!({"items":[{"name":"Main","presentation":"Corpus settings"}]}),
+    );
+    add(
+        ".Setting.Main",
+        "structure.add",
+        json!({"items":[{"name":"Corpus group","kind":"group","groupBy":["Value"]}]}),
+    );
+    // Контейнер настроек — адрес: вариант или его элемент структуры (#1357).
+    add(
+        ".Setting.Main.Item.Corpus group",
+        "structure.add",
+        json!({"items":[{"name":"Details","kind":"group","groupBy":[]}]}),
+    );
+    for container in [".Setting.Main", ".Setting.Main.Item.Corpus group"] {
+        add(
+            container,
+            "selection.add",
+            json!({"items":[{"field":"Value"},{"field":"Amount"}]}),
+        );
+        add(
+            container,
+            "filter.add",
+            json!({"items":[{"field":"Amount","comparison":"Greater","value":0}]}),
+        );
+        add(
+            container,
+            "order.add",
+            json!({"items":[{"field":"Amount","direction":"Desc"}]}),
+        );
+        add(
+            container,
+            "conditionalAppearance.add",
+            json!({"items":[{"fields":["Amount"],"filter":[{"field":"Amount","comparison":"Greater","value":0}],"appearance":{"ЦветТекста":"web:Red"}}]}),
+        );
+        add(
+            container,
+            "outputParameter.set",
+            json!({"values":{"name":"Заголовок","value":if container.ends_with("group"){"Corpus group"}else{"Corpus report"}}}),
+        );
+    }
+    add(
+        ".Setting.Main",
+        "dataParameter.add",
+        json!({"items":[{"name":"Режим","value":"A"}]}),
+    );
+    ops
+}
+
+fn dcs_component_args(workspace: &Path, template: &str) -> Map<String, Value> {
+    let mut args = common_args(workspace);
+    args.insert(
+        "at".to_string(),
+        json!(format!("main:Report.CorpusReport.Template.{template}")),
+    );
+    args.insert("ops".to_string(), Value::Array(dcs_component_ops(template)));
+    args
+}
+
+fn dcs_mutation_ops(case_id: &str) -> Vec<Value> {
+    let base = "main:Report.CorpusReport.Template.CorpusDcs";
+    let mut ops = match case_id {
+        "dcs-edit-owned-template" => vec![
+            json!({"at":format!("{base}.DataSet.Main"),"op":"field.add","args":{"items":[{"dataPath":"Added"}]}}),
+            json!({"at":format!("{base}.Setting.Main"),"op":"selection.add","args":{"items":[{"field":"Added"}]}}),
+        ],
+        "dcs-edit-add-parameter-after-settings" => {
+            vec![json!({"op":"parameter.add","args":{"items":[{
+                "name":"ПериодРедактирования","title":"Edit period","type":"StandardPeriod","value":"LastMonth","useRestriction":true,"use":"Always"
+            }]}})]
+        }
+        "dcs-edit-set-structure-after-settings" => vec![
+            json!({"at":format!("{base}.Setting.Main"),"op":"structure.set","args":{"values":{"name":"Edited","groupBy":["Value"],"details":true}}}),
+        ],
+        "dcs-edit-modify-field-role-restriction" => vec![
+            json!({"at":format!("{base}.DataSet.CatalogObject.Field.Description"),"op":"field.set","args":{"values":{"title":"Updated","type":"String","useRestriction":{"field":true,"order":true}}}}),
+            json!({"at":format!("{base}.DataSet.CatalogObject.Field.Description"),"op":"fieldRole.set","args":{"values":{"role":{"required":true,"dimension":true}}}}),
+        ],
+        _ => unreachable!("unknown DCS mutation case {case_id}"),
+    };
+    for op in &mut ops {
+        if let Some(at) = op.as_object_mut().unwrap().remove("at") {
+            op["args"]["at"] = at;
+        }
+    }
+    ops
+}
+
+fn platform_fixture(relative: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures/platform_8_3_27")
+        .join(relative)
+}
+
+/// Корень набора `main` — выгрузка пустой конфигурации 8.3.27 / 2.20
+/// (`platform_8_3_27/empty_configuration`, имя `CorpusConfiguration`).
+fn seed_configuration(workspace: &Path) -> Result<(), String> {
+    copy_fixture_tree(
+        &platform_fixture("empty_configuration/src"),
+        &workspace.join("src"),
+    )?;
+    write_designer_project(workspace, &[("main", "CONFIGURATION", "src")])
+}
+
+/// Корень набора `extension` — пустое расширение `CorpusExtension` над той же
+/// конфигурацией, записанное по скиллу `cfe-init`
+/// (`platform_8_3_27/empty_extension`). Канонической операции создания
+/// расширения нет.
+fn seed_extension(workspace: &Path) -> Result<(), String> {
+    copy_fixture_tree(
+        &platform_fixture("empty_extension/ext"),
+        &workspace.join("ext"),
+    )?;
+    write_designer_project(
+        workspace,
+        &[
+            ("main", "CONFIGURATION", "src"),
+            ("extension", "EXTENSION", "ext"),
+        ],
+    )
+}
+
+fn number_type(digits: u32, fraction: u32) -> Value {
+    json!({"variants": [{"kind": "number", "digits": digits, "fraction": fraction, "sign": "any"}]})
+}
+
+fn string50_type() -> Value {
+    json!({"variants": [{"kind": "string", "length": 50, "allowedLength": "variable"}]})
+}
+
+/// Имя объекта корпуса каждого вида метаданных.
+fn meta_object_name(kind: &str) -> Option<&'static str> {
+    Some(match kind {
+        "Catalog" => "CorpusCatalog",
+        "Document" => "CorpusDocument",
+        "Enum" => "CorpusEnum",
+        "Constant" => "CorpusConstant",
+        "InformationRegister" => "CorpusInformationRegister",
+        "AccumulationRegister" => "CorpusAccumulationRegister",
+        "AccountingRegister" => "CorpusAccountingRegister",
+        "CalculationRegister" => "CorpusCalculationRegister",
+        "ChartOfAccounts" => "CorpusAccounts",
+        "ChartOfCharacteristicTypes" => "CorpusCharacteristics",
+        "ChartOfCalculationTypes" => "CorpusCalculationTypes",
+        "BusinessProcess" => "CorpusBusinessProcess",
+        "Task" => "CorpusTask",
+        "ExchangePlan" => "CorpusExchangePlan",
+        "DocumentJournal" => "CorpusDocumentJournal",
+        "Report" => "CorpusReport",
+        "DataProcessor" => "CorpusDataProcessor",
+        "CommonModule" => "CorpusCommonModule",
+        "ScheduledJob" => "CorpusScheduledJob",
+        "EventSubscription" => "CorpusEventSubscription",
+        "HTTPService" => "CorpusHTTPService",
+        "WebService" => "CorpusWebService",
+        "DefinedType" => "CorpusDefinedType",
+        _ => return None,
+    })
+}
+
+/// `object.create` и операции той же публикации, без которых объект не
+/// целостен: у регистра есть поля, у веб-сервиса — пространство имён. Виды
+/// без условий ничего не требуют, и корпус за них ничего не дописывает.
+fn object_create_ops(kind: &str, name: &str) -> Vec<Value> {
+    let at = format!("main:{kind}.{name}");
+    let mut ops = vec![json!({
+        "op": "object.create",
+        "args": {"values": {"kind": kind, "name": name}}
+    })];
+    let member = |op: &str, member: &str, member_type: Value| json!({"op": op, "args": {"at": at, "items": [{"name": member, "type": member_type}]}});
+    match kind {
+        "InformationRegister" => {
+            ops.push(member("dimension.add", "Item", string50_type()));
+            ops.push(member("resource.add", "Price", number_type(15, 2)));
+        }
+        "AccumulationRegister" => {
+            ops.push(member("dimension.add", "Warehouse", string50_type()));
+            ops.push(member("resource.add", "Quantity", number_type(15, 3)));
+        }
+        "AccountingRegister" => {
+            ops.push(member("resource.add", "Amount", number_type(15, 2)));
+        }
+        "WebService" => ops.push(json!({
+            "op": "props.set",
+            "args": {"at": at, "values": {"Namespace": "urn:corpus"}}
+        })),
+        _ => {}
+    }
+    ops
+}
+
+fn apply_args(workspace: &Path, at: &str, ops: Vec<Value>) -> Map<String, Value> {
+    let mut args = common_args(workspace);
+    args.insert("at".to_string(), Value::String(at.to_string()));
+    args.insert("ops".to_string(), Value::Array(ops));
+    args
+}
+
+fn seed_apply(workspace: &Path, at: &str, ops: Vec<Value>) -> Result<(), String> {
+    call_canonical_apply(&apply_args(workspace, at, ops)).map(|_| ())
+}
+
+fn seed_metadata(workspace: &Path, kind: &str, name: &str) -> Result<(), String> {
+    seed_apply(
+        workspace,
+        "main:Configuration",
+        object_create_ops(kind, name),
+    )
+}
+
+fn seed_catalog(workspace: &Path) -> Result<(), String> {
+    seed_metadata(workspace, "Catalog", "CorpusCatalog")
+}
+
+fn seed_catalog_form(workspace: &Path) -> Result<(), String> {
+    seed_catalog(workspace)?;
+    call_canonical_apply(&form_add_args(workspace))?;
+    Ok(())
+}
+
+fn seed_report(workspace: &Path) -> Result<(), String> {
+    seed_metadata(workspace, "Report", "CorpusReport")
+}
+
+fn seed_report_form(workspace: &Path) -> Result<(), String> {
+    seed_report(workspace)?;
+    call_canonical_apply(&report_form_add_args(workspace))?;
+    Ok(())
+}
+
+fn write_seed_bytes(workspace: &Path, relative: &str, bytes: &[u8]) -> Result<(), String> {
+    let path = workspace.join(relative);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("cannot create {}: {error}", parent.display()))?;
+    }
+    fs::write(&path, bytes).map_err(|error| format!("cannot seed {}: {error}", path.display()))
+}
+
+fn seed_event_handlers(workspace: &Path, include_record_set_handler: bool) -> Result<(), String> {
+    seed_metadata(workspace, "CommonModule", "EventHandlers")?;
+    write_seed_bytes(
+        workspace,
+        "src/CommonModules/EventHandlers/Ext/Module.bsl",
+        event_handlers_module(include_record_set_handler).as_bytes(),
+    )
+}
+
+fn seed_unicode_defined_type(workspace: &Path) -> Result<(), String> {
+    seed_metadata(workspace, "DefinedType", "ТипКорпуса")
+}
+
+/// Командный интерфейс подсистемы канон правит, но не создаёт: пустой
+/// документ лежит в семени кейса (#1983).
+fn seed_parent_subsystem_command_interface(workspace: &Path) -> Result<(), String> {
+    let document = unica_metadata_designer::interface::emit_empty_command_interface_document(
+        unica_source_designer::format_profile::ACTIVE_FORMAT_PROFILE.export_format,
+    );
+    write_seed_bytes(
+        workspace,
+        "src/Subsystems/CorpusParent/Ext/CommandInterface.xml",
+        &unica_xml_format::text::utf8_bom_bytes(&document),
+    )
+}
+
+fn seed_role_reader(workspace: &Path) -> Result<(), String> {
+    seed_catalog(workspace)?;
+    // Роль с правами просмотра справочника заводят канонические
+    // `role.create` и `right.add` одной публикацией.
+    seed_apply(
+        workspace,
+        "main:Configuration",
+        vec![
+            json!({
+                "op": "role.create",
+                "args": {"at": "main:Configuration", "values": {"name": "CorpusReader"}}
+            }),
+            json!({
+                "op": "right.add",
+                "args": {
+                    "at": "main:Role.CorpusReader",
+                    "items": [{
+                        "object": "Catalog.CorpusCatalog",
+                        "rights": {"Read": true, "View": true, "InputByString": true}
+                    }]
+                }
+            }),
+        ],
+    )
+}
+
+fn seed_information_register_with_price(workspace: &Path) -> Result<(), String> {
+    seed_apply(
+        workspace,
+        "main:Configuration",
+        vec![
+            json!({
+                "op": "object.create",
+                "args": {"values": {"kind": "InformationRegister", "name": "CorpusInformationRegister"}}
+            }),
+            json!({
+                "op": "resource.add",
+                "args": {
+                    "at": "main:InformationRegister.CorpusInformationRegister",
+                    "items": [{"name": "Price", "type": number_type(15, 2)}]
+                }
+            }),
+        ],
+    )
+}
+
+fn spreadsheet_template_add_ops() -> Vec<Value> {
+    vec![json!({
+        "op": "template.add",
+        "args": {"items": [{"name": "CorpusTemplate", "templateType": "SpreadsheetDocument"}]}
+    })]
+}
+
+/// Семя кейса: всё, что лежит в рабочем пространстве до целевого вызова.
+fn seed_case(case: &ExecutableCase, workspace: &Path) -> Result<(), String> {
+    match case.id {
+        "support-edit-bin-only" => return seed_platform_support_fixture(workspace),
+        "xdto-add-nested-property" => {
+            copy_fixture_tree(
+                &Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../tests/fixtures/xdto/enterprise-data-minimal"),
+                &workspace.join("src"),
+            )?;
+            return write_designer_project(workspace, &[("main", "CONFIGURATION", "src")]);
+        }
+        _ => {}
+    }
+    seed_configuration(workspace)?;
+    match case.id {
+        "dcs-compile-owned-template" => {
+            seed_report(workspace)?;
+            seed_catalog(workspace)?;
+            seed_unicode_defined_type(workspace)
+        }
+        "dcs-edit-owned-template"
+        | "dcs-edit-add-parameter-after-settings"
+        | "dcs-edit-set-structure-after-settings"
+        | "dcs-edit-modify-field-role-restriction" => {
+            seed_report(workspace)?;
+            seed_catalog(workspace)?;
+            seed_unicode_defined_type(workspace)?;
+            seed_dcs_template(workspace)
+        }
+        "cfe-borrow-object" => {
+            seed_catalog(workspace)?;
+            seed_extension(workspace)
+        }
+        "code-patch-bsl-only" => {
+            seed_metadata(workspace, "CommonModule", "CorpusModule")?;
+            write_seed_bytes(
+                workspace,
+                "src/CommonModules/CorpusModule/Ext/Module.bsl",
+                b"\xef\xbb\xbfProcedure Run()\r\n    Message(\"ok\");\r\nEndProcedure\r\n",
+            )
+        }
+        "meta-edit-event-source" => {
+            seed_event_handlers(workspace, true)?;
+            seed_catalog(workspace)?;
+            seed_metadata(
+                workspace,
+                "InformationRegister",
+                "CorpusInformationRegister",
+            )?;
+            seed_metadata(workspace, "EventSubscription", "CorpusEventSubscription")
+        }
+        "meta-edit-resource-append" => seed_information_register_with_price(workspace),
+        "meta-edit-resource-position-after" => {
+            seed_information_register_with_price(workspace)?;
+            seed_apply(
+                workspace,
+                "main:InformationRegister.CorpusInformationRegister",
+                vec![json!({
+                    "op": "resource.add",
+                    "args": {"items": [{"name": "Total", "type": number_type(15, 2)}]}
+                })],
+            )
+        }
+        "meta-remove-object"
+        | "meta-edit-predefined-items"
+        | "meta-edit-property"
+        | "help-add-object"
+        | "form-add-managed" => seed_catalog(workspace),
+        "form-compile-managed" => seed_report_form(workspace),
+        "form-edit-managed" | "form-remove-managed" => seed_catalog_form(workspace),
+        "interface-edit-subsystem" => {
+            seed_parent_subsystem(workspace)?;
+            seed_parent_subsystem_command_interface(workspace)?;
+            seed_catalog(workspace)
+        }
+        "subsystem-edit-add-child" => seed_parent_subsystem(workspace),
+        "template-add-spreadsheet-document" => seed_report(workspace),
+        "template-remove-object-template" => {
+            seed_report(workspace)?;
+            seed_apply(
+                workspace,
+                "main:Report.CorpusReport",
+                spreadsheet_template_add_ops(),
+            )
+        }
+        "role-edit-set-right" => seed_role_reader(workspace),
+        _ if case.id.starts_with("meta-compile-") => match case.branch {
+            "Catalog" => seed_metadata(workspace, "DefinedType", "CorpusDefinedType"),
+            "AccumulationRegister" => seed_metadata(workspace, "Document", "CorpusRecorder"),
+            "AccountingRegister" => {
+                seed_metadata(workspace, "ChartOfAccounts", "CorpusAccounts")?;
+                seed_metadata(workspace, "Document", "CorpusRecorder")
+            }
+            "CalculationRegister" => {
+                seed_metadata(
+                    workspace,
+                    "ChartOfCalculationTypes",
+                    "CorpusCalculationTypes",
+                )?;
+                seed_metadata(workspace, "Document", "CorpusRecorder")
+            }
+            "BusinessProcess" => seed_metadata(workspace, "Task", "CorpusTask"),
+            "DocumentJournal" => seed_metadata(workspace, "Document", "CorpusDocument"),
+            "ScheduledJob" => seed_event_handlers(workspace, false),
+            "EventSubscription" => {
+                seed_metadata(workspace, "Document", "CorpusDocument")?;
+                seed_catalog(workspace)?;
+                seed_event_handlers(workspace, false)
+            }
+            _ => Ok(()),
+        },
+        other => Err(format!("no executable seed for case {other}")),
+    }
+}
+
+/// Аргументы целевого `unica.apply` кейса. Чистая функция: страж реестра
+/// сверяет операции каждого кейса, не исполняя семя.
+fn target_args(case: &ExecutableCase, workspace: &Path) -> Result<Map<String, Value>, String> {
+    let args = |at: &str, ops: Vec<Value>| Ok(apply_args(workspace, at, ops));
+    match case.id {
+        "support-edit-bin-only" => args(
+            // Возможность изменения — свойство корня конфигурации на поддержке.
+            "main:Configuration",
+            vec![json!({"op": "supportCapability.set", "args": {"values": {"enabled": false}}})],
+        ),
+        "xdto-add-nested-property" => args(
+            "main:XDTOPackage.EnterpriseData_1_17_3.Type.ЛюбаяСсылка.Property.СсылкаНаОбъект",
+            vec![json!({
+                "op": "property.add",
+                "args": {"values": {
+                    "property": {
+                        "name": "Документ_Корпус",
+                        "type": "tns:Документ_ЗаказКлиента",
+                        "lowerBound": 0
+                    }
+                }}
+            })],
+        ),
+        "dcs-compile-owned-template" => {
+            Ok(canonical_dcs_template_add_args(workspace, "CorpusTemplate"))
+        }
+        "dcs-edit-owned-template"
+        | "dcs-edit-add-parameter-after-settings"
+        | "dcs-edit-set-structure-after-settings"
+        | "dcs-edit-modify-field-role-restriction" => args(
+            "main:Report.CorpusReport.Template.CorpusDcs",
+            dcs_mutation_ops(case.id),
+        ),
+        "cfe-borrow-object" => args(
+            "extension:Configuration",
+            vec![json!({"op": "object.borrow", "args": {"from": "main:Catalog.CorpusCatalog"}})],
+        ),
+        "code-patch-bsl-only" => args(
+            "main:CommonModule.CorpusModule.Method.Run",
+            vec![json!({
+                "op": "code.insert",
+                "args": {"text": "Procedure Added()\nEndProcedure", "position": "after"}
+            })],
+        ),
+        "meta-edit-predefined-items" => args(
+            "main:Catalog.CorpusCatalog",
+            vec![
+                json!({"op": "props.set", "args": {"values": {"CodeType": "Number"}}}),
+                json!({
+                    "op": "predefinedItem.add",
+                    "args": {"items": [{
+                        "id": "a7d2e6fc-3824-4b56-b4be-ae6be4944c0e",
+                        "name": "CorpusMain",
+                        "code": "643",
+                        "description": "Corpus predefined item",
+                        "isFolder": false
+                    }]}
+                }),
+            ],
+        ),
+        "meta-edit-property" => args(
+            "main:Catalog.CorpusCatalog",
+            vec![json!({"op": "props.set", "args": {"values": {"Comment": "Corpus edited"}}})],
+        ),
+        "meta-edit-event-source" => args(
+            "main:EventSubscription.CorpusEventSubscription",
+            vec![
+                json!({
+                    "op": "props.set",
+                    "args": {"values": {"Handler": "CommonModule.EventHandlers.OnBeforeWriteRecordSet"}}
+                }),
+                json!({
+                    "op": "relation.replace",
+                    "args": {"values": {
+                        "relation": "source",
+                        "targets": [{
+                            "kind": "recordSet",
+                            "metadataPath": "InformationRegister.CorpusInformationRegister"
+                        }]
+                    }}
+                }),
+            ],
+        ),
+        "meta-edit-resource-append" | "meta-edit-resource-position-after" => {
+            let item = if case.id == "meta-edit-resource-append" {
+                json!({"name": "Amount", "type": number_type(15, 2)})
+            } else {
+                json!({"name": "Quantity", "type": number_type(15, 2), "position": {"after": "Price"}})
+            };
+            args(
+                "main:InformationRegister.CorpusInformationRegister",
+                vec![json!({"op": "resource.add", "args": {"items": [item]}})],
+            )
+        }
+        "meta-remove-object" => args(
+            "main:Catalog.CorpusCatalog",
+            vec![json!({"op": "object.remove"})],
+        ),
+        "help-add-object" => args(
+            "main:Catalog.CorpusCatalog",
+            vec![json!({"op": "help.create", "args": {"values": {"lang": "ru"}}})],
+        ),
+        "form-add-managed" => Ok(form_add_args(workspace)),
+        "form-compile-managed" => args(
+            "main:Report.CorpusReport.Form.CorpusForm",
+            form_compose_ops(),
+        ),
+        "form-edit-managed" => args(
+            "main:Catalog.CorpusCatalog.Form.CorpusForm",
+            vec![json!({
+                "op": "attribute.add",
+                "args": {"items": [{"name": "CorpusAdded", "type": "string"}]}
+            })],
+        ),
+        "form-remove-managed" => args(
+            "main:Catalog.CorpusCatalog.Form.CorpusForm",
+            vec![json!({"op": "form.remove", "args": {}})],
+        ),
+        "interface-edit-subsystem" => args(
+            "main:Subsystem.CorpusParent.Interface",
+            vec![json!({
+                "op": "commandVisibility.set",
+                "args": {"items": [{
+                    "command": "Catalog.CorpusCatalog.StandardCommand.OpenList",
+                    "visible": false
+                }]}
+            })],
+        ),
+        "subsystem-edit-add-child" => args(
+            "main:Subsystem.CorpusParent",
+            vec![json!({
+                "op": "childSubsystem.add",
+                "args": {"items": [{"name": "CorpusEditedChild"}]}
+            })],
+        ),
+        "template-add-spreadsheet-document" => {
+            args("main:Report.CorpusReport", spreadsheet_template_add_ops())
+        }
+        "template-remove-object-template" => args(
+            "main:Report.CorpusReport.Template.CorpusTemplate",
+            vec![json!({"op": "template.remove", "args": {}})],
+        ),
+        // Снятие обоих интерактивных прав держит каждую промежуточную и
+        // итоговую комбинацию внутри платформенной матрицы зависимостей
+        // (ввод по строке требует просмотра); каноническая форма итога —
+        // блок с одним хранимым Read, который 8.3.27 экспортирует как есть.
+        "role-edit-set-right" => args(
+            "main:Role.CorpusReader.Right.Catalog_CorpusCatalog",
+            vec![
+                json!({"op": "right.set", "args": {"values": {"right": "InputByString", "value": false}}}),
+                json!({"op": "right.set", "args": {"values": {"right": "View", "value": false}}}),
+            ],
+        ),
+        _ if case.id.starts_with("meta-compile-") => {
+            let name = meta_object_name(case.branch)
+                .ok_or_else(|| format!("missing metadata object name for {}", case.branch))?;
+            args("main:Configuration", object_create_ops(case.branch, name))
+        }
+        other => Err(format!("no executable target for case {other}")),
+    }
+}
+
+/// Управляемая форма отчёта целиком каноническими операциями формы: свойства
+/// самой формы, реквизиты, команда и элементы формы, которую сделал
+/// `form.add`, одним вызовом (#1984, #2043).
+fn form_compose_ops() -> Vec<Value> {
+    let form = "main:Report.CorpusReport.Form.CorpusForm";
+    vec![
+        json!({"op": "props.set", "args": {"values": {
+            "Title": "Corpus form",
+            "AutoTitle": false,
+            "Width": 4_294_967_295_u64,
+            "Height": 4_294_967_294_u64,
+            "Scale": 98
+        }}}),
+        json!({"op": "attribute.add", "args": {"items": [
+            {"name": "Value", "type": "String"},
+            {"name": "Enabled", "type": "Boolean"},
+            {"name": "Picture", "type": "Number"},
+            {"name": "Rows", "type": "ValueTable", "columns": [
+                {"name": "Value", "type": "String"},
+                {"name": "Presentation", "type": "String"},
+                {"name": "Picture", "type": "Number"}
+            ]}
+        ]}}),
+        json!({"op": "command.add", "args": {"items": [
+            {"name": "CorpusAction", "title": "Corpus action"}
+        ]}}),
+        json!({"op": "item.add", "args": {"items": [
+            {"name": "Header", "type": "Group", "orientation": "AlwaysHorizontal",
+             "behavior": "PopUp", "currentRowUse": "DontUse", "titleDataPath": "Value"},
+            {"name": "Description", "type": "InputField", "path": "Rows", "titleLocation": "Top",
+             "footerDataPath": "Value", "multipleValueDataPath": "Rows.Value",
+             "multipleValuePresentDataPath": "Rows.Presentation",
+             "multipleValuePictureDataPath": "Rows.Picture",
+             "width": 4_294_967_295_u64, "height": 4_294_967_294_u64},
+            {"name": "Enabled", "type": "CheckBox", "path": "Enabled",
+             "checkBoxType": "Tumbler", "titleLocation": "Bottom"},
+            {"name": "Rows", "type": "Table", "path": "Rows", "rowPictureDataPath": "Rows.Picture"},
+            {"name": "HtmlDescription", "type": "HTMLDocumentField", "path": "Value",
+             "titleLocation": "None", "skipOnInput": true, "width": 40, "height": 1,
+             "autoMaxWidth": false, "autoMaxHeight": false}
+        ]}}),
+        // Кнопка командной панели формы — элемент самой панели.
+        json!({"op": "item.add", "args": {
+            "at": format!("{form}.Item.ФормаКоманднаяПанель"),
+            "items": [{"name": "CorpusActionButton", "type": "Button", "command": "CorpusAction",
+                       "representation": "Text", "locationInCommandBar": "InCommandBar"}]
+        }}),
+    ]
+}
+
+fn prepare_target(case: &ExecutableCase, workspace: &Path) -> Result<Map<String, Value>, String> {
+    fs::create_dir_all(workspace)
+        .map_err(|error| format!("cannot create {}: {error}", workspace.display()))?;
+    seed_case(case, workspace)?;
+    target_args(case, workspace)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CorpusManifest {
+    pub(crate) schema_version: u32,
+    pub(crate) profile: String,
+    pub(crate) empty_directory_paths: Vec<String>,
+    pub(crate) cases: Vec<CorpusCase>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CorpusCase {
+    id: String,
+    workspace_path: String,
+    pre_snapshot_path: String,
+    platform_checkpoint: PlatformCheckpoint,
+    checkpoint: String,
+    tool_id: String,
+    operation: String,
+    branch: String,
+    impact_class: String,
+    xml_impact: String,
+    pre_files: Vec<PreCorpusFile>,
+    files: Vec<CorpusFile>,
+    removed_paths: Vec<String>,
+    pre_non_xml_files: Vec<PreNonXmlFile>,
+    non_xml_files: Vec<NonXmlFile>,
+    removed_non_xml_paths: Vec<String>,
+    auxiliary_files: Vec<PreNonXmlFile>,
+    pre_owner_versions: BTreeMap<String, String>,
+    owner_versions: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PlatformCheckpoint {
+    kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    base_source_path: Option<String>,
+    covered_case_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CorpusFile {
+    path: String,
+    sha256: String,
+    family: String,
+    seed: bool,
+    delta: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    owner_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    new_standalone: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PreCorpusFile {
+    path: String,
+    sha256: String,
+    family: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    owner_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PreNonXmlFile {
+    path: String,
+    sha256: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct NonXmlFile {
+    path: String,
+    sha256: String,
+    seed: bool,
+    delta: String,
+}
+
+struct PreCorpusContract {
+    files: Vec<PreCorpusFile>,
+    owner_versions: BTreeMap<String, String>,
+}
+
+struct NonXmlContract {
+    pre_files: Vec<PreNonXmlFile>,
+    files: Vec<NonXmlFile>,
+    removed_paths: Vec<String>,
+}
+
+struct CaseFileContracts {
+    pre_xml: PreCorpusContract,
+    non_xml: NonXmlContract,
+    auxiliary_files: Vec<PreNonXmlFile>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CaseReport {
+    schema_version: u32,
+    profile: String,
+    id: String,
+    workspace_path: String,
+    pre_snapshot_path: String,
+    platform_checkpoint: PlatformCheckpoint,
+    tool_id: String,
+    operation: String,
+    branch: String,
+    impact_class: String,
+    public_arguments: Value,
+    target_call: TargetCallReport,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    publications: Vec<PublicationReport>,
+    pre_files: Vec<PreCorpusFile>,
+    pre_non_xml_files: Vec<PreNonXmlFile>,
+    non_xml_files: Vec<NonXmlFile>,
+    removed_non_xml_paths: Vec<String>,
+    auxiliary_files: Vec<PreNonXmlFile>,
+    seed_outputs: Vec<String>,
+    pre_xml_sha256: XmlSnapshot,
+    post_xml_sha256: XmlSnapshot,
+    delta: XmlDelta,
+    remaining_xml: Vec<String>,
+    removed_paths: Vec<RemovedPathReport>,
+    owner_links: BTreeMap<String, String>,
+    pre_owner_versions: BTreeMap<String, String>,
+    owner_versions: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TargetCallReport {
+    sequence: usize,
+    result_ok: bool,
+    errors: Vec<String>,
+    summary: String,
+}
+
+/// A component creation case publishes the scaffold first, then fills the
+/// newly registered template. Each publication retains its own real delta.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PublicationReport {
+    snapshot_path: String,
+    tool_id: String,
+    public_arguments: Value,
+    summary: String,
+    pre_xml_sha256: XmlSnapshot,
+    post_xml_sha256: XmlSnapshot,
+    delta: XmlDelta,
+}
+
+#[derive(Debug, Serialize)]
+struct RemovedPathReport {
+    path: String,
+    sha256: String,
+}
+
+fn impact_class_name(impact: XmlImpactClass) -> &'static str {
+    match impact {
+        XmlImpactClass::None => "None",
+        XmlImpactClass::CreateOrModify => "CreateOrModify",
+        XmlImpactClass::RemoveOrModify => "RemoveOrModify",
+    }
+}
+
+fn xml_impact_name(delta: &XmlDelta) -> &'static str {
+    if !delta.removed.is_empty() {
+        "removed"
+    } else if !delta.created.is_empty() {
+        "created"
+    } else if !delta.modified.is_empty() {
+        "modified"
+    } else {
+        "unchanged"
+    }
+}
+
+fn xml_root_details_payload(
+    payload: &[u8],
+    label: &str,
+) -> Result<(String, String, Option<String>, Option<String>), String> {
+    let text = std::str::from_utf8(payload)
+        .map_err(|error| format!("cannot decode XML {label}: {error}"))?;
+    let source = text.trim_start_matches('\u{feff}');
+    let document =
+        Document::parse(source).map_err(|error| format!("cannot parse XML {label}: {error}"))?;
+    let root = document.root_element();
+    let namespace = root.tag_name().namespace().unwrap_or("").to_string();
+    let local_name = root.tag_name().name().to_string();
+    let child_type = root
+        .children()
+        .find(|child| child.is_element())
+        .map(|child| child.tag_name().name().to_string());
+    let version = root
+        .attributes()
+        .find(|attribute| attribute.namespace().is_none() && attribute.name() == "version")
+        .and_then(|attribute| source.get(attribute.range_value()))
+        .map(str::to_string);
+    Ok((namespace, local_name, child_type, version))
+}
+
+fn family_for_xml_payload(payload: &[u8], label: &str) -> Result<String, String> {
+    let (namespace, local_name, _, _) = xml_root_details_payload(payload, label)?;
+    family_for_root(&namespace, &local_name, label)
+}
+
+fn family_for_root(namespace: &str, local_name: &str, label: &str) -> Result<String, String> {
+    let family = match (namespace, local_name) {
+        ("http://v8.1c.ru/8.3/MDClasses", "MetaDataObject") => "metadata",
+        ("http://v8.1c.ru/8.3/xcf/scheme", "GraphicalSchema") => "flowchart",
+        ("http://v8.1c.ru/8.3/xcf/logform", "Form") => "managed-form",
+        ("http://v8.1c.ru/8.3/xcf/extrnprops", "CommandInterface") => "command-interface",
+        ("http://v8.1c.ru/8.3/xcf/extrnprops", "Help") => "help",
+        ("http://v8.1c.ru/8.3/xcf/extrnprops", "ExchangePlanContent") => "exchange-plan-content",
+        ("http://v8.1c.ru/8.3/xcf/extrnprops", "HomePageWorkArea") => "home-page-work-area",
+        ("http://v8.1c.ru/8.1/data-composition-system/schema", "DataCompositionSchema") => "dcs",
+        ("http://v8.1c.ru/8.2/data/spreadsheet", "document") => "mxl",
+        ("http://v8.1c.ru/8.2/managed-application/core", "ClientApplicationInterface") => {
+            "client-application-interface"
+        }
+        ("http://v8.1c.ru/8.2/roles", "Rights") => "roles",
+        ("http://v8.1c.ru/8.3/xcf/predef", "PredefinedData") => "predefined-data",
+        ("http://v8.1c.ru/8.1/xdto", "package") => "xdto-package",
+        _ => {
+            return Err(format!(
+                "unclassified XML root {{{namespace}}}{local_name}: {}",
+                label
+            ));
+        }
+    };
+    Ok(family.to_string())
+}
+
+fn source_set_owner_roots_from_payloads(
+    payloads: &XmlPayloadSnapshot,
+) -> Result<BTreeMap<String, String>, String> {
+    let allowed = [
+        "Configuration",
+        "ConfigurationExtension",
+        "ExternalDataProcessor",
+        "ExternalReport",
+    ];
+    let mut owners = BTreeMap::new();
+    for (relative, payload) in payloads {
+        let (namespace, local_name, child_type, _) = xml_root_details_payload(payload, relative)?;
+        if namespace == "http://v8.1c.ru/8.3/MDClasses"
+            && local_name == "MetaDataObject"
+            && child_type
+                .as_deref()
+                .is_some_and(|kind| allowed.contains(&kind))
+        {
+            let root = Path::new(relative)
+                .parent()
+                .unwrap_or_else(|| Path::new(""))
+                .to_string_lossy()
+                .replace('\\', "/");
+            owners.insert(relative.clone(), root);
+        }
+    }
+    Ok(owners)
+}
+
+fn unique_deepest_owner_for_path<'a>(
+    relative: &str,
+    owners: &'a BTreeMap<String, String>,
+) -> Result<Option<&'a str>, String> {
+    let candidates = owners
+        .iter()
+        .filter(|(_, root)| {
+            root.is_empty()
+                || relative == root.as_str()
+                || relative.starts_with(&format!("{root}/"))
+        })
+        .collect::<Vec<_>>();
+    let Some(deepest) = candidates
+        .iter()
+        .map(|(_, root)| Path::new(root).components().count())
+        .max()
+    else {
+        return Ok(None);
+    };
+    let deepest_owners = candidates
+        .into_iter()
+        .filter(|(_, root)| Path::new(root).components().count() == deepest)
+        .map(|(owner, _)| owner.as_str())
+        .collect::<Vec<_>>();
+    if deepest_owners.len() != 1 {
+        return Err(format!(
+            "versionless XML has no unique deepest source-set owner: {relative}: {deepest_owners:?}"
+        ));
+    }
+    Ok(deepest_owners.first().copied())
+}
+
+fn manifest_case_prefix(case_id: &str) -> String {
+    format!("cases/{case_id}/workspace")
+}
+
+fn pre_snapshot_prefix(case_id: &str) -> String {
+    format!("cases/{case_id}/pre-xml")
+}
+
+fn pre_non_xml_snapshot_prefix(case_id: &str) -> String {
+    format!("cases/{case_id}/pre-non-xml")
+}
+
+fn manifest_path(case_id: &str, relative: &str) -> String {
+    format!("{}/{relative}", manifest_case_prefix(case_id))
+}
+
+fn platform_checkpoint_for_case(case: &ExecutableCase) -> PlatformCheckpoint {
+    let prefix = manifest_case_prefix(case.id);
+    let (kind, source_path, base_source_path) = if case.id.starts_with("cfe-") {
+        (
+            "extension",
+            Some(format!("{prefix}/ext")),
+            Some(format!("{prefix}/src")),
+        )
+    } else {
+        ("configuration", Some(format!("{prefix}/src")), None)
+    };
+    PlatformCheckpoint {
+        kind: kind.to_string(),
+        source_path,
+        base_source_path,
+        covered_case_ids: vec![case.id.to_string()],
+    }
+}
+
+fn platform_source_root_relatives(
+    case: &ExecutableCase,
+) -> Result<&'static [&'static str], String> {
+    let checkpoint = platform_checkpoint_for_case(case);
+    match checkpoint.kind.as_str() {
+        "configuration" => Ok(&["src"]),
+        "extension" => Ok(&["src", "ext"]),
+        other => Err(format!(
+            "unknown platform checkpoint kind for {}: {other}",
+            case.id
+        )),
+    }
+}
+
+fn prefixed_path(prefix: &str, relative: &str) -> String {
+    format!("{prefix}/{relative}")
+}
+
+fn owner_versions_from_payloads(
+    prefix: &str,
+    payloads: &XmlPayloadSnapshot,
+    owners: &BTreeMap<String, String>,
+) -> Result<BTreeMap<String, String>, String> {
+    let mut versions = BTreeMap::new();
+    for owner in owners.keys() {
+        let payload = payloads
+            .get(owner)
+            .ok_or_else(|| format!("pre-snapshot owner payload is absent: {owner}"))?;
+        let (_, _, _, version) = xml_root_details_payload(payload, owner)?;
+        let version = version
+            .ok_or_else(|| format!("pre-snapshot source-set owner has no version: {owner}"))?;
+        if version != "2.20" {
+            return Err(format!(
+                "pre-snapshot source-set owner is not format 2.20: {owner}: {version}"
+            ));
+        }
+        versions.insert(prefixed_path(prefix, owner), version);
+    }
+    Ok(versions)
+}
+
+fn build_pre_contract(
+    case: &ExecutableCase,
+    pre_payloads: &XmlPayloadSnapshot,
+) -> Result<PreCorpusContract, String> {
+    let prefix = pre_snapshot_prefix(case.id);
+    let owners = source_set_owner_roots_from_payloads(pre_payloads)?;
+    let pre_owner_versions = owner_versions_from_payloads(&prefix, pre_payloads, &owners)?;
+    let mut pre_files = Vec::new();
+    for (relative, payload) in pre_payloads {
+        let family = family_for_xml_payload(payload, relative)?;
+        let (_, _, _, version) = xml_root_details_payload(payload, relative)?;
+        let owner = if version.is_none() {
+            unique_deepest_owner_for_path(relative, &owners)?
+        } else {
+            None
+        };
+        match version.as_deref() {
+            Some("2.20") if owner.is_none() => {}
+            Some("2.20") => {
+                return Err(format!(
+                    "version-bearing pre-snapshot XML must not declare an owner: {relative}"
+                ));
+            }
+            Some(other) => {
+                return Err(format!(
+                    "pre-snapshot version-bearing XML is not format 2.20: {relative}: {other}"
+                ));
+            }
+            None if owner.is_some() => {}
+            None => {
+                return Err(format!(
+                    "versionless pre-snapshot XML has no same-case owner: {relative}"
+                ));
+            }
+        }
+        pre_files.push(PreCorpusFile {
+            path: prefixed_path(&prefix, relative),
+            sha256: format!("{:x}", Sha256::digest(payload)),
+            family,
+            owner_path: owner.map(|owner| prefixed_path(&prefix, owner)),
+        });
+    }
+    pre_files.sort_by(|left, right| left.path.cmp(&right.path));
+    Ok(PreCorpusContract {
+        files: pre_files,
+        owner_versions: pre_owner_versions,
+    })
+}
+
+fn ensure_all_xml_listed(actual: &XmlSnapshot, listed: &BTreeSet<String>) -> Result<(), String> {
+    let actual_paths = actual.keys().cloned().collect::<BTreeSet<_>>();
+    if actual_paths != *listed {
+        let unlisted = actual_paths
+            .difference(listed)
+            .next()
+            .cloned()
+            .unwrap_or_default();
+        let stale = listed
+            .difference(&actual_paths)
+            .next()
+            .cloned()
+            .unwrap_or_default();
+        return Err(format!(
+            "manifest XML listing mismatch: unlisted={unlisted:?}, stale={stale:?}"
+        ));
+    }
+    Ok(())
+}
+
+fn delta_for_path<'a>(delta: &'a XmlDelta, path: &str) -> &'a str {
+    if delta.created.iter().any(|item| item == path) {
+        "created"
+    } else if delta.modified.iter().any(|item| item == path) {
+        "modified"
+    } else if delta.unchanged.iter().any(|item| item == path) {
+        "unchanged"
+    } else {
+        panic!("post-snapshot path absent from delta: {path}");
+    }
+}
+
+fn build_non_xml_contract(
+    case: &ExecutableCase,
+    pre_payloads: &NonXmlPayloadSnapshot,
+    post_payloads: &NonXmlPayloadSnapshot,
+) -> Result<NonXmlContract, String> {
+    let before = hashes_for_non_xml_payloads(pre_payloads);
+    let after = hashes_for_non_xml_payloads(post_payloads);
+    let delta = classify_xml_delta(&before, &after);
+    let mut pre_files = before
+        .iter()
+        .map(|(relative, sha256)| PreNonXmlFile {
+            path: format!("{}/{relative}", pre_non_xml_snapshot_prefix(case.id)),
+            sha256: sha256.clone(),
+        })
+        .collect::<Vec<_>>();
+    let mut files = after
+        .iter()
+        .map(|(relative, sha256)| NonXmlFile {
+            path: manifest_path(case.id, relative),
+            sha256: sha256.clone(),
+            seed: before.contains_key(relative),
+            delta: delta_for_path(&delta, relative).to_string(),
+        })
+        .collect::<Vec<_>>();
+    let mut removed_paths = delta
+        .removed
+        .iter()
+        .map(|relative| manifest_path(case.id, relative))
+        .collect::<Vec<_>>();
+    pre_files.sort_by(|left, right| left.path.cmp(&right.path));
+    files.sort_by(|left, right| left.path.cmp(&right.path));
+    removed_paths.sort();
+
+    let prefix = format!("{}/", manifest_case_prefix(case.id));
+    let pre_prefix = format!("{}/", pre_non_xml_snapshot_prefix(case.id));
+    let listed_post = files
+        .iter()
+        .map(|file| {
+            file.path
+                .strip_prefix(&prefix)
+                .expect("non-XML case manifest prefix")
+                .to_string()
+        })
+        .collect::<BTreeSet<_>>();
+    let actual_post = after.keys().cloned().collect::<BTreeSet<_>>();
+    if listed_post != actual_post {
+        return Err(format!("manifest non-XML listing mismatch for {}", case.id));
+    }
+    let listed_pre = pre_files
+        .iter()
+        .map(|file| {
+            file.path
+                .strip_prefix(&pre_prefix)
+                .expect("pre non-XML case manifest prefix")
+                .to_string()
+        })
+        .collect::<BTreeSet<_>>();
+    let actual_pre = before.keys().cloned().collect::<BTreeSet<_>>();
+    if listed_pre != actual_pre {
+        return Err(format!(
+            "manifest pre non-XML listing mismatch for {}",
+            case.id
+        ));
+    }
+
+    Ok(NonXmlContract {
+        pre_files,
+        files,
+        removed_paths,
+    })
+}
+
+fn build_corpus_case(
+    case: &ExecutableCase,
+    post_payloads: &XmlPayloadSnapshot,
+    entry: &MutatorRegistryEntry,
+    contracts: CaseFileContracts,
+    before: &XmlSnapshot,
+    after: &XmlSnapshot,
+    delta: &XmlDelta,
+) -> Result<CorpusCase, String> {
+    let CaseFileContracts {
+        pre_xml,
+        non_xml,
+        auxiliary_files,
+    } = contracts;
+    let owners = source_set_owner_roots_from_payloads(post_payloads)?;
+    let workspace_prefix = manifest_case_prefix(case.id);
+    let owner_versions = owner_versions_from_payloads(&workspace_prefix, post_payloads, &owners)?;
+    let mut files = Vec::new();
+    for (relative, hash) in after {
+        let payload = post_payloads
+            .get(relative)
+            .ok_or_else(|| format!("post-snapshot payload is absent: {relative}"))?;
+        let family = family_for_xml_payload(payload, relative)?;
+        let versionless = matches!(
+            family.as_str(),
+            "dcs" | "mxl" | "client-application-interface" | "xdto-package"
+        );
+        let owner = if versionless {
+            unique_deepest_owner_for_path(relative, &owners)?
+        } else {
+            None
+        };
+        let new_standalone = (versionless && owner.is_none())
+            .then_some(delta.created.iter().any(|item| item == relative));
+        if versionless && owner.is_none() && new_standalone != Some(true) {
+            return Err(format!(
+                "versionless XML has neither same-case owner nor new standalone evidence: {relative}"
+            ));
+        }
+        files.push(CorpusFile {
+            path: manifest_path(case.id, relative),
+            sha256: hash.clone(),
+            family,
+            seed: before.contains_key(relative),
+            delta: delta_for_path(delta, relative).to_string(),
+            owner_path: owner.map(|owner| manifest_path(case.id, owner)),
+            new_standalone,
+        });
+    }
+    files.sort_by(|left, right| left.path.cmp(&right.path));
+    ensure_all_xml_listed(
+        after,
+        &files
+            .iter()
+            .map(|file| {
+                file.path
+                    .strip_prefix(&format!("{}/", manifest_case_prefix(case.id)))
+                    .expect("case manifest prefix")
+                    .to_string()
+            })
+            .collect(),
+    )?;
+
+    let mut removed_paths = delta
+        .removed
+        .iter()
+        .map(|path| manifest_path(case.id, path))
+        .collect::<Vec<_>>();
+    removed_paths.sort();
+    Ok(CorpusCase {
+        id: case.id.to_string(),
+        workspace_path: workspace_prefix,
+        pre_snapshot_path: pre_snapshot_prefix(case.id),
+        platform_checkpoint: platform_checkpoint_for_case(case),
+        checkpoint: format!("cases/{}/case-report.json", case.id),
+        tool_id: case.tool.to_string(),
+        operation: entry.operation.to_string(),
+        branch: case.branch.to_string(),
+        impact_class: impact_class_name(effective_xml_impact(case.id)).to_string(),
+        xml_impact: xml_impact_name(delta).to_string(),
+        pre_files: pre_xml.files,
+        files,
+        removed_paths,
+        pre_non_xml_files: non_xml.pre_files,
+        non_xml_files: non_xml.files,
+        removed_non_xml_paths: non_xml.removed_paths,
+        auxiliary_files,
+        pre_owner_versions: pre_xml.owner_versions,
+        owner_versions,
+    })
+}
+
+fn sanitize_value(value: &Value, workspace: &Path) -> Value {
+    match value {
+        Value::String(text) => {
+            Value::String(text.replace(&workspace.display().to_string(), "$CASE_WORKSPACE"))
+        }
+        Value::Array(items) => Value::Array(
+            items
+                .iter()
+                .map(|item| sanitize_value(item, workspace))
+                .collect(),
+        ),
+        Value::Object(object) => Value::Object(
+            object
+                .iter()
+                .map(|(key, value)| (key.clone(), sanitize_value(value, workspace)))
+                .collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
+fn dcs_child<'a, 'input>(
+    node: roxmltree::Node<'a, 'input>,
+    ns: &str,
+    tag: &str,
+) -> Result<roxmltree::Node<'a, 'input>, String> {
+    node.children()
+        .find(|child| child.has_tag_name((ns, tag)))
+        .ok_or_else(|| format!("missing DCS {tag}"))
+}
+
+fn dcs_named<'a, 'input>(
+    node: roxmltree::Node<'a, 'input>,
+    ns: &str,
+    tag: &str,
+    key: &str,
+    name: &str,
+) -> Result<roxmltree::Node<'a, 'input>, String> {
+    let matches = node
+        .children()
+        .filter(|child| {
+            child.has_tag_name((ns, tag))
+                && dcs_child(*child, ns, key).ok().and_then(|key| key.text()) == Some(name)
+        })
+        .collect::<Vec<_>>();
+    if matches.len() != 1 {
+        return Err(format!("DCS {tag}.{name} must occur exactly once"));
+    }
+    Ok(matches[0])
+}
+
+fn require_dcs_fixture_xml(case_id: &str, xml: &str) -> Result<(), String> {
+    const S: &str = "http://v8.1c.ru/8.1/data-composition-system/schema";
+    const T: &str = "http://v8.1c.ru/8.1/data-composition-system/settings";
+    const C: &str = "http://v8.1c.ru/8.1/data-composition-system/core";
+    const COMMON: &str = "http://v8.1c.ru/8.1/data-composition-system/common";
+    const V: &str = "http://v8.1c.ru/8.1/data/core";
+    let document = Document::parse(xml).map_err(|error| error.to_string())?;
+    let root = document.root_element();
+    let check = |condition: bool, message: &str| -> Result<(), String> {
+        if condition {
+            Ok(())
+        } else {
+            Err(format!("{case_id}: {message}"))
+        }
+    };
+    check(
+        root.has_tag_name((S, "DataCompositionSchema")) && root.attribute("version").is_none(),
+        "versionless DCS root was not preserved",
+    )?;
+    let main = dcs_named(root, S, "dataSet", "name", "Main")?;
+    let object = dcs_named(root, S, "dataSet", "name", "CatalogObject")?;
+    let union = dcs_named(root, S, "dataSet", "name", "Combined")?;
+    check(
+        dcs_child(main, S, "query")?.text() == Some("SELECT 1 AS Value, 10 AS Amount"),
+        "Query text changed",
+    )?;
+    check(
+        dcs_child(object, S, "objectName")?.text() == Some("Catalog.CorpusCatalog"),
+        "Object dataset name missing",
+    )?;
+    for (name, query) in [
+        ("UnionFirst", "SELECT 1 AS Value"),
+        ("UnionSecond", "SELECT 2 AS Value"),
+    ] {
+        let member = dcs_named(union, S, "item", "name", name)?;
+        check(
+            dcs_child(member, S, "query")?.text() == Some(query),
+            "Union member query missing",
+        )?;
+        dcs_named(member, S, "field", "dataPath", "Value")?;
+    }
+    dcs_child(
+        dcs_named(union, S, "field", "dataPath", "Value")?,
+        S,
+        "valueType",
+    )?;
+    let link = dcs_child(root, S, "dataSetLink")?;
+    for (tag, value) in [
+        ("sourceDataSet", "Main"),
+        ("destinationDataSet", "CatalogObject"),
+        ("sourceExpression", "Value"),
+        ("destinationExpression", "Description"),
+        ("parameter", "Режим"),
+        ("parameterListAllowed", "true"),
+        ("linkConditionExpression", "Value = Description"),
+        ("startExpression", "Value"),
+    ] {
+        check(
+            dcs_child(link, S, tag)?.text() == Some(value),
+            &format!("link {tag} missing"),
+        )?;
+    }
+    // Required=true is the platform default; an explicit false would weaken it.
+    check(
+        link.children()
+            .find(|node| node.has_tag_name((S, "required")))
+            .is_none_or(|node| node.text() == Some("true")),
+        "link required default changed",
+    )?;
+    let calculated = dcs_named(root, S, "calculatedField", "dataPath", "CalculatedAmount")?;
+    check(
+        dcs_child(calculated, S, "expression")?.text() == Some("Amount * 2"),
+        "calculated expression missing",
+    )?;
+    let restriction = dcs_child(calculated, S, "useRestriction")?;
+    for flag in ["field", "condition", "group", "order"] {
+        check(
+            dcs_child(restriction, S, flag)?.text() == Some("true"),
+            &format!("calculated restriction {flag} missing"),
+        )?;
+    }
+    let declared = dcs_child(calculated, S, "valueType")?;
+    check(
+        declared
+            .descendants()
+            .any(|node| node.has_tag_name((V, "Digits")) && node.text() == Some("15")),
+        "calculated numeric type qualifiers missing",
+    )?;
+    let mode = dcs_named(root, S, "parameter", "name", "Режим")?;
+    for (tag, value) in [
+        ("value", "A"),
+        ("useRestriction", "true"),
+        ("expression", "&Source.Mode"),
+        ("valueListAllowed", "true"),
+        ("availableAsField", "false"),
+        ("denyIncompleteValues", "true"),
+        ("use", "Always"),
+    ] {
+        check(
+            dcs_child(mode, S, tag)?.text() == Some(value),
+            &format!("parameter {tag} missing"),
+        )?;
+    }
+    let choices = mode
+        .children()
+        .filter(|node| node.has_tag_name((S, "availableValue")))
+        .collect::<Vec<_>>();
+    check(choices.len() == 2, "available value count changed")?;
+    for (choice, value, title) in [(choices[0], "A", "Alpha"), (choices[1], "B", "Beta")] {
+        check(
+            dcs_child(choice, S, "value")?.text() == Some(value),
+            "available value missing",
+        )?;
+        check(
+            dcs_child(choice, S, "presentation")?
+                .descendants()
+                .any(|node| node.has_tag_name((V, "content")) && node.text() == Some(title)),
+            "available presentation missing",
+        )?;
+    }
+    let unicode = dcs_named(root, S, "parameter", "name", "ТипКорпуса")?;
+    check(
+        dcs_child(unicode, S, "valueType")?
+            .descendants()
+            .any(|node| node.has_tag_name((V, "Length")) && node.text() == Some("16")),
+        "unicode parameter type qualifiers missing",
+    )?;
+    for (name, expression) in [
+        ("ДатаНачала", "&Период.ДатаНачала"),
+        ("ДатаОкончания", "&Период.ДатаОкончания"),
+    ] {
+        let parameter = dcs_named(root, S, "parameter", "name", name)?;
+        check(
+            dcs_child(parameter, S, "expression")?.text() == Some(expression),
+            "existing explicit period dependency changed",
+        )?;
+        check(
+            dcs_child(parameter, S, "useRestriction")?.text() == Some("true"),
+            "period dependency visibility changed",
+        )?;
+    }
+    let variant = root
+        .children()
+        .find(|node| {
+            node.has_tag_name((S, "settingsVariant"))
+                && dcs_child(*node, T, "name")
+                    .ok()
+                    .and_then(|name| name.text())
+                    == Some("Main")
+        })
+        .ok_or("missing Main variant")?;
+    check(
+        !root.children().any(|node| {
+            node.has_tag_name((S, "settingsVariant"))
+                && dcs_child(node, T, "name").ok().and_then(|name| name.text()) == Some("Основной")
+        }),
+        "removed Основной variant is still present",
+    )?;
+    let settings = dcs_child(variant, T, "settings")?;
+    for tag in [
+        "selection",
+        "filter",
+        "dataParameters",
+        "order",
+        "conditionalAppearance",
+        "outputParameters",
+    ] {
+        dcs_child(settings, T, tag)?;
+    }
+    let title = dcs_child(settings, T, "outputParameters")?;
+    check(
+        title
+            .descendants()
+            .any(|node| node.has_tag_name((V, "content")) && node.text() == Some("Corpus report")),
+        "localized output title missing",
+    )?;
+    let color = dcs_child(settings, T, "conditionalAppearance")?;
+    let value = color
+        .descendants()
+        .find(|node| node.has_tag_name((C, "value")) && node.text() == Some("web:Red"))
+        .ok_or("conditional appearance color missing")?;
+    let qname = value
+        .attribute(("http://www.w3.org/2001/XMLSchema-instance", "type"))
+        .ok_or("color lacks type")?;
+    let (prefix, local) = qname.split_once(':').ok_or("color lacks qualified type")?;
+    check(
+        local == "Color"
+            && value.lookup_namespace_uri(Some(prefix)) == Some("http://v8.1c.ru/8.1/data/ui"),
+        "appearance color has wrong platform type",
+    )?;
+    check(
+        value.lookup_namespace_uri(Some("web")) == Some("http://v8.1c.ru/8.1/data/ui/colors/web"),
+        "color value QName is unbound",
+    )?;
+    let structure_name = if case_id == "dcs-edit-set-structure-after-settings" {
+        "Edited"
+    } else {
+        "Corpus group"
+    };
+    let group = settings
+        .children()
+        .find(|node| {
+            node.has_tag_name((T, "item"))
+                && dcs_child(*node, T, "name")
+                    .ok()
+                    .and_then(|name| name.text())
+                    == Some(structure_name)
+        })
+        .ok_or("missing named structure group")?;
+    check(
+        dcs_child(group, T, "groupItems")?
+            .descendants()
+            .any(|node| node.has_tag_name((T, "field")) && node.text() == Some("Value")),
+        "groupBy field missing",
+    )?;
+    check(
+        group.children().any(|node| node.has_tag_name((T, "item"))),
+        "nested details missing",
+    )?;
+    if case_id != "dcs-edit-set-structure-after-settings" {
+        for tag in [
+            "selection",
+            "filter",
+            "order",
+            "conditionalAppearance",
+            "outputParameters",
+        ] {
+            dcs_child(group, T, tag)?;
+        }
+    }
+    let description = dcs_named(object, S, "field", "dataPath", "Description")?;
+    check(
+        dcs_child(description, S, "presentationExpression")?.text() == Some("Description"),
+        "unaddressed presentation expression changed",
+    )?;
+    dcs_child(description, S, "valueType")?;
+    match case_id {
+        "dcs-edit-owned-template" => {
+            dcs_named(main, S, "field", "dataPath", "Added")?;
+            check(
+                dcs_child(settings, T, "selection")?
+                    .descendants()
+                    .any(|node| node.has_tag_name((T, "field")) && node.text() == Some("Added")),
+                "explicit selection of added field missing",
+            )?;
+        }
+        "dcs-edit-add-parameter-after-settings" => {
+            let added = dcs_named(root, S, "parameter", "name", "ПериодРедактирования")?;
+            check(
+                dcs_child(added, S, "use")?.text() == Some("Always")
+                    && dcs_child(added, S, "useRestriction")?.text() == Some("true"),
+                "added period flags missing",
+            )?;
+            check(
+                dcs_child(added, S, "value")?.descendants().any(|node| {
+                    node.has_tag_name((V, "variant")) && node.text() == Some("LastMonth")
+                }),
+                "added period value missing",
+            )?;
+        }
+        "dcs-edit-modify-field-role-restriction" => {
+            let restriction = dcs_child(description, S, "useRestriction")?;
+            check(
+                dcs_child(restriction, S, "field")?.text() == Some("true")
+                    && dcs_child(restriction, S, "order")?.text() == Some("true"),
+                "modified field restrictions missing",
+            )?;
+            let role = dcs_child(description, S, "role")?;
+            check(
+                dcs_child(role, COMMON, "dimension")?.text() == Some("true")
+                    && dcs_child(role, COMMON, "required")?.text() == Some("true"),
+                "modified field role flags missing",
+            )?;
+            check(
+                dcs_child(description, S, "title")?
+                    .descendants()
+                    .any(|node| {
+                        node.has_tag_name((V, "content")) && node.text() == Some("Updated")
+                    }),
+                "modified field title missing",
+            )?;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn assert_case_postconditions(
+    case: &ExecutableCase,
+    workspace: &Path,
+    before: &XmlSnapshot,
+    after: &XmlSnapshot,
+    delta: &XmlDelta,
+) -> Result<(), String> {
+    if case.id.starts_with("dcs-") {
+        let template = if case.id == "dcs-compile-owned-template" {
+            "CorpusTemplate"
+        } else {
+            "CorpusDcs"
+        };
+        let body = format!("src/Reports/CorpusReport/Templates/{template}/Ext/Template.xml");
+        let xml = fs::read_to_string(workspace.join(&body)).map_err(|error| error.to_string())?;
+        require_dcs_fixture_xml(case.id, &xml)?;
+        if case.id != "dcs-compile-owned-template"
+            && (!delta.created.is_empty() || !delta.removed.is_empty() || delta.modified != [body])
+        {
+            return Err(format!(
+                "DCS component mutation changed files outside its existing body: {delta:?}"
+            ));
+        }
+    }
+    if matches!(effective_xml_impact(case.id), XmlImpactClass::None) {
+        if before.is_empty() {
+            return Err(format!("None-impact case has no seed XML: {}", case.id));
+        }
+        if before != after {
+            return Err(format!("None-impact case changed XML: {}", case.id));
+        }
+    }
+    if case.id == "meta-compile-business-process"
+        && !after
+            .keys()
+            .any(|path| path.ends_with("/Ext/Flowchart.xml"))
+    {
+        return Err("BusinessProcess case did not generate Flowchart.xml".to_string());
+    }
+    if case.id == "meta-compile-exchange-plan"
+        && !after.keys().any(|path| path.ends_with("/Ext/Content.xml"))
+    {
+        return Err("ExchangePlan case did not generate Ext/Content.xml".to_string());
+    }
+    if case.id == "meta-edit-event-source" {
+        let descriptor = workspace.join("src/EventSubscriptions/CorpusEventSubscription.xml");
+        let xml = fs::read_to_string(&descriptor)
+            .map_err(|error| format!("cannot read {}: {error}", descriptor.display()))?;
+        let expected =
+            "<v8:Type>cfg:InformationRegisterRecordSet.CorpusInformationRegister</v8:Type>";
+        if !xml.contains(expected) || xml.contains("<v8:Type>xs:string</v8:Type>") {
+            return Err("relation.replace did not replace the complete Source list".to_string());
+        }
+    }
+    if case.id == "template-add-spreadsheet-document"
+        && !after
+            .keys()
+            .any(|path| path.ends_with("/Templates/CorpusTemplate/Ext/Template.xml"))
+    {
+        return Err(format!("{} template content is not XML", case.branch));
+    }
+    if matches!(
+        effective_xml_impact(case.id),
+        XmlImpactClass::RemoveOrModify
+    ) && (delta.removed.is_empty() || delta.modified.is_empty())
+    {
+        return Err(format!(
+            "removal case lacks removed path or surviving owner modification: {}",
+            case.id
+        ));
+    }
+    Ok(())
+}
+
+fn run_corpus_case(
+    output: &Path,
+    case: &ExecutableCase,
+    gate: &mut SequentialCallGate,
+) -> Result<CorpusCase, String> {
+    let case_root = output.join("cases").join(case.id);
+    let workspace = case_root.join("workspace");
+    fs::create_dir_all(&workspace)
+        .map_err(|error| format!("cannot create {}: {error}", workspace.display()))?;
+    let args = prepare_target(case, &workspace)?;
+    remove_internal_workspace_cache(&workspace)?;
+    let pre_root = case_root.join("pre-xml");
+    let pre_non_xml_root = case_root.join("pre-non-xml");
+    let pre_payloads = capture_xml_payloads(&workspace)?;
+    let pre_non_xml_payloads = capture_non_xml_payloads(case, &workspace)?;
+    let pre_auxiliary_payloads = capture_auxiliary_payloads(case, &workspace)?;
+    let before = hashes_for_xml_payloads(&pre_payloads);
+    let pre_contract = build_pre_contract(case, &pre_payloads)?;
+    let sequence = gate.completed_target_calls + 1;
+    let mut publications = Vec::new();
+    let summary = if case.id == "dcs-compile-owned-template" {
+        // One sequential case contains two actual publications. A new Template
+        // address becomes usable only after template.add execution completes.
+        gate.begin()?;
+        let result = (|| -> Result<String, String> {
+            let creation_summary = call_public_tool(case.tool, &args)?;
+            remove_internal_workspace_cache(&workspace)?;
+            let created_payloads = capture_xml_payloads(&workspace)?;
+            let created = hashes_for_xml_payloads(&created_payloads);
+            let creation_delta =
+                enforce_xml_impact(XmlImpactClass::CreateOrModify, &before, &created)?;
+            let body = "src/Reports/CorpusReport/Templates/CorpusTemplate/Ext/Template.xml";
+            if !creation_delta.created.iter().any(|path| path == body) {
+                return Err("DCS template.add did not create a previously absent body".to_string());
+            }
+            let creation_snapshot = format!("cases/{}/publications/1/xml", case.id);
+            materialize_pre_xml(&output.join(&creation_snapshot), &created_payloads)?;
+            publications.push(PublicationReport {
+                snapshot_path: creation_snapshot,
+                tool_id: case.tool.to_string(),
+                public_arguments: sanitize_value(&Value::Object(args.clone()), &workspace),
+                summary: creation_summary.clone(),
+                pre_xml_sha256: before.clone(),
+                post_xml_sha256: created.clone(),
+                delta: creation_delta,
+            });
+            let components = dcs_component_args(&workspace, "CorpusTemplate");
+            let component_summary = call_public_tool(CANONICAL_APPLY_TOOL, &components)?;
+            remove_internal_workspace_cache(&workspace)?;
+            let filled = hashes_for_xml_payloads(&capture_xml_payloads(&workspace)?);
+            let component_delta =
+                enforce_xml_impact(XmlImpactClass::CreateOrModify, &created, &filled)?;
+            if !component_delta.created.is_empty()
+                || !component_delta.removed.is_empty()
+                || component_delta.modified != [body.to_string()]
+            {
+                return Err(format!("DCS component publication must modify only its existing body: {component_delta:?}"));
+            }
+            publications.push(PublicationReport {
+                snapshot_path: format!("cases/{}/workspace", case.id),
+                tool_id: CANONICAL_APPLY_TOOL.to_string(),
+                public_arguments: sanitize_value(&Value::Object(components), &workspace),
+                summary: component_summary,
+                pre_xml_sha256: created,
+                post_xml_sha256: filled,
+                delta: component_delta,
+            });
+            Ok(creation_summary)
+        })();
+        gate.finish()?;
+        result?
+    } else {
+        call_target_tool(gate, case.tool, &args)?
+    };
+    remove_internal_workspace_cache(&workspace)?;
+    materialize_pre_xml(&pre_root, &pre_payloads)?;
+    materialize_pre_non_xml(case, &pre_non_xml_root, &pre_non_xml_payloads)?;
+    let post_payloads = capture_xml_payloads(&workspace)?;
+    let post_non_xml_payloads = capture_non_xml_payloads(case, &workspace)?;
+    let post_auxiliary_payloads = capture_auxiliary_payloads(case, &workspace)?;
+    if post_auxiliary_payloads != pre_auxiliary_payloads {
+        let before = hashes_for_non_xml_payloads(&pre_auxiliary_payloads);
+        let after = hashes_for_non_xml_payloads(&post_auxiliary_payloads);
+        let delta = classify_xml_delta(&before, &after);
+        return Err(format!(
+            "target call created, changed, or removed a file outside the platform checkpoint boundary: {}: created={:?}, modified={:?}, removed={:?}",
+            case.id, delta.created, delta.modified, delta.removed
+        ));
+    }
+    let after = hashes_for_xml_payloads(&post_payloads);
+    let entry = registry_entry_for_case(case.id);
+    let effective_impact = effective_xml_impact(case.id);
+    let delta = enforce_xml_impact(effective_impact, &before, &after)?;
+    assert_case_postconditions(case, &workspace, &before, &after, &delta)?;
+    let contracts = CaseFileContracts {
+        pre_xml: pre_contract,
+        non_xml: build_non_xml_contract(case, &pre_non_xml_payloads, &post_non_xml_payloads)?,
+        auxiliary_files: pre_auxiliary_payloads
+            .iter()
+            .map(|(relative, payload)| PreNonXmlFile {
+                path: manifest_path(case.id, relative),
+                sha256: format!("{:x}", Sha256::digest(payload)),
+            })
+            .collect(),
+    };
+    let manifest_case = build_corpus_case(
+        case,
+        &post_payloads,
+        entry,
+        contracts,
+        &before,
+        &after,
+        &delta,
+    )?;
+    let seed_outputs = before.keys().cloned().collect::<Vec<_>>();
+    let remaining_xml = after.keys().cloned().collect::<Vec<_>>();
+    let removed_paths = delta
+        .removed
+        .iter()
+        .map(|path| RemovedPathReport {
+            path: path.clone(),
+            sha256: before
+                .get(path)
+                .expect("removed XML must have a pre-snapshot hash")
+                .clone(),
+        })
+        .collect::<Vec<_>>();
+    let owner_links = manifest_case
+        .files
+        .iter()
+        .filter_map(|file| {
+            file.owner_path
+                .as_ref()
+                .map(|owner| (file.path.clone(), owner.clone()))
+        })
+        .collect::<BTreeMap<_, _>>();
+    let report = CaseReport {
+        schema_version: 1,
+        profile: "1c-8.3.27-export-2.20".to_string(),
+        id: case.id.to_string(),
+        workspace_path: manifest_case.workspace_path.clone(),
+        pre_snapshot_path: manifest_case.pre_snapshot_path.clone(),
+        platform_checkpoint: manifest_case.platform_checkpoint.clone(),
+        tool_id: case.tool.to_string(),
+        operation: entry.operation.to_string(),
+        branch: case.branch.to_string(),
+        impact_class: impact_class_name(effective_impact).to_string(),
+        public_arguments: sanitize_value(&Value::Object(args), &workspace),
+        target_call: TargetCallReport {
+            sequence,
+            result_ok: true,
+            errors: Vec::new(),
+            summary: summary.replace(&workspace.display().to_string(), "$CASE_WORKSPACE"),
+        },
+        publications,
+        pre_files: manifest_case.pre_files.clone(),
+        pre_non_xml_files: manifest_case.pre_non_xml_files.clone(),
+        non_xml_files: manifest_case.non_xml_files.clone(),
+        removed_non_xml_paths: manifest_case.removed_non_xml_paths.clone(),
+        auxiliary_files: manifest_case.auxiliary_files.clone(),
+        seed_outputs,
+        pre_xml_sha256: before,
+        post_xml_sha256: after,
+        delta,
+        remaining_xml,
+        removed_paths,
+        owner_links,
+        pre_owner_versions: manifest_case.pre_owner_versions.clone(),
+        owner_versions: manifest_case.owner_versions.clone(),
+    };
+    fs::write(
+        case_root.join("case-report.json"),
+        serde_json::to_vec_pretty(&report)
+            .map_err(|error| format!("cannot serialize case report: {error}"))?,
+    )
+    .map_err(|error| format!("cannot write case report: {error}"))?;
+    require_xml_payloads_unchanged(&workspace, &post_payloads, "post-workspace")?;
+    require_xml_payloads_unchanged(&pre_root, &pre_payloads, "materialized pre-snapshot")?;
+    require_non_xml_payloads_unchanged(case, &workspace, &post_non_xml_payloads, "post-workspace")?;
+    require_non_xml_payloads_unchanged(
+        case,
+        &pre_non_xml_root,
+        &pre_non_xml_payloads,
+        "materialized pre non-XML snapshot",
+    )?;
+    Ok(manifest_case)
+}
+
+fn sort_manifest(manifest: &mut CorpusManifest) {
+    manifest.empty_directory_paths.sort();
+    for case in &mut manifest.cases {
+        case.pre_files
+            .sort_by(|left, right| left.path.cmp(&right.path));
+        case.files.sort_by(|left, right| left.path.cmp(&right.path));
+        case.removed_paths.sort();
+        case.pre_non_xml_files
+            .sort_by(|left, right| left.path.cmp(&right.path));
+        case.non_xml_files
+            .sort_by(|left, right| left.path.cmp(&right.path));
+        case.removed_non_xml_paths.sort();
+        case.auxiliary_files
+            .sort_by(|left, right| left.path.cmp(&right.path));
+    }
+    manifest.cases.sort_by(|left, right| left.id.cmp(&right.id));
+}
+
+// Исследование `research_xml_corpus` собирает этот файл модулем и зовёт отсюда.
+#[allow(dead_code)]
+pub(crate) fn generate_corpus(output: &Path) -> Result<CorpusManifest, String> {
+    if !output.exists() {
+        fs::create_dir(output).map_err(|error| {
+            format!("cannot create corpus target {}: {error}", output.display())
+        })?;
+    }
+    let mut cases = EXECUTABLE_CASES.iter().collect::<Vec<_>>();
+    cases.sort_by_key(|case| case.id);
+    let mut gate = SequentialCallGate::default();
+    let mut generated = Vec::new();
+    for case in cases {
+        generated.push(run_corpus_case(output, case, &mut gate)?);
+    }
+    if gate.completed_target_calls != EXECUTABLE_CASES.len() {
+        return Err(format!(
+            "sequential target call count mismatch: {} != {}",
+            gate.completed_target_calls,
+            EXECUTABLE_CASES.len()
+        ));
+    }
+    let mut manifest = CorpusManifest {
+        schema_version: 2,
+        profile: "1c-8.3.27-export-2.20".to_string(),
+        empty_directory_paths: capture_empty_directory_paths(output)?,
+        cases: generated,
+    };
+    sort_manifest(&mut manifest);
+    fs::write(
+        output.join("corpus-manifest.json"),
+        serde_json::to_vec_pretty(&manifest)
+            .map_err(|error| format!("cannot serialize corpus manifest: {error}"))?,
+    )
+    .map_err(|error| format!("cannot write corpus manifest: {error}"))?;
+    Ok(manifest)
+}
+
+fn normalize_absolute_path(path: &Path) -> Result<PathBuf, String> {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(|error| format!("cannot resolve current directory: {error}"))?
+            .join(path)
+    };
+    let mut normalized = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
+            Component::RootDir => normalized.push(Path::new("/")),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !normalized.pop() {
+                    return Err("output path escapes filesystem root".to_string());
+                }
+            }
+            Component::Normal(part) => normalized.push(part),
+        }
+    }
+    Ok(normalized)
+}
+
+fn canonical_or_parent(path: &Path) -> Result<PathBuf, String> {
+    if path.exists() {
+        return path
+            .canonicalize()
+            .map_err(|error| format!("cannot canonicalize {}: {error}", path.display()));
+    }
+    let parent = path
+        .parent()
+        .ok_or_else(|| "output target has no parent directory".to_string())?;
+    if !parent.is_dir() {
+        return Err(format!(
+            "output target parent does not exist: {}",
+            parent.display()
+        ));
+    }
+    let canonical_parent = parent
+        .canonicalize()
+        .map_err(|error| format!("cannot canonicalize {}: {error}", parent.display()))?;
+    let name = path
+        .file_name()
+        .ok_or_else(|| "output target has no final path component".to_string())?;
+    Ok(canonical_parent.join(name))
+}
+
+fn validate_output_directory(
+    raw: &str,
+    repo_root: &Path,
+    home_root: &Path,
+) -> Result<PathBuf, String> {
+    if raw.trim().is_empty() {
+        return Err("UNICA_XML_CORPUS_DIR is empty".to_string());
+    }
+    let normalized = normalize_absolute_path(Path::new(raw.trim()))?;
+    if fs::symlink_metadata(&normalized).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+        return Err("corpus output target must not be a symlink".to_string());
+    }
+    let target = canonical_or_parent(&normalized)?;
+    let filesystem_root = Path::new("/")
+        .canonicalize()
+        .map_err(|error| format!("cannot canonicalize filesystem root: {error}"))?;
+    let home = home_root
+        .canonicalize()
+        .map_err(|error| format!("cannot canonicalize home root: {error}"))?;
+    let repo = repo_root
+        .canonicalize()
+        .map_err(|error| format!("cannot canonicalize repository root: {error}"))?;
+    if target == filesystem_root {
+        return Err("refusing filesystem root as corpus output".to_string());
+    }
+    if target == home {
+        return Err("refusing home root as corpus output".to_string());
+    }
+    if target.starts_with(&repo) {
+        return Err(format!(
+            "refusing repository tree as corpus output: {} is the repository root {} or inside it",
+            target.display(),
+            repo.display()
+        ));
+    }
+    if target.exists() {
+        if !target.is_dir() {
+            return Err("corpus output target exists and is not a directory".to_string());
+        }
+        let mut entries = fs::read_dir(&target)
+            .map_err(|error| format!("cannot inspect corpus output: {error}"))?;
+        if entries.next().is_some() {
+            return Err("corpus output directory must be empty".to_string());
+        }
+    }
+    Ok(target)
+}
+
+fn configured_output_directory_from(
+    raw: Option<&str>,
+    repo_root: &Path,
+    home_root: &Path,
+) -> Result<PathBuf, String> {
+    let raw = raw.ok_or_else(|| "UNICA_XML_CORPUS_DIR is not set".to_string())?;
+    validate_output_directory(raw, repo_root, home_root)
+}
+
+#[allow(dead_code)]
+pub(crate) fn configured_output_directory() -> Result<PathBuf, String> {
+    let raw = std::env::var("UNICA_XML_CORPUS_DIR").ok();
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let repo_root = manifest_dir
+        .parent()
+        .and_then(Path::parent)
+        .ok_or_else(|| "cannot resolve repository root".to_string())?;
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .ok_or_else(|| "HOME is not set".to_string())?;
+    configured_output_directory_from(raw.as_deref(), repo_root, &home)
+}
+
+/// Зарегистрированные операции `unica.apply`: тот же реестр, по которому
+/// словарь `can` публикует операции узла.
+fn registered_apply_operations() -> BTreeSet<String> {
+    unica_daemon::registered_apply_operation_names()
+        .into_iter()
+        .map(str::to_string)
+        .collect()
+}
+
+#[test]
+fn every_corpus_case_publishes_registered_canonical_operations() {
+    let registered = registered_apply_operations();
+    assert!(registered.contains("object.create"), "{registered:?}");
+    let mut executable = BTreeMap::new();
+    for case in EXECUTABLE_CASES {
+        assert!(
+            executable.insert(case.id, case).is_none(),
+            "duplicate executable case: {}",
+            case.id
+        );
+        assert_eq!(case.tool, CANONICAL_APPLY_TOOL, "{}", case.id);
+    }
+
+    let mut seen_operations = BTreeSet::new();
+    let mut referenced_cases = BTreeSet::new();
+    let workspace = Path::new("/corpus-registry-probe");
+    for entry in MUTATOR_REGISTRY {
+        assert!(
+            seen_operations.insert(entry.operation),
+            "duplicate registry operation: {}",
+            entry.operation
+        );
+        assert!(
+            !entry.ops.is_empty(),
+            "{} names no operation",
+            entry.operation
+        );
+        for op in entry.ops {
+            assert!(
+                registered.contains(*op),
+                "{}: `{op}` is not a registered unica.apply operation",
+                entry.operation
+            );
+        }
+        assert!(
+            !entry.case_ids.is_empty(),
+            "registry row has no case: {}",
+            entry.operation
+        );
+        let mut actual_branches = BTreeSet::new();
+        for case_id in entry.case_ids {
+            assert!(
+                referenced_cases.insert(*case_id),
+                "case referenced by multiple rows: {case_id}"
+            );
+            let case = executable
+                .get(case_id)
+                .unwrap_or_else(|| panic!("missing executable case: {case_id}"));
+            actual_branches.insert(case.branch);
+            let args = target_args(case, workspace).unwrap_or_else(|error| panic!("{error}"));
+            assert!(
+                args.get("at").and_then(Value::as_str).is_some(),
+                "{case_id} has no target address"
+            );
+            let ops = args["ops"]
+                .as_array()
+                .unwrap_or_else(|| panic!("{case_id} has no ops"));
+            assert!(!ops.is_empty(), "{case_id} publishes nothing");
+            for op in ops {
+                let name = op["op"].as_str().unwrap_or_default();
+                assert!(
+                    entry.ops.contains(&name),
+                    "{case_id} publishes `{name}` outside its row {}",
+                    entry.operation
+                );
+            }
+        }
+        let required_branches = entry
+            .required_branches
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        assert!(
+            !required_branches.is_empty(),
+            "registry row has no branch contract: {}",
+            entry.operation
+        );
+        assert_eq!(
+            actual_branches, required_branches,
+            "branch coverage mismatch"
+        );
+    }
+    assert_eq!(
+        referenced_cases,
+        executable.keys().copied().collect(),
+        "stale executable case"
+    );
+}
+
+#[test]
+fn meta_edit_structural_resource_insertions_build_exact_platform_cases() {
+    for (case_id, expected_names) in [
+        ("meta-edit-resource-append", &["Price", "Amount"][..]),
+        (
+            "meta-edit-resource-position-after",
+            &["Price", "Quantity", "Total"][..],
+        ),
+    ] {
+        let case = EXECUTABLE_CASES
+            .iter()
+            .find(|case| case.id == case_id)
+            .unwrap_or_else(|| panic!("missing exact platform case: {case_id}"));
+        let root = unique_temp_dir(case_id);
+        let mut gate = SequentialCallGate::default();
+        let generated = run_corpus_case(&root, case, &mut gate).unwrap();
+
+        assert_eq!(gate.completed_target_calls, 1, "{case_id}");
+        assert_eq!(
+            generated.platform_checkpoint.covered_case_ids,
+            [case_id.to_string()],
+            "{case_id}"
+        );
+        if case_id == "meta-edit-resource-append" {
+            let preimage = fs::read_to_string(
+                root.join("cases")
+                    .join(case_id)
+                    .join("pre-xml/src/InformationRegisters/CorpusInformationRegister.xml"),
+            )
+            .unwrap();
+            let child_objects_close = preimage.find("</ChildObjects>").unwrap();
+            let resource_close = preimage[..child_objects_close]
+                .rfind("</Resource>")
+                .map(|index| index + "</Resource>".len())
+                .expect("append preimage must contain a resource");
+            assert!(
+                preimage[resource_close..child_objects_close]
+                    .trim()
+                    .is_empty(),
+                "append preimage must end ChildObjects with Resource: {preimage}"
+            );
+        }
+        let descriptor = fs::read_to_string(
+            root.join("cases")
+                .join(case_id)
+                .join("workspace/src/InformationRegisters/CorpusInformationRegister.xml"),
+        )
+        .unwrap();
+        assert!(!descriptor.contains("</Resource>&#13;"), "{descriptor}");
+        let positions = expected_names
+            .iter()
+            .map(|name| {
+                descriptor
+                    .find(&format!("<Name>{name}</Name>"))
+                    .unwrap_or_else(|| panic!("{case_id} has no resource {name}: {descriptor}"))
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            positions.windows(2).all(|pair| pair[0] < pair[1]),
+            "{case_id}: {descriptor}"
+        );
+
+        remove_temp_tree(&root);
+    }
+}
+
+#[test]
+fn xml_delta_classifies_exact_pre_post_impact() {
+    let before = BTreeMap::from([
+        ("modified.xml".to_string(), "old".to_string()),
+        ("removed.xml".to_string(), "gone".to_string()),
+        ("unchanged.xml".to_string(), "same".to_string()),
+    ]);
+    let after = BTreeMap::from([
+        ("created.xml".to_string(), "new".to_string()),
+        ("modified.xml".to_string(), "changed".to_string()),
+        ("unchanged.xml".to_string(), "same".to_string()),
+    ]);
+
+    assert_eq!(
+        classify_xml_delta(&before, &after),
+        XmlDelta {
+            created: vec!["created.xml".to_string()],
+            modified: vec!["modified.xml".to_string()],
+            removed: vec!["removed.xml".to_string()],
+            unchanged: vec!["unchanged.xml".to_string()],
+        }
+    );
+}
+
+#[test]
+fn non_xml_contract_records_removed_payloads_outside_post_inventory() {
+    let case = EXECUTABLE_CASES
+        .iter()
+        .find(|case| case.id == "form-remove-managed")
+        .unwrap();
+    let before = NonXmlPayloadSnapshot::from([
+        ("src/kept.bsl".to_string(), b"before".to_vec()),
+        ("src/removed.bin".to_string(), b"removed".to_vec()),
+    ]);
+    let after = NonXmlPayloadSnapshot::from([("src/kept.bsl".to_string(), b"after".to_vec())]);
+
+    let contract = build_non_xml_contract(case, &before, &after).unwrap();
+
+    assert_eq!(contract.pre_files.len(), 2);
+    assert_eq!(contract.files.len(), 1);
+    assert!(contract.files[0].path.ends_with("src/kept.bsl"));
+    assert_eq!(contract.files[0].delta, "modified");
+    assert_eq!(
+        contract.removed_paths,
+        ["cases/form-remove-managed/workspace/src/removed.bin"]
+    );
+}
+
+#[test]
+fn remove_impact_requires_removal_and_surviving_owner_modification() {
+    let before = BTreeMap::from([
+        ("owner.xml".to_string(), "old".to_string()),
+        ("removed.xml".to_string(), "gone".to_string()),
+    ]);
+    let after = BTreeMap::from([("owner.xml".to_string(), "new".to_string())]);
+
+    let delta = enforce_xml_impact(XmlImpactClass::RemoveOrModify, &before, &after).unwrap();
+
+    assert_eq!(delta.removed, ["removed.xml"]);
+    assert_eq!(delta.modified, ["owner.xml"]);
+}
+
+#[test]
+fn none_impact_rejects_any_xml_map_change() {
+    let before = BTreeMap::from([("seed.xml".to_string(), "before".to_string())]);
+    let after = BTreeMap::from([("seed.xml".to_string(), "after".to_string())]);
+
+    let error = enforce_xml_impact(XmlImpactClass::None, &before, &after).unwrap_err();
+
+    assert!(error.contains("complete XML map"), "{error}");
+}
+
+#[test]
+fn source_resource_reads_preserve_every_corpus_byte() {
+    let root = unique_temp_dir("source-resource-snapshot-chain");
+    let workspace = root.join("workspace");
+    // No `UNICA_CACHE_DIR` override: setting it would mutate process-global
+    // state shared with every other test in this binary. The default cache
+    // root already lands in this workspace's own ignored `.build`, which the
+    // payload capture skips.
+    fs::create_dir_all(&workspace).unwrap();
+    write_designer_project(
+        &workspace,
+        &[
+            ("main", "CONFIGURATION", "src"),
+            ("extension", "EXTENSION", "ext"),
+        ],
+    )
+    .unwrap();
+    for (source_root, name, method, extension) in [
+        ("src", "Main", "Run", false),
+        ("ext", "Extension", "RunExtension", true),
+    ] {
+        let source = workspace.join(source_root);
+        fs::create_dir_all(source.join("CommonModules/Shared/Ext")).unwrap();
+        let extension_property = if extension {
+            "<ConfigurationExtensionPurpose>Customization</ConfigurationExtensionPurpose>"
+        } else {
+            ""
+        };
+        fs::write(
+            source.join("Configuration.xml"),
+            format!(
+                "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.20\"><Configuration><Properties><Name>{name}</Name>{extension_property}</Properties><ChildObjects><CommonModule>Shared</CommonModule></ChildObjects></Configuration></MetaDataObject>"
+            ),
+        )
+        .unwrap();
+        fs::write(
+            source.join("CommonModules/Shared.xml"),
+            "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.20\"><CommonModule uuid=\"ac847dc9-e222-45cf-af4a-6fa863c919a8\"><Properties><Name>Shared</Name><Synonym/><Comment/><Global>false</Global><ClientManagedApplication>false</ClientManagedApplication><Server>true</Server><ExternalConnection>false</ExternalConnection><ClientOrdinaryApplication>false</ClientOrdinaryApplication><ServerCall>false</ServerCall><Privileged>false</Privileged><ReturnValuesReuse>DontUse</ReturnValuesReuse></Properties></CommonModule></MetaDataObject>",
+        )
+        .unwrap();
+        fs::write(
+            source.join("CommonModules/Shared/Ext/Module.bsl"),
+            format!("\u{feff}Procedure {method}()\r\nEndProcedure\r\n"),
+        )
+        .unwrap();
+    }
+    let before = capture_workspace_payloads_for_source_test(&workspace);
+    for source_set in ["main", "extension"] {
+        let mut view_args = common_args(&workspace);
+        view_args.remove("dryRun");
+        view_args.insert(
+            "at".to_string(),
+            json!(format!("{source_set}:CommonModule.Shared")),
+        );
+        call_canonical_tool("unica.view", &view_args).expect("canonical module view");
+    }
+    // Canonical reads never write: the corpus must come out byte-identical.
+    assert_eq!(
+        capture_workspace_payloads_for_source_test(&workspace),
+        before
+    );
+    remove_temp_tree(&root);
+}
+
+fn capture_workspace_payloads_for_source_test(root: &Path) -> BTreeMap<String, Vec<u8>> {
+    let mut payloads = BTreeMap::new();
+    fn visit(root: &Path, directory: &Path, payloads: &mut BTreeMap<String, Vec<u8>>) {
+        for entry in fs::read_dir(directory).unwrap() {
+            let path = entry.unwrap().path();
+            if path.file_name() == Some(std::ffi::OsStr::new(".build")) {
+                // Generated cache root, not corpus source under test.
+                continue;
+            }
+            if path.is_dir() {
+                visit(root, &path, payloads);
+            } else {
+                payloads.insert(
+                    path.strip_prefix(root)
+                        .unwrap()
+                        .to_string_lossy()
+                        .replace('\\', "/"),
+                    fs::read(path).unwrap(),
+                );
+            }
+        }
+    }
+    visit(root, root, &mut payloads);
+    payloads
+}
+
+#[test]
+fn sequential_execution_invariant_rejects_overlap() {
+    let mut gate = SequentialCallGate::default();
+    gate.begin().unwrap();
+
+    let error = gate.begin().unwrap_err();
+
+    assert!(error.contains("overlapping"), "{error}");
+    gate.finish().unwrap();
+    assert_eq!(gate.completed_target_calls, 1);
+}
+
+#[test]
+fn every_executable_case_has_an_exact_platform_checkpoint() {
+    for case in EXECUTABLE_CASES {
+        let checkpoint = platform_checkpoint_for_case(case);
+        assert_ne!(
+            checkpoint.kind, "none",
+            "{} must not be excluded from the exact platform gate",
+            case.id
+        );
+        assert!(
+            checkpoint.source_path.is_some(),
+            "{} has no platform source path",
+            case.id
+        );
+        if case.id.starts_with("cfe-") {
+            assert_eq!(checkpoint.kind, "extension", "{}", case.id);
+            assert!(
+                checkpoint.base_source_path.is_some(),
+                "{} has no base configuration source path",
+                case.id
+            );
+        }
+    }
+}
+
+#[test]
+fn managed_form_corpus_cases_mutate_content_without_overwriting_metadata_wrapper() {
+    let root = unique_temp_dir("managed-form-content-targets");
+    let mut gate = SequentialCallGate::default();
+
+    for (case_id, wrapper, content) in [
+        (
+            "form-compile-managed",
+            "src/Reports/CorpusReport/Forms/CorpusForm.xml",
+            "src/Reports/CorpusReport/Forms/CorpusForm/Ext/Form.xml",
+        ),
+        (
+            "form-edit-managed",
+            "src/Catalogs/CorpusCatalog/Forms/CorpusForm.xml",
+            "src/Catalogs/CorpusCatalog/Forms/CorpusForm/Ext/Form.xml",
+        ),
+    ] {
+        let case = EXECUTABLE_CASES
+            .iter()
+            .find(|case| case.id == case_id)
+            .unwrap();
+
+        let generated = run_corpus_case(&root, case, &mut gate).unwrap();
+        let wrapper_file = generated
+            .files
+            .iter()
+            .find(|file| file.path == manifest_path(case_id, wrapper))
+            .expect("managed form metadata wrapper must remain in the corpus");
+        let content_file = generated
+            .files
+            .iter()
+            .find(|file| file.path == manifest_path(case_id, content))
+            .expect("managed form content must remain in the corpus");
+
+        assert_eq!(wrapper_file.delta, "unchanged", "{case_id}");
+        assert_eq!(content_file.delta, "modified", "{case_id}");
+
+        let case_root = root.join("cases").join(case_id);
+        assert_eq!(
+            fs::read(case_root.join("pre-xml").join(wrapper)).unwrap(),
+            fs::read(case_root.join("workspace").join(wrapper)).unwrap(),
+            "{case_id} must preserve the metadata wrapper byte-for-byte"
+        );
+        assert_ne!(
+            fs::read(case_root.join("pre-xml").join(content)).unwrap(),
+            fs::read(case_root.join("workspace").join(content)).unwrap(),
+            "{case_id} must mutate the managed form content"
+        );
+    }
+
+    assert_eq!(gate.completed_target_calls, 2);
+    remove_temp_tree(&root);
+}
+
+#[test]
+fn dcs_creation_snapshot_materializes_under_fresh_generation_path() {
+    let root = unique_temp_dir("dcs-creation-snapshot-generation-path");
+    let workspace = root.join("workspace");
+    let source = workspace.join("src/Configuration.xml");
+    fs::create_dir_all(source.parent().unwrap()).unwrap();
+    fs::write(
+        &source,
+        br#"<MetaDataObject version="2.20"><Configuration/></MetaDataObject>"#,
+    )
+    .unwrap();
+    let captured = capture_xml_payloads(&workspace).unwrap();
+    let generation = root.join("first");
+    // The same nested path is materialized by run_corpus_case during full
+    // research generation; neither the generation nor publication parents exist.
+    let snapshot = generation.join("cases/dcs-compile-owned-template/publications/1/xml");
+    assert!(!generation.exists());
+    materialize_pre_xml(&snapshot, &captured).unwrap();
+    assert_eq!(
+        snapshot_xml(&snapshot).unwrap(),
+        hashes_for_xml_payloads(&captured)
+    );
+    let copied = snapshot.join("src/Configuration.xml");
+    platform_support::assert_independent_copy(&source, &copied);
+    let initial = fs::read(&copied).unwrap();
+    let error = materialize_pre_xml(&snapshot, &captured).unwrap_err();
+    assert!(error.contains("cannot create"), "{error}");
+    assert_eq!(fs::read(&copied).unwrap(), initial);
+    remove_temp_tree(&root);
+}
+
+#[test]
+fn pre_snapshot_materializes_only_immutable_pre_call_bytes() {
+    let root = unique_temp_dir("immutable-pre-snapshot");
+    let workspace = root.join("workspace");
+    let source = workspace.join("src/Configuration.xml");
+    fs::create_dir_all(source.parent().unwrap()).unwrap();
+    let before = br#"<MetaDataObject version="2.20"><Configuration/></MetaDataObject>"#;
+    let after = br#"<MetaDataObject version="2.20"><Configuration><Changed/></Configuration></MetaDataObject>"#;
+    fs::write(&source, before).unwrap();
+
+    let captured = capture_xml_payloads(&workspace).unwrap();
+    fs::write(&source, after).unwrap();
+    let pre_root = root.join("pre-xml");
+    materialize_pre_xml(&pre_root, &captured).unwrap();
+
+    let copied = pre_root.join("src/Configuration.xml");
+    assert_eq!(fs::read(&copied).unwrap(), before);
+    assert_ne!(fs::read(&source).unwrap(), fs::read(&copied).unwrap());
+    platform_support::assert_independent_copy(&source, &copied);
+
+    let collision = root.join("target-created-pre-xml");
+    fs::create_dir(&collision).unwrap();
+    fs::write(collision.join("tampered.xml"), b"<tampered/>").unwrap();
+    let error = materialize_pre_xml(&collision, &captured).unwrap_err();
+    assert!(error.contains("cannot create"), "{error}");
+    assert_eq!(
+        fs::read(collision.join("tampered.xml")).unwrap(),
+        b"<tampered/>"
+    );
+
+    let captured_post = capture_xml_payloads(&workspace).unwrap();
+    fs::write(
+        &source,
+        br#"<MetaDataObject version="2.20"><Configuration><LateMutation/></Configuration></MetaDataObject>"#,
+    )
+    .unwrap();
+    let error =
+        require_xml_payloads_unchanged(&workspace, &captured_post, "post-workspace").unwrap_err();
+    assert!(error.contains("changed after"), "{error}");
+
+    remove_temp_tree(&root);
+}
+
+#[test]
+fn non_xml_manifest_inventory_binds_bsl_tampering_for_none_impact_case() {
+    let root = unique_temp_dir("non-xml-manifest-tamper");
+    let case = EXECUTABLE_CASES
+        .iter()
+        .find(|case| case.id == "code-patch-bsl-only")
+        .unwrap();
+    let mut gate = SequentialCallGate::default();
+
+    let generated = run_corpus_case(&root, case, &mut gate).unwrap();
+    let manifest_case = serde_json::to_value(generated).unwrap();
+    let module_suffix = "src/CommonModules/CorpusModule/Ext/Module.bsl";
+    let pre_entry = manifest_case["preNonXmlFiles"]
+        .as_array()
+        .and_then(|files| {
+            files.iter().find(|file| {
+                file["path"]
+                    .as_str()
+                    .is_some_and(|path| path.ends_with(module_suffix))
+            })
+        })
+        .expect("pre-call BSL must be bound by the manifest");
+    let post_entry = manifest_case["nonXmlFiles"]
+        .as_array()
+        .and_then(|files| {
+            files.iter().find(|file| {
+                file["path"]
+                    .as_str()
+                    .is_some_and(|path| path.ends_with(module_suffix))
+            })
+        })
+        .expect("post-call BSL must be bound by the manifest");
+
+    assert_eq!(
+        pre_entry["sha256"],
+        format!(
+            "{:x}",
+            Sha256::digest(
+                b"\xef\xbb\xbfProcedure Run()\r\n    Message(\"ok\");\r\nEndProcedure\r\n"
+            )
+        )
+    );
+    assert_eq!(post_entry["seed"], true);
+    assert_eq!(post_entry["delta"], "modified");
+    let workspace = root.join("cases/code-patch-bsl-only/workspace");
+    let module = workspace.join(module_suffix);
+    assert_eq!(post_entry["sha256"], sha256_file(&module).unwrap());
+    assert!(manifest_case["preNonXmlFiles"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|file| {
+            file["path"]
+                .as_str()
+                .is_some_and(|path| path.contains("/pre-non-xml/src/") && !path.ends_with(".json"))
+        }));
+    assert!(manifest_case["nonXmlFiles"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|file| {
+            file["path"]
+                .as_str()
+                .is_some_and(|path| path.contains("/workspace/src/") && !path.ends_with(".json"))
+        }));
+    let materialized_pre_module = root
+        .join("cases/code-patch-bsl-only/pre-non-xml")
+        .join(module_suffix);
+    assert_eq!(
+        pre_entry["sha256"],
+        sha256_file(&materialized_pre_module).unwrap()
+    );
+
+    let post_payloads = capture_non_xml_payloads(case, &workspace).unwrap();
+    fs::write(&module, "tampered after manifest").unwrap();
+    assert_ne!(post_entry["sha256"], sha256_file(&module).unwrap());
+    let error =
+        require_non_xml_payloads_unchanged(case, &workspace, &post_payloads, "tampered workspace")
+            .unwrap_err();
+    assert!(error.contains("changed after"), "{error}");
+    remove_temp_tree(&root);
+}
+
+fn assert_platform_canonical_bsl(bytes: &[u8]) {
+    assert!(
+        bytes.starts_with(b"\xef\xbb\xbf"),
+        "platform BSL must start with a UTF-8 BOM"
+    );
+    let payload = &bytes[3..];
+    std::str::from_utf8(payload).expect("platform BSL payload must be UTF-8");
+    assert!(
+        payload.windows(2).any(|window| window == b"\r\n"),
+        "platform BSL must contain CRLF line endings"
+    );
+    for (offset, byte) in payload.iter().enumerate() {
+        match byte {
+            b'\n' => assert_eq!(
+                payload.get(offset.wrapping_sub(1)),
+                Some(&b'\r'),
+                "platform BSL contains a bare LF at byte {offset}"
+            ),
+            b'\r' => assert_eq!(
+                payload.get(offset + 1),
+                Some(&b'\n'),
+                "platform BSL contains a bare CR at byte {offset}"
+            ),
+            _ => {}
+        }
+    }
+}
+
+#[test]
+fn meta_reference_cases_seed_platform_canonical_event_handlers_bsl() {
+    let expected = concat!(
+        "\u{feff}Procedure RunJob() Export\r\n",
+        "EndProcedure\r\n\r\n",
+        "Procedure OnBeforeWrite(Source, Cancel) Export\r\n",
+        "EndProcedure\r\n"
+    )
+    .as_bytes();
+
+    for case_id in [
+        "meta-compile-scheduled-job",
+        "meta-compile-event-subscription",
+    ] {
+        let root = unique_temp_dir(case_id);
+        let workspace = root.join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+        let case = EXECUTABLE_CASES
+            .iter()
+            .find(|case| case.id == case_id)
+            .unwrap();
+
+        prepare_target(case, &workspace).unwrap();
+
+        let module =
+            fs::read(workspace.join("src/CommonModules/EventHandlers/Ext/Module.bsl")).unwrap();
+        assert_platform_canonical_bsl(&module);
+        assert_eq!(module, expected, "{case_id}");
+        remove_temp_tree(&root);
+    }
+}
+
+#[test]
+fn code_patch_case_seeds_and_preserves_platform_canonical_bsl_bytes() {
+    let root = unique_temp_dir("code-patch-canonical-bsl");
+    let case = EXECUTABLE_CASES
+        .iter()
+        .find(|case| case.id == "code-patch-bsl-only")
+        .unwrap();
+    let mut gate = SequentialCallGate::default();
+
+    run_corpus_case(&root, case, &mut gate).unwrap();
+
+    let relative = "src/CommonModules/CorpusModule/Ext/Module.bsl";
+    let pre = fs::read(
+        root.join("cases/code-patch-bsl-only/pre-non-xml")
+            .join(relative),
+    )
+    .unwrap();
+    let post = fs::read(
+        root.join("cases/code-patch-bsl-only/workspace")
+            .join(relative),
+    )
+    .unwrap();
+    assert_platform_canonical_bsl(&pre);
+    assert_platform_canonical_bsl(&post);
+    assert!(
+        std::str::from_utf8(&post[3..])
+            .unwrap()
+            .contains("Procedure Added()\r\nEndProcedure\r\n"),
+        "inserted code must use the surrounding platform CRLF convention"
+    );
+
+    remove_temp_tree(&root);
+}
+
+#[test]
+fn non_xml_inventory_covers_every_xml_none_impact_case() {
+    let expectations = [
+        (
+            "code-patch-bsl-only",
+            "src/CommonModules/CorpusModule/Ext/Module.bsl",
+            true,
+            "modified",
+        ),
+        (
+            "support-edit-bin-only",
+            "src/Ext/ParentConfigurations.bin",
+            true,
+            "modified",
+        ),
+    ];
+    for (case_id, payload_suffix, seed, delta) in expectations {
+        let root = unique_temp_dir(case_id);
+        let case = EXECUTABLE_CASES
+            .iter()
+            .find(|case| case.id == case_id)
+            .unwrap();
+        assert_eq!(effective_xml_impact(case_id), XmlImpactClass::None);
+        let mut gate = SequentialCallGate::default();
+
+        let generated = run_corpus_case(&root, case, &mut gate).unwrap();
+        let manifest_case = serde_json::to_value(generated).unwrap();
+        let post = manifest_case["nonXmlFiles"]
+            .as_array()
+            .and_then(|files| {
+                files.iter().find(|file| {
+                    file["path"]
+                        .as_str()
+                        .is_some_and(|path| path.ends_with(payload_suffix))
+                })
+            })
+            .unwrap_or_else(|| panic!("{case_id} did not inventory {payload_suffix}"));
+
+        assert_eq!(post["seed"], seed, "{case_id}");
+        assert_eq!(post["delta"], delta, "{case_id}");
+        assert_eq!(
+            manifest_case["preNonXmlFiles"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|file| file["path"]
+                    .as_str()
+                    .is_some_and(|path| path.ends_with(payload_suffix))),
+            seed,
+            "{case_id}"
+        );
+        if payload_suffix.ends_with(".bsl") {
+            assert_platform_canonical_bsl(
+                &fs::read(
+                    root.join("cases")
+                        .join(case_id)
+                        .join("workspace")
+                        .join(payload_suffix),
+                )
+                .unwrap(),
+            );
+        }
+        remove_temp_tree(&root);
+    }
+}
+
+#[test]
+fn managed_form_cases_address_logform_content_and_spare_the_descriptor() {
+    let expectations = [
+        ("form-compile-managed", "src/Reports/CorpusReport"),
+        ("form-edit-managed", "src/Catalogs/CorpusCatalog"),
+    ];
+    for (case_id, owner) in expectations {
+        let root = unique_temp_dir(case_id);
+        let case = EXECUTABLE_CASES
+            .iter()
+            .find(|case| case.id == case_id)
+            .unwrap();
+        let mut gate = SequentialCallGate::default();
+
+        let generated = run_corpus_case(&root, case, &mut gate).unwrap();
+
+        let prefix = manifest_case_prefix(case_id);
+        let content = format!("{prefix}/{owner}/Forms/CorpusForm/Ext/Form.xml");
+        let descriptor = format!("{prefix}/{owner}/Forms/CorpusForm.xml");
+        let families = generated
+            .files
+            .iter()
+            .map(|file| (file.path.as_str(), file.family.as_str()))
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(
+            families.get(descriptor.as_str()).copied(),
+            Some("metadata"),
+            "{case_id} rewrote the managed form descriptor"
+        );
+        let changed = generated
+            .files
+            .iter()
+            .filter(|file| matches!(file.delta.as_str(), "created" | "modified"))
+            .map(|file| (file.path.as_str(), file.family.as_str()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            changed,
+            [(content.as_str(), "managed-form")],
+            "{case_id} did not change exactly the managed form content"
+        );
+
+        remove_temp_tree(&root);
+    }
+}
+
+#[test]
+fn meta_edit_event_source_case_executes_public_writer_and_binds_exact_delta() {
+    let root = unique_temp_dir("meta-edit-event-source-case");
+    fs::create_dir_all(&root).unwrap();
+    let case = EXECUTABLE_CASES
+        .iter()
+        .find(|case| case.id == "meta-edit-event-source")
+        .unwrap();
+
+    let lifecycle_workspace = root.join("preview-apply-noop");
+    let args = prepare_target(case, &lifecycle_workspace).unwrap();
+    let descriptor = lifecycle_workspace.join("src/EventSubscriptions/CorpusEventSubscription.xml");
+    let preimage = fs::read(&descriptor).unwrap();
+    let before_preview = capture_xml_payloads(&lifecycle_workspace).unwrap();
+
+    let mut preview_args = args.clone();
+    preview_args.insert("dryRun".to_string(), Value::Bool(true));
+    let preview = call_canonical_tool_response(case.tool, &preview_args).unwrap();
+    let previewed_effects = preview["data"]["effects"].as_u64().unwrap_or_default();
+    assert!(previewed_effects >= 1, "{preview}");
+    assert_eq!(fs::read(&descriptor).unwrap(), preimage);
+    assert_eq!(
+        capture_xml_payloads(&lifecycle_workspace).unwrap(),
+        before_preview,
+        "Source relation preview must leave every platform XML byte unchanged"
+    );
+
+    let applied = call_canonical_tool_response(case.tool, &args).unwrap();
+    assert_eq!(
+        applied["data"]["effects"].as_u64(),
+        Some(previewed_effects),
+        "{applied}"
+    );
+    let postimage = fs::read(&descriptor).unwrap();
+    assert_ne!(postimage, preimage);
+
+    let noop = call_canonical_tool_response(case.tool, &args).unwrap();
+    assert_eq!(noop["data"]["effects"].as_u64(), Some(0), "{noop}");
+    assert_eq!(fs::read(&descriptor).unwrap(), postimage);
+
+    let generation_a = root.join("generation-a");
+    let generation_b = root.join("generation-b");
+    let mut gate_a = SequentialCallGate::default();
+    let mut gate_b = SequentialCallGate::default();
+    let generated = run_corpus_case(&generation_a, case, &mut gate_a).unwrap();
+    let regenerated = run_corpus_case(&generation_b, case, &mut gate_b).unwrap();
+
+    assert_eq!(gate_a.completed_target_calls, 1);
+    assert_eq!(gate_b.completed_target_calls, 1);
+    assert_eq!(generated.branch, "event-source");
+    assert_eq!(regenerated.branch, "event-source");
+    assert_eq!(generated.xml_impact, "modified");
+    assert_eq!(regenerated.xml_impact, "modified");
+    assert!(generated.files.iter().any(|file| {
+        file.path
+            .ends_with("src/EventSubscriptions/CorpusEventSubscription.xml")
+            && file.delta == "modified"
+    }));
+    let report: Value = serde_json::from_slice(
+        &fs::read(generation_a.join("cases/meta-edit-event-source/case-report.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        report["publicArguments"]["ops"],
+        json!([
+            {
+                "op": "props.set",
+                "args": {"values": {"Handler": "CommonModule.EventHandlers.OnBeforeWriteRecordSet"}}
+            },
+            {
+                "op": "relation.replace",
+                "args": {"values": {
+                    "relation": "source",
+                    "targets": [{
+                        "kind": "recordSet",
+                        "metadataPath": "InformationRegister.CorpusInformationRegister"
+                    }]
+                }}
+            }
+        ])
+    );
+    let generated_descriptor = generation_a.join(
+        "cases/meta-edit-event-source/workspace/src/EventSubscriptions/CorpusEventSubscription.xml",
+    );
+    let xml = fs::read_to_string(generated_descriptor).unwrap();
+    assert!(xml
+        .contains("<v8:Type>cfg:InformationRegisterRecordSet.CorpusInformationRegister</v8:Type>"));
+    assert!(!xml.contains("<v8:Type>xs:string</v8:Type>"));
+
+    let transition = |output: &Path| {
+        let case_root = output.join("cases/meta-edit-event-source");
+        let pre = capture_xml_payloads(&case_root.join("pre-xml")).unwrap();
+        let post = capture_xml_payloads(&case_root.join("workspace")).unwrap();
+        normalized_xml_transition(&pre, &post)
+    };
+    assert_eq!(
+        transition(&generation_a),
+        transition(&generation_b),
+        "two isolated generations must have the same UUID-normalized XML transition"
+    );
+    let workspace_a = generation_a.join("cases/meta-edit-event-source/workspace");
+    let workspace_b = generation_b.join("cases/meta-edit-event-source/workspace");
+    assert_eq!(
+        capture_non_xml_payloads(case, &workspace_a).unwrap(),
+        capture_non_xml_payloads(case, &workspace_b).unwrap(),
+        "two isolated generations must have byte-identical platform non-XML artifacts"
+    );
+    assert_eq!(
+        capture_auxiliary_payloads(case, &workspace_a).unwrap(),
+        capture_auxiliary_payloads(case, &workspace_b).unwrap(),
+        "two isolated generations must have byte-identical auxiliary artifacts"
+    );
+
+    remove_temp_tree(&root);
+}
+
+#[test]
+fn corpus_case_inventories_stable_files_outside_platform_boundaries() {
+    let root = unique_temp_dir("auxiliary-files");
+    let case = EXECUTABLE_CASES
+        .iter()
+        .find(|case| case.id == "meta-compile-catalog")
+        .unwrap();
+    let mut gate = SequentialCallGate::default();
+
+    let generated = run_corpus_case(&root, case, &mut gate).unwrap();
+    let paths = generated
+        .auxiliary_files
+        .iter()
+        .map(|file| file.path.as_str())
+        .collect::<BTreeSet<_>>();
+
+    assert!(paths
+        .iter()
+        .any(|path| path.ends_with("/workspace/v8project.yaml")));
+    assert!(
+        paths
+            .iter()
+            .all(|path| !path.contains("/workspace/inputs/")),
+        "object.create must not recreate the retired JSON-DSL input channel"
+    );
+    assert!(paths.iter().all(|path| !path.contains("/workspace/src/")));
+
+    remove_temp_tree(&root);
+}
+
+#[test]
+fn owner_assignment_requires_same_case_source_set_path() {
+    let owners = BTreeMap::from([
+        ("src/Configuration.xml".to_string(), "src".to_string()),
+        ("ext/Configuration.xml".to_string(), "ext".to_string()),
+    ]);
+
+    assert_eq!(
+        unique_deepest_owner_for_path("src/Ext/ClientApplicationInterface.xml", &owners).unwrap(),
+        Some("src/Configuration.xml")
+    );
+    assert_eq!(
+        unique_deepest_owner_for_path("ext/Ext/ClientApplicationInterface.xml", &owners).unwrap(),
+        Some("ext/Configuration.xml")
+    );
+    assert_eq!(
+        unique_deepest_owner_for_path("standalone/Dcs.xml", &owners).unwrap(),
+        None
+    );
+
+    let ambiguous = BTreeMap::from([
+        ("src/Configuration.xml".to_string(), "src".to_string()),
+        ("src/Extension.xml".to_string(), "src".to_string()),
+    ]);
+    assert!(
+        unique_deepest_owner_for_path("src/Ext/ClientApplicationInterface.xml", &ambiguous)
+            .unwrap_err()
+            .contains("unique deepest")
+    );
+}
+
+/// The XDTO fixture must be a configuration the platform can actually import.
+///
+/// `ibcmd infobase create --import` refuses a `Configuration` without
+/// `InternalInfo`, and rejects the XDTO model when a package references a
+/// `current-config` type the platform never defines for it. Both stop the
+/// exact-platform gate at `import-apply`, long before the mutated
+/// `Package.bin` is ever compared.
+#[test]
+fn tracked_xdto_package_fixture_is_an_importable_platform_export() {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures/xdto/enterprise-data-minimal");
+
+    let configuration = fs::read_to_string(fixture.join("Configuration.xml"))
+        .expect("tracked XDTO fixture must ship Configuration.xml");
+    assert!(
+        configuration.contains("<InternalInfo"),
+        "platform import refuses a Configuration without InternalInfo"
+    );
+
+    let package =
+        fs::read_to_string(fixture.join("XDTOPackages/EnterpriseData_1_17_3/Ext/Package.bin"))
+            .expect("tracked XDTO fixture must ship Package.bin");
+    assert!(
+        !package.contains("http://v8.1c.ru/8.1/data/enterprise/current-config"),
+        "the platform cannot resolve current-config types for this package"
+    );
+}
+
+#[test]
+fn tracked_xdto_package_fixture_executes_public_corpus_preview_apply_and_noop() {
+    let root = unique_temp_dir("xdto-package-pre-contract");
+    fs::create_dir_all(&root).unwrap();
+    let workspace = root.join("workspace");
+    let case = EXECUTABLE_CASES
+        .iter()
+        .find(|case| case.id == "xdto-add-nested-property")
+        .unwrap();
+    let args = prepare_target(case, &workspace).unwrap();
+    let package_path = workspace.join("src/XDTOPackages/EnterpriseData_1_17_3/Ext/Package.bin");
+    let package_before = fs::read(&package_path).unwrap();
+    let marker = b"\t\t\t</typeDef>\r\n";
+    let insertion = concat!(
+        "\t\t\t\t<property xmlns:tns=\"http://v8.1c.ru/edi/edi_stnd/EnterpriseData/1.17.3\" ",
+        "name=\"Документ_Корпус\" type=\"tns:Документ_ЗаказКлиента\" ",
+        "lowerBound=\"0\"/>\r\n"
+    )
+    .as_bytes();
+    let marker_offset = package_before
+        .windows(marker.len())
+        .position(|window| window == marker)
+        .expect("tracked EnterpriseData fixture must contain the nested typeDef close");
+    assert_eq!(
+        package_before
+            .windows(marker.len())
+            .filter(|window| *window == marker)
+            .count(),
+        1
+    );
+    let mut expected_package = Vec::with_capacity(package_before.len() + insertion.len());
+    expected_package.extend_from_slice(&package_before[..marker_offset]);
+    expected_package.extend_from_slice(insertion);
+    expected_package.extend_from_slice(&package_before[marker_offset..]);
+
+    let captured = capture_xml_payloads(&workspace).unwrap();
+    assert!(captured.contains_key("src/XDTOPackages/EnterpriseData_1_17_3/Ext/Package.bin"));
+    let contract = build_pre_contract(case, &captured).unwrap();
+    let package = contract
+        .files
+        .iter()
+        .find(|file| file.path.ends_with("/Ext/Package.bin"))
+        .expect("tracked Package.bin must be represented in the pre-call corpus contract");
+
+    assert_eq!(package.family, "xdto-package");
+    assert_eq!(
+        package.owner_path.as_deref(),
+        Some("cases/xdto-add-nested-property/pre-xml/src/Configuration.xml")
+    );
+
+    let before = hashes_for_xml_payloads(&captured);
+    let mut preview_args = args.clone();
+    preview_args.insert("dryRun".to_string(), Value::Bool(true));
+    assert_eq!(case.tool, CANONICAL_APPLY_TOOL);
+    let preview = call_canonical_apply(&preview_args).unwrap();
+    assert!(!preview.is_empty(), "{preview:?}");
+    assert_eq!(fs::read(&package_path).unwrap(), package_before);
+
+    call_canonical_apply(&args).unwrap();
+    let package_after = fs::read(&package_path).unwrap();
+    assert_eq!(package_after, expected_package);
+
+    // Replanning the same operation over the applied package is a noop: the
+    // preview succeeds, the publication writes nothing new, and the bytes stay
+    // exactly what the first apply produced.
+    call_canonical_apply(&preview_args).expect("replanning the applied operation previews");
+    assert_eq!(fs::read(&package_path).unwrap(), package_after);
+    call_canonical_apply(&args).expect("replanning the applied operation publishes");
+    assert_eq!(fs::read(&package_path).unwrap(), package_after);
+
+    let post_payloads = capture_xml_payloads(&workspace).unwrap();
+    let after = hashes_for_xml_payloads(&post_payloads);
+    let delta = enforce_xml_impact(effective_xml_impact(case.id), &before, &after).unwrap();
+    assert_eq!(
+        delta.modified,
+        ["src/XDTOPackages/EnterpriseData_1_17_3/Ext/Package.bin"]
+    );
+    let generated = build_corpus_case(
+        case,
+        &post_payloads,
+        registry_entry_for_case(case.id),
+        CaseFileContracts {
+            pre_xml: contract,
+            non_xml: NonXmlContract {
+                pre_files: Vec::new(),
+                files: Vec::new(),
+                removed_paths: Vec::new(),
+            },
+            auxiliary_files: Vec::new(),
+        },
+        &before,
+        &after,
+        &delta,
+    )
+    .unwrap();
+    let post_package = generated
+        .files
+        .iter()
+        .find(|file| file.path.ends_with("/Ext/Package.bin"))
+        .expect("tracked Package.bin must remain represented after the corpus call");
+    assert_eq!(post_package.family, "xdto-package");
+    assert_eq!(
+        post_package.owner_path.as_deref(),
+        Some("cases/xdto-add-nested-property/workspace/src/Configuration.xml")
+    );
+
+    remove_temp_tree(&root);
+}
+
+#[test]
+fn unlisted_xml_prevention_rejects_missing_and_stale_paths() {
+    let actual = BTreeMap::from([
+        ("a.xml".to_string(), "a".to_string()),
+        ("b.xml".to_string(), "b".to_string()),
+    ]);
+    let error = ensure_all_xml_listed(&actual, &BTreeSet::from(["a.xml".to_string()])).unwrap_err();
+    assert!(error.contains("b.xml"), "{error}");
+
+    let error = ensure_all_xml_listed(
+        &actual,
+        &BTreeSet::from([
+            "a.xml".to_string(),
+            "b.xml".to_string(),
+            "stale.xml".to_string(),
+        ]),
+    )
+    .unwrap_err();
+    assert!(error.contains("stale.xml"), "{error}");
+}
+
+#[test]
+fn output_directory_refusal_rules_are_fail_closed() {
+    let root = unique_temp_dir("output-safety");
+    let repo = root.join("repo");
+    let home = root.join("home");
+    let empty = root.join("empty");
+    let non_empty = root.join("non-empty");
+    fs::create_dir_all(&repo).unwrap();
+    fs::create_dir_all(&home).unwrap();
+    fs::create_dir_all(&empty).unwrap();
+    fs::create_dir_all(&non_empty).unwrap();
+    fs::write(non_empty.join("sentinel"), "keep").unwrap();
+
+    assert!(configured_output_directory_from(None, &repo, &home).is_err());
+    assert!(validate_output_directory("", &repo, &home).is_err());
+    assert!(validate_output_directory("/", &repo, &home).is_err());
+    assert!(validate_output_directory(home.to_str().unwrap(), &repo, &home).is_err());
+    assert!(validate_output_directory(repo.to_str().unwrap(), &repo, &home).is_err());
+    assert!(validate_output_directory(non_empty.to_str().unwrap(), &repo, &home).is_err());
+    assert_eq!(
+        validate_output_directory(empty.to_str().unwrap(), &repo, &home).unwrap(),
+        empty.canonicalize().unwrap()
+    );
+    let absent = root.join("explicit-absent-target");
+    assert_eq!(
+        validate_output_directory(absent.to_str().unwrap(), &repo, &home).unwrap(),
+        root.canonicalize().unwrap().join("explicit-absent-target")
+    );
+    assert!(!absent.exists());
+    let inside_empty = repo.join("corpus-output");
+    fs::create_dir_all(&inside_empty).unwrap();
+    let inside_absent = repo.join("new-corpus-output");
+    for inside in [&inside_empty, &inside_absent] {
+        let refusal = validate_output_directory(inside.to_str().unwrap(), &repo, &home)
+            .expect_err("a directory inside the repository tree must be refused");
+        assert!(refusal.contains("repository tree"), "{refusal}");
+    }
+    assert!(!inside_absent.exists());
+    let repo_link = root.join("repo-link");
+    if platform_support::symlink_directory(&repo, &repo_link) {
+        let through_link = repo_link.join("new-corpus-output");
+        let refusal = validate_output_directory(through_link.to_str().unwrap(), &repo, &home)
+            .expect_err(
+                "a path reaching the repository through a symlinked parent must be refused",
+            );
+        assert!(refusal.contains("repository tree"), "{refusal}");
+    }
+    let prefixed_sibling = root.join("repo-sibling");
+    assert_eq!(
+        validate_output_directory(prefixed_sibling.to_str().unwrap(), &repo, &home).unwrap(),
+        root.canonicalize().unwrap().join("repo-sibling")
+    );
+    remove_temp_tree(&root);
+}
+
+#[test]
+fn empty_directory_inventory_detects_added_and_removed_paths() {
+    let root = unique_temp_dir("empty-directory-inventory");
+    fs::create_dir_all(root.join("stable/with-file")).unwrap();
+    fs::write(root.join("stable/with-file/payload.xml"), "<r/>").unwrap();
+    fs::create_dir_all(root.join("removed-empty")).unwrap();
+
+    let before = capture_empty_directory_paths(&root).unwrap();
+    assert_eq!(before, vec!["removed-empty"]);
+
+    fs::remove_dir(root.join("removed-empty")).unwrap();
+    fs::create_dir(root.join("added-empty")).unwrap();
+    let after = capture_empty_directory_paths(&root).unwrap();
+
+    assert_eq!(after, vec!["added-empty"]);
+    assert_ne!(before, after);
+    remove_temp_tree(&root);
+}
+
+#[test]
+fn manifest_sorting_and_task_7a_shape_round_trip() {
+    let file = |path: &str| CorpusFile {
+        path: path.to_string(),
+        sha256: "a".repeat(64),
+        family: "metadata".to_string(),
+        seed: false,
+        delta: "created".to_string(),
+        owner_path: None,
+        new_standalone: None,
+    };
+    let case = |id: &str, paths: &[&str]| CorpusCase {
+        id: id.to_string(),
+        workspace_path: format!("cases/{id}/workspace"),
+        pre_snapshot_path: format!("cases/{id}/pre-xml"),
+        platform_checkpoint: PlatformCheckpoint {
+            kind: "configuration".to_string(),
+            source_path: Some(format!("cases/{id}/workspace/src")),
+            base_source_path: None,
+            covered_case_ids: vec![id.to_string()],
+        },
+        checkpoint: format!("cases/{id}/case-report.json"),
+        tool_id: CANONICAL_APPLY_TOOL.to_string(),
+        operation: "object-create".to_string(),
+        branch: "Catalog".to_string(),
+        impact_class: "CreateOrModify".to_string(),
+        xml_impact: "created".to_string(),
+        pre_files: Vec::new(),
+        files: paths.iter().map(|path| file(path)).collect(),
+        removed_paths: Vec::new(),
+        pre_non_xml_files: vec![PreNonXmlFile {
+            path: format!("cases/{id}/pre-non-xml/src/Module.bsl"),
+            sha256: "b".repeat(64),
+        }],
+        non_xml_files: vec![NonXmlFile {
+            path: format!("cases/{id}/workspace/src/Module.bsl"),
+            sha256: "c".repeat(64),
+            seed: true,
+            delta: "modified".to_string(),
+        }],
+        removed_non_xml_paths: Vec::new(),
+        auxiliary_files: Vec::new(),
+        pre_owner_versions: BTreeMap::new(),
+        owner_versions: BTreeMap::new(),
+    };
+    let mut manifest = CorpusManifest {
+        schema_version: 2,
+        profile: "1c-8.3.27-export-2.20".to_string(),
+        empty_directory_paths: vec![
+            "cases/z/workspace/z-empty".to_string(),
+            "cases/a/workspace/a-empty".to_string(),
+        ],
+        cases: vec![case("z", &["z/b.xml", "z/a.xml"]), case("a", &["a/a.xml"])],
+    };
+
+    sort_manifest(&mut manifest);
+    let bytes = serde_json::to_vec(&manifest).unwrap();
+    let reparsed: CorpusManifest = serde_json::from_slice(&bytes).unwrap();
+    let task_7a_view: Value = serde_json::from_slice(&bytes).unwrap();
+
+    assert_eq!(reparsed.cases[0].id, "a");
+    assert_eq!(reparsed.cases[1].files[0].path, "z/a.xml");
+    assert_eq!(task_7a_view["schemaVersion"], 2);
+    assert_eq!(
+        task_7a_view["emptyDirectoryPaths"],
+        json!(["cases/a/workspace/a-empty", "cases/z/workspace/z-empty"])
+    );
+    assert_eq!(task_7a_view["profile"], "1c-8.3.27-export-2.20");
+    for case in task_7a_view["cases"].as_array().unwrap() {
+        assert!(case["id"].is_string());
+        assert!(case["toolId"].is_string());
+        assert!(case["xmlImpact"].is_string());
+        assert!(case["preSnapshotPath"].is_string());
+        assert!(case["preFiles"].is_array());
+        assert!(case["preNonXmlFiles"].is_array());
+        assert!(case["nonXmlFiles"].is_array());
+        assert!(case["removedNonXmlPaths"].is_array());
+        assert!(case["auxiliaryFiles"].is_array());
+        assert!(case["preOwnerVersions"].is_object());
+        for file in case["files"].as_array().unwrap() {
+            assert!(file["path"].is_string());
+            assert!(file["sha256"].is_string());
+            assert!(file["family"].is_string());
+            assert!(file["seed"].is_boolean());
+        }
+        for file in case["preNonXmlFiles"].as_array().unwrap() {
+            assert!(file["path"].is_string());
+            assert!(file["sha256"].is_string());
+        }
+        for file in case["nonXmlFiles"].as_array().unwrap() {
+            assert!(file["path"].is_string());
+            assert!(file["sha256"].is_string());
+            assert!(file["seed"].is_boolean());
+            assert!(file["delta"].is_string());
+        }
+    }
+}
+
+#[test]
+fn dcs_component_corpus_cases_publish_and_preserve_platform_owned_content() {
+    let root = unique_temp_dir("dcs-component-corpus");
+    let mut gate = SequentialCallGate::default();
+    for case in EXECUTABLE_CASES
+        .iter()
+        .filter(|case| case.id.starts_with("dcs-"))
+    {
+        assert_eq!(case.tool, CANONICAL_APPLY_TOOL);
+        let generated = run_corpus_case(&root, case, &mut gate)
+            .unwrap_or_else(|error| panic!("{}: {error}", case.id));
+        let template = if case.id == "dcs-compile-owned-template" {
+            "CorpusTemplate"
+        } else {
+            "CorpusDcs"
+        };
+        let body = format!("src/Reports/CorpusReport/Templates/{template}/Ext/Template.xml");
+        let file = generated
+            .files
+            .iter()
+            .find(|file| file.path == manifest_path(case.id, &body))
+            .expect("DCS body absent from platform inventory");
+        assert_eq!(file.family, "dcs");
+        assert!(
+            file.owner_path.is_some(),
+            "DCS body must retain a metadata owner"
+        );
+        let report: Value = serde_json::from_slice(
+            &fs::read(root.join("cases").join(case.id).join("case-report.json")).unwrap(),
+        )
+        .unwrap();
+        if case.id == "dcs-compile-owned-template" {
+            let publications = report["publications"]
+                .as_array()
+                .expect("creation publications not recorded");
+            assert_eq!(publications.len(), 2);
+            assert_eq!(
+                publications[0]["publicArguments"]["ops"][0]["op"],
+                "template.add"
+            );
+            let snapshot_path = publications[0]["snapshotPath"]
+                .as_str()
+                .expect("creation snapshot path");
+            assert_eq!(
+                snapshot_path,
+                format!("cases/{}/publications/1/xml", case.id)
+            );
+            assert_eq!(
+                serde_json::to_value(snapshot_xml(&root.join(snapshot_path)).unwrap()).unwrap(),
+                publications[0]["postXmlSha256"]
+            );
+            assert!(publications[0]["preXmlSha256"].get(&body).is_none());
+            assert!(publications[0]["delta"]["created"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|path| path == &json!(body)));
+            assert_eq!(publications[1]["delta"]["modified"], json!([body]));
+            assert_eq!(
+                publications[1]["preXmlSha256"],
+                publications[0]["postXmlSha256"]
+            );
+            assert_eq!(publications[1]["postXmlSha256"], report["postXmlSha256"]);
+            assert!(publications[1]["publicArguments"]["ops"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|op| op["op"] == "conditionalAppearance.add"));
+        } else {
+            assert!(report.get("publications").is_none());
+            assert_eq!(report["delta"]["modified"], json!([body]));
+        }
+    }
+    assert_eq!(gate.completed_target_calls, 5);
+    remove_temp_tree(&root);
+}
+
+#[test]
+fn dcs_corpus_exercises_xsd_order_sensitive_contracts() {
+    let ops = dcs_component_ops("CorpusTemplate");
+    let find = |op: &str| ops.iter().find(|entry| entry["op"] == op).unwrap();
+    let sets = find("dataSet.add")["args"]["items"].as_array().unwrap();
+    assert!(sets.iter().any(|set| set["kind"] == "Union"));
+    let members = ops
+        .iter()
+        .find(|entry| {
+            entry["op"] == "dataSet.add"
+                && entry["args"]["at"]
+                    .as_str()
+                    .unwrap()
+                    .ends_with(".DataSet.Combined")
+        })
+        .unwrap();
+    assert_eq!(members["args"]["items"].as_array().unwrap().len(), 2);
+    let link = &find("dataSetLink.add")["args"]["items"][0];
+    assert_eq!(link["condition"], "Value = Description");
+    assert_eq!(link["startExpression"], "Value");
+    assert_eq!(link["parameterListAllowed"], true);
+    assert_eq!(link["required"], true);
+    let calculated = &find("calculatedField.add")["args"]["items"][0];
+    assert_eq!(calculated["type"], "decimal(15,2)");
+    assert_eq!(
+        calculated["useRestriction"],
+        json!({"condition":true,"group":true,"field":true,"order":true})
+    );
+    let parameters = find("parameter.add")["args"]["items"].as_array().unwrap();
+    assert!(parameters
+        .iter()
+        .any(|parameter| parameter["name"] == "ТипКорпуса" && parameter["type"] == "string(16)"));
+    assert!(parameters
+        .iter()
+        .any(|parameter| parameter["availableValues"]
+            .as_array()
+            .is_some_and(|values| values.len() == 2)));
+    for (name, expression) in [
+        ("ДатаНачала", "&Период.ДатаНачала"),
+        ("ДатаОкончания", "&Период.ДатаОкончания"),
+    ] {
+        assert!(parameters.iter().any(|parameter| parameter["name"] == name
+            && parameter["expression"] == expression
+            && parameter["useRestriction"] == true));
+    }
+    for op in [
+        "selection.add",
+        "filter.add",
+        "order.add",
+        "conditionalAppearance.add",
+        "outputParameter.set",
+    ] {
+        let matching = ops
+            .iter()
+            .filter(|entry| entry["op"] == op)
+            .collect::<Vec<_>>();
+        assert_eq!(matching.len(), 2, "missing variant/group settings {op}");
+        assert!(
+            matching[1]["args"]["at"]
+                .as_str()
+                .unwrap()
+                .ends_with(".Setting.Main.Item.Corpus group"),
+            "{op} addresses the structure item"
+        );
+    }
+    assert_eq!(
+        find("dataParameter.add")["args"]["items"][0]["name"],
+        "Режим"
+    );
+    assert_eq!(
+        find("structure.add")["args"]["items"][0]["groupBy"],
+        json!(["Value"])
+    );
+}
+
+#[test]
+fn dcs_edit_corpus_covers_order_sensitive_mutations() {
+    let entry = MUTATOR_REGISTRY
+        .iter()
+        .find(|entry| entry.operation == "dcs-component-modify")
+        .unwrap();
+    assert_eq!(
+        entry.case_ids,
+        [
+            "dcs-edit-owned-template",
+            "dcs-edit-add-parameter-after-settings",
+            "dcs-edit-set-structure-after-settings",
+            "dcs-edit-modify-field-role-restriction",
+        ]
+    );
+}
+
+#[test]
+fn meta_info_manifest_platform_cases_are_exact_executable_object_create_branches() {
+    #[derive(Deserialize)]
+    struct MetaInfoManifest {
+        kinds: Vec<MetaInfoManifestKind>,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct MetaInfoManifestKind {
+        kind: String,
+        platform_case: String,
+    }
+
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures/platform_8_3_27/meta_info/manifest.json");
+    let manifest: MetaInfoManifest = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    assert_eq!(manifest.kinds.len(), 23);
+
+    for entry in manifest.kinds {
+        let executable = EXECUTABLE_CASES
+            .iter()
+            .find(|case| case.id == entry.platform_case)
+            .unwrap_or_else(|| panic!("missing executable case {}", entry.platform_case));
+        assert_eq!(
+            registry_entry_for_case(executable.id).operation,
+            "object-create",
+            "{} points at a case outside object.create",
+            entry.kind
+        );
+        assert_eq!(
+            executable.branch, entry.kind,
+            "{} points at a different metadata branch",
+            entry.platform_case
+        );
+    }
+}
+
+#[test]
+fn xml_payload_rule_grants_the_bin_exception_only_to_the_xdto_layout() {
+    // The XDTO package grammar names `XDTOPackages/<Name>/Ext/Package.bin` as text XML. The
+    // exception belongs to that layout, not to the file name, and this rule
+    // mirrors `_is_xml_payload_path` in scripts/dev/verify-8-3-27-platform.py.
+    for granted in [
+        "src/XDTOPackages/CorpusPackage/Ext/Package.bin",
+        "XDTOPackages/CorpusPackage/Ext/Package.bin",
+        "src/Catalogs/CorpusCatalog.xml",
+        "src/Catalogs/CorpusCatalog.XML",
+    ] {
+        assert!(
+            is_xml_payload_path(Path::new(granted)),
+            "expected XML payload: {granted}"
+        );
+    }
+    for refused in [
+        "src/Ext/Package.bin",
+        "src/XDTOPackages/CorpusPackage/Package.bin",
+        "src/XDTOPackages/Ext/Package.bin",
+        "src/Ext/ParentConfigurations.bin",
+    ] {
+        assert!(
+            !is_xml_payload_path(Path::new(refused)),
+            "expected non-XML payload: {refused}"
+        );
+    }
+}
+
+#[test]
+fn corpus_owner_version_uses_the_raw_lexical_attribute() {
+    let payload = br#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.&#50;0"><Configuration/></MetaDataObject>"#;
+
+    let (_, _, owner_type, version) =
+        xml_root_details_payload(payload, "entity-version.xml").unwrap();
+
+    assert_eq!(owner_type.as_deref(), Some("Configuration"));
+    assert_eq!(version.as_deref(), Some("2.&#50;0"));
+}

@@ -19,14 +19,97 @@ use unica_source_designer::module_layout::{module_relative, module_source_addres
 use unica_work_control::cancellation::CancellationToken;
 use unica_work_control::provider_deadline::ProviderDeadline;
 
+// resource-limit: find.source-set-count
+// class: corpus
+// unit: count
+// scope: workspace
+// value: 64
+// resource: Число наборов исходников, из которых строится каталог имён find.
+// status: unproven
+// origin: cec3ddf7c
+// problem: неизвестно
+// on-reach: Отказ provider_limit_exceeded «find source-set count exceeds the bounded workspace limit».
+// issue: #1119
+// review: снимается в #1119 PR2
 const MAX_SOURCE_SETS: usize = 64;
+// resource-limit: find.point-path-depth
+// class: format
+// unit: depth
+// scope: request
+// value: 7
+// resource: Число компонентов пути, по которому find сопоставляет точный путь ресурса.
+// status: unproven
+// origin: 4288eaccd (#1510)
+// problem: неизвестно
+// on-reach: тихо: путь глубже 7 компонентов не сопоставляется как точный ресурс.
 const MAX_POINT_PATH_DEPTH: usize = 7;
+// resource-limit: find.directory-documents
+// class: corpus
+// unit: count
+// scope: workspace
+// value: 65536
+// resource: Число документов каталога раскладки find (resolve по адресу, callGraph) по всему рабочему пространству. Поиск имён (search corpus=names) этот каталог больше не строит: он ранжирует документы во время обхода, и предел к нему не применяется. Он держит только limit + 1 кандидатов, ранжированных после последнего имени прошлой страницы (курсор sc3 несёт его оценку и адрес), счётчик и отпечаток всех совпадений, а при обходе — список одной коллекции; ближайшие имена ищутся вторым обходом, когда прямых совпадений нет. Каждая страница обходит раскладку заново — #2106. Предел остался у каталога раскладки, который держат разрешение адреса (resolve по адресу) и соседи callGraph.
+// status: unproven
+// origin: cec3ddf7c
+// problem: неизвестно
+// on-reach: Отказ provider_limit_exceeded «find directory exceeds the bounded workspace entry limit».
+// issue: #1119
+// evidence: Замер 25.10.2026 (Apple M3 Max, 14 ядер, macOS, git 2.54, релизная сборка ветки поверх main 07306a173, scripts/dev/measure-capacity.py, два прохода подряд, наблюдение ёмкости демона (--capacity-report)): наибольшее число документов каталога имён — 19 607 на выгрузке УТ 11 (48 159 файлов в индексе Git, 12 290 модулей BSL на 508 МБ, 31 009 XML на 692 МБ) (30% предела), 9 548 на синтетическом корпусе формы УТ из scripts/dev/synthetic-configuration.py (10 757 модулей BSL на 510 МБ, 14 546 XML на 69 МБ).
+// review: #1119 PR2 снял предел с поиска имён; каталог раскладки остаётся до снятия своих пределов
 const DEFAULT_MAX_DOCUMENTS: usize = 65_536;
+// resource-limit: find.directory-fact-bytes
+// class: corpus
+// unit: bytes
+// scope: workspace
+// value: 16777216
+// resource: Оценка суммарного объёма фактов каталога раскладки find (resolve по адресу, callGraph) (с псевдонимами путей модулей). Поиск имён (search corpus=names) этот каталог больше не строит: он ранжирует документы во время обхода, и предел к нему не применяется. Он держит только limit + 1 кандидатов, ранжированных после последнего имени прошлой страницы (курсор sc3 несёт его оценку и адрес), счётчик и отпечаток всех совпадений, а при обходе — список одной коллекции; ближайшие имена ищутся вторым обходом, когда прямых совпадений нет. Каждая страница обходит раскладку заново — #2106. Предел остался у каталога раскладки, который держат разрешение адреса (resolve по адресу) и соседи callGraph.
+// status: unproven
+// origin: cec3ddf7c
+// problem: неизвестно
+// on-reach: Отказ provider_limit_exceeded «find directory exceeds the bounded workspace byte budget».
+// issue: #1119
+// evidence: Замер 25.10.2026 (Apple M3 Max, 14 ядер, macOS, git 2.54, релизная сборка ветки поверх main 07306a173, scripts/dev/measure-capacity.py, два прохода подряд, наблюдение ёмкости демона (--capacity-report)): наибольшая оценка объёма фактов каталога имён — 8 834 518 байт на выгрузке УТ 11 (48 159 файлов в индексе Git, 12 290 модулей BSL на 508 МБ, 31 009 XML на 692 МБ) (52,7% предела), 2 258 617 байт на синтетическом корпусе формы УТ из scripts/dev/synthetic-configuration.py (10 757 модулей BSL на 510 МБ, 14 546 XML на 69 МБ); поиск имён завершился без неполноты.
+// review: #1119 PR2 снял предел с поиска имён; каталог раскладки остаётся до снятия своих пределов
 const DEFAULT_MAX_FACT_BYTES: usize = 16 * 1024 * 1024;
 /// Enough of a descriptor head to carry `Name` and `Synonym`. The directory
 /// never needs the rest of the file.
+// resource-limit: find.descriptor-head-bytes
+// class: corpus
+// unit: bytes
+// scope: file
+// value: 8192
+// resource: Начало файла дескриптора, читаемое каталогом find для Name и Synonym.
+// status: unproven
+// origin: #690
+// problem: Каталогу нужны только Name и Synonym (комментарий в v13_find.rs).
+// on-reach: имя за пределами первых 8 КиБ не доказано: адресный поиск отказывает invalid_source
+// issue: #1119
+// review: снимается в #1119 PR2
 const DESCRIPTOR_HEAD_BYTES: usize = 8 * 1024;
+// resource-limit: find.collection-entries
+// class: corpus
+// unit: count
+// scope: directory
+// value: 65536
+// resource: Число элементов одного каталога коллекции при построении каталога раскладки find (resolve по адресу, callGraph). Поиск имён (search corpus=names) этот каталог больше не строит: он ранжирует документы во время обхода, и предел к нему не применяется. Он держит только limit + 1 кандидатов, ранжированных после последнего имени прошлой страницы (курсор sc3 несёт его оценку и адрес), счётчик и отпечаток всех совпадений, а при обходе — список одной коллекции; ближайшие имена ищутся вторым обходом, когда прямых совпадений нет. Каждая страница обходит раскладку заново — #2106. Предел остался у каталога раскладки, который держат разрешение адреса (resolve по адресу) и соседи callGraph.
+// status: unproven
+// origin: e2f60abd5 (#690)
+// problem: неизвестно
+// on-reach: Отказ provider_limit_exceeded «find source collection exceeds the bounded entry limit».
+// issue: #1119
+// evidence: Замер 25.10.2026 (Apple M3 Max, 14 ядер, macOS, git 2.54, релизная сборка ветки поверх main 07306a173, scripts/dev/measure-capacity.py, два прохода подряд, наблюдение ёмкости демона (--capacity-report)): наибольший каталог коллекции — 5 424 элемента на выгрузке УТ 11 (48 159 файлов в индексе Git, 12 290 модулей BSL на 508 МБ, 31 009 XML на 692 МБ) (общие модули; 8% предела), 5 422 на синтетическом корпусе формы УТ из scripts/dev/synthetic-configuration.py (10 757 модулей BSL на 510 МБ, 14 546 XML на 69 МБ).
+// review: #1119 PR2 снял предел с поиска имён; каталог раскладки остаётся до снятия своих пределов
 const MAX_COLLECTION_ENTRIES: usize = 65_536;
+// resource-limit: find.omission-details
+// class: format
+// unit: count
+// scope: request
+// value: 20
+// resource: Число образцов пропущенных документов в деталях неполноты find.
+// status: unproven
+// origin: eed587b99 (#1024)
+// problem: неизвестно
+// on-reach: тихо: сверх 20 детали не добавляются; полное число сохраняется счётчиком total.
 const MAX_OMISSION_DETAILS: usize = 20;
 /// Physical child families an object owns as its own files or directories.
 const NESTED_FAMILIES: [(&str, NodeKind); 3] = [
@@ -75,20 +158,20 @@ impl AttachedPathResource {
 
 /// One admitted source-set root. The directory is read through the retained
 /// no-follow capability the actor owns; no path is reopened by name.
-pub(crate) struct LayoutFindSource<'a> {
+pub struct LayoutFindSource<'a> {
     name: &'a str,
     kind: SourceSetKind,
     root: &'a SourceDirectory,
 }
 
 impl<'a> LayoutFindSource<'a> {
-    pub(crate) const fn new(name: &'a str, kind: SourceSetKind, root: &'a SourceDirectory) -> Self {
+    pub const fn new(name: &'a str, kind: SourceSetKind, root: &'a SourceDirectory) -> Self {
         Self { name, kind, root }
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct FindBuildError {
+pub struct FindBuildError {
     code: RefusalCode,
     detail: Option<RefusalDetail>,
     message: String,
@@ -111,11 +194,11 @@ impl FindBuildError {
         }
     }
 
-    pub(crate) const fn code(&self) -> RefusalCode {
+    pub const fn code(&self) -> RefusalCode {
         self.code
     }
 
-    pub(crate) const fn detail(&self) -> Option<RefusalDetail> {
+    pub const fn detail(&self) -> Option<RefusalDetail> {
         self.detail
     }
 
@@ -142,7 +225,7 @@ impl From<io::Error> for FindBuildError {
 /// Builds the two-way directory between qualified logical addresses and where
 /// objects live in the source layout. It reads that layout only: no typed
 /// projection, no module source, no revision lease.
-pub(crate) struct WorkspaceFindDirectoryBuilder {
+pub struct WorkspaceFindDirectoryBuilder {
     max_documents: usize,
     max_total_fact_bytes: usize,
     max_collection_entries: usize,
@@ -163,11 +246,11 @@ enum DescriptorHeadReadError {
 }
 
 /// The ranked names of one search and what its layout walk could not read.
-pub(crate) struct NameSearchOutcome {
-    pub(crate) names: RankedNames,
-    pub(crate) omissions: FindOmissions,
+pub struct NameSearchOutcome {
+    pub names: RankedNames,
+    pub omissions: FindOmissions,
     /// The watched addresses, such as the search scope, that exist.
-    pub(crate) present: HashSet<String>,
+    pub present: HashSet<String>,
 }
 
 #[derive(Debug)]
@@ -177,15 +260,15 @@ pub(crate) struct FindBuildOutcome {
 }
 
 #[derive(Debug, Default)]
-pub(crate) struct FindOmissions {
-    pub(crate) total: usize,
-    pub(crate) details: Vec<FindOmission>,
+pub struct FindOmissions {
+    pub total: usize,
+    pub details: Vec<FindOmission>,
 }
 
 #[derive(Debug)]
-pub(crate) struct FindOmission {
-    pub(crate) source_set: String,
-    pub(crate) reason: &'static str,
+pub struct FindOmission {
+    pub source_set: String,
+    pub reason: &'static str,
 }
 
 impl Default for WorkspaceFindDirectoryBuilder {
@@ -233,19 +316,19 @@ impl WorkspaceFindDirectoryBuilder {
         }
     }
 
-    pub(crate) fn with_capacity_observer(mut self, observer: Arc<CapacityObserver>) -> Self {
+    pub fn with_capacity_observer(mut self, observer: Arc<CapacityObserver>) -> Self {
         self.capacity_observer = Some(observer);
         self
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     fn with_head_reader(mut self, reader: Arc<HeadReader>) -> Self {
         self.read_head = reader;
         self
     }
 
-    #[cfg(test)]
-    pub(crate) fn with_local_read_fault_for_test(
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn with_local_read_fault_for_test(
         self,
         relative: &'static str,
         kind: io::ErrorKind,
@@ -259,23 +342,23 @@ impl WorkspaceFindDirectoryBuilder {
         }))
     }
 
-    #[cfg(test)]
-    pub(crate) fn with_document_limit(max_documents: usize) -> Self {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn with_document_limit(max_documents: usize) -> Self {
         Self::with_limits(max_documents, DEFAULT_MAX_FACT_BYTES)
     }
 
-    #[cfg(test)]
-    pub(crate) fn with_fact_byte_limit_for_test(max_fact_bytes: usize) -> Self {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn with_fact_byte_limit_for_test(max_fact_bytes: usize) -> Self {
         Self::with_limits(DEFAULT_MAX_DOCUMENTS, max_fact_bytes)
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     fn with_collection_limit_for_test(mut self, max_collection_entries: usize) -> Self {
         self.max_collection_entries = max_collection_entries;
         self
     }
 
-    pub(crate) fn build(
+    pub fn build(
         &self,
         sources: &[LayoutFindSource<'_>],
         deadline: ProviderDeadline,
@@ -319,7 +402,7 @@ impl WorkspaceFindDirectoryBuilder {
         Ok(outcome.index)
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn build_for_search(
         &self,
         sources: &[LayoutFindSource<'_>],
@@ -336,7 +419,7 @@ impl WorkspaceFindDirectoryBuilder {
     /// count nor its facts are budgeted. Nearest names take a second walk,
     /// only when nothing matched directly. Each page walks the layout again
     /// (#2106).
-    pub(crate) fn search_names(
+    pub fn search_names(
         &self,
         sources: &[LayoutFindSource<'_>],
         ranker: NameRanker,
@@ -431,7 +514,7 @@ impl WorkspaceFindDirectoryBuilder {
     /// Resolve only paths that could be the requested object. The name-search
     /// directory still owns its aggregate fact budget; a point lookup must not
     /// read unrelated descriptors or charge their facts before answering.
-    pub(crate) fn locate_path(
+    pub fn locate_path(
         &self,
         sources: &[LayoutFindSource<'_>],
         path: &str,

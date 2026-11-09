@@ -2,9 +2,7 @@
 use super::layout::metadata_layout;
 use roxmltree::Document;
 use std::path::{Path, PathBuf};
-use unica_address::source_target::{
-    MetadataAddress, SourceTarget, TargetKind, PLATFORM_XML_8_3_27_FORMAT_2_20,
-};
+use unica_address::source_target::{MetadataAddress, SourceTarget, TargetKind};
 use unica_bsl_parser::{first_exported_bsl_procedure, BslProcedureRequirement};
 
 use unica_metadata::{MetaDiagnostic, MetaDiagnosticCode, MetadataKind};
@@ -256,10 +254,9 @@ pub fn required_common_module_method<G>(
         let relative_path = PathBuf::from("CommonModules")
             .join(&module)
             .join("Ext/Module.bsl");
-        let Ok(module_address) = MetadataAddress::parse(
-            PLATFORM_XML_8_3_27_FORMAT_2_20,
-            &format!("CommonModule.{module}.Module"),
-        ) else {
+        let Ok(module_address) =
+            MetadataAddress::parse_logical(&format!("CommonModule.{module}.Module"))
+        else {
             continue;
         };
         let target = SourceTarget {
@@ -292,11 +289,8 @@ pub fn required_common_module_method<G>(
         else {
             continue;
         };
-        let module_target = MetadataAddress::parse(
-            PLATFORM_XML_8_3_27_FORMAT_2_20,
-            &format!("CommonModule.{module}"),
-        )
-        .expect("registered common module has a canonical logical address");
+        let module_target = MetadataAddress::parse_logical(&format!("CommonModule.{module}"))
+            .expect("registered common module has a canonical logical address");
         return Ok((
             module,
             method,
@@ -386,13 +380,12 @@ pub fn read_dependency<G>(
                 format!("metadata prerequisite `{tag}.{name}` image is unavailable"),
             ))
         })?;
-    let target = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &format!("{tag}.{name}"))
-        .map_err(|_| {
-            unica_metadata::request::MetaFailure::from(MetaDiagnostic::error(
-                MetaDiagnosticCode::ProviderUnavailable,
-                "metadata prerequisite identity is invalid",
-            ))
-        })?;
+    let target = MetadataAddress::parse_logical(&format!("{tag}.{name}")).map_err(|_| {
+        unica_metadata::request::MetaFailure::from(MetaDiagnostic::error(
+            MetaDiagnosticCode::ProviderUnavailable,
+            "metadata prerequisite identity is invalid",
+        ))
+    })?;
     let bytes = match &edit {
         Some(edit) => edit.apply(&preimage).map_err(|_| {
             unica_metadata::request::MetaFailure::from(MetaDiagnostic::error(
@@ -3206,19 +3199,16 @@ pub fn minimal_object<G>(
         .with_field("name")
         .into());
     }
-    let metadata_path = MetadataAddress::parse(
-        PLATFORM_XML_8_3_27_FORMAT_2_20,
-        &format!("{}.{name}", kind.as_str()),
-    )
-    .map_err(|_| {
-        unica_metadata::request::MetaFailure::from(
-            MetaDiagnostic::error(
-                MetaDiagnosticCode::InvalidArguments,
-                "metadata creation target is not a canonical logical address",
+    let metadata_path = MetadataAddress::parse_logical(&format!("{}.{name}", kind.as_str()))
+        .map_err(|_| {
+            unica_metadata::request::MetaFailure::from(
+                MetaDiagnostic::error(
+                    MetaDiagnosticCode::InvalidArguments,
+                    "metadata creation target is not a canonical logical address",
+                )
+                .with_field("name"),
             )
-            .with_field("name"),
-        )
-    })?;
+        })?;
     let context =
         MinimalTemplateContext::from_source(source, kind, name, overrides, source_set, language)?;
     let (xml, _) = minimal_metadata_xml(
