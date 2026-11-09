@@ -54,7 +54,7 @@ pub(crate) fn edit_support_with_data(
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn edit_support_result(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
@@ -428,4 +428,4 @@ pub(crate) fn plan_object_rule(
 
 #[cfg(test)]
 #[path = "../../tests/platform/support_tests.rs"]
-pub(crate) mod tests;
+pub(crate) mod medium_tests;

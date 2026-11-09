@@ -89,6 +89,13 @@ pub static PLATFORM_XML_ROOTS: &[PlatformXmlRoot] = &[
         publication: PlatformXmlPublicationPolicy::ExactRootVersion,
         owner: PlatformXmlOwnerPolicy::ContainerScoped,
     },
+    // Styles/*/Ext/Style.xml
+    PlatformXmlRoot {
+        namespace: "http://v8.1c.ru/8.3/xcf/extrnprops",
+        local_name: "Style",
+        publication: PlatformXmlPublicationPolicy::ExactRootVersion,
+        owner: PlatformXmlOwnerPolicy::ContainerScoped,
+    },
     // ScheduledJobs/*/Ext/Schedule.xml
     PlatformXmlRoot {
         namespace: "http://v8.1c.ru/8.3/xcf/extrnprops",
@@ -225,6 +232,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.SOURCE.ROOT-POLICIES-CLOSED
     #[test]
     fn every_root_has_independently_recorded_publication_and_owner_policies() {
         use PlatformXmlOwnerPolicy::{
@@ -272,6 +280,12 @@ mod tests {
             (
                 "http://v8.1c.ru/8.3/xcf/extrnprops",
                 "ExtPicture",
+                ExactRootVersion,
+                ContainerScoped,
+            ),
+            (
+                "http://v8.1c.ru/8.3/xcf/extrnprops",
+                "Style",
                 ExactRootVersion,
                 ContainerScoped,
             ),
@@ -364,6 +378,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.SOURCE.ROOT-POLICIES-CLOSED
     #[test]
     fn unregistered_roots_have_no_policies() {
         for (namespace, local_name) in [

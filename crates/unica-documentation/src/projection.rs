@@ -405,6 +405,7 @@ mod tests {
         assert_eq!(sections[1]["provider"], "second");
     }
 
+    /// rule: INV.APP.DOCUMENTATION-SECTIONS
     #[test]
     fn sections_follow_registry_order_and_carry_provenance() {
         // Provider ids are declared in DESCENDING alphabetical order ("zeta"
@@ -441,6 +442,7 @@ mod tests {
         assert_eq!(sections[0]["hits"][0]["applicableVersion"], "8.3.27.2074");
     }
 
+    /// rule: INV.APP.DOCUMENTATION-SEARCH-PAGES
     #[test]
     fn full_provider_window_is_a_lower_bound_and_receives_its_own_limit() {
         struct Bounded {
@@ -493,6 +495,7 @@ mod tests {
         assert_eq!(result["sections"][0]["matches"]["relation"], "lowerBound");
     }
 
+    /// rule: INV.APP.DOCUMENTATION-SECTIONS
     #[test]
     fn one_failed_provider_does_not_hide_the_other() {
         let registry = DocumentationRegistry::new(vec![
@@ -643,6 +646,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.APP.DOCUMENTATION-SECTIONS
     #[test]
     fn all_providers_failed_is_an_error() {
         let registry = DocumentationRegistry::new(vec![Arc::new(Stub {
@@ -654,7 +658,7 @@ mod tests {
         assert!(search(&registry, &request(), &context()).is_err());
     }
 
-    /// #1419: отказ без пригодной секции называл лишь «ни один поставщик
+    /// Отказ без пригодной секции называл лишь «ни один поставщик
     /// не дал результата», и сбой сервера стандартов становился неотличим
     /// от отсутствия справки. Отказ обязан назвать каждую непригодную
     /// секцию с диагностикой её поставщика.
@@ -693,6 +697,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.APP.DOCUMENTATION-SECTIONS
     #[test]
     fn empty_status_counts_as_success_not_just_ok() {
         // `any_usable` requires `Ok | Empty`; none of the other three tests
@@ -720,6 +725,7 @@ mod tests {
     /// прочитавшийся при непустой выдаче. Статус остаётся `ok`, но проекция
     /// обязана донести предупреждения до публичного результата: молчание
     /// выдавало бы частичный корпус за целый.
+    /// rule: INV.APP.DOCUMENTATION-SECTIONS
     #[test]
     fn warnings_reach_the_public_result_next_to_an_ok_status() {
         let mut section = ok_section("partial");
@@ -820,6 +826,7 @@ mod tests {
 
     /// Владельца находит первый не-`None` в порядке реестра, и его документ
     /// доходит до публичного результата всеми полями происхождения.
+    /// rule: INV.APP.DOCUMENTATION-GET
     #[test]
     fn get_skips_a_non_owner_and_projects_the_owners_document() {
         let registry = DocumentationRegistry::new(vec![
@@ -858,6 +865,7 @@ mod tests {
 
     /// Локатор без владельца — отказ, называющий сам локатор: молчаливый
     /// пустой успех оставил бы вызывающего гадать, что пошло не так.
+    /// rule: INV.APP.DOCUMENTATION-GET
     #[test]
     fn a_locator_no_provider_owns_is_refused_naming_it() {
         let registry = DocumentationRegistry::new(vec![Arc::new(GetStub {
@@ -876,6 +884,7 @@ mod tests {
 
     /// Отказ владельца — отказ вызова с его причиной: страница исчезла или
     /// сеть запрещена политикой, и подмена другой страницей недопустима.
+    /// rule: INV.APP.DOCUMENTATION-GET
     #[test]
     fn the_owners_failure_is_the_calls_failure() {
         let registry = DocumentationRegistry::new(vec![Arc::new(GetStub {

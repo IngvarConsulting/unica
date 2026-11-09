@@ -1,0 +1,295 @@
+{
+  "id": "S-1806-diagnostic-rule-docs",
+  "issue": 1806,
+  "area": "Документация и стандарты",
+  "task": "Получить описание и закреплённый источник каждого из трёх кодов анализатора отдельно; открыть страницы без сети и исходников 1С, явно обозначить отсутствие описания неизвестного кода и отклонить комбинированный запрос",
+  "workspace": "tests/fixtures/acceptance/workspace-diagnostic-rules",
+  "wire": [
+    {
+      "tool": "unica.docs",
+      "args": {
+        "query": "UnresolvedMethodCall",
+        "source": "diagnostic-rule"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "doc0": {
+          "pointer": "/data/sections/0/hits/0/documentId"
+        },
+        "config": {
+          "file": "unica.toml",
+          "kind": "sha256"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/sections/0/status",
+          "eq": "ok"
+        },
+        {
+          "pointer": "/data/sections/0/sourceKind",
+          "eq": "diagnostic-rule"
+        },
+        {
+          "pointer": "/data/sections/0/language",
+          "eq": "ru"
+        },
+        {
+          "pointer": "/data/sections/0/authority",
+          "eq": "community"
+        },
+        {
+          "pointer": "/data/sections/0/hits/0/documentId",
+          "eq": "https://github.com/itrous/bsl-analyzer/blob/53d8765288adf3b9277b7a4112dba167e51690b7/crates/ide-diagnostics/docs/ru/UnresolvedMethodCall.md"
+        },
+        {
+          "pointer": "/data/sections/0/hits/0/signature",
+          "eq": "UnresolvedMethodCall"
+        },
+        {
+          "pointer": "/data/sections/0/hits/0/applicableVersion",
+          "eq": "0.2.86"
+        },
+        {
+          "pointer": "/data/searchComplete",
+          "eq": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.docs",
+      "args": {
+        "query": "$capture.doc0"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/document/documentId",
+          "eq": "https://github.com/itrous/bsl-analyzer/blob/53d8765288adf3b9277b7a4112dba167e51690b7/crates/ide-diagnostics/docs/ru/UnresolvedMethodCall.md"
+        },
+        {
+          "pointer": "/data/document/signature",
+          "eq": "UnresolvedMethodCall"
+        },
+        {
+          "pointer": "/data/document/applicableVersion",
+          "eq": "0.2.86"
+        },
+        {
+          "pointer": "/data/document/language",
+          "eq": "ru"
+        },
+        {
+          "pointer": "/data/document/text",
+          "contains": "метод существует, но не экспортирован"
+        }
+      ]
+    },
+    {
+      "tool": "unica.docs",
+      "args": {
+        "query": "AmbiguousFieldInQuery",
+        "source": "diagnostic-rule"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "doc1": {
+          "pointer": "/data/sections/0/hits/0/documentId"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/sections/0/status",
+          "eq": "ok"
+        },
+        {
+          "pointer": "/data/sections/0/sourceKind",
+          "eq": "diagnostic-rule"
+        },
+        {
+          "pointer": "/data/sections/0/language",
+          "eq": "ru"
+        },
+        {
+          "pointer": "/data/sections/0/authority",
+          "eq": "community"
+        },
+        {
+          "pointer": "/data/sections/0/hits/0/documentId",
+          "eq": "https://github.com/itrous/bsl-analyzer/blob/53d8765288adf3b9277b7a4112dba167e51690b7/crates/ide-diagnostics/docs/ru/AmbiguousFieldInQuery.md"
+        },
+        {
+          "pointer": "/data/sections/0/hits/0/signature",
+          "eq": "AmbiguousFieldInQuery"
+        },
+        {
+          "pointer": "/data/sections/0/hits/0/applicableVersion",
+          "eq": "0.2.86"
+        },
+        {
+          "pointer": "/data/searchComplete",
+          "eq": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.docs",
+      "args": {
+        "query": "$capture.doc1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/document/documentId",
+          "eq": "https://github.com/itrous/bsl-analyzer/blob/53d8765288adf3b9277b7a4112dba167e51690b7/crates/ide-diagnostics/docs/ru/AmbiguousFieldInQuery.md"
+        },
+        {
+          "pointer": "/data/document/signature",
+          "eq": "AmbiguousFieldInQuery"
+        },
+        {
+          "pointer": "/data/document/applicableVersion",
+          "eq": "0.2.86"
+        },
+        {
+          "pointer": "/data/document/language",
+          "eq": "ru"
+        },
+        {
+          "pointer": "/data/document/text",
+          "contains": "Проверка срабатывает только тогда"
+        }
+      ]
+    },
+    {
+      "tool": "unica.docs",
+      "args": {
+        "query": "UnresolvedField",
+        "source": "diagnostic-rule"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "doc2": {
+          "pointer": "/data/sections/0/hits/0/documentId"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/sections/0/status",
+          "eq": "ok"
+        },
+        {
+          "pointer": "/data/sections/0/sourceKind",
+          "eq": "diagnostic-rule"
+        },
+        {
+          "pointer": "/data/sections/0/language",
+          "eq": "ru"
+        },
+        {
+          "pointer": "/data/sections/0/authority",
+          "eq": "community"
+        },
+        {
+          "pointer": "/data/sections/0/hits/0/documentId",
+          "eq": "https://github.com/itrous/bsl-analyzer/blob/53d8765288adf3b9277b7a4112dba167e51690b7/crates/ide-diagnostics/docs/ru/UnresolvedField.md"
+        },
+        {
+          "pointer": "/data/sections/0/hits/0/signature",
+          "eq": "UnresolvedField"
+        },
+        {
+          "pointer": "/data/sections/0/hits/0/applicableVersion",
+          "eq": "0.2.86"
+        },
+        {
+          "pointer": "/data/searchComplete",
+          "eq": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.docs",
+      "args": {
+        "query": "$capture.doc2"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/document/documentId",
+          "eq": "https://github.com/itrous/bsl-analyzer/blob/53d8765288adf3b9277b7a4112dba167e51690b7/crates/ide-diagnostics/docs/ru/UnresolvedField.md"
+        },
+        {
+          "pointer": "/data/document/signature",
+          "eq": "UnresolvedField"
+        },
+        {
+          "pointer": "/data/document/applicableVersion",
+          "eq": "0.2.86"
+        },
+        {
+          "pointer": "/data/document/language",
+          "eq": "ru"
+        },
+        {
+          "pointer": "/data/document/text",
+          "contains": "тип которого известен достаточно точно"
+        }
+      ]
+    },
+    {
+      "tool": "unica.docs",
+      "args": {
+        "query": "NoSuchDiagnostic123",
+        "source": "diagnostic-rule"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/sections/0/status",
+          "eq": "empty"
+        },
+        {
+          "pointer": "/data/sections/0/hits",
+          "eq": []
+        },
+        {
+          "pointer": "/data/sections/0/warnings/0",
+          "contains": "does not establish that the diagnostic rule or its basis is absent"
+        }
+      ]
+    },
+    {
+      "tool": "unica.docs",
+      "args": {
+        "query": "UnresolvedMethodCall UnresolvedField",
+        "source": "diagnostic-rule"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: diagnostic-rule requires one exact diagnostic code; query each code separately",
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "unica.toml",
+          "eq": "$capture.config"
+        }
+      ]
+    }
+  ]
+}

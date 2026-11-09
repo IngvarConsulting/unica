@@ -19,6 +19,19 @@ use unica_diagnostics::stream_error::MISSING_START_MESSAGE;
 use unica_redaction::redactor;
 use unica_workspace::paths::normalize_path_identity;
 
+// resource-limit: bsl-analyzer.jsonl-line-bytes
+// class: format
+// unit: bytes
+// scope: line
+// value: 8388608
+// resource: Длина одной строки JSONL-потока диагностик анализатора BSL.
+// status: unproven
+// origin: #425
+// problem: неизвестно
+// on-reach: строка отклоняется с ошибкой потока LineTooLong, результат анализа не выдаётся как полный
+// decision: закреплено правилом
+// decision-date: 2026-09-22
+// decision-source: arch/rules/analysis/analyzer-jsonl-stream.md
 pub const MAX_DIAGNOSTICS_JSONL_LINE_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -720,6 +733,7 @@ mod tests {
         ));
     }
 
+    /// rule: INV.ANALYSIS.ANALYZER-JSONL-COMPLETION
     #[test]
     fn complete_stream_projects_typed_data_without_upstream_shape() {
         let file = diagnostic("LineLength", "Warning", 10);
@@ -766,6 +780,7 @@ mod tests {
     /// Each branch of the baseline verdict on a real `done` shape: a proven
     /// filter keeps the batch complete and names what it hid; only a broken
     /// or unclassified baseline costs completeness, and then names the cause.
+    /// rule: INV.APP.DIAGNOSTIC-SUPPRESSION-EVIDENCE
     #[test]
     fn done_baseline_is_a_named_filter_and_only_a_broken_one_is_incomplete() {
         struct Case {
@@ -948,6 +963,7 @@ mod tests {
         assert!(!failure.message.contains("secret"));
     }
 
+    /// rule: INV.ANALYSIS.ANALYZER-JSONL-COMPLETION
     #[test]
     fn only_start_is_pending_and_file_without_done_is_incomplete() {
         let mut pending = parser();
@@ -985,6 +1001,7 @@ mod tests {
         assert!(incomplete.outcome.observations.is_empty());
     }
 
+    /// rule: INV.ANALYSIS.ANALYZER-JSONL-COMPLETION
     #[test]
     fn invalid_grammar_and_totals_fail_closed_without_partial_items() {
         let cases: Vec<Vec<&str>> = vec![
@@ -1026,6 +1043,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.ANALYSIS.ANALYZER-JSONL-COMPLETION
     #[test]
     fn diagnostic_validation_rejects_unknown_severity_tags_and_range() {
         for diagnostic in [
@@ -1051,6 +1069,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.ANALYSIS.ANALYZER-JSONL-COMPLETION
     #[test]
     fn duplicate_start_done_and_normalized_path_are_invalid() {
         for lines in [

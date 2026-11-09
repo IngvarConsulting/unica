@@ -1,0 +1,20 @@
+{
+  "area": "Роли и права",
+  "task": "Проверить читаемость узла роли",
+  "wire": [
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "main:Role.SalesReader"
+      },
+      "expect": [
+        "ok"
+      ],
+      "status": "passed",
+      "validators": [
+        "role"
+      ]
+    }
+  ],
+  "id": "S179"
+}

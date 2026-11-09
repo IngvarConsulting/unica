@@ -134,6 +134,152 @@ pub fn color_value(node: Node<'_, '_>) -> Result<StyleItemColor, ColorIssue> {
         })
 }
 
+fn descriptor_document<'input>(
+    source: &'input str,
+    name: &str,
+    relative: &Path,
+    require_writable: bool,
+) -> Result<Document<'input>, ColorIssue> {
+    let evidence = unica_source_designer::owner::prove_already_read_metadata_owner(
+        relative,
+        source.as_bytes(),
+    )
+    .map_err(|error| invalid(error.message))?;
+    if require_writable {
+        if let Some(refusal) = writable_profile_refusal(relative.portable(), evidence.version()) {
+            return Err(invalid(refusal.message));
+        }
+    }
+    if evidence.artifact_kind() != "StyleItem" || evidence.artifact_name() != Some(name) {
+        return Err(invalid(
+            "StyleItem descriptor does not match the addressed owner",
+        ));
+    }
+    let document = Document::parse(source).map_err(|error| invalid(error.to_string()))?;
+    let owner = single(document.root_element(), "StyleItem")?;
+    owner
+        .attribute("uuid")
+        .and_then(|id| uuid::Uuid::parse_str(id).ok())
+        .ok_or_else(|| invalid("StyleItem UUID is missing or invalid"))?;
+    let properties = single(owner, "Properties")?;
+    if xml_trim(&leaf(single(properties, "Name")?)?) != name {
+        return Err(invalid("StyleItem Name does not match the addressed owner"));
+    }
+    Ok(document)
+}
+
+fn prove_registration(
+    name: &str,
+    parent: &[u8],
+    source_kind: unica_source_contract::SourceSetKind,
+) -> Result<(), ColorIssue> {
+    let root = Path::new("Configuration.xml");
+    let owner = unica_source_designer::owner::prove_already_read_source_set_owner(
+        root,
+        parent,
+        source_kind,
+    )
+    .map_err(|error| invalid(error.message))?;
+    if let Some(refusal) = writable_profile_refusal(root.portable(), owner.version()) {
+        return Err(invalid(refusal.message));
+    }
+    if !owner.registers("StyleItem", name) {
+        return Err(ColorIssue::NotFound(
+            "StyleItem is not registered by its source-set owner".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Independent capabilities on an already registered and readable descriptor.
+pub fn observe_properties(
+    source: &str,
+    name: &str,
+    relative: &Path,
+) -> Result<unica_metadata::style_color::StyleItemPropertiesObservation, ColorIssue> {
+    let document = descriptor_document(source, name, relative, false)?;
+    let version =
+        unica_source_designer::roots::root_version_literal(source, document.root_element());
+    if writable_profile_refusal(relative.portable(), version.as_deref()).is_some() {
+        return Ok(
+            unica_metadata::style_color::StyleItemPropertiesObservation {
+                comment: false,
+                color: None,
+            },
+        );
+    }
+    Ok(
+        unica_metadata::style_color::StyleItemPropertiesObservation {
+            comment: crate::descriptor_comment::comment_patch_capability(
+                source,
+                unica_address::address::NodeKind::StyleItem,
+                name,
+            )
+            .is_ok(),
+            // Identity/XML failures were proved above; remaining failures belong
+            // to the independent Type/Value field capability.
+            color: StyleColorImage::parse(source, name, relative)
+                .ok()
+                .map(|image| image.color()),
+        },
+    )
+}
+
+/// Productive admission preserves the existing typed intent and Color refusals.
+pub fn observe_registered_properties(
+    source: &str,
+    name: &str,
+    relative: &Path,
+    parent: &[u8],
+    source_kind: unica_source_contract::SourceSetKind,
+    intent: Option<&unica_metadata::property_input::PropertiesIntent>,
+) -> Result<unica_metadata::style_color::StyleItemPropertiesObservation, ColorIssue> {
+    use unica_metadata::property_input::PropertiesIntent;
+    prove_registration(name, parent, source_kind)?;
+    descriptor_document(source, name, relative, true)?;
+    match intent {
+        Some(PropertiesIntent::StyleItem(values)) => {
+            let image =
+                StyleColorImage::parse_registered(source, name, relative, parent, source_kind)?;
+            let comment = crate::descriptor_comment::comment_patch_capability(
+                source,
+                unica_address::address::NodeKind::StyleItem,
+                name,
+            );
+            if values.comment.is_some() {
+                comment
+                    .as_ref()
+                    .map_err(|message| invalid(message.clone()))?;
+            }
+            Ok(
+                unica_metadata::style_color::StyleItemPropertiesObservation {
+                    comment: comment.is_ok(),
+                    color: Some(image.color()),
+                },
+            )
+        }
+        Some(PropertiesIntent::CommentOnly {
+            kind: unica_address::address::NodeKind::StyleItem,
+            ..
+        }) => {
+            crate::descriptor_comment::comment_patch_capability(
+                source,
+                unica_address::address::NodeKind::StyleItem,
+                name,
+            )
+            .map_err(invalid)?;
+            Ok(
+                unica_metadata::style_color::StyleItemPropertiesObservation {
+                    comment: true,
+                    color: None,
+                },
+            )
+        }
+        None => observe_properties(source, name, relative),
+        Some(_) => Err(invalid("expected a StyleItem property request")),
+    }
+}
+
 /// One checked descriptor image. Ranges and bindings always come from this
 /// same input; neither preview nor publication reconstructs the descriptor.
 pub struct StyleColorImage<'input> {
@@ -149,48 +295,14 @@ impl<'input> StyleColorImage<'input> {
         parent: &[u8],
         source_kind: unica_source_contract::SourceSetKind,
     ) -> Result<Self, ColorIssue> {
-        let root = Path::new("Configuration.xml");
-        let owner = unica_source_designer::owner::prove_already_read_source_set_owner(
-            root,
-            parent,
-            source_kind,
-        )
-        .map_err(|error| invalid(error.message))?;
-        if let Some(refusal) = writable_profile_refusal(root.portable(), owner.version()) {
-            return Err(invalid(refusal.message));
-        }
-        if !owner.registers("StyleItem", name) {
-            return Err(ColorIssue::NotFound(
-                "StyleItem is not registered by its source-set owner".into(),
-            ));
-        }
+        prove_registration(name, parent, source_kind)?;
         Self::parse(source, name, relative)
     }
 
     pub fn parse(source: &'input str, name: &str, relative: &Path) -> Result<Self, ColorIssue> {
-        let evidence = unica_source_designer::owner::prove_already_read_metadata_owner(
-            relative,
-            source.as_bytes(),
-        )
-        .map_err(|error| invalid(error.message))?;
-        if let Some(refusal) = writable_profile_refusal(relative.portable(), evidence.version()) {
-            return Err(invalid(refusal.message));
-        }
-        if evidence.artifact_kind() != "StyleItem" || evidence.artifact_name() != Some(name) {
-            return Err(invalid(
-                "StyleItem descriptor does not match the addressed owner",
-            ));
-        }
-        let document = Document::parse(source).map_err(|error| invalid(error.to_string()))?;
+        let document = descriptor_document(source, name, relative, true)?;
         let owner = single(document.root_element(), "StyleItem")?;
-        owner
-            .attribute("uuid")
-            .and_then(|id| uuid::Uuid::parse_str(id).ok())
-            .ok_or_else(|| invalid("StyleItem UUID is missing or invalid"))?;
         let properties = single(owner, "Properties")?;
-        if xml_trim(&leaf(single(properties, "Name")?)?) != name {
-            return Err(invalid("StyleItem Name does not match the addressed owner"));
-        }
         let kind = leaf(single(properties, "Type")?)?;
         if xml_trim(&kind) != "Color" {
             return Err(ColorIssue::ReadOnly(

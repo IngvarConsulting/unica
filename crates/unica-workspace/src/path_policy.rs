@@ -67,9 +67,10 @@ fn normalize_lexically(path: &Path) -> PathBuf {
 }
 
 #[cfg(test)]
-mod tests {
+mod medium_tests {
     use super::*;
 
+    /// rule: INV.SOURCE.WRITE-CONTAINMENT
     #[test]
     fn rejects_write_escape_outside_workspace_root() {
         let temp = std::env::temp_dir().join(format!("unica-path-policy-{}", std::process::id()));

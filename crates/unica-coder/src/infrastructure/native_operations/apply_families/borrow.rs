@@ -992,6 +992,8 @@ mod tests {
         fixture
     }
 
+    /// rule: INV.SOURCE.BORROWED-OBJECT-IDENTITY
+    /// rule: INV.SOURCE.BORROWED-OBJECT-REFRESH
     #[test]
     fn canonical_enum_value_preview_refresh_and_noop_preserve_local_siblings() {
         let fixture = enum_fixture();
@@ -1133,6 +1135,8 @@ mod tests {
         );
     }
 
+    /// rule: INV.SOURCE.BORROWED-OBJECT-IDENTITY
+    /// rule: INV.SOURCE.BORROWED-OBJECT-REFRESH
     #[test]
     fn canonical_borrow_preview_refresh_and_noop_keep_local_identity_and_events_honest() {
         let fixture = Fixture::new();

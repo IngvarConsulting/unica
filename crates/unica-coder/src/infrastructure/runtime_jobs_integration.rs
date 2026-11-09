@@ -35,7 +35,7 @@ use unica_process::runtime_job::{
 };
 use unica_process::STDOUT_CAPTURE_LIMIT;
 
-use unica_runner::{
+use unica_execution::runner::{
     attempt::{RuntimeAttemptScope, RuntimeJobRunner},
     operation::RuntimeJobOperation,
 };
@@ -168,6 +168,7 @@ pub(crate) mod tests {
         );
     }
 
+    /// rule: INV.OBS.DETACHED-JOB-STATE
     #[test]
     fn detached_worker_owns_the_queued_record_until_terminal_state() {
         let cache = TestCache::new();
@@ -364,11 +365,13 @@ pub(crate) mod tests {
         );
     }
 
+    /// rule: INV.APP.RUNTIME-RESOURCE-TREE
     #[test]
     fn stream_tail_read_failure_is_sticky_across_quarantine_probes() {
         assert_faulty_reader_stays_quarantined(FaultyStream::Error);
     }
 
+    /// rule: INV.APP.RUNTIME-RESOURCE-TREE
     #[test]
     fn stream_tail_panic_is_sticky_across_quarantine_probes() {
         assert_faulty_reader_stays_quarantined(FaultyStream::Panic);
@@ -1121,6 +1124,7 @@ pub(crate) mod tests {
         );
     }
 
+    /// rule: INV.APP.RUNTIME-RESOURCE-TREE
     #[test]
     fn system_runtime_job_keeps_resource_owned_after_leader_exit_until_descendant_dies() {
         let cache = TestCache::new();
@@ -1209,6 +1213,7 @@ pub(crate) mod tests {
         assert!(!service.test_store().active_lock_path().exists());
     }
 
+    /// rule: INV.APP.RUNTIME-ACTIVE-LEASE-JOIN
     #[test]
     fn runtime_shared_work_joins_only_the_exact_active_resource_and_lease() {
         let cache = TestCache::new();
@@ -1233,6 +1238,7 @@ pub(crate) mod tests {
         second.wait().expect("exact follower succeeds");
     }
 
+    /// rule: INV.APP.RUNTIME-ACTIVE-LEASE-JOIN
     #[test]
     fn runtime_shared_work_separates_physical_resources_and_distinct_v4_leases() {
         let cache_a = TestCache::new();
@@ -1282,6 +1288,7 @@ pub(crate) mod tests {
         assert_eq!(producers.load(Ordering::SeqCst), 3);
     }
 
+    /// rule: INV.APP.RUNTIME-ACTIVE-LEASE-JOIN
     #[test]
     fn stale_runtime_shared_work_authority_starts_no_producer_after_lock_replacement() {
         let cache = TestCache::new();
@@ -1320,6 +1327,7 @@ pub(crate) mod tests {
         );
     }
 
+    /// rule: INV.APP.RUNTIME-ACTIVE-LEASE-JOIN
     #[test]
     fn replaced_jobs_directory_between_lifecycle_lock_and_admission_starts_no_producer() {
         let cache = TestCache::new();
@@ -1384,6 +1392,7 @@ pub(crate) mod tests {
         }
     }
 
+    /// rule: INV.APP.RUNTIME-ACTIVE-LEASE-JOIN
     #[test]
     fn symlinked_jobs_directory_between_lifecycle_lock_and_admission_starts_no_producer() {
         if !unica_process::test_support::unix_runtime_authority_tests_supported() {
@@ -1436,6 +1445,7 @@ pub(crate) mod tests {
         fs::rename(&original, &jobs).expect("restore exact jobs root A before teardown");
     }
 
+    /// rule: INV.APP.RUNTIME-RETAINED-JOB-PUBLICATION
     #[test]
     fn quarantine_release_never_removes_active_lock_from_replacement_jobs_root() {
         let cache = TestCache::new();
@@ -1574,6 +1584,7 @@ pub(crate) mod tests {
         (replacement, bytes)
     }
 
+    /// rule: INV.APP.RUNTIME-RETAINED-JOB-PUBLICATION
     #[test]
     fn quarantine_record_read_never_follows_replacement_after_retained_validation() {
         let (_cache, service, job_id, mut active) = lost_quarantine_fixture();
@@ -1648,6 +1659,7 @@ pub(crate) mod tests {
         );
     }
 
+    /// rule: INV.APP.RUNTIME-RETAINED-JOB-PUBLICATION
     #[test]
     fn quarantine_record_publish_never_writes_replacement_root() {
         let (_cache, service, job_id, mut active) = lost_quarantine_fixture();
@@ -1713,6 +1725,7 @@ pub(crate) mod tests {
         }
     }
 
+    /// rule: INV.APP.RUNTIME-RETAINED-JOB-PUBLICATION
     #[test]
     fn quarantine_publication_never_releases_after_same_root_job_directory_replacement() {
         let (_cache, service, job_id, mut active) = lost_quarantine_fixture();
@@ -1809,6 +1822,7 @@ pub(crate) mod tests {
         ));
     }
 
+    /// rule: INV.APP.RUNTIME-RETAINED-JOB-PUBLICATION
     #[test]
     fn quarantine_post_rename_flush_failure_never_releases_active_lock() {
         let (_cache, service, job_id, mut active) = lost_quarantine_fixture();
@@ -1853,6 +1867,7 @@ pub(crate) mod tests {
         );
     }
 
+    /// rule: INV.APP.RUNTIME-RETAINED-JOB-PUBLICATION
     #[test]
     fn quarantine_post_publication_confirmation_rejects_same_root_job_directory_swap() {
         let (_cache, service, job_id, mut active) = lost_quarantine_fixture();
@@ -1939,6 +1954,7 @@ pub(crate) mod tests {
         ));
     }
 
+    /// rule: INV.APP.RUNTIME-RETAINED-JOB-PUBLICATION
     #[test]
     fn quarantine_record_transition_completes_only_in_exact_retained_root() {
         let (_cache, service, job_id, mut active) = lost_quarantine_fixture();
@@ -2207,6 +2223,7 @@ pub(crate) mod tests {
         scope.assert_drained();
     }
 
+    /// rule: INV.APP.RUNTIME-RETAINED-JOB-PUBLICATION
     #[test]
     fn ownership_retained_transition_never_writes_replacement_job_directory() {
         let cache = TestCache::new();
@@ -2460,6 +2477,7 @@ pub(crate) mod tests {
         assert!(!service.test_has_retained_process(job_id));
     }
 
+    /// rule: INV.APP.RUNTIME-JOB-DIRECTORY-AUTHORITY
     #[test]
     fn ordinary_poll_and_finish_never_follow_a_replaced_job_directory() {
         // Control: without a replacement the same job finishes and unlocks.
@@ -2539,6 +2557,7 @@ pub(crate) mod tests {
         );
     }
 
+    /// rule: INV.APP.RUNTIME-JOB-DIRECTORY-AUTHORITY
     #[test]
     fn attached_process_poll_and_finish_never_follow_a_replaced_job_directory() {
         let cache = TestCache::new();
@@ -2614,6 +2633,7 @@ pub(crate) mod tests {
         armed
     }
 
+    /// rule: INV.APP.RUNTIME-JOB-DIRECTORY-AUTHORITY
     #[test]
     fn full_rebuild_fallback_never_follows_a_replaced_job_directory() {
         let cache = TestCache::new();
@@ -2691,6 +2711,7 @@ pub(crate) mod tests {
         );
     }
 
+    /// rule: INV.APP.RUNTIME-JOB-DIRECTORY-AUTHORITY
     #[test]
     fn record_publication_and_lock_release_never_follow_a_replaced_job_directory() {
         let cache = TestCache::new();
@@ -2790,6 +2811,7 @@ pub(crate) mod tests {
         );
     }
 
+    /// rule: INV.APP.RUNTIME-RETAINED-JOB-PUBLICATION
     #[test]
     fn failed_activation_cleanup_never_writes_replacement_job_directory() {
         let cache = TestCache::new();
@@ -2819,6 +2841,7 @@ pub(crate) mod tests {
         service.test_lock_processes().unwrap().remove(&job_id);
     }
 
+    /// rule: INV.APP.RUNTIME-RESOURCE-TREE
     #[test]
     fn quarantine_thread_spawn_failure_retains_process_authority_and_active_lock() {
         struct RetentionProbeRunner {
@@ -2980,6 +3003,7 @@ pub(crate) mod tests {
             .expect("release replacement fixture lock");
     }
 
+    /// rule: INV.APP.RUNTIME-RESOURCE-TREE
     #[test]
     fn worker_supervises_initial_retained_ownership_until_proven_terminal() {
         let cache = TestCache::new();
@@ -3013,6 +3037,7 @@ pub(crate) mod tests {
         assert_replacement_available(&cache, &request);
     }
 
+    /// rule: INV.APP.RUNTIME-RESOURCE-TREE
     #[test]
     fn worker_supervises_fallback_retained_ownership_until_proven_terminal() {
         let cache = TestCache::new();
@@ -3258,16 +3283,19 @@ pub(crate) mod tests {
         });
     }
 
+    /// rule: INV.APP.RUNTIME-RESOURCE-TREE
     #[test]
     fn worker_quarantines_poll_failure_until_later_terminal_proof() {
         assert_worker_supervises_observation_failure(true, false);
     }
 
+    /// rule: INV.APP.RUNTIME-RESOURCE-TREE
     #[test]
     fn worker_quarantines_output_failure_until_later_eof_proof() {
         assert_worker_supervises_observation_failure(false, true);
     }
 
+    /// rule: INV.APP.RUNTIME-RESOURCE-TREE
     #[test]
     fn stale_local_worker_retains_process_until_later_terminal_proof() {
         let cache = TestCache::new();
@@ -3387,6 +3415,7 @@ pub(crate) mod tests {
         assert_replacement_available(&cache, &request);
     }
 
+    /// rule: INV.APP.RUNTIME-RESOURCE-TREE
     #[test]
     fn worker_retains_initial_process_when_running_record_write_fails() {
         assert_worker_supervises_post_spawn_record_failure(
@@ -3395,6 +3424,7 @@ pub(crate) mod tests {
         );
     }
 
+    /// rule: INV.APP.RUNTIME-RESOURCE-TREE
     #[test]
     fn worker_retains_fallback_process_when_running_record_write_fails() {
         let cache = TestCache::new();
@@ -3433,6 +3463,7 @@ pub(crate) mod tests {
         assert!(!service.test_store().active_lock_path().exists());
     }
 
+    /// rule: INV.APP.RUNTIME-RESOURCE-TREE
     #[test]
     fn proven_childless_spawn_failure_releases_initial_active_lock() {
         let cache = TestCache::new();
@@ -3449,6 +3480,7 @@ pub(crate) mod tests {
         );
     }
 
+    /// rule: INV.APP.RUNTIME-RESOURCE-TREE
     #[test]
     fn proven_childless_fallback_spawn_failure_releases_active_lock() {
         let cache = TestCache::new();
@@ -3514,7 +3546,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    pub(crate) fn runtime_resource_tree_lease_contract() {
+    pub(crate) fn medium_runtime_resource_tree_lease_contract() {
         let supervisor_scope = TestSupervisorScope::enter();
         runtime_shared_work_joins_only_the_exact_active_resource_and_lease();
         runtime_shared_work_separates_physical_resources_and_distinct_v4_leases();
@@ -3563,6 +3595,7 @@ pub(crate) mod tests {
         supervisor_scope.assert_drained();
     }
 
+    /// rule: INV.TOKEN.RUNTIME-LOG-ARTIFACTS
     #[test]
     pub(crate) fn terminal_snapshot_and_persistence_are_redacted_and_keep_log_artifacts() {
         const ARGV_SECRET: &str = "argv-secret";
@@ -3631,6 +3664,8 @@ pub(crate) mod tests {
         }
     }
 
+    /// rule: INV.SAFETY.RUNTIME-SECRET-REDACTION
+    /// rule: INV.SAFETY.STREAM-SECRET-REDACTION
     #[test]
     pub(crate) fn production_secret_key_matrix_is_redacted_from_runtime_surfaces() {
         let keys = unica_redaction::production_secret_key_matrix();
@@ -4205,6 +4240,7 @@ pub(crate) mod tests {
         assert!(!service.test_store().active_lock_path().exists());
     }
 
+    /// rule: INV.OBS.WAIT-TIMEOUT-KEEPS-JOB
     #[test]
     fn caller_wait_timeout_does_not_stop_the_active_job() {
         let cache = TestCache::new();
@@ -4234,6 +4270,7 @@ pub(crate) mod tests {
         );
     }
 
+    /// rule: INV.TOKEN.RUNTIME-LOG-TAIL
     #[test]
     fn runtime_job_lifecycle_and_log_bounds_are_complete() {
         detached_worker_owns_the_queued_record_until_terminal_state();
@@ -5220,6 +5257,7 @@ pub(crate) mod tests {
         assert!(!store.active_lock_path().exists());
     }
 
+    /// rule: INV.SAFETY.RUNTIME-SECRET-REDACTION
     #[test]
     pub(crate) fn worker_handoff_never_persists_actual_argv_or_output_secrets() {
         const REQUEST_SECRET: &str = "request-secret";

@@ -125,6 +125,7 @@ fn right_insertion_uses_local_eol_and_preserves_uniform_lone_cr() {
     assert!(insertion.contains('\r'));
     assert!(!insertion.contains('\n'));
 }
+/// rule: INV.SOURCE.ROLE-RIGHT-LOCAL-CHANGE
 #[test]
 fn range_writer_uses_direct_children_and_preserves_unknown_xml_bom_and_eol() {
     for (self_closing, expected_value) in [
@@ -154,6 +155,7 @@ fn range_writer_uses_direct_children_and_preserves_unknown_xml_bom_and_eol() {
         assert!(encoded.starts_with(&[0xEF, 0xBB, 0xBF]));
     }
 }
+/// rule: INV.SOURCE.ROLE-RIGHT-LOCAL-CHANGE
 #[test]
 fn range_writer_replaces_only_boolean_text_and_preserves_value_markup() {
     let body = rights_xml(
@@ -189,6 +191,7 @@ fn writer_ignores_and_preserves_unnamed_forward_compatible_blocks() {
     assert!(updated.contains(unnamed_object));
     validate_every_role_value(&updated).unwrap();
 }
+/// rule: INV.SOURCE.ROLE-RIGHT-LOCAL-CHANGE
 #[test]
 fn writer_inserts_with_existing_eol_and_data_processor_false_removes_whole_object() {
     let body = rights_xml("\r\n", "<value>true</value>");
@@ -419,6 +422,7 @@ fn an_untouched_non_boolean_neighbour_does_not_block_the_requested_edit() {
         validate_role_rights_document(&updated, RoleValueScope::WrittenRights(&neighbour)).is_err()
     );
 }
+/// rule: INV.SOURCE.ROLE-RIGHT-DEFAULT-STORAGE
 #[test]
 fn default_valued_right_is_stored_as_absence_like_the_platform_export() {
     // ibcmd 8.3.27.2074 хранит объектное право только при значении,
@@ -463,6 +467,7 @@ fn default_valued_right_is_stored_as_absence_like_the_platform_export() {
     assert!(!second.changed);
     assert_eq!(second.before, None);
 }
+/// rule: INV.SOURCE.ROLE-RIGHT-DEFAULT-STORAGE
 #[test]
 fn removing_the_last_stored_right_drops_the_emptied_object_block() {
     let body = [
@@ -493,6 +498,7 @@ fn removing_the_last_stored_right_drops_the_emptied_object_block() {
     assert!(updated.contains("Catalog.Kept"), "{updated}");
     validate_every_role_value(&updated).unwrap();
 }
+/// rule: INV.SOURCE.ROLE-RIGHT-DEFAULT-STORAGE
 #[test]
 fn emptied_block_with_unknown_children_keeps_the_block_and_sheds_the_right() {
     let body = [
@@ -518,6 +524,7 @@ fn emptied_block_with_unknown_children_keeps_the_block_and_sheds_the_right() {
     assert!(!updated.contains("<name>Read</name>"), "{updated}");
     validate_every_role_value(&updated).unwrap();
 }
+/// rule: INV.SOURCE.ROLE-RIGHT-DEFAULT-STORAGE
 #[test]
 fn set_for_new_objects_true_mirrors_the_stored_value_rule() {
     let body = rights_xml("\n", "<value>true</value>").replacen(

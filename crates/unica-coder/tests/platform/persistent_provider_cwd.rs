@@ -131,9 +131,12 @@ fn probe(session: &mut PersistentMcpSession) -> Observation {
 
 fn stop_session(session: &mut PersistentMcpSession) {
     let deadline = ElapsedBudgetDeadline::new(Duration::from_secs(2));
-    let cancellation = CancellationToken::new();
     session
-        .retire_for_replacement(|| deadline.remaining_cancellable(&cancellation))
+        .retire_for_replacement(|| {
+            deadline
+                .remaining()
+                .ok_or_else(|| "probe stop budget spent".to_string())
+        })
         .unwrap();
     assert!(
         session.test_poll_owned_leader_exit().unwrap(),
@@ -141,21 +144,16 @@ fn stop_session(session: &mut PersistentMcpSession) {
     );
 }
 
-fn live_provider_rename(rlm: bool) {
+fn live_provider_rename() {
     let fixture = CwdFixture::new(true);
     let binary = compile_probe(&fixture);
-    let command = if rlm {
-        rlm_transport_command_for_build(binary, &fixture.context, &fixture.source, &fixture.build)
-            .unwrap()
-    } else {
-        bsl_analyzer_command(&binary, &fixture.context, &fixture.source).unwrap()
-    };
+    let command = bsl_analyzer_command(&binary, &fixture.context, &fixture.source).unwrap();
     let expected_args = command
         .get_args()
         .map(OsStr::to_os_string)
         .collect::<Vec<_>>();
     let configured = command.get_current_dir().map(Path::to_path_buf);
-    let expected_cache = (!rlm).then(|| argument(&command, "--cache-dir"));
+    let expected_cache = Some(argument(&command, "--cache-dir"));
     let mut session =
         PersistentMcpSession::start_with_command(command, &CancellationToken::new()).unwrap();
     let before = probe(&mut session);
@@ -168,25 +166,21 @@ fn live_provider_rename(rlm: bool) {
             .as_deref()
             .expect("producer must choose explicit cwd"),
     );
-    if rlm {
-        assert_eq!(before.generation.as_os_str(), fixture.build.as_os_str());
-    } else {
-        let index = before
-            .args
-            .iter()
-            .position(|arg| arg.as_os_str() == OsStr::new("--source-dir"))
-            .unwrap();
-        assert_eq!(
-            PathBuf::from(before.args[index + 1].as_os_str()),
-            canonical_path(&fixture.source)
-        );
-        let index = before
-            .args
-            .iter()
-            .position(|arg| arg.as_os_str() == OsStr::new("--cache-dir"))
-            .unwrap();
-        assert_eq!(Some(&before.args[index + 1]), expected_cache.as_ref());
-    }
+    let index = before
+        .args
+        .iter()
+        .position(|arg| arg.as_os_str() == OsStr::new("--source-dir"))
+        .unwrap();
+    assert_eq!(
+        PathBuf::from(before.args[index + 1].as_os_str()),
+        canonical_path(&fixture.source)
+    );
+    let index = before
+        .args
+        .iter()
+        .position(|arg| arg.as_os_str() == OsStr::new("--cache-dir"))
+        .unwrap();
+    assert_eq!(Some(&before.args[index + 1]), expected_cache.as_ref());
     assert!(session.is_reusable());
     let renamed = fixture.root.join("workspace-renamed");
     fs::rename(&fixture.context.workspace_root, &renamed).unwrap();
@@ -206,16 +200,13 @@ fn live_provider_rename(rlm: bool) {
     stop_session(&mut session);
 }
 
-#[test]
-fn native_rlm_cwd_is_external_while_same_warm_process_survives_workspace_rename() {
-    live_provider_rename(true);
-}
-
+/// rule: INV.APP.PERSISTENT-PROVIDER-CWD
 #[test]
 fn native_bsl_cwd_is_external_while_same_warm_process_survives_workspace_rename() {
-    live_provider_rename(false);
+    live_provider_rename();
 }
 
+/// rule: INV.APP.PERSISTENT-PROVIDER-CWD
 #[cfg(windows)]
 #[test]
 fn windows_factories_start_live_providers_at_an_external_anchor_when_other_candidates_are_excluded()
@@ -227,13 +218,6 @@ fn windows_factories_start_live_providers_at_an_external_anchor_when_other_candi
     fixture.context.workspace_root = temp.clone();
     let identity = WorkspaceServiceIdentity::new(&fixture.context, &executable).unwrap();
     let commands = [
-        rlm_transport_command_for_build(
-            binary.clone(),
-            &fixture.context,
-            &executable,
-            &fixture.build,
-        )
-        .unwrap(),
         bsl_analyzer_command(&binary, &fixture.context, &executable).unwrap(),
         workspace_service_command(
             &binary,
@@ -263,20 +247,13 @@ fn windows_factories_start_live_providers_at_an_external_anchor_when_other_candi
     }
 }
 
+/// rule: INV.APP.PERSISTENT-PROVIDER-CWD
 #[cfg(windows)]
 #[test]
 fn windows_live_cwd_inside_outside_pair_isolates_workspace_rename() {
     let fixture = CwdFixture::new(false);
     let binary = compile_probe(&fixture);
-    let make = || {
-        rlm_transport_command_for_build(
-            binary.clone(),
-            &fixture.context,
-            &fixture.source,
-            &fixture.build,
-        )
-        .unwrap()
-    };
+    let make = || bsl_analyzer_command(&binary, &fixture.context, &fixture.source).unwrap();
     let mut inside_command = make();
     inside_command.current_dir(&fixture.context.workspace_root);
     let mut outside_command = make();
@@ -319,12 +296,13 @@ fn windows_live_cwd_inside_outside_pair_isolates_workspace_rename() {
     stop_session(&mut outside);
 }
 
+/// rule: INV.APP.PERSISTENT-PROVIDER-CWD
 #[test]
 fn native_helper_does_not_inherit_project_cwd_from_isolated_caller() {
     let fixture = CwdFixture::new(true);
     let binary = compile_probe(&fixture);
     let mut command = Command::new(env::current_exe().unwrap());
-    command.args(["--exact", "infrastructure::workspace_services::persistent_provider_cwd_native_tests::helper_inherited_cwd_subprocess_fixture",
+    command.args(["--exact", "infrastructure::workspace_services::medium_persistent_provider_cwd_native_tests::helper_inherited_cwd_subprocess_fixture",
                   "--ignored", "--nocapture"])
         .current_dir(&fixture.context.cwd)
         .env("UNICA_CWD_HELPER_FIXTURE_ROOT", &fixture.root)

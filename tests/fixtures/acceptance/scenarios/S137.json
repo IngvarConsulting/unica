@@ -1,0 +1,29 @@
+{
+  "area": "Формы",
+  "task": "Добавить форму отчёту",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Report.АнализВерсийОбъектов",
+        "ops": [
+          {
+            "op": "form.add",
+            "args": {
+              "items": [
+                {
+                  "name": "ФормаНастроек",
+                  "type": "SettingsForm"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S137"
+}

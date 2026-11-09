@@ -5,7 +5,8 @@ pub mod context;
 pub mod route;
 
 use serde::Serialize;
-use unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20;
+/// The canonical id of the Designer export profile 8.3.27 / 2.20.
+pub const PLATFORM_XML_8_3_27_FORMAT_2_20: &str = "platform-xml-8.3.27-format-2.20";
 
 /// Built-in script language, independent of multilingual presentation values.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -103,6 +104,16 @@ impl SourceSetKind {
 }
 
 impl SourceFormat {
+    /// The format family this observed format names, by its wire name;
+    /// `None` for a set whose format is unknown or contradictory.
+    pub const fn family_id(self) -> Option<format_identity::FormatFamilyId> {
+        match self {
+            Self::PlatformXml => Some(format_identity::FormatFamilyId::new("platform_xml")),
+            Self::Edt => Some(format_identity::FormatFamilyId::new("edt")),
+            Self::Unknown | Self::Invalid => None,
+        }
+    }
+
     /// Работаем ли мы с этим форматом. Сегодня работаем с одним — выгрузкой
     /// платформы; EDT не поддержан, а `unknown` и `invalid` форматом не
     /// являются вовсе.
@@ -174,6 +185,18 @@ impl SourceProfile {
             Self::TestPlatform8_3_28Format2_20 => Some(ACTIVE_SERIALIZATION_FORMAT),
             #[cfg(any(test, feature = "test-support"))]
             Self::TestPlatform8_3_27Format2_21 => Some("2.21-test"),
+        }
+    }
+
+    /// The platform line of the format this profile identifies, when that
+    /// format is a known one (INV.SOURCE.FORMAT-IDENTITY): the line follows
+    /// from the format. Legacy and test identities name no known format.
+    pub const fn semantic_line(self) -> Option<format_identity::PlatformLine> {
+        match self {
+            Self::PlatformXml8_3_27Format2_20 => Some(format_identity::PlatformLine::new(8, 3, 27)),
+            Self::LegacyWorkspaceServiceCompatibility => None,
+            #[cfg(any(test, feature = "test-support"))]
+            Self::TestPlatform8_3_28Format2_20 | Self::TestPlatform8_3_27Format2_21 => None,
         }
     }
 
@@ -265,3 +288,5 @@ pub mod read;
 pub mod proposal;
 
 pub mod discovery;
+
+pub mod format_identity;

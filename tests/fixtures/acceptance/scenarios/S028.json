@@ -1,0 +1,25 @@
+{
+  "area": "Навигация и чтение",
+  "task": "Узнать словарь операций перечисления",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Enum.ВажностьПроблемыУчета"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/can",
+          "contains": {
+            "op": "enumValue.add",
+            "args": "items"
+          }
+        }
+      ]
+    }
+  ],
+  "id": "S028"
+}

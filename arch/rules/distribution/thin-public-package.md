@@ -1,7 +1,5 @@
 ---
 id: INV.PKG.THIN-PACKAGE
-check:
-  - tests/ci/test_package_unica_plugin.py::PackageUnicaPluginTests.test_generated_marketplace_is_thin_pinned_and_target_neutral
 ---
 
 # Публичный пакет содержит загрузчик, а ядро и движки доставляет отдельно

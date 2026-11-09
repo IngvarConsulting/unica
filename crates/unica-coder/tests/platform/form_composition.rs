@@ -85,7 +85,7 @@ fn form_validate_rejects_wrong_root_namespace() {
 
 /// 8.3.27 loads `Representation` on a form command only from
 /// `DefaultRepresentation`; `PictureAndText` breaks the load with an XDTO
-/// property mismatch (#1436), while `TextPicture` is the platform's own.
+/// property mismatch, while `TextPicture` is the platform's own.
 #[test]
 fn form_validate_rejects_button_representation_on_command() {
     let form = |representation: &str| {
@@ -589,7 +589,7 @@ fn add_form_accepts_valid_external_processor_and_report_owners() {
     }
 }
 
-/// #340. The context of a form is decided by the object that owns it, not
+/// The context of a form is decided by the object that owns it, not
 /// by whether some `Configuration.xml` happens to sit above it in the
 /// tree. An external data processor stored under a workspace that also
 /// holds a configuration was read as configuration context, so the main
@@ -644,7 +644,7 @@ fn form_validation_reads_context_from_the_owning_object_not_the_tree_above() {
     let _ = fs::remove_dir_all(&context.cwd);
 }
 
-/// #389. `form-dsl-spec` documents `label` as `LabelDecoration`, the
+/// `form-dsl-spec` documents `label` as `LabelDecoration`, the
 /// pattern reference recommends it for forms built with
 /// `unica.form.compile`, and `form-edit` says it uses the same DSL keys.
 /// The native compiler had no such discriminator and answered
@@ -689,7 +689,7 @@ fn form_compile_accepts_the_documented_label_decoration() {
     let _ = fs::remove_dir_all(&context.cwd);
 }
 
-/// Review of #450: `LabelDecoration` allows only `Click` and
+/// `LabelDecoration` allows only `Click` and
 /// `URLProcessing`. Classifying `label` as a `LabelField` let `OnChange`
 /// through preflight and would have emitted an event the platform does
 /// not accept on a decoration.
@@ -730,7 +730,7 @@ fn form_compile_refuses_a_label_event_the_decoration_does_not_allow() {
     let _ = fs::remove_dir_all(&context.cwd);
 }
 
-/// #341. One writer must not produce a form the other refuses. `form.add`
+/// One writer must not produce a form the other refuses. `form.add`
 /// wrote a `Form.xml` without a root `ChildItems`, so the very next
 /// `form.edit` failed with `No <ChildItems> section found in form`.
 #[test]
@@ -767,7 +767,7 @@ fn add_form_produces_a_form_the_editor_accepts() {
     let _ = fs::remove_dir_all(&context.cwd);
 }
 
-/// Review of #446: without `Attributes`, a root that has both `Parameters`
+/// Without `Attributes`, a root that has both `Parameters`
 /// and `Commands` must still receive `ChildItems` before `Parameters`.
 #[test]
 fn form_edit_creates_child_items_before_parameters_when_attributes_are_absent() {

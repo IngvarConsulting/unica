@@ -66,7 +66,7 @@ META_TOOL_NAMES = {
 }
 ROLE_TYPED_TOOL_NAME = "unica.role.edit"
 CODE_SEARCH_TYPED_TOOL_NAME = "unica.code.search"
-CODE_SEARCH_PROVIDERS = ["rlm", "bsl-analyzer", "git-grep"]
+CODE_SEARCH_PROVIDERS = ["bsl-analyzer", "git-grep"]
 DEFAULT_TOTAL_TIMEOUT_SECONDS = 120.0
 UPSTREAM_SEARCH_FIELDS = {"root_id", "rootId", "roots", "cacheDir"}
 EXPECTED_META_OUTPUT_SCHEMA = {
@@ -1382,7 +1382,7 @@ def _bsl_search_is_ready(payload: dict) -> bool:
             "Unica MCP code search provider sections differ from "
             f"{CODE_SEARCH_PROVIDERS}: {providers}"
         )
-    bsl = sections[1]
+    bsl = sections[0]
     status = bsl.get("status")
     # A still-building index is a typed fact: `timedOut` with a retryable
     # `dependencyPending` termination. The prose in the diagnostics is for

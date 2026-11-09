@@ -3,10 +3,6 @@ use unica_adapter_bsl_analyzer::provider::{
 };
 use unica_adapter_lexical::provider::*;
 
-use unica_adapter_rlm::provider::{
-    rlm_search_unready_error, wait_for_rlm_search, RlmProvider, RlmSearchAttempt, RlmSearchClient,
-};
-
 use unica_code_intelligence::model::*;
 use unica_code_intelligence::source_locations::*;
 
@@ -28,20 +24,6 @@ fn parse_bsl_analyzer_search(
         crate::infrastructure::analysis_composition::source_bindings(),
     )
 }
-fn parse_rlm_search(
-    text: &str,
-    context: &CodeIntelligenceContext,
-    limit: usize,
-    cancel: &CancellationToken,
-) -> ProviderSearchSection {
-    unica_adapter_rlm::provider::parse_rlm_search(
-        text,
-        context,
-        limit,
-        cancel,
-        crate::infrastructure::analysis_composition::source_bindings(),
-    )
-}
 #[cfg(test)]
 fn location_path(location: &SourceLocation) -> &str {
     match location {
@@ -50,15 +32,12 @@ fn location_path(location: &SourceLocation) -> &str {
     }
 }
 #[cfg(test)]
-mod tests {
+mod medium_tests {
     use super::{
-        git_grep_bsl_pathspecs, location_path, parse_call_graph_answer, rlm_search_unready_error,
-        BslAnalyzerProvider, BslToolClient, GitGrepProvider, RlmProvider, RlmSearchAttempt,
-        RlmSearchClient,
+        git_grep_bsl_pathspecs, location_path, parse_call_graph_answer, BslAnalyzerProvider,
+        BslToolClient, GitGrepProvider,
     };
     use serde_json::{json, Value};
-    use unica_adapter_rlm::index::IndexReadiness;
-    use unica_adapter_rlm::session::WorkspaceServiceRlmCall;
     use unica_code_intelligence::model::CallEdgeProvenance;
     use unica_code_intelligence::model::CallGraphDirection;
     use unica_code_intelligence::model::CallGraphState;
@@ -66,11 +45,8 @@ mod tests {
     use unica_code_intelligence::model::CodeIntelligenceProvider;
     use unica_code_intelligence::model::CodeIntelligenceReadData;
     use unica_code_intelligence::model::CodeIntelligenceReadRequest;
-    use unica_code_intelligence::model::CodeIntelligenceRegistry;
     use unica_code_intelligence::model::CodeSearchScope;
-    use unica_code_intelligence::model::ProviderCapability;
     use unica_code_intelligence::model::ProviderId;
-    use unica_code_intelligence::model::ProviderSearchSection;
     use unica_code_intelligence::model::ProviderSectionStatus;
     use unica_code_intelligence::model::RelativeSearchFilter;
     use unica_code_intelligence::model::SearchCountRelation;
@@ -145,6 +121,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.SOURCE.CALL-GRAPH-STATE-IS-NAMED
     #[test]
     fn call_graph_distinguishes_a_recursive_call_from_a_capped_answer() {
         let payloads: Value = serde_json::from_str(include_str!(
@@ -192,19 +169,11 @@ mod tests {
     }
     use std::cell::RefCell;
     use std::path::{Path, PathBuf};
-    use std::sync::{Arc, Mutex};
+    use std::sync::Mutex;
     use std::time::{Duration, Instant};
 
     thread_local! {
         static MANUAL_NOW: RefCell<Option<Instant>> = const { RefCell::new(None) };
-    }
-
-    fn manual_now() -> Instant {
-        MANUAL_NOW.with(|now| now.borrow().expect("manual test clock must be initialized"))
-    }
-
-    fn set_manual_now(now: Instant) {
-        MANUAL_NOW.with(|current| *current.borrow_mut() = Some(now));
     }
 
     fn parse_bsl_analyzer_search(
@@ -212,13 +181,6 @@ mod tests {
         context: &CodeIntelligenceContext,
     ) -> unica_code_intelligence::model::ProviderSearchSection {
         super::parse_bsl_analyzer_search(text, context, usize::MAX, &CancellationToken::new())
-    }
-
-    fn parse_rlm_search(
-        text: &str,
-        context: &CodeIntelligenceContext,
-    ) -> unica_code_intelligence::model::ProviderSearchSection {
-        super::parse_rlm_search(text, context, usize::MAX, &CancellationToken::new())
     }
 
     struct FakeRunner {
@@ -332,11 +294,6 @@ mod tests {
                 &workspace_root,
             )),
         );
-
-        let rlm = parse_rlm_search(
-            r#"[{"text":"Post","source_type":"method","path":"CommonModules/Sales/Ext/Module.bsl","detail":{"line":1}}]"#,
-            &context,
-        );
         let analyzer = parse_bsl_analyzer_search(
             "#1 [L] CommonModules/Sales/Ext/Module.bsl:1 :: Post (procedure)\n",
             &context,
@@ -359,7 +316,7 @@ mod tests {
             &CancellationToken::new(),
         );
 
-        for section in [&rlm, &analyzer, &lexical] {
+        for section in [&analyzer, &lexical] {
             assert_eq!(section.status, ProviderSectionStatus::Ok);
             assert_sales_module_location(&section.hits[0].location);
         }
@@ -492,7 +449,7 @@ mod tests {
 
     #[test]
     fn git_grep_scoped_preflight_refuses_invalid_routes_without_dispatch() {
-        for case in [
+        assert_git_grep_invalid_routes(&[
             "deleted-root",
             "root-file",
             "different-root",
@@ -501,8 +458,16 @@ mod tests {
             "parent",
             "empty",
             "parent-file",
-            "dangling-link",
-        ] {
+        ]);
+    }
+
+    #[test]
+    fn git_grep_scoped_preflight_refuses_dangling_links_without_dispatch() {
+        assert_git_grep_invalid_routes(&["dangling-link"]);
+    }
+
+    fn assert_git_grep_invalid_routes(cases: &[&str]) {
+        for &case in cases {
             let temp = tempfile::tempdir().unwrap();
             let root = temp.path().join("src");
             std::fs::create_dir(&root).unwrap();
@@ -548,8 +513,11 @@ mod tests {
                                     | std::io::ErrorKind::Unsupported
                             ) =>
                         {
-                            eprintln!("directory-link fixture unavailable: {error}");
-                            continue;
+                            unica_process::test_support::skip_without_host_capability(
+                                unica_process::test_support::HostCapability::Symlink,
+                                &format!("directory-link fixture unavailable: {error}"),
+                            );
+                            return;
                         }
                         Err(error) => panic!("directory-link fixture failed: {error}"),
                     }
@@ -671,6 +639,7 @@ mod tests {
         assert_eq!(runner.commands.lock().unwrap().len(), 1);
     }
 
+    /// rule: INV.RUNTIME.TIMERS-PRESERVE-WORK
     #[test]
     fn git_grep_without_deadline_passes_absence_to_the_process_runner() {
         let runner = FakeRunner {
@@ -790,6 +759,7 @@ mod tests {
     /// spends the whole provider budget reading Unica's own index of the very
     /// tree it was asked to search, and publishes generated bytes in place of
     /// the source hit it displaced.
+    /// rule: INV.APP.CODE-SEARCH-SOURCE-BOUNDARIES
     #[test]
     fn git_grep_excludes_the_generated_cache_from_the_lexical_corpus() {
         let root = std::env::temp_dir().join(format!(
@@ -1353,6 +1323,7 @@ mod tests {
         assert!(section.diagnostics[0].contains("without any valid results"));
     }
 
+    /// rule: INV.APP.CODE-SEARCH-RESULT-EVIDENCE
     #[test]
     fn git_grep_keeps_valid_hits_but_reports_malformed_siblings_as_partial() {
         let runner = FakeRunner {
@@ -1395,6 +1366,7 @@ mod tests {
         assert!(capped.diagnostics.iter().any(|item| item.contains("limit")));
     }
 
+    /// rule: INV.APP.CODE-SEARCH-SOURCE-BOUNDARIES
     #[test]
     fn git_grep_does_not_publish_a_parent_escape_as_a_location() {
         let runner = FakeRunner {
@@ -1493,6 +1465,71 @@ mod tests {
     }
 
     #[test]
+    fn bsl_analyzer_budget_envelope_reaches_the_provider_limit_without_failing() {
+        // Так анализатор отвечает на обычный запрос к большой конфигурации:
+        // вывод не помещается в его бюджет, и лишние попадания отброшены.
+        let envelope = serde_json::json!({
+            "action": "search_code",
+            "budget_exhausted": true,
+            "freshness": {"completeness": {"status": "partial", "reasons": [
+                {"code": "output_budget", "detail": "hits trimmed to fit max_output_tokens"}
+            ]}},
+            "shown": 1,
+            "total": 20,
+            "hits": [{
+                "rank": 1,
+                "graph_id": "method/common/Module/Run",
+                "kind": "procedure",
+                "line_start": 3,
+                "line_end": 7,
+                "location": {"path": "Module.bsl"},
+                "modality": "L",
+                "path": "Module.bsl",
+                "snippet": "Procedure Run()",
+                "symbol": "Run"
+            }]
+        });
+
+        let section = parse_bsl_analyzer_search(&envelope.to_string(), &context());
+
+        assert_eq!(section.status, ProviderSectionStatus::LimitReached);
+        assert_eq!(
+            section.termination.as_ref().unwrap().code,
+            unica_code_intelligence::model::SearchTerminationCode::LimitReached
+        );
+        assert!(!section.search_complete);
+        assert_eq!(section.hits.len(), 1);
+        let hit = &section.hits[0];
+        assert_eq!(hit.rank, Some(1));
+        assert_eq!(hit.line, 3);
+        assert_eq!(hit.end_line, Some(7));
+        assert_eq!(hit.symbol.as_deref(), Some("Run"));
+        assert_eq!(hit.kind.as_deref(), Some("procedure"));
+        assert_eq!(hit.snippet, "Procedure Run()");
+        assert_eq!(hit.attributes["graphId"], "method/common/Module/Run");
+        assert!(section
+            .diagnostics
+            .iter()
+            .any(|line| line.contains("max_output_tokens")));
+    }
+
+    #[test]
+    fn bsl_analyzer_budget_envelope_cannot_name_a_place_outside_the_source() {
+        let envelope = serde_json::json!({
+            "budget_exhausted": true,
+            "hits": [{"line_start": 2, "location": {"path": "/outside/Secret.bsl"}}]
+        });
+
+        let section = parse_bsl_analyzer_search(&envelope.to_string(), &context());
+
+        assert_eq!(section.status, ProviderSectionStatus::Failed);
+        assert!(section.hits.is_empty());
+        assert!(!serde_json::to_string(&section)
+            .unwrap()
+            .contains("Secret.bsl"));
+    }
+
+    #[test]
     fn bsl_analyzer_not_ready_envelope_is_a_retryable_dependency() {
         // The analyzer names this state `Pending` and ships `retry_after_ms`
         // alongside: it promises the next attempt can differ. Flattening that
@@ -1514,6 +1551,7 @@ mod tests {
         assert_eq!(section.diagnostics, vec!["indexing 40%".to_string()]);
     }
 
+    /// rule: INV.APP.CODE-SEARCH-RESULT-EVIDENCE
     #[test]
     fn bsl_analyzer_empty_results_with_index_ready_footer_are_empty() {
         for text in [
@@ -1531,6 +1569,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.APP.CODE-SEARCH-RESULT-EVIDENCE
     #[test]
     fn bsl_analyzer_empty_marker_does_not_hide_untrusted_tail() {
         for text in [
@@ -1567,6 +1606,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.APP.CODE-SEARCH-RESULT-EVIDENCE
     #[test]
     fn bsl_analyzer_busy_or_building_index_is_a_retryable_wait_not_an_empty_answer() {
         use unica_code_intelligence::model::SearchTerminationCode;
@@ -1616,6 +1656,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.APP.CODE-SEARCH-RESULT-EVIDENCE
     #[test]
     fn bsl_analyzer_empty_marker_with_a_queued_or_running_index_is_pending() {
         // After a published edit the analyzer answers before its index update
@@ -1676,6 +1717,7 @@ mod tests {
             .any(|item| item.contains("malformed bsl-analyzer search header")));
     }
 
+    /// rule: INV.APP.CODE-SEARCH-RESULT-EVIDENCE
     #[test]
     fn bsl_analyzer_does_not_claim_complete_when_one_header_is_unreadable() {
         let section = parse_bsl_analyzer_search(
@@ -1701,6 +1743,7 @@ mod tests {
         assert!(capped.diagnostics.iter().any(|item| item.contains("limit")));
     }
 
+    /// rule: INV.APP.CODE-SEARCH-RESULT-EVIDENCE
     #[test]
     fn cancelled_projection_is_not_reported_as_a_malformed_search_result() {
         let cancellation = CancellationToken::new();
@@ -1711,13 +1754,8 @@ mod tests {
             20,
             &cancellation,
         );
-        let rlm = super::parse_rlm_search(
-            r#"[{"text":"Post","source_type":"method","path":"CommonModules/Sales/Ext/Module.bsl","detail":{"line":1}}]"#,
-            &context(),
-            20,
-            &cancellation,
-        );
-        for section in [analyzer, rlm] {
+        {
+            let section = analyzer;
             assert_eq!(section.status, ProviderSectionStatus::Failed);
             assert!(section.hits.is_empty());
             assert!(section.diagnostics[0].starts_with(CANCELLED_PREFIX));
@@ -1830,6 +1868,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.RUNTIME.TIMERS-PRESERVE-WORK
     #[test]
     fn bsl_search_without_deadline_refuses_before_legacy_service_dispatch() {
         let client = FakeBslClient {
@@ -1870,6 +1909,7 @@ mod tests {
         assert!(client.calls.lock().unwrap().is_empty());
     }
 
+    /// rule: INV.RUNTIME.TIMERS-PRESERVE-WORK
     #[test]
     fn bsl_graph_without_deadline_refuses_before_legacy_service_dispatch() {
         let client = FakeBslClient {
@@ -2040,9 +2080,149 @@ mod tests {
         assert_eq!(calls[0].1["action"], "search_code");
         assert_eq!(calls[0].1["query"], "Post");
         assert_eq!(calls[0].1["limit"], 50);
+        assert_eq!(calls[0].1["max_output_tokens"], 50_000);
         assert!(calls[0].2 <= Duration::from_secs(120));
     }
 
+    #[test]
+    fn bsl_analyzer_listing_frame_is_not_reported_as_unparsed_output() {
+        let section = parse_bsl_analyzer_search(
+            "Modality tag per hit: [L] lexical-only\n\
+             #1 [L] CommonModules/Sales/Ext/Module.bsl:1 :: Post (procedure)\n\
+             \n\
+             -- semantic skipped: not configured (set EMBEDDING_URL) --\n\
+             Indexing lexical: ready\n\
+             Indexing semantic: disabled\n",
+            &context(),
+        );
+        assert_eq!(section.hits.len(), 1);
+        assert_eq!(
+            section.diagnostics,
+            vec!["semantic skipped: not configured (set EMBEDDING_URL)".to_string()]
+        );
+
+        // Неготовый индекс рядом с попаданиями не прячется.
+        let pending = parse_bsl_analyzer_search(
+            "#1 [L] CommonModules/Sales/Ext/Module.bsl:1 :: Post (procedure)\n\
+             \n\
+             Indexing lexical: running\n",
+            &context(),
+        );
+        assert!(pending
+            .diagnostics
+            .iter()
+            .any(|line| line.contains("Indexing lexical: running")));
+    }
+
+    /// rule: INV.APP.CODE-SEARCH-RESULT-EVIDENCE
+    #[test]
+    fn bsl_analyzer_process_log_never_reaches_the_search_answer() {
+        // Журнал сборки индекса растёт вместе с процессом: попав в ответ, он
+        // занимал страницу и вытеснял попадания.
+        let log = "2026-11-06T16:19:28.850332300+05:00  WARN table not found alias=secret-marker\n"
+            .repeat(4_000);
+        let budget_envelope = serde_json::json!({
+            "budget_exhausted": true,
+            "freshness": {"completeness": {"reasons": [
+                {"code": "output_budget", "detail": "hits trimmed to fit max_output_tokens"}
+            ]}},
+            "hits": [{
+                "line_start": 3,
+                "location": {"path": "Module.bsl"},
+                "snippet": "Procedure Run()",
+                "symbol": "Run"
+            }]
+        })
+        .to_string();
+        for (reply, status, reason) in [
+            (
+                budget_envelope.as_str(),
+                ProviderSectionStatus::LimitReached,
+                Some("max_output_tokens"),
+            ),
+            (
+                "#broken header\n#2 [L] CommonModules/Sales/Ext/Module.bsl:1 :: Post (procedure)",
+                ProviderSectionStatus::Partial,
+                Some("malformed"),
+            ),
+            (
+                r#"{"status":"not_ready","detail":"indexing 40%","retry_after_ms":1500}"#,
+                ProviderSectionStatus::TimedOut,
+                Some("indexing 40%"),
+            ),
+            (
+                "unexpected analyzer reply",
+                ProviderSectionStatus::Failed,
+                None,
+            ),
+        ] {
+            let client = FakeBslClient {
+                calls: Mutex::new(Vec::new()),
+                output: McpToolOutput {
+                    result_text: reply.to_string(),
+                    stderr: log.clone(),
+                },
+            };
+            let provider = BslAnalyzerProvider::new(
+                &client,
+                crate::infrastructure::analysis_composition::source_bindings(),
+            );
+
+            let section = provider.search(
+                &SearchRequest {
+                    query: "Post".to_string(),
+                    limit: 50,
+                },
+                &context(),
+                ProviderDeadline::new(Instant::now() + Duration::from_secs(120)),
+                &CancellationToken::new(),
+            );
+
+            assert_eq!(section.status, status, "{reply}");
+            let text = serde_json::to_string(&section).unwrap();
+            assert!(!text.contains("secret-marker"), "{reply}: {text}");
+            assert!(text.len() < 4_096, "{reply}: {} bytes", text.len());
+            if let Some(reason) = reason {
+                assert!(
+                    section.diagnostics.iter().any(|line| line.contains(reason)),
+                    "{reply}: {:?}",
+                    section.diagnostics
+                );
+            }
+        }
+
+        // Причина после журнала остаётся, но одной короткой строкой.
+        let fatal = format!("fatal: graph database is unavailable {}", "x".repeat(5_000));
+        let client = FakeBslClient {
+            calls: Mutex::new(Vec::new()),
+            output: McpToolOutput {
+                result_text: "unexpected analyzer reply".to_string(),
+                stderr: format!("{log}{fatal}\n"),
+            },
+        };
+        let section = BslAnalyzerProvider::new(
+            &client,
+            crate::infrastructure::analysis_composition::source_bindings(),
+        )
+        .search(
+            &SearchRequest {
+                query: "Post".to_string(),
+                limit: 50,
+            },
+            &context(),
+            ProviderDeadline::new(Instant::now() + Duration::from_secs(120)),
+            &CancellationToken::new(),
+        );
+        let text = serde_json::to_string(&section).unwrap();
+        assert!(
+            text.contains("fatal: graph database is unavailable"),
+            "{text}"
+        );
+        assert!(!text.contains("secret-marker"), "{text}");
+        assert!(text.len() < 4_096, "{} bytes", text.len());
+    }
+
+    /// rule: INV.APP.CODE-SEARCH-RESULT-EVIDENCE
     #[test]
     fn bsl_analyzer_at_requested_limit_does_not_claim_exhaustion() {
         let client = FakeBslClient {
@@ -2085,6 +2265,7 @@ mod tests {
         assert_eq!(section.matches.relation, SearchCountRelation::Exact);
     }
 
+    /// rule: INV.APP.CODE-SEARCH-RESULT-EVIDENCE
     #[test]
     fn bsl_analyzer_at_its_internal_cap_does_not_claim_exhaustion() {
         let output = (1..=50)
@@ -2102,6 +2283,7 @@ mod tests {
         assert_eq!(section.matches.relation, SearchCountRelation::LowerBound);
     }
 
+    /// rule: INV.APP.CODE-SEARCH-RESULT-EVIDENCE
     #[test]
     fn bsl_analyzer_output_budget_truncation_does_not_claim_exhaustion() {
         let section = super::parse_bsl_analyzer_search(
@@ -2112,11 +2294,12 @@ mod tests {
             &CancellationToken::new(),
         );
         assert_eq!(section.hits.len(), 1);
-        assert_eq!(section.status, ProviderSectionStatus::Partial);
+        assert_eq!(section.status, ProviderSectionStatus::LimitReached);
         assert!(!section.search_complete);
         assert_eq!(section.matches.relation, SearchCountRelation::LowerBound);
     }
 
+    /// rule: INV.APP.CODE-SEARCH-SOURCE-BOUNDARIES
     #[test]
     fn bsl_analyzer_does_not_broaden_metadata_scoped_search() {
         let client = FakeBslClient {
@@ -2245,818 +2428,8 @@ mod tests {
             .any(|diagnostic| diagnostic.contains("fatal: graph database is unavailable")));
     }
 
-    #[test]
-    fn rlm_parser_maps_unified_helper_rows_without_cross_provider_scoring() {
-        let section = parse_rlm_search(
-            r#"[
-                {
-                    "text": "Post",
-                    "source_type": "method",
-                    "object_name": "Sales",
-                    "path": "CommonModules/Sales/Ext/Module.bsl",
-                    "path_kind": "bsl",
-                    "detail": {
-                        "name": "Post",
-                        "type": "procedure",
-                        "line": 42,
-                        "end_line": 58,
-                        "rank": -2.75
-                    }
-                },
-                {
-                    "text": "Goods",
-                    "source_type": "object",
-                    "object_name": "Goods",
-                    "path": "Catalogs/Goods.xml",
-                    "path_kind": "metadata",
-                    "detail": {}
-                }
-            ]"#,
-            &context(),
-        );
-
-        assert_eq!(section.status, ProviderSectionStatus::Ok);
-        assert_eq!(section.hits.len(), 2);
-        assert_eq!(section.hits[0].rank, Some(1));
-        assert_eq!(section.hits[0].provider_score, Some(-2.75));
-        assert_eq!(section.hits[0].line, 42);
-        assert_eq!(section.hits[0].end_line, Some(58));
-        assert_eq!(section.hits[0].symbol.as_deref(), Some("Post"));
-        assert_eq!(section.hits[0].kind.as_deref(), Some("procedure"));
-        assert_eq!(section.hits[1].rank, Some(2));
-        assert_eq!(section.hits[1].provider_score, None);
-        assert_eq!(section.hits[1].line, 1);
-    }
-
-    #[test]
-    fn rlm_parser_fails_when_every_non_empty_row_is_malformed() {
-        let section = parse_rlm_search(
-            r#"[
-                {"text": "missing path", "detail": {}},
-                {"path": "CommonModules/X/Ext/Module.bsl", "detail": {}}
-            ]"#,
-            &context(),
-        );
-
-        assert_eq!(section.status, ProviderSectionStatus::Failed);
-        assert!(section.hits.is_empty());
-        assert_eq!(section.diagnostics.len(), 3);
-        assert!(section.diagnostics[0].contains("no valid rows"));
-    }
-
-    #[test]
-    fn rlm_does_not_publish_an_absolute_path_outside_source_set() {
-        let section = parse_rlm_search(
-            r#"[{
-                "text": "Password",
-                "source_type": "variable",
-                "path": "/outside/Secret.bsl",
-                "detail": {"line": 2}
-            }]"#,
-            &context(),
-        );
-
-        assert_eq!(section.status, ProviderSectionStatus::Failed);
-        assert!(section.hits.is_empty());
-        assert!(!serde_json::to_string(&section)
-            .unwrap()
-            .contains("Secret.bsl"));
-    }
-
-    #[test]
-    fn rlm_parser_keeps_valid_rows_and_reports_malformed_siblings() {
-        let section = parse_rlm_search(
-            r#"[
-                {},
-                {
-                    "text": "Post",
-                    "source_type": "method",
-                    "path": "CommonModules/X/Ext/Module.bsl",
-                    "detail": {"line": 7}
-                }
-            ]"#,
-            &context(),
-        );
-
-        assert_eq!(section.hits.len(), 1);
-        assert_eq!(section.status, ProviderSectionStatus::Partial);
-        assert_eq!(section.hits[0].rank, Some(1));
-        assert_eq!(section.hits[0].line, 7);
-        assert_eq!(section.diagnostics.len(), 1);
-        assert!(!section.search_complete);
-        assert_eq!(section.matches.relation, SearchCountRelation::LowerBound);
-        assert_eq!(
-            section.termination.unwrap().code,
-            unica_code_intelligence::model::SearchTerminationCode::ProviderFailed
-        );
-
-        let capped = super::parse_rlm_search(
-            r#"[{}, {"text":"Post","source_type":"method","path":"CommonModules/X/Ext/Module.bsl","detail":{"line":7}}]"#,
-            &context(),
-            2,
-            &CancellationToken::new(),
-        );
-        assert_eq!(capped.status, ProviderSectionStatus::Partial);
-        assert!(capped.diagnostics.iter().any(|item| item.contains("limit")));
-    }
-
-    struct FakeRlmClient {
-        readiness: IndexReadiness,
-        calls: Mutex<Vec<(PathBuf, String, usize, Duration)>>,
-        result: String,
-    }
-
-    impl RlmSearchClient for FakeRlmClient {
-        fn search(
-            &self,
-            context: &CodeIntelligenceContext,
-            query: &str,
-            limit: usize,
-            timeout: Duration,
-            _cancellation: &CancellationToken,
-        ) -> Result<RlmSearchAttempt, String> {
-            self.calls.lock().unwrap().push((
-                context.source_root.path.clone(),
-                query.to_string(),
-                limit,
-                timeout,
-            ));
-            match &self.readiness {
-                IndexReadiness::Ready { .. } => Ok(RlmSearchAttempt::Output(
-                    unica_adapter_rlm::session::WorkspaceServiceRlmOutput {
-                        result_text: self.result.clone(),
-                        stderr: String::new(),
-                        freshness: Some("unknown".to_string()),
-                        build_id: Some("test-build".to_string()),
-                        maintenance: None,
-                    },
-                )),
-                readiness => Ok(RlmSearchAttempt::Unready(readiness.clone())),
-            }
-        }
-    }
-
-    struct CancellingRlmSearchClient {
-        readiness: IndexReadiness,
-        search_calls: Mutex<Vec<Duration>>,
-    }
-
-    impl RlmSearchClient for CancellingRlmSearchClient {
-        fn search(
-            &self,
-            _context: &CodeIntelligenceContext,
-            _query: &str,
-            _limit: usize,
-            timeout: Duration,
-            cancellation: &CancellationToken,
-        ) -> Result<RlmSearchAttempt, String> {
-            self.search_calls.lock().unwrap().push(timeout);
-            cancellation.cancel();
-            match &self.readiness {
-                IndexReadiness::Ready { .. } => Ok(RlmSearchAttempt::Output(
-                    unica_adapter_rlm::session::WorkspaceServiceRlmOutput {
-                        result_text: "[]".to_string(),
-                        stderr: String::new(),
-                        freshness: Some("unknown".to_string()),
-                        build_id: Some("test-build".to_string()),
-                        maintenance: None,
-                    },
-                )),
-                readiness => Ok(RlmSearchAttempt::Unready(readiness.clone())),
-            }
-        }
-    }
-
     // This client exercises the production wait loop. Only the clock,
     // service boundary and sleep are controlled; no ready-made attempt is injected.
-    struct ControlledRlmWaitClient {
-        readiness: Vec<IndexReadiness>,
-        elapsed_before_wait: Duration,
-        wait_overshoot: Duration,
-        cancel_on_wait: bool,
-        calls: Mutex<Vec<Duration>>,
-    }
-
-    impl RlmSearchClient for ControlledRlmWaitClient {
-        fn search(
-            &self,
-            context: &CodeIntelligenceContext,
-            _query: &str,
-            _limit: usize,
-            timeout: Duration,
-            cancellation: &CancellationToken,
-        ) -> Result<RlmSearchAttempt, String> {
-            let started_at = manual_now();
-            set_manual_now(started_at + self.elapsed_before_wait);
-            let mut next = 0;
-            super::wait_for_rlm_search(
-                context,
-                timeout,
-                cancellation,
-                || manual_now().duration_since(started_at),
-                |remaining| {
-                    self.calls.lock().unwrap().push(remaining);
-                    let readiness = self
-                        .readiness
-                        .get(next)
-                        .expect("the wait loop dispatched beyond the controlled sequence")
-                        .clone();
-                    next += 1;
-                    Ok(WorkspaceServiceRlmCall::Unready(readiness))
-                },
-                |duration| {
-                    set_manual_now(manual_now() + duration + self.wait_overshoot);
-                    if self.cancel_on_wait {
-                        cancellation.cancel();
-                    }
-                    Ok(())
-                },
-            )
-        }
-    }
-
-    fn controlled_rlm_wait_section(
-        client: &ControlledRlmWaitClient,
-        budget: Duration,
-        cancellation: &CancellationToken,
-    ) -> ProviderSearchSection {
-        let started_at = Instant::now();
-        set_manual_now(started_at);
-        RlmProvider::new(
-            client,
-            crate::infrastructure::analysis_composition::rlm_navigation_client(),
-            crate::infrastructure::analysis_composition::source_bindings(),
-        )
-        .search(
-            &SearchRequest {
-                query: "Find".into(),
-                limit: 20,
-            },
-            &context(),
-            ProviderDeadline::with_clock(started_at + budget, manual_now),
-            cancellation,
-        )
-    }
-
-    #[test]
-    fn rlm_wait_deadline_preserves_the_last_observed_maintenance() {
-        use unica_code_intelligence::model::IndexMaintenanceEvidence;
-        use unica_code_intelligence::model::SearchTerminationCode;
-        for overshoot in [Duration::ZERO, Duration::from_nanos(1)] {
-            for (states, budget, detail, evidence) in [
-                (
-                    vec![IndexReadiness::Queued],
-                    Duration::from_millis(100),
-                    "indexQueued",
-                    IndexMaintenanceEvidence::Queued,
-                ),
-                (
-                    vec![IndexReadiness::Building],
-                    Duration::from_millis(100),
-                    "buildingIndex",
-                    IndexMaintenanceEvidence::Running,
-                ),
-                (
-                    vec![IndexReadiness::Queued, IndexReadiness::Building],
-                    Duration::from_millis(300),
-                    "buildingIndex",
-                    IndexMaintenanceEvidence::Running,
-                ),
-            ] {
-                let expected_calls = states.len();
-                let client = ControlledRlmWaitClient {
-                    readiness: states,
-                    elapsed_before_wait: Duration::ZERO,
-                    wait_overshoot: overshoot,
-                    cancel_on_wait: false,
-                    calls: Mutex::new(Vec::new()),
-                };
-                let section =
-                    controlled_rlm_wait_section(&client, budget, &CancellationToken::new());
-                assert_eq!(
-                    section.status,
-                    ProviderSectionStatus::TimedOut,
-                    "{section:?}"
-                );
-                let termination = section.termination.as_ref().unwrap();
-                assert_eq!(termination.code, SearchTerminationCode::DependencyPending);
-                assert_eq!(termination.detail_code.as_deref(), Some(detail));
-                assert!(termination.retryable);
-                assert_eq!(section.index_maintenance, Some(evidence));
-                let calls = client.calls.lock().unwrap();
-                assert_eq!(calls.len(), expected_calls);
-                assert_eq!(calls[0], budget);
-                if expected_calls == 2 {
-                    assert_eq!(calls[1], budget - Duration::from_millis(100) - overshoot);
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn rlm_wait_deadline_before_observation_is_typed_without_maintenance() {
-        use unica_code_intelligence::model::SearchTerminationCode;
-        let budget = Duration::from_millis(100);
-        for overshoot in [Duration::ZERO, Duration::from_nanos(1)] {
-            let client = ControlledRlmWaitClient {
-                readiness: Vec::new(),
-                elapsed_before_wait: budget + overshoot,
-                wait_overshoot: Duration::ZERO,
-                cancel_on_wait: false,
-                calls: Mutex::new(Vec::new()),
-            };
-            let section = controlled_rlm_wait_section(&client, budget, &CancellationToken::new());
-            assert_eq!(
-                section.status,
-                ProviderSectionStatus::TimedOut,
-                "{section:?}"
-            );
-            let termination = section.termination.as_ref().unwrap();
-            assert_eq!(termination.code, SearchTerminationCode::DeadlineExceeded);
-            assert!(termination.retryable);
-            assert_eq!(termination.detail_code, None);
-            assert_eq!(section.index_maintenance, None);
-            assert!(client.calls.lock().unwrap().is_empty());
-        }
-    }
-
-    #[test]
-    fn rlm_wait_cancellation_wins_over_expiration_and_observed_maintenance() {
-        for readiness in [IndexReadiness::Queued, IndexReadiness::Building] {
-            let client = ControlledRlmWaitClient {
-                readiness: vec![readiness],
-                elapsed_before_wait: Duration::ZERO,
-                wait_overshoot: Duration::from_nanos(1),
-                cancel_on_wait: true,
-                calls: Mutex::new(Vec::new()),
-            };
-            let section = controlled_rlm_wait_section(
-                &client,
-                Duration::from_millis(100),
-                &CancellationToken::new(),
-            );
-            assert_eq!(section.status, ProviderSectionStatus::Failed);
-            assert!(section.diagnostics[0].starts_with(CANCELLED_PREFIX));
-            assert_eq!(section.index_maintenance, None);
-            assert_eq!(client.calls.lock().unwrap().len(), 1);
-        }
-    }
-
-    #[test]
-    fn rlm_wait_terminal_observation_supersedes_prior_maintenance() {
-        use unica_code_intelligence::model::IndexMaintenanceEvidence;
-        use unica_code_intelligence::model::SearchTerminationCode;
-        for evidence in [
-            IndexMaintenanceEvidence::Unknown,
-            IndexMaintenanceEvidence::StartFailed,
-        ] {
-            let client = ControlledRlmWaitClient {
-                readiness: vec![
-                    IndexReadiness::Queued,
-                    IndexReadiness::MaintenanceUnavailable(evidence),
-                ],
-                elapsed_before_wait: Duration::ZERO,
-                wait_overshoot: Duration::ZERO,
-                cancel_on_wait: false,
-                calls: Mutex::new(Vec::new()),
-            };
-            let section = controlled_rlm_wait_section(
-                &client,
-                Duration::from_secs(1),
-                &CancellationToken::new(),
-            );
-            assert_eq!(section.status, ProviderSectionStatus::Unavailable);
-            assert_eq!(
-                section.termination.unwrap().code,
-                SearchTerminationCode::ProviderUnavailable
-            );
-            assert_eq!(section.index_maintenance, Some(evidence));
-            assert_eq!(client.calls.lock().unwrap().len(), 2);
-        }
-    }
-
-    struct DeadlineRecordingRlmSearchClient {
-        timeouts: Mutex<Vec<Duration>>,
-    }
-
-    impl RlmSearchClient for DeadlineRecordingRlmSearchClient {
-        fn search(
-            &self,
-            _context: &CodeIntelligenceContext,
-            _query: &str,
-            _limit: usize,
-            timeout: Duration,
-            _cancellation: &CancellationToken,
-        ) -> Result<RlmSearchAttempt, String> {
-            self.timeouts.lock().unwrap().push(timeout);
-            Ok(RlmSearchAttempt::Output(
-                unica_adapter_rlm::session::WorkspaceServiceRlmOutput {
-                    result_text: "[]".to_string(),
-                    stderr: String::new(),
-                    freshness: Some("unknown".to_string()),
-                    build_id: Some("test-build".to_string()),
-                    maintenance: None,
-                },
-            ))
-        }
-    }
-
-    struct CancelledRlmSearchClient;
-
-    impl RlmSearchClient for CancelledRlmSearchClient {
-        fn search(
-            &self,
-            _context: &CodeIntelligenceContext,
-            _query: &str,
-            _limit: usize,
-            _timeout: Duration,
-            _cancellation: &CancellationToken,
-        ) -> Result<RlmSearchAttempt, String> {
-            Err("cancelled: readiness transport stopped".to_string())
-        }
-    }
-
-    #[test]
-    fn rlm_provider_redacts_maintenance_failure_while_preserving_readable_results() {
-        struct FailedMaintenanceClient;
-        impl RlmSearchClient for FailedMaintenanceClient {
-            fn search(
-                &self,
-                _: &CodeIntelligenceContext,
-                _: &str,
-                _: usize,
-                _: Duration,
-                _: &CancellationToken,
-            ) -> Result<RlmSearchAttempt, String> {
-                Ok(RlmSearchAttempt::Output(
-                    unica_adapter_rlm::session::WorkspaceServiceRlmOutput {
-                        result_text: "[]".to_string(),
-                        stderr: String::new(),
-                        freshness: Some("unknown".to_string()),
-                        build_id: Some("readable-build".to_string()),
-                        maintenance: Some(
-                            unica_analysis_services::protocol::IndexMaintenanceStatus::Failed(
-                                "worker failed; token=maintenance-secret".to_string(),
-                            ),
-                        ),
-                    },
-                ))
-            }
-        }
-        let section = RlmProvider::new(
-            &FailedMaintenanceClient,
-            crate::infrastructure::analysis_composition::rlm_navigation_client(),
-            crate::infrastructure::analysis_composition::source_bindings(),
-        )
-        .search(
-            &SearchRequest {
-                query: "Find".to_string(),
-                limit: 20,
-            },
-            &context(),
-            ProviderDeadline::new(Instant::now() + Duration::from_secs(5)),
-            &CancellationToken::new(),
-        );
-        assert_eq!(section.status, ProviderSectionStatus::Empty);
-        assert_eq!(section.index_build_id.as_deref(), Some("readable-build"));
-        assert_eq!(
-            section.index_maintenance,
-            Some(unica_code_intelligence::model::IndexMaintenanceEvidence::ExecutionFailed)
-        );
-        assert!(section.diagnostics.is_empty());
-        assert!(!serde_json::to_string(&section)
-            .unwrap()
-            .contains("maintenance-secret"));
-    }
-
-    #[test]
-    fn rlm_provider_delegates_readiness_and_execution_to_one_client_operation() {
-        let client = FakeRlmClient {
-            readiness: IndexReadiness::Ready {
-                db_path: PathBuf::from("/cache/index.db"),
-            },
-            calls: Mutex::new(Vec::new()),
-            result: "[]".to_string(),
-        };
-
-        let section = RlmProvider::new(
-            &client,
-            crate::infrastructure::analysis_composition::rlm_navigation_client(),
-            crate::infrastructure::analysis_composition::source_bindings(),
-        )
-        .search(
-            &SearchRequest {
-                query: "Post".to_string(),
-                limit: 20,
-            },
-            &context(),
-            ProviderDeadline::new(Instant::now() + Duration::from_secs(90)),
-            &CancellationToken::new(),
-        );
-
-        assert_eq!(section.status, ProviderSectionStatus::Empty);
-        assert_eq!(section.index_freshness.as_deref(), Some("unknown"));
-        assert_eq!(section.index_build_id.as_deref(), Some("test-build"));
-        let calls = client.calls.lock().unwrap();
-        assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].0, PathBuf::from("/workspace/src"));
-        assert_eq!(calls[0].1, "Post");
-        assert_eq!(calls[0].2, 20);
-        assert!(calls[0].3 > Duration::from_secs(45));
-        assert!(calls[0].3 <= Duration::from_secs(90));
-    }
-
-    #[test]
-    fn rlm_at_requested_limit_does_not_claim_exhaustion() {
-        let client = FakeRlmClient {
-            readiness: IndexReadiness::Ready {
-                db_path: PathBuf::from("/cache/index.db"),
-            },
-            calls: Mutex::new(Vec::new()),
-            result: r#"[{"text":"Post","source_type":"method","path":"CommonModules/Sales/Ext/Module.bsl","detail":{"line":1}}]"#.to_string(),
-        };
-        let provider = RlmProvider::new(
-            &client,
-            crate::infrastructure::analysis_composition::rlm_navigation_client(),
-            crate::infrastructure::analysis_composition::source_bindings(),
-        );
-        let section = provider.search(
-            &SearchRequest {
-                query: "Post".to_string(),
-                limit: 1,
-            },
-            &context(),
-            ProviderDeadline::new(Instant::now() + Duration::from_secs(15)),
-            &CancellationToken::new(),
-        );
-        assert_eq!(section.hits.len(), 1);
-        assert_eq!(section.status, ProviderSectionStatus::LimitReached);
-        assert!(!section.search_complete);
-        assert_eq!(section.matches.relation, SearchCountRelation::LowerBound);
-
-        let section = provider.search(
-            &SearchRequest {
-                query: "Post".to_string(),
-                limit: 2,
-            },
-            &context(),
-            ProviderDeadline::new(Instant::now() + Duration::from_secs(15)),
-            &CancellationToken::new(),
-        );
-        assert_eq!(section.status, ProviderSectionStatus::Ok);
-        assert!(section.search_complete);
-        assert_eq!(section.matches.relation, SearchCountRelation::Exact);
-    }
-
-    #[test]
-    fn rlm_at_one_source_quota_does_not_claim_exhaustion() {
-        let rows = (1..=33)
-            .map(|line| {
-                json!({
-                    "text": format!("Post{line}"),
-                    "source_type": "method",
-                    "path": "CommonModules/Sales/Ext/Module.bsl",
-                    "detail": {"line": line}
-                })
-            })
-            .collect::<Vec<_>>();
-        let output = serde_json::to_string(&rows).unwrap();
-        let capped = super::parse_rlm_search(&output, &context(), 200, &CancellationToken::new());
-        assert_eq!(capped.hits.len(), 33);
-        assert_eq!(capped.status, ProviderSectionStatus::LimitReached);
-        assert!(!capped.search_complete);
-        assert_eq!(capped.matches.relation, SearchCountRelation::LowerBound);
-
-        let uncapped = super::parse_rlm_search(
-            &serde_json::to_string(&rows[..32]).unwrap(),
-            &context(),
-            200,
-            &CancellationToken::new(),
-        );
-        assert_eq!(uncapped.status, ProviderSectionStatus::Ok);
-        assert!(uncapped.search_complete);
-        assert_eq!(uncapped.matches.relation, SearchCountRelation::Exact);
-    }
-
-    #[test]
-    fn rlm_does_not_broaden_metadata_scoped_search() {
-        let client = FakeRlmClient {
-            readiness: IndexReadiness::Ready {
-                db_path: PathBuf::from("/cache/index.db"),
-            },
-            calls: Mutex::new(Vec::new()),
-            result: "[]".to_string(),
-        };
-
-        let section = RlmProvider::new(
-            &client,
-            crate::infrastructure::analysis_composition::rlm_navigation_client(),
-            crate::infrastructure::analysis_composition::source_bindings(),
-        )
-        .search(
-            &SearchRequest {
-                query: "Post".to_string(),
-                limit: 20,
-            },
-            &metadata_scoped_context(),
-            ProviderDeadline::new(Instant::now() + Duration::from_secs(15)),
-            &CancellationToken::new(),
-        );
-
-        assert_eq!(section.status, ProviderSectionStatus::Unavailable);
-        assert!(section.diagnostics.join(" ").contains("metadataPath"));
-        assert!(client.calls.lock().unwrap().is_empty());
-    }
-
-    #[test]
-    fn rlm_search_without_deadline_refuses_before_legacy_service_dispatch() {
-        let client = FakeRlmClient {
-            readiness: IndexReadiness::Ready {
-                db_path: PathBuf::from("/cache/index.db"),
-            },
-            calls: Mutex::new(Vec::new()),
-            result: "[]".to_string(),
-        };
-        let section = RlmProvider::new(
-            &client,
-            crate::infrastructure::analysis_composition::rlm_navigation_client(),
-            crate::infrastructure::analysis_composition::source_bindings(),
-        )
-        .search(
-            &SearchRequest {
-                query: "Post".to_string(),
-                limit: 20,
-            },
-            &context(),
-            ProviderDeadline::no_deadline(),
-            &CancellationToken::new(),
-        );
-        assert_eq!(section.status, ProviderSectionStatus::Unavailable);
-        let termination = section.termination.as_ref().unwrap();
-        assert_eq!(
-            termination.code,
-            unica_code_intelligence::model::SearchTerminationCode::ProviderUnavailable
-        );
-        assert!(!termination.retryable);
-        assert_eq!(termination.detail_code, None);
-        assert_eq!(
-            section.diagnostics,
-            vec![
-                unica_work_control::provider_deadline::ProviderDeadlineError::Unsupported
-                    .to_string()
-            ]
-        );
-        assert!(client.calls.lock().unwrap().is_empty());
-    }
-
-    #[test]
-    fn rlm_search_passes_the_single_remaining_deadline_to_the_client() {
-        let started_at = Instant::now();
-        set_manual_now(started_at);
-        let client = DeadlineRecordingRlmSearchClient {
-            timeouts: Mutex::new(Vec::new()),
-        };
-
-        let section = RlmProvider::new(
-            &client,
-            crate::infrastructure::analysis_composition::rlm_navigation_client(),
-            crate::infrastructure::analysis_composition::source_bindings(),
-        )
-        .search(
-            &SearchRequest {
-                query: "Post".to_string(),
-                limit: 20,
-            },
-            &context(),
-            ProviderDeadline::with_clock(started_at + Duration::from_millis(200), manual_now),
-            &CancellationToken::new(),
-        );
-
-        assert_eq!(section.status, ProviderSectionStatus::Empty);
-        assert_eq!(
-            client.timeouts.lock().unwrap().as_slice(),
-            &[Duration::from_millis(200)]
-        );
-    }
-
-    #[test]
-    fn rlm_search_checks_cancellation_before_interpreting_an_expired_deadline() {
-        let started_at = Instant::now();
-        set_manual_now(started_at);
-        let cancellation = CancellationToken::new();
-        cancellation.cancel();
-        let client = CancellingRlmSearchClient {
-            readiness: IndexReadiness::Missing,
-            search_calls: Mutex::new(Vec::new()),
-        };
-
-        let section = RlmProvider::new(
-            &client,
-            crate::infrastructure::analysis_composition::rlm_navigation_client(),
-            crate::infrastructure::analysis_composition::source_bindings(),
-        )
-        .search(
-            &SearchRequest {
-                query: "Post".to_string(),
-                limit: 20,
-            },
-            &context(),
-            ProviderDeadline::with_clock(started_at, manual_now),
-            &cancellation,
-        );
-
-        assert_eq!(section.status, ProviderSectionStatus::Failed);
-        assert!(
-            section.diagnostics[0].starts_with(CANCELLED_PREFIX),
-            "{:?}",
-            section.diagnostics
-        );
-        assert!(client.search_calls.lock().unwrap().is_empty());
-    }
-
-    #[test]
-    fn rlm_search_checks_cancellation_after_the_client_operation() {
-        let started_at = Instant::now();
-        set_manual_now(started_at);
-        let cancellation = CancellationToken::new();
-        let client = CancellingRlmSearchClient {
-            readiness: IndexReadiness::Ready {
-                db_path: PathBuf::from("/cache/index.db"),
-            },
-            search_calls: Mutex::new(Vec::new()),
-        };
-
-        let section = RlmProvider::new(
-            &client,
-            crate::infrastructure::analysis_composition::rlm_navigation_client(),
-            crate::infrastructure::analysis_composition::source_bindings(),
-        )
-        .search(
-            &SearchRequest {
-                query: "Post".to_string(),
-                limit: 20,
-            },
-            &context(),
-            ProviderDeadline::with_clock(started_at + Duration::from_secs(1), manual_now),
-            &cancellation,
-        );
-
-        assert_eq!(section.status, ProviderSectionStatus::Failed);
-        assert!(
-            section.diagnostics[0].starts_with(CANCELLED_PREFIX),
-            "{:?}",
-            section.diagnostics
-        );
-        assert_eq!(client.search_calls.lock().unwrap().len(), 1);
-    }
-
-    #[test]
-    fn rlm_search_preserves_prefixed_client_cancellation_without_a_set_token() {
-        let section = RlmProvider::new(
-            &CancelledRlmSearchClient,
-            crate::infrastructure::analysis_composition::rlm_navigation_client(),
-            crate::infrastructure::analysis_composition::source_bindings(),
-        )
-        .search(
-            &SearchRequest {
-                query: "Post".to_string(),
-                limit: 20,
-            },
-            &context(),
-            ProviderDeadline::new(Instant::now() + Duration::from_secs(1)),
-            &CancellationToken::new(),
-        );
-
-        assert_eq!(section.status, ProviderSectionStatus::Failed);
-        assert_eq!(
-            section.diagnostics,
-            vec!["cancelled: readiness transport stopped"]
-        );
-    }
-
-    #[test]
-    fn rlm_search_unready_diagnostic_is_redacted() {
-        let error = rlm_search_unready_error(IndexReadiness::Failed(
-            "token=top-secret index generation changed".to_string(),
-        ));
-
-        assert_eq!(error, "token=<redacted>");
-        assert!(!error.contains("top-secret"));
-    }
-
-    #[test]
-    fn rlm_provider_declares_its_search_and_navigation_capabilities() {
-        let provider = crate::infrastructure::analysis_composition::rlm_provider();
-
-        assert_eq!(
-            provider.capabilities(),
-            &[
-                ProviderCapability::Search,
-                ProviderCapability::Definition,
-                ProviderCapability::ObjectProfile,
-            ]
-        );
-    }
 
     #[test]
     fn an_outline_names_the_module_it_read_as_an_absolute_artifact() {
@@ -3220,165 +2593,5 @@ mod tests {
         }
 
         let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn the_outline_capability_belongs_to_the_current_source_provider() {
-        // ADR-0020: the outline is proved from the BSL file on disk, so the
-        // index-backed provider must not claim it and the registry must not be
-        // able to route it there.
-        assert!(!crate::infrastructure::analysis_composition::rlm_provider()
-            .capabilities()
-            .contains(&ProviderCapability::Outline));
-        assert!(crate::infrastructure::analysis_composition::bsl_provider()
-            .capabilities()
-            .contains(&ProviderCapability::Outline));
-
-        let registry = CodeIntelligenceRegistry::new(vec![
-            Arc::new(crate::infrastructure::analysis_composition::rlm_provider())
-                as Arc<dyn CodeIntelligenceProvider>,
-            Arc::new(crate::infrastructure::analysis_composition::bsl_provider()),
-        ])
-        .unwrap();
-
-        assert_eq!(
-            registry
-                .provider_for(ProviderCapability::Outline)
-                .map(|provider| provider.identity()),
-            Some(ProviderId::BslAnalyzer.identity())
-        );
-    }
-
-    #[test]
-    fn rlm_provider_reports_building_without_opening_session() {
-        let client = FakeRlmClient {
-            readiness: IndexReadiness::Building,
-            calls: Mutex::new(Vec::new()),
-            result: "[]".to_string(),
-        };
-
-        let section = RlmProvider::new(
-            &client,
-            crate::infrastructure::analysis_composition::rlm_navigation_client(),
-            crate::infrastructure::analysis_composition::source_bindings(),
-        )
-        .search(
-            &SearchRequest {
-                query: "Post".to_string(),
-                limit: 20,
-            },
-            &context(),
-            ProviderDeadline::new(Instant::now() + Duration::from_secs(45)),
-            &CancellationToken::new(),
-        );
-
-        assert_eq!(section.status, ProviderSectionStatus::TimedOut);
-        assert_eq!(section.diagnostics, vec!["rlm index building".to_string()]);
-        assert_eq!(
-            serde_json::to_value(&section).unwrap()["termination"],
-            json!({
-                "code": "dependencyPending",
-                "retryable": true,
-                "detailCode": "buildingIndex"
-            })
-        );
-        assert_eq!(client.calls.lock().unwrap().len(), 1);
-    }
-
-    #[test]
-    fn rlm_provider_does_not_infer_maintenance_from_staleness() {
-        let client = FakeRlmClient {
-            readiness: IndexReadiness::Stale {
-                status: "stale (content)".to_string(),
-            },
-            calls: Mutex::new(Vec::new()),
-            result: "[]".to_string(),
-        };
-
-        let section = RlmProvider::new(
-            &client,
-            crate::infrastructure::analysis_composition::rlm_navigation_client(),
-            crate::infrastructure::analysis_composition::source_bindings(),
-        )
-        .search(
-            &SearchRequest {
-                query: "Post".to_string(),
-                limit: 20,
-            },
-            &context(),
-            ProviderDeadline::new(Instant::now() + Duration::from_secs(45)),
-            &CancellationToken::new(),
-        );
-
-        assert_eq!(section.status, ProviderSectionStatus::Unavailable);
-        assert_eq!(
-            section.termination.unwrap(),
-            unica_code_intelligence::model::SearchTermination::provider_unavailable()
-        );
-    }
-
-    #[test]
-    fn rlm_provider_does_not_infer_maintenance_from_incomplete_index() {
-        let client = FakeRlmClient {
-            readiness: IndexReadiness::Incomplete,
-            calls: Mutex::new(Vec::new()),
-            result: "[]".to_string(),
-        };
-
-        let section = RlmProvider::new(
-            &client,
-            crate::infrastructure::analysis_composition::rlm_navigation_client(),
-            crate::infrastructure::analysis_composition::source_bindings(),
-        )
-        .search(
-            &SearchRequest {
-                query: "Post".to_string(),
-                limit: 20,
-            },
-            &context(),
-            ProviderDeadline::new(Instant::now() + Duration::from_secs(45)),
-            &CancellationToken::new(),
-        );
-
-        assert_eq!(section.status, ProviderSectionStatus::Unavailable);
-        assert!(section.hits.is_empty());
-        assert!(section
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.contains("maintenance state is unknown")));
-        assert_eq!(
-            section.termination.unwrap(),
-            unica_code_intelligence::model::SearchTermination::provider_unavailable()
-        );
-    }
-
-    #[test]
-    fn rlm_provider_redacts_unready_failures() {
-        let client = FakeRlmClient {
-            readiness: IndexReadiness::Failed(
-                "token=top-secret index generation failed".to_string(),
-            ),
-            calls: Mutex::new(Vec::new()),
-            result: "[]".to_string(),
-        };
-
-        let section = RlmProvider::new(
-            &client,
-            crate::infrastructure::analysis_composition::rlm_navigation_client(),
-            crate::infrastructure::analysis_composition::source_bindings(),
-        )
-        .search(
-            &SearchRequest {
-                query: "Post".to_string(),
-                limit: 20,
-            },
-            &context(),
-            ProviderDeadline::new(Instant::now() + Duration::from_secs(45)),
-            &CancellationToken::new(),
-        );
-
-        assert_eq!(section.status, ProviderSectionStatus::Unavailable);
-        assert!(!section.diagnostics.join(" ").contains("top-secret"));
-        assert_eq!(client.calls.lock().unwrap().len(), 1);
     }
 }

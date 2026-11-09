@@ -6,9 +6,7 @@ use crate::contracts::{
 use crate::*;
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
-use unica_address::source_target::{
-    metadata_address_kind_spellings, MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20,
-};
+use unica_address::source_target::{metadata_address_kind_spellings, MetadataAddress};
 use unica_operation_contract::ArgumentShape;
 const INFO_SECTIONS: &[(&str, MetaInfoSection)] = &[
     ("roles", MetaInfoSection::Roles),
@@ -805,6 +803,7 @@ pub fn parse_element_input(
                 .map(|value| parse_position(value, field))
                 .transpose()
         })?,
+        deny_incomplete_values: reader.read("denyIncompleteValues", optional_bool_at)?,
         template_type: reader.read("templateType", |object, key, field| {
             object
                 .get(key)
@@ -818,6 +817,8 @@ pub fn parse_element_input(
                 .transpose()
         })?,
         indexing: reader.read("indexing", optional_string_at)?,
+        master: reader.read("master", optional_bool_at)?,
+        main_filter: reader.read("mainFilter", optional_bool_at)?,
     })
 }
 pub fn parse_element_update(
@@ -832,6 +833,8 @@ pub fn parse_element_update(
     reader.reject_unknown()?;
     Ok(MetaElementUpdateInput {
         indexing: reader.read("indexing", optional_string_at)?,
+        master: reader.read("master", optional_bool_at)?,
+        main_filter: reader.read("mainFilter", optional_bool_at)?,
         deny_incomplete_values: reader.read("denyIncompleteValues", optional_bool_at)?,
         type_reduction_mode: reader.read("typeReductionMode", optional_string_at)?,
         name: reader.read("name", required_string_at)?,
@@ -1251,7 +1254,7 @@ pub fn required_metadata_path(
     parse_address(&raw, field)
 }
 pub fn parse_address(raw: &str, field: &str) -> Result<MetadataAddress, MetaDiagnostic> {
-    MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, raw).map_err(|error| {
+    MetadataAddress::parse_logical(raw).map_err(|error| {
         invalid(
             field,
             format!("invalid logical metadata address: {}", error.message),
@@ -1851,6 +1854,56 @@ mod shared_primitive_contract_tests {
         let error = parse_predefined_fields(&reader).unwrap_err();
         assert_eq!(error.field.as_deref(), Some(field), "{pointer}: {error:?}");
     }
+    }
+}
+
+#[cfg(test)]
+mod dimension_flags_tests {
+    use super::*;
+    #[test]
+    fn dimension_flags_decode_explicit_false() {
+        let omitted = parse_element_input(&json!({"name":"Item"}), "elements[0]", false).unwrap();
+        assert_eq!(
+            (
+                omitted.master,
+                omitted.main_filter,
+                omitted.deny_incomplete_values
+            ),
+            (None, None, None)
+        );
+        let value =
+            json!({"name":"Item","master":false,"mainFilter":false,"denyIncompleteValues":false});
+        assert!(parse_element_input(&value, "elements[0]", false).is_ok());
+        assert!(parse_element_update(&value, "elements[0]").is_ok());
+    }
+}
+
+#[cfg(test)]
+mod dimension_flag_invalid_tests {
+    use super::*;
+    #[test]
+    fn dimension_flags_reject_non_booleans_and_aliases() {
+        for key in [
+            "master",
+            "mainFilter",
+            "denyIncompleteValues",
+            "Master",
+            "MainFilter",
+            "DenyIncompleteValues",
+        ] {
+            for bad in [json!("false"), json!(0), json!(null)] {
+                let mut value = json!({"name":"Item"});
+                value[key] = bad;
+                assert!(
+                    parse_element_input(&value, "elements[0]", false).is_err(),
+                    "{value}"
+                );
+                assert!(
+                    parse_element_update(&value, "elements[0]").is_err(),
+                    "{value}"
+                );
+            }
+        }
     }
 }
 

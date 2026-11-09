@@ -2362,27 +2362,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "unica-adapter-rlm"
-version = "0.15.0-rc.1"
-dependencies = [
- "fs2",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "unica-analysis-services",
- "unica-artifact-delivery",
- "unica-code-intelligence",
- "unica-execution-contract",
- "unica-process",
- "unica-redaction",
- "unica-source-contract",
- "unica-work-control",
- "unica-workspace",
- "uuid",
-]
-
-[[package]]
 name = "unica-adapter-v8-runner"
 version = "0.15.0-rc.1"
 dependencies = [
@@ -2395,7 +2374,6 @@ dependencies = [
  "unica-execution-contract",
  "unica-process",
  "unica-redaction",
- "unica-runner",
  "unica-source-contract",
  "unica-source-designer",
  "unica-work-control",
@@ -2425,6 +2403,40 @@ dependencies = [
  "unica-source-contract",
  "unica-work-control",
  "unica-workspace",
+ "uuid",
+]
+
+[[package]]
+name = "unica-application"
+version = "0.15.0-rc.1"
+dependencies = [
+ "jsonschema",
+ "serde",
+ "serde_json",
+ "sha2",
+ "unica-address",
+ "unica-artifact-delivery",
+ "unica-bootstrap",
+ "unica-bsl",
+ "unica-code-intelligence",
+ "unica-configuration",
+ "unica-dcs",
+ "unica-diagnostics",
+ "unica-domain",
+ "unica-execution",
+ "unica-execution-contract",
+ "unica-forms",
+ "unica-metadata",
+ "unica-navigation",
+ "unica-operation-contract",
+ "unica-operations",
+ "unica-refusal",
+ "unica-roles",
+ "unica-source-contract",
+ "unica-templates",
+ "unica-work-control",
+ "unica-workspace",
+ "unica-xdto",
  "uuid",
 ]
 
@@ -2531,7 +2543,6 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
- "unica-documentation-sources",
 ]
 
 [[package]]
@@ -2543,11 +2554,20 @@ dependencies = [
  "unica-address",
  "unica-bsl",
  "unica-bsl-parser",
+ "unica-code-model",
  "unica-navigation",
  "unica-source-contract",
  "unica-work-control",
  "unica-workspace",
  "uuid",
+]
+
+[[package]]
+name = "unica-code-model"
+version = "0.15.0-rc.1"
+dependencies = [
+ "serde",
+ "unica-work-control",
 ]
 
 [[package]]
@@ -2558,7 +2578,6 @@ dependencies = [
  "base64 0.22.1",
  "cap-fs-ext",
  "cap-primitives",
- "chrono",
  "diffy",
  "flate2",
  "fs2",
@@ -2566,12 +2585,8 @@ dependencies = [
  "jsonschema",
  "libc",
  "objc2-core-foundation",
- "percent-encoding",
- "proc-macro2",
  "quote",
  "regex",
- "regex-syntax",
- "rmcp",
  "roxmltree",
  "rust-stemmers",
  "serde",
@@ -2581,14 +2596,13 @@ dependencies = [
  "syn 2.0.118",
  "tar",
  "tempfile",
- "tokio",
  "toml",
  "unica-adapter-bsl-analyzer",
  "unica-adapter-lexical",
- "unica-adapter-rlm",
  "unica-adapter-v8-runner",
  "unica-address",
  "unica-analysis-services",
+ "unica-application",
  "unica-artifact-delivery",
  "unica-bindings",
  "unica-bootstrap",
@@ -2596,16 +2610,18 @@ dependencies = [
  "unica-bsl-parser",
  "unica-code-intelligence",
  "unica-configuration",
- "unica-daemon",
+ "unica-daemon-protocol",
  "unica-dcs",
  "unica-dcs-designer",
  "unica-diagnostics",
  "unica-documentation",
  "unica-documentation-sources",
+ "unica-domain",
  "unica-execution",
  "unica-execution-contract",
  "unica-forms",
  "unica-forms-designer",
+ "unica-lsp",
  "unica-metadata",
  "unica-metadata-designer",
  "unica-navigation",
@@ -2613,12 +2629,10 @@ dependencies = [
  "unica-operation-contract",
  "unica-operations",
  "unica-process",
- "unica-project-health",
  "unica-redaction",
  "unica-refusal",
  "unica-roles",
  "unica-roles-designer",
- "unica-runner",
  "unica-source-contract",
  "unica-source-designer",
  "unica-templates",
@@ -2652,6 +2666,66 @@ dependencies = [
 name = "unica-daemon"
 version = "0.15.0-rc.1"
 dependencies = [
+ "chrono",
+ "flate2",
+ "jsonschema",
+ "proc-macro2",
+ "quote",
+ "regex",
+ "regex-syntax",
+ "rmcp",
+ "roxmltree",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sha2",
+ "syn 2.0.118",
+ "tempfile",
+ "tokio",
+ "unica-adapter-bsl-analyzer",
+ "unica-adapter-lexical",
+ "unica-adapter-v8-runner",
+ "unica-address",
+ "unica-analysis-services",
+ "unica-application",
+ "unica-artifact-delivery",
+ "unica-bootstrap",
+ "unica-bsl",
+ "unica-bsl-parser",
+ "unica-code-intelligence",
+ "unica-coder",
+ "unica-daemon-protocol",
+ "unica-diagnostics",
+ "unica-documentation",
+ "unica-documentation-sources",
+ "unica-execution",
+ "unica-execution-contract",
+ "unica-forms",
+ "unica-lsp",
+ "unica-lsp-contract",
+ "unica-metadata",
+ "unica-metadata-designer",
+ "unica-navigation",
+ "unica-operations",
+ "unica-process",
+ "unica-project-health",
+ "unica-redaction",
+ "unica-refusal",
+ "unica-source-contract",
+ "unica-source-designer",
+ "unica-templates",
+ "unica-work-control",
+ "unica-workspace",
+ "unica-xdto",
+ "unica-xml-format",
+ "url",
+ "uuid",
+]
+
+[[package]]
+name = "unica-daemon-protocol"
+version = "0.15.0-rc.1"
+dependencies = [
  "serde",
  "serde_json",
  "sha2",
@@ -2660,6 +2734,7 @@ dependencies = [
  "unica-bootstrap",
  "unica-execution",
  "unica-execution-contract",
+ "unica-lsp-contract",
  "unica-process",
  "unica-work-control",
  "unica-workspace",
@@ -2691,7 +2766,6 @@ dependencies = [
  "unica-dcs",
  "unica-metadata",
  "unica-operation-contract",
- "unica-operations",
  "unica-source-contract",
  "unica-source-designer",
  "unica-xml-format",
@@ -2740,16 +2814,41 @@ dependencies = [
  "flate2",
  "percent-encoding",
  "rust-stemmers",
+ "serde",
  "serde_json",
  "sha2",
  "tempfile",
  "toml",
+ "unica-bsl-types",
  "unica-configuration",
  "unica-documentation",
  "unica-metadata",
  "unica-network",
  "unica-work-control",
  "zip",
+]
+
+[[package]]
+name = "unica-domain"
+version = "0.15.0-rc.1"
+dependencies = [
+ "jsonschema",
+ "serde",
+ "serde_json",
+ "unica-address",
+ "unica-artifact-delivery",
+ "unica-bsl",
+ "unica-dcs",
+ "unica-execution-contract",
+ "unica-forms",
+ "unica-metadata",
+ "unica-operation-contract",
+ "unica-operations",
+ "unica-refusal",
+ "unica-roles",
+ "unica-source-contract",
+ "unica-templates",
+ "unica-xdto",
 ]
 
 [[package]]
@@ -2767,7 +2866,6 @@ dependencies = [
  "unica-process",
  "unica-redaction",
  "unica-refusal",
- "unica-runner",
  "unica-source-contract",
  "unica-work-control",
  "unica-workspace",
@@ -2812,7 +2910,6 @@ dependencies = [
  "unica-forms",
  "unica-metadata",
  "unica-operation-contract",
- "unica-operations",
  "unica-source-contract",
  "unica-source-designer",
  "unica-xml-format",
@@ -2833,6 +2930,35 @@ dependencies = [
  "unica-metadata",
  "unica-source-contract",
  "unica-workspace",
+]
+
+[[package]]
+name = "unica-lsp"
+version = "0.15.0-rc.1"
+dependencies = [
+ "percent-encoding",
+ "sha2",
+ "tempfile",
+ "unica-address",
+ "unica-bsl",
+ "unica-code-model",
+ "unica-execution-contract",
+ "unica-lsp-contract",
+ "unica-source-contract",
+ "unica-source-designer",
+ "unica-work-control",
+ "unica-workspace",
+ "url",
+]
+
+[[package]]
+name = "unica-lsp-contract"
+version = "0.15.0-rc.1"
+dependencies = [
+ "serde",
+ "serde_json",
+ "unica-work-control",
+ "uuid",
 ]
 
 [[package]]
@@ -2950,6 +3076,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "unica-product"
+version = "0.15.0-rc.1"
+dependencies = [
+ "chrono",
+ "flate2",
+ "libc",
+ "proc-macro2",
+ "quote",
+ "roxmltree",
+ "serde",
+ "serde_json",
+ "sha2",
+ "syn 2.0.118",
+ "tempfile",
+ "unica-analysis-services",
+ "unica-artifact-delivery",
+ "unica-bootstrap",
+ "unica-daemon",
+ "unica-daemon-protocol",
+ "unica-execution",
+ "unica-metadata-designer",
+ "unica-process",
+ "unica-source-designer",
+ "unica-workspace",
+ "unica-xml-format",
+ "url",
+ "uuid",
+ "windows-sys 0.59.0",
+]
+
+[[package]]
 name = "unica-project-health"
 version = "0.15.0-rc.1"
 dependencies = [
@@ -2999,17 +3156,6 @@ dependencies = [
  "unica-source-contract",
  "unica-source-designer",
  "unica-xml-format",
-]
-
-[[package]]
-name = "unica-runner"
-version = "0.15.0-rc.1"
-dependencies = [
- "serde",
- "serde_json",
- "unica-process",
- "unica-redaction",
- "unica-source-contract",
 ]
 
 [[package]]

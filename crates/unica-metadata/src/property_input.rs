@@ -41,23 +41,40 @@ pub struct ConfigurationPropertyChanges {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WsReferencePropertyChanges {
     pub location_url: String,
+    pub comment: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PropertiesIntent {
+    DocumentNumerator(crate::document_numerator::DocumentNumeratorChanges),
     Metadata(MetaPropertyChanges),
+    LanguageCode {
+        code: String,
+        comment: Option<String>,
+    },
+    CommentOnly {
+        kind: unica_address::address::NodeKind,
+        comment: String,
+    },
     FunctionalOption(FunctionalOptionPropertyChanges),
     Role(RolePropertyChanges),
     WSReference(WsReferencePropertyChanges),
     Subsystem(SubsystemPropertyChanges),
     Configuration(ConfigurationPropertyChanges),
-    StyleItem(crate::style_color::StyleItemColor),
+    StyleItem(StyleItemPropertyChanges),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FunctionalOptionPropertyChanges {
+    pub comment: Option<String>,
     pub location: Option<String>,
     pub privileged_get_mode: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StyleItemPropertyChanges {
+    pub color: crate::style_color::StyleItemColor,
+    pub comment: Option<String>,
 }
 
 type DecodeResult<T> = Result<T, ContractError>;
@@ -288,6 +305,14 @@ fn decode_with_contract(
             let values = reader
                 .field("values", false)?
                 .ok_or_else(|| invalid(&values_path, "values must be an object"))?;
+            if site == PropertiesSite::CommentOnly(unica_address::address::NodeKind::Language)
+                && values.get("LanguageCode").is_some()
+            {
+                return Err(invalid(
+                    format!("{values_path}.LanguageCode"),
+                    "an extension adopts its language: LanguageCode is set in the main configuration; only Comment changes here",
+                ));
+            }
             let shape = reader
                 .shape
                 .property("values")
@@ -297,20 +322,60 @@ fn decode_with_contract(
                 return Err(invalid(&values_path, "property changes must not be empty"));
             }
             let intent = match site {
-                PropertiesSite::StyleItem => {
-                    let value = values_reader
-                        .field("Value", false)?
-                        .and_then(Value::as_str)
-                        .and_then(crate::style_color::StyleItemColor::parse_argument)
-                        .ok_or_else(|| {
-                            invalid(
-                                format!("{values_path}.Value"),
-                                "Value must be a supported RGB, web or builtin style color",
-                            )
-                        })?;
-                    PropertiesIntent::StyleItem(value)
+                PropertiesSite::CommentOnly(kind) => PropertiesIntent::CommentOnly {
+                    kind,
+                    comment: values_reader
+                        .string(DescriptorProperty::Comment)?
+                        .ok_or_else(|| invalid(&values_path, "Comment is required"))?,
+                },
+                PropertiesSite::DocumentNumerator => {
+                    use crate::document_numerator::DocumentNumeratorChanges;
+                    PropertiesIntent::DocumentNumerator(DocumentNumeratorChanges {
+                        number_type: values_reader
+                            .field("NumberType", false)?
+                            .and_then(Value::as_str)
+                            .map(str::to_owned),
+                        number_length: values_reader
+                            .field("NumberLength", true)?
+                            .and_then(json_u32),
+                        number_allowed_length: values_reader
+                            .field("NumberAllowedLength", false)?
+                            .and_then(Value::as_str)
+                            .map(str::to_owned),
+                        number_periodicity: values_reader
+                            .field("NumberPeriodicity", false)?
+                            .and_then(Value::as_str)
+                            .map(str::to_owned),
+                        check_unique: values_reader
+                            .field("CheckUnique", false)?
+                            .and_then(Value::as_bool),
+                        comment: values_reader.string(DescriptorProperty::Comment)?,
+                    })
                 }
-                PropertiesSite::Metadata(kind) => {
+                PropertiesSite::StyleItem => {
+                    let comment = values_reader.string(DescriptorProperty::Comment)?;
+                    let value = values_reader.field("Value", false)?;
+                    if let Some(value) = value {
+                        let color = value
+                            .as_str()
+                            .and_then(crate::style_color::StyleItemColor::parse_argument)
+                            .ok_or_else(|| {
+                                invalid(
+                                    format!("{values_path}.Value"),
+                                    "Value must be a supported RGB, web or builtin style color",
+                                )
+                            })?;
+                        PropertiesIntent::StyleItem(StyleItemPropertyChanges { color, comment })
+                    } else {
+                        PropertiesIntent::CommentOnly {
+                            kind: unica_address::address::NodeKind::StyleItem,
+                            comment: comment.ok_or_else(|| {
+                                invalid(&values_path, "Comment or Value is required")
+                            })?,
+                        }
+                    }
+                }
+                PropertiesSite::Metadata { kind, .. } => {
                     // Preserve Metadata's existing conversion diagnostics and
                     // structured Type model, then verify the shared shape.
                     let changes =
@@ -324,6 +389,9 @@ fn decode_with_contract(
                         .iter()
                         .filter(|spec| spec.allowed_kinds.contains(&kind))
                     {
+                        if values_reader.shape.property(spec.public_name).is_none() {
+                            continue;
+                        }
                         values_reader.field(
                             spec.public_name,
                             spec.value_kind == MetaPropertyValueKind::UnsignedInteger,
@@ -331,24 +399,67 @@ fn decode_with_contract(
                     }
                     PropertiesIntent::Metadata(changes)
                 }
-                PropertiesSite::WSReference => {
-                    PropertiesIntent::WSReference(WsReferencePropertyChanges {
-                        location_url: values_reader
-                            .string(DescriptorProperty::LocationUrl)?
-                            .ok_or_else(|| {
+                PropertiesSite::Language => {
+                    let comment = values_reader.string(DescriptorProperty::Comment)?;
+                    match values_reader.field("LanguageCode", false)? {
+                        Some(value) => {
+                            let code = value.as_str().ok_or_else(|| {
                                 invalid(
-                                    format!("{path}.values.LocationURL"),
-                                    "LocationURL is required",
+                                    format!("{values_path}.LanguageCode"),
+                                    "LanguageCode must be a string",
                                 )
+                            })?;
+                            crate::language_code::validate_language_code(code).map_err(
+                                |message| invalid(format!("{values_path}.LanguageCode"), message),
+                            )?;
+                            PropertiesIntent::LanguageCode {
+                                code: code.to_string(),
+                                comment,
+                            }
+                        }
+                        None => PropertiesIntent::CommentOnly {
+                            kind: unica_address::address::NodeKind::Language,
+                            comment: comment.ok_or_else(|| {
+                                invalid(&values_path, "Comment or LanguageCode is required")
                             })?,
-                    })
+                        },
+                    }
+                }
+                PropertiesSite::WSReference => {
+                    let comment = values_reader.string(DescriptorProperty::Comment)?;
+                    let location_url = values_reader.string(DescriptorProperty::LocationUrl)?;
+                    match location_url {
+                        Some(location_url) => {
+                            PropertiesIntent::WSReference(WsReferencePropertyChanges {
+                                location_url,
+                                comment,
+                            })
+                        }
+                        None => PropertiesIntent::CommentOnly {
+                            kind: unica_address::address::NodeKind::WsReference,
+                            comment: comment.ok_or_else(|| {
+                                invalid(&values_path, "Comment or LocationURL is required")
+                            })?,
+                        },
+                    }
                 }
                 PropertiesSite::FunctionalOption => {
-                    PropertiesIntent::FunctionalOption(FunctionalOptionPropertyChanges {
+                    let changes = FunctionalOptionPropertyChanges {
+                        comment: values_reader.string(DescriptorProperty::Comment)?,
                         location: values_reader.string(DescriptorProperty::Location)?,
                         privileged_get_mode: values_reader
                             .boolean(DescriptorProperty::PrivilegedGetMode)?,
-                    })
+                    };
+                    if changes.location.is_none() && changes.privileged_get_mode.is_none() {
+                        PropertiesIntent::CommentOnly {
+                            kind: unica_address::address::NodeKind::FunctionalOption,
+                            comment: changes
+                                .comment
+                                .ok_or_else(|| invalid(&values_path, "Comment is required"))?,
+                        }
+                    } else {
+                        PropertiesIntent::FunctionalOption(changes)
+                    }
                 }
                 PropertiesSite::Role => PropertiesIntent::Role(RolePropertyChanges {
                     synonym: values_reader.string(DescriptorProperty::Synonym)?,
@@ -404,9 +515,149 @@ mod tests {
     }
 
     #[test]
+    fn language_code_has_a_closed_descriptor_profile() {
+        let at = unica_address::address::QualifiedAddress::parse("main:Language.English").unwrap();
+        let site =
+            PropertiesSite::from_address(&at, unica_source_contract::SourceSetKind::Configuration)
+                .expect("Language must have a property profile");
+        let schema = PropertiesOperation::Set.contract(site).schema;
+        let properties = schema["properties"]["values"]["properties"]
+            .as_object()
+            .unwrap();
+        let mut names = properties.keys().cloned().collect::<Vec<_>>();
+        names.sort();
+        assert_eq!(names, ["Comment", "LanguageCode", "comment"]);
+        assert_eq!(properties["LanguageCode"]["type"], "string");
+        for code in ["de", "zz", "en-US"] {
+            assert!(matches!(
+                decode(site, serde_json::json!({"values":{"LanguageCode":code}})),
+                Ok(PropertiesIntent::LanguageCode { comment: None, .. })
+            ));
+        }
+        for value in [
+            serde_json::json!(""),
+            serde_json::json!("bad?code"),
+            serde_json::json!(true),
+        ] {
+            assert!(decode(site, serde_json::json!({"values":{"LanguageCode":value}})).is_err());
+        }
+        assert!(matches!(
+            decode(site, serde_json::json!({"values":{"comment":"Назначение"}})),
+            Ok(PropertiesIntent::CommentOnly { kind: unica_address::address::NodeKind::Language, comment })
+                if comment == "Назначение"
+        ));
+        assert!(matches!(
+            decode(site, serde_json::json!({"values":{"Comment":"","LanguageCode":"de"}})),
+            Ok(PropertiesIntent::LanguageCode { code, comment: Some(comment) })
+                if code == "de" && comment.is_empty()
+        ));
+        for values in [
+            serde_json::json!({"Comment":"A","comment":"A"}),
+            serde_json::json!({"Comment":null}),
+            serde_json::json!({"Synonym":"Label"}),
+            serde_json::json!({}),
+        ] {
+            assert!(
+                decode(site, serde_json::json!({"values":values})).is_err(),
+                "{values}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_extension_language_refuses_language_code_with_the_main_configuration_reason() {
+        let site = PropertiesSite::CommentOnly(unica_address::address::NodeKind::Language);
+        let error = decode(site, serde_json::json!({"values":{"LanguageCode":"de"}}))
+            .expect_err("an adopted language has no LanguageCode write");
+        assert_eq!(error.path, "ops[7].args.values.LanguageCode");
+        assert!(
+            error.message.contains("set in the main configuration"),
+            "{}",
+            error.message
+        );
+        assert!(matches!(
+            decode(site, serde_json::json!({"values":{"Comment":"x"}})),
+            Ok(PropertiesIntent::CommentOnly { .. })
+        ));
+    }
+
+    #[test]
+    fn document_numerator_properties_have_a_closed_addressed_write_profile() {
+        let address = unica_address::address::QualifiedAddress::resolve_input(
+            "main:DocumentNumerator.Sales",
+            &["main"],
+        )
+        .unwrap();
+        let site = PropertiesSite::from_address(
+            &address,
+            unica_source_contract::SourceSetKind::Configuration,
+        )
+        .expect("an existing document numerator has a property write profile");
+        for values in [
+            json!({"NumberType":"Number"}),
+            json!({"NumberLength":9}),
+            json!({"NumberAllowedLength":"Variable"}),
+            json!({"NumberPeriodicity":"Month"}),
+            json!({"CheckUnique":false}),
+            json!({"Comment":""}),
+            json!({"comment":"Текст & < >
+"}),
+        ] {
+            decode(site, json!({"values":values})).unwrap();
+        }
+        // Comment is the sixth field of the same closed profile and travels
+        // together with the numerator scalars in one intent.
+        let PropertiesIntent::DocumentNumerator(changes) = decode(
+            site,
+            json!({"values":{"Comment":"Назначение","CheckUnique":true}}),
+        )
+        .unwrap() else {
+            panic!("a document numerator decodes to its own intent");
+        };
+        assert_eq!(changes.comment.as_deref(), Some("Назначение"));
+        assert_eq!(changes.check_unique, Some(true));
+        let schema = PropertiesOperation::Set.contract(site).schema;
+        let mut names = schema["properties"]["values"]["properties"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        names.sort();
+        assert_eq!(
+            names,
+            [
+                "CheckUnique",
+                "Comment",
+                "NumberAllowedLength",
+                "NumberLength",
+                "NumberPeriodicity",
+                "NumberType",
+                "comment"
+            ]
+        );
+        for values in [
+            json!({"Comment":"A","comment":"A"}),
+            json!({"Comment":null}),
+            json!({"Comment":1}),
+            json!({"Synonym":"Label"}),
+            json!({"Name":"Renamed"}),
+            json!({"NumberType":"Unknown"}),
+            json!({"NumberLength":-1}),
+            json!({"CheckUnique":"false"}),
+            json!({}),
+        ] {
+            assert!(decode(site, json!({"values":values})).is_err());
+        }
+    }
+
+    #[test]
     fn every_current_metadata_property_uses_its_owner_schema_and_typed_value() {
         for kind in MetadataKind::ALL {
-            let site = PropertiesSite::Metadata(*kind);
+            let site = PropertiesSite::Metadata {
+                kind: *kind,
+                source_kind: unica_source_contract::SourceSetKind::Configuration,
+            };
             let contract = PropertiesOperation::Set.contract(site);
             let oracle = jsonschema::validator_for(&contract.schema).unwrap();
             for spec in METADATA_PROPERTY_SPECS
@@ -563,7 +814,10 @@ mod tests {
 
     #[test]
     fn metadata_numeric_spellings_and_structured_reference_types_survive_conversion() {
-        let site = PropertiesSite::Metadata(MetadataKind::Catalog);
+        let site = PropertiesSite::Metadata {
+            kind: MetadataKind::Catalog,
+            source_kind: unica_source_contract::SourceSetKind::Configuration,
+        };
         for spelling in ["0", "0.0", "0e0", "4294967295", "4294967295.0"] {
             let number: Value = serde_json::from_str(spelling).unwrap();
             let PropertiesIntent::Metadata(changes) =
@@ -593,9 +847,14 @@ mod tests {
             );
         }
         let args = json!({"values":{"Type":{"variants":[{"kind":"reference","metadataPath":"Catalog.Items"}]}}});
-        let PropertiesIntent::Metadata(changes) =
-            decode(PropertiesSite::Metadata(MetadataKind::Constant), args).unwrap()
-        else {
+        let PropertiesIntent::Metadata(changes) = decode(
+            PropertiesSite::Metadata {
+                kind: MetadataKind::Constant,
+                source_kind: unica_source_contract::SourceSetKind::Configuration,
+            },
+            args,
+        )
+        .unwrap() else {
             unreachable!()
         };
         let MetaPropertyValue::Type(ty) = &changes.entries()[0].1 else {
@@ -606,7 +865,10 @@ mod tests {
         );
         assert_eq!(
             decode(
-                PropertiesSite::Metadata(MetadataKind::Constant),
+                PropertiesSite::Metadata {
+                    kind: MetadataKind::Constant,
+                    source_kind: unica_source_contract::SourceSetKind::Configuration
+                },
                 json!({"values":{"Type":{"variants":[{"kind":"boolean","extra":true}]}}})
             )
             .unwrap_err()

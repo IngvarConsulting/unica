@@ -15,58 +15,58 @@ use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use unica_address::source_target::{
     MetadataAddress, SourceTarget, SourceTargetError, SourceTargetErrorCode,
-    SourceTargetErrorReason, TargetKind, PLATFORM_XML_8_3_27_FORMAT_2_20,
+    SourceTargetErrorReason, TargetKind,
 };
 use unica_execution_contract::adapter_outcome::AdapterOutcome;
 use unica_navigation::source_navigation::{
     authenticate_cursor, page_bounds_from_offset, SOURCE_NAVIGATION_LIMIT_DEFAULT,
     SOURCE_NAVIGATION_LIMIT_MAX,
 };
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use unica_source_contract::proposal::{
     ApplyPlanError, ApplyPlanErrorKind, IndexedPlanOperation, ProvisionalApplyEffect,
 };
 use unica_source_contract::workspace::WorkspaceContext;
 use unica_source_designer::owner::PlatformXmlResourceEvidence;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use unica_workspace::actor::ProviderRootBinding;
 use unica_workspace::compile_transaction::CompileTransaction;
 use unica_workspace::path_policy::WorkspacePathPolicy;
 use unica_workspace::paths::metadata_is_link_or_reparse_point;
 use unica_workspace::paths::normalize_path_identity;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use unica_xdto::operations::{
     PrefixedXmlQName, XdtoAddObjectTypeArgs, XdtoAddPropertyArgs, XdtoAddValueTypeArgs,
     XdtoPropertySpec, XdtoRemovePropertyArgs, XdtoRemoveTypeArgs, XmlNcName,
 };
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use unica_xdto::operations::{XdtoOperation, XdtoPlanOperation, XdtoPropertyPath};
 use unica_xdto::results::*;
 use unica_xdto_designer::descriptor::descriptor_fields;
 
 use unica_xdto_designer::edit_plan::{plan_xdto_edit_operations, PlanningFailure};
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use unica_xdto_designer::info::parse_xdto_info_bytes;
 use unica_xdto_designer::info::{
     build_xdto_info, model_error, parse_xdto_info_model, validate_xdto_type_name,
 };
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use unica_xdto_designer::planner::{
     decode_xdto_plan_operation, plan_xdto_batch, validate_final_xdto_resources,
     XdtoValidationLedger,
 };
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use unica_xdto_designer::planner::{staged_writer_error, staged_writer_operation};
 
 use unica_xdto_designer::{decode, model, required};
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use unica_xdto_designer::{validation, writer};
 
 use model::PackageModel;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use validation::validate;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn parse_xdto_plan_operation(
     operation: &str,
     value: &Value,
@@ -80,7 +80,7 @@ fn parse_xdto_plan_operation(
     decode_xdto_plan_operation(operation, value, op_index, binding.source_set_name())
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn plan_unindexed_xdto_batch(
     staged: unica_workspace::apply::ApplyStagedState,
     authority: unica_workspace::actor::XdtoApplyAuthority<'_>,
@@ -586,8 +586,7 @@ impl XdtoResolutionError {
             (SourceTargetErrorCode::TargetKindMismatch, _) => XdtoPublicErrorCode::NotAnXdtoPackage,
             (SourceTargetErrorCode::ContainmentDenied, _) => XdtoPublicErrorCode::ContainmentDenied,
             (SourceTargetErrorCode::MetadataAddressInvalid, _)
-            | (SourceTargetErrorCode::MetadataAddressNotFound, _)
-            | (SourceTargetErrorCode::AddressProfileUnsupported, _) => {
+            | (SourceTargetErrorCode::MetadataAddressNotFound, _) => {
                 XdtoPublicErrorCode::TargetNotFound
             }
         };
@@ -631,7 +630,7 @@ fn resolve_package(
         .map_err(|error| XdtoResolutionError::new(XdtoPublicErrorCode::SourceSetUnknown, error))?;
     let raw_address = required(args, "metadataPath")
         .map_err(|error| XdtoResolutionError::new(XdtoPublicErrorCode::TargetNotFound, error))?;
-    let address = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, raw_address)
+    let address = MetadataAddress::parse_logical(raw_address)
         .map_err(XdtoResolutionError::from_source_target)?;
     let parts = address.as_str().split('.').collect::<Vec<_>>();
     if parts.len() != 2 || parts[0] != "XDTOPackage" {
@@ -765,7 +764,7 @@ fn prove_xdto_resource(
             format!("cannot resolve XDTO package resource identity: {error}"),
         )
     })?;
-    if !resource_identity.starts_with(&source_root) {
+    if !unica_workspace::paths::path_starts_with_host_root(&resource_identity, &source_root) {
         return Err(XdtoResolutionError::new(
             XdtoPublicErrorCode::ContainmentDenied,
             format!(
@@ -779,9 +778,8 @@ fn prove_xdto_resource(
 }
 
 fn ensure_no_link_components(source_root: &Path, path: &Path) -> Result<(), String> {
-    let relative = path
-        .strip_prefix(source_root)
-        .map_err(|_| "containment_denied: XDTO package resource escapes sourceSet".to_string())?;
+    let relative = unica_workspace::paths::host_path_relative_to(path, source_root)
+        .ok_or_else(|| "containment_denied: XDTO package resource escapes sourceSet".to_string())?;
     let mut current = source_root.to_path_buf();
     for component in relative.components() {
         current.push(component.as_os_str());
@@ -814,7 +812,7 @@ fn descriptor_namespace(path: &Path) -> Result<String, String> {
     descriptor_fields(&bytes).map(|fields| fields.namespace)
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) fn plan_xdto_batch_owned_for_test(
     mut staged: unica_workspace::apply::ApplyStagedState,
     authority: &unica_workspace::actor::XdtoApplyAuthority<'_>,
@@ -837,7 +835,7 @@ pub(crate) fn plan_xdto_batch_owned_for_test(
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
+pub(crate) mod medium_tests {
     use super::{
         apply_with_data, decode, info_with_data, model, parse_xdto_info_bytes,
         parse_xdto_plan_operation, plan_unindexed_xdto_batch, plan_xdto_batch_owned_for_test,
@@ -855,7 +853,7 @@ pub(crate) mod tests {
     use unica_xdto_designer::test_support::{args, PACKAGE};
 
     use crate::infrastructure::native_operations::common::support_guard_violation;
-    use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+    use unica_address::source_target::MetadataAddress;
     use unica_source_contract::proposal::{ApplyPlanError, ApplyPlanErrorKind};
     use unica_source_contract::workspace::WorkspaceContext;
     use unica_workspace::single_file_publisher::with_before_commit_hook;
@@ -884,8 +882,7 @@ pub(crate) mod tests {
             ("typeName", json!("ЛюбаяСсылка")),
         ]);
         let wrapper = info_with_data(&request, &context).unwrap().data.unwrap();
-        let address =
-            MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "XDTOPackage.Sample").unwrap();
+        let address = MetadataAddress::parse_logical("XDTOPackage.Sample").unwrap();
         let core = parse_xdto_info_bytes(
             &fs::read(&package).unwrap(),
             &fs::read(&descriptor).unwrap(),
@@ -2220,6 +2217,7 @@ pub(crate) mod tests {
         fixture.cleanup();
     }
 
+    /// rule: INV.SOURCE.XDTO-ORDERED-BATCH
     #[test]
     fn staged_xdto_add_type_then_property_reads_prior_postimage() {
         let fixture = staged_xdto_fixture("compose", PACKAGE.as_bytes());
@@ -2270,6 +2268,7 @@ pub(crate) mod tests {
         fixture.cleanup();
     }
 
+    /// rule: INV.SOURCE.XDTO-ORDERED-BATCH
     #[test]
     fn staged_xdto_poisoned_second_op_publishes_nothing() {
         let referenced = REFERENCED_PACKAGE;
@@ -2326,6 +2325,7 @@ pub(crate) mod tests {
     /// INV.SOURCE.XDTO-ORDERED-BATCH: an exact repeat of an addition changes
     /// nothing — the canonical plan is empty and publication writes neither
     /// sources nor cache.
+    /// rule: INV.SOURCE.XDTO-ORDERED-BATCH
     #[test]
     fn staged_xdto_exact_repeat_of_an_addition_plans_and_publishes_nothing() {
         let package = package_with_declarations();
@@ -2374,6 +2374,7 @@ pub(crate) mod tests {
     /// INV.SOURCE.XDTO-ORDERED-BATCH: an addition with an existing name and
     /// other content is refused at its own operation, and nothing of the
     /// batch is written.
+    /// rule: INV.SOURCE.XDTO-ORDERED-BATCH
     #[test]
     fn staged_xdto_conflicting_duplicate_is_refused_at_its_operation_without_writes() {
         let package = package_with_declarations();
@@ -2422,6 +2423,7 @@ pub(crate) mod tests {
         }
     }
 
+    /// rule: INV.SOURCE.XDTO-ORDERED-BATCH
     #[test]
     fn staged_xdto_dry_and_real_share_postimage_effects_and_revision() {
         let fixture = staged_xdto_fixture("dry-real-plan", PACKAGE.as_bytes());
@@ -2581,6 +2583,7 @@ pub(crate) mod tests {
         fixture.cleanup();
     }
 
+    /// rule: INV.SOURCE.XDTO-PROPERTY-PATH
     #[test]
     fn staged_xdto_args_are_closed_typed_and_report_exact_paths() {
         let fixture = staged_xdto_fixture("args", PACKAGE.as_bytes());
@@ -2826,6 +2829,7 @@ pub(crate) mod tests {
         }
     }
 
+    /// rule: INV.SOURCE.XDTO-LOCAL-CHANGE
     #[test]
     pub(crate) fn staged_xdto_v12_parity_preserves_exact_bytes_errors_and_noop() {
         let before = r#"<package xmlns="http://v8.1c.ru/8.1/xdto" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:tns="urn:test" targetNamespace="urn:test">
@@ -2991,6 +2995,7 @@ pub(crate) mod tests {
     /// становится путём писателя, точка в имени (`\.` в адресе) остаётся
     /// точкой имени, а удаляемое свойство — последним сегментом. Писатель
     /// получает тот же путь, что прежде давал `propertyPath`.
+    /// rule: INV.SOURCE.XDTO-PROPERTY-PATH
     #[test]
     fn staged_xdto_property_chain_comes_from_the_address() {
         let fixture = staged_xdto_fixture("chain", PACKAGE.as_bytes());
@@ -3073,6 +3078,7 @@ pub(crate) mod tests {
         fixture.cleanup();
     }
 
+    /// rule: INV.SOURCE.XDTO-LOCAL-CHANGE
     #[test]
     fn staged_xdto_package_mapping_is_logical_and_single_resource() {
         let fixture = staged_xdto_fixture("mapping", PACKAGE.as_bytes());
@@ -3233,6 +3239,7 @@ pub(crate) mod tests {
     const RENAMED_PACKAGE: &str = "\u{feff}<package xmlns=\"http://v8.1c.ru/8.1/xdto\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:tns=\"urn:test\" targetNamespace=\"urn:test\">\r\n\t<objectType name=\"Товар\">\r\n\t\t<property name=\"Наименование\" type=\"xs:string\"/>\r\n\t\t<property name=\"Код\" type=\"xs:string\" lowerBound=\"0\" form=\"Attribute\" localName=\"code\"/>\r\n\t\t<property name=\"Цена\" type=\"xs:decimal\" lowerBound=\"0\" upperBound=\"-1\"/>\r\n\t</objectType>\r\n</package>";
     const RENAMED_TYPE: &str = "main:XDTOPackage.Sample.Type.Товар";
 
+    /// rule: INV.SOURCE.XDTO-ORDERED-BATCH
     #[test]
     fn staged_xdto_rename_changes_only_names_and_keeps_pre_existing_findings() {
         let fixture = staged_xdto_fixture("rename", RENAMED_PACKAGE.as_bytes());
@@ -3403,6 +3410,7 @@ pub(crate) mod tests {
 
     const BASED_PACKAGE: &str = "\u{feff}<package xmlns=\"http://v8.1c.ru/8.1/xdto\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:tns=\"urn:test\" targetNamespace=\"urn:test\">\r\n\t<valueType name=\"Процент\" base=\"xs:decimal\" totalDigits=\"5\" fractionDigits=\"2\"/>\r\n\t<valueType name=\"Количество\" base=\"xs:decimal\"/>\r\n\t<objectType name=\"ОсноваА\">\r\n\t\t<property name=\"А\" type=\"xs:string\"/>\r\n\t</objectType>\r\n\t<objectType name=\"ОсноваБ\">\r\n\t\t<property name=\"Б\" type=\"tns:Количество\"/>\r\n\t</objectType>\r\n\t<objectType name=\"Производный\" base=\"tns:ОсноваА\" sequenced=\"true\">\r\n\t\t<property name=\"Своё\" type=\"tns:Процент\"/>\r\n\t</objectType>\r\n\t<objectType name=\"Ссылка\">\r\n\t\t<property name=\"Цель\" type=\"tns:Производный\"/>\r\n\t</objectType>\r\n</package>";
 
+    /// rule: INV.SOURCE.XDTO-LOCAL-CHANGE
     #[test]
     fn staged_xdto_type_set_changes_only_the_base_and_repeats_the_current_base_as_no_op() {
         let fixture = staged_xdto_fixture("type-set", BASED_PACKAGE.as_bytes());
@@ -3455,6 +3463,7 @@ pub(crate) mod tests {
         fixture.cleanup();
     }
 
+    /// rule: INV.SOURCE.XDTO-ORDERED-BATCH
     #[test]
     fn staged_xdto_type_set_refuses_cycles_families_and_restrictions_without_writes() {
         let fixture = staged_xdto_fixture("type-set-refusals", BASED_PACKAGE.as_bytes());
@@ -3785,5 +3794,27 @@ pub(crate) mod tests {
             assert_eq!(snapshot_tree(&fixture.source), before);
         }
         fixture.cleanup();
+    }
+}
+
+#[cfg(test)]
+mod host_path_tests {
+    use super::ensure_no_link_components;
+    use std::path::Path;
+    use unica_workspace::test_support::extended_length_spelling_for_test;
+
+    #[test]
+    fn an_absent_resource_stays_inside_a_source_root_of_another_host_spelling() {
+        let temp = tempfile::tempdir().unwrap();
+        let plain = unica_workspace::paths::normalize_path_identity(temp.path()).unwrap();
+        let extended = extended_length_spelling_for_test(&plain);
+        let resource = Path::new("XDTOPackages/Absent.xdto");
+
+        ensure_no_link_components(&extended, &plain.join(resource)).unwrap();
+        ensure_no_link_components(&plain, &extended.join(resource)).unwrap();
+        assert!(
+            ensure_no_link_components(&extended.join("src"), &plain.join("other/Absent.xdto"))
+                .is_err()
+        );
     }
 }

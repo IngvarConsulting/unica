@@ -1,4 +1,4 @@
-use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+use unica_address::source_target::MetadataAddress;
 use unica_metadata::{MetaDiagnosticCode, MetadataKind};
 
 fn project(xml: &str, kind: MetadataKind, metadata_path: &str) -> serde_json::Value {
@@ -6,7 +6,7 @@ fn project(xml: &str, kind: MetadataKind, metadata_path: &str) -> serde_json::Va
     let object = document.root_element().first_element_child().unwrap();
     let properties = unica_xml_format::read::child_element(object, "Properties");
     let child_objects = unica_xml_format::read::child_element(object, "ChildObjects");
-    let target = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, metadata_path).unwrap();
+    let target = MetadataAddress::parse_logical(metadata_path).unwrap();
     let mut diagnostics = Vec::new();
     let details = crate::info_projection::project_meta_info_details(
         kind,
@@ -59,7 +59,7 @@ fn report_profile_observes_the_tracked_auxiliary_variant_form() {
 fn project_declarations(xml: &str, kind: MetadataKind, metadata_path: &str) -> serde_json::Value {
     let document = roxmltree::Document::parse(xml).unwrap();
     let object = document.root_element().first_element_child().unwrap();
-    let target = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, metadata_path).unwrap();
+    let target = MetadataAddress::parse_logical(metadata_path).unwrap();
     let mut diagnostics = Vec::new();
     let declarations = crate::info_projection::project_meta_info_declarations(
         kind,
@@ -94,8 +94,7 @@ fn scheduled_job_rejects_a_two_part_value_that_is_not_a_common_module_method() {
     let xml = r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses"><ScheduledJob><Properties><Name>Invalid</Name><MethodName>Catalog.Items</MethodName></Properties></ScheduledJob></MetaDataObject>"#;
     let document = roxmltree::Document::parse(xml).unwrap();
     let object = document.root_element().first_element_child().unwrap();
-    let target =
-        MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "ScheduledJob.Invalid").unwrap();
+    let target = MetadataAddress::parse_logical("ScheduledJob.Invalid").unwrap();
     let mut diagnostics = Vec::new();
 
     let value = serde_json::to_value(crate::info_projection::project_meta_info_details(
@@ -169,7 +168,7 @@ fn http_service_details_preserve_templates_and_methods() {
 /// Конфигуратор 8.3.27 пишет у шаблона и метода `Synonym` и `<Comment/>`
 /// всегда, даже пустыми: так устроены все 55 шаблонов и 61 метод локальной
 /// выгрузки. Без них разбор отвечал `urlTemplates: null`, и `view` не видел
-/// ни одного шаблона настоящего сервиса (#634).
+/// ни одного шаблона настоящего сервиса.
 #[test]
 fn http_service_details_accept_the_configurator_synonym_and_comment() {
     let xml = include_str!(concat!(
@@ -198,9 +197,7 @@ fn http_service_details_accept_the_configurator_synonym_and_comment() {
 
 #[test]
 fn http_service_descriptive_properties_still_reject_nested_markup() {
-    let target =
-        MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "HTTPService.ПроверкаСвязи")
-            .unwrap();
+    let target = MetadataAddress::parse_logical("HTTPService.ПроверкаСвязи").unwrap();
     for (eol, original) in line_ending_variants(include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../../tests/fixtures/platform_8_3_27/meta_info/edge/http-service-configurator.xml"
@@ -266,6 +263,7 @@ fn http_service_descriptive_properties_still_reject_nested_markup() {
     }
 }
 
+/// rule: INV.SOURCE.XDTO-EXPANDED-TYPE-NAME
 #[test]
 fn web_service_details_preserve_packages_operations_and_expanded_qnames() {
     let xml = include_str!(concat!(
@@ -346,8 +344,7 @@ fn web_service_details_accept_the_configurator_operation_properties() {
 
 #[test]
 fn web_service_operation_properties_still_reject_foreign_content() {
-    let target =
-        MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "WebService.ОбменДанными").unwrap();
+    let target = MetadataAddress::parse_logical("WebService.ОбменДанными").unwrap();
     for (eol, original) in line_ending_variants(include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../../tests/fixtures/platform_8_3_27/meta_info/edge/web-service-configurator.xml"
@@ -467,6 +464,7 @@ fn manifest_edge_fixtures_keep_the_canonical_platform_wrapper() {
     }
 }
 
+/// rule: INV.APP.META-INFO-COVERAGE
 #[test]
 fn manifest_and_profile_cover_every_platform_gated_metadata_kind() {
     let manifest: serde_json::Value = serde_json::from_str(include_str!(concat!(
@@ -521,11 +519,8 @@ fn manifest_and_profile_cover_every_platform_gated_metadata_kind() {
             properties,
             child_objects,
         ));
-        let target = MetadataAddress::parse(
-            PLATFORM_XML_8_3_27_FORMAT_2_20,
-            &format!("{}.Evidence", kind.as_str()),
-        )
-        .unwrap();
+        let target =
+            MetadataAddress::parse_logical(&format!("{}.Evidence", kind.as_str())).unwrap();
         let mut diagnostics = Vec::new();
         let value = serde_json::to_value(crate::info_projection::project_meta_info_details(
             *kind,
@@ -577,11 +572,8 @@ fn manifest_and_profile_cover_every_platform_gated_metadata_kind() {
             let name = properties
                 .and_then(|node| unica_xml_format::read::child_direct_text(node, "Name"))
                 .unwrap();
-            let target = MetadataAddress::parse(
-                PLATFORM_XML_8_3_27_FORMAT_2_20,
-                &format!("{}.{name}", kind.as_str()),
-            )
-            .unwrap();
+            let target =
+                MetadataAddress::parse_logical(&format!("{}.{name}", kind.as_str())).unwrap();
             let mut diagnostics = Vec::new();
             let details = serde_json::to_value(crate::info_projection::project_meta_info_details(
                 kind,
@@ -626,11 +618,8 @@ fn manifest_and_profile_cover_every_platform_gated_metadata_kind() {
             );
             let document = roxmltree::Document::parse(&xml).unwrap();
             let object = document.root_element().first_element_child().unwrap();
-            let target = MetadataAddress::parse(
-                PLATFORM_XML_8_3_27_FORMAT_2_20,
-                &format!("{}.Evidence", kind.as_str()),
-            )
-            .unwrap();
+            let target =
+                MetadataAddress::parse_logical(&format!("{}.Evidence", kind.as_str())).unwrap();
             let mut diagnostics = Vec::new();
             let values = crate::info::typed_root_collection(
                 &xml,
@@ -815,9 +804,7 @@ fn declaration_localized_leaves_reject_unmodelled_attributes() {
     let xml = r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:foreign="urn:foreign"><ChartOfAccounts><Properties><Name>Accounts</Name><StandardTabularSections><xr:StandardTabularSection name="ExtDimensionTypes"><xr:Synonym foreign:source="poison"/><xr:Comment/><xr:ToolTip/><xr:FillChecking>DontCheck</xr:FillChecking><xr:StandardAttributes/></xr:StandardTabularSection></StandardTabularSections></Properties></ChartOfAccounts></MetaDataObject>"#;
     let document = roxmltree::Document::parse(xml).unwrap();
     let object = document.root_element().first_element_child().unwrap();
-    let target =
-        MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "ChartOfAccounts.Accounts")
-            .unwrap();
+    let target = MetadataAddress::parse_logical("ChartOfAccounts.Accounts").unwrap();
     let mut diagnostics = Vec::new();
 
     let declarations =
@@ -871,8 +858,7 @@ fn root_details_localize_unknown_platform_qnames_as_warnings() {
         );
         let document = roxmltree::Document::parse(&xml).unwrap();
         let object = document.root_element().first_element_child().unwrap();
-        let target =
-            MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Constant.Value").unwrap();
+        let target = MetadataAddress::parse_logical("Constant.Value").unwrap();
         let mut diagnostics = Vec::new();
         let details = serde_json::to_value(crate::info_projection::project_meta_info_details(
             MetadataKind::Constant,
@@ -898,7 +884,7 @@ fn unknown_platform_type_with_a_malformed_qualifier_remains_an_error() {
     let xml = r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core"><Constant><Properties><Name>Value</Name><Type><v8:Type>v8:FutureOpaque</v8:Type><v8:StringQualifiers><v8:Length>garbage</v8:Length></v8:StringQualifiers></Type></Properties></Constant></MetaDataObject>"#;
     let document = roxmltree::Document::parse(xml).unwrap();
     let object = document.root_element().first_element_child().unwrap();
-    let target = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Constant.Value").unwrap();
+    let target = MetadataAddress::parse_logical("Constant.Value").unwrap();
     let mut diagnostics = Vec::new();
 
     let _ = crate::info_projection::project_meta_info_details(
@@ -1019,8 +1005,7 @@ fn details_reject_nested_markup_in_reference_and_qname_leaves() {
     let journal = r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><DocumentJournal><Properties><Name>Journal</Name><RegisteredDocuments><xr:Item xsi:type="xr:MDObjectRef">Document.Orders<xr:Unexpected/></xr:Item></RegisteredDocuments></Properties></DocumentJournal></MetaDataObject>"#;
     let document = roxmltree::Document::parse(journal).unwrap();
     let object = document.root_element().first_element_child().unwrap();
-    let target =
-        MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "DocumentJournal.Journal").unwrap();
+    let target = MetadataAddress::parse_logical("DocumentJournal.Journal").unwrap();
     let mut diagnostics = Vec::new();
     let details = serde_json::to_value(crate::info_projection::project_meta_info_details(
         MetadataKind::DocumentJournal,
@@ -1039,8 +1024,7 @@ fn details_reject_nested_markup_in_reference_and_qname_leaves() {
     let web = r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core"><WebService><Properties><Name>Service</Name></Properties><ChildObjects><Operation><Properties><Name>Run</Name><XDTOReturningValueType>v8:Value<v8:Unexpected/></XDTOReturningValueType><Nillable>false</Nillable><Transactioned>false</Transactioned><ProcedureName>Run</ProcedureName></Properties><ChildObjects/></Operation></ChildObjects></WebService></MetaDataObject>"#;
     let document = roxmltree::Document::parse(web).unwrap();
     let object = document.root_element().first_element_child().unwrap();
-    let target =
-        MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "WebService.Service").unwrap();
+    let target = MetadataAddress::parse_logical("WebService.Service").unwrap();
     let mut diagnostics = Vec::new();
     let details = serde_json::to_value(crate::info_projection::project_meta_info_details(
         MetadataKind::WebService,
@@ -1062,8 +1046,7 @@ fn reference_and_xdto_entries_reject_unmodelled_attributes() {
     let journal = r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:foreign="urn:foreign"><DocumentJournal><Properties><Name>Journal</Name><RegisteredDocuments><xr:Item xsi:type="xr:MDObjectRef" foreign:source="poison">Document.Orders</xr:Item></RegisteredDocuments></Properties></DocumentJournal></MetaDataObject>"#;
     let document = roxmltree::Document::parse(journal).unwrap();
     let object = document.root_element().first_element_child().unwrap();
-    let target =
-        MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "DocumentJournal.Journal").unwrap();
+    let target = MetadataAddress::parse_logical("DocumentJournal.Journal").unwrap();
     let mut diagnostics = Vec::new();
 
     let details = serde_json::to_value(crate::info_projection::project_meta_info_details(
@@ -1084,8 +1067,7 @@ fn root_reference_lists_reject_nested_metadata_addresses() {
     let journal = r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><DocumentJournal><Properties><Name>Journal</Name><RegisteredDocuments><xr:Item xsi:type="xr:MDObjectRef">Document.Orders.Form.Item</xr:Item></RegisteredDocuments></Properties></DocumentJournal></MetaDataObject>"#;
     let document = roxmltree::Document::parse(journal).unwrap();
     let object = document.root_element().first_element_child().unwrap();
-    let target =
-        MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "DocumentJournal.Journal").unwrap();
+    let target = MetadataAddress::parse_logical("DocumentJournal.Journal").unwrap();
     let mut diagnostics = Vec::new();
     let details = serde_json::to_value(crate::info_projection::project_meta_info_details(
         MetadataKind::DocumentJournal,
@@ -1107,8 +1089,7 @@ fn root_reference_lists_reject_nested_metadata_addresses() {
     );
     let document = roxmltree::Document::parse(&web).unwrap();
     let object = document.root_element().first_element_child().unwrap();
-    let target =
-        MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "WebService.Exchange").unwrap();
+    let target = MetadataAddress::parse_logical("WebService.Exchange").unwrap();
     let mut diagnostics = Vec::new();
     let details = serde_json::to_value(crate::info_projection::project_meta_info_details(
         MetadataKind::WebService,
@@ -1136,7 +1117,7 @@ fn non_empty_type_without_a_known_variant_is_not_silently_treated_as_absent() {
     let xml = r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:foreign="urn:foreign"><Constant><Properties><Name>Value</Name><Type><foreign:Type>foreign:Opaque</foreign:Type></Type></Properties></Constant></MetaDataObject>"#;
     let document = roxmltree::Document::parse(xml).unwrap();
     let object = document.root_element().first_element_child().unwrap();
-    let target = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Constant.Value").unwrap();
+    let target = MetadataAddress::parse_logical("Constant.Value").unwrap();
     let mut diagnostics = Vec::new();
 
     let details = serde_json::to_value(crate::info_projection::project_meta_info_details(
@@ -1178,8 +1159,7 @@ fn an_incomplete_http_collection_is_null_and_names_the_public_field() {
     .replace("<Handler>MetricsGet</Handler>", "<Handler/>");
     let document = roxmltree::Document::parse(&xml).unwrap();
     let object = document.root_element().first_element_child().unwrap();
-    let target =
-        MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "HTTPService.ExternalAPI").unwrap();
+    let target = MetadataAddress::parse_logical("HTTPService.ExternalAPI").unwrap();
     let mut diagnostics = Vec::new();
 
     let value = serde_json::to_value(crate::info_projection::project_meta_info_details(
@@ -1205,8 +1185,7 @@ fn a_missing_http_methods_container_is_not_reported_as_an_empty_collection() {
     let xml = r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses"><HTTPService><Properties><Name>ExternalAPI</Name></Properties><ChildObjects><URLTemplate><Properties><Name>Metrics</Name><Template>/metrics</Template></Properties></URLTemplate></ChildObjects></HTTPService></MetaDataObject>"#;
     let document = roxmltree::Document::parse(xml).unwrap();
     let object = document.root_element().first_element_child().unwrap();
-    let target =
-        MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "HTTPService.ExternalAPI").unwrap();
+    let target = MetadataAddress::parse_logical("HTTPService.ExternalAPI").unwrap();
     let mut diagnostics = Vec::new();
 
     let value = serde_json::to_value(crate::info_projection::project_meta_info_details(
@@ -1230,8 +1209,7 @@ fn an_unexpected_nested_http_child_is_not_reported_as_an_empty_collection() {
     let xml = r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses"><HTTPService><Properties><Name>ExternalAPI</Name></Properties><ChildObjects><URLTemplate><Properties><Name>Metrics</Name><Template>/metrics</Template></Properties><ChildObjects><Unexpected/></ChildObjects></URLTemplate></ChildObjects></HTTPService></MetaDataObject>"#;
     let document = roxmltree::Document::parse(xml).unwrap();
     let object = document.root_element().first_element_child().unwrap();
-    let target =
-        MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "HTTPService.ExternalAPI").unwrap();
+    let target = MetadataAddress::parse_logical("HTTPService.ExternalAPI").unwrap();
     let mut diagnostics = Vec::new();
 
     let value = serde_json::to_value(crate::info_projection::project_meta_info_details(
@@ -1256,8 +1234,7 @@ fn duplicate_nested_structure_has_a_stable_provider_unavailable_code() {
     let xml = r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses"><HTTPService><Properties><Name>ExternalAPI</Name></Properties><ChildObjects><URLTemplate><Properties><Name>Metrics</Name><Template>/metrics</Template></Properties><ChildObjects/><ChildObjects/></URLTemplate></ChildObjects></HTTPService></MetaDataObject>"#;
     let document = roxmltree::Document::parse(xml).unwrap();
     let object = document.root_element().first_element_child().unwrap();
-    let target =
-        MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "HTTPService.ExternalAPI").unwrap();
+    let target = MetadataAddress::parse_logical("HTTPService.ExternalAPI").unwrap();
     let mut diagnostics = Vec::new();
 
     let value = serde_json::to_value(crate::info_projection::project_meta_info_details(
@@ -1278,8 +1255,7 @@ fn nested_http_and_web_leaves_reject_unmodelled_attributes() {
     let xml = r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:foreign="urn:foreign"><HTTPService><Properties><Name>ExternalAPI</Name></Properties><ChildObjects><URLTemplate><Properties><Name>Metrics</Name><Template>/metrics</Template></Properties><ChildObjects><Method><Properties><Name>Get</Name><HTTPMethod>GET</HTTPMethod><Handler foreign:source="poison">MetricsGet</Handler></Properties></Method></ChildObjects></URLTemplate></ChildObjects></HTTPService></MetaDataObject>"#;
     let document = roxmltree::Document::parse(xml).unwrap();
     let object = document.root_element().first_element_child().unwrap();
-    let target =
-        MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "HTTPService.ExternalAPI").unwrap();
+    let target = MetadataAddress::parse_logical("HTTPService.ExternalAPI").unwrap();
     let mut diagnostics = Vec::new();
 
     let value = serde_json::to_value(crate::info_projection::project_meta_info_details(
@@ -1304,8 +1280,7 @@ fn a_missing_web_parameters_container_is_not_reported_as_an_empty_collection() {
     let xml = r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:xs="http://www.w3.org/2001/XMLSchema"><WebService><Properties><Name>Exchange</Name></Properties><ChildObjects><Operation><Properties><Name>Ping</Name><XDTOReturningValueType>xs:boolean</XDTOReturningValueType><Nillable>false</Nillable><Transactioned>false</Transactioned><ProcedureName>Ping</ProcedureName></Properties></Operation></ChildObjects></WebService></MetaDataObject>"#;
     let document = roxmltree::Document::parse(xml).unwrap();
     let object = document.root_element().first_element_child().unwrap();
-    let target =
-        MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "WebService.Exchange").unwrap();
+    let target = MetadataAddress::parse_logical("WebService.Exchange").unwrap();
     let mut diagnostics = Vec::new();
 
     let value = serde_json::to_value(crate::info_projection::project_meta_info_details(
@@ -1329,8 +1304,7 @@ fn an_unexpected_nested_web_child_is_not_reported_as_an_empty_collection() {
     let xml = r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:xs="http://www.w3.org/2001/XMLSchema"><WebService><Properties><Name>Exchange</Name></Properties><ChildObjects><Operation><Properties><Name>Ping</Name><XDTOReturningValueType>xs:boolean</XDTOReturningValueType><Nillable>false</Nillable><Transactioned>false</Transactioned><ProcedureName>Ping</ProcedureName></Properties><ChildObjects><Unexpected/></ChildObjects></Operation></ChildObjects></WebService></MetaDataObject>"#;
     let document = roxmltree::Document::parse(xml).unwrap();
     let object = document.root_element().first_element_child().unwrap();
-    let target =
-        MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "WebService.Exchange").unwrap();
+    let target = MetadataAddress::parse_logical("WebService.Exchange").unwrap();
     let mut diagnostics = Vec::new();
 
     let value = serde_json::to_value(crate::info_projection::project_meta_info_details(
@@ -1359,8 +1333,7 @@ fn web_service_rejects_a_qname_with_an_invalid_local_name() {
     .replace("xs:boolean", "xs:1invalid");
     let document = roxmltree::Document::parse(&xml).unwrap();
     let object = document.root_element().first_element_child().unwrap();
-    let target =
-        MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "WebService.Exchange").unwrap();
+    let target = MetadataAddress::parse_logical("WebService.Exchange").unwrap();
     let mut diagnostics = Vec::new();
 
     let value = serde_json::to_value(crate::info_projection::project_meta_info_details(
@@ -1380,6 +1353,7 @@ fn web_service_rejects_a_qname_with_an_invalid_local_name() {
     assert_eq!(diagnostics[0].code, MetaDiagnosticCode::ValidationFailed);
 }
 
+/// rule: INV.SOURCE.XDTO-EXPANDED-TYPE-NAME
 #[test]
 fn expanded_xdto_names_do_not_depend_on_the_xml_prefix() {
     let original = include_str!(concat!(
@@ -1466,8 +1440,7 @@ fn http_url_template_name_must_be_a_platform_identifier() {
     .replace("<Name>Metrics</Name>", "<Name>bad name</Name>");
     let document = roxmltree::Document::parse(&xml).unwrap();
     let object = document.root_element().first_element_child().unwrap();
-    let target =
-        MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "HTTPService.ExternalAPI").unwrap();
+    let target = MetadataAddress::parse_logical("HTTPService.ExternalAPI").unwrap();
     let mut diagnostics = Vec::new();
 
     let value = serde_json::to_value(crate::info_projection::project_meta_info_details(
@@ -1664,8 +1637,9 @@ fn http_method_projection_accepts_every_8_3_27_enum_literal() {
     }
 }
 
-/// Ссылка расширения на тип расширяемой конфигурации (`v8:TypeId`, #1361)
+/// Ссылка расширения на тип расширяемой конфигурации (`v8:TypeId`)
 /// читается как есть и закрыта для записи: имени типа у неё нет.
+/// rule: INV.SOURCE.OBSERVED-TYPE-CAPABILITY
 #[test]
 fn observed_type_reads_an_extension_type_id_as_a_read_only_variant() {
     use unica_metadata::{
@@ -1729,6 +1703,7 @@ fn observed_type_reads_an_extension_type_id_as_a_read_only_variant() {
     }
 }
 
+/// rule: INV.SOURCE.INCOMPLETE-METADATA-READ
 #[test]
 fn property_observation_distinguishes_missing_false_empty_nil_and_damage() {
     // Synthetic property fragments test the reader, not platform export policy.
@@ -1816,7 +1791,7 @@ fn observed_binary_type_accepts_native_qnames_and_keeps_legacy_read_compatibilit
     use unica_metadata::{ObservedMetadataTypeVariant, StringLengthMode};
     let native = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../tests/fixtures/platform_8_3_27/binary-data/native-type.xml"
+        "/tests/fixtures/binary-data/native-type.xml"
     ));
     let wrap = |fragment: &str, namespace: &str| {
         format!(
@@ -1914,7 +1889,7 @@ fn observed_binary_type_accepts_native_qnames_and_keeps_legacy_read_compatibilit
 /// Голый текст локализуемого свойства стандартного реквизита отвергается
 /// одинаково у справочника, табличной части и стандартной табличной части.
 /// Набор свойств — по выгрузке 8.3.27, где `Format` и `EditFormat` пишутся
-/// `<v8:item>` (#1910).
+/// `<v8:item>`.
 #[test]
 fn bare_text_of_a_localized_standard_attribute_property_is_refused_for_every_owner() {
     const NS: &str = r#"xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:v8="http://v8.1c.ru/8.1/data/core""#;
@@ -1925,7 +1900,7 @@ fn bare_text_of_a_localized_standard_attribute_property_is_refused_for_every_own
             r#"<StandardAttributes><xr:StandardAttribute name="Ref"><xr:{property}>{localized}</xr:{property}></xr:StandardAttribute><xr:StandardAttribute name="Code"><xr:{property}>{value}</xr:{property}></xr:StandardAttribute></StandardAttributes>"#
         )
     };
-    let target = |path| MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, path).unwrap();
+    let target = |path| MetadataAddress::parse_logical(path).unwrap();
     for property in ["Synonym", "ToolTip", "Format", "EditFormat"] {
         for (value, accepted) in [(localized, true), ("ДЛФ=D", false)] {
             // Справочник.
@@ -2010,6 +1985,67 @@ fn bare_text_of_a_localized_standard_attribute_property_is_refused_for_every_own
                 );
             }
         }
+    }
+}
+
+#[test]
+fn defined_type_observes_object_and_reference_as_distinct_read_only_members() {
+    let xml = r#"<Properties xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:core="http://v8.1c.ru/8.1/data/core" xmlns:configuration="http://v8.1c.ru/8.1/data/enterprise/current-config"><Type><core:Type>configuration:CatalogObject.Items</core:Type><core:Type>configuration:CatalogRef.Items</core:Type></Type></Properties>"#;
+    let document = roxmltree::Document::parse(xml).unwrap();
+    let observed =
+        crate::info_projection::parse_observed_metadata_type_node(document.root_element()).unwrap();
+    let value = serde_json::to_value(observed).unwrap();
+    assert_eq!(value["mutationCapability"], "readOnly");
+    assert_eq!(
+        value["variants"],
+        serde_json::json!([
+            {"kind": "object", "metadataPath": "Catalog.Items"},
+            {"kind": "reference", "metadataPath": "Catalog.Items"}
+        ])
+    );
+}
+
+#[test]
+fn defined_type_object_members_keep_malformed_and_unmodelled_compositions_distinct() {
+    let wrap = |body: &str| {
+        format!(
+            r#"<Properties xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:xs="http://www.w3.org/2001/XMLSchema"><Type>{body}</Type></Properties>"#
+        )
+    };
+    for body in [
+        "<v8:Type>cfg:CatalogObject.Items.Form.Main</v8:Type>",
+        "<v8:Type>unknown:CatalogObject.Items</v8:Type>",
+        "<v8:Type>cfg:CatalogObject.Items</v8:Type><v8:Type>cfg:CatalogObject.Items</v8:Type>",
+        "<v8:Type>cfg:CatalogObject.Items</v8:Type><v8:Type>xs:decimal</v8:Type><v8:NumberQualifiers><v8:Digits>39</v8:Digits><v8:FractionDigits>40</v8:FractionDigits><v8:AllowedSign>Any</v8:AllowedSign></v8:NumberQualifiers>",
+    ] {
+        let xml = wrap(body);
+        let document = roxmltree::Document::parse(&xml).unwrap();
+        let properties = document.root_element();
+        assert!(crate::info_projection::parse_observed_metadata_type_node(properties).is_err(), "{body}");
+        assert!(!crate::info_projection::observed_type_is_strict_but_unmodelled(properties), "{body}");
+    }
+    for (tag, name) in [("TypeSet", "CatalogObject"), ("Type", "FutureOpaque.Items")] {
+        let xml = wrap(&format!(
+            "<v8:Type>cfg:CatalogObject.Items</v8:Type><v8:{tag}>cfg:{name}</v8:{tag}>"
+        ));
+        let document = roxmltree::Document::parse(&xml).unwrap();
+        let target = MetadataAddress::parse_logical("DefinedType.Source").unwrap();
+        let mut diagnostics = Vec::new();
+        let details = crate::info_projection::project_meta_info_details(
+            MetadataKind::DefinedType,
+            Some(document.root_element()),
+            None,
+            &target,
+            &mut diagnostics,
+        );
+        let value = serde_json::to_value(details).unwrap();
+        assert!(value["details"]["type"].is_null());
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].code, MetaDiagnosticCode::ValidationWarning);
+        assert!(diagnostics[0].message.contains(&format!(
+            "{tag} QName {{http://v8.1c.ru/8.1/data/enterprise/current-config}}{name}"
+        )));
+        assert!(diagnostics[0].message.contains("incomplete"));
     }
 }
 
@@ -2115,6 +2151,24 @@ fn exchange_plan_reference_family_admission_is_qname_exact_and_preserves_concret
             serde_json::json!({"kind":"definedType", "metadataPath":format!("DefinedType.{name}")})
         );
     }
+}
+
+#[test]
+fn defined_type_observes_record_set_and_nested_type_without_losing_scalar_members() {
+    let xml = r#"<Properties xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:xs="http://www.w3.org/2001/XMLSchema"><Type><v8:Type>cfg:InformationRegisterRecordSet.Facts</v8:Type><v8:Type>xs:boolean</v8:Type><v8:TypeSet>cfg:DefinedType.Other</v8:TypeSet></Type></Properties>"#;
+    let document = roxmltree::Document::parse(xml).unwrap();
+    let observed =
+        crate::info_projection::parse_observed_metadata_type_node(document.root_element()).unwrap();
+    let value = serde_json::to_value(observed).unwrap();
+    assert_eq!(value["mutationCapability"], "readOnly");
+    assert_eq!(
+        value["variants"],
+        serde_json::json!([
+            {"kind": "recordSet", "metadataPath": "InformationRegister.Facts"},
+            {"kind": "boolean"},
+            {"kind": "definedType", "metadataPath": "DefinedType.Other"}
+        ])
+    );
 }
 
 #[test]

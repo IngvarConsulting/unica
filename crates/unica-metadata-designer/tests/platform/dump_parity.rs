@@ -3,7 +3,7 @@ use super::apply_typed_operations_to_image_with_seed;
 use crate::decode::{parse_legacy_edit, MetadataPlanKind};
 use crate::template_catalog::{add_document_register_record, place_register_record};
 use serde_json::json;
-use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+use unica_address::source_target::MetadataAddress;
 use unica_metadata::MetadataKind;
 
 fn fixture(name: &str) -> String {
@@ -46,7 +46,7 @@ fn chart_header_attributes_match_the_platform_export() {
     ] {
         let before = fixture(&format!("{file}.before.xml"));
         let after = fixture(&format!("{file}.after.xml"));
-        let target = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, name).unwrap();
+        let target = MetadataAddress::parse_logical(name).unwrap();
         let MetadataPlanKind::Edit { operation, .. } = parse_legacy_edit(
             "main",
             target,

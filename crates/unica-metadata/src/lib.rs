@@ -41,6 +41,7 @@ pub mod applicability;
 pub mod apply_operations;
 pub mod contracts;
 pub mod descriptor_operations;
+pub mod document_numerator;
 pub mod event;
 pub mod event_contract;
 pub mod support;
@@ -51,7 +52,9 @@ pub mod interface_operations;
 
 pub mod site;
 
-pub mod recovery;
+pub mod borrowing;
+
+pub mod read_codec;
 
 pub mod support_state;
 
@@ -79,4 +82,5 @@ pub mod extension;
 
 mod source_contracts;
 
+pub mod language_code;
 pub mod style_color;

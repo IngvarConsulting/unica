@@ -95,7 +95,7 @@ fn item_object<'a>(
     })
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) fn parse_dcs_mxl_plan_operation(
     operation: &str,
     args: &Value,
