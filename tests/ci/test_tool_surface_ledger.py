@@ -14,6 +14,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
+# Размер тестов модуля (scripts/ci/python_sizes.py).
+# Реестр поверхности инструментов: продукт через `ensure_binary`.
+MEDIUM = ("ToolSurfaceLedgerTests",)
+# Очередь исполняет при выборе тестов: снимок контракта.
+QUEUE_KEEPS_MEDIUM = ("ToolSurfaceLedgerTests",)
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 GENERATOR = REPO_ROOT / "scripts/ci/generate-tool-surface.py"
 LEDGER = REPO_ROOT / "docs/tool-surface.md"
@@ -72,7 +78,7 @@ class ToolSurfaceLedgerTests(unittest.TestCase):
 
     def test_plugin_examples_pass_only_published_arguments(self) -> None:
         # A skill example is copied by the agent as is: an argument the
-        # schema does not publish is refused as unknown (#2006, `cwd`).
+        # schema does not publish is refused as unknown (`cwd`).
         # The server checks top-level `properties` only (`validate_hidden_v13_request`).
         published = {tool["name"]: set(tool["inputSchema"].get("properties", {})) for tool in self.tools}
         examples = 0
@@ -127,7 +133,7 @@ class ToolSurfaceLedgerTests(unittest.TestCase):
         self.assertIn(" нет |", row("cwd"))
 
     def test_nullable_argument_types_render_as_alternatives(self) -> None:
-        # The live surface publishes one type per argument (#1211); the
+        # The live surface publishes one type per argument; the
         # renderer still names a type array honestly if one ever appears.
         schema = {
             "type": "object",
@@ -234,7 +240,7 @@ class ToolSurfaceLedgerTests(unittest.TestCase):
             "unica.search": {"query", "corpus", "kind", "role", "scope", "regex", "ignoreCase", "limit", "cursor"},
             "unica.check": {"at", "limit", "cursor"},
             # Курсор есть только у чтения сохранённого плана; сравнение
-            # left/right по-прежнему не публикует продолжение (#1218).
+            # left/right по-прежнему не публикует продолжение.
             "unica.diff": {"left", "right", "limit", "executionToken", "cursor"},
             "unica.run": {"op", "args", "dryRun", "infobase"},
             "unica.docs": {"query", "source", "limit", "cursor"},
@@ -364,6 +370,51 @@ class SurfaceCopiesAgreeTests(unittest.TestCase):
             sorted(names),
             sorted(ledger),
             f"{BOOTSTRAP_VERIFICATION} расходится с {LEDGER}",
+        )
+
+
+# Имя инструмента в тексте: `unica.view`, `unica.task.get`. Перед ним не стоит
+# часть другого имени (`run-unica.sh`, `.unica.x`), а имя с расширением файла —
+# это файл (`unica.toml`), не инструмент.
+GUIDANCE_TOOL_NAME = re.compile(r"(?<![\w./-])unica(?:\.[a-z][a-z0-9_]*)+")
+FILE_SUFFIXES = {"toml", "sh", "ps1", "json", "yaml", "yml", "md", "exe", "log"}
+GUIDANCE_ROOTS = ("plugins/unica/skills", "plugins/unica/references")
+
+
+def guidance_tool_names(text: str) -> list[str]:
+    return [name for name in GUIDANCE_TOOL_NAME.findall(text) if name.rsplit(".", 1)[-1] not in FILE_SUFFIXES]
+
+
+class GuidanceNamesPublishedToolsTests(unittest.TestCase):
+    """Скил и справочник называют только опубликованные инструменты.
+
+    Агент зовёт названный инструмент как есть: имя, которого поверхность не
+    публикует, ведёт к отказу. Опубликованные имена — заголовки ведомости,
+    которую сверяет с бинарём `test_ledger_matches_the_live_registry`.
+    """
+
+    def test_every_tool_name_in_skills_and_references_is_published(self) -> None:
+        published = set(LEDGER_TOOL_HEADING.findall(LEDGER.read_text(encoding="utf-8")))
+        self.assertTrue(published)
+        offenders = collections.defaultdict(set)
+        scanned = 0
+        for root in GUIDANCE_ROOTS:
+            for path in sorted((REPO_ROOT / root).rglob("*.md")):
+                scanned += 1
+                for name in guidance_tool_names(path.read_text(encoding="utf-8")):
+                    if name not in published:
+                        offenders[path.relative_to(REPO_ROOT).as_posix()].add(name)
+        self.assertGreater(scanned, 0)
+        self.assertEqual({path: sorted(names) for path, names in offenders.items()}, {})
+
+    def test_a_name_is_a_tool_unless_it_is_part_of_a_file_name(self) -> None:
+        text = (
+            "`unica.view` и `unica.task.get`, снятый `unica.form.compile` и семейство `unica.meta.*`; "
+            "файлы `run-unica.sh`, `unica.toml`, `unica.local.toml`, `.unica.cache`"
+        )
+        self.assertEqual(
+            guidance_tool_names(text),
+            ["unica.view", "unica.task.get", "unica.form.compile", "unica.meta"],
         )
 
 

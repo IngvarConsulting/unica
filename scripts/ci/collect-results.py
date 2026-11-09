@@ -115,7 +115,8 @@ def job_conclusions(jobs: Path | None) -> dict[str, str]:
     if isinstance(total, int) and total > len(listed.get("jobs", [])):
         # Обрезанный список — исходы недошедших джоб стали бы «unknown» молча.
         raise SystemExit(f"список джоб обрезан: {len(listed['jobs'])} из {total}; читайте страницу целиком")
-    return {job["name"]: (job.get("conclusion") or job.get("status") or "unknown") for job in listed.get("jobs", [])}
+    # В вызванном workflow API отдаёт имя `Вызов / Джоба`; отчёт знает только джобу.
+    return {job["name"].rsplit(" / ", 1)[-1]: (job.get("conclusion") or job.get("status") or "unknown") for job in listed.get("jobs", [])}
 
 
 def rust_lane(run: dict) -> str | None:

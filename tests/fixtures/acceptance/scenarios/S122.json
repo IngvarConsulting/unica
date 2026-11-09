@@ -1,0 +1,48 @@
+{
+  "area": "Создание и удаление объектов",
+  "task": "Создать регистр накопления",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "object.create",
+            "args": {
+              "values": {
+                "kind": "AccumulationRegister",
+                "name": "ОстаткиТоваров"
+              }
+            }
+          },
+          {
+            "op": "resource.add",
+            "args": {
+              "at": "main:AccumulationRegister.ОстаткиТоваров",
+              "items": [
+                {
+                  "name": "Количество",
+                  "type": {
+                    "variants": [
+                      {
+                        "kind": "number",
+                        "digits": 10,
+                        "fraction": 0,
+                        "sign": "any"
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S122"
+}

@@ -1,0 +1,47 @@
+{
+  "area": "Формы",
+  "task": "Добавить форму перечислению из словаря операций",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Enum.ВажностьПроблемыУчета"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/can",
+          "contains": {
+            "op": "form.add",
+            "args": "items"
+          }
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Enum.ВажностьПроблемыУчета",
+        "ops": [
+          {
+            "op": "form.add",
+            "args": {
+              "items": [
+                {
+                  "name": "ФормаВыбора",
+                  "type": "ChoiceForm"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S138"
+}

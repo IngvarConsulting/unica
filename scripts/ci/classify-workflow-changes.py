@@ -38,7 +38,7 @@ TOOLCHAIN_PATHS = {
     # Настройка исполнителя тестов меняет, как гоняется каждая цель на каждом
     # раннере: это тот же класс, что смена toolchain.
     ".config/nextest.toml",
-    ".config/python-sizes.toml",
+    "scripts/ci/python_sizes.py",
 }
 PACKAGE_PATHS = {
     ".agents/plugins/marketplace.json",
@@ -71,6 +71,15 @@ PACKAGE_PATHS = {
 CI_CONTRACT_PATHS = {
     "scripts/ci/check-component-boundaries.py",
     "tests/ci/test_component_boundaries.py",
+    # Both boundary guards derive their package sets from crate declarations.
+    "scripts/ci/crate_declarations.py",
+    "tests/ci/test_crate_declarations.py",
+    "scripts/ci/check-crate-read-boundary.py",
+    "tests/ci/test_crate_read_boundary.py",
+    "scripts/ci/check-version-literals.py",
+    "tests/ci/test_version_literals.py",
+    "scripts/ci/check-discovered-modules-format.py",
+    "tests/ci/test_discovered_modules_format.py",
     "scripts/ci/workflow_routing.py",
     "scripts/dev/install-local-unica.sh",
     "scripts/ci/classify-workflow-changes.py",
@@ -99,9 +108,11 @@ CI_CONTRACT_PATHS = {
     "scripts/ci/collect-results.py",
     "tests/ci/test_run_tests.py",
     "tests/ci/test_gate_profiles.py",
-    "scripts/ci/nightly-lines.py",
+    "scripts/ci/nightly-decide.py",
+    "scripts/ci/release-alpha.py",
+    "tests/ci/test_release_alpha.py",
     "scripts/ci/resolve-line.py",
-    "tests/ci/test_nightly_lines.py",
+    "tests/ci/test_nightly_decide.py",
     "tests/ci/test_resolve_line.py",
     "tests/ci/test_python_sizes.py",
     "tests/ci/test_research_policy.py",
@@ -115,6 +126,7 @@ CI_CONTRACT_PATHS = {
 PLATFORM_CONTRACT_PATHS = {
     "scripts/ci/check-rust-platform-boundary.py",
     "tests/ci/test_rust_platform_boundary.py",
+    "scripts/ci/crate_declarations.py",
     # Проход Clippy по файловым методам (#1894): конфигурация, проба и скрипт.
     "scripts/ci/check-file-io-methods.py",
     "tests/ci/test_file_io_methods.py",
@@ -141,26 +153,24 @@ SEARCH_INTEGRATION_OWNER_PREFIXES = (
     "crates/unica-source-contract/",
 )
 SEARCH_INTEGRATION_PATHS = {
-    "crates/unica-coder/src/application/code_intelligence.rs",
-    "crates/unica-coder/src/application/mod.rs",
-    "crates/unica-coder/src/application/operational_config.rs",
-    "crates/unica-coder/src/application/ports.rs",
-    "crates/unica-coder/src/application/source_navigation.rs",
-    "crates/unica-coder/src/application/tool_contracts.rs",
-    "crates/unica-coder/src/domain/code_intelligence.rs",
-    "crates/unica-coder/src/domain/operational_config.rs",
-    "crates/unica-coder/src/domain/source_location.rs",
+    "crates/unica-application/src/application/code_intelligence.rs",
+    "crates/unica-application/src/application/mod.rs",
+    "crates/unica-application/src/application/operational_config.rs",
+    "crates/unica-application/src/application/ports.rs",
+    "crates/unica-application/src/application/source_navigation.rs",
+    "crates/unica-application/src/application/tool_contracts.rs",
+    "crates/unica-domain/src/code_intelligence.rs",
+    "crates/unica-domain/src/operational_config.rs",
+    "crates/unica-domain/src/source_location.rs",
     "crates/unica-coder/src/infrastructure/application_ports.rs",
     "crates/unica-coder/src/infrastructure/code_intelligence.rs",
     "crates/unica-coder/src/infrastructure/internal_adapters.rs",
     "crates/unica-coder/src/infrastructure/operational_config.rs",
     "crates/unica-coder/src/infrastructure/platform/process.rs",
     "crates/unica-coder/src/infrastructure/platform_xml_source_targets.rs",
-    "crates/unica-coder/src/infrastructure/rlm_navigation.rs",
     "crates/unica-coder/src/infrastructure/source_roots.rs",
-    "crates/unica-coder/src/infrastructure/workspace_index.rs",
     "crates/unica-coder/src/infrastructure/workspace_services.rs",
-    "crates/unica-coder/src/interfaces/mcp.rs",
+    "crates/unica-daemon/src/interfaces/mcp.rs",
 }
 # The long BSP assessment runs the packaged runtime end to end, so it follows
 # the search contour it exercises. These paths add what that contour does not
@@ -168,7 +178,7 @@ SEARCH_INTEGRATION_PATHS = {
 # whether the assessment runs at all.
 ASSESSMENT_PATHS = {
     "scripts/ci/workflow_routing.py",
-    ".github/workflows/unica-plugin-release.yml",
+    ".github/workflows/release.yml",
     "crates/unica-coder/src/infrastructure/plugin_runtime.rs",
     "plugins/unica/third-party/tools.lock.json",
     "scripts/ci/build-unica-tools.py",

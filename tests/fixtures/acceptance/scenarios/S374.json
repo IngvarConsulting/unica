@@ -1,0 +1,446 @@
+{
+  "id": "S374",
+  "name": "dcs-auto-selection-order-item-lifecycle",
+  "issue": 1310,
+  "area": "СКД",
+  "task": "Явно вернуть Auto после clear; set/remove выбирают прочитанный индекс Auto, сохраняют соседние Field элементы",
+  "workspace": "tests/fixtures/acceptance/workspace-dcs",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F05Report",
+        "ops": [
+          {
+            "op": "template.add",
+            "args": {
+              "items": [
+                {
+                  "name": "PrimitiveAuto",
+                  "templateType": "DataCompositionSchema"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveAuto/Ext/Template.xml",
+          "kind": "exists",
+          "eq": false
+        }
+      ],
+      "captures": {
+        "createToken": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.createToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveAuto/Ext/Template.xml",
+          "kind": "exists",
+          "eq": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveAuto.Setting.Основной"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "phase2Before": {
+          "file": "src/cf/Reports/F05Report/Templates/PrimitiveAuto/Ext/Template.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveAuto.Setting.Основной",
+        "ops": [
+          {
+            "op": "selection.clear",
+            "args": {
+              "values": {}
+            }
+          },
+          {
+            "op": "order.clear",
+            "args": {
+              "values": {}
+            }
+          },
+          {
+            "op": "selection.add",
+            "args": {
+              "items": [
+                {
+                  "kind": "Auto"
+                },
+                {
+                  "kind": "Field",
+                  "field": "Amount"
+                }
+              ]
+            }
+          },
+          {
+            "op": "order.add",
+            "args": {
+              "items": [
+                {
+                  "kind": "Auto"
+                },
+                {
+                  "kind": "Field",
+                  "field": "Amount",
+                  "direction": "Desc"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveAuto/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.phase2Before"
+        }
+      ],
+      "captures": {
+        "phase2Token": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.phase2Token"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveAuto/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}settings/{http://v8.1c.ru/8.1/data-composition-system/settings}selection/{http://v8.1c.ru/8.1/data-composition-system/settings}item[@{http://www.w3.org/2001/XMLSchema-instance}type='dcsset:SelectedItemAuto']",
+          "eq": [
+            ""
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveAuto/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}settings/{http://v8.1c.ru/8.1/data-composition-system/settings}order/{http://v8.1c.ru/8.1/data-composition-system/settings}item[@{http://www.w3.org/2001/XMLSchema-instance}type='dcsset:OrderItemAuto']",
+          "eq": [
+            ""
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveAuto/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}settings/{http://v8.1c.ru/8.1/data-composition-system/settings}selection/{http://v8.1c.ru/8.1/data-composition-system/settings}item/{http://v8.1c.ru/8.1/data-composition-system/settings}field",
+          "eq": [
+            "Amount"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveAuto/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}settings/{http://v8.1c.ru/8.1/data-composition-system/settings}order/{http://v8.1c.ru/8.1/data-composition-system/settings}item/{http://v8.1c.ru/8.1/data-composition-system/settings}field",
+          "eq": [
+            "Amount"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveAuto.Setting.Основной.Property"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/kind",
+          "eq": "Selection"
+        },
+        {
+          "pointer": "/data/items/0/index",
+          "eq": 0
+        },
+        {
+          "pointer": "/data/items/0/itemType",
+          "eq": "SelectedItemAuto"
+        },
+        {
+          "pointer": "/data/items/2/kind",
+          "eq": "Order"
+        },
+        {
+          "pointer": "/data/items/2/itemType",
+          "eq": "OrderItemAuto"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveAuto.Setting.Основной"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "phase4Before": {
+          "file": "src/cf/Reports/F05Report/Templates/PrimitiveAuto/Ext/Template.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveAuto.Setting.Основной",
+        "ops": [
+          {
+            "op": "selection.set",
+            "args": {
+              "values": {
+                "index": 0,
+                "use": false,
+                "viewMode": "Normal"
+              }
+            }
+          },
+          {
+            "op": "order.set",
+            "args": {
+              "values": {
+                "index": 0,
+                "use": false
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveAuto/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.phase4Before"
+        }
+      ],
+      "captures": {
+        "phase4Token": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.phase4Token"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveAuto/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}settings/{http://v8.1c.ru/8.1/data-composition-system/settings}selection/{http://v8.1c.ru/8.1/data-composition-system/settings}item[@{http://www.w3.org/2001/XMLSchema-instance}type='dcsset:SelectedItemAuto']/{http://v8.1c.ru/8.1/data-composition-system/settings}use",
+          "eq": [
+            "false"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveAuto/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}settings/{http://v8.1c.ru/8.1/data-composition-system/settings}selection/{http://v8.1c.ru/8.1/data-composition-system/settings}item[@{http://www.w3.org/2001/XMLSchema-instance}type='dcsset:SelectedItemAuto']/{http://v8.1c.ru/8.1/data-composition-system/settings}viewMode",
+          "eq": [
+            "Normal"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveAuto/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}settings/{http://v8.1c.ru/8.1/data-composition-system/settings}order/{http://v8.1c.ru/8.1/data-composition-system/settings}item[@{http://www.w3.org/2001/XMLSchema-instance}type='dcsset:OrderItemAuto']/{http://v8.1c.ru/8.1/data-composition-system/settings}use",
+          "eq": [
+            "false"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveAuto.Setting.Основной"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "phase6Before": {
+          "file": "src/cf/Reports/F05Report/Templates/PrimitiveAuto/Ext/Template.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveAuto.Setting.Основной",
+        "ops": [
+          {
+            "op": "selection.remove",
+            "args": {
+              "values": {
+                "index": 0
+              }
+            }
+          },
+          {
+            "op": "order.remove",
+            "args": {
+              "values": {
+                "index": 0
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveAuto/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.phase6Before"
+        }
+      ],
+      "captures": {
+        "phase6Token": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.phase6Token"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveAuto/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}settings/{http://v8.1c.ru/8.1/data-composition-system/settings}selection/{http://v8.1c.ru/8.1/data-composition-system/settings}item[@{http://www.w3.org/2001/XMLSchema-instance}type='dcsset:SelectedItemAuto']",
+          "eq": []
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveAuto/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}settings/{http://v8.1c.ru/8.1/data-composition-system/settings}order/{http://v8.1c.ru/8.1/data-composition-system/settings}item[@{http://www.w3.org/2001/XMLSchema-instance}type='dcsset:OrderItemAuto']",
+          "eq": []
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveAuto/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}settings/{http://v8.1c.ru/8.1/data-composition-system/settings}selection/{http://v8.1c.ru/8.1/data-composition-system/settings}item/{http://v8.1c.ru/8.1/data-composition-system/settings}field",
+          "eq": [
+            "Amount"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveAuto/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}settings/{http://v8.1c.ru/8.1/data-composition-system/settings}order/{http://v8.1c.ru/8.1/data-composition-system/settings}item/{http://v8.1c.ru/8.1/data-composition-system/settings}field",
+          "eq": [
+            "Amount"
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -82,8 +82,6 @@ class AttributionTests(unittest.TestCase):
                 ("library", "ureq"),
                 ("tool", "bsl-analyzer"),
                 ("tool", "v8-runner"),
-                ("tool", "rlm-bsl-mcp"),
-                ("tool", "rlm-bsl-index"),
                 ("adapter", "v8std"),
                 ("upstream", "cc-1c-skills"),
                 ("upstream", "ai-rules-1c"),
@@ -255,25 +253,14 @@ class AttributionTests(unittest.TestCase):
         module = load_attribution_module()
 
         sections = module.parse_sections(
-            "## RLM\n"
-            "<!-- unica-attribution: tool rlm-bsl-mcp -->\n"
-            "<!-- unica-attribution: tool rlm-bsl-index -->\n"
+            "## Archive\n"
+            "<!-- unica-attribution: tool archive-tool-server -->\n"
+            "<!-- unica-attribution: tool archive-tool-index -->\n"
             "Общий текст.\n"
         )
 
-        self.assertEqual(sections[("tool", "rlm-bsl-mcp")], sections[("tool", "rlm-bsl-index")])
-        self.assertIn("Общий текст", sections[("tool", "rlm-bsl-mcp")])
-
-    def test_rlm_attribution_identifies_current_immutable_build(self) -> None:
-        root = self.repo_root()
-        section = load_attribution_module().parse_sections(
-            (root / "plugins/unica/ATTRIBUTIONS.md").read_text(encoding="utf-8")
-        )[("tool", "rlm-bsl-mcp")]
-
-        self.assertIn("`1.42.0`", section)
-        self.assertIn("`9a84f24f0c156630e1d4e757b30070a13a56d0e0`", section)
-        self.assertIn("`rlm-tools-bsl-v1.42.0-build.1`", section)
-        self.assertIn("Nuitka", section)
+        self.assertEqual(sections[("tool", "archive-tool-server")], sections[("tool", "archive-tool-index")])
+        self.assertIn("Общий текст", sections[("tool", "archive-tool-server")])
 
     def test_parse_sections_rejects_duplicate_markers(self) -> None:
         module = load_attribution_module()

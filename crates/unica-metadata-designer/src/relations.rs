@@ -3,9 +3,7 @@ use crate::resource_plan::{TypedDependencyModule, TypedRelationDependency};
 use roxmltree::Document;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
-use unica_address::source_target::{
-    MetadataAddress, ResolvedTarget, SourceTarget, TargetKind, PLATFORM_XML_8_3_27_FORMAT_2_20,
-};
+use unica_address::source_target::{MetadataAddress, ResolvedTarget, SourceTarget, TargetKind};
 use unica_metadata::{
     validate_metadata_relation_target_profile, MetaDiagnostic, MetaDiagnosticCode,
     MetaEditOperation, MetaRelation, MetadataKind,
@@ -519,20 +517,17 @@ pub fn resolve_typed_event_subscription_handler_dependency<G>(
             ))
         }
     };
-    let target = MetadataAddress::parse(
-        PLATFORM_XML_8_3_27_FORMAT_2_20,
-        &format!("CommonModule.{module_name}"),
-    )
-    .map_err(|_| {
-        unica_metadata::request::MetaFailure::from(
-            crate::edit::typed_diagnostic(
-                MetaDiagnosticCode::ValidationFailed,
-                "EventSubscription Handler CommonModule is invalid",
-                Some("properties.handler"),
+    let target =
+        MetadataAddress::parse_logical(&format!("CommonModule.{module_name}")).map_err(|_| {
+            unica_metadata::request::MetaFailure::from(
+                crate::edit::typed_diagnostic(
+                    MetaDiagnosticCode::ValidationFailed,
+                    "EventSubscription Handler CommonModule is invalid",
+                    Some("properties.handler"),
+                )
+                .with_metadata_path(metadata_path.clone()),
             )
-            .with_metadata_path(metadata_path.clone()),
-        )
-    })?;
+        })?;
     let source_target = SourceTarget {
         source_set: source_set.to_string(),
         metadata_path: Some(target.clone()),
@@ -592,11 +587,9 @@ pub fn resolve_typed_event_subscription_handler_dependency<G>(
                     .with_metadata_path(metadata_path.clone()),
                 )
             })?;
-    let module_address = MetadataAddress::parse(
-        PLATFORM_XML_8_3_27_FORMAT_2_20,
-        &format!("CommonModule.{module_name}.Module"),
-    )
-    .expect("a registered common module has a canonical module address");
+    let module_address =
+        MetadataAddress::parse_logical(&format!("CommonModule.{module_name}.Module"))
+            .expect("a registered common module has a canonical module address");
     let module_source_target = SourceTarget {
         source_set: source_set.to_string(),
         metadata_path: Some(module_address),
@@ -730,17 +723,16 @@ pub fn parse_typed_final_relation_graph(
                     })?,
                 )
             } else {
-                let metadata_path = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, value)
-                    .map_err(|_| {
-                        unica_metadata::request::MetaFailure::from(
-                            crate::edit::typed_diagnostic(
-                                MetaDiagnosticCode::ValidationFailed,
-                                "final relation target is not a metadata address",
-                                Some(&format!("relations.{}[{index}]", relation.as_str())),
-                            )
-                            .with_metadata_path(owner.clone()),
+                let metadata_path = MetadataAddress::parse_logical(value).map_err(|_| {
+                    unica_metadata::request::MetaFailure::from(
+                        crate::edit::typed_diagnostic(
+                            MetaDiagnosticCode::ValidationFailed,
+                            "final relation target is not a metadata address",
+                            Some(&format!("relations.{}[{index}]", relation.as_str())),
                         )
-                    })?;
+                        .with_metadata_path(owner.clone()),
+                    )
+                })?;
                 unica_metadata::MetaRelationTarget::Object(unica_metadata::MetadataReference {
                     metadata_path,
                 })

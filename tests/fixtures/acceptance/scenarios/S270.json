@@ -1,0 +1,22 @@
+{
+  "id": "S270",
+  "area": "Проверки качества",
+  "task": "Проверить подсистему в выгрузке 2.21 с командным интерфейсом 2.21 — предупреждение о формате",
+  "wire": [
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "newer:Subsystem.Администрирование"
+      },
+      "expect": [
+        "ok"
+      ],
+      "status": "passed",
+      "diagnostic": "platformVersionUnsupported",
+      "validators": [
+        "subsystem"
+      ]
+    }
+  ],
+  "workspace": "tests/fixtures/acceptance/workspace-format"
+}
