@@ -259,7 +259,7 @@ fn plan_single(
     plan_hidden_v13_apply(&request, &binding, &admission).map(|_| ())
 }
 
-/// #1381 (вторая вычитка): заимствованный справочник без `CodeType` не даёт
+/// Заимствованный справочник без `CodeType` не даёт
 /// вида кодов; запись предопределённых отказывает тем же текстом, что и
 /// чтение, а не проверяет коды по придуманному `String`.
 /// rule: INV.SOURCE.INCOMPLETE-METADATA-READ

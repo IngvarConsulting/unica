@@ -1,0 +1,289 @@
+name: Unica CI
+
+# Ворота pull request и очереди слияния: одна джоба Linux.
+# Pull request: формат, контракт версий, Clippy и быстрые проверки Python, цель до трёх
+# минут. Ранний сигнал по тестам — локальный прогон перед снятием черновика.
+# Очередь: Clippy всего workspace, весь Rust `small`, `medium` изменённых крейтов, Python
+# small, смоук и снимки контрактов (`scripts/ci/queue-tests.py`); medium остальных крейтов,
+# Python medium и large идут ночью. Windows и macOS целиком, тяжёлые тесты и упаковка
+# идут ночью и в выпуске, в `release.yml`.
+on:
+  pull_request:
+    # Черновик не занимает раннер. Перевод в готовые запускает прогон:
+    # без `ready_for_review` на его head осталась бы пропущенная проверка.
+    # `milestoned` запускает тесты, когда владелец вычитал PR.
+    types: [opened, synchronize, reopened, ready_for_review, milestoned]
+  merge_group:
+    types: [checks_requested]
+
+permissions:
+  contents: read
+
+# Новый push отменяет прогон того же pull request. Прогон записи очереди
+# не отменяется: очередь сама снимает записи.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# Переменные `CARGO*` входят в ключ rust-cache. Те же значения у ночного контура,
+# который этот кэш пишет: иначе он сюда не подойдёт.
+env:
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  PYTHONUTF8: "1"
+  GATE_PROFILE: ${{ github.event_name == 'merge_group' && 'queue' || 'pr' }}
+
+jobs:
+  # Непрочитанная работа не занимает раннеры тестами. Отметка «вычитано» — веха от
+  # владельца: см. `pr-metadata.yml`, правило то же. Кода PR здесь нет. Очередь
+  # допускает всегда, а отметку заново проверяет `PR metadata`.
+  admission:
+    name: Допуск к тестам
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+      checks: read
+    outputs:
+      admitted: ${{ github.event_name == 'merge_group' || steps.admission.outputs.admitted == 'true' }}
+      kept: ${{ steps.kept.outputs.kept == 'true' }}
+    steps:
+      - name: Веха от владельца
+        id: admission
+        if: ${{ github.event_name == 'pull_request' && !github.event.pull_request.draft }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          MILESTONE_OWNER: zeegin
+          STRICT: "false"
+        run: |
+          set -euo pipefail
+          # Запись очереди называется gh-readonly-queue/<база>/pr-<номер>-<sha>.
+          number="${PR_NUMBER:-$(sed -nE 's#^refs/heads/gh-readonly-queue/[^/]+/pr-([0-9]+)-[0-9a-f]+$#\1#p' <<<"$GITHUB_REF")}"
+          if [ -z "$number" ]; then
+            echo "::error::Номер PR не определён по $GITHUB_REF"
+            exit 1
+          fi
+          json="$(gh api graphql -F owner="${GITHUB_REPOSITORY%/*}" -F name="${GITHUB_REPOSITORY#*/}" -F number="$number" -f query='
+            query($owner: String!, $name: String!, $number: Int!) {
+              repository(owner: $owner, name: $name) {
+                pullRequest(number: $number) {
+                  milestone { number }
+                  assignees { totalCount }
+                  timelineItems(itemTypes: [MILESTONED_EVENT], last: 1) { nodes { ... on MilestonedEvent { actor { login } } } }
+                  closingIssuesReferences(first: 100) { nodes { number milestone { number } } }
+                }
+              }
+            }')"
+          problems="$(jq -r --arg owner "$MILESTONE_OWNER" '
+            .data.repository.pullRequest as $pr | $pr.closingIssuesReferences.nodes as $issues
+            | ($pr.timelineItems.nodes[-1].actor.login // "неизвестно") as $actor
+            | (if $pr.milestone == null then
+                 (if ($issues | length) > 0 then "Поставьте веху: скопируйте её с issue" else "Поставьте веху: на PR без issue её ставит \($owner)" end)
+               elif ($issues | length) == 0 and $actor != $owner then "Веху на PR поставил \($actor), нужна от \($owner)"
+               else empty end),
+              ($issues[] | select(.milestone == null) | "Issue #\(.number) без вехи, PR не рассматривается")' <<<"$json")"
+          assignees="$(jq -r '.data.repository.pullRequest.assignees.totalCount' <<<"$json")"
+          if [ -n "$problems" ]; then echo "admitted=false"; else echo "admitted=true"; fi >> "$GITHUB_OUTPUT"
+          level="$( [ "$STRICT" = true ] && echo error || echo notice )"
+          if [ -n "$problems" ]; then
+            while read -r problem; do echo "::$level::$problem"; done <<<"$problems"
+          fi
+          # Ответственный на запуск тестов не влияет: его требует только `PR metadata`.
+          if [ "$STRICT" = true ]; then
+            if [ "$assignees" = 0 ]; then echo "::error::Укажите ответственного"; fi
+            if [ -n "$problems" ] || [ "$assignees" = 0 ]; then exit 1; fi
+          fi
+          echo "PR #$number: проверка окончена"
+      # Смена вехи на зелёной вершине не повторяет тесты и не заменяет зелёный итог
+      # пропуском: `Unica CI` этого набора сразу зелёный. Новый push это не затрагивает.
+      - name: Зелёный итог этой вершины
+        id: kept
+        if: ${{ github.event.action == 'milestoned' && steps.admission.outputs.admitted == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          last="$(gh api "repos/$GITHUB_REPOSITORY/commits/$HEAD_SHA/check-runs?check_name=Unica%20CI&filter=all&per_page=100" \
+            --jq '[.check_runs[] | select(.status == "completed" and .conclusion != "skipped")] | sort_by(.completed_at) | last | .conclusion // ""')"
+          if [ "$last" = success ]; then echo "kept=true" >> "$GITHUB_OUTPUT"; fi
+
+  unica-ci:
+    # Имя обязательной проверки ruleset. Пропуск по условию она считает пройденной,
+    # поэтому без отметки владельца вливание блокирует `PR metadata`.
+    name: Unica CI
+    needs: admission
+    if: ${{ needs.admission.outputs.admitted == 'true' }}
+    # Очередь и её повторы используют общий пул PVE, включая GPU-ВМ. PR — GitHub.
+    # UNICA_SELF_HOSTED=false (или отсутствие переменной) возвращает новые прогоны на GitHub.
+    runs-on: ${{ fromJSON(github.event_name == 'merge_group' && vars.UNICA_SELF_HOSTED == 'true' && '["self-hosted","Linux","X64","unica-pve"]' || '["ubuntu-latest"]') }}
+    timeout-minutes: 60
+    # Проверка удалений тестов читает описание pull request: объявление,
+    # поправленное после push, должно засчитаться при повторе. Ночной путь
+    # очереди читает инвентарь прошлой ночи — артефакт прогона.
+    permissions:
+      contents: read
+      pull-requests: read
+      actions: read
+    defaults:
+      run:
+        shell: bash
+    env:
+      KEPT: ${{ needs.admission.outputs.kept }}
+    steps:
+      # На PVE сохраняем сборку на время очистки checkout. При исполнении target
+      # остаётся обычным каталогом: тесты ищут плагин относительно пути бинаря.
+      - name: Сохранить локальную сборку перед очисткой
+        id: park-target
+        if: ${{ runner.environment == 'self-hosted' && env.KEPT != 'true' }}
+        run: |
+          cache_dir="$(dirname "$GITHUB_WORKSPACE")/.unica-ci-target"
+          if [ -d target ] && [ ! -L target ]; then
+            test ! -e "$cache_dir"
+            test ! -L "$cache_dir"
+            mv target "$cache_dir"
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: env.KEPT != 'true'
+        with:
+          persist-credentials: false
+          # Python-проверки читают историю репозитория.
+          fetch-depth: 0
+      - name: Вернуть локальную сборку в checkout
+        id: local-target
+        if: ${{ runner.environment == 'self-hosted' && env.KEPT != 'true' }}
+        run: |
+          cache_dir="$(dirname "$GITHUB_WORKSPACE")/.unica-ci-target"
+          if [ -e "$cache_dir" ] || [ -L "$cache_dir" ]; then
+            test -d "$cache_dir"
+            test ! -L "$cache_dir"
+            test ! -e target
+            test ! -L target
+            mv "$cache_dir" target
+          fi
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        if: env.KEPT != 'true'
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -r tests/ci/requirements.txt
+        if: env.KEPT != 'true'
+      # На pull request проверки Python идут в фоне, пока раннер восстанавливает
+      # кэш Rust и гоняет fmt и Clippy: подряд они занимали бо́льшую часть
+      # стадии. Шаги ожидания ниже отдают их лог и исход как свои.
+      - name: Статические проверки Python (запуск)
+        if: ${{ github.event_name == 'pull_request' && env.KEPT != 'true' }}
+        run: python scripts/ci/background_step.py start static-python -- python scripts/ci/run-static-tests.py
+      - name: Удалённые тесты (запуск)
+        if: ${{ github.event_name == 'pull_request' && env.KEPT != 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        # Сверка ещё и от инвентаря ночи: между ним и базой PR тест мог
+        # переехать или уйти из второй цели, и ночь знает его прежний ID.
+        run: python scripts/ci/background_step.py start removed-tests -- python scripts/ci/removed_tests.py --base "$BASE_SHA" --nightly-profile large
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        if: env.KEPT != 'true'
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+      # Версия — из `.config/nextest.toml`; готовый nextest не ставится заново.
+      - if: ${{ github.event_name == 'merge_group' && env.KEPT != 'true' }}
+        uses: ./.github/actions/install-nextest
+        timeout-minutes: 5
+      # На GitHub читаем кэш main; при промахе все команды работают с пустым target.
+      # На PVE сохраняем локальные артефакты workspace, не заменяя их архивом GitHub.
+      - name: Кэш зависимостей Rust # zizmor: ignore[cache-poisoning] restore-only; pull request и очередь читают область main и ничего не пишут
+        if: ${{ runner.environment == 'github-hosted' && env.KEPT != 'true' }}
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: ci-rust-ordinary
+          save-if: false
+      - name: Формат
+        if: env.KEPT != 'true'
+        run: |
+          cargo fmt --all -- --check
+          python scripts/ci/check-discovered-modules-format.py
+      - name: Контракт версий
+        if: env.KEPT != 'true'
+        run: python scripts/ci/check-version-contract.py
+      - id: clippy
+        name: Clippy
+        if: env.KEPT != 'true'
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      # Medium Python запускает продукт. Сборка идёт до тестов Rust: вызов
+      # контракта ReceiptLedger пересобирает `unica` со своим признаком.
+      - name: Продукт для Python
+        if: ${{ github.event_name == 'merge_group' && env.KEPT != 'true' }}
+        run: |
+          python scripts/ci/prepared_binary.py build --destination .build/ci-product --target-dir target
+          echo "UNICA_PREPARED_BINARY_MANIFEST=$PWD/.build/ci-product/manifest.json" >> "$GITHUB_ENV"
+      # Красный шаг не отменяет следующие: упавший тест не прячет остальные.
+      - name: Тесты Rust
+        id: selection
+        if: ${{ !cancelled() && github.event_name == 'merge_group' && env.KEPT != 'true' }}
+        env:
+          QUEUE_FULL_TESTS: ${{ vars.QUEUE_FULL_TESTS }}
+          BASE_SHA: ${{ github.event.merge_group.base_sha }}
+          HEAD_SHA: ${{ github.event.merge_group.head_sha }}
+        run: python scripts/ci/queue-tests.py --base "$BASE_SHA" --head "$HEAD_SHA"
+      # Правку CI иначе исполняет только ночь. Запись с ней проходит ночной путь
+      # в лёгком виде: план полос, архив маленькой полосы, `nextest list` по нему
+      # и учёт против инвентаря прошлой ночи. Остальные записи выходят сразу.
+      - id: nightly-path
+        name: Ночной путь
+        if: ${{ !cancelled() && github.event_name == 'merge_group' && env.KEPT != 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_SHA: ${{ github.event.merge_group.base_sha }}
+          HEAD_SHA: ${{ github.event.merge_group.head_sha }}
+        run: python scripts/ci/nightly-path-probe.py --base "$BASE_SHA" --head "$HEAD_SHA"
+      # Неразрешимый выбор — полный набор и здесь. Иначе Python medium идёт ночью,
+      # кроме смоука продукта и снимков контрактов.
+      - id: python
+        name: Тесты Python
+        if: ${{ !cancelled() && github.event_name == 'merge_group' && env.KEPT != 'true' }}
+        env:
+          FULL: ${{ steps.selection.outputs.full }}
+        run: |
+          if [ "$FULL" = false ]; then
+            python scripts/ci/run-static-tests.py --queue
+          else
+            python scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem python
+          fi
+      - name: Статические проверки Python
+        if: ${{ !cancelled() && github.event_name == 'pull_request' && env.KEPT != 'true' }}
+        run: python scripts/ci/background_step.py wait static-python --timeout 900
+      # Тест Rust, снятый без объявления `Removes-test`, иначе впервые виден
+      # в учёте ночи; у тестов Python ночного учёта нет, это единственная
+      # проверка. Случаи строятся по исходникам, без сборки и импорта.
+      - name: Удалённые тесты объявлены
+        if: ${{ !cancelled() && github.event_name == 'pull_request' && env.KEPT != 'true' }}
+        run: python scripts/ci/background_step.py wait removed-tests --timeout 600
+
+  windows-clippy:
+    # Пропуск на pull request не мешает сделать проверку обязательной:
+    # пропущенная по условию джоба считается пройденной, а очередь её исполняет.
+    name: Clippy (windows-latest)
+    if: github.event_name == 'merge_group'
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: stable
+          components: clippy
+      - name: Кэш зависимостей Rust # zizmor: ignore[cache-poisoning] restore-only; очередь читает область main и ничего не пишет
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: ci-rust-ordinary
+          save-if: false
+      - id: clippy
+        name: Clippy
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings

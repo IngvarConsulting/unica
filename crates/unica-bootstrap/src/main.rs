@@ -188,6 +188,19 @@ fn install_and_verify_runtime(plugin_root: &Path, provider_state_root: &Path) ->
             runtime_manifest: &plugin_root.join("runtime-manifest.json"),
             startup_notice: None,
         },
+        // resource-limit: bootstrap.runtime-verify-timeout
+        // class: deadline
+        // unit: ms
+        // scope: process
+        // value: 20000
+        // literal: Duration::from_secs(20)
+        // count: 1
+        // expr: Duration::from_secs(20)
+        // resource: Срок проверки установленного runtime и инструментов MCP при установке пакета bootstrap.
+        // status: unproven
+        // origin: неизвестно
+        // problem: неизвестно
+        // on-reach: установка завершается ошибкой проверки runtime
         Duration::from_secs(20),
     )?;
     eprintln!(

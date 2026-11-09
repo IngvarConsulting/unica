@@ -437,7 +437,7 @@ impl RealReaderFixture {
             &source.join("Catalogs/Items/Commands/Refresh/Ext/CommandModule.bsl"),
             "&AtClient\nProcedure CommandProcessing(CommandParameter, CommandExecuteParameters)\nEndProcedure\n",
         );
-        let report = fixture_text("unica_mcp_script_parity/form-remove/ParityReport.xml");
+        let report = crate_fixture_text("form-remove/ParityReport.xml");
         fs::create_dir_all(source.join("Reports")).unwrap();
         fs::write(
                 source.join("Reports/ParityReport.xml"),
@@ -447,8 +447,8 @@ impl RealReaderFixture {
                 ),
             )
             .unwrap();
-        copy_fixture(
-            "unica_mcp_script_parity/form-remove/ParityReport/Forms/MainForm.xml",
+        copy_crate_fixture(
+            "form-remove/ParityReport/Forms/MainForm.xml",
             &source.join("Reports/ParityReport/Forms/MainForm.xml"),
         );
         let form = r#"<?xml version="1.0" encoding="utf-8"?>
@@ -492,8 +492,8 @@ impl RealReaderFixture {
             "unica_mcp_script_parity/meta-remove/Subsystems/Sales/Ext/CommandInterface.xml",
             &source.join("Subsystems/Sales/Ext/CommandInterface.xml"),
         );
-        copy_fixture(
-            "unica_mcp_script_parity/template-remove/ParityReport/Templates/MainSchema.xml",
+        copy_crate_fixture(
+            "template-remove/ParityReport/Templates/MainSchema.xml",
             &source.join("Reports/ParityReport/Templates/MainSchema.xml"),
         );
         let dcs = fixture_text("unica_mcp_script_parity/dcs-validate/BadPrefix.xml")
@@ -509,11 +509,10 @@ impl RealReaderFixture {
             &source.join("Reports/ParityReport/Templates/MainSchema/Ext/Template.xml"),
             &dcs,
         );
-        let print_descriptor = fixture_text(
-            "unica_mcp_script_parity/template-remove/ParityReport/Templates/MainSchema.xml",
-        )
-        .replace("MainSchema", "Print")
-        .replace("DataCompositionSchema", "SpreadsheetDocument");
+        let print_descriptor =
+            crate_fixture_text("template-remove/ParityReport/Templates/MainSchema.xml")
+                .replace("MainSchema", "Print")
+                .replace("DataCompositionSchema", "SpreadsheetDocument");
         write(
             &source.join("Reports/ParityReport/Templates/Print.xml"),
             &print_descriptor,
@@ -812,8 +811,8 @@ impl RealReaderFixture {
 <Rights xmlns="http://v8.1c.ru/8.2/roles" version="2.20"><object><name>Catalog.Товары</name><right><name>Read</name><value>true</value><restrictionByCondition><condition>Товары.Владелец = &amp;ТекущийПользователь</condition></restrictionByCondition></right></object></Rights>"#,
         );
 
-        let report = fixture_text("unica_mcp_script_parity/form-remove/ParityReport.xml")
-            .replace("ParityReport", "Продажи");
+        let report =
+            crate_fixture_text("form-remove/ParityReport.xml").replace("ParityReport", "Продажи");
         write(
             &self.source.join("Reports/Продажи.xml"),
             &replace_child_objects(
@@ -821,10 +820,9 @@ impl RealReaderFixture {
                 "<Template>ОсновнаяСхема</Template><Template>Печать</Template>",
             ),
         );
-        let schema_descriptor = fixture_text(
-            "unica_mcp_script_parity/template-remove/ParityReport/Templates/MainSchema.xml",
-        )
-        .replace("MainSchema", "ОсновнаяСхема");
+        let schema_descriptor =
+            crate_fixture_text("template-remove/ParityReport/Templates/MainSchema.xml")
+                .replace("MainSchema", "ОсновнаяСхема");
         write(
             &self
                 .source
@@ -881,6 +879,21 @@ pub(super) fn fixture_path(relative: &str) -> PathBuf {
 
 pub(super) fn fixture_text(relative: &str) -> String {
     fs::read_to_string(fixture_path(relative)).unwrap()
+}
+
+fn crate_fixture_path(relative: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures")
+        .join(relative)
+}
+
+pub(super) fn crate_fixture_text(relative: &str) -> String {
+    fs::read_to_string(crate_fixture_path(relative)).unwrap()
+}
+
+fn copy_crate_fixture(relative: &str, destination: &Path) {
+    fs::create_dir_all(destination.parent().unwrap()).unwrap();
+    fs::copy(crate_fixture_path(relative), destination).unwrap();
 }
 
 pub(super) fn copy_fixture(relative: &str, destination: &Path) {

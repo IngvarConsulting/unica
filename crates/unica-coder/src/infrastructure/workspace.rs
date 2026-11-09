@@ -6,9 +6,7 @@ use std::time::UNIX_EPOCH;
 use unica_source_contract::workspace::WorkspaceContext;
 
 /// Discovers the workspace selected by an optional caller-provided directory.
-pub(crate) fn discover_workspace(
-    requested_cwd: Option<PathBuf>,
-) -> Result<WorkspaceContext, String> {
+pub fn discover_workspace(requested_cwd: Option<PathBuf>) -> Result<WorkspaceContext, String> {
     discover_workspace_with_cache_override(
         requested_cwd,
         env::var("UNICA_CACHE_DIR").map(PathBuf::from).ok(),

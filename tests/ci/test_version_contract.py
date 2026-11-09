@@ -26,7 +26,7 @@ class VersionContractTests(unittest.TestCase):
     def test_public_runtime_binary_name_is_unica(self) -> None:
         """rule: INV.PKG.PUBLIC-BINARY-NAME"""
         manifest = tomllib.loads(
-            (REPO_ROOT / "crates/unica-coder/Cargo.toml").read_text(encoding="utf-8")
+            (REPO_ROOT / "crates/unica-product/Cargo.toml").read_text(encoding="utf-8")
         )
         lock = json.loads(
             (
@@ -47,7 +47,7 @@ class VersionContractTests(unittest.TestCase):
             },
             {
                 "binaryName": "unica",
-                "cargoPackage": "unica-coder",
+                "cargoPackage": "unica-product",
                 "cargoBin": "unica",
             },
         )

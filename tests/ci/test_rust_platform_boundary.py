@@ -382,7 +382,7 @@ class RustPlatformBoundaryTests(unittest.TestCase):
         checker = load_checker_module()
 
         diagnostics = checker.check_source(
-            "crates/unica-coder/src/domain/project.rs",
+            "crates/unica-domain/src/project.rs",
             "// #[cfg(windows)] std::os::unix\n"
             "#[cfg(feature = \"windows\")]\n"
             "let text = \"cfg(unix) windows_sys\nstd::os::linux\";\n"
@@ -395,13 +395,13 @@ class RustPlatformBoundaryTests(unittest.TestCase):
         self.assertEqual(
             diagnostics,
             [
-                "crates/unica-coder/src/domain/project.rs:5: "
+                "crates/unica-domain/src/project.rs:5: "
                 "OS-specific cfg condition is outside a platform facade",
-                "crates/unica-coder/src/domain/project.rs:6: "
+                "crates/unica-domain/src/project.rs:6: "
                 "OS-specific cfg condition is outside a platform facade",
-                "crates/unica-coder/src/domain/project.rs:7: "
+                "crates/unica-domain/src/project.rs:7: "
                 "OS-specific cfg condition is outside a platform facade",
-                "crates/unica-coder/src/domain/project.rs:8: "
+                "crates/unica-domain/src/project.rs:8: "
                 "OS-specific cfg condition is outside a platform facade",
             ],
         )
@@ -411,7 +411,7 @@ class RustPlatformBoundaryTests(unittest.TestCase):
         checker = load_checker_module()
 
         diagnostics = checker.check_source(
-            "crates/unica-coder/src/domain/project.rs",
+            "crates/unica-domain/src/project.rs",
             r"fn inspect<'a>() { std::fs::read(path); rule.exists(); "
             r"let _ = crate::infrastructure::Store; #[cfg(windows)] let _ = 1; "
             r"let _: Option<&'a str> = None; let _ = ('x', '\n', '\u{41}', '\''); "
@@ -422,11 +422,11 @@ class RustPlatformBoundaryTests(unittest.TestCase):
         self.assertEqual(
             diagnostics,
             [
-                "crates/unica-coder/src/domain/project.rs:1: "
+                "crates/unica-domain/src/project.rs:1: "
                 "OS-specific cfg condition is outside a platform facade",
-                "crates/unica-coder/src/domain/project.rs:1: "
+                "crates/unica-domain/src/project.rs:1: "
                 "domain must not reference crate::infrastructure",
-                "crates/unica-coder/src/domain/project.rs:1: "
+                "crates/unica-domain/src/project.rs:1: "
                 "domain must not access std::fs directly",
             ],
         )
@@ -436,13 +436,13 @@ class RustPlatformBoundaryTests(unittest.TestCase):
         checker = load_checker_module()
 
         domain_diagnostics = checker.check_source(
-            "crates/unica-coder/src/domain/project.rs",
+            "crates/unica-domain/src/project.rs",
             "use crate::application::Port;\n"
             "use crate::infrastructure::Store;\n"
             "use crate::interfaces::Cli;\n",
         )
         application_diagnostics = checker.check_source(
-            "crates/unica-coder/src/application/use_case.rs",
+            "crates/unica-application/src/application/use_case.rs",
             "let store = crate :: infrastructure :: Store::new();\n"
             "let cli = super :: interfaces :: Cli::new();\n",
         )
@@ -462,9 +462,9 @@ class RustPlatformBoundaryTests(unittest.TestCase):
         self.assertEqual(
             application_diagnostics,
             [
-                "crates/unica-coder/src/application/use_case.rs:1: "
+                "crates/unica-application/src/application/use_case.rs:1: "
                 "application must not reference crate::infrastructure",
-                "crates/unica-coder/src/application/use_case.rs:2: "
+                "crates/unica-application/src/application/use_case.rs:2: "
                 "application must not reference super::interfaces",
             ],
         )
@@ -474,7 +474,7 @@ class RustPlatformBoundaryTests(unittest.TestCase):
         checker = load_checker_module()
 
         diagnostics = checker.check_source(
-            "crates/unica-coder/src/application/use_case.rs",
+            "crates/unica-application/src/application/use_case.rs",
             "use crate::{infrastructure::Store, domain::Model};\n"
             "use super::{\n"
             "    interfaces::{Cli, Request},\n"
@@ -485,9 +485,9 @@ class RustPlatformBoundaryTests(unittest.TestCase):
         self.assertEqual(
             diagnostics,
             [
-                "crates/unica-coder/src/application/use_case.rs:1: "
+                "crates/unica-application/src/application/use_case.rs:1: "
                 "application must not reference crate::infrastructure",
-                "crates/unica-coder/src/application/use_case.rs:3: "
+                "crates/unica-application/src/application/use_case.rs:3: "
                 "application must not reference super::interfaces",
             ],
         )
@@ -497,7 +497,7 @@ class RustPlatformBoundaryTests(unittest.TestCase):
         checker = load_checker_module()
 
         diagnostics = checker.check_source(
-            "crates/unica-coder/src/application/use_case.rs",
+            "crates/unica-application/src/application/use_case.rs",
             "use crate as root;\n"
             "use self::root::infrastructure::Store;\n"
             "use super::{self as parent};\n"
@@ -507,9 +507,9 @@ class RustPlatformBoundaryTests(unittest.TestCase):
         self.assertEqual(
             diagnostics,
             [
-                "crates/unica-coder/src/application/use_case.rs:2: "
+                "crates/unica-application/src/application/use_case.rs:2: "
                 "application must not reference crate::infrastructure",
-                "crates/unica-coder/src/application/use_case.rs:4: "
+                "crates/unica-application/src/application/use_case.rs:4: "
                 "application must not reference super::interfaces",
             ],
         )
@@ -519,7 +519,7 @@ class RustPlatformBoundaryTests(unittest.TestCase):
         checker = load_checker_module()
 
         diagnostics = checker.check_source(
-            "crates/unica-coder/src/domain/project.rs",
+            "crates/unica-domain/src/project.rs",
             "let text = ::std::fs::read_to_string(path)?;\n"
             "use std::{env as environment, process};\n"
             "use std as rust_std;\n"
@@ -531,15 +531,15 @@ class RustPlatformBoundaryTests(unittest.TestCase):
         self.assertEqual(
             diagnostics,
             [
-                "crates/unica-coder/src/domain/project.rs:1: "
+                "crates/unica-domain/src/project.rs:1: "
                 "domain must not access std::fs directly",
-                "crates/unica-coder/src/domain/project.rs:2: "
+                "crates/unica-domain/src/project.rs:2: "
                 "domain must not access std::env directly",
-                "crates/unica-coder/src/domain/project.rs:2: "
+                "crates/unica-domain/src/project.rs:2: "
                 "domain must not access std::process directly",
-                "crates/unica-coder/src/domain/project.rs:4: "
+                "crates/unica-domain/src/project.rs:4: "
                 "domain must not access std::fs directly",
-                "crates/unica-coder/src/domain/project.rs:6: "
+                "crates/unica-domain/src/project.rs:6: "
                 "domain must not access std::env directly",
             ],
         )
@@ -549,7 +549,7 @@ class RustPlatformBoundaryTests(unittest.TestCase):
         checker = load_checker_module()
 
         diagnostics = checker.check_source(
-            "crates/unica-coder/src/domain/project.rs",
+            "crates/unica-domain/src/project.rs",
             "use std::path::Path as P;\n"
             "P::exists(path);\n"
             "use std::path::{Path as Q, PathBuf as PB};\n"
@@ -563,7 +563,7 @@ class RustPlatformBoundaryTests(unittest.TestCase):
         self.assertEqual(
             diagnostics,
             [
-                f"crates/unica-coder/src/domain/project.rs:{line}: "
+                f"crates/unica-domain/src/project.rs:{line}: "
                 f"domain must not call filesystem method .{method} directly"
                 for line, method in (
                     (2, "exists"),
@@ -580,7 +580,7 @@ class RustPlatformBoundaryTests(unittest.TestCase):
         checker = load_checker_module()
 
         diagnostics = checker.check_source(
-            "crates/unica-coder/src/domain/project.rs",
+            "crates/unica-domain/src/project.rs",
             "use std::path::{Path, PathBuf};\n"
             "rule.exists();\n"
             "aggregate.metadata();\n"
@@ -598,7 +598,7 @@ class RustPlatformBoundaryTests(unittest.TestCase):
         checker = load_checker_module()
 
         diagnostics = checker.check_source(
-            "crates/unica-coder/src/domain/project.rs",
+            "crates/unica-domain/src/project.rs",
             "// use std::fs; Path::exists(path);\n"
             "let text = \"std::env::current_dir Path::canonicalize(path)\";\n"
             "let raw = r#\"crate::infrastructure std::process::Command\"#;\n"
@@ -799,7 +799,7 @@ class RustPlatformBoundaryTests(unittest.TestCase):
     def test_cli_returns_nonzero_and_prints_diagnostics(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             repo_root = Path(temporary_directory)
-            source_path = repo_root / "crates/unica-coder/src/domain/project.rs"
+            source_path = repo_root / "crates/unica-domain/src/project.rs"
             source_path.parent.mkdir(parents=True)
             source_path.write_text("let _ = std::fs::read(path);\n", encoding="utf-8")
             subprocess.run(["git", "init", "-q", str(repo_root)], check=True)
@@ -818,7 +818,7 @@ class RustPlatformBoundaryTests(unittest.TestCase):
         self.assertEqual(
             result.stdout.splitlines(),
             [
-                "crates/unica-coder/src/domain/project.rs:1: "
+                "crates/unica-domain/src/project.rs:1: "
                 "domain must not access std::fs directly"
             ],
         )
@@ -833,6 +833,44 @@ class RustPlatformBoundaryTests(unittest.TestCase):
         checker = load_checker_module()
 
         self.assertEqual(checker.check_repository(REPO_ROOT), [])
+        self.assertEqual(checker.file_io_declaration_errors(checker.collect_repository_manifests(REPO_ROOT)[0]), [])
+
+    def test_a_package_that_says_nothing_about_file_io_is_refused_with_a_hint(self) -> None:
+        checker = load_checker_module()
+
+        def manifest(name, unica=""):
+            return f'[package]\nname = "{name}"\n\n[package.metadata.unica]\n{unica}\n'
+
+        errors = checker.file_io_declaration_errors({"crates/new/Cargo.toml": manifest("unica-new")})
+        self.assertEqual(len(errors), 1)
+        self.assertIn("crates/new/Cargo.toml: declare file-io", errors[0])
+        for level in ("domain", "none", "owned"):
+            self.assertIn(f'"{level}"', errors[0])
+        # A new package restricts itself by its declaration alone.
+        for level in ("owned", "none", "domain"):
+            self.assertEqual(checker.file_io_declaration_errors({"a": manifest("unica-new", f'file-io = "{level}"')}), [])
+        self.assertEqual(checker.file_io_declaration_errors({"a": manifest("unica-navigation", 'file-io = "none"')}), [])
+        self.assertEqual(checker.file_io_declaration_errors({"a": manifest("unica-navigation", 'file-io = "domain"')}), [])
+
+    def test_a_package_does_not_lift_its_own_file_io_restriction(self) -> None:
+        """rule: INV.APP.DOMAIN-INPUTS"""
+        checker = load_checker_module()
+
+        def manifest(name, level):
+            return f'[package]\nname = "{name}"\n\n[package.metadata.unica]\nfile-io = "{level}"\n'
+
+        for name, level in (
+            ("unica-navigation", "owned"),
+            ("unica-forms-designer", "owned"),
+            ("unica-domain", "none"),
+            ("unica-address", "owned"),
+        ):
+            with self.subTest(package=name, level=level):
+                errors = checker.file_io_declaration_errors({"a": manifest(name, level)})
+                self.assertEqual(len(errors), 1, errors)
+                self.assertIn("lifts a restriction", errors[0])
+        self.assertLessEqual(checker.DOMAIN_FLOOR, checker.DOMAIN_COMPONENTS)
+        self.assertLessEqual(checker.FILE_IO_FLOOR, checker.FILE_IO_COMPONENTS)
 
 
 class HostNameBoundaryTests(unittest.TestCase):

@@ -8,3 +8,7 @@ repository.workspace = true
 [features]
 default = []
 test-support = []
+
+[package.metadata.unica]
+component = "abstraction"
+file-io = "owned"
