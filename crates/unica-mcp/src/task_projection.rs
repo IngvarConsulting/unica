@@ -104,6 +104,11 @@ pub fn call_tool_result(
     if public_result.source_text_read_hint.is_some() {
         public_result.to_mut().source_text_read_hint = None;
     }
+    // The choice is asked by the door before projection, if at all; the
+    // refusal it came with is the public answer.
+    if public_result.human_choice.is_some() {
+        public_result.to_mut().human_choice = None;
+    }
     let result = public_result.as_ref();
     match canonical_result_size(result) {
         Ok(_) => {}
@@ -383,6 +388,32 @@ mod tests {
         );
     }
 
+    /// The question a refusal offers a person is asked by the door, if at
+    /// all; the public projection is the refusal without it.
+    /// rule: INV.RUNTIME.RUNNER-BASE-REFUSALS
+    #[test]
+    fn the_public_projection_carries_no_human_choice() {
+        let mut refusal = DomainResult::canonical_rejection(
+            None,
+            unica_refusal::RefusalCode::InvalidState,
+            "push loaded nothing",
+        );
+        let plain = call_tool_result(&refusal, ResponseBudget::default()).unwrap();
+        refusal.human_choice = Some(Box::new(
+            unica_execution_contract::invocation::HumanChoice {
+                question: "What should be done with the infobase?".into(),
+                options: Vec::new(),
+            },
+        ));
+
+        let projected = call_tool_result(&refusal, ResponseBudget::default()).unwrap();
+
+        assert_eq!(
+            serde_json::to_value(&projected).unwrap(),
+            serde_json::to_value(&plain).unwrap()
+        );
+    }
+
     /// rule: CTR.WIRE.NATIVE-TASK-PROJECTION
     #[test]
     fn v5_completed_task_embeds_the_exact_direct_call_result() {
@@ -404,6 +435,7 @@ mod tests {
             page: None,
             source_text: None,
             source_text_read_hint: None,
+            human_choice: None,
         };
         let direct = match super::project_direct_terminal(
             &unica_execution::receipt_ledger::ReceiptTerminalOutcome::Completed {

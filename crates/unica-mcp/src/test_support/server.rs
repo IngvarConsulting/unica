@@ -152,6 +152,7 @@ pub fn canonical_result(summary: &str) -> unica_execution_contract::invocation::
         page: None,
         source_text: None,
         source_text_read_hint: None,
+        human_choice: None,
     }
 }
 

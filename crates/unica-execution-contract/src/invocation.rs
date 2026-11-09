@@ -208,6 +208,40 @@ pub struct DomainResult {
         skip_serializing_if = "Option::is_none"
     )]
     pub source_text_read_hint: Option<Box<SourceTextReadHint>>,
+    /// Private, digest-covered choice a refusal offers a person instead of
+    /// a dead end. A host projection that can ask the person in the course
+    /// of the call asks it and executes the chosen call; every public
+    /// projection drops it. Old completed records omit it without changing
+    /// bytes.
+    #[serde(
+        default,
+        rename = "humanChoice",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub human_choice: Option<Box<HumanChoice>>,
+}
+
+/// A question with ready calls for each answer. Cancelling is always
+/// possible and is not an option here: it keeps the refusal the choice came
+/// with. The text names the subject and what each answer loses, never project
+/// paths or provider commands.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct HumanChoice {
+    pub question: String,
+    pub options: Vec<HumanChoiceOption>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct HumanChoiceOption {
+    /// Stable answer value, unique within the choice; never `cancel`.
+    pub id: String,
+    /// Short title of the answer, including what it loses.
+    pub title: String,
+    /// Public tool executing the answer, with its public arguments.
+    pub tool: String,
+    pub arguments: serde_json::Map<String, Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -236,6 +270,7 @@ impl DomainResult {
             page: None,
             source_text: None,
             source_text_read_hint: None,
+            human_choice: None,
         }
     }
 
@@ -379,6 +414,7 @@ mod tests {
             page: Some(json!({"stoppedBy": "limit"})),
             source_text: None,
             source_text_read_hint: None,
+            human_choice: None,
         };
 
         let serialized = serde_json::to_value(result).expect("serialize domain result");

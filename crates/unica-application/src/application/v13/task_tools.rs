@@ -555,6 +555,7 @@ mod tests {
             page: None,
             source_text: None,
             source_text_read_hint: None,
+            human_choice: None,
         };
         let mut completed = snapshot(InvocationStatus::Completed);
         completed.result = Some(subject.clone());
