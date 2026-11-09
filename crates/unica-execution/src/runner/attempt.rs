@@ -1,5 +1,5 @@
 //! A prepared attempt is bound to one backend and one immutable admission scope.
-use crate::operation::RuntimeJobOperation;
+use crate::runner::operation::RuntimeJobOperation;
 use std::{
     fmt::Debug,
     path::{Path, PathBuf},

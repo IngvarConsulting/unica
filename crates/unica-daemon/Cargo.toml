@@ -90,7 +90,6 @@ unica-execution-contract = { path = "../unica-execution-contract", features = ["
 unica-process = { path = "../unica-process", features = ["test-support"] }
 unica-work-control = { path = "../unica-work-control", features = ["test-support"] }
 unica-documentation = { path = "../unica-documentation" }
-unica-runner = { path = "../unica-runner" }
 jsonschema.workspace = true
 proc-macro2.workspace = true
 quote.workspace = true
