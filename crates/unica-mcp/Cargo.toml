@@ -12,7 +12,7 @@ file-io = "owned"
 [features]
 default = []
 # Внутренности двери для тестов `unica-daemon` с живым демоном.
-test-support = ["dep:jsonschema", "dep:tempfile", "dep:unica-workspace", "unica-workspace?/test-support"]
+test-support = ["unica-daemon-protocol/test-support", "dep:jsonschema", "dep:tempfile", "dep:unica-workspace", "unica-workspace?/test-support"]
 
 [dependencies]
 unica-application = { path = "../unica-application" }

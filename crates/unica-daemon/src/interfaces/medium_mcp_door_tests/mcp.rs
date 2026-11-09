@@ -2458,7 +2458,7 @@ async fn canonical_manual_cancellation_sole_engine_waiter_preserves_delivery_and
     if std::env::var_os(CHILD).is_none() {
         let root = tempfile::tempdir().unwrap();
         let output = std::process::Command::new(std::env::current_exe().unwrap())
-                .args(["--exact", "interfaces::mcp_door_tests::mcp::canonical_manual_cancellation_sole_engine_waiter_preserves_delivery_and_pinned_artifact", "--nocapture"])
+                .args(["--exact", "interfaces::medium_mcp_door_tests::mcp::canonical_manual_cancellation_sole_engine_waiter_preserves_delivery_and_pinned_artifact", "--nocapture"])
                 .env(CHILD, "1").env(ROOT, root.path()).output().unwrap();
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);

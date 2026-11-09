@@ -4,4 +4,4 @@ pub mod runtime_job_worker;
 pub mod workspace_service;
 
 #[cfg(test)]
-mod mcp_door_tests;
+mod medium_mcp_door_tests;

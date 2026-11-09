@@ -957,7 +957,7 @@ class ProductContractTests(unittest.TestCase):
         owner = RMCP_INTERFACE_ROOT
         errors = rmcp_reference_confinement_errors(
             {
-                "crates/unica-daemon/src/interfaces/mcp_door_tests/mcp.rs": (
+                "crates/unica-daemon/src/interfaces/medium_mcp_door_tests/mcp.rs": (
                     b"#![cfg(test)]\nuse unica_mcp::test_support::rmcp::model::Tool;\n"
                 ),
                 "crates/unica-daemon/src/interfaces/daemon.rs": (
