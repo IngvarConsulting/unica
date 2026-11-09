@@ -54,7 +54,7 @@ pub(crate) fn edit_support_with_data(
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn edit_support_result(
     args: &Map<String, Value>,
     context: &WorkspaceContext,

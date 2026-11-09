@@ -170,6 +170,16 @@ impl Census {
     const STOP_KEY: usize = 2;
     // A failed stop notification must not leave a detached reader forever.
     // This idle poll does not wait for process cleanup or extend its deadline.
+    // resource-limit: process.windows-job-collector-idle-ms
+    // class: step
+    // unit: ms
+    // scope: process
+    // value: 25
+    // resource: Окно ожидания порта завершения сборщиком событий задания Windows между проверками остановки.
+    // status: unproven
+    // origin: неизвестно
+    // problem: Неудачное уведомление об остановке не должно оставлять отсоединённого читателя навсегда.
+    // on-reach: сборщик проверяет флаг остановки и ждёт следующее окно
     const COLLECTOR_IDLE_MS: u32 = 25;
 
     pub(super) fn associate(job: wf::HANDLE) -> io::Result<Self> {

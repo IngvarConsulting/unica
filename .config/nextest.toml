@@ -54,38 +54,12 @@ kind(test)
 ) & not (
 (
 binary(daemon_receipt_ledger) & (
-    test(/^acknowledged_catalog_crosses_former_byte_pool_and_reopens_exactly$/)
-    | test(/^acknowledgement_crosses_former_tombstone_count_and_reopens_without_replay$/)
-    | test(/^deterministic_horizon_load_does_not_saturate$/)
+    test(/^deterministic_horizon_load_does_not_saturate$/)
     | test(/^retained_receipt_and_task_catalogs_are_independent_after_restart$/)
     | test(/^retained_receipt_backed_terminals_do_not_starve_target_direct_load$/)
-    | test(/^staged_handoff_materializes_past_former_link_quota_and_reopens_exact_winner$/)
-    | test(/^task_handoff_before_begun_materializes_past_former_link_quota_without_callback$/)
     | test(/^task_store_4097_materialization_preserves_existing_tasks_listener_and_recovery$/)
     | test(/^task_store_capacity_after_reservation_is_invariant_violation_and_fail_stops$/)
     | test(/^thirty_two_lazy_cancel_actor_batch_finishes_within_125ms$/)
-)
-) | (
-binary(unica_coder) & (
-    test(/^infrastructure::daemon::medium_receipt_runtime_tests::promoted_reads_run_past_former_deadlines_and_complete_through_their_tasks$/)
-    | test(/^infrastructure::daemon::v13_workspace_bootstrap::medium_tests::root_check_streams_an_index_past_the_former_capture_limit$/)
-)
-) | (
-binary(unica_project_health) & (
-    test(/^inspection::git::medium_tests::project_health_git_ignore_batch_reads_staged_blobs_past_the_former_limits_with_two_children$/)
-    | test(/^inspection::resources::medium_tests::continued_repository_eol_resumes_on_disk_past_the_former_evidence_capacity$/)
-    | test(/^inspection::resources::medium_tests::staged_attribute_policy_past_the_former_file_and_byte_limits_is_checked$/)
-)
-) | (
-binary(unica_workspace) & (
-    test(/^selection_evidence::tests::aggregate_selection_records_cross_former_65536_with_real_absences$/)
-    | test(/^selection_evidence::tests::aggregate_selection_route_names_cross_former_8mib_with_real_absences$/)
-)
-) | (
-binary(selection) & (
-    test(/^aggregate_selection_directory_handles_cross_former_128_and_keep_finality$/)
-    | test(/^aggregate_selection_exact_bytes_cross_former_32mib_without_source_walk$/)
-    | test(/^aggregate_selection_membership_crosses_former_16384_across_sources$/)
 )
 )
 )'''
@@ -98,38 +72,12 @@ binary(selection) & (
 default-filter = '''not (
 (
 binary(daemon_receipt_ledger) & (
-    test(/^acknowledged_catalog_crosses_former_byte_pool_and_reopens_exactly$/)
-    | test(/^acknowledgement_crosses_former_tombstone_count_and_reopens_without_replay$/)
-    | test(/^deterministic_horizon_load_does_not_saturate$/)
+    test(/^deterministic_horizon_load_does_not_saturate$/)
     | test(/^retained_receipt_and_task_catalogs_are_independent_after_restart$/)
     | test(/^retained_receipt_backed_terminals_do_not_starve_target_direct_load$/)
-    | test(/^staged_handoff_materializes_past_former_link_quota_and_reopens_exact_winner$/)
-    | test(/^task_handoff_before_begun_materializes_past_former_link_quota_without_callback$/)
     | test(/^task_store_4097_materialization_preserves_existing_tasks_listener_and_recovery$/)
     | test(/^task_store_capacity_after_reservation_is_invariant_violation_and_fail_stops$/)
     | test(/^thirty_two_lazy_cancel_actor_batch_finishes_within_125ms$/)
-)
-) | (
-binary(unica_coder) & (
-    test(/^infrastructure::daemon::medium_receipt_runtime_tests::promoted_reads_run_past_former_deadlines_and_complete_through_their_tasks$/)
-    | test(/^infrastructure::daemon::v13_workspace_bootstrap::medium_tests::root_check_streams_an_index_past_the_former_capture_limit$/)
-)
-) | (
-binary(unica_project_health) & (
-    test(/^inspection::git::medium_tests::project_health_git_ignore_batch_reads_staged_blobs_past_the_former_limits_with_two_children$/)
-    | test(/^inspection::resources::medium_tests::continued_repository_eol_resumes_on_disk_past_the_former_evidence_capacity$/)
-    | test(/^inspection::resources::medium_tests::staged_attribute_policy_past_the_former_file_and_byte_limits_is_checked$/)
-)
-) | (
-binary(unica_workspace) & (
-    test(/^selection_evidence::tests::aggregate_selection_records_cross_former_65536_with_real_absences$/)
-    | test(/^selection_evidence::tests::aggregate_selection_route_names_cross_former_8mib_with_real_absences$/)
-)
-) | (
-binary(selection) & (
-    test(/^aggregate_selection_directory_handles_cross_former_128_and_keep_finality$/)
-    | test(/^aggregate_selection_exact_bytes_cross_former_32mib_without_source_walk$/)
-    | test(/^aggregate_selection_membership_crosses_former_16384_across_sources$/)
 )
 )
 ) & not (
@@ -179,38 +127,12 @@ binary(v13_workspace_bootstrap) & (
 default-filter = '''not (
 (
 binary(daemon_receipt_ledger) & (
-    test(/^acknowledged_catalog_crosses_former_byte_pool_and_reopens_exactly$/)
-    | test(/^acknowledgement_crosses_former_tombstone_count_and_reopens_without_replay$/)
-    | test(/^deterministic_horizon_load_does_not_saturate$/)
+    test(/^deterministic_horizon_load_does_not_saturate$/)
     | test(/^retained_receipt_and_task_catalogs_are_independent_after_restart$/)
     | test(/^retained_receipt_backed_terminals_do_not_starve_target_direct_load$/)
-    | test(/^staged_handoff_materializes_past_former_link_quota_and_reopens_exact_winner$/)
-    | test(/^task_handoff_before_begun_materializes_past_former_link_quota_without_callback$/)
     | test(/^task_store_4097_materialization_preserves_existing_tasks_listener_and_recovery$/)
     | test(/^task_store_capacity_after_reservation_is_invariant_violation_and_fail_stops$/)
     | test(/^thirty_two_lazy_cancel_actor_batch_finishes_within_125ms$/)
-)
-) | (
-binary(unica_coder) & (
-    test(/^infrastructure::daemon::medium_receipt_runtime_tests::promoted_reads_run_past_former_deadlines_and_complete_through_their_tasks$/)
-    | test(/^infrastructure::daemon::v13_workspace_bootstrap::medium_tests::root_check_streams_an_index_past_the_former_capture_limit$/)
-)
-) | (
-binary(unica_project_health) & (
-    test(/^inspection::git::medium_tests::project_health_git_ignore_batch_reads_staged_blobs_past_the_former_limits_with_two_children$/)
-    | test(/^inspection::resources::medium_tests::continued_repository_eol_resumes_on_disk_past_the_former_evidence_capacity$/)
-    | test(/^inspection::resources::medium_tests::staged_attribute_policy_past_the_former_file_and_byte_limits_is_checked$/)
-)
-) | (
-binary(unica_workspace) & (
-    test(/^selection_evidence::tests::aggregate_selection_records_cross_former_65536_with_real_absences$/)
-    | test(/^selection_evidence::tests::aggregate_selection_route_names_cross_former_8mib_with_real_absences$/)
-)
-) | (
-binary(selection) & (
-    test(/^aggregate_selection_directory_handles_cross_former_128_and_keep_finality$/)
-    | test(/^aggregate_selection_exact_bytes_cross_former_32mib_without_source_walk$/)
-    | test(/^aggregate_selection_membership_crosses_former_16384_across_sources$/)
 )
 )
 ) & not (
@@ -315,10 +237,9 @@ binary(v13_workspace_bootstrap) & (
 )
 '''
 
-# Ночной ярус: точные тесты ёмкости и нагрузки ReceiptLedger, карты исходников
-# и проверки здоровья проекта за прежними пределами корпуса.
+# Ночной ярус: точные тесты ёмкости и нагрузки ReceiptLedger.
 # Фильтр называет цель Cargo и тест: интеграционная цель квитанций целиком
-# `medium`, а библиотечные проверки карты используют большие реальные каталоги.
+# `medium`.
 # Нагрузочные проверки квитанций идут по 200–520 с; запускаем ярус по одному
 # тесту на машину (`threads-required` ниже). Замер 07.09.2026, локально.
 [profile.large]
@@ -326,38 +247,12 @@ binary(v13_workspace_bootstrap) & (
 default-filter = '''
 (
 binary(daemon_receipt_ledger) & (
-    test(/^acknowledged_catalog_crosses_former_byte_pool_and_reopens_exactly$/)
-    | test(/^acknowledgement_crosses_former_tombstone_count_and_reopens_without_replay$/)
-    | test(/^deterministic_horizon_load_does_not_saturate$/)
+    test(/^deterministic_horizon_load_does_not_saturate$/)
     | test(/^retained_receipt_and_task_catalogs_are_independent_after_restart$/)
     | test(/^retained_receipt_backed_terminals_do_not_starve_target_direct_load$/)
-    | test(/^staged_handoff_materializes_past_former_link_quota_and_reopens_exact_winner$/)
-    | test(/^task_handoff_before_begun_materializes_past_former_link_quota_without_callback$/)
     | test(/^task_store_4097_materialization_preserves_existing_tasks_listener_and_recovery$/)
     | test(/^task_store_capacity_after_reservation_is_invariant_violation_and_fail_stops$/)
     | test(/^thirty_two_lazy_cancel_actor_batch_finishes_within_125ms$/)
-)
-) | (
-binary(unica_coder) & (
-    test(/^infrastructure::daemon::medium_receipt_runtime_tests::promoted_reads_run_past_former_deadlines_and_complete_through_their_tasks$/)
-    | test(/^infrastructure::daemon::v13_workspace_bootstrap::medium_tests::root_check_streams_an_index_past_the_former_capture_limit$/)
-)
-) | (
-binary(unica_project_health) & (
-    test(/^inspection::git::medium_tests::project_health_git_ignore_batch_reads_staged_blobs_past_the_former_limits_with_two_children$/)
-    | test(/^inspection::resources::medium_tests::continued_repository_eol_resumes_on_disk_past_the_former_evidence_capacity$/)
-    | test(/^inspection::resources::medium_tests::staged_attribute_policy_past_the_former_file_and_byte_limits_is_checked$/)
-)
-) | (
-binary(unica_workspace) & (
-    test(/^selection_evidence::tests::aggregate_selection_records_cross_former_65536_with_real_absences$/)
-    | test(/^selection_evidence::tests::aggregate_selection_route_names_cross_former_8mib_with_real_absences$/)
-)
-) | (
-binary(selection) & (
-    test(/^aggregate_selection_directory_handles_cross_former_128_and_keep_finality$/)
-    | test(/^aggregate_selection_exact_bytes_cross_former_32mib_without_source_walk$/)
-    | test(/^aggregate_selection_membership_crosses_former_16384_across_sources$/)
 )
 )
 '''
@@ -383,38 +278,12 @@ binary(selection) & (
 filter = '''
 (
 binary(daemon_receipt_ledger) & (
-    test(/^acknowledged_catalog_crosses_former_byte_pool_and_reopens_exactly$/)
-    | test(/^acknowledgement_crosses_former_tombstone_count_and_reopens_without_replay$/)
-    | test(/^deterministic_horizon_load_does_not_saturate$/)
+    test(/^deterministic_horizon_load_does_not_saturate$/)
     | test(/^retained_receipt_and_task_catalogs_are_independent_after_restart$/)
     | test(/^retained_receipt_backed_terminals_do_not_starve_target_direct_load$/)
-    | test(/^staged_handoff_materializes_past_former_link_quota_and_reopens_exact_winner$/)
-    | test(/^task_handoff_before_begun_materializes_past_former_link_quota_without_callback$/)
     | test(/^task_store_4097_materialization_preserves_existing_tasks_listener_and_recovery$/)
     | test(/^task_store_capacity_after_reservation_is_invariant_violation_and_fail_stops$/)
     | test(/^thirty_two_lazy_cancel_actor_batch_finishes_within_125ms$/)
-)
-) | (
-binary(unica_coder) & (
-    test(/^infrastructure::daemon::medium_receipt_runtime_tests::promoted_reads_run_past_former_deadlines_and_complete_through_their_tasks$/)
-    | test(/^infrastructure::daemon::v13_workspace_bootstrap::medium_tests::root_check_streams_an_index_past_the_former_capture_limit$/)
-)
-) | (
-binary(unica_project_health) & (
-    test(/^inspection::git::medium_tests::project_health_git_ignore_batch_reads_staged_blobs_past_the_former_limits_with_two_children$/)
-    | test(/^inspection::resources::medium_tests::continued_repository_eol_resumes_on_disk_past_the_former_evidence_capacity$/)
-    | test(/^inspection::resources::medium_tests::staged_attribute_policy_past_the_former_file_and_byte_limits_is_checked$/)
-)
-) | (
-binary(unica_workspace) & (
-    test(/^selection_evidence::tests::aggregate_selection_records_cross_former_65536_with_real_absences$/)
-    | test(/^selection_evidence::tests::aggregate_selection_route_names_cross_former_8mib_with_real_absences$/)
-)
-) | (
-binary(selection) & (
-    test(/^aggregate_selection_directory_handles_cross_former_128_and_keep_finality$/)
-    | test(/^aggregate_selection_exact_bytes_cross_former_32mib_without_source_walk$/)
-    | test(/^aggregate_selection_membership_crosses_former_16384_across_sources$/)
 )
 )
 '''
@@ -442,23 +311,34 @@ receipt-runtime = { max-threads = 4 }
 # получали `store_failed` и истечение срока submit, когда шли одновременно с
 # тяжёлыми тестами поиска по большим корпусам (#2147). Группа не даёт им
 # идти одновременно друг с другом; сроки и остальной прогон не меняются.
+# Она действует только на Windows: на Linux и macOS сбой не наблюдался, а
+# цепочка из 11 тестов подряд дописывала к шагу очереди около 40 с.
 workspace-stdio = { max-threads = 1 }
 
 # Гонка отмены со стартом задания держит отмену, пока задание стартует с
 # записью на диск; срок самой отмены — 2 с. Тест занимает машину целиком,
 # чтобы старт не делил её с соседями по прогону.
 [[profile.default.overrides]]
-filter = 'binary(unica_coder) & test(/^infrastructure::daemon::medium_receipt_runtime_tests::(exact|task_id)_cancel_racing_the_start_of_the_continued_task_ends_it_cancelled$/)'
+filter = 'binary(unica_daemon) & test(/^infrastructure::daemon::medium_receipt_runtime_tests::(exact|task_id)_cancel_racing_the_start_of_the_continued_task_ends_it_cancelled$/)'
+threads-required = "num-cpus"
+
+# Сравнивает задержку вызова MCP под потоком hover с задержкой без него. Обе
+# медианы снимаются по очереди, поэтому соседи по прогону, появившиеся между
+# замерами, выглядят как задержка от LSP. Допуск не меняется; тест занимает
+# машину целиком, и замеры делят её только с его собственным потоком hover.
+[[profile.default.overrides]]
+filter = 'binary(unica_daemon) & test(/^interfaces::lsp::tests::medium_an_lsp_hover_stream_does_not_delay_a_parallel_mcp_call$/)'
 threads-required = "num-cpus"
 
 [[profile.default.overrides]]
-filter = 'binary(unica_coder) & test(/^infrastructure::daemon::medium_receipt_runtime_tests::/)'
+filter = 'binary(unica_daemon) & test(/^infrastructure::daemon::medium_receipt_runtime_tests::/)'
 test-group = "receipt-runtime"
 
 [[profile.default.overrides]]
+platform = 'cfg(windows)'
 filter = '''
 binary(v13_workspace_bootstrap)
-| (binary(v13_search_integration) & test(/^(text_search_enumerates_wide_and_aggregate_corpora_without_an_entry_quota|resolve_resources::resolve_form_and_module_paths_preserve_the_exact_resource_on_public_mcp)$/))
+| (binary(v13_search_integration) & test(/^(text_search_enumerates_wide_and_aggregate_corpora_without_an_entry_quota|resolve_resources::resolve_form_and_module_paths_preserve_the_exact_resource_of_(a_configuration|an_extension)_on_public_mcp)$/))
 '''
 test-group = "workspace-stdio"
 

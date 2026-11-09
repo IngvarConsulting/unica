@@ -1,0 +1,204 @@
+{
+  "id": "S355",
+  "name": "accumulation-register-turnovers",
+  "issue": 852,
+  "area": "Свойства объектов",
+  "task": "Создать регистр накопления, затем сделать его оборотным через props.set RegisterType=Turnovers",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "object.create",
+            "args": {
+              "values": {
+                "kind": "AccumulationRegister",
+                "name": "CorpusTurnovers"
+              }
+            }
+          },
+          {
+            "op": "resource.add",
+            "args": {
+              "at": "main:AccumulationRegister.CorpusTurnovers",
+              "items": [
+                {
+                  "name": "Количество",
+                  "type": {
+                    "variants": [
+                      {
+                        "kind": "number",
+                        "digits": 10,
+                        "fraction": 0,
+                        "sign": "any"
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/executable",
+          "eq": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "41c7a0b8161a1e7661471f225cc24faf46d85761df32ff022b171b525b063989"
+        },
+        {
+          "kind": "exists",
+          "path": "src/AccumulationRegisters/CorpusTurnovers.xml",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "xml",
+          "path": "src/AccumulationRegisters/CorpusTurnovers.xml",
+          "select": ".//{*}AccumulationRegister/{*}Properties/{*}RegisterType",
+          "eq": [
+            "Balance"
+          ]
+        },
+        {
+          "kind": "xml",
+          "path": "src/Configuration.xml",
+          "select": ".//{*}Configuration/{*}ChildObjects/{*}AccumulationRegister",
+          "contains": "CorpusTurnovers"
+        }
+      ],
+      "captures": {
+        "registerBytes": {
+          "file": "src/AccumulationRegisters/CorpusTurnovers.xml",
+          "kind": "sha256"
+        },
+        "configBytes": {
+          "file": "src/Configuration.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:AccumulationRegister.CorpusTurnovers",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "RegisterType": "Turnovers"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/executable",
+          "eq": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/AccumulationRegisters/CorpusTurnovers.xml",
+          "eq": "$capture.registerBytes"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "$capture.configBytes"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "xml",
+          "path": "src/AccumulationRegisters/CorpusTurnovers.xml",
+          "select": ".//{*}AccumulationRegister/{*}Properties/{*}RegisterType",
+          "eq": [
+            "Turnovers"
+          ]
+        },
+        {
+          "kind": "sha256",
+          "path": "src/AccumulationRegisters/CorpusTurnovers.xml",
+          "notEq": "$capture.registerBytes"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "$capture.configBytes"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:AccumulationRegister.CorpusTurnovers"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/RegisterType",
+          "eq": "Turnovers"
+        }
+      ]
+    }
+  ]
+}

@@ -61,7 +61,7 @@ class FakeHost(PREFLIGHT.Host):
         self.python = python
         self.files = {
             REPO / "tests" / "ci" / "requirements.txt": REQUIREMENTS,
-            REPO / ".github" / "workflows" / "unica-plugin-release.yml": WORKFLOW,
+            REPO / ".github" / "actions" / "install-nextest" / "action.yml": WORKFLOW,
             REPO / "scripts" / "dev" / "verify-8-3-27-platform.py": VERIFIER,
         }
         self.executables = {Path(VSWHERE)} if system == "Windows" else set()

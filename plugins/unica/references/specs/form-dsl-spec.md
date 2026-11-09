@@ -244,8 +244,8 @@ companion-панели с собственным контентом. Оба не
 - объект `{ "autofill"?: bool, "children": [ … ] }` (+ `horizontalAlign` у `commandBar`).
 
 `children` — массив `button` с `command`/`commandName`/`stdCommand`.
-`popup` и `buttonGroup` зарезервированы полной моделью Form XML, но текущий
-native `unica.form.compile` их не принимает. Не передавайте эти ключи как
+`popup` и `buttonGroup` зарезервированы полной моделью Form XML, но `form.add` в
+`unica.apply` их сейчас не принимает. Не передавайте эти ключи как
 элементы DSL до появления отдельной реализации и тестов.
 
 - `autofill`: `false` → подавить автозаполнение (тег `<Autofill>false</Autofill>`); `true` или отсутствие → автозаполнение (платформенный дефолт, тег **не пишется**). Платформа `Autofill=true` не эмитит никогда.
@@ -807,8 +807,8 @@ Pages поддерживает `pagesRepresentation`: `None`, `TabsOnTop`, `Tabs
 
 #### popup / buttonGroup — зарезервированы
 
-`popup` и `buttonGroup` зарезервированы полной моделью Form XML, но текущий
-native `unica.form.compile` их не принимает. Для группировки команд пока
+`popup` и `buttonGroup` зарезервированы полной моделью Form XML, но `form.add` в
+`unica.apply` их сейчас не принимает. Для группировки команд пока
 используйте отдельные `button` в `cmdBar`; документировать эти два ключа как
 исполняемый JSON DSL можно только после реализации и точных XML-тестов.
 
@@ -822,7 +822,6 @@ flags/layout/оформление/companions/события общий), плю�
 |-----------|-------------|---------------|----------------|
 | `spreadsheet` | SpreadSheetDocumentField | `mxl:SpreadsheetDocument` | `output` (Disable/Enable), `protection`, `verticalScrollBar`/`horizontalScrollBar`, `viewScalingMode`, `selectionShowMode`, `pointerType`, `showGrid`/`showGroups`/`showHeaders`/`showRowAndColumnNames`/`showCellNames`, `edit`, `enableDrag`/`enableStartDrag` (фактическое значение) |
 | `html` | HTMLDocumentField | `string` | Нативная поддержка: `path`, `title`, `tooltip`, `titleLocation`, `width`/`height`, `autoMaxWidth`/`autoMaxHeight`, `skipOnInput`, общие флаги видимости/доступности/чтения и `on`/`handlers` |
-| `textDoc` | TextDocumentField | `d5p1:TextDocument` | `editMode` |
 | `formattedDoc` | FormattedDocumentField | `fd:FormattedDocument` | `editMode` |
 | `progressBar` | ProgressBarField | число | `showPercent`, `minValue`/`maxValue` (без `xsi:type`, ≠ типизированных у `input`) |
 | `trackBar` | TrackBarField | число | `minValue`/`maxValue`/`largeStep`/`markingStep`/`step` (числовые), `markingAppearance` |
@@ -832,6 +831,9 @@ flags/layout/оформление/companions/события общий), плю�
 | `planner` | PlannerField | `pl:Planner` (Планировщик) | — |
 | `periodField` | PeriodField | `v8:StandardPeriod` (Период) | — |
 | `dendrogram` | DendrogramField | (Дендрограмма) | — |
+
+Поле текстового документа (TextDocumentField) описание формы не создаёт: ключ `textDoc`
+отклоняется как неизвестный ключ элемента. Такое поле добавляет операция `item.add`.
 
 ```json
 { "spreadsheet": "ТаблицаОтчета", "path": "ТаблицаОтчета", "titleLocation": "none", "readOnly": true, "output": "Disable", "protection": true }
