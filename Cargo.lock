@@ -3206,6 +3206,7 @@ version = "0.15.0-rc.1"
 dependencies = [
  "roxmltree",
  "serde",
+ "serde_json",
  "serde_yaml",
  "sha2",
  "unica-address",

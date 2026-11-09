@@ -38,11 +38,7 @@ pub fn source_set_compatibility_mode(
     configuration: &[u8],
     source_kind: SourceSetKind,
 ) -> Option<CompatibilityMode> {
-    let property = match source_kind {
-        SourceSetKind::Configuration => "CompatibilityMode",
-        SourceSetKind::Extension => PROPERTY,
-        SourceSetKind::ExternalProcessor | SourceSetKind::ExternalReport => return None,
-    };
+    let property = compatibility_mode_property(source_kind)?;
     let (_, document) = unica_xml_format::read::parse_metadata_image(configuration).ok()?;
     let object = document
         .root_element()
@@ -51,6 +47,62 @@ pub fn source_set_compatibility_mode(
     let properties = unica_xml_format::read::child_element(object, "Properties")?;
     let raw = unica_xml_format::read::child_direct_text(properties, property)?;
     CompatibilityMode::parse(raw.trim())
+}
+
+/// The property that records the compatibility mode of a source set:
+/// `CompatibilityMode` of a configuration, the extension's own
+/// `ConfigurationExtensionCompatibilityMode`; external sets have none.
+pub fn compatibility_mode_property(source_kind: SourceSetKind) -> Option<&'static str> {
+    match source_kind {
+        SourceSetKind::Configuration => Some("CompatibilityMode"),
+        SourceSetKind::Extension => Some(PROPERTY),
+        SourceSetKind::ExternalProcessor | SourceSetKind::ExternalReport => None,
+    }
+}
+
+/// Refuses an edit of a set whose compatibility mode is older than the
+/// oldest editable one (INV.SOURCE.WRITABLE-PROFILE). The set stays readable,
+/// and the one edit it admits is raising its own mode to an editable one:
+/// `raised_to` is the mode the edit sets, when that is all the edit does. The
+/// refusal names the set's mode, the minimum and that the mode can be raised.
+/// A set without a known mode is not refused here.
+pub fn refuse_edit_below_minimum_mode(
+    configuration: Option<&[u8]>,
+    source_kind: SourceSetKind,
+    raised_to: Option<CompatibilityMode>,
+    at_path: &str,
+) -> Result<(), ApplyPlanError> {
+    let Some(mode) =
+        configuration.and_then(|bytes| source_set_compatibility_mode(bytes, source_kind))
+    else {
+        return Ok(());
+    };
+    if mode.editable() || raised_to.is_some_and(CompatibilityMode::editable) {
+        return Ok(());
+    }
+    let [major, minor, release] = unica_source_contract::compatibility::MINIMUM_EDITABLE_MODE;
+    let minimum = format!("Version{major}_{minor}_{release}");
+    let property = compatibility_mode_property(source_kind).unwrap_or(PROPERTY);
+    let message = match raised_to {
+        Some(raised) => format!(
+            "the source set is read-only: its compatibility mode {mode} is older than {minimum}, the oldest mode Unica edits, and the new mode {raised} is older too; set {property} to {minimum} or newer"
+        ),
+        None => format!(
+            "the source set is read-only: its compatibility mode {mode} is older than {minimum}, the oldest mode Unica edits; reading, search, analysis and check still work, and the one edit allowed is to set {property} to {minimum} or newer"
+        ),
+    };
+    Err(
+        ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message.clone())
+            .at_path(at_path)
+            .with_diagnostics(vec![serde_json::json!({
+                "code": "compatibilityModeUnsupported",
+                "severity": "error",
+                "message": message,
+                "mode": mode.to_string(),
+                "minimumMode": minimum,
+                "property": property,
+            })]),
+    )
 }
 
 /// Whether a metadata descriptor is a borrowed object: its properties name
