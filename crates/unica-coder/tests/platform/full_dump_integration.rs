@@ -112,6 +112,7 @@ mod tests {
             _effective_config: &serde_yaml::Value,
             _config_dir: &Path,
             _utility: PlatformUtility,
+            _line: unica_source_contract::format_identity::PlatformLine,
             _runner: &dyn ProcessRunner,
             _cancellation: &CancellationToken,
         ) -> Result<VerifiedPlatform, String> {
@@ -131,6 +132,7 @@ mod tests {
             _effective_config: &serde_yaml::Value,
             _config_dir: &Path,
             _utility: PlatformUtility,
+            _line: unica_source_contract::format_identity::PlatformLine,
             _runner: &dyn ProcessRunner,
             _cancellation: &CancellationToken,
         ) -> Result<VerifiedPlatform, String> {
@@ -1720,6 +1722,7 @@ mod tests {
                 &wrong_config,
                 &root,
                 PlatformUtility::Designer,
+                unica_source_contract::format_identity::PlatformLine::new(8, 3, 27),
                 unica_process::runner::system_process_runner(),
                 &CancellationToken::new(),
             )
@@ -1741,6 +1744,7 @@ mod tests {
                 &exact_config,
                 &root,
                 PlatformUtility::Designer,
+                unica_source_contract::format_identity::PlatformLine::new(8, 3, 27),
                 unica_process::runner::system_process_runner(),
                 &CancellationToken::new(),
             )
@@ -1830,6 +1834,7 @@ mod tests {
                 &config,
                 &root,
                 PlatformUtility::Designer,
+                unica_source_contract::format_identity::PlatformLine::new(8, 3, 27),
                 unica_process::runner::system_process_runner(),
                 &CancellationToken::new(),
             )

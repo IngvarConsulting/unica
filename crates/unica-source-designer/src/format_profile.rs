@@ -278,6 +278,21 @@ pub fn platform_xml_dialects() -> Vec<FormatKey> {
         .collect()
 }
 
+/// The writable Designer export version a root records as `raw`, as a
+/// static literal; `None` for any other spelling or version.
+pub fn writable_platform_xml_version(raw: Option<&str>) -> Option<&'static str> {
+    const WRITABLE: [&str; 3] = [ACTIVE_FORMAT_PROFILE.export_format, "2.21", "2.22"];
+    WRITABLE.into_iter().find(|version| raw == Some(*version))
+}
+
+/// The writable Designer export version a platform line writes.
+pub fn writable_platform_xml_version_of_line(line: PlatformLine) -> Option<&'static str> {
+    EXPORT_FORMAT_PLATFORM_LINES
+        .iter()
+        .find(|(_, writer)| PlatformLine::parse(writer) == Some(line))
+        .and_then(|(version, _)| writable_platform_xml_version(Some(version)))
+}
+
 /// Which dialect reads a root recording `raw` (INV.SOURCE.WRITABLE-PROFILE);
 /// a root without `version` is format 1.0.
 pub fn resolve_platform_xml_read(
@@ -411,7 +426,9 @@ mod tests {
             RootVersionReport::Error(_)
         ));
         assert!(require_supported_root_version(Some(writable)).is_ok());
-        assert!(require_supported_root_version(Some("2.21")).is_err());
+        // 2.21 has a dialect of its own; 2.23 does not.
+        assert!(require_supported_root_version(Some("2.21")).is_ok());
+        assert!(require_supported_root_version(Some("2.23")).is_err());
     }
 
     #[test]
