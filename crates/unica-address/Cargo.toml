@@ -13,7 +13,6 @@ unica-xml-format = { path = "../unica-xml-format" }
 serde_json.workspace = true
 
 [package.metadata.unica]
-version-literal-baseline = 8
 component = "abstraction"
 file-io = "domain"
 inputs = ["tests/fixtures/v013/address-profile-8.3.27.json"]

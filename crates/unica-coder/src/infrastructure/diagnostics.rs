@@ -763,8 +763,7 @@ fn source_target_request_error(code: SourceTargetErrorCode) -> DiagnosticRequest
             Some("metadataPath"),
             "metadataPath does not identify a supported diagnostic target",
         ),
-        SourceTargetErrorCode::SourceRootNotAddressable
-        | SourceTargetErrorCode::AddressProfileUnsupported => request_error(
+        SourceTargetErrorCode::SourceRootNotAddressable => request_error(
             "source_format_unsupported",
             Some("sourceSet"),
             "sourceSet is outside the supported logical address profile",

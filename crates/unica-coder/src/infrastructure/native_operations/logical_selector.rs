@@ -451,10 +451,6 @@ fn selector_failure(code: SourceTargetErrorCode) -> LogicalSelectorFailure {
             RefusalCode::ContainmentDenied,
             "the logical target failed its containment checks",
         ),
-        SourceTargetErrorCode::AddressProfileUnsupported => LogicalSelectorFailure::new(
-            RefusalCode::ProfileUnsupported,
-            "the logical address profile is unsupported",
-        ),
         SourceTargetErrorCode::SourceRootNotAddressable => LogicalSelectorFailure::new(
             RefusalCode::ProviderUnavailable,
             "the logical source provider is unavailable",
