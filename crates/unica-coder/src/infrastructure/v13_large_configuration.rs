@@ -20,6 +20,16 @@ use unica_source_contract::read::{FileStamp, ReadFile, RetainedSourceRead, Sourc
 use xml::name::OwnedName;
 use xml::reader::{ParserConfig, XmlEvent};
 
+// resource-limit: view.registration-run-bytes
+// class: step
+// unit: bytes
+// scope: request
+// value: 1048576
+// resource: Объём одной отсортированной порции регистраций при потоковом чтении большого Configuration.xml.
+// status: unproven
+// origin: #1130
+// problem: неизвестно
+// on-reach: порция сбрасывается, чтение продолжается следующей
 const REGISTRATION_RUN_BYTES: usize = 1024 * 1024;
 const MD_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
 
@@ -222,7 +232,7 @@ impl Default for RegistrationSorter {
 /// The data run is sorted and unique; a second file stores fixed-width offsets
 /// so a named read requires logarithmically many seeks without keeping every
 /// registration key in process memory. Both files disappear on drop.
-pub(crate) struct RegistrationIndex {
+pub struct RegistrationIndex {
     inner: Mutex<RegistrationIndexFiles>,
     count: u64,
 }
@@ -237,7 +247,7 @@ pub(crate) struct RegistrationIndex {
 /// если штамп устоялся (обе метки времени известны и старше окна); иначе
 /// файл разбирается при каждом обращении. Обхода дерева нет. Отравленная
 /// блокировка сбрасывает запись, а не отказывает дальше.
-pub(crate) struct RegistrationCache {
+pub struct RegistrationCache {
     /// Which modules of the set spell a name, built in the background.
     names: Arc<crate::infrastructure::name_index::SourceNameIndex>,
     registrations: Mutex<Option<(FileStamp, Arc<RegistrationIndex>)>>,
@@ -245,13 +255,23 @@ pub(crate) struct RegistrationCache {
     support: Mutex<Option<RetainedSupportState>>,
     subsystems: Mutex<Option<RetainedSubsystemTopology>>,
     settle_window: std::time::Duration,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     registration_builds: std::sync::atomic::AtomicUsize,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     after_parse: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
 /// Timestamp granularity window: a stamp younger than this is never cached.
+// resource-limit: view.registration-settle-window-ms
+// class: retention
+// unit: ms
+// scope: cache
+// value: 2000
+// resource: Окно гранулярности отметки времени: файл моложе окна не кешируется в индексе регистраций и перечитывается индексом имён при следующем обходе.
+// status: unproven
+// origin: b054c6196 (#1457, #1481)
+// problem: Отметка времени моложе окна не доказывает неизменность файла (комментарий в v13_large_configuration.rs).
+// on-reach: Запись не кешируется, корень разбирается заново при следующем вызове.
 pub(crate) const SETTLE_WINDOW: std::time::Duration = std::time::Duration::from_secs(2);
 
 impl Default for RegistrationCache {
@@ -263,9 +283,9 @@ impl Default for RegistrationCache {
             support: Mutex::new(None),
             subsystems: Mutex::new(None),
             settle_window: SETTLE_WINDOW,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             registration_builds: std::sync::atomic::AtomicUsize::new(0),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             after_parse: Mutex::new(None),
         }
     }
@@ -341,7 +361,7 @@ fn slot<T>(mutex: &Mutex<Option<T>>) -> std::sync::MutexGuard<'_, Option<T>> {
 }
 
 impl RegistrationCache {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn with_settle_window_for_test(window: std::time::Duration) -> Self {
         Self {
             settle_window: window,
@@ -350,13 +370,13 @@ impl RegistrationCache {
     }
 
     /// Runs once after the next parse, before its stamp is checked again.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn after_next_parse_for_test(&self, hook: impl FnOnce() + Send + 'static) {
         *slot(&self.after_parse) = Some(Box::new(hook));
     }
 
     fn parsed(&self) {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         if let Some(hook) = slot(&self.after_parse).take() {
             hook();
         }
@@ -373,7 +393,7 @@ impl RegistrationCache {
 
     /// The registration index of `Configuration.xml` under `root`, parsed
     /// again unless a settled, unchanged stamp proves the retained one.
-    pub(crate) fn registrations(
+    pub fn registrations(
         &self,
         root: &SourceDirectory,
         checkpoint: &dyn Fn() -> Result<(), ViewError>,
@@ -390,7 +410,7 @@ impl RegistrationCache {
                 return Ok(Arc::clone(index));
             }
         }
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         self.registration_builds
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let built = Arc::new(read_configuration_registration_index(file, checkpoint)?);
@@ -513,8 +533,8 @@ impl RegistrationCache {
         Ok(topology)
     }
 
-    #[cfg(test)]
-    pub(crate) fn registration_builds_for_test(&self) -> usize {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn registration_builds_for_test(&self) -> usize {
         self.registration_builds
             .load(std::sync::atomic::Ordering::Relaxed)
     }
@@ -576,7 +596,7 @@ impl RegistrationIndex {
         })
     }
 
-    pub(crate) fn contains(
+    pub fn contains(
         &self,
         kind: &str,
         name: &str,
@@ -623,7 +643,7 @@ impl RegistrationIndex {
     /// Return the complete duplicate-free branch in `ChildObjects` order. The
     /// collection response itself holds these names, so only output-sized
     /// memory is used.
-    pub(crate) fn names_for_kind(
+    pub fn names_for_kind(
         &self,
         kind: &str,
         checkpoint: &dyn Fn() -> Result<(), ViewError>,
@@ -863,17 +883,9 @@ pub(crate) fn read_configuration_registration_index(
     RegistrationIndex::from_sorter(state.registrations, checkpoint)
 }
 
-fn parse_configuration_owner(
-    mut file: impl Read + Seek,
-    checkpoint: &dyn Fn() -> Result<(), ViewError>,
-) -> Result<RootState, ViewError> {
-    skip_leading_boms(&mut file, checkpoint)?;
-    let checkpoint_failure = Rc::new(RefCell::new(None));
-    let checked = CheckedRead {
-        file,
-        checkpoint,
-        failure: Rc::clone(&checkpoint_failure),
-    };
+/// One parser policy for complete registration reads and the lexical root
+/// header observation; no default token-size ceiling becomes a write limit.
+fn configuration_parser_config() -> ParserConfig {
     let mut config = ParserConfig::new()
         .coalesce_characters(false)
         .ignore_comments(false);
@@ -891,7 +903,95 @@ fn parse_configuration_owner(
     // treats an XML declaration's encoding as syntax, not as an instruction to
     // reinterpret those bytes. Keep the same behavior for streamed bytes.
     config.ignore_invalid_encoding_declarations = true;
-    let mut parser = config.create_reader(BufReader::new(checked));
+    config
+}
+
+/// Observe only the opening root after the caller has proved the complete
+/// Configuration owner. XML events identify the header; roxmltree supplies
+/// its raw attribute span, so entity-equivalent versions stay distinguishable.
+/// The existing streamed owner proof still validates the complete tail.
+pub(crate) fn read_configuration_root_version_literal(
+    mut file: impl Read + Seek,
+    checkpoint: &dyn Fn() -> Result<(), ViewError>,
+) -> Result<Option<String>, ViewError> {
+    skip_leading_boms(&mut file, checkpoint)?;
+    let failure = Rc::new(RefCell::new(None));
+    let checked = CheckedRead {
+        file,
+        checkpoint,
+        failure: Rc::clone(&failure),
+    };
+    let capture = RootHeaderRead {
+        inner: BufReader::new(checked),
+        bytes: Vec::new(),
+    };
+    let mut parser = configuration_parser_config().create_reader(capture);
+    loop {
+        checkpoint()?;
+        let event = parser.next().map_err(|error| {
+            failure.borrow_mut().take().unwrap_or_else(|| {
+                source_unreadable(&format!("Configuration header parse error: {error}"))
+            })
+        })?;
+        match event {
+            XmlEvent::StartElement { name, .. } => {
+                if name.namespace.as_deref() != Some(MD_NS) || name.local_name != "MetaDataObject" {
+                    return Err(source_unreadable("Configuration owner has the wrong root"));
+                }
+                let qualified = name.prefix.as_ref().map_or_else(
+                    || name.local_name.clone(),
+                    |prefix| format!("{prefix}:{}", name.local_name),
+                );
+                let header = std::str::from_utf8(&parser.source().bytes)
+                    .map_err(|error| source_unreadable(&error.to_string()))?;
+                let complete = format!("{header}</{qualified}>");
+                let document = roxmltree::Document::parse(&complete)
+                    .map_err(|error| source_unreadable(&error.to_string()))?;
+                return Ok(unica_source_designer::roots::root_version_literal(
+                    &complete,
+                    document.root_element(),
+                ));
+            }
+            XmlEvent::Doctype { .. } => {
+                return Err(source_unreadable(
+                    "Configuration.xml has an unsupported DOCTYPE",
+                ))
+            }
+            XmlEvent::EndDocument => {
+                return Err(source_unreadable("Configuration.xml has no root"))
+            }
+            _ => {}
+        }
+    }
+}
+
+// Capture above BufReader: parser character reads retain only the consumed
+// header, while buffering and cancellation still operate on ordinary chunks.
+struct RootHeaderRead<R> {
+    inner: R,
+    bytes: Vec<u8>,
+}
+impl<R: Read> Read for RootHeaderRead<R> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        let count = self.inner.read(buffer)?;
+        self.bytes.try_reserve(count).map_err(io::Error::other)?;
+        self.bytes.extend_from_slice(&buffer[..count]);
+        Ok(count)
+    }
+}
+
+fn parse_configuration_owner(
+    mut file: impl Read + Seek,
+    checkpoint: &dyn Fn() -> Result<(), ViewError>,
+) -> Result<RootState, ViewError> {
+    skip_leading_boms(&mut file, checkpoint)?;
+    let checkpoint_failure = Rc::new(RefCell::new(None));
+    let checked = CheckedRead {
+        file,
+        checkpoint,
+        failure: Rc::clone(&checkpoint_failure),
+    };
+    let mut parser = configuration_parser_config().create_reader(BufReader::new(checked));
     let mut state = RootState::new();
     loop {
         checkpoint()?;
@@ -1640,7 +1740,8 @@ mod tests {
 
     /// One topology answers every object of a source state: it is reused
     /// while every file it was built from keeps its stamp, and built again
-    /// once a subsystem descriptor changes (#2235).
+    /// once a subsystem descriptor changes.
+    /// rule: INV.SOURCE.RELATIONS-ANSWER-IN-ONE-BRANCH
     #[test]
     fn retained_subsystem_topology_is_reused_until_a_descriptor_changes() {
         let directory = tempfile::tempdir().unwrap();
@@ -1656,10 +1757,9 @@ mod tests {
         let root = Arc::new(unica_workspace::read::open_source_directory(&path).unwrap());
         let cache = settled_cache();
         let module = |name: &str| {
-            unica_address::source_target::MetadataAddress::parse(
-                unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
-                &format!("CommonModule.{name}"),
-            )
+            unica_address::source_target::MetadataAddress::parse_logical(&format!(
+                "CommonModule.{name}"
+            ))
             .unwrap()
         };
 
@@ -1675,6 +1775,7 @@ mod tests {
         assert_eq!(rebuilt.memberships_of(&module("Other"), None).len(), 1);
     }
 
+    /// rule: INV.SOURCE.CONFIGURATION-ROOT-CACHE-REUSE
     #[test]
     fn retained_registrations_are_reused_until_their_file_changes() {
         let fixture = artifact_root("First");
@@ -1718,6 +1819,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.SOURCE.CONFIGURATION-ROOT-CACHE-REUSE
     #[test]
     fn a_stamp_inside_the_racy_window_is_never_retained() {
         let fixture = artifact_root("First");
@@ -1751,6 +1853,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.SOURCE.CONFIGURATION-ROOT-CACHE-REUSE
     #[test]
     fn stamps_differ_by_every_identity_field() {
         use unica_source_contract::read::FileStamp;
@@ -1770,6 +1873,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.SOURCE.CONFIGURATION-ROOT-CACHE-REUSE
     #[test]
     fn a_file_changed_during_its_parse_is_not_retained() {
         let fixture = artifact_root("First");
@@ -1838,6 +1942,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.SOURCE.CONFIGURATION-ROOT-CACHE-REUSE
     #[test]
     fn every_payload_file_invalidates_the_retained_root() {
         let fixture = artifact_root("First");
@@ -1885,6 +1990,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.SOURCE.CONFIGURATION-ROOT-CACHE-REUSE
     #[test]
     fn a_poisoned_retained_index_is_rebuilt() {
         let fixture = artifact_root("First");
@@ -1909,6 +2015,7 @@ mod tests {
         assert!(Arc::ptr_eq(&rebuilt, &retained));
     }
 
+    /// rule: INV.SOURCE.CONFIGURATION-ROOT-CACHE-REUSE
     #[test]
     fn a_poisoned_slot_is_emptied_and_reused() {
         let fixture = artifact_root("First");
@@ -1960,5 +2067,72 @@ mod tests {
             state.properties.get("Comment").map(String::as_str),
             Some("")
         );
+    }
+}
+
+#[cfg(test)]
+mod root_version_tests {
+    use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn parent_version_keeps_literal_spelling_and_ignores_prolog_lookalikes() {
+        for version in ["2.20", "2.21", "2.&#50;0", "2.20 "] {
+            let header=format!("<?xml version='1.0'?><!-- version='wrong' --><cfg:MetaDataObject xmlns:cfg='{MD_NS}' note='>' version='{version}'>");
+            assert_eq!(
+                read_configuration_root_version_literal(Cursor::new(header.into_bytes()), &|| Ok(
+                    ()
+                ))
+                .unwrap(),
+                Some(version.to_string())
+            );
+        }
+        let header = format!("<MetaDataObject xmlns='{MD_NS}'>");
+        assert_eq!(
+            read_configuration_root_version_literal(Cursor::new(header.into_bytes()), &|| Ok(()))
+                .unwrap(),
+            None
+        );
+    }
+
+    struct HeaderOnly(Cursor<Vec<u8>>);
+    impl Read for HeaderOnly {
+        fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+            if self.0.position() == self.0.get_ref().len() as u64 {
+                return Err(io::Error::other(
+                    "the full owner body was already proved; do not parse it again",
+                ));
+            }
+            self.0.read(bytes)
+        }
+    }
+    impl Seek for HeaderOnly {
+        fn seek(&mut self, position: SeekFrom) -> io::Result<u64> {
+            self.0.seek(position)
+        }
+    }
+
+    #[test]
+    fn lexical_version_probe_stops_before_parsing_the_owner_body() {
+        let header=format!("\u{feff}<?xml version='1.0'?><!-- Юникод & raw comment --><m:MetaDataObject xmlns:m='{MD_NS}' version='2.20'>");
+        let source = HeaderOnly(Cursor::new(header.into_bytes()));
+        assert_eq!(
+            read_configuration_root_version_literal(source, &|| Ok(())).unwrap(),
+            Some("2.20".into())
+        );
+    }
+
+    #[test]
+    fn lexical_version_probe_preserves_checkpoint_refusal() {
+        let source =
+            Cursor::new(format!("<MetaDataObject xmlns='{MD_NS}' version='2.20'>").into_bytes());
+        let error = read_configuration_root_version_literal(source, &|| {
+            Err(ViewError::new(
+                unica_refusal::RefusalCode::Cancelled,
+                "cancelled header observation",
+            ))
+        })
+        .unwrap_err();
+        assert_eq!(error.code(), unica_refusal::RefusalCode::Cancelled);
     }
 }

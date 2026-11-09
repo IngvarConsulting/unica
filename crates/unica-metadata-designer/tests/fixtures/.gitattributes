@@ -1,0 +1,3 @@
+# Platform bytes that tests compare exactly: a checkout must not convert them.
+support-markers/** -text -whitespace
+binary-data/native-type.xml -text whitespace=cr-at-eol

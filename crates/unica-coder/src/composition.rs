@@ -1,50 +1,35 @@
-use crate::application::UnicaApplication;
-use crate::infrastructure::application_ports::InfrastructureApplicationPorts;
-use std::sync::Arc;
+#[cfg(any(test, feature = "test-support"))]
+pub mod testing {
+    use crate::application::UnicaApplication;
+    use crate::infrastructure::application_ports::InfrastructureApplicationPorts;
+    use std::sync::Arc;
 
-impl UnicaApplication {
-    pub fn new() -> Self {
-        Self::with_ports(Arc::new(InfrastructureApplicationPorts::new()))
+    /// Приложение на портах инфраструктуры. Продукт его не собирает: он вызывает
+    /// порты через демон, а этим входом его поверхность проверяют тесты.
+    pub fn application() -> UnicaApplication {
+        UnicaApplication::with_ports(Arc::new(InfrastructureApplicationPorts::new()))
     }
-}
-
-impl Default for UnicaApplication {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-#[cfg(test)]
-pub(crate) mod testing {
 
     pub(crate) use crate::infrastructure::native_operations::meta::{
         with_meta_add_after_authorization_hook, with_meta_edit_before_reauthorization_hook,
         with_meta_info_descriptor_image_hook, with_registrar_processing_hook,
         with_subsystem_evidence_processing_hook,
     };
-    pub(crate) use unica_workspace::compile_transaction::CompileTransaction;
-    pub(crate) use unica_workspace::single_file_publisher::{
-        with_publication_lock_contention_signal, with_publication_lock_pause,
-    };
-
-    pub(crate) use unica_workspace::test_support::prepare_file_for_removal;
-
     pub(crate) use unica_workspace::test_support::{
-        create_file_link_fixture_for_test, file_identity_for_test, set_unix_mode_for_test,
-        unix_mode_for_test, FileLinkFixtureOutcome,
+        create_file_link_fixture_for_test, FileLinkFixtureOutcome,
     };
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
+mod medium_tests {
+    use super::testing::application;
     use crate::application::input_schema_for_tool;
     use serde_json::{Map, Value};
 
     #[test]
-    fn new_and_default_have_identical_tools_and_deterministic_dry_run() {
-        let created = UnicaApplication::new();
-        let defaulted = UnicaApplication::default();
+    fn two_applications_have_identical_tools_and_deterministic_dry_run() {
+        let created = application();
+        let defaulted = application();
         let created_tools = created.tools();
         let defaulted_tools = defaulted.tools();
 

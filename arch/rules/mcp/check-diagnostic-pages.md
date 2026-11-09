@@ -1,16 +1,5 @@
 ---
 id: INV.WIRE.CHECK-DIAGNOSTIC-PAGES
-check:
-  - crates/unica-coder/src/application/v13/check.rs::check_pages_preserve_verdict_and_every_diagnostic_with_replay
-  - crates/unica-coder/src/application/v13/check.rs::check_returns_whole_large_finding_and_refuses_late_oversize_before_page_one
-  - crates/unica-coder/src/application/v13/check.rs::check_refuses_before_first_page_when_snapshot_cannot_be_retained
-  - crates/unica-coder/src/application/v13/check.rs::late_finding_at_transport_edge_is_refused_before_issuing_a_cursor
-  - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::bsl_check_never_calls_a_truncated_analyzer_result_complete
-  - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::bsl_check_sees_an_error_after_two_hundred_warnings
-  - crates/unica-coder/src/infrastructure/daemon/server.rs::root_check_pages_its_groups_by_count_and_bytes_with_the_whole_verdict
-  - crates/unica-coder/src/infrastructure/daemon/server.rs::root_check_cursor_answers_only_the_question_that_issued_it
-  - crates/unica-coder/src/infrastructure/daemon/server.rs::a_root_check_cursor_without_its_saved_verdict_is_refused
-  - crates/unica-coder/tests/platform/receipt_runtime.rs::root_check_pages_are_the_same_through_a_task_and_a_direct_call
 ---
 
 # Страницы диагностик сохраняют полный вердикт проверки

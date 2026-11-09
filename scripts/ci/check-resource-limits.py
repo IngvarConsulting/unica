@@ -1,11 +1,29 @@
 #!/usr/bin/env python3
-"""Сверка реестра ресурсных ограничений `arch/resource-limits.json` с кодом.
+"""Сверка ресурсных ограничений продукта с их описанием в коде.
 
-Число предела живёт в коде. Реестр повторяет выражение константы и сверяется
-с ним: расхождение, неучтённая константа-предел или устаревшая запись дают
-ошибку. Константу-предел страж узнаёт по имени (`LIMIT_NAME`); предел,
-записанный литералом, вносится в реестр вручную и сверяется по числу вхождений.
-`--scaffold` печатает заготовки записей для неучтённых констант.
+Число предела живёт в коде, а сведения о нём — в блоке комментариев прямо
+над константой или над строкой, где предел записан литералом:
+
+    // resource-limit: lsp.completion-inference-depth
+    // class: step
+    // unit: depth
+    // scope: request
+    // value: 4
+    // resource: Шаги вывода типа при дополнении.
+    // status: unproven
+    // origin: неизвестно
+    // problem: неизвестно
+    // on-reach: тип дальше не прослеживается
+    pub const MAX_INFERENCE_DEPTH: usize = 4;
+
+Константу, имя которой похоже на предел (`LIMIT_NAME`), но которая им не
+является, помечает `// resource-limit-excluded: <причина>`. Ошибка — значение,
+расходящееся с выражением под блоком; константа-предел без блока; блок, под
+которым нет предела; повтор id. Предел без такого имени, в том числе
+литерал, страж сам не находит: блок ставится вручную и затем сверяется.
+
+`--report` печатает опись пределов JSON, `--scaffold` — заготовки блоков для
+констант без описания.
 """
 
 from __future__ import annotations
@@ -20,8 +38,6 @@ from pathlib import Path
 from typing import NamedTuple
 
 ROOT = Path(__file__).resolve().parents[2]
-REGISTRY = Path("arch/resource-limits.json")
-SCHEMA = Path("arch/resource-limits.schema.json")
 
 # Имя константы похоже на ресурсный предел, срок, окно, порцию или ёмкость.
 LIMIT_NAME = re.compile(
@@ -32,23 +48,58 @@ LIMIT_NAME = re.compile(
 DURATION = re.compile(r"^(?:std::time::)?Duration::from_(secs|millis|mins)\((.+)\)$", re.S)
 UNIT_MS = {"secs": 1000, "millis": 1, "mins": 60_000}
 ITEM_KINDS = {"const_item", "static_item"}
-CONTAINERS = {"impl_item": "impl", "trait_item": "trait", "function_item": "fn"}
+
+MARK = "resource-limit"
+EXCLUDED = "resource-limit-excluded"
+LINE = re.compile(r"^[ \t]*// ([a-z][a-z-]*): (.+?)\s*$")
+
+CLASSES = {"corpus", "step", "retention", "concurrency", "retry", "format", "deadline", "result"}
+UNITS = {"bytes", "count", "depth", "ms", "s", "chars"}
+SCOPES = {
+    "request", "file", "line", "directory", "traversal", "source-set", "workspace", "repository",
+    "record", "frame", "process", "daemon", "connection", "session", "cache", "operation",
+}
+STATUSES = {"unproven", "justified", "external"}
+ID = re.compile(r"^[a-z0-9]+(?:[.-][a-z0-9]+)*$")
+ISSUE = re.compile(r"^#[0-9]+$")
+DATE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
+# Поля блока в том порядке, в каком они пишутся; `evidence` повторяется.
+FIELDS = (
+    "class", "unit", "scope", "value", "derived", "literal", "count", "expr", "resource", "status",
+    "origin", "problem", "on-reach", "issue", "evidence", "decision", "decision-date",
+    "decision-source", "review",
+)
+REQUIRED = ("class", "unit", "scope", "resource", "status", "origin", "problem", "on-reach")
+# Происхождение или проблема, которых никто не знает, названы так прямо.
+UNKNOWN = "неизвестно"
 
 
-class Constant(NamedTuple):
+class Item(NamedTuple):
+    """Константа или статическое значение продукта."""
+
     file: str
     line: int
     symbol: str
-    within: str | None
     type: str
     expr: str
+
+
+class Block(NamedTuple):
+    """Описание предела или исключения в коде."""
+
+    file: str
+    line: int
+    end: int
+    kind: str
+    head: str
+    fields: tuple[tuple[str, str], ...]
 
 
 class Source(NamedTuple):
     crate: str
     text: str
-    identifiers: frozenset[str]
-    constants: tuple[Constant, ...]
+    items: tuple[Item, ...]
+    blocks: tuple[Block, ...]
 
 
 @functools.lru_cache(maxsize=1)
@@ -139,6 +190,28 @@ def test_items(root_node):
     return found
 
 
+def read_blocks(rel: str, lines: list[str]) -> list[Block]:
+    """Блоки `// resource-limit…` текста: заголовок и следующие строки `// поле: значение`."""
+    blocks = []
+    index = 0
+    while index < len(lines):
+        match = LINE.match(lines[index])
+        if not match or match.group(1) not in (MARK, EXCLUDED):
+            index += 1
+            continue
+        start = index
+        fields = []
+        index += 1
+        while index < len(lines):
+            field = LINE.match(lines[index])
+            if not field or field.group(1) in (MARK, EXCLUDED):
+                break
+            fields.append((field.group(1), field.group(2)))
+            index += 1
+        blocks.append(Block(rel, start + 1, index, match.group(1), match.group(2), tuple(fields)))
+    return blocks
+
+
 def parse(root: Path, path: Path, test_files: set[Path]) -> Source:
     data = path.read_bytes()
     tree = rust_parser().parse(data)
@@ -155,31 +228,29 @@ def parse(root: Path, path: Path, test_files: set[Path]) -> Source:
                 blank[index] = 0x20
     text = blank.decode("utf-8")
     rel = path.relative_to(root).as_posix()
-    identifiers = set()
-    constants = []
+    items = []
 
-    def walk(node, within):
+    def walk(node):
         if (node.start_byte, node.end_byte) in skipped:
             return
-        if node.type == "identifier" and node.text.decode().isupper():
-            identifiers.add(node.text.decode())
         if node.type in ITEM_KINDS:
-            name = node.child_by_field_name("name").text.decode()
             value = node.child_by_field_name("value")
             kind = node.child_by_field_name("type")
-            if value is not None and kind is not None and LIMIT_NAME.search(name):
-                expr = value.text.decode().strip()
-                # `pub const X: T = super::X;` переэкспортирует уже учтённый предел.
-                if not normalize(expr).endswith(f"::{name}"):
-                    constants.append(Constant(rel, node.start_point[0] + 1, name, within, kind.text.decode(), expr))
-        if node.type in CONTAINERS:
-            label = node.child_by_field_name("type") or node.child_by_field_name("name")
-            within = f"{CONTAINERS[node.type]} {label.text.decode()}" if label is not None else within
+            if value is not None and kind is not None:
+                name = node.child_by_field_name("name").text.decode()
+                items.append(Item(rel, node.start_point[0] + 1, name, kind.text.decode(), value.text.decode().strip()))
         for child in node.children:
-            walk(child, within)
+            walk(child)
 
-    walk(tree.root_node, None)
-    return Source(rel.split("/")[1], text, frozenset(identifiers), tuple(constants))
+    walk(tree.root_node)
+    # Lines as tree-sitter counts them: only `\n` ends one.
+    lines = text.split("\n")
+    blocks = read_blocks(rel, [line.rstrip("\r") for line in lines])
+    # A block names its literal: only the code counts as its occurrences.
+    for block in blocks:
+        for index in range(block.line - 1, block.end):
+            lines[index] = ""
+    return Source(rel.split("/")[1], "\n".join(lines), tuple(items), tuple(blocks))
 
 
 @functools.lru_cache(maxsize=4)
@@ -194,7 +265,8 @@ def sources(root: Path) -> dict[str, Source]:
     return {
         path.relative_to(root).as_posix(): source
         for path, source in parsed.items()
-        if not any(path == item or item in path.parents for item in test_files)
+        # The path itself or any of its directories is test-only: set lookups, not pairs.
+        if path not in test_files and test_files.isdisjoint(path.parents)
     }
 
 
@@ -202,16 +274,13 @@ def normalize(expr: str) -> str:
     return re.sub(r"\s+", "", expr)
 
 
-def scan(root: Path) -> list[Constant]:
-    return [constant for source in sources(root).values() for constant in source.constants]
-
-
-def key(file: str, symbol: str, within: str | None) -> tuple[str, str, str | None]:
-    return (file, symbol, within)
+def is_limit(item: Item) -> bool:
+    """Константа с именем предела; `pub const X: T = super::X;` переэкспортирует уже описанный."""
+    return bool(LIMIT_NAME.search(item.symbol)) and not normalize(item.expr).endswith(f"::{item.symbol}")
 
 
 def evaluate(expr: str, unit: str, names: dict[str, int] | None = None) -> int | None:
-    """Значение выражения в единице записи; `None`, если выражение не вычисляется."""
+    """Значение выражения в единице предела; `None`, если выражение не вычисляется."""
     text = expr.strip()
     duration = DURATION.match(text)
     if duration:
@@ -257,185 +326,238 @@ def evaluate(expr: str, unit: str, names: dict[str, int] | None = None) -> int |
         return None
 
 
-def literal_count(root: Path, file: str, literal: str) -> int:
-    source = sources(root).get(file)
-    return 0 if source is None else normalize(source.text).count(normalize(literal))
-
-
-def users(root: Path, constant: Constant) -> list[str]:
-    """Файлы продукта, где применяется именно эта константа.
-
-    Файл со своим одноимённым пределом относится к своему. В крейте с несколькими
-    одноимёнными пределами чужой файл засчитывается по пути модуля, в другом
-    крейте — по имени крейта-владельца.
-    """
-    parsed = sources(root)
-    owner = parsed[constant.file]
-    owner_crate = owner.crate.replace("-", "_")
-    module = Path(constant.file).stem if Path(constant.file).stem not in ("mod", "lib", "main") else Path(constant.file).parent.name
-    same_named = [path for path, source in parsed.items() if any(item.symbol == constant.symbol for item in source.constants)]
-    in_crate = [path for path in same_named if parsed[path].crate == owner.crate]
-    found = {constant.file}
-    for path, source in parsed.items():
-        if path == constant.file or constant.symbol not in source.identifiers or path in same_named:
-            continue
-        if source.crate == owner.crate:
-            if len(in_crate) == 1 or f"{module}::" in source.text:
-                found.add(path)
-        elif owner_crate in source.text:
-            found.add(path)
-    return sorted(found)
-
-
-def names_for(root: Path, constant: Constant) -> dict[str, int]:
+def names_for(root: Path, item: Item) -> dict[str, int]:
     """Значения соседних числовых пределов: сначала того же файла, затем крейта."""
     values: dict[str, int] = {}
     parsed = sources(root)
-    crate = parsed[constant.file].crate
-    for path, source in sorted(parsed.items(), key=lambda item: item[0] == constant.file):
+    crate = parsed[item.file].crate
+    for path, source in sorted(parsed.items(), key=lambda pair: pair[0] == item.file):
         if source.crate != crate:
             continue
-        for item in source.constants:
-            value = evaluate(item.expr, "count")
+        for other in source.items:
+            if not is_limit(other):
+                continue
+            value = evaluate(other.expr, "count")
             if value is not None:
-                values[item.symbol] = value
+                values[other.symbol] = value
     return values
 
 
-def load(root: Path) -> dict:
-    return json.loads((root / REGISTRY).read_text(encoding="utf-8"))
+def literal_position(text: str, after: int, literal: str) -> tuple[int, int] | None:
+    """Строка первого вхождения литерала после строки `after` и число его вхождений в файле."""
+    lines = [line + "\n" for line in text.split("\n")]
+    target = normalize(literal)
+    tail = normalize("".join(lines[after:]))
+    found = tail.find(target)
+    if found < 0:
+        return None
+    consumed = 0
+    for offset, line in enumerate(lines[after:]):
+        consumed += len(normalize(line))
+        if consumed > found:
+            return after + offset + 1, normalize(text).count(target)
+    return None
 
 
-def schema_errors(root: Path, registry: dict) -> list[str]:
-    import jsonschema
+def field_errors(where: str, block: Block) -> tuple[dict, list[str]]:
+    """Поля блока описью предела и ошибки их формы."""
+    errors = []
+    entry: dict = {"id": block.head}
+    evidence = []
+    seen = set()
+    order = []
+    for name, value in block.fields:
+        if name not in FIELDS:
+            errors.append(f"{where}: unknown field `{name}`")
+            continue
+        if name == "evidence":
+            evidence.append(value)
+        elif name in seen:
+            errors.append(f"{where}: field `{name}` repeats")
+        else:
+            entry[name] = value
+        seen.add(name)
+        order.append(FIELDS.index(name))
+    if order != sorted(order):
+        errors.append(f"{where}: fields go in the order {', '.join(FIELDS)}")
+    if not ID.match(block.head):
+        errors.append(f"{where}: id `{block.head}` is not lower-case words joined by `.` or `-`")
+    for name in REQUIRED:
+        if name not in entry:
+            errors.append(f"{where}: field `{name}` is missing")
+    for name, allowed in (("class", CLASSES), ("unit", UNITS), ("scope", SCOPES), ("status", STATUSES)):
+        if name in entry and entry[name] not in allowed:
+            errors.append(f"{where}: {name} `{entry[name]}` is not one of {', '.join(sorted(allowed))}")
+    if "issue" in entry and not ISSUE.match(entry["issue"]):
+        errors.append(f"{where}: issue `{entry['issue']}` is not `#<number>`")
+    if "derived" in entry and entry["derived"] != "true":
+        errors.append(f"{where}: derived is written only as `derived: true`")
+    for name in ("value", "count"):
+        if name in entry and not entry[name].isdigit():
+            errors.append(f"{where}: {name} `{entry[name]}` is not a number")
+    decision = [name for name in ("decision", "decision-date", "decision-source") if name in entry]
+    if decision and len(decision) != 3:
+        errors.append(f"{where}: decision, decision-date and decision-source go together")
+    if "decision-date" in entry and not DATE.match(entry["decision-date"]):
+        errors.append(f"{where}: decision-date `{entry['decision-date']}` is not YYYY-MM-DD")
+    if entry.get("status") == "justified" and not (evidence and len(decision) == 3):
+        errors.append(f"{where}: a justified limit names its evidence and decision")
+    if entry.get("status") == "external" and entry.get("origin", UNKNOWN) == UNKNOWN:
+        errors.append(f"{where}: an external limit names its origin")
+    if "literal" in entry and ("count" not in entry or "expr" not in entry):
+        errors.append(f"{where}: a literal limit names its count and expr")
+    if "literal" not in entry and ("count" in entry or "expr" in entry):
+        errors.append(f"{where}: count and expr belong to a literal limit; a constant gives its own expr")
+    record = {
+        "id": block.head,
+        "class": entry.get("class"),
+        "resource": entry.get("resource"),
+        "unit": entry.get("unit"),
+        "scope": entry.get("scope"),
+        "expr": entry.get("expr"),
+        "value": int(entry["value"]) if entry.get("value", "").isdigit() else None,
+        "status": entry.get("status"),
+        "origin": None if entry.get("origin") == UNKNOWN else entry.get("origin"),
+        "problem": None if entry.get("problem") == UNKNOWN else entry.get("problem"),
+        "onReach": entry.get("on-reach"),
+        "issue": entry.get("issue"),
+        "evidence": evidence,
+        "decision": (
+            {"date": entry["decision-date"], "text": entry["decision"], "source": entry["decision-source"]}
+            if len(decision) == 3 else None
+        ),
+        "review": entry.get("review"),
+    }
+    if entry.get("derived") == "true":
+        record["derived"] = True
+    if "literal" in entry:
+        record["literal"] = entry["literal"]
+        record["count"] = int(entry["count"]) if entry.get("count", "").isdigit() else None
+    return record, errors
 
-    schema = json.loads((root / SCHEMA).read_text(encoding="utf-8"))
-    validator = jsonschema.Draft202012Validator(schema)
-    return [
-        f"{REGISTRY}: {'/'.join(map(str, error.absolute_path)) or '<root>'}: {error.message}"
-        for error in sorted(validator.iter_errors(registry), key=lambda item: list(map(str, item.absolute_path)))
-    ]
+
+def inventory(root: Path) -> tuple[dict, list[str]]:
+    """Опись пределов из кода и ошибки сверки."""
+    sources.cache_clear()
+    errors: list[str] = []
+    limits: list[dict] = []
+    excluded: list[dict] = []
+    ids: dict[str, str] = {}
+    described: set[tuple[str, int]] = set()
+    for file, source in sources(root).items():
+        by_line = {item.line: item for item in source.items}
+        for block in source.blocks:
+            where = f"{file}:{block.line}"
+            target = by_line.get(block.end + 1)
+            if block.kind == EXCLUDED:
+                if block.fields:
+                    errors.append(f"{where}: an exclusion has only its reason")
+                if target is None:
+                    errors.append(f"{where}: resource-limit-excluded stands before no constant")
+                    continue
+                described.add((file, target.line))
+                excluded.append({"at": f"{file}:{target.line}", "symbol": target.symbol, "reason": block.head})
+                continue
+            record, problems = field_errors(where, block)
+            errors.extend(problems)
+            if block.head in ids:
+                errors.append(f"{where}: id {block.head} is already used at {ids[block.head]}")
+            ids[block.head] = where
+            unit = record["unit"] or "count"
+            if "literal" in record:
+                position = literal_position(source.text, block.end, record["literal"])
+                if position is None or position[0] != block.end + 1:
+                    errors.append(f"{where}: {block.head} stands before no line with literal {record['literal']!r}")
+                elif record["count"] is not None and position[1] != record["count"]:
+                    errors.append(
+                        f"{where}: {block.head}: literal {record['literal']!r} occurs {position[1]} times in {file}, "
+                        f"the block says {record['count']}"
+                    )
+                if record["expr"] is not None:
+                    if normalize(record["expr"]) not in normalize(record["literal"]):
+                        errors.append(f"{where}: {block.head}: expr `{record['expr']}` is not part of literal {record['literal']!r}")
+                    computed = evaluate(record["expr"], unit)
+                    if computed != record["value"]:
+                        errors.append(f"{where}: {block.head}: `{record['expr']}` evaluates to {computed}, the block says {record['value']}")
+                record["at"] = f"{file}:{block.end + 1}"
+                limits.append(record)
+                continue
+            if target is None:
+                errors.append(f"{where}: {block.head} stands before no constant; put the block right above it")
+                continue
+            described.add((file, target.line))
+            record["expr"] = target.expr
+            plain = evaluate(target.expr, unit)
+            computed = plain if plain is not None else evaluate(target.expr, unit, names_for(root, target))
+            if computed is not None and computed != record["value"]:
+                errors.append(f"{where}: {block.head}: `{target.expr}` evaluates to {computed}, the block says {record['value']}")
+            if plain is None and not record.get("derived"):
+                errors.append(f"{where}: {block.head}: `{target.expr}` is not a plain number; mark it `derived: true`")
+            if plain is not None and record.get("derived"):
+                errors.append(f"{where}: {block.head}: `{target.expr}` is a plain number; derived is not needed")
+            record["at"] = f"{file}:{target.line}"
+            limits.append(record)
+        for item in source.items:
+            if is_limit(item) and (file, item.line) not in described:
+                errors.append(
+                    f"{file}:{item.line}: {item.symbol} has no `// {MARK}:` block above it; "
+                    "run scripts/ci/check-resource-limits.py --scaffold"
+                )
+    return {"limits": limits, "excluded": excluded}, errors
 
 
 def check(root: Path) -> list[str]:
-    sources.cache_clear()
-    registry = load(root)
-    errors = schema_errors(root, registry)
-    if errors:
-        return errors
-    constants: dict[tuple, Constant] = {}
-    for constant in scan(root):
-        item_key = key(constant.file, constant.symbol, constant.within)
-        if item_key in constants:
-            errors.append(f"{constant.file}:{constant.line}: {constant.symbol} is declared twice in one scope; the registry cannot tell them apart")
-        constants[item_key] = constant
-    seen: dict[tuple, str] = {}
-    ids: set[str] = set()
-    for entry in registry["limits"]:
-        ident = entry["id"]
-        if ident in ids:
-            errors.append(f"{ident}: duplicate id")
-        ids.add(ident)
-        source = entry["source"]
-        file = source["file"]
-        if not (root / file).is_file():
-            errors.append(f"{ident}: source file {file} does not exist")
-            continue
-        if "literal" in source:
-            count = literal_count(root, file, source["literal"])
-            if count != source["count"]:
-                errors.append(f"{ident}: literal {source['literal']!r} occurs {count} times in {file}, registry says {source['count']}")
-            if normalize(entry["expr"]) not in normalize(source["literal"]):
-                errors.append(f"{ident}: expr `{entry['expr']}` is not part of literal {source['literal']!r}")
-            computed = evaluate(entry["expr"], entry["unit"])
-            if computed != entry["value"]:
-                errors.append(f"{ident}: `{entry['expr']}` evaluates to {computed}, registry value is {entry['value']}")
-            if entry["applied"] != [file]:
-                errors.append(f"{ident}: a literal applies only in {file}")
-            continue
-        item_key = key(file, source["symbol"], source.get("within"))
-        if item_key in seen:
-            errors.append(f"{ident}: {file}::{source['symbol']} is already registered as {seen[item_key]}")
-        seen[item_key] = ident
-        constant = constants.get(item_key)
-        if constant is None:
-            errors.append(f"{ident}: {file} has no product limit constant {source['symbol']} within {source.get('within')}")
-            continue
-        if normalize(constant.expr) != normalize(entry["expr"]):
-            errors.append(f"{ident}: code has `{constant.expr}`, registry has `{entry['expr']}`")
-        plain = evaluate(constant.expr, entry["unit"])
-        computed = plain if plain is not None else evaluate(constant.expr, entry["unit"], names_for(root, constant))
-        if computed is not None and computed != entry["value"]:
-            errors.append(f"{ident}: `{constant.expr}` evaluates to {computed}, registry value is {entry['value']}")
-        if plain is None and not entry.get("derived"):
-            errors.append(f"{ident}: `{constant.expr}` is not a plain number; mark the entry as derived")
-        if plain is not None and entry.get("derived"):
-            errors.append(f"{ident}: `{constant.expr}` is a plain number; derived is not needed")
-        applied = users(root, constant)
-        if sorted(entry["applied"]) != applied:
-            errors.append(f"{ident}: applied files {sorted(entry['applied'])} differ from product users {applied}")
-    for item in registry["excluded"]:
-        item_key = key(item["file"], item["symbol"], item.get("within"))
-        if item_key in seen:
-            errors.append(f"{item['file']}::{item['symbol']} is both registered and excluded")
-        elif item_key not in constants:
-            errors.append(f"excluded {item['file']}::{item['symbol']} no longer exists")
-        seen[item_key] = "excluded"
-    for item_key, constant in sorted(constants.items(), key=lambda pair: (pair[1].file, pair[1].line)):
-        if item_key not in seen:
-            errors.append(f"{constant.file}:{constant.line}: {constant.symbol} is not in {REGISTRY}; run scripts/ci/check-resource-limits.py --scaffold")
-    return errors
+    return inventory(root)[1]
 
 
-def scaffold(root: Path) -> list[dict]:
-    sources.cache_clear()
-    registry = load(root)
-    known = {key(entry["source"]["file"], entry["source"].get("symbol"), entry["source"].get("within")) for entry in registry["limits"]}
-    known |= {key(item["file"], item["symbol"], item.get("within")) for item in registry["excluded"]}
-    entries = []
-    for constant in scan(root):
-        if key(constant.file, constant.symbol, constant.within) in known:
-            continue
-        unit = "ms" if "Duration" in constant.type or "Duration" in constant.expr else "count"
-        source = {"file": constant.file, "symbol": constant.symbol}
-        if constant.within:
-            source["within"] = constant.within
-        plain = evaluate(constant.expr, unit)
-        entry = {
-            "id": constant.symbol.lower().replace("_", "-"),
-            "class": None,
-            "resource": None,
-            "unit": unit,
-            "scope": None,
-            "source": source,
-            "expr": constant.expr,
-            "value": plain if plain is not None else evaluate(constant.expr, unit, names_for(root, constant)),
-            "applied": users(root, constant),
-            "status": "unproven",
-            "origin": None,
-            "problem": None,
-            "onReach": None,
-            "issue": None,
-            "evidence": [],
-            "decision": None,
-            "review": None,
-        }
-        if plain is None:
-            entry["derived"] = True
-        entries.append(entry)
-    return entries
+def scaffold(root: Path) -> list[str]:
+    """Заготовки блоков для констант-пределов без описания."""
+    _, errors = inventory(root)
+    missing = {error.split(": ", 1)[0] for error in errors if f"no `// {MARK}:` block" in error}
+    drafts = []
+    for file, source in sources(root).items():
+        for item in source.items:
+            if f"{file}:{item.line}" not in missing:
+                continue
+            unit = "ms" if "Duration" in item.type or "Duration" in item.expr else "count"
+            plain = evaluate(item.expr, unit)
+            value = plain if plain is not None else evaluate(item.expr, unit, names_for(root, item))
+            lines = [
+                f"{file}:{item.line} {item.symbol}",
+                f"// {MARK}: {item.symbol.lower().replace('_', '-')}",
+                "// class: <corpus|step|retention|concurrency|retry|format|deadline|result>",
+                f"// unit: {unit}",
+                "// scope: <request|file|...>",
+            ]
+            if value is not None:
+                lines.append(f"// value: {value}")
+            if plain is None:
+                lines.append("// derived: true")
+            lines += [
+                "// resource: <что ограничено>",
+                "// status: unproven",
+                f"// origin: <откуда предел или {UNKNOWN}>",
+                f"// problem: <от какого отказа защищает или {UNKNOWN}>",
+                "// on-reach: <что происходит у предела>",
+            ]
+            drafts.append("\n".join(lines))
+    return drafts
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--root", type=Path, default=ROOT)
-    parser.add_argument("--scaffold", action="store_true", help="print draft entries for unregistered constants")
+    action = parser.add_mutually_exclusive_group()
+    action.add_argument("--report", action="store_true", help="print the inventory of limits as JSON")
+    action.add_argument("--scaffold", action="store_true", help="print draft blocks for undescribed constants")
     args = parser.parse_args()
     root = args.root.resolve()
     if args.scaffold:
-        print(json.dumps(scaffold(root), ensure_ascii=False, indent=2))
+        print("\n\n".join(scaffold(root)))
         return 0
-    errors = check(root)
+    found, errors = inventory(root)
+    if args.report:
+        print(json.dumps(found, ensure_ascii=False, indent=2))
     for error in errors:
         print(error, file=sys.stderr)
     return 1 if errors else 0

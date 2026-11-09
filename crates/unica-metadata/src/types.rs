@@ -306,36 +306,44 @@ pub struct MetadataType {
 
 impl MetadataType {
     pub fn new(variants: Vec<MetadataTypeVariant>) -> Result<Self, MetaDiagnostic> {
-        if variants.is_empty() {
-            return Err(invalid_type(
-                "type.variants",
-                "type variants must not be empty",
-            ));
-        }
-        if variants.len() > 1
-            && variants
-                .iter()
-                .any(|variant| matches!(variant, MetadataTypeVariant::ValueStorage))
-        {
-            return Err(invalid_type(
-                "type.variants",
-                "ValueStorage must be the only type variant",
-            ));
-        }
-
-        let mut seen = HashSet::new();
-        for (index, variant) in variants.iter().enumerate() {
-            validate_variant(variant, index)?;
-            let identity = variant_identity(variant);
-            if !seen.insert(identity) {
-                return Err(invalid_type(
-                    format!("type.variants[{index}]"),
-                    "duplicate platform type variant",
-                ));
-            }
-        }
+        validate_type_variants(variants.iter().enumerate(), variants.len())?;
         Ok(Self { variants })
     }
+}
+
+/// Observed unions can contain read-only members outside the writer algebra.
+/// Their original count and indices still govern shared type invariants.
+pub(crate) fn validate_type_variants<'a>(
+    variants: impl Iterator<Item = (usize, &'a MetadataTypeVariant)> + Clone,
+    total_variant_count: usize,
+) -> Result<(), MetaDiagnostic> {
+    if total_variant_count == 0 {
+        return Err(invalid_type(
+            "type.variants",
+            "type variants must not be empty",
+        ));
+    }
+    if total_variant_count > 1
+        && variants
+            .clone()
+            .any(|(_, variant)| matches!(variant, MetadataTypeVariant::ValueStorage))
+    {
+        return Err(invalid_type(
+            "type.variants",
+            "ValueStorage must be the only type variant",
+        ));
+    }
+    let mut seen = HashSet::new();
+    for (index, variant) in variants {
+        validate_variant(variant, index)?;
+        if !seen.insert(variant_identity(variant)) {
+            return Err(invalid_type(
+                format!("type.variants[{index}]"),
+                "duplicate platform type variant",
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn invalid_type(field: impl Into<String>, message: impl Into<String>) -> MetaDiagnostic {
@@ -419,8 +427,8 @@ pub struct MetadataReference {
 
 impl MetadataReference {
     #[cfg(test)]
-    pub fn parse(profile: &str, raw: &str) -> Result<Self, MetaDiagnostic> {
-        MetadataAddress::parse(profile, raw)
+    pub fn parse(raw: &str) -> Result<Self, MetaDiagnostic> {
+        MetadataAddress::parse_logical(raw)
             .map(|metadata_path| Self { metadata_path })
             .map_err(|error| address_diagnostic(raw, error))
     }
@@ -438,14 +446,13 @@ fn address_diagnostic(raw: &str, error: SourceTargetError) -> MetaDiagnostic {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20;
 
     /// Тип пишущего вызова и прочитанный тип реквизита сериализуются одинаково:
     /// предопределённый элемент называет ссылку `metadataPath`, как реквизит
-    /// (#1942).
+    /// .
     #[test]
     fn a_metadata_type_serializes_like_the_observed_attribute_type() {
-        let address = |raw| MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, raw).unwrap();
+        let address = |raw| MetadataAddress::parse_logical(raw).unwrap();
         for variant in [
             MetadataTypeVariant::String {
                 length: 10,
@@ -536,18 +543,12 @@ mod tests {
     fn reference_like_types_require_top_level_metadata_addresses() {
         for variant in [
             MetadataTypeVariant::Reference {
-                metadata_path: MetadataAddress::parse(
-                    PLATFORM_XML_8_3_27_FORMAT_2_20,
-                    "Catalog.Products.Form.Main",
-                )
-                .unwrap(),
+                metadata_path: MetadataAddress::parse_logical("Catalog.Products.Form.Main")
+                    .unwrap(),
             },
             MetadataTypeVariant::DefinedType {
-                metadata_path: MetadataAddress::parse(
-                    PLATFORM_XML_8_3_27_FORMAT_2_20,
-                    "DefinedType.Code.Form.Main",
-                )
-                .unwrap(),
+                metadata_path: MetadataAddress::parse_logical("DefinedType.Code.Form.Main")
+                    .unwrap(),
             },
         ] {
             let error = MetadataType::new(vec![variant]).unwrap_err();
@@ -636,8 +637,7 @@ mod tests {
 
     #[test]
     fn metadata_type_identity_uses_domain_discriminants_and_logical_addresses() {
-        let catalog =
-            MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Catalog.Products").unwrap();
+        let catalog = MetadataAddress::parse_logical("Catalog.Products").unwrap();
         assert_eq!(
             variant_identity(&MetadataTypeVariant::String {
                 length: 10,
@@ -687,11 +687,8 @@ mod tests {
 
     #[test]
     fn event_source_serialization_uses_the_public_typed_shape() {
-        let record_set =
-            MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "InformationRegister.Facts")
-                .unwrap();
-        let manager =
-            MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Catalog.Products").unwrap();
+        let record_set = MetadataAddress::parse_logical("InformationRegister.Facts").unwrap();
+        let manager = MetadataAddress::parse_logical("Catalog.Products").unwrap();
         assert_eq!(
             serde_json::to_value(MetaEventSource::Manager {
                 metadata_path: manager,
@@ -715,11 +712,7 @@ mod tests {
         );
         assert_eq!(
             serde_json::to_value(MetaEventSource::Manager {
-                metadata_path: MetadataAddress::parse(
-                    PLATFORM_XML_8_3_27_FORMAT_2_20,
-                    "Constant.Mode",
-                )
-                .unwrap(),
+                metadata_path: MetadataAddress::parse_logical("Constant.Mode",).unwrap(),
                 source_class: Some(EventSourceClass::ConstantManager),
             })
             .unwrap(),
@@ -744,13 +737,22 @@ mod tests {
     #[test]
     fn metadata_reference_reuses_the_logical_address_parser() {
         let reference =
-            MetadataReference::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Catalog.Products")
-                .expect("canonical logical reference");
+            MetadataReference::parse("Catalog.Products").expect("canonical logical reference");
         assert_eq!(reference.metadata_path.as_str(), "Catalog.Products");
 
-        let diagnostic = MetadataReference::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Catalog")
+        let diagnostic = MetadataReference::parse("Catalog")
             .expect_err("incomplete logical address must not be reparsed loosely");
         assert_eq!(diagnostic.code, MetaDiagnosticCode::InvalidArguments);
         assert_eq!(diagnostic.field.as_deref(), Some("metadataPath"));
+    }
+    #[test]
+    fn indexed_validation_keeps_the_original_observed_union_position() {
+        let bad = MetadataTypeVariant::Number {
+            digits: 39,
+            fraction: 0,
+            sign: NumberSign::Any,
+        };
+        let error = validate_type_variants([(1, &bad)].into_iter(), 2).unwrap_err();
+        assert_eq!(error.field.as_deref(), Some("type.variants[1]"));
     }
 }

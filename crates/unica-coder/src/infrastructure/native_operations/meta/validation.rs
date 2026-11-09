@@ -1,13 +1,13 @@
 use unica_metadata_designer::validation::*;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use std::collections::BTreeMap;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use std::fs;
 use std::path::{Path, PathBuf};
-#[cfg(test)]
-use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
+use unica_address::source_target::MetadataAddress;
+#[cfg(any(test, feature = "test-support"))]
 use unica_metadata::{MetaDiagnostic, MetaDiagnosticSeverity, MetadataKind};
 use unica_source_contract::workspace::WorkspaceContext;
 
@@ -15,7 +15,7 @@ use super::super::cf::validate_cf_owner_path;
 use super::super::common::read_utf8_sig;
 use crate::infrastructure::subsystem_composition::validate_subsystem_owner_path;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 const MD_CLASSES_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
 
 pub(crate) fn validate_metadata_owner_shape_8_3_27(
@@ -83,14 +83,14 @@ mod tests {
     use super::*;
     use roxmltree::Document;
 
-    use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+    use unica_address::source_target::MetadataAddress;
     use unica_metadata::subsystem::SubsystemAddress;
     use unica_metadata::{MetaDiagnosticCode, MetaValidationStatus};
 
     const MD_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
 
     /// `AutomaticAndManaged` допустим только у корня конфигурации: корень
-    /// уходит в проверку `cf` раньше общих перечислений объектов (#1271).
+    /// уходит в проверку `cf` раньше общих перечислений объектов.
     #[test]
     fn configuration_accepts_automatic_and_managed_lock_mode_unlike_objects() {
         let temp = tempfile::tempdir().unwrap();
@@ -178,7 +178,7 @@ mod tests {
     }
 
     fn address(value: &str) -> MetadataAddress {
-        MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, value).unwrap()
+        MetadataAddress::parse_logical(value).unwrap()
     }
 
     fn image(
@@ -260,8 +260,7 @@ mod tests {
 
     #[test]
     fn child_descriptor_read_admission_preserves_structure_and_strict_publication() {
-        let owner =
-            MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Report.Sales").unwrap();
+        let owner = MetadataAddress::parse_logical("Report.Sales").unwrap();
         let body = "<Template><Properties><Name>Dcs</Name><TemplateType>DataCompositionSchema</TemplateType></Properties></Template>";
         for version in [Some("2.20"), Some("2.19"), Some("2.21"), None] {
             let version_attr = version
@@ -1080,6 +1079,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.SOURCE.EXACT-VERSION
     #[test]
     fn readable_child_graph_does_not_authorize_materializing_unsupported_descriptors() {
         for kind in ["Template", "Form"] {
@@ -1373,7 +1373,7 @@ mod tests {
         }
     }
 
-    /// Issue #360 asked for this: the three ways a child can lose its
+    /// The three ways a child can lose its
     /// descriptor used to share one message, so the diagnostic never said which
     /// of them happened.
     #[test]
@@ -1902,6 +1902,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.SOURCE.HTML-TEMPLATE-VALIDATION
     #[test]
     fn html_template_requires_both_its_descriptor_and_language_page() {
         for (label, resources) in [
@@ -1931,6 +1932,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.SOURCE.HTML-TEMPLATE-VALIDATION
     #[test]
     fn html_template_accepts_every_declared_language_page() {
         let subject = template_subject(
@@ -1959,6 +1961,7 @@ mod tests {
         assert!(diagnostics.is_empty(), "{diagnostics:?}");
     }
 
+    /// rule: INV.SOURCE.HTML-TEMPLATE-VALIDATION
     #[test]
     fn html_template_page_accepts_registered_utf8_html_without_xml_grammar() {
         let page = concat!(
@@ -1977,6 +1980,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.SOURCE.HTML-TEMPLATE-VALIDATION
     #[test]
     fn html_template_page_rejects_non_utf8_bytes() {
         let error = validate_template_resource(
@@ -1989,6 +1993,7 @@ mod tests {
         assert!(error.contains("not UTF-8"), "{error}");
     }
 
+    /// rule: INV.SOURCE.HTML-TEMPLATE-VALIDATION
     #[test]
     fn html_template_pages_must_match_registered_language_codes() {
         let subject = template_subject(
@@ -2129,6 +2134,7 @@ mod tests {
         assert!(exact.is_empty(), "{exact:?}");
     }
 
+    /// rule: INV.ANALYSIS.METADATA-DIAGNOSTIC-VERDICT
     #[test]
     fn legacy_metadata_warnings_use_a_warning_code_and_keep_error_verdicts() {
         let registration = owner(&[("CommonModule", "Service")]);
@@ -2218,6 +2224,7 @@ mod tests {
         assert!(result.diagnostics[0].field.is_some());
     }
 
+    /// rule: INV.ANALYSIS.METADATA-DIAGNOSTIC-VERDICT
     #[test]
     fn internal_malformed_xml_is_a_hard_failure_matching_legacy_classification() {
         let registration = owner(&[("CommonModule", "Service")]);
@@ -2623,7 +2630,7 @@ mod tests {
 
     /// Платформа 8.3.27 выгружает ссылку расширения на тип расширяемой
     /// конфигурации как `v8:TypeId`: один и после `v8:Type` в составном
-    /// типе, в том числе у реквизита табличной части (#1361). Фикстура —
+    /// типе, в том числе у реквизита табличной части. Фикстура —
     /// выгрузка `ibcmd config export --extension`.
     #[test]
     fn extension_type_id_reference_is_a_valid_type_block() {
@@ -2700,7 +2707,7 @@ mod tests {
 
     /// Source подписки расширения из штатной выгрузки 8.3.27 содержит
     /// `v8:TypeId` источника из основной конфигурации после собственного
-    /// `v8:Type` (#1361) — это допустимо. Source из одних `v8:TypeId`
+    /// `v8:Type` — это допустимо. Source из одних `v8:TypeId`
     /// платформа не загружает («Имя события должно быть задано»).
     #[test]
     fn extension_event_subscription_type_id_source_needs_an_own_source() {
@@ -2737,19 +2744,19 @@ mod tests {
     fn internal_reverse_registrar_inconsistency_is_not_lost() {
         let descriptor = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../tests/fixtures/unica_mcp_script_parity/meta-validate-subordinate-register/InformationRegisters/SubordinateRegister.xml"
+            "/tests/fixtures/meta-validate-subordinate-register/InformationRegisters/SubordinateRegister.xml"
         ));
         let registration = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../tests/fixtures/unica_mcp_script_parity/meta-validate-subordinate-register/Configuration.xml"
+            "/tests/fixtures/meta-validate-subordinate-register/Configuration.xml"
         ));
         let language = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../tests/fixtures/unica_mcp_script_parity/meta-validate-subordinate-register/Languages/Русский.xml"
+            "/tests/fixtures/meta-validate-subordinate-register/Languages/Русский.xml"
         ));
         let registrar = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../tests/fixtures/unica_mcp_script_parity/meta-validate-subordinate-register/Documents/Регистратор.xml"
+            "/tests/fixtures/meta-validate-subordinate-register/Documents/Регистратор.xml"
         ))
         .replace(
             "InformationRegister.SubordinateRegister",
@@ -2795,15 +2802,15 @@ mod tests {
     fn registrar_evidence_availability_is_strict_read_only() {
         let descriptor = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../tests/fixtures/unica_mcp_script_parity/meta-validate-subordinate-register/InformationRegisters/SubordinateRegister.xml"
+            "/tests/fixtures/meta-validate-subordinate-register/InformationRegisters/SubordinateRegister.xml"
         ));
         let registration = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../tests/fixtures/unica_mcp_script_parity/meta-validate-subordinate-register/Configuration.xml"
+            "/tests/fixtures/meta-validate-subordinate-register/Configuration.xml"
         ));
         let language = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../tests/fixtures/unica_mcp_script_parity/meta-validate-subordinate-register/Languages/Русский.xml"
+            "/tests/fixtures/meta-validate-subordinate-register/Languages/Русский.xml"
         ));
         let mut unavailable = subject(
             "InformationRegister.SubordinateRegister",
@@ -2853,19 +2860,19 @@ mod tests {
     fn complete_read_proof_accepts_consistent_forward_and_reverse_dependencies() {
         let document = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../tests/fixtures/unica_mcp_script_parity/meta-validate-subordinate-register/Documents/Регистратор.xml"
+            "/tests/fixtures/meta-validate-subordinate-register/Documents/Регистратор.xml"
         ));
         let register = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../tests/fixtures/unica_mcp_script_parity/meta-validate-subordinate-register/InformationRegisters/SubordinateRegister.xml"
+            "/tests/fixtures/meta-validate-subordinate-register/InformationRegisters/SubordinateRegister.xml"
         ));
         let registration = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../tests/fixtures/unica_mcp_script_parity/meta-validate-subordinate-register/Configuration.xml"
+            "/tests/fixtures/meta-validate-subordinate-register/Configuration.xml"
         ));
         let language = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../tests/fixtures/unica_mcp_script_parity/meta-validate-subordinate-register/Languages/Русский.xml"
+            "/tests/fixtures/meta-validate-subordinate-register/Languages/Русский.xml"
         ));
         let document_subject = subject(
             "Document.Регистратор",
@@ -3103,6 +3110,221 @@ mod tests {
             assert_eq!(actual, expected, "{enum_name}");
         }
     }
+    const TURNOVER_STANDARD_ATTRIBUTES: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/fixtures/acceptance/workspace-turnover-attributes/src/AccumulationRegisters/Остатки.xml"
+    ));
+    const BALANCE_STANDARD_ATTRIBUTES: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/fixtures/acceptance/workspace-register-dimensions/src/AccumulationRegisters/Остатки.xml"
+    ));
+
+    fn checked_accumulation_register(xml: &str) -> unica_metadata::MetaValidationData {
+        let registration = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/fixtures/acceptance/workspace-turnover-attributes/src/Configuration.xml"
+        ));
+        let language = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/fixtures/acceptance/workspace-turnover-attributes/src/Languages/Русский.xml"));
+        let proof = subject(
+            "AccumulationRegister.Остатки",
+            Some(xml),
+            registration,
+            &[("Language.Русский", language)],
+        );
+        MetadataValidator::new(unica_metadata_designer::validation::FormRootValidator(
+            unica_forms_designer::root::require_form_root,
+        ))
+        .validate(&proof, &context())
+    }
+
+    fn without_standard_attribute(xml: &str, name: &str) -> String {
+        let start = xml
+            .find(&format!("<xr:StandardAttribute name=\"{name}\">"))
+            .unwrap();
+        let end = start
+            + xml[start..].find("</xr:StandardAttribute>").unwrap()
+            + "</xr:StandardAttribute>".len();
+        let mut changed = xml.to_owned();
+        changed.replace_range(start..end, "");
+        changed
+    }
+
+    fn standard_warning(result: &unica_metadata::MetaValidationData, message: &str) -> bool {
+        result.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == MetaDiagnosticCode::ValidationWarning
+                && diagnostic.severity == MetaDiagnosticSeverity::Warning
+                && diagnostic.field.as_deref() == Some("standardAttributes")
+                && diagnostic.message == message
+        })
+    }
+
+    #[test]
+    fn native_turnover_standard_attributes_do_not_require_record_type() {
+        for xml in [TURNOVER_STANDARD_ATTRIBUTES.to_owned(), TURNOVER_STANDARD_ATTRIBUTES.replacen(
+            "<v8:content>Остатки</v8:content>",
+            "<v8:content>Очень длинное имя регистра для независимого предупреждения о длине команды</v8:content>", 1,
+        )] {
+            let result = checked_accumulation_register(&xml);
+            assert_eq!(result.status, MetaValidationStatus::Passed, "{:?}", result.diagnostics);
+            assert!(!result.diagnostics.iter().any(|diagnostic| {
+                diagnostic.field.as_deref() == Some("standardAttributes")
+                    && diagnostic.message.contains("RecordType")
+            }), "{:?}", result.diagnostics);
+            assert!(result.diagnostics.iter().any(|diagnostic| diagnostic.message.contains("no registrar document found")), "independent diagnostic lost: {:?}", result.diagnostics);
+            if xml != TURNOVER_STANDARD_ATTRIBUTES {
+                assert!(result.diagnostics.iter().any(|diagnostic| {
+                    diagnostic.code == MetaDiagnosticCode::CommandTextUpperLimit
+                        && diagnostic.field.as_deref() == Some("properties.Synonym")
+                }), "independent synonym diagnostic lost: {:?}", result.diagnostics);
+            }
+        }
+    }
+
+    #[test]
+    fn accumulation_register_standard_attributes_keep_balance_and_real_missing_checks() {
+        let balance = checked_accumulation_register(BALANCE_STANDARD_ATTRIBUTES);
+        assert_eq!(
+            balance.status,
+            MetaValidationStatus::Passed,
+            "{:?}",
+            balance.diagnostics
+        );
+        assert!(
+            !balance
+                .diagnostics
+                .iter()
+                .any(|d| d.field.as_deref() == Some("standardAttributes")),
+            "{:?}",
+            balance.diagnostics
+        );
+        let missing_record_type = checked_accumulation_register(&without_standard_attribute(
+            BALANCE_STANDARD_ATTRIBUTES,
+            "RecordType",
+        ));
+        assert!(
+            standard_warning(
+                &missing_record_type,
+                "5. Missing StandardAttributes: RecordType"
+            ),
+            "{:?}",
+            missing_record_type.diagnostics
+        );
+        for xml in [TURNOVER_STANDARD_ATTRIBUTES, BALANCE_STANDARD_ATTRIBUTES] {
+            for name in ["Active", "LineNumber", "Recorder", "Period"] {
+                let missing = checked_accumulation_register(&without_standard_attribute(xml, name));
+                assert!(
+                    standard_warning(&missing, &format!("5. Missing StandardAttributes: {name}")),
+                    "{:?}",
+                    missing.diagnostics
+                );
+            }
+        }
+        let broken = checked_accumulation_register(&TURNOVER_STANDARD_ATTRIBUTES.replacen(
+            "name=\"Active\"",
+            "",
+            1,
+        ));
+        assert_eq!(broken.status, MetaValidationStatus::Failed);
+        assert!(
+            broken
+                .diagnostics
+                .iter()
+                .any(|d| d.severity == MetaDiagnosticSeverity::Error
+                    && d.field.as_deref() == Some("standardAttributes")
+                    && d.message.contains("without 'name'")),
+            "{:?}",
+            broken.diagnostics
+        );
+        let inapplicable = checked_accumulation_register(&TURNOVER_STANDARD_ATTRIBUTES.replace(
+            "</StandardAttributes>",
+            "<xr:StandardAttribute name=\"RecordType\"/></StandardAttributes>",
+        ));
+        assert!(
+            standard_warning(
+                &inapplicable,
+                "5. Unexpected StandardAttribute 'RecordType' for AccumulationRegister"
+            ),
+            "{:?}",
+            inapplicable.diagnostics
+        );
+    }
+
+    #[test]
+    fn accumulation_register_unknown_kind_does_not_invent_record_type_applicability() {
+        let without_active = without_standard_attribute(TURNOVER_STANDARD_ATTRIBUTES, "Active");
+        for kind in [
+            "",
+            "<RegisterType/>",
+            "<RegisterType>UnknownKind</RegisterType>",
+            "<RegisterType><Nested>Balance</Nested></RegisterType>",
+            "<RegisterType>Turnovers<Nested/></RegisterType>",
+            "<RegisterType>Turnovers</RegisterType><RegisterType>Balance</RegisterType>",
+            "<foreign:RegisterType xmlns:foreign=\"urn:foreign\">Balance</foreign:RegisterType>",
+            "<RegisterType extra=\"damaged\">Balance</RegisterType>",
+        ] {
+            let xml = without_active.replace("<RegisterType>Turnovers</RegisterType>", kind);
+            let result = checked_accumulation_register(&xml);
+            assert!(
+                standard_warning(&result, "5. Missing StandardAttributes: Active"),
+                "{kind}: {:?}",
+                result.diagnostics
+            );
+            assert!(standard_warning(&result, "5. Cannot determine RecordType applicability: RegisterType is missing or invalid"), "{kind}: {:?}", result.diagnostics);
+            assert!(
+                !result
+                    .diagnostics
+                    .iter()
+                    .any(|d| d.message.contains("Missing StandardAttributes")
+                        && d.message.contains("RecordType")),
+                "{kind}: {:?}",
+                result.diagnostics
+            );
+            if kind.contains("UnknownKind") {
+                assert_eq!(result.status, MetaValidationStatus::Failed);
+                assert!(
+                    result
+                        .diagnostics
+                        .iter()
+                        .any(|d| d.severity == MetaDiagnosticSeverity::Error
+                            && d.field.as_deref() == Some("properties")
+                            && d.message.contains("UnknownKind")),
+                    "existing enum diagnostic lost: {:?}",
+                    result.diagnostics
+                );
+            }
+        }
+        let alias = TURNOVER_STANDARD_ATTRIBUTES.replace("<RegisterType>Turnovers</RegisterType>", "<md:RegisterType xmlns:md=\"http://v8.1c.ru/8.3/MDClasses\">Turnovers</md:RegisterType>");
+        let result = checked_accumulation_register(&alias);
+        assert!(
+            !result
+                .diagnostics
+                .iter()
+                .any(|d| d.field.as_deref() == Some("standardAttributes")),
+            "{:?}",
+            result.diagnostics
+        );
+        for native in ["Balance", "Turnovers"] {
+            for foreign_first in [true, false] {
+                let own = format!("<RegisterType>{native}</RegisterType>");
+                let foreign = "<foreign:RegisterType xmlns:foreign=\"urn:foreign\">UnknownKind</foreign:RegisterType>";
+                let kind = if foreign_first {
+                    format!("{foreign}{own}")
+                } else {
+                    format!("{own}{foreign}")
+                };
+                let xml = TURNOVER_STANDARD_ATTRIBUTES
+                    .replace("<RegisterType>Turnovers</RegisterType>", &kind);
+                let result = checked_accumulation_register(&xml);
+                assert_eq!(
+                    standard_warning(&result, "5. Missing StandardAttributes: RecordType"),
+                    native == "Balance",
+                    "{kind}: {:?}",
+                    result.diagnostics
+                );
+                assert!(!standard_warning(&result, "5. Cannot determine RecordType applicability: RegisterType is missing or invalid"), "{kind}: {:?}", result.diagnostics);
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -3127,8 +3349,7 @@ mod template_removal_owner_range_tests {
             "\u{feff}\u{feff}{}",
             original.replacen(start, &properties, 1)
         );
-        let owner =
-            MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Report.F05Report").unwrap();
+        let owner = MetadataAddress::parse_logical("Report.F05Report").unwrap();
         let identity =
             validate_template_removal_identity(&source, descriptor, &owner, "F05Schema", false)
                 .unwrap();

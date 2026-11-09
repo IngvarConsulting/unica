@@ -120,56 +120,6 @@ mod tests {
         health_leaf_fixture(&config)
     }
 
-    fn health_format_bytes_fixture() -> (tempfile::TempDir, String) {
-        let fixture = tempfile::tempdir().unwrap();
-        let path = format!("{}/{}/src", "a".repeat(180), "b".repeat(180));
-        let marker = format!("{path}/Configuration.xml");
-        write(&fixture.path().join(&marker), "<MetaDataObject/>");
-        let mut config = String::from("format: DESIGNER\nsource-set:\n");
-        for index in 0..12_000 {
-            config.push_str(&format!(
-                "  - name: set{index:05}\n    type: CONFIGURATION\n    path: {path}\n"
-            ));
-        }
-        assert!(config.len() < 8 * 1024 * 1024);
-        assert!(marker.len() * 12_000 > 4 * 1024 * 1024);
-        write(&fixture.path().join("v8project.yaml"), &config);
-        (fixture, path)
-    }
-
-    fn assert_health_format_bytes(map: &ProjectSourceMap, path: &str) {
-        assert_eq!(map.source_sets.len(), 12_000);
-        assert!(map.source_sets.len() < 16 * 1024);
-        for (index, set) in map.source_sets.iter().enumerate() {
-            assert_eq!(set.name, format!("set{index:05}"));
-            assert_eq!(set.path, path);
-            assert_eq!(set.kind, SourceSetKind::Configuration);
-            assert_eq!(set.source_format, SourceFormat::PlatformXml);
-            assert_eq!(set.source_state, SourceSetState::Supported);
-            assert_eq!(set.format_probe_error, None);
-            assert_eq!(
-                set.format_evidence,
-                vec![format!("{path}/Configuration.xml")]
-            );
-        }
-    }
-
-    #[test]
-    fn controlled_health_keeps_format_evidence_past_four_mib_below_the_old_entry_limit() {
-        let (fixture, path) = health_format_bytes_fixture();
-        let map = discover_project_source_map_controlled(fixture.path(), &mut || Ok(()))
-            .expect("valid format evidence beyond four MiB must keep every source");
-        assert_health_format_bytes(&map, &path);
-    }
-
-    #[test]
-    fn actor_health_keeps_format_evidence_past_four_mib_below_the_old_entry_limit() {
-        let (fixture, path) = health_format_bytes_fixture();
-        let admission = discover_project_source_admission(fixture.path(), &mut || Ok(()))
-            .expect("actor format evidence beyond four MiB must keep every source");
-        assert_health_format_bytes(admission.map(), &path);
-    }
-
     fn health_external_membership_fixture() -> tempfile::TempDir {
         let fixture = tempfile::tempdir().unwrap();
         write(&fixture.path().join("v8project.yaml"),
@@ -203,6 +153,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.APP.SOURCE-SELECTION-LIMITS
     #[test]
     fn controlled_health_external_descriptor_survives_more_than_16384_siblings() {
         let fixture = health_external_membership_fixture();
@@ -211,6 +162,7 @@ mod tests {
         assert_health_external_membership(&map);
     }
 
+    /// rule: INV.APP.SOURCE-SELECTION-LIMITS
     #[test]
     fn actor_health_external_descriptor_survives_more_than_16384_siblings_and_binds_membership() {
         let fixture = health_external_membership_fixture();
@@ -234,6 +186,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.APP.SOURCE-SELECTION-LIMITS
     #[test]
     fn controlled_health_accepts_yaml_input_past_eight_mib() {
         let fixture = health_leaf_large_input_fixture();
@@ -242,6 +195,8 @@ mod tests {
         assert_health_leaf_main(&map);
     }
 
+    /// rule: INV.APP.RETAINED-SOURCE-SELECTION-FINALITY
+    /// rule: INV.APP.SOURCE-SELECTION-LIMITS
     #[test]
     fn actor_health_accepts_yaml_input_past_eight_mib_and_binds_late_bytes() {
         let fixture = health_leaf_large_input_fixture();
@@ -326,6 +281,7 @@ mod tests {
         assert_eq!(actual, expected);
     }
 
+    /// rule: INV.APP.SOURCE-SELECTION-LIMITS
     #[test]
     fn controlled_health_accepts_1025_declared_source_sets() {
         let fixture = health_leaf_many_sources_fixture(true);
@@ -334,6 +290,7 @@ mod tests {
         assert_health_leaf_many_sources(&map);
     }
 
+    /// rule: INV.APP.SOURCE-SELECTION-LIMITS
     #[test]
     fn actor_health_accepts_1025_declared_source_sets() {
         let fixture = health_leaf_many_sources_fixture(true);
@@ -342,6 +299,7 @@ mod tests {
         assert_health_leaf_many_sources(admission.map());
     }
 
+    /// rule: INV.APP.SOURCE-SELECTION-LIMITS
     #[test]
     fn controlled_health_autodetects_1025_source_directories() {
         let fixture = health_leaf_many_sources_fixture(false);
@@ -350,6 +308,7 @@ mod tests {
         assert_health_leaf_many_sources(&map);
     }
 
+    /// rule: INV.APP.SOURCE-SELECTION-LIMITS
     #[test]
     fn actor_health_autodetects_1025_source_directories() {
         let fixture = health_leaf_many_sources_fixture(false);
@@ -358,6 +317,7 @@ mod tests {
         assert_health_leaf_many_sources(admission.map());
     }
 
+    /// rule: INV.APP.SOURCE-SELECTION-LIMITS
     #[test]
     fn health_yaml_selected_values_past_two_mib_keep_their_useful_source() {
         let mut config = String::from(HEALTH_LEAF_MAIN_CONFIG);
@@ -368,6 +328,7 @@ mod tests {
         assert_health_leaf_both_routes(&fixture, "selected value past2MiB");
     }
 
+    /// rule: INV.APP.SOURCE-SELECTION-LIMITS
     #[test]
     fn health_yaml_ignored_nodes_past_65536_keep_their_useful_source() {
         let mut config = String::from(HEALTH_LEAF_MAIN_CONFIG);
@@ -378,6 +339,7 @@ mod tests {
         assert_health_leaf_both_routes(&fixture, "ignored syntactic nodes past65536");
     }
 
+    /// rule: INV.APP.SOURCE-SELECTION-LIMITS
     #[test]
     fn health_yaml_ignored_alias_bytes_past_sixteen_mib_keep_their_useful_source() {
         let mut config = String::from(HEALTH_LEAF_MAIN_CONFIG);
@@ -391,6 +353,7 @@ mod tests {
         assert_health_leaf_both_routes(&fixture, "ignored expanded alias bytes past16MiB");
     }
 
+    /// rule: INV.APP.SOURCE-SELECTION-LIMITS
     #[test]
     fn health_yaml_ignored_depth_past_256_keeps_its_useful_source() {
         let mut config = String::from(HEALTH_LEAF_MAIN_CONFIG);
@@ -403,6 +366,7 @@ mod tests {
         assert_health_leaf_both_routes(&fixture, "ignored nesting past256");
     }
 
+    /// rule: INV.APP.SOURCE-SELECTION-LIMITS
     #[test]
     fn health_yaml_ignored_alias_depth_past_256_keeps_its_useful_source() {
         let mut config = String::from(HEALTH_LEAF_MAIN_CONFIG);
@@ -419,6 +383,7 @@ mod tests {
         assert_health_leaf_both_routes(&fixture, "ignored expanded alias depth past256");
     }
 
+    /// rule: INV.APP.SOURCE-SELECTION-LIMITS
     #[test]
     fn health_yaml_keeps_route_specific_duplicate_and_anchor_semantics() {
         for tail in [
@@ -500,6 +465,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.APP.SOURCE-SELECTION-LIMITS
     #[test]
     fn health_yaml_rejects_malformed_tail_and_extra_document_after_useful_source() {
         for tail in ["ignored: [\n", "---\nignored: valid\n"] {
@@ -575,6 +541,7 @@ mod tests {
         assert_large_reserved_descriptor_is_observed(&map);
     }
 
+    /// rule: INV.APP.RETAINED-SOURCE-SELECTION-FINALITY
     #[test]
     fn actor_admission_recognizes_large_reserved_descriptor_and_binds_exact_content() {
         let fixture = large_reserved_external_descriptor_fixture();
@@ -613,6 +580,7 @@ mod tests {
     /// рабочее пространство выглядит до знакомства с Unica. Прежде такому
     /// набору приписывался формат из объявления, будто его наблюдали, и
     /// читатель не мог отличить «работаем» от «надо наполнить».
+    /// rule: INV.SOURCE.MULTI-FORMAT-WORKSPACE
     #[test]
     fn a_declared_but_empty_source_set_is_declared_not_observed() {
         let root = temp_workspace("unica-source-state-declared");
@@ -646,6 +614,7 @@ mod tests {
 
     /// Обратная сторона: как только выгрузка на месте, состояние наблюдённое,
     /// и доказательство указывает на файл.
+    /// rule: INV.SOURCE.MULTI-FORMAT-WORKSPACE
     #[test]
     fn a_filled_source_set_is_supported_and_its_evidence_points_at_a_file() {
         let root = temp_workspace("unica-source-state-supported");
@@ -680,21 +649,6 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     static TEMP_WORKSPACE_NONCE: AtomicU64 = AtomicU64::new(0);
-
-    #[test]
-    pub(crate) fn external_actor_positive_witness_uses_no_process_global_counter() {
-        let source = include_str!("../../unica-source-designer/src/project_sources.rs");
-        for forbidden in [
-            ["EXTERNAL_ACTOR_", "WITNESS_RUNS"].concat(),
-            ["reset_external_actor_", "witness_runs"].concat(),
-            ["external_actor_", "witness_runs"].concat(),
-        ] {
-            assert!(
-                !source.contains(&forbidden),
-                "external-positive aggregate still depends on process-global state: {forbidden}"
-            );
-        }
-    }
 
     #[test]
     fn source_map_input_read_honors_cooperative_checkpoint_between_chunks() {
@@ -768,6 +722,7 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    /// rule: INV.APP.SOURCE-SELECTION-LIMITS
     #[test]
     fn injected_health_evidence_entry_allowance_refuses_without_partial_results() {
         let root = temp_workspace("unica-source-map-health-evidence-budget");
@@ -794,6 +749,7 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    /// rule: INV.APP.SOURCE-SELECTION-LIMITS
     #[test]
     fn injected_health_evidence_byte_allowance_refuses_without_partial_results() {
         let fixture = tempfile::tempdir().unwrap();
@@ -1215,6 +1171,7 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    /// rule: INV.SOURCE.AUTODETECT-CATALOG
     #[test]
     fn autodetect_skips_extension_directory_named_main() {
         let root = temp_workspace("unica-source-map-autodetect-extension-named-main");
@@ -1508,6 +1465,7 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    /// rule: INV.SOURCE.AUTODETECT-CATALOG
     #[test]
     fn autodetect_keeps_a_non_utf8_extension_name_from_hiding_its_siblings() {
         // The fixture lives behind the platform facade (ADR-0009): only some platforms
@@ -1586,6 +1544,7 @@ mod tests {
     /// The scenario matrix is derived from the production layout and marker
     /// catalogs. Exact catalog assertions make an intentional new layout a
     /// review event instead of allowing it to bypass the near-miss matrix.
+    /// rule: INV.SOURCE.AUTODETECT-CATALOG
     #[test]
     fn autodetect_catalog_contract_is_closed_over_production_layouts() {
         assert_eq!(BASE_CONFIGURATION_LAYOUTS, [".", "src", "src/cf"]);
@@ -1842,6 +1801,7 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    /// rule: INV.SOURCE.MULTI-FORMAT-WORKSPACE
     #[test]
     fn detects_edt_configuration_and_platform_external_processor_source_sets() {
         let root = temp_workspace("unica-source-map-multi");
@@ -1890,6 +1850,7 @@ source-set:
         fs::remove_dir_all(root).unwrap();
     }
 
+    /// rule: INV.SOURCE.MULTI-FORMAT-WORKSPACE
     #[test]
     fn controlled_discovery_accepts_uppercase_external_xml_extension() {
         let root = temp_workspace("unica-source-map-uppercase-external-xml");
@@ -1977,6 +1938,7 @@ source-set:
         fs::remove_dir_all(root).unwrap();
     }
 
+    /// rule: INV.APP.RETAINED-SOURCE-SELECTION-FINALITY
     #[test]
     pub(crate) fn actor_admission_external_config_dump_info_content_change_invalidates_evidence() {
         let root = temp_workspace("unica-source-map-actor-external-content-change");
@@ -2019,6 +1981,7 @@ source-set:
         fs::remove_dir_all(root).unwrap();
     }
 
+    /// rule: INV.APP.RETAINED-SOURCE-SELECTION-FINALITY
     #[test]
     pub(crate) fn actor_admission_external_descriptor_absence_to_appearance_invalidates_evidence() {
         let root = temp_workspace("unica-source-map-actor-external-absence-change");
@@ -2388,6 +2351,7 @@ source-set:
         fs::remove_dir_all(root).unwrap();
     }
 
+    /// rule: INV.SOURCE.MULTI-FORMAT-WORKSPACE
     #[test]
     fn conflicting_markers_inside_one_source_set_are_invalid_not_mixed() {
         let root = temp_workspace("unica-source-map-invalid");

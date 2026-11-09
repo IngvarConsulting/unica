@@ -1,0 +1,47 @@
+{
+  "family": "Interface",
+  "operations": [
+    {
+      "variant": "VisibilitySet",
+      "operation": "commandVisibility.set",
+      "applicability": "Interface",
+      "skeleton": "Items"
+    },
+    {
+      "variant": "PlacementSet",
+      "operation": "commandPlacement.set",
+      "applicability": "Interface",
+      "skeleton": "Items"
+    },
+    {
+      "variant": "CommandOrderSet",
+      "operation": "commandOrder.set",
+      "applicability": "InterfaceGroup",
+      "skeleton": "Values"
+    },
+    {
+      "variant": "GroupOrderSet",
+      "operation": "groupOrder.set",
+      "applicability": "Interface",
+      "skeleton": "Values"
+    },
+    {
+      "variant": "SubsystemOrderSet",
+      "operation": "subsystemOrder.set",
+      "applicability": "Configuration",
+      "skeleton": "Values"
+    },
+    {
+      "variant": "PanelsSet",
+      "operation": "panels.set",
+      "applicability": "ConfigurationRoot",
+      "skeleton": "Values"
+    },
+    {
+      "variant": "HomePageSet",
+      "operation": "homePage.set",
+      "applicability": "ConfigurationRoot",
+      "skeleton": "Values"
+    }
+  ]
+}

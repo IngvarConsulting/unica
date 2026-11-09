@@ -1,0 +1,3086 @@
+{
+  "inputSchema": {
+    "$defs": {
+      "fillValue": {
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "enum": [
+                  "string"
+                ],
+                "type": "string"
+              },
+              "value": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "value"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "enum": [
+                  "number"
+                ],
+                "type": "string"
+              },
+              "value": {
+                "pattern": "^[+-]?[0-9]+(\\.[0-9]+)?$",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "value"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "enum": [
+                  "boolean"
+                ],
+                "type": "string"
+              },
+              "value": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "kind",
+              "value"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "enum": [
+                  "dateTime"
+                ],
+                "type": "string"
+              },
+              "value": {
+                "pattern": "^[0-9]+-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]([.][0-9]+)?(Z|[+-]((0[0-9]|1[0-3]):[0-5][0-9]|14:00))?$",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "value"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "enum": [
+                  "reference"
+                ],
+                "type": "string"
+              },
+              "metadataPath": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "metadataPath"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "metadataType": {
+        "additionalProperties": false,
+        "properties": {
+          "variants": {
+            "allOf": [
+              {
+                "contains": {
+                  "properties": {
+                    "kind": {
+                      "enum": [
+                        "string"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "kind"
+                  ],
+                  "type": "object"
+                },
+                "maxContains": 1,
+                "minContains": 0
+              },
+              {
+                "contains": {
+                  "properties": {
+                    "kind": {
+                      "enum": [
+                        "number"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "kind"
+                  ],
+                  "type": "object"
+                },
+                "maxContains": 1,
+                "minContains": 0
+              },
+              {
+                "contains": {
+                  "properties": {
+                    "kind": {
+                      "enum": [
+                        "boolean"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "kind"
+                  ],
+                  "type": "object"
+                },
+                "maxContains": 1,
+                "minContains": 0
+              },
+              {
+                "contains": {
+                  "properties": {
+                    "kind": {
+                      "enum": [
+                        "uuid"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "kind"
+                  ],
+                  "type": "object"
+                },
+                "maxContains": 1,
+                "minContains": 0
+              },
+              {
+                "contains": {
+                  "properties": {
+                    "kind": {
+                      "enum": [
+                        "date"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "kind"
+                  ],
+                  "type": "object"
+                },
+                "maxContains": 1,
+                "minContains": 0
+              },
+              {
+                "contains": {
+                  "properties": {
+                    "kind": {
+                      "enum": [
+                        "binaryData"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "kind"
+                  ],
+                  "type": "object"
+                },
+                "maxContains": 1,
+                "minContains": 0
+              },
+              {
+                "contains": {
+                  "properties": {
+                    "kind": {
+                      "enum": [
+                        "valueStorage"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "kind"
+                  ],
+                  "type": "object"
+                },
+                "maxContains": 1,
+                "minContains": 0
+              }
+            ],
+            "if": {
+              "contains": {
+                "properties": {
+                  "kind": {
+                    "enum": [
+                      "valueStorage"
+                    ]
+                  }
+                },
+                "required": [
+                  "kind"
+                ],
+                "type": "object"
+              }
+            },
+            "items": {
+              "oneOf": [
+                {
+                  "additionalProperties": false,
+                  "allOf": [
+                    {
+                      "if": {
+                        "properties": {
+                          "allowedLength": {
+                            "enum": [
+                              "fixed"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "allowedLength"
+                        ]
+                      },
+                      "then": {
+                        "properties": {
+                          "length": {
+                            "minimum": 1
+                          }
+                        }
+                      }
+                    }
+                  ],
+                  "properties": {
+                    "allowedLength": {
+                      "enum": [
+                        "variable",
+                        "fixed"
+                      ],
+                      "type": "string"
+                    },
+                    "kind": {
+                      "enum": [
+                        "string"
+                      ],
+                      "type": "string"
+                    },
+                    "length": {
+                      "maximum": 1024,
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "length",
+                    "allowedLength"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "anyOf": [
+                    {
+                      "properties": {
+                        "digits": {
+                          "const": 0
+                        },
+                        "fraction": {
+                          "maximum": 0
+                        }
+                      }
+                    },
+                    {
+                      "properties": {
+                        "digits": {
+                          "const": 1
+                        },
+                        "fraction": {
+                          "maximum": 1
+                        }
+                      }
+                    },
+                    {
+                      "properties": {
+                        "digits": {
+                          "const": 2
+                        },
+                        "fraction": {
+                          "maximum": 2
+                        }
+                      }
+                    },
+                    {
+                      "properties": {
+                        "digits": {
+                          "const": 3
+                        },
+                        "fraction": {
+                          "maximum": 3
+                        }
+                      }
+                    },
+                    {
+                      "properties": {
+                        "digits": {
+                          "const": 4
+                        },
+                        "fraction": {
+                          "maximum": 4
+                        }
+                      }
+                    },
+                    {
+                      "properties": {
+                        "digits": {
+                          "const": 5
+                        },
+                        "fraction": {
+                          "maximum": 5
+                        }
+                      }
+                    },
+                    {
+                      "properties": {
+                        "digits": {
+                          "const": 6
+                        },
+                        "fraction": {
+                          "maximum": 6
+                        }
+                      }
+                    },
+                    {
+                      "properties": {
+                        "digits": {
+                          "const": 7
+                        },
+                        "fraction": {
+                          "maximum": 7
+                        }
+                      }
+                    },
+                    {
+                      "properties": {
+                        "digits": {
+                          "const": 8
+                        },
+                        "fraction": {
+                          "maximum": 8
+                        }
+                      }
+                    },
+                    {
+                      "properties": {
+                        "digits": {
+                          "const": 9
+                        },
+                        "fraction": {
+                          "maximum": 9
+                        }
+                      }
+                    },
+                    {
+                      "properties": {
+                        "digits": {
+                          "const": 10
+                        },
+                        "fraction": {
+                          "maximum": 10
+                        }
+                      }
+                    },
+                    {
+                      "properties": {
+                        "digits": {
+                          "const": 11
+                        },
+                        "fraction": {
+                          "maximum": 11
+                        }
+                      }
+                    },
+                    {
+                      "properties": {
+                        "digits": {
+                          "const": 12
+                        },
+                        "fraction": {
+                          "maximum": 12
+                        }
+                      }
+                    },
+                    {
+                      "properties": {
+                        "digits": {
+                          "const": 13
+                        },
+                        "fraction": {
+                          "maximum": 13
+                        }
+                      }
+                    },
+                    {
+                      "properties": {
+                        "digits": {
+                          "const": 14
+                        },
+                        "fraction": {
+                          "maximum": 14
+                        }
+                      }
+                    },
+                    {
+                      "properties": {
+                        "digits": {
+                          "const": 15
+                        },
+                        "fraction": {
+                          "maximum": 15
+                        }
+                      }
+                    },
+                    {
+                      "properties": {
+                        "digits": {
+                          "const": 16
+                        },
+                        "fraction": {
+                          "maximum": 16
+                        }
+                      }
+                    },
+                    {
+                      "properties": {
+                        "digits": {
+                          "const": 17
+                        },
+                        "fraction": {
+                          "maximum": 17
+                        }
+                      }
+                    },
+                    {
+                      "properties": {
+                        "digits": {
+                          "const": 18
+                        },
+                        "fraction": {
+                          "maximum": 18
+                        }
+                      }
+                    },
+                    {
+                      "properties": {
+                        "digits": {
+                          "const": 19
+                        },
+                        "fraction": {
+                          "maximum": 19
+                        }
+                      }
+                    },
+                    {
+                      "properties": {
+                        "digits": {
+                          "const": 20
+                        },
+                        "fraction": {
+                          "maximum": 20
+                        }
+                      }
+                    },
+                    {
+                      "properties": {
+                        "digits": {
+                          "const": 21
+                        },
+                        "fraction": {
+                          "maximum": 21
+                        }
+                      }
+                    },
+                    {
+                      "properties": {
+                        "digits": {
+                          "const": 22
+                        },
+                        "fraction": {
+                          "maximum": 22
+                        }
+                      }
+                    },
+                    {
+                      "properties": {
+                        "digits": {
+                          "const": 23
+                        },
+                        "fraction": {
+                          "maximum": 23
+                        }
+                      }
+                    },
+                    {
+                      "properties": {
+                        "digits": {
+                          "const": 24
+                        },
+                        "fraction": {
+                          "maximum": 24
+                        }
+                      }
+                    },
+                    {
+                      "properties": {
+                        "digits": {
+                          "const": 25
+                        },
+                        "fraction": {
+                          "maximum": 25
+                        }
+                      }
+                    },
+                    {
+                      "properties": {
+                        "digits": {
+                          "const": 26
+                        },
+                        "fraction": {
+                          "maximum": 26
+                        }
+                      }
+                    },
+                    {
+                      "properties": {
+                        "digits": {
+                          "const": 27
+                        },
+                        "fraction": {
+                          "maximum": 27
+                        }
+                      }
+                    },
+                    {
+                      "properties": {
+                        "digits": {
+                          "const": 28
+                        },
+                        "fraction": {
+                          "maximum": 28
+                        }
+                      }
+                    },
+                    {
+                      "properties": {
+                        "digits": {
+                          "const": 29
+                        },
+                        "fraction": {
+                          "maximum": 29
+                        }
+                      }
+                    },
+                    {
+                      "properties": {
+                        "digits": {
+                          "const": 30
+                        },
+                        "fraction": {
+                          "maximum": 30
+                        }
+                      }
+                    },
+                    {
+                      "properties": {
+                        "digits": {
+                          "const": 31
+                        },
+                        "fraction": {
+                          "maximum": 31
+                        }
+                      }
+                    },
+                    {
+                      "properties": {
+                        "digits": {
+                          "const": 32
+                        },
+                        "fraction": {
+                          "maximum": 32
+                        }
+                      }
+                    },
+                    {
+                      "properties": {
+                        "digits": {
+                          "const": 33
+                        },
+                        "fraction": {
+                          "maximum": 33
+                        }
+                      }
+                    },
+                    {
+                      "properties": {
+                        "digits": {
+                          "const": 34
+                        },
+                        "fraction": {
+                          "maximum": 34
+                        }
+                      }
+                    },
+                    {
+                      "properties": {
+                        "digits": {
+                          "const": 35
+                        },
+                        "fraction": {
+                          "maximum": 35
+                        }
+                      }
+                    },
+                    {
+                      "properties": {
+                        "digits": {
+                          "const": 36
+                        },
+                        "fraction": {
+                          "maximum": 36
+                        }
+                      }
+                    },
+                    {
+                      "properties": {
+                        "digits": {
+                          "const": 37
+                        },
+                        "fraction": {
+                          "maximum": 37
+                        }
+                      }
+                    },
+                    {
+                      "properties": {
+                        "digits": {
+                          "const": 38
+                        },
+                        "fraction": {
+                          "maximum": 38
+                        }
+                      }
+                    }
+                  ],
+                  "properties": {
+                    "digits": {
+                      "maximum": 38,
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "fraction": {
+                      "maximum": 38,
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "kind": {
+                      "enum": [
+                        "number"
+                      ],
+                      "type": "string"
+                    },
+                    "sign": {
+                      "enum": [
+                        "any",
+                        "nonNegative"
+                      ],
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "digits",
+                    "fraction",
+                    "sign"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": {
+                      "enum": [
+                        "boolean"
+                      ],
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": {
+                      "enum": [
+                        "uuid"
+                      ],
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "fractions": {
+                      "enum": [
+                        "date",
+                        "time",
+                        "dateTime"
+                      ],
+                      "type": "string"
+                    },
+                    "kind": {
+                      "enum": [
+                        "date"
+                      ],
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "fractions"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "allOf": [
+                    {
+                      "if": {
+                        "properties": {
+                          "allowedLength": {
+                            "enum": [
+                              "fixed"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "allowedLength"
+                        ]
+                      },
+                      "then": {
+                        "properties": {
+                          "length": {
+                            "minimum": 1
+                          }
+                        }
+                      }
+                    }
+                  ],
+                  "properties": {
+                    "allowedLength": {
+                      "enum": [
+                        "variable",
+                        "fixed"
+                      ],
+                      "type": "string"
+                    },
+                    "kind": {
+                      "enum": [
+                        "binaryData"
+                      ],
+                      "type": "string"
+                    },
+                    "length": {
+                      "maximum": 4294967295,
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "length",
+                    "allowedLength"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": {
+                      "enum": [
+                        "valueStorage"
+                      ],
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": {
+                      "enum": [
+                        "reference"
+                      ],
+                      "type": "string"
+                    },
+                    "metadataPath": {
+                      "pattern": "^(Catalog|Справочник|Document|Документ|Enum|Перечисление|ChartOfAccounts|ПланСчетов|ChartOfCharacteristicTypes|ПланВидовХарактеристик|ChartOfCalculationTypes|ПланВидовРасчета|ПланВидовРасчёта|BusinessProcess|БизнесПроцесс|Task|Задача|ExchangePlan|ПланОбмена)\\.[^.]+$",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "metadataPath"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": {
+                      "enum": [
+                        "definedType"
+                      ],
+                      "type": "string"
+                    },
+                    "metadataPath": {
+                      "pattern": "^(DefinedType|ОпределяемыйТип)\\.[^.]+$",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "metadataPath"
+                  ],
+                  "type": "object"
+                }
+              ]
+            },
+            "minItems": 1,
+            "then": {
+              "maxItems": 1
+            },
+            "type": "array",
+            "uniqueItems": true
+          }
+        },
+        "required": [
+          "variants"
+        ],
+        "type": "object"
+      },
+      "position": {
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "before": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "before"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "after": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "after"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "scope": {
+        "additionalProperties": false,
+        "properties": {
+          "tabularSection": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "tabularSection"
+        ],
+        "type": "object"
+      }
+    },
+    "additionalProperties": false,
+    "properties": {
+      "cwd": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "dryRun": {
+        "default": true,
+        "type": "boolean"
+      },
+      "kind": {
+        "enum": [
+          "Catalog",
+          "Document",
+          "Enum",
+          "Constant",
+          "InformationRegister",
+          "AccumulationRegister",
+          "AccountingRegister",
+          "CalculationRegister",
+          "ChartOfAccounts",
+          "ChartOfCharacteristicTypes",
+          "ChartOfCalculationTypes",
+          "BusinessProcess",
+          "Task",
+          "ExchangePlan",
+          "DocumentJournal",
+          "Report",
+          "DataProcessor",
+          "CommonModule",
+          "ScheduledJob",
+          "EventSubscription",
+          "HTTPService",
+          "WebService",
+          "DefinedType"
+        ],
+        "type": "string"
+      },
+      "name": {
+        "minLength": 1,
+        "pattern": "^[^.]+$",
+        "type": "string"
+      },
+      "operations": {
+        "items": {
+          "oneOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "op": {
+                  "enum": [
+                    "setProperties"
+                  ],
+                  "type": "string"
+                },
+                "values": {
+                  "additionalProperties": false,
+                  "minProperties": 1,
+                  "properties": {
+                    "ActionPeriod": {
+                      "type": "boolean"
+                    },
+                    "ActionPeriodUse": {
+                      "type": "boolean"
+                    },
+                    "AutoOrderByCode": {
+                      "type": "boolean"
+                    },
+                    "Autonumbering": {
+                      "type": "boolean"
+                    },
+                    "BasePeriod": {
+                      "type": "boolean"
+                    },
+                    "CheckUnique": {
+                      "type": "boolean"
+                    },
+                    "ChoiceDataGetModeOnInputByString": {
+                      "enum": [
+                        "Directly",
+                        "Background"
+                      ],
+                      "type": "string"
+                    },
+                    "ChoiceHistoryOnInput": {
+                      "enum": [
+                        "Auto",
+                        "DontUse"
+                      ],
+                      "type": "string"
+                    },
+                    "ChoiceMode": {
+                      "enum": [
+                        "BothWays",
+                        "FromForm",
+                        "QuickChoice"
+                      ],
+                      "type": "string"
+                    },
+                    "ClientManagedApplication": {
+                      "type": "boolean"
+                    },
+                    "ClientOrdinaryApplication": {
+                      "type": "boolean"
+                    },
+                    "CodeAllowedLength": {
+                      "enum": [
+                        "Variable",
+                        "Fixed"
+                      ],
+                      "type": "string"
+                    },
+                    "CodeLength": {
+                      "maximum": 4294967295,
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "CodeMask": {
+                      "type": "string"
+                    },
+                    "CodeSeries": {
+                      "enum": [
+                        "WholeCatalog",
+                        "WithinOwnerSubordination",
+                        "WithinSubordination"
+                      ],
+                      "type": "string"
+                    },
+                    "CodeType": {
+                      "enum": [
+                        "String",
+                        "Number"
+                      ],
+                      "type": "string"
+                    },
+                    "Comment": {
+                      "type": "string"
+                    },
+                    "Correspondence": {
+                      "type": "boolean"
+                    },
+                    "CreateOnInput": {
+                      "enum": [
+                        "Auto",
+                        "Use",
+                        "DontUse"
+                      ],
+                      "type": "string"
+                    },
+                    "CreateTaskInPrivilegedMode": {
+                      "type": "boolean"
+                    },
+                    "DataHistory": {
+                      "enum": [
+                        "Use",
+                        "DontUse"
+                      ],
+                      "type": "string"
+                    },
+                    "DataLockControlMode": {
+                      "enum": [
+                        "Automatic",
+                        "Managed"
+                      ],
+                      "type": "string"
+                    },
+                    "DefaultPresentation": {
+                      "enum": [
+                        "AsDescription",
+                        "AsCode"
+                      ],
+                      "type": "string"
+                    },
+                    "DependenceOnCalculationTypes": {
+                      "enum": [
+                        "DontUse",
+                        "OnActionPeriod"
+                      ],
+                      "type": "string"
+                    },
+                    "Description": {
+                      "type": "string"
+                    },
+                    "DescriptionLength": {
+                      "maximum": 4294967295,
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "DistributedInfoBase": {
+                      "type": "boolean"
+                    },
+                    "EditType": {
+                      "enum": [
+                        "InDialog",
+                        "InList",
+                        "BothWays"
+                      ],
+                      "type": "string"
+                    },
+                    "EnableTotalsSplitting": {
+                      "type": "boolean"
+                    },
+                    "Event": {
+                      "pattern": "^[A-Z][A-Za-z0-9]*$",
+                      "type": "string"
+                    },
+                    "ExecuteAfterWriteDataHistoryVersionProcessing": {
+                      "type": "boolean"
+                    },
+                    "ExternalConnection": {
+                      "type": "boolean"
+                    },
+                    "FoldersOnTop": {
+                      "type": "boolean"
+                    },
+                    "FullTextSearch": {
+                      "enum": [
+                        "Use",
+                        "DontUse"
+                      ],
+                      "type": "string"
+                    },
+                    "FullTextSearchOnInputByString": {
+                      "enum": [
+                        "Use",
+                        "DontUse"
+                      ],
+                      "type": "string"
+                    },
+                    "Global": {
+                      "type": "boolean"
+                    },
+                    "Handler": {
+                      "pattern": "^CommonModule\\.[^.]+\\.[^.]+$",
+                      "type": "string"
+                    },
+                    "Hierarchical": {
+                      "type": "boolean"
+                    },
+                    "HierarchyType": {
+                      "enum": [
+                        "HierarchyFoldersAndItems",
+                        "HierarchyOfItems"
+                      ],
+                      "type": "string"
+                    },
+                    "IncludeHelpInContents": {
+                      "type": "boolean"
+                    },
+                    "LevelCount": {
+                      "maximum": 4294967295,
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "LimitLevelCount": {
+                      "type": "boolean"
+                    },
+                    "MainFilterOnPeriod": {
+                      "type": "boolean"
+                    },
+                    "MaxExtDimensionCount": {
+                      "maximum": 4294967295,
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "Namespace": {
+                      "type": "string"
+                    },
+                    "NumberAllowedLength": {
+                      "enum": [
+                        "Variable",
+                        "Fixed"
+                      ],
+                      "type": "string"
+                    },
+                    "NumberLength": {
+                      "maximum": 4294967295,
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "NumberPeriodicity": {
+                      "enum": [
+                        "Day",
+                        "Month",
+                        "Nonperiodical",
+                        "Quarter",
+                        "Year"
+                      ],
+                      "type": "string"
+                    },
+                    "NumberType": {
+                      "enum": [
+                        "String",
+                        "Number"
+                      ],
+                      "type": "string"
+                    },
+                    "OrderLength": {
+                      "maximum": 4294967295,
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "PeriodAdjustmentLength": {
+                      "maximum": 4294967295,
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "Periodicity": {
+                      "enum": [
+                        "Nonperiodical",
+                        "Second",
+                        "Day",
+                        "Month",
+                        "Quarter",
+                        "Year",
+                        "RecorderPosition"
+                      ],
+                      "type": "string"
+                    },
+                    "PostInPrivilegedMode": {
+                      "type": "boolean"
+                    },
+                    "Posting": {
+                      "enum": [
+                        "Allow",
+                        "Deny"
+                      ],
+                      "type": "string"
+                    },
+                    "Predefined": {
+                      "type": "boolean"
+                    },
+                    "PredefinedDataUpdate": {
+                      "enum": [
+                        "Auto",
+                        "AutoUpdate",
+                        "DontAutoUpdate"
+                      ],
+                      "type": "string"
+                    },
+                    "Privileged": {
+                      "type": "boolean"
+                    },
+                    "QuickChoice": {
+                      "type": "boolean"
+                    },
+                    "RealTimePosting": {
+                      "enum": [
+                        "Allow",
+                        "Deny"
+                      ],
+                      "type": "string"
+                    },
+                    "RegisterRecordsDeletion": {
+                      "enum": [
+                        "AutoDelete",
+                        "AutoDeleteOnUnpost",
+                        "AutoDeleteOff"
+                      ],
+                      "type": "string"
+                    },
+                    "RegisterRecordsWritingOnPost": {
+                      "enum": [
+                        "WriteModified",
+                        "WriteSelected",
+                        "WriteAll"
+                      ],
+                      "type": "string"
+                    },
+                    "RegisterType": {
+                      "enum": [
+                        "Balance",
+                        "Turnovers"
+                      ],
+                      "type": "string"
+                    },
+                    "RestartCountOnFailure": {
+                      "maximum": 4294967295,
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "RestartIntervalOnFailure": {
+                      "maximum": 4294967295,
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "ReturnValuesReuse": {
+                      "enum": [
+                        "DontUse",
+                        "DuringRequest",
+                        "DuringSession"
+                      ],
+                      "type": "string"
+                    },
+                    "ReuseSessions": {
+                      "enum": [
+                        "DontUse",
+                        "AutoUse"
+                      ],
+                      "type": "string"
+                    },
+                    "RootURL": {
+                      "type": "string"
+                    },
+                    "SearchStringModeOnInputByString": {
+                      "enum": [
+                        "Begin",
+                        "AnyPart"
+                      ],
+                      "type": "string"
+                    },
+                    "Server": {
+                      "type": "boolean"
+                    },
+                    "ServerCall": {
+                      "type": "boolean"
+                    },
+                    "SessionMaxAge": {
+                      "maximum": 4294967295,
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "SubordinationUse": {
+                      "enum": [
+                        "ToFolders",
+                        "ToFoldersAndItems",
+                        "ToItems"
+                      ],
+                      "type": "string"
+                    },
+                    "Synonym": {
+                      "type": "string"
+                    },
+                    "Type": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "variants": {
+                          "allOf": [
+                            {
+                              "contains": {
+                                "properties": {
+                                  "kind": {
+                                    "enum": [
+                                      "string"
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "kind"
+                                ],
+                                "type": "object"
+                              },
+                              "maxContains": 1,
+                              "minContains": 0
+                            },
+                            {
+                              "contains": {
+                                "properties": {
+                                  "kind": {
+                                    "enum": [
+                                      "number"
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "kind"
+                                ],
+                                "type": "object"
+                              },
+                              "maxContains": 1,
+                              "minContains": 0
+                            },
+                            {
+                              "contains": {
+                                "properties": {
+                                  "kind": {
+                                    "enum": [
+                                      "boolean"
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "kind"
+                                ],
+                                "type": "object"
+                              },
+                              "maxContains": 1,
+                              "minContains": 0
+                            },
+                            {
+                              "contains": {
+                                "properties": {
+                                  "kind": {
+                                    "enum": [
+                                      "uuid"
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "kind"
+                                ],
+                                "type": "object"
+                              },
+                              "maxContains": 1,
+                              "minContains": 0
+                            },
+                            {
+                              "contains": {
+                                "properties": {
+                                  "kind": {
+                                    "enum": [
+                                      "date"
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "kind"
+                                ],
+                                "type": "object"
+                              },
+                              "maxContains": 1,
+                              "minContains": 0
+                            },
+                            {
+                              "contains": {
+                                "properties": {
+                                  "kind": {
+                                    "enum": [
+                                      "binaryData"
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "kind"
+                                ],
+                                "type": "object"
+                              },
+                              "maxContains": 1,
+                              "minContains": 0
+                            },
+                            {
+                              "contains": {
+                                "properties": {
+                                  "kind": {
+                                    "enum": [
+                                      "valueStorage"
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "kind"
+                                ],
+                                "type": "object"
+                              },
+                              "maxContains": 1,
+                              "minContains": 0
+                            }
+                          ],
+                          "if": {
+                            "contains": {
+                              "properties": {
+                                "kind": {
+                                  "enum": [
+                                    "valueStorage"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "kind"
+                              ],
+                              "type": "object"
+                            }
+                          },
+                          "items": {
+                            "oneOf": [
+                              {
+                                "additionalProperties": false,
+                                "allOf": [
+                                  {
+                                    "if": {
+                                      "properties": {
+                                        "allowedLength": {
+                                          "enum": [
+                                            "fixed"
+                                          ]
+                                        }
+                                      },
+                                      "required": [
+                                        "allowedLength"
+                                      ]
+                                    },
+                                    "then": {
+                                      "properties": {
+                                        "length": {
+                                          "minimum": 1
+                                        }
+                                      }
+                                    }
+                                  }
+                                ],
+                                "properties": {
+                                  "allowedLength": {
+                                    "enum": [
+                                      "variable",
+                                      "fixed"
+                                    ],
+                                    "type": "string"
+                                  },
+                                  "kind": {
+                                    "enum": [
+                                      "string"
+                                    ],
+                                    "type": "string"
+                                  },
+                                  "length": {
+                                    "maximum": 1024,
+                                    "minimum": 0,
+                                    "type": "integer"
+                                  }
+                                },
+                                "required": [
+                                  "kind",
+                                  "length",
+                                  "allowedLength"
+                                ],
+                                "type": "object"
+                              },
+                              {
+                                "additionalProperties": false,
+                                "anyOf": [
+                                  {
+                                    "properties": {
+                                      "digits": {
+                                        "const": 0
+                                      },
+                                      "fraction": {
+                                        "maximum": 0
+                                      }
+                                    }
+                                  },
+                                  {
+                                    "properties": {
+                                      "digits": {
+                                        "const": 1
+                                      },
+                                      "fraction": {
+                                        "maximum": 1
+                                      }
+                                    }
+                                  },
+                                  {
+                                    "properties": {
+                                      "digits": {
+                                        "const": 2
+                                      },
+                                      "fraction": {
+                                        "maximum": 2
+                                      }
+                                    }
+                                  },
+                                  {
+                                    "properties": {
+                                      "digits": {
+                                        "const": 3
+                                      },
+                                      "fraction": {
+                                        "maximum": 3
+                                      }
+                                    }
+                                  },
+                                  {
+                                    "properties": {
+                                      "digits": {
+                                        "const": 4
+                                      },
+                                      "fraction": {
+                                        "maximum": 4
+                                      }
+                                    }
+                                  },
+                                  {
+                                    "properties": {
+                                      "digits": {
+                                        "const": 5
+                                      },
+                                      "fraction": {
+                                        "maximum": 5
+                                      }
+                                    }
+                                  },
+                                  {
+                                    "properties": {
+                                      "digits": {
+                                        "const": 6
+                                      },
+                                      "fraction": {
+                                        "maximum": 6
+                                      }
+                                    }
+                                  },
+                                  {
+                                    "properties": {
+                                      "digits": {
+                                        "const": 7
+                                      },
+                                      "fraction": {
+                                        "maximum": 7
+                                      }
+                                    }
+                                  },
+                                  {
+                                    "properties": {
+                                      "digits": {
+                                        "const": 8
+                                      },
+                                      "fraction": {
+                                        "maximum": 8
+                                      }
+                                    }
+                                  },
+                                  {
+                                    "properties": {
+                                      "digits": {
+                                        "const": 9
+                                      },
+                                      "fraction": {
+                                        "maximum": 9
+                                      }
+                                    }
+                                  },
+                                  {
+                                    "properties": {
+                                      "digits": {
+                                        "const": 10
+                                      },
+                                      "fraction": {
+                                        "maximum": 10
+                                      }
+                                    }
+                                  },
+                                  {
+                                    "properties": {
+                                      "digits": {
+                                        "const": 11
+                                      },
+                                      "fraction": {
+                                        "maximum": 11
+                                      }
+                                    }
+                                  },
+                                  {
+                                    "properties": {
+                                      "digits": {
+                                        "const": 12
+                                      },
+                                      "fraction": {
+                                        "maximum": 12
+                                      }
+                                    }
+                                  },
+                                  {
+                                    "properties": {
+                                      "digits": {
+                                        "const": 13
+                                      },
+                                      "fraction": {
+                                        "maximum": 13
+                                      }
+                                    }
+                                  },
+                                  {
+                                    "properties": {
+                                      "digits": {
+                                        "const": 14
+                                      },
+                                      "fraction": {
+                                        "maximum": 14
+                                      }
+                                    }
+                                  },
+                                  {
+                                    "properties": {
+                                      "digits": {
+                                        "const": 15
+                                      },
+                                      "fraction": {
+                                        "maximum": 15
+                                      }
+                                    }
+                                  },
+                                  {
+                                    "properties": {
+                                      "digits": {
+                                        "const": 16
+                                      },
+                                      "fraction": {
+                                        "maximum": 16
+                                      }
+                                    }
+                                  },
+                                  {
+                                    "properties": {
+                                      "digits": {
+                                        "const": 17
+                                      },
+                                      "fraction": {
+                                        "maximum": 17
+                                      }
+                                    }
+                                  },
+                                  {
+                                    "properties": {
+                                      "digits": {
+                                        "const": 18
+                                      },
+                                      "fraction": {
+                                        "maximum": 18
+                                      }
+                                    }
+                                  },
+                                  {
+                                    "properties": {
+                                      "digits": {
+                                        "const": 19
+                                      },
+                                      "fraction": {
+                                        "maximum": 19
+                                      }
+                                    }
+                                  },
+                                  {
+                                    "properties": {
+                                      "digits": {
+                                        "const": 20
+                                      },
+                                      "fraction": {
+                                        "maximum": 20
+                                      }
+                                    }
+                                  },
+                                  {
+                                    "properties": {
+                                      "digits": {
+                                        "const": 21
+                                      },
+                                      "fraction": {
+                                        "maximum": 21
+                                      }
+                                    }
+                                  },
+                                  {
+                                    "properties": {
+                                      "digits": {
+                                        "const": 22
+                                      },
+                                      "fraction": {
+                                        "maximum": 22
+                                      }
+                                    }
+                                  },
+                                  {
+                                    "properties": {
+                                      "digits": {
+                                        "const": 23
+                                      },
+                                      "fraction": {
+                                        "maximum": 23
+                                      }
+                                    }
+                                  },
+                                  {
+                                    "properties": {
+                                      "digits": {
+                                        "const": 24
+                                      },
+                                      "fraction": {
+                                        "maximum": 24
+                                      }
+                                    }
+                                  },
+                                  {
+                                    "properties": {
+                                      "digits": {
+                                        "const": 25
+                                      },
+                                      "fraction": {
+                                        "maximum": 25
+                                      }
+                                    }
+                                  },
+                                  {
+                                    "properties": {
+                                      "digits": {
+                                        "const": 26
+                                      },
+                                      "fraction": {
+                                        "maximum": 26
+                                      }
+                                    }
+                                  },
+                                  {
+                                    "properties": {
+                                      "digits": {
+                                        "const": 27
+                                      },
+                                      "fraction": {
+                                        "maximum": 27
+                                      }
+                                    }
+                                  },
+                                  {
+                                    "properties": {
+                                      "digits": {
+                                        "const": 28
+                                      },
+                                      "fraction": {
+                                        "maximum": 28
+                                      }
+                                    }
+                                  },
+                                  {
+                                    "properties": {
+                                      "digits": {
+                                        "const": 29
+                                      },
+                                      "fraction": {
+                                        "maximum": 29
+                                      }
+                                    }
+                                  },
+                                  {
+                                    "properties": {
+                                      "digits": {
+                                        "const": 30
+                                      },
+                                      "fraction": {
+                                        "maximum": 30
+                                      }
+                                    }
+                                  },
+                                  {
+                                    "properties": {
+                                      "digits": {
+                                        "const": 31
+                                      },
+                                      "fraction": {
+                                        "maximum": 31
+                                      }
+                                    }
+                                  },
+                                  {
+                                    "properties": {
+                                      "digits": {
+                                        "const": 32
+                                      },
+                                      "fraction": {
+                                        "maximum": 32
+                                      }
+                                    }
+                                  },
+                                  {
+                                    "properties": {
+                                      "digits": {
+                                        "const": 33
+                                      },
+                                      "fraction": {
+                                        "maximum": 33
+                                      }
+                                    }
+                                  },
+                                  {
+                                    "properties": {
+                                      "digits": {
+                                        "const": 34
+                                      },
+                                      "fraction": {
+                                        "maximum": 34
+                                      }
+                                    }
+                                  },
+                                  {
+                                    "properties": {
+                                      "digits": {
+                                        "const": 35
+                                      },
+                                      "fraction": {
+                                        "maximum": 35
+                                      }
+                                    }
+                                  },
+                                  {
+                                    "properties": {
+                                      "digits": {
+                                        "const": 36
+                                      },
+                                      "fraction": {
+                                        "maximum": 36
+                                      }
+                                    }
+                                  },
+                                  {
+                                    "properties": {
+                                      "digits": {
+                                        "const": 37
+                                      },
+                                      "fraction": {
+                                        "maximum": 37
+                                      }
+                                    }
+                                  },
+                                  {
+                                    "properties": {
+                                      "digits": {
+                                        "const": 38
+                                      },
+                                      "fraction": {
+                                        "maximum": 38
+                                      }
+                                    }
+                                  }
+                                ],
+                                "properties": {
+                                  "digits": {
+                                    "maximum": 38,
+                                    "minimum": 0,
+                                    "type": "integer"
+                                  },
+                                  "fraction": {
+                                    "maximum": 38,
+                                    "minimum": 0,
+                                    "type": "integer"
+                                  },
+                                  "kind": {
+                                    "enum": [
+                                      "number"
+                                    ],
+                                    "type": "string"
+                                  },
+                                  "sign": {
+                                    "enum": [
+                                      "any",
+                                      "nonNegative"
+                                    ],
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "kind",
+                                  "digits",
+                                  "fraction",
+                                  "sign"
+                                ],
+                                "type": "object"
+                              },
+                              {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "kind": {
+                                    "enum": [
+                                      "boolean"
+                                    ],
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "kind"
+                                ],
+                                "type": "object"
+                              },
+                              {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "kind": {
+                                    "enum": [
+                                      "uuid"
+                                    ],
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "kind"
+                                ],
+                                "type": "object"
+                              },
+                              {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "fractions": {
+                                    "enum": [
+                                      "date",
+                                      "time",
+                                      "dateTime"
+                                    ],
+                                    "type": "string"
+                                  },
+                                  "kind": {
+                                    "enum": [
+                                      "date"
+                                    ],
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "kind",
+                                  "fractions"
+                                ],
+                                "type": "object"
+                              },
+                              {
+                                "additionalProperties": false,
+                                "allOf": [
+                                  {
+                                    "if": {
+                                      "properties": {
+                                        "allowedLength": {
+                                          "enum": [
+                                            "fixed"
+                                          ]
+                                        }
+                                      },
+                                      "required": [
+                                        "allowedLength"
+                                      ]
+                                    },
+                                    "then": {
+                                      "properties": {
+                                        "length": {
+                                          "minimum": 1
+                                        }
+                                      }
+                                    }
+                                  }
+                                ],
+                                "properties": {
+                                  "allowedLength": {
+                                    "enum": [
+                                      "variable",
+                                      "fixed"
+                                    ],
+                                    "type": "string"
+                                  },
+                                  "kind": {
+                                    "enum": [
+                                      "binaryData"
+                                    ],
+                                    "type": "string"
+                                  },
+                                  "length": {
+                                    "maximum": 4294967295,
+                                    "minimum": 0,
+                                    "type": "integer"
+                                  }
+                                },
+                                "required": [
+                                  "kind",
+                                  "length",
+                                  "allowedLength"
+                                ],
+                                "type": "object"
+                              },
+                              {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "kind": {
+                                    "enum": [
+                                      "valueStorage"
+                                    ],
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "kind"
+                                ],
+                                "type": "object"
+                              },
+                              {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "kind": {
+                                    "enum": [
+                                      "reference"
+                                    ],
+                                    "type": "string"
+                                  },
+                                  "metadataPath": {
+                                    "pattern": "^(Catalog|Справочник|Document|Документ|Enum|Перечисление|ChartOfAccounts|ПланСчетов|ChartOfCharacteristicTypes|ПланВидовХарактеристик|ChartOfCalculationTypes|ПланВидовРасчета|ПланВидовРасчёта|BusinessProcess|БизнесПроцесс|Task|Задача|ExchangePlan|ПланОбмена)\\.[^.]+$",
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "kind",
+                                  "metadataPath"
+                                ],
+                                "type": "object"
+                              },
+                              {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "kind": {
+                                    "enum": [
+                                      "definedType"
+                                    ],
+                                    "type": "string"
+                                  },
+                                  "metadataPath": {
+                                    "pattern": "^(DefinedType|ОпределяемыйТип)\\.[^.]+$",
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "kind",
+                                  "metadataPath"
+                                ],
+                                "type": "object"
+                              }
+                            ]
+                          },
+                          "minItems": 1,
+                          "then": {
+                            "maxItems": 1
+                          },
+                          "type": "array",
+                          "uniqueItems": true
+                        }
+                      },
+                      "required": [
+                        "variants"
+                      ],
+                      "type": "object"
+                    },
+                    "UnpostInPrivilegedMode": {
+                      "type": "boolean"
+                    },
+                    "UpdateDataHistoryImmediatelyAfterWrite": {
+                      "type": "boolean"
+                    },
+                    "Use": {
+                      "type": "boolean"
+                    },
+                    "UseStandardCommands": {
+                      "type": "boolean"
+                    },
+                    "WriteMode": {
+                      "enum": [
+                        "Independent",
+                        "RecorderSubordinate"
+                      ],
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              },
+              "required": [
+                "op",
+                "values"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "collection": {
+                  "enum": [
+                    "attributes",
+                    "tabularSections",
+                    "dimensions",
+                    "resources",
+                    "enumValues",
+                    "columns",
+                    "forms",
+                    "templates",
+                    "commands"
+                  ],
+                  "type": "string"
+                },
+                "elements": {
+                  "items": {
+                    "properties": {
+                      "attributes": {
+                        "items": {
+                          "required": [
+                            "name"
+                          ],
+                          "type": "object"
+                        },
+                        "minItems": 1,
+                        "type": "array"
+                      },
+                      "comment": {
+                        "type": "string"
+                      },
+                      "denyIncompleteValues": {
+                        "type": "boolean"
+                      },
+                      "fillValue": {
+                        "$ref": "#/$defs/fillValue"
+                      },
+                      "mainFilter": {
+                        "type": "boolean"
+                      },
+                      "master": {
+                        "type": "boolean"
+                      },
+                      "name": {
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "newName": {
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "position": {
+                        "$ref": "#/$defs/position"
+                      },
+                      "required": {
+                        "type": "boolean"
+                      },
+                      "synonym": {
+                        "type": "string"
+                      },
+                      "templateType": {
+                        "enum": [
+                          "HTMLDocument",
+                          "TextDocument",
+                          "SpreadsheetDocument",
+                          "BinaryData",
+                          "DataCompositionSchema"
+                        ],
+                        "type": "string"
+                      },
+                      "type": {
+                        "$ref": "#/$defs/metadataType"
+                      }
+                    },
+                    "required": [
+                      "name"
+                    ],
+                    "type": "object"
+                  },
+                  "minItems": 1,
+                  "type": "array"
+                },
+                "op": {
+                  "enum": [
+                    "add"
+                  ],
+                  "type": "string"
+                },
+                "scope": {
+                  "$ref": "#/$defs/scope"
+                }
+              },
+              "required": [
+                "op",
+                "collection",
+                "elements"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "collection": {
+                  "enum": [
+                    "attributes",
+                    "tabularSections",
+                    "dimensions",
+                    "resources",
+                    "enumValues",
+                    "columns",
+                    "forms",
+                    "templates",
+                    "commands"
+                  ],
+                  "type": "string"
+                },
+                "elements": {
+                  "items": {
+                    "properties": {
+                      "attributes": {
+                        "items": {
+                          "required": [
+                            "name"
+                          ],
+                          "type": "object"
+                        },
+                        "minItems": 1,
+                        "type": "array"
+                      },
+                      "comment": {
+                        "type": "string"
+                      },
+                      "denyIncompleteValues": {
+                        "type": "boolean"
+                      },
+                      "fillValue": {
+                        "$ref": "#/$defs/fillValue"
+                      },
+                      "mainFilter": {
+                        "type": "boolean"
+                      },
+                      "master": {
+                        "type": "boolean"
+                      },
+                      "name": {
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "newName": {
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "position": {
+                        "$ref": "#/$defs/position"
+                      },
+                      "required": {
+                        "type": "boolean"
+                      },
+                      "synonym": {
+                        "type": "string"
+                      },
+                      "templateType": {
+                        "enum": [
+                          "HTMLDocument",
+                          "TextDocument",
+                          "SpreadsheetDocument",
+                          "BinaryData",
+                          "DataCompositionSchema"
+                        ],
+                        "type": "string"
+                      },
+                      "type": {
+                        "$ref": "#/$defs/metadataType"
+                      }
+                    },
+                    "required": [
+                      "name"
+                    ],
+                    "type": "object"
+                  },
+                  "minItems": 1,
+                  "type": "array"
+                },
+                "op": {
+                  "enum": [
+                    "update"
+                  ],
+                  "type": "string"
+                },
+                "scope": {
+                  "$ref": "#/$defs/scope"
+                }
+              },
+              "required": [
+                "op",
+                "collection",
+                "elements"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "collection": {
+                  "enum": [
+                    "attributes",
+                    "tabularSections",
+                    "dimensions",
+                    "resources",
+                    "enumValues",
+                    "columns",
+                    "forms",
+                    "templates",
+                    "commands"
+                  ],
+                  "type": "string"
+                },
+                "names": {
+                  "items": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "minItems": 1,
+                  "type": "array",
+                  "uniqueItems": true
+                },
+                "op": {
+                  "enum": [
+                    "remove"
+                  ],
+                  "type": "string"
+                },
+                "scope": {
+                  "$ref": "#/$defs/scope"
+                }
+              },
+              "required": [
+                "op",
+                "collection",
+                "names"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "collection": {
+                  "enum": [
+                    "predefinedItems"
+                  ],
+                  "type": "string"
+                },
+                "elements": {
+                  "items": {
+                    "additionalProperties": false,
+                    "minProperties": 0,
+                    "properties": {
+                      "accountType": {
+                        "enum": [
+                          "Active",
+                          "Passive",
+                          "ActivePassive"
+                        ],
+                        "type": "string"
+                      },
+                      "accountingFlags": {
+                        "additionalProperties": {
+                          "type": "boolean"
+                        },
+                        "type": "object"
+                      },
+                      "actionPeriodIsBase": {
+                        "type": "boolean"
+                      },
+                      "code": {
+                        "type": "string"
+                      },
+                      "description": {
+                        "type": "string"
+                      },
+                      "extDimensionTypes": {
+                        "items": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "accountingFlags": {
+                              "additionalProperties": {
+                                "type": "boolean"
+                              },
+                              "type": "object"
+                            },
+                            "name": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "turnover": {
+                              "type": "boolean"
+                            }
+                          },
+                          "required": [
+                            "name"
+                          ],
+                          "type": "object"
+                        },
+                        "type": "array"
+                      },
+                      "id": {
+                        "format": "uuid",
+                        "pattern": "^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$",
+                        "type": "string"
+                      },
+                      "isFolder": {
+                        "type": "boolean"
+                      },
+                      "name": {
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "offBalance": {
+                        "type": "boolean"
+                      },
+                      "order": {
+                        "type": "string"
+                      },
+                      "type": {
+                        "$ref": "#/$defs/metadataType"
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "name"
+                    ],
+                    "type": "object"
+                  },
+                  "minItems": 1,
+                  "type": "array"
+                },
+                "op": {
+                  "enum": [
+                    "add"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op",
+                "collection",
+                "elements"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "collection": {
+                  "enum": [
+                    "predefinedItems"
+                  ],
+                  "type": "string"
+                },
+                "elements": {
+                  "items": {
+                    "additionalProperties": false,
+                    "minProperties": 2,
+                    "properties": {
+                      "accountType": {
+                        "enum": [
+                          "Active",
+                          "Passive",
+                          "ActivePassive"
+                        ],
+                        "type": "string"
+                      },
+                      "accountingFlags": {
+                        "additionalProperties": {
+                          "type": "boolean"
+                        },
+                        "type": "object"
+                      },
+                      "actionPeriodIsBase": {
+                        "type": "boolean"
+                      },
+                      "code": {
+                        "type": "string"
+                      },
+                      "description": {
+                        "type": "string"
+                      },
+                      "extDimensionTypes": {
+                        "items": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "accountingFlags": {
+                              "additionalProperties": {
+                                "type": "boolean"
+                              },
+                              "type": "object"
+                            },
+                            "name": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "turnover": {
+                              "type": "boolean"
+                            }
+                          },
+                          "required": [
+                            "name"
+                          ],
+                          "type": "object"
+                        },
+                        "type": "array"
+                      },
+                      "id": {
+                        "format": "uuid",
+                        "pattern": "^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$",
+                        "type": "string"
+                      },
+                      "isFolder": {
+                        "type": "boolean"
+                      },
+                      "name": {
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "offBalance": {
+                        "type": "boolean"
+                      },
+                      "order": {
+                        "type": "string"
+                      },
+                      "type": {
+                        "$ref": "#/$defs/metadataType"
+                      }
+                    },
+                    "required": [
+                      "id"
+                    ],
+                    "type": "object"
+                  },
+                  "minItems": 1,
+                  "type": "array"
+                },
+                "op": {
+                  "enum": [
+                    "update"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op",
+                "collection",
+                "elements"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "collection": {
+                  "enum": [
+                    "predefinedItems"
+                  ],
+                  "type": "string"
+                },
+                "ids": {
+                  "items": {
+                    "format": "uuid",
+                    "pattern": "^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$",
+                    "type": "string"
+                  },
+                  "minItems": 1,
+                  "type": "array",
+                  "uniqueItems": true
+                },
+                "op": {
+                  "enum": [
+                    "remove"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op",
+                "collection",
+                "ids"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "lang": {
+                  "default": "ru",
+                  "minLength": 1,
+                  "pattern": "^[A-Za-z0-9_-]+$",
+                  "type": "string"
+                },
+                "op": {
+                  "enum": [
+                    "addHelp"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "oneOf": [
+                {
+                  "properties": {
+                    "mode": {
+                      "enum": [
+                        "add",
+                        "remove",
+                        "replace"
+                      ],
+                      "type": "string"
+                    },
+                    "relation": {
+                      "const": "owners"
+                    },
+                    "targets": {
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "metadataPath": {
+                            "pattern": "^(Catalog|Справочник)\\.[^.]+$",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "metadataPath"
+                        ],
+                        "type": "object"
+                      },
+                      "minItems": 1,
+                      "type": "array",
+                      "uniqueItems": true
+                    }
+                  }
+                },
+                {
+                  "properties": {
+                    "mode": {
+                      "enum": [
+                        "add",
+                        "remove",
+                        "replace"
+                      ],
+                      "type": "string"
+                    },
+                    "relation": {
+                      "const": "registerRecords"
+                    },
+                    "targets": {
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "metadataPath": {
+                            "pattern": "^(InformationRegister|РегистрСведений|AccumulationRegister|РегистрНакопления|AccountingRegister|РегистрБухгалтерии|CalculationRegister|РегистрРасчета|РегистрРасчёта)\\.[^.]+$",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "metadataPath"
+                        ],
+                        "type": "object"
+                      },
+                      "minItems": 1,
+                      "type": "array",
+                      "uniqueItems": true
+                    }
+                  }
+                },
+                {
+                  "properties": {
+                    "mode": {
+                      "enum": [
+                        "add",
+                        "remove",
+                        "replace"
+                      ],
+                      "type": "string"
+                    },
+                    "relation": {
+                      "const": "basedOn"
+                    },
+                    "targets": {
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "metadataPath": {
+                            "pattern": "^(Catalog|Справочник|Document|Документ|ChartOfCharacteristicTypes|ПланВидовХарактеристик|ChartOfAccounts|ПланСчетов|ChartOfCalculationTypes|ПланВидовРасчета|ПланВидовРасчёта|ExchangePlan|ПланОбмена|BusinessProcess|БизнесПроцесс|Task|Задача)\\.[^.]+$",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "metadataPath"
+                        ],
+                        "type": "object"
+                      },
+                      "minItems": 1,
+                      "type": "array",
+                      "uniqueItems": true
+                    }
+                  }
+                },
+                {
+                  "properties": {
+                    "mode": {
+                      "enum": [
+                        "add",
+                        "remove",
+                        "replace"
+                      ],
+                      "type": "string"
+                    },
+                    "relation": {
+                      "const": "inputByString"
+                    },
+                    "targets": {
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "fieldPath": {
+                            "pattern": "^[^.]+\\.[^.]+\\.(Attribute|StandardAttribute)\\.[^.]+$",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "fieldPath"
+                        ],
+                        "type": "object"
+                      },
+                      "minItems": 1,
+                      "type": "array",
+                      "uniqueItems": true
+                    }
+                  }
+                },
+                {
+                  "properties": {
+                    "mode": {
+                      "enum": [
+                        "add",
+                        "remove",
+                        "replace"
+                      ],
+                      "type": "string"
+                    },
+                    "relation": {
+                      "const": "source"
+                    },
+                    "targets": {
+                      "items": {
+                        "oneOf": [
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "kind": {
+                                "const": "object"
+                              },
+                              "metadataPath": {
+                                "pattern": "^(Catalog|Справочник|Document|Документ|ChartOfAccounts|ПланСчетов|ChartOfCharacteristicTypes|ПланВидовХарактеристик|ChartOfCalculationTypes|ПланВидовРасчета|ПланВидовРасчёта|ExchangePlan|ПланОбмена|BusinessProcess|БизнесПроцесс|Task|Задача|Report|Отчет|Отчёт|DataProcessor|Обработка)\\.[_A-Za-zА-Яа-яЁё][_A-Za-zА-Яа-яЁё0-9]*$",
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "metadataPath"
+                            ],
+                            "type": "object"
+                          },
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "kind": {
+                                "const": "manager"
+                              },
+                              "metadataPath": {
+                                "pattern": "^(Catalog|Справочник|Document|Документ|Enum|Перечисление|InformationRegister|РегистрСведений|AccumulationRegister|РегистрНакопления|AccountingRegister|РегистрБухгалтерии|CalculationRegister|РегистрРасчета|РегистрРасчёта|ChartOfAccounts|ПланСчетов|ChartOfCharacteristicTypes|ПланВидовХарактеристик|ChartOfCalculationTypes|ПланВидовРасчета|ПланВидовРасчёта|BusinessProcess|БизнесПроцесс|Task|Задача|ExchangePlan|ПланОбмена|DocumentJournal|ЖурналДокументов|Report|Отчет|Отчёт|DataProcessor|Обработка|FilterCriterion|КритерийОтбора|SettingsStorage|ХранилищеНастроек)\\.[_A-Za-zА-Яа-яЁё][_A-Za-zА-Яа-яЁё0-9]*$",
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "metadataPath"
+                            ],
+                            "type": "object"
+                          },
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "kind": {
+                                "const": "manager"
+                              },
+                              "metadataPath": {
+                                "pattern": "^(Constant|Константа)\\.[_A-Za-zА-Яа-яЁё][_A-Za-zА-Яа-яЁё0-9]*$",
+                                "type": "string"
+                              },
+                              "sourceClass": {
+                                "enum": [
+                                  "constantManager",
+                                  "constantValueManager"
+                                ],
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "metadataPath",
+                              "sourceClass"
+                            ],
+                            "type": "object"
+                          },
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "kind": {
+                                "const": "recordSet"
+                              },
+                              "metadataPath": {
+                                "pattern": "^((InformationRegister|РегистрСведений|AccumulationRegister|РегистрНакопления|AccountingRegister|РегистрБухгалтерии|CalculationRegister|РегистрРасчета|РегистрРасчёта|Sequence|Последовательность)\\.[_A-Za-zА-Яа-яЁё][_A-Za-zА-Яа-яЁё0-9]*|(CalculationRegister|РегистрРасчета|РегистрРасчёта)\\.[_A-Za-zА-Яа-яЁё][_A-Za-zА-Яа-яЁё0-9]*\\.(Recalculation|Recalculations|Перерасчет|Перерасчёт|Перерасчеты|Перерасчёты)\\.[_A-Za-zА-Яа-яЁё][_A-Za-zА-Яа-яЁё0-9]*)$",
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "metadataPath"
+                            ],
+                            "type": "object"
+                          },
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "kind": {
+                                "const": "definedType"
+                              },
+                              "metadataPath": {
+                                "pattern": "^(DefinedType|ОпределяемыйТип)\\.[_A-Za-zА-Яа-яЁё][_A-Za-zА-Яа-яЁё0-9]*$",
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "metadataPath"
+                            ],
+                            "type": "object"
+                          },
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "kind": {
+                                "const": "family"
+                              },
+                              "sourceClass": {
+                                "enum": [
+                                  "accountingRegisterManager",
+                                  "accountingRegisterRecordSet",
+                                  "accumulationRegisterManager",
+                                  "accumulationRegisterRecordSet",
+                                  "businessProcessManager",
+                                  "businessProcessObject",
+                                  "calculationRegisterManager",
+                                  "calculationRegisterRecordSet",
+                                  "catalogManager",
+                                  "catalogObject",
+                                  "chartOfAccountsManager",
+                                  "chartOfAccountsObject",
+                                  "chartOfCalculationTypesManager",
+                                  "chartOfCalculationTypesObject",
+                                  "chartOfCharacteristicTypesManager",
+                                  "chartOfCharacteristicTypesObject",
+                                  "constantManager",
+                                  "constantValueManager",
+                                  "dataProcessorManager",
+                                  "dataProcessorObject",
+                                  "documentJournalManager",
+                                  "documentManager",
+                                  "documentObject",
+                                  "enumManager",
+                                  "exchangePlanManager",
+                                  "exchangePlanObject",
+                                  "externalDataSourceCubeDimensionTableManager",
+                                  "externalDataSourceCubeManager",
+                                  "externalDataSourceTableManager",
+                                  "externalDataSourceTableObject",
+                                  "externalDataSourceTableRecordSet",
+                                  "filterCriterionManager",
+                                  "informationRegisterManager",
+                                  "informationRegisterRecordSet",
+                                  "recalculationRecordSet",
+                                  "reportManager",
+                                  "reportObject",
+                                  "sequenceRecordSet",
+                                  "settingsStorageManager",
+                                  "taskManager",
+                                  "taskObject"
+                                ],
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "sourceClass"
+                            ],
+                            "type": "object"
+                          }
+                        ]
+                      },
+                      "minItems": 1,
+                      "type": "array",
+                      "uniqueItems": true
+                    }
+                  }
+                }
+              ],
+              "properties": {
+                "mode": {
+                  "enum": [
+                    "add",
+                    "remove",
+                    "replace"
+                  ],
+                  "type": "string"
+                },
+                "op": {
+                  "enum": [
+                    "editRelations"
+                  ],
+                  "type": "string"
+                },
+                "relation": {
+                  "enum": [
+                    "owners",
+                    "registerRecords",
+                    "basedOn",
+                    "inputByString",
+                    "source"
+                  ],
+                  "type": "string"
+                },
+                "targets": {
+                  "type": "array",
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "op",
+                "relation",
+                "mode",
+                "targets"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "minItems": 1,
+        "type": "array"
+      },
+      "sourceSet": {
+        "minLength": 1,
+        "type": "string"
+      }
+    },
+    "required": [
+      "sourceSet",
+      "kind",
+      "name"
+    ],
+    "type": "object"
+  },
+  "operation": "metadata:Add"
+}

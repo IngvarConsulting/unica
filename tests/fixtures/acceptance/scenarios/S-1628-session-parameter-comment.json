@@ -3,7 +3,7 @@
   "name": "session-parameter-comment-read-observations",
   "issue": 1628,
   "area": "Навигация по исходникам",
-  "task": "Прочитать SessionParameter.Comment по возвращённым адресам после обхода всех страниц, различить пустоту, отсутствие, повреждение и длинное значение; подтвердить, что чтение не добавляет запись",
+  "task": "Прочитать SessionParameter.Comment по возвращённым адресам, различить пустоту, отсутствие, повреждение и длинное значение; проверить отсутствие записи при предпросмотре изменения комментария",
   "workspace": "tests/fixtures/acceptance/workspace-session-parameter-comment",
   "wire": [
     {
@@ -257,14 +257,14 @@
             "op": "props.set",
             "args": {
               "values": {
-                "Comment": "Не писать"
+                "Comment": "Предпросмотр"
               }
             }
           }
         ]
       },
       "expect": [
-        "refused"
+        "ok"
       ],
       "fileAssertions": [
         {
@@ -307,8 +307,7 @@
           "path": "src/Configuration.xml",
           "eq": "$capture.configurationXml"
         }
-      ],
-      "refusal": "bad_value: apply operation `props.set` does not apply to SessionParameter `main:SessionParameter.A_Short`; it applies at `main:Configuration`"
+      ]
     }
   ]
 }

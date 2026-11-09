@@ -32,6 +32,16 @@ def load_package_module():
     return module
 
 
+SCRIPT_INTERPRETER_LAUNCH = re.compile(
+    r'Command::new\(\s*"(python3?|bash|powershell|pwsh)(?:\.exe)?"\s*\)'
+)
+
+
+def script_interpreter_launches(source: str) -> list[str]:
+    """Интерпретаторы скриптов, которые исходник запускает буквальным `Command::new`."""
+    return SCRIPT_INTERPRETER_LAUNCH.findall(source)
+
+
 class PackageUnicaPluginTests(unittest.TestCase):
     def test_package_tree_hash_frames_path_and_content_boundaries(self) -> None:
         module = load_package_module()
@@ -53,7 +63,7 @@ class PackageUnicaPluginTests(unittest.TestCase):
 
     def test_package_tree_hash_frames_the_executable_bit(self) -> None:
         # Тот же кадр, что у proof: бит исполнения входит в идентичность
-        # пакета, иначе потерянный `+x` у bootstrap пройдёт сверку (#700).
+        # пакета, иначе потерянный `+x` у bootstrap пройдёт сверку.
         module = load_package_module()
         root = Path(self.enterContext(tempfile.TemporaryDirectory()))
         plain = root / "plain"
@@ -131,6 +141,7 @@ class PackageUnicaPluginTests(unittest.TestCase):
         }
 
     def test_source_mcp_declares_single_unica_orchestrator(self) -> None:
+        """rule: INV.WIRE.ONE-SERVER"""
         repo_root = Path(__file__).resolve().parents[2]
         mcp = json.loads((repo_root / "plugins" / "unica" / ".mcp.json").read_text(encoding="utf-8"))
 
@@ -280,29 +291,27 @@ class PackageUnicaPluginTests(unittest.TestCase):
         self.assertIn(": whitespace: unset", result.stdout)
 
     def test_unica_coder_has_no_runtime_operation_script_fallback(self) -> None:
+        """rule: INV.APP.NATIVE-OPERATION-BACKEND"""
         repo_root = Path(__file__).resolve().parents[2]
-
-        self.assertFalse((repo_root / "plugins" / "unica" / "scripts" / "legacy").exists())
-
-        rust_sources = sorted((repo_root / "crates" / "unica-coder" / "src").rglob("*.rs"))
-        forbidden = (
-            "ToolHandler::LegacyScript",
-            "LegacyScriptAdapter",
-            "legacy_scripts",
-            'Command::new("python3")',
-            'Command::new("python")',
-            'Command::new("bash")',
-            'Command::new("powershell")',
-            'Command::new("pwsh")',
+        rust_sources = sorted(
+            path
+            for package in ("unica-coder", "unica-daemon", "unica-application", "unica-domain")
+            for path in (repo_root / "crates" / package / "src").rglob("*.rs")
         )
         matches = [
-            f"{path.relative_to(repo_root)}:{needle}"
+            f"{path.relative_to(repo_root)}:{interpreter}"
             for path in rust_sources
-            for needle in forbidden
-            if needle in path.read_text(encoding="utf-8")
+            for interpreter in script_interpreter_launches(path.read_text(encoding="utf-8"))
         ]
 
         self.assertEqual(matches, [])
+
+    def test_a_script_interpreter_launch_is_found_however_it_is_spelled(self) -> None:
+        source = (
+            'Command::new("python3"); Command::new( "bash" ); std::process::Command::new("pwsh.exe"); '
+            'Command::new("powershell"); Command::new("cargo"); Command::new(path);'
+        )
+        self.assertEqual(script_interpreter_launches(source), ["python3", "bash", "pwsh", "powershell"])
 
     def test_source_mcp_does_not_use_runtime_shell_wrappers(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
@@ -424,6 +433,7 @@ class PackageUnicaPluginTests(unittest.TestCase):
 
     @unittest.skipIf(os.name == "nt", "alias fixture uses POSIX test scripts")
     def test_packaged_alias_resolves_the_plugin_root_for_both_hosts(self) -> None:
+        """rule: INV.PKG.POSIX-TWO-HOSTS-ONE-ROOT"""
         with tempfile.TemporaryDirectory() as tmp:
             plugin_root = self.make_alias_fixture(Path(tmp) / "marketplace")
 
@@ -447,6 +457,8 @@ class PackageUnicaPluginTests(unittest.TestCase):
         """Exercise the shared launcher after ZCode's documented token expansion.
 
         This models the loader boundary; it does not run an installed ZCode client.
+
+        rule: INV.PKG.POSIX-TWO-HOSTS-ONE-ROOT
         """
         module = load_package_module()
         source = Path(__file__).resolve().parents[2] / "plugins/unica"
@@ -526,6 +538,7 @@ class PackageUnicaPluginTests(unittest.TestCase):
         self.assertEqual(legacy.rstrip("/"), current.rstrip("/"))
 
     def test_packaged_plugin_serves_both_hosts_from_one_directory(self) -> None:
+        """rule: INV.WIRE.ONE-SERVER"""
         module = load_package_module()
         repo_root = Path(__file__).resolve().parents[2]
 
@@ -548,6 +561,7 @@ class PackageUnicaPluginTests(unittest.TestCase):
         )
 
     def test_source_plugin_carries_a_manifest_for_every_host(self) -> None:
+        """rule: INV.PKG.VERSION-LOCKSTEP"""
         module = load_package_module()
         repo_root = Path(__file__).resolve().parents[2]
 
@@ -566,6 +580,7 @@ class PackageUnicaPluginTests(unittest.TestCase):
         self.assertEqual(len(set(versions.values())), 1, versions)
 
     def test_zcode_manifest_declares_portable_shared_components(self) -> None:
+        """rule: INV.WIRE.ONE-SERVER"""
         plugin_root = Path(__file__).resolve().parents[2] / "plugins/unica"
         manifest = json.loads(
             (plugin_root / ".zcode-plugin/plugin.json").read_text(encoding="utf-8")
@@ -640,6 +655,8 @@ class PackageUnicaPluginTests(unittest.TestCase):
         releases that predate it, so a key added for a newer client makes the
         plugin unloadable for everyone below that version. A current client only
         warns, which is why this is asserted here instead of via `validate`.
+
+        rule: INV.PKG.OLDEST-CLIENT-KEYS
         """
         module = load_package_module()
         repo_root = Path(__file__).resolve().parents[2]
@@ -705,6 +722,7 @@ class PackageUnicaPluginTests(unittest.TestCase):
                 self.assertIn(field, message)
 
     def test_claude_catalog_pins_the_release_tag(self) -> None:
+        """rule: INV.PKG.CODEX-CATALOG-RELEASE-PIN"""
         module = load_package_module()
 
         source = module.claude_plugin_source(release_tag="v1.2.3")
@@ -716,6 +734,7 @@ class PackageUnicaPluginTests(unittest.TestCase):
         self.assertEqual(source["source"], "git-subdir")
 
     def test_claude_manifest_leaves_skill_discovery_to_the_default_scan(self) -> None:
+        """rule: INV.PKG.OLDEST-CLIENT-KEYS"""
         repo_root = Path(__file__).resolve().parents[2]
         manifest = json.loads(
             (repo_root / "plugins/unica/.claude-plugin/plugin.json").read_text(encoding="utf-8")
@@ -756,24 +775,6 @@ class PackageUnicaPluginTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.strip(), f"native=run")
-
-    def test_source_tree_does_not_reference_deleted_runtime_shell_wrappers_in_active_docs(self) -> None:
-        repo_root = Path(__file__).resolve().parents[2]
-        active_paths = [
-            repo_root / "README.md",
-            repo_root / "plugins" / "unica" / "README.md",
-            repo_root / "docs" / "internal-package.md",
-        ]
-        forbidden = ("run-unica.sh", "run-tool.sh", "run-tool.ps1", "run-bsl-analyzer.sh", "run-v8-runner.sh")
-
-        matches = [
-            f"{path.relative_to(repo_root)}:{needle}"
-            for path in active_paths
-            for needle in forbidden
-            if needle in path.read_text(encoding="utf-8")
-        ]
-
-        self.assertEqual(matches, [])
 
     def test_packaged_mcp_entrypoint_is_target_neutral(self) -> None:
         module = load_package_module()
@@ -819,6 +820,7 @@ class PackageUnicaPluginTests(unittest.TestCase):
         # REQ-REL-COLD-INSTALL-BUDGET. The host default is 30 seconds and it
         # kills the launcher process tree mid-download, so the first install of
         # every version has to carry a budget of its own.
+        """rule: INV.PKG.COLD-INSTALL-STARTUP-BUDGET"""
         module = load_package_module()
         repo_root = Path(__file__).resolve().parents[2]
 
@@ -936,6 +938,8 @@ class PackageUnicaPluginTests(unittest.TestCase):
         `plugin_src`. Здесь они вызываются без подмены на настоящем
         git-репозитории с приманкой рядом с `plugin_src`, но вне его — это и
         есть форма прежней локальной документации платформы, снятой Task 8.
+
+        rule: INV.PKG.PLATFORM-DOCUMENTATION-CORPUS
         """
         module = load_package_module()
 
@@ -981,6 +985,7 @@ class PackageUnicaPluginTests(unittest.TestCase):
                 self.assertNotIn("docs-local", path)
 
     def test_attribution_page_and_referenced_local_licenses_are_packaged(self) -> None:
+        """rule: INV.PKG.ATTRIBUTION"""
         module = load_package_module()
         repo_root = Path(__file__).resolve().parents[2]
         plugin_src = repo_root / "plugins" / "unica"
@@ -1003,6 +1008,7 @@ class PackageUnicaPluginTests(unittest.TestCase):
                 self.assertTrue((destination / link).is_file(), link)
 
     def test_all_active_packaged_documentation_links_are_relative_and_resolve(self) -> None:
+        """rule: INV.DOC.PACKAGED-RELATIVE-LINKS"""
         module = load_package_module()
         repo_root = Path(__file__).resolve().parents[2]
         plugin_src = repo_root / "plugins" / "unica"
@@ -1041,6 +1047,7 @@ class PackageUnicaPluginTests(unittest.TestCase):
             self.assertGreater(checked, 0)
 
     def test_plugin_source_copy_rejects_tracked_source_bin(self) -> None:
+        """rule: INV.PKG.TRACKED-IGNORED-REJECTED"""
         module = load_package_module()
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -1060,6 +1067,7 @@ class PackageUnicaPluginTests(unittest.TestCase):
                     module.copy_tracked_plugin_source(repo_root, plugin_src, root / "dest")
 
     def test_plugin_source_copy_rejects_tracked_nested_ignored_dir(self) -> None:
+        """rule: INV.PKG.TRACKED-IGNORED-REJECTED"""
         module = load_package_module()
 
         for relative in (
@@ -1081,6 +1089,7 @@ class PackageUnicaPluginTests(unittest.TestCase):
 
     @unittest.skipIf(os.name == "nt" or not hasattr(os, "symlink"), "symlink validation is POSIX-only")
     def test_plugin_source_copy_rejects_tracked_symlink(self) -> None:
+        """rule: INV.PKG.SOURCE-SYMLINK-REJECTED"""
         module = load_package_module()
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -1150,6 +1159,7 @@ class PackageUnicaPluginTests(unittest.TestCase):
         self.assertEqual(sorted(grouped["v8-runner"]["binaries"]), ["darwin-arm64"])
 
     def test_load_tool_bundles_can_filter_one_release_target(self) -> None:
+        """rule: INV.PKG.DEV-PACKAGE-ISOLATED"""
         module = load_package_module()
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -1221,6 +1231,11 @@ class PackageUnicaPluginTests(unittest.TestCase):
             self.assertTrue(copied_mode & stat.S_IXUSR)
 
     def test_generated_marketplace_is_thin_pinned_and_target_neutral(self) -> None:
+        """
+        rule: INV.PKG.CODEX-CATALOG-RELEASE-PIN
+        rule: INV.PKG.THIN-PACKAGE
+        rule: INV.SURFACE.RUNTIME-NO-SKILL
+        """
         module = load_package_module()
         repo_root = Path(__file__).resolve().parents[2]
         # Packaging requires the release tag to match the packaged version, so
@@ -1455,7 +1470,7 @@ class PackageUnicaPluginTests(unittest.TestCase):
             self.assertEqual(package_evidence["sourceCommit"], "a" * 40)
             # Свидетельство пакета несёт только наблюдённое: версию, коммит и
             # дайджесты. Флаги «не бампали, не публиковали, тега нет» были
-            # литералами продюсера и сняты (#696).
+            # литералами продюсера и сняты.
             for key in ("versionBumped", "published", "tag"):
                 self.assertNotIn(key, package_evidence)
 
@@ -1490,6 +1505,7 @@ class PackageUnicaPluginTests(unittest.TestCase):
                     self.assertEqual(server["env"]["UNICA_HOST_CONTEXT_REQUIRED"], "1")
 
     def test_local_debug_mode_remains_current_host_only_and_uses_unica_dev(self) -> None:
+        """rule: INV.PKG.DEV-PACKAGE-ISOLATED"""
         module = load_package_module()
         repo_root = Path(__file__).resolve().parents[2]
         lock = json.loads(

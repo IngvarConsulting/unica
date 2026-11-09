@@ -881,9 +881,6 @@ impl<'a> ArgumentReader<'a> {
 }
 
 impl unica_operations::FamilyOperation for XdtoOperation {
-    fn retired_arguments(self) -> &'static [unica_operations::recovery::RetiredArgument] {
-        crate::recovery::RETIRED_ARGUMENTS
-    }
     type Observation = ();
     fn family(self) -> unica_operations::OperationFamily {
         unica_operations::OperationFamily::Xdto
@@ -1505,6 +1502,7 @@ mod tests {
         assert_eq!(args.property.min_occurs, Some(1));
     }
 
+    /// rule: INV.SOURCE.XDTO-PROPERTY-PATH
     #[test]
     fn property_rename_takes_its_target_from_the_address_and_only_the_new_name_from_values() {
         let operation = XdtoOperation::RenameProperty;

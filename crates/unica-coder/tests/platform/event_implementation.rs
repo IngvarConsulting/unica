@@ -16,7 +16,7 @@ use unica_bsl::event_text::RequiredEventDirective;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use unica_address::address::QualifiedAddress;
-use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+use unica_address::source_target::MetadataAddress;
 use unica_forms::event_targets::{PropertyEventOwner, PropertyEventOwnerKind};
 use unica_source_contract::SourceSetKind;
 use unica_work_control::cancellation::CancellationToken;
@@ -60,8 +60,7 @@ fn form_source() -> PropertyEventSource {
     PropertyEventSource {
         event_at: QualifiedAddress::parse("main:CommonForm.Main.Event.OnOpen").unwrap(),
         form_at: form_at.clone(),
-        form_target: MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "CommonForm.Main")
-            .unwrap(),
+        form_target: MetadataAddress::parse_logical("CommonForm.Main").unwrap(),
         form_xml_relative: PathBuf::from("CommonForms/Main/Ext/Form.xml"),
         module_relative: PathBuf::from("CommonForms/Main/Ext/Form/Module.bsl"),
         module_at: QualifiedAddress::parse("main:CommonForm.Main.Module.Form").unwrap(),
@@ -255,6 +254,7 @@ fn owner_proof_distinguishes_unregistered_from_registered_inconsistent_descripto
     std::fs::remove_dir_all(root).unwrap();
 }
 
+/// rule: INV.SOURCE.EVENT-IMPLEMENTATION-PAIR
 #[test]
 fn staged_property_planner_composes_two_events_and_poisoned_batch_publishes_nothing() {
     let root = temp_root("staged-planner");
@@ -601,6 +601,7 @@ fn borrowed_available_accepts_all_call_types_and_base_form_only_stays_byte_exact
     std::fs::remove_dir_all(root).unwrap();
 }
 
+/// rule: INV.SOURCE.EVENT-IMPLEMENTATION-PAIR
 #[test]
 fn staged_missing_property_keeps_form_byte_exact_and_platform_creates_only_module() {
     let root = temp_root("missing-and-platform");

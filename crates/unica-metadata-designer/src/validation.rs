@@ -299,11 +299,8 @@ pub fn parse_owner_child_artifact(
     if name.is_empty() {
         return Err(format!("{child_kind} owner entry name is empty"));
     }
-    let child = MetadataAddress::parse(
-        PLATFORM_XML_8_3_27_FORMAT_2_20,
-        &format!("{owner}.{child_kind}.{name}"),
-    )
-    .map_err(|_| "owner child identity is not representable".to_string())?;
+    let child = MetadataAddress::parse_logical(&format!("{owner}.{child_kind}.{name}"))
+        .map_err(|_| "owner child identity is not representable".to_string())?;
     Ok(ClosedOwnerChild {
         child,
         kind,
@@ -804,7 +801,7 @@ impl ClosedChildKind {
 
 use std::collections::BTreeMap;
 use std::path::Path;
-use unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20;
+
 use unica_bsl_parser::{
     exact_bsl_method_facts, exported_bsl_procedure_matches, BslProcedureRequirement,
 };
@@ -2077,11 +2074,8 @@ pub fn parse_child_artifact(
         ),
         _ => unreachable!(),
     };
-    let child = MetadataAddress::parse(
-        PLATFORM_XML_8_3_27_FORMAT_2_20,
-        &format!("{owner}.{child_kind}.{name}"),
-    )
-    .map_err(|_| "child descriptor identity is not representable".to_string())?;
+    let child = MetadataAddress::parse_logical(&format!("{owner}.{child_kind}.{name}"))
+        .map_err(|_| "child descriptor identity is not representable".to_string())?;
     Ok(ClosedChildDescriptor { child, profile })
 }
 
@@ -2099,14 +2093,7 @@ fn template_descriptor_type(
         .ok_or_else(|| "Template descriptor has unsupported TemplateType".into())
 }
 
-/// Read the top-level template through the same closed type vocabulary and
-/// descriptor admission as a physical child template. This is a read profile,
-/// not a new metadata creation kind.
-pub struct CommonTemplateDescriptorFacts {
-    pub template_type: MetadataTemplateType,
-    pub synonym: Option<String>,
-    pub unreadable_synonym: Option<String>,
-}
+pub use unica_metadata::validation_subject::CommonTemplateDescriptorFacts;
 
 pub fn parse_common_template_descriptor_from_bytes(
     bytes: &[u8],
@@ -2485,10 +2472,8 @@ pub fn validate_event_subscription_binding_subject(
         }
     }
 
-    let module_target = match MetadataAddress::parse(
-        PLATFORM_XML_8_3_27_FORMAT_2_20,
-        &format!("CommonModule.{module_name}"),
-    ) {
+    let module_target = match MetadataAddress::parse_logical(&format!("CommonModule.{module_name}"))
+    {
         Ok(target) => target,
         Err(_) => {
             return fail(
@@ -2853,8 +2838,7 @@ impl MetaValidationReporter {
 }
 
 pub fn metadata_address(raw: impl AsRef<str>) -> Result<MetadataAddress, String> {
-    MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, raw.as_ref())
-        .map_err(|error| error.to_string())
+    MetadataAddress::parse_logical(raw.as_ref()).map_err(|error| error.to_string())
 }
 
 pub fn metadata_collection(object_type: &str) -> Option<&'static str> {
@@ -3440,6 +3424,19 @@ pub fn meta_validate_check_standard_attributes(
     };
     let std_attrs = unica_xml_format::read::child_elements(std_attr_node, "StandardAttribute");
     let expected_std_attrs = meta_validate_standard_attributes(md_type).unwrap_or_default();
+    // RecordType belongs to balances. Keep the common attributes checkable
+    // when the register kind is not proven, without inventing a default kind.
+    let record_type_applies = if md_type == "AccumulationRegister" {
+        let applies = accumulation_register_record_type_applies(props_node);
+        if applies.is_none() {
+            report.warn(
+                "5. Cannot determine RecordType applicability: RegisterType is missing or invalid",
+            );
+        }
+        applies
+    } else {
+        Some(true)
+    };
     let mut check_ok = true;
     let mut found_names = Vec::<String>::new();
     for standard_attr in &std_attrs {
@@ -3450,7 +3447,8 @@ pub fn meta_validate_check_standard_attributes(
             continue;
         }
         found_names.push(name.to_string());
-        if !expected_std_attrs.contains(&name)
+        if (!expected_std_attrs.contains(&name)
+            || (name == "RecordType" && record_type_applies == Some(false)))
             && !meta_validate_dynamic_standard_attr(md_type, name)
         {
             report.warn(format!(
@@ -3460,6 +3458,7 @@ pub fn meta_validate_check_standard_attributes(
     }
     let missing_attrs = expected_std_attrs
         .iter()
+        .filter(|attr| **attr != "RecordType" || record_type_applies == Some(true))
         .filter(|attr| !found_names.iter().any(|found| found == **attr))
         .copied()
         .collect::<Vec<_>>();
@@ -3474,6 +3473,25 @@ pub fn meta_validate_check_standard_attributes(
             "5. StandardAttributes: {} entries",
             std_attrs.len()
         ));
+    }
+}
+
+fn accumulation_register_record_type_applies(properties: roxmltree::Node<'_, '_>) -> Option<bool> {
+    let kinds = unica_xml_format::read::child_elements_in_namespace(
+        properties,
+        "RegisterType",
+        MD_CLASSES_NS,
+    );
+    let [kind] = kinds.as_slice() else {
+        return None;
+    };
+    if kind.attributes().len() != 0 || kind.children().any(|child| child.is_element()) {
+        return None;
+    }
+    match unica_xml_format::read::direct_text(*kind).as_str() {
+        "Balance" => Some(true),
+        "Turnovers" => Some(false),
+        _ => None,
     }
 }
 
@@ -4370,10 +4388,7 @@ pub fn meta_validate_check_method_reference(
     }
     if let Some(subject) = proof_subject {
         let module_reference = format!("CommonModule.{module_name}");
-        let module_target = match MetadataAddress::parse(
-            PLATFORM_XML_8_3_27_FORMAT_2_20,
-            &module_reference,
-        ) {
+        let module_target = match MetadataAddress::parse_logical(&module_reference) {
             Ok(target) => target,
             Err(_) => {
                 report.error(format!(

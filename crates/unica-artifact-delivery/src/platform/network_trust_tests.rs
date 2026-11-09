@@ -68,7 +68,7 @@ use std::process::{Command, Output};
 use unica_network::test_support::{ConnectProxy, TestRoot, TlsStand};
 
 #[cfg(target_os = "linux")]
-const CHILD: &str = "platform::network_trust_tests::network_trust_child_process";
+const CHILD: &str = "platform::medium_network_trust_tests::network_trust_child_process";
 
 #[cfg(target_os = "linux")]
 /// Переменные машины, которые изменили бы маршрут или хранилище в дочернем
@@ -150,6 +150,7 @@ fn body() -> Vec<u8> {
     (0..4096).map(|index| (index % 251) as u8).collect()
 }
 
+/// rule: INV.PKG.NETWORK-TRUST-AND-PROXY
 #[cfg(target_os = "linux")]
 #[test]
 fn a_root_in_the_os_store_lets_the_download_through() {
@@ -172,6 +173,7 @@ fn a_root_in_the_os_store_lets_the_download_through() {
     assert_eq!(stand.requests(), vec!["GET /artifact.tar.gz HTTP/1.1"]);
 }
 
+/// rule: INV.PKG.NETWORK-TRUST-AND-PROXY
 #[cfg(target_os = "linux")]
 #[test]
 fn a_download_through_https_proxy_reaches_a_trusted_server() {
@@ -200,6 +202,7 @@ fn a_download_through_https_proxy_reaches_a_trusted_server() {
     );
 }
 
+/// rule: INV.PKG.NETWORK-TRUST-AND-PROXY
 #[cfg(target_os = "linux")]
 #[test]
 fn a_root_missing_from_the_os_store_is_refused_with_the_interception_cure() {
@@ -226,6 +229,7 @@ fn a_root_missing_from_the_os_store_is_refused_with_the_interception_cure() {
     assert!(stand.requests().is_empty());
 }
 
+/// rule: INV.PKG.NETWORK-TRUST-AND-PROXY
 #[cfg(target_os = "linux")]
 #[test]
 fn a_non_empty_os_store_selects_the_os_branch() {
@@ -250,6 +254,7 @@ fn a_non_empty_os_store_selects_the_os_branch() {
     assert!(stdout.contains("trust=OperatingSystem"), "{stdout}");
 }
 
+/// rule: INV.PKG.NETWORK-TRUST-AND-PROXY
 #[cfg(target_os = "linux")]
 #[test]
 fn an_empty_os_store_falls_back_to_the_bundled_mozilla_roots() {

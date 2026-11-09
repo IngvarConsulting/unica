@@ -79,8 +79,7 @@ fn validate_native_source_set_format(
             .iter()
             .filter_map(|source_set| {
                 let source_root = normalize_lexical(&context.workspace_root.join(&source_set.path));
-                target
-                    .starts_with(&source_root)
+                unica_workspace::paths::path_starts_with_host_root(&target, &source_root)
                     .then_some((source_set, source_root))
             })
             .collect::<Vec<_>>();
@@ -183,7 +182,7 @@ fn normalize_lexical(path: &Path) -> PathBuf {
 }
 
 #[cfg(test)]
-mod tests {
+mod medium_tests {
     use super::*;
     use crate::application::tools;
     use serde_json::json;
@@ -222,6 +221,42 @@ mod tests {
                 )
             })
             .collect()
+    }
+
+    #[test]
+    fn native_tool_sees_the_source_set_of_an_absent_target_in_any_host_spelling() {
+        use unica_workspace::test_support::{
+            extended_length_spelling_for_test, other_letter_case_for_test,
+        };
+        let (root, context) = fixture("host-spelling");
+        std::fs::write(
+            context.workspace_root.join("v8project.yaml"),
+            "format: EDT\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(context.workspace_root.join("src")).unwrap();
+        let tool = tools()
+            .into_iter()
+            .find(|tool| !native_source_path_args(*tool).is_empty())
+            .expect("a native tool with a source path");
+        let key = native_source_path_args(tool)[0];
+        let spellings = [
+            context.workspace_root.join("src/Absent.xml"),
+            context
+                .workspace_root
+                .join(other_letter_case_for_test(Path::new("src/Absent.xml"))),
+            extended_length_spelling_for_test(&context.workspace_root).join("src/Absent.xml"),
+        ];
+        for target in spellings {
+            let args = json!({ key: target.display().to_string() })
+                .as_object()
+                .unwrap()
+                .clone();
+            let error = validate_native_source_set_format(tool, &args, false, &context)
+                .expect_err("the EDT source set owns the target in every spelling");
+            assert!(error.contains("sourceFormat=edt"), "{target:?}: {error}");
+        }
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
@@ -276,6 +311,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
+    /// rule: INV.SOURCE.MULTI-FORMAT-WORKSPACE
     #[test]
     fn native_platform_xml_source_format_public_gate_is_closed_over_public_operations() {
         use unica_source_contract::SourceFormat;

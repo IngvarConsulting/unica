@@ -27,6 +27,8 @@ pub enum NodeKind {
     EventSubscription,
     ScheduledJob,
     Schedule,
+    /// Read-only semantic declarations of a WSReference's local WSDL.
+    Definition,
     SettingsStorage,
     FunctionalOption,
     FunctionalOptionsParameter,
@@ -62,6 +64,7 @@ pub enum NodeKind {
     ExternalReport,
     WebSocketClient,
     Attribute,
+    AddressingAttribute,
     StandardAttribute,
     TabularSection,
     Dimension,
@@ -193,6 +196,7 @@ const V13_KIND_SPELLINGS: &[V13KindSpelling] = &[
     spelling(NodeKind::Schedule, &["Расписание"]),
     spelling(NodeKind::WebSocketClient, &[]),
     spelling(NodeKind::Attribute, &["Реквизит"]),
+    spelling(NodeKind::AddressingAttribute, &["РеквизитАдресации"]),
     spelling(NodeKind::StandardAttribute, &["СтандартныйРеквизит"]),
     spelling(NodeKind::TabularSection, &["ТабличнаяЧасть"]),
     spelling(NodeKind::Dimension, &["Измерение"]),
@@ -229,6 +233,7 @@ const V13_KIND_SPELLINGS: &[V13KindSpelling] = &[
     spelling(NodeKind::Namespace, &["ПространствоИмен"]),
     spelling(NodeKind::Type, &["Тип"]),
     spelling(NodeKind::Property, &["Свойство"]),
+    spelling(NodeKind::Definition, &["Определение"]),
     spelling(NodeKind::Relation, &["Связь"]),
     spelling(NodeKind::Characteristic, &["Характеристика"]),
     spelling(
@@ -274,7 +279,11 @@ impl NodeKind {
     pub const fn takes_name(self) -> bool {
         !matches!(
             self,
-            Self::Configuration | Self::Interface | Self::Metadata | Self::Schedule
+            Self::Configuration
+                | Self::Interface
+                | Self::Metadata
+                | Self::Schedule
+                | Self::Definition
         )
     }
 
@@ -363,6 +372,7 @@ impl NodeKind {
             Self::WebService => "WebService",
             Self::HttpService => "HTTPService",
             Self::WsReference => "WSReference",
+            Self::Definition => "Definition",
             Self::EventSubscription => "EventSubscription",
             Self::ScheduledJob => "ScheduledJob",
             Self::Schedule => "Schedule",
@@ -400,6 +410,7 @@ impl NodeKind {
             Self::ExternalReport => "ExternalReport",
             Self::WebSocketClient => "WebSocketClient",
             Self::Attribute => "Attribute",
+            Self::AddressingAttribute => "AddressingAttribute",
             Self::StandardAttribute => "StandardAttribute",
             Self::TabularSection => "TabularSection",
             Self::Dimension => "Dimension",
@@ -983,6 +994,7 @@ mod tests {
     /// `main` тут — выдуманный заполнитель. До правила безымянных видов вторая
     /// форма молча разбиралась в «интерфейс по имени main», то есть негодный
     /// адрес принимался за годный.
+    /// rule: CTR.SOURCE.QUALIFIED-LOGICAL-ADDRESS
     #[test]
     fn neither_a_configuration_prefix_nor_an_invented_interface_name_is_accepted() {
         let prefixed = QualifiedAddress::parse("main:Configuration.Interface")
@@ -1006,6 +1018,7 @@ mod tests {
     /// забирал `Command` себе под имя, и объявленная узлом ветвь
     /// `...Interface.Command` разрешалась обратно в тот же узел: счёт называл
     /// команды, спуск по названному адресу их не показывал.
+    /// rule: CTR.SOURCE.QUALIFIED-LOGICAL-ADDRESS
     #[test]
     fn nameless_kinds_do_not_consume_the_next_segment_as_a_name() {
         let at = QualifiedAddress::parse("main:Subsystem.Администрирование.Interface.Command")
@@ -1031,7 +1044,8 @@ mod tests {
     }
 
     /// `<узел>.Props.<имя>` называет одно свойство узла: сегмент последний и
-    /// с одним именем, владелец — адрес до него (#2088).
+    /// с одним именем, владелец — адрес до него.
+    /// rule: CTR.SOURCE.QUALIFIED-LOGICAL-ADDRESS
     #[test]
     fn a_property_address_names_its_owner_and_one_property() {
         for (raw, owner) in [
@@ -1063,6 +1077,7 @@ mod tests {
     /// Обратная сторона того же правила: вид, который имя носит, забирает
     /// следующий сегмент как прежде. Иначе правка сломала бы каждый обычный
     /// адрес, а терминальная ветка перестала бы быть веткой.
+    /// rule: CTR.SOURCE.QUALIFIED-LOGICAL-ADDRESS
     #[test]
     fn a_named_kind_still_takes_the_segment_that_follows_it() {
         let deep = QualifiedAddress::parse("main:Catalog.Валюты.Module.Object")
@@ -1091,6 +1106,8 @@ mod tests {
     /// `<узел>.Can.<op>` спрашивает контракт одной операции. Имя операции
     /// само содержит точку, поэтому `Can` забирает весь остаток адреса, а
     /// узел, чей словарь спрашивают, — всё, что до него.
+    /// rule: CTR.SOURCE.QUALIFIED-LOGICAL-ADDRESS
+    /// rule: INV.WIRE.V13-CAN-DICTIONARY
     #[test]
     fn a_can_segment_takes_the_rest_of_the_address_as_the_operation_name() {
         let at = QualifiedAddress::parse("main:Catalog.Валюты.Can.query.set").unwrap();
@@ -1197,6 +1214,7 @@ mod tests {
     /// макета и области несёт точку, `Parameter` формы и операции
     /// веб-сервиса — член метаданных и её не несёт; то же для поля, области,
     /// группы, типа, свойства и записи права вне своего документа.
+    /// rule: CTR.SOURCE.QUALIFIED-LOGICAL-ADDRESS
     #[test]
     fn an_escaped_dot_is_a_name_only_on_document_routes() {
         for accepted in [
@@ -1256,6 +1274,7 @@ mod tests {
     /// сегмент, а не переход к виду. Печать возвращает то же написание, и
     /// разбор напечатанного адреса даёт тот же адрес; имена без точки
     /// пишутся как прежде.
+    /// rule: CTR.SOURCE.QUALIFIED-LOGICAL-ADDRESS
     #[test]
     fn an_escaped_dot_stays_inside_one_name_and_round_trips() {
         let raw = r"main:Report.R.Template.S.DataSet.D.Field.Контрагент\.ИНН";
@@ -1346,7 +1365,7 @@ mod tests {
     }
 
     use super::{AddressErrorCode, NodeKind, QualifiedAddress};
-    use crate::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+    use crate::source_target::MetadataAddress;
     use serde::Deserialize;
 
     #[derive(Debug, Deserialize)]
@@ -1393,6 +1412,7 @@ mod tests {
         .expect("the checked address fixture must be valid JSON")
     }
 
+    /// rule: CTR.SOURCE.QUALIFIED-LOGICAL-ADDRESS
     #[test]
     fn qualified_addresses_are_table_driven_canonical_and_arbitrarily_deep() {
         let fixture = fixture();
@@ -1443,6 +1463,7 @@ mod tests {
         assert!(saw_arbitrary_depth);
     }
 
+    /// rule: CTR.SOURCE.QUALIFIED-LOGICAL-ADDRESS
     #[test]
     fn qualified_addresses_reject_unqualified_malformed_and_noncanonical_roots() {
         for case in fixture().invalid_addresses {
@@ -1465,19 +1486,20 @@ mod tests {
         }
     }
 
+    /// rule: CTR.SOURCE.QUALIFIED-LOGICAL-ADDRESS
     #[test]
     fn metadata_aliases_reuse_v12_evidence_while_structural_aliases_stay_separate() {
-        let legacy =
-            MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Документ.Заказ").unwrap();
+        let legacy = MetadataAddress::parse_logical("Документ.Заказ").unwrap();
         let qualified = QualifiedAddress::parse("main:Документ.Заказ").unwrap();
         assert_eq!(qualified.logical_path(), legacy.as_str());
         assert_eq!(qualified.to_string(), "main:Document.Заказ");
 
         assert_eq!(NodeKind::parse("Реквизит").unwrap(), NodeKind::Attribute);
-        assert!(MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Реквизит.Заказ").is_err());
+        assert!(MetadataAddress::parse_logical("Реквизит.Заказ").is_err());
         assert!(NodeKind::parse("Документы").is_err());
     }
 
+    /// rule: CTR.SOURCE.QUALIFIED-LOGICAL-ADDRESS
     #[test]
     fn unqualified_input_resolves_only_with_one_source_set_and_stays_qualified() {
         assert!(QualifiedAddress::parse("Document.Заказ").is_err());
@@ -1536,6 +1558,7 @@ mod tests {
         );
     }
 
+    /// rule: CTR.SOURCE.QUALIFIED-LOGICAL-ADDRESS
     #[test]
     fn configuration_kind_is_rejected_everywhere_except_the_sole_root() {
         let error = QualifiedAddress::parse("main:Document.Заказ.Configuration").unwrap_err();
@@ -1546,6 +1569,7 @@ mod tests {
 #[cfg(test)]
 mod form_metadata_addresses {
     use super::{NodeKind, QualifiedAddress};
+    /// rule: CTR.SOURCE.QUALIFIED-LOGICAL-ADDRESS
     #[test]
     fn metadata_is_a_terminal_nameless_form_descriptor_and_keeps_operation_queries() {
         for (raw, owner) in [
@@ -1582,6 +1606,7 @@ mod form_metadata_addresses {
         }
     }
 
+    /// rule: CTR.SOURCE.QUALIFIED-LOGICAL-ADDRESS
     #[test]
     fn schedule_is_nameless_and_preserves_its_operation_query() {
         for raw in [
@@ -1603,6 +1628,7 @@ mod form_metadata_addresses {
 mod body_line_addresses {
     use super::{NodeKind, QualifiedAddress};
 
+    /// rule: CTR.SOURCE.QUALIFIED-LOGICAL-ADDRESS
     #[test]
     fn body_line_suffix_keeps_the_bsl_node_and_round_trips() {
         for raw in [
@@ -1624,6 +1650,7 @@ mod body_line_addresses {
         }
     }
 
+    /// rule: CTR.SOURCE.QUALIFIED-LOGICAL-ADDRESS
     #[test]
     fn body_line_suffix_rejects_malformed_ranges_and_other_nodes() {
         for raw in [
@@ -1646,6 +1673,7 @@ mod body_line_addresses {
         }
     }
 
+    /// rule: CTR.SOURCE.QUALIFIED-LOGICAL-ADDRESS
     #[test]
     fn a_hash_inside_a_free_text_dcs_item_is_not_a_body_line_selector() {
         for raw in [

@@ -10,6 +10,16 @@ use unica_refusal::RefusalCode;
 /// заголовок, словарь операций и ревизия. Настоящий конверт меньше (проверка
 /// по проводу); по этому запасу одинаково решаются отказ и пометка
 /// `overBudget` в сводке модуля.
+// resource-limit: view.source-text-envelope-reserve-bytes
+// class: format
+// unit: bytes
+// scope: request
+// value: 2048
+// resource: Запас на конверт ответа с текстом Body при сверке с бюджетом ответа клиента.
+// status: unproven
+// origin: #1458 (#1478)
+// problem: неизвестно
+// on-reach: текст, не помещающийся в бюджет вместе с запасом, не отдаётся: отказ или пометка overBudget в сводке модуля
 const ENVELOPE_RESERVE_BYTES: usize = 2 * 1024;
 
 /// Что именно не поместилось в предел.
@@ -380,9 +390,11 @@ fn text_fits(bytes: u64, budget: usize) -> bool {
 mod tests {
     use super::*;
 
-    /// #2229: a refusal names every cause that fits the client's budget;
+    /// A refusal names every cause that fits the client's budget;
     /// past it, the answer names how many there are and how many it shows,
     /// and the refusal itself always stays.
+    /// rule: INV.SOURCE.CODE-TEXT-SYNTAX-ERRORS
+    /// rule: INV.WIRE.V13-REFUSAL-CHANNEL
     #[test]
     fn refusal_diagnostics_fill_the_budget_and_count_the_rest() {
         let mut refused = DomainResult::canonical_rejection(
@@ -454,6 +466,8 @@ mod tests {
         result
     }
 
+    /// rule: INV.SOURCE.MODULE-SUMMARY
+    /// rule: INV.WIRE.SOURCE-TEXT-RESPONSE-BUDGET
     #[test]
     fn response_budget_refuses_text_with_its_envelope_and_marks_oversized_branches() {
         use crate::invocation::DomainResult;
@@ -503,6 +517,8 @@ mod tests {
         assert!(branches[0].get("overBudget").is_none());
     }
 
+    /// rule: INV.SOURCE.MODULE-SUMMARY
+    /// rule: INV.WIRE.SOURCE-TEXT-RESPONSE-BUDGET
     #[test]
     fn overbudget_mark_and_refusal_share_one_boundary() {
         use crate::invocation::DomainResult;
@@ -522,6 +538,7 @@ mod tests {
         assert_eq!(branch(14_337), Some(json!(true)));
     }
 
+    /// rule: INV.WIRE.SOURCE-TEXT-RESPONSE-BUDGET
     #[test]
     fn oversized_body_routes_by_address_segments_not_by_text() {
         // Объект с именем `Method` не делает модуль методом.
@@ -556,6 +573,7 @@ mod tests {
         assert!(refused.next.is_empty());
     }
 
+    /// rule: INV.WIRE.SOURCE-TEXT-RESPONSE-BUDGET
     #[test]
     fn oversized_method_refusal_routes_to_the_method_and_module_structure() {
         let module = "main:CommonModule.Пример";
@@ -582,6 +600,7 @@ mod tests {
         );
     }
 
+    /// rule: CTR.WIRE.NATIVE-TASK-PROJECTION
     #[test]
     fn admission_refusal_bounds_client_specific_range_hints() {
         use crate::result_delivery::error_delivery_text;
@@ -646,6 +665,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.WIRE.SOURCE-TEXT-RESPONSE-BUDGET
     #[test]
     fn continuation_fits_the_real_ranged_envelope_at_each_host_budget() {
         let line = format!("{}\r\n", "ю".repeat(100));
