@@ -1,0 +1,27 @@
+{
+  "area": "Роли и права",
+  "task": "Дать право проведения документа",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Role.SalesReader.Right.Document_АктОбУничтоженииПерсональныхДанных",
+        "ops": [
+          {
+            "op": "right.set",
+            "args": {
+              "values": {
+                "right": "Posting",
+                "value": true
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S172"
+}

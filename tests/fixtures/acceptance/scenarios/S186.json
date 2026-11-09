@@ -1,0 +1,30 @@
+{
+  "area": "СКД",
+  "task": "Добавить отбор по автору",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.Setting.Основной",
+        "ops": [
+          {
+            "op": "filter.add",
+            "args": {
+              "items": [
+                {
+                  "field": "ТипОбъекта",
+                  "comparison": "Equal",
+                  "value": "Справочник"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S186"
+}

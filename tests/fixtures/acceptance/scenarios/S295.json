@@ -1,0 +1,23 @@
+{
+  "id": "S295",
+  "area": "Поддержка поставщика",
+  "task": "Удалить форму у объекта поставщика на замке — отказ стража поддержки до поиска формы",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Enum.НастройкиПоставщика.Form.ФормаСписка",
+        "ops": [
+          {
+            "op": "form.remove",
+            "args": {}
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "invalid_state: `main:Enum.НастройкиПоставщика` is a vendor object with the support rule `locked`; allow editing with `supportRule.set` in a separate apply before ordinary edit"
+    }
+  ]
+}

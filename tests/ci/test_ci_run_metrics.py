@@ -420,7 +420,7 @@ class CollectTests(unittest.TestCase):
         self.assertEqual([(shard["shard"], shard["executionSeconds"]) for shard in result["shards"]], [(1, 300.5)])
         self.assertNotIn(f"repos/{REPO}/actions/artifacts/13/zip", api.calls)
         self.assertNotIn(f"repos/{REPO}/actions/artifacts/14/zip", api.calls)
-        # Логи читаются только у исполнявшихся Rust-джоб; `Unica CI` с #1813 сам
+        # Логи читаются только у исполнявшихся Rust-джоб; `Unica CI` сам
         # собирает Linux, поэтому его лог читается и в прежней раскладке.
         logged = sorted(path for path in api.calls if path.endswith("/logs"))
         self.assertEqual(logged, [f"repos/{REPO}/actions/jobs/{n}/logs" for n in (2, 3, 4, 5)])

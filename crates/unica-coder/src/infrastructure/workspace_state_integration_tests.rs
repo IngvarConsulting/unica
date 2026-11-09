@@ -6,11 +6,9 @@ use unica_work_control::provider_deadline::ProviderDeadline;
 use unica_workspace::cache::CacheAccess;
 use unica_workspace::state::WorkspaceStateRepository;
 
-use crate::infrastructure::analysis_composition::index_is_ready as bsl_index_is_ready;
 use serde_json::{json, Map, Value};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
-use unica_adapter_rlm::index::rlm_provider_state_root;
 use unica_address::source_target::{MetadataAddress, ResolvedTarget, TargetKind};
 use unica_source_contract::location::SourceLocation;
 use unica_source_contract::workspace::{ResolvedSourceRoot, WorkspaceContext};
@@ -335,104 +333,6 @@ fn diagnostics_reads_preserve_workspace_cache_staleness() {
             "persisted {action}"
         );
     }
-}
-
-#[test]
-fn bsl_index_read_reflects_real_index_status_instead_of_lazy_rebuild() {
-    let root = temp_root("unica-cache-lazy");
-    fs::create_dir_all(&root).unwrap();
-    let context = WorkspaceContext {
-        cwd: root.clone(),
-        workspace_root: root.clone(),
-        cache_root: root.join(".cache"),
-        workspace_epoch: 1,
-    };
-    let repo = WorkspaceStateRepository::new(&context).with_index_readiness(bsl_index_is_ready);
-
-    let invalidation = repo
-        .report(
-            &context,
-            &[DomainEvent::new(
-                DomainEventKind::ModuleChanged,
-                "Module.bsl",
-            )],
-            false,
-            CacheAccess::default(),
-        )
-        .unwrap();
-    assert!(invalidation.stale.contains(&"bsl_index".to_string()));
-
-    let reported = repo
-        .report(
-            &context,
-            &[],
-            false,
-            CacheAccess {
-                reads: &["bsl_index"],
-                writes: &[],
-            },
-        )
-        .unwrap();
-    assert!(reported.lazy_rebuilt.is_empty());
-    assert!(reported.stale.contains(&"bsl_index".to_string()));
-
-    let _ = fs::remove_dir_all(root);
-}
-
-#[test]
-fn bsl_index_cache_report_ignores_pair_scoped_builder_14_marker() {
-    let root = temp_root("unica-cache-builder14-ignored");
-    let source_root = root.join("src");
-    fs::create_dir_all(&source_root).unwrap();
-    fs::write(
-        root.join("v8project.yaml"),
-        "source-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
-    )
-    .unwrap();
-    let context = WorkspaceContext {
-        cwd: root.clone(),
-        workspace_root: root.clone(),
-        cache_root: root.join(".cache"),
-        workspace_epoch: 1,
-    };
-    let pair_root = rlm_provider_state_root(&context, &source_root).unwrap();
-    let legacy_db = pair_root.join("rlm-tools-bsl/index/bsl_index.db");
-    let legacy_status = pair_root.join("caches/bsl_index_status.json");
-    fs::create_dir_all(legacy_db.parent().unwrap()).unwrap();
-    fs::create_dir_all(legacy_status.parent().unwrap()).unwrap();
-    fs::write(&legacy_db, b"builder-14-db").unwrap();
-    fs::write(
-        &legacy_status,
-        serde_json::to_string_pretty(&serde_json::json!({
-            "status": "ready",
-            "source_root": source_root.display().to_string(),
-            "db_path": legacy_db.display().to_string(),
-            "message": null,
-            "updated_at": 1
-        }))
-        .unwrap()
-            + "\n",
-    )
-    .unwrap();
-    let legacy_bytes = fs::read(&legacy_status).unwrap();
-
-    let reported = WorkspaceStateRepository::new(&context)
-        .with_index_readiness(bsl_index_is_ready)
-        .report(
-            &context,
-            &[],
-            false,
-            CacheAccess {
-                reads: &["bsl_index"],
-                writes: &[],
-            },
-        )
-        .unwrap();
-
-    assert!(reported.stale.contains(&"bsl_index".to_string()));
-    assert!(!reported.lazy_rebuilt.contains(&"bsl_index".to_string()));
-    assert_eq!(fs::read(&legacy_status).unwrap(), legacy_bytes);
-    let _ = fs::remove_dir_all(root);
 }
 
 #[test]

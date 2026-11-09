@@ -22,51 +22,51 @@ use unica_navigation::source_navigation::{
     authenticate_cursor, page_bounds_from_offset, SOURCE_NAVIGATION_LIMIT_DEFAULT,
     SOURCE_NAVIGATION_LIMIT_MAX,
 };
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use unica_source_contract::proposal::{
     ApplyPlanError, ApplyPlanErrorKind, IndexedPlanOperation, ProvisionalApplyEffect,
 };
 use unica_source_contract::workspace::WorkspaceContext;
 use unica_source_designer::owner::PlatformXmlResourceEvidence;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use unica_workspace::actor::ProviderRootBinding;
 use unica_workspace::compile_transaction::CompileTransaction;
 use unica_workspace::path_policy::WorkspacePathPolicy;
 use unica_workspace::paths::metadata_is_link_or_reparse_point;
 use unica_workspace::paths::normalize_path_identity;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use unica_xdto::operations::{
     PrefixedXmlQName, XdtoAddObjectTypeArgs, XdtoAddPropertyArgs, XdtoAddValueTypeArgs,
     XdtoPropertySpec, XdtoRemovePropertyArgs, XdtoRemoveTypeArgs, XmlNcName,
 };
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use unica_xdto::operations::{XdtoOperation, XdtoPlanOperation, XdtoPropertyPath};
 use unica_xdto::results::*;
 use unica_xdto_designer::descriptor::descriptor_fields;
 
 use unica_xdto_designer::edit_plan::{plan_xdto_edit_operations, PlanningFailure};
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use unica_xdto_designer::info::parse_xdto_info_bytes;
 use unica_xdto_designer::info::{
     build_xdto_info, model_error, parse_xdto_info_model, validate_xdto_type_name,
 };
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use unica_xdto_designer::planner::{
     decode_xdto_plan_operation, plan_xdto_batch, validate_final_xdto_resources,
     XdtoValidationLedger,
 };
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use unica_xdto_designer::planner::{staged_writer_error, staged_writer_operation};
 
 use unica_xdto_designer::{decode, model, required};
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use unica_xdto_designer::{validation, writer};
 
 use model::PackageModel;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use validation::validate;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn parse_xdto_plan_operation(
     operation: &str,
     value: &Value,
@@ -80,7 +80,7 @@ fn parse_xdto_plan_operation(
     decode_xdto_plan_operation(operation, value, op_index, binding.source_set_name())
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn plan_unindexed_xdto_batch(
     staged: unica_workspace::apply::ApplyStagedState,
     authority: unica_workspace::actor::XdtoApplyAuthority<'_>,
@@ -765,7 +765,7 @@ fn prove_xdto_resource(
             format!("cannot resolve XDTO package resource identity: {error}"),
         )
     })?;
-    if !resource_identity.starts_with(&source_root) {
+    if !unica_workspace::paths::path_starts_with_host_root(&resource_identity, &source_root) {
         return Err(XdtoResolutionError::new(
             XdtoPublicErrorCode::ContainmentDenied,
             format!(
@@ -779,9 +779,8 @@ fn prove_xdto_resource(
 }
 
 fn ensure_no_link_components(source_root: &Path, path: &Path) -> Result<(), String> {
-    let relative = path
-        .strip_prefix(source_root)
-        .map_err(|_| "containment_denied: XDTO package resource escapes sourceSet".to_string())?;
+    let relative = unica_workspace::paths::host_path_relative_to(path, source_root)
+        .ok_or_else(|| "containment_denied: XDTO package resource escapes sourceSet".to_string())?;
     let mut current = source_root.to_path_buf();
     for component in relative.components() {
         current.push(component.as_os_str());
@@ -814,7 +813,7 @@ fn descriptor_namespace(path: &Path) -> Result<String, String> {
     descriptor_fields(&bytes).map(|fields| fields.namespace)
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) fn plan_xdto_batch_owned_for_test(
     mut staged: unica_workspace::apply::ApplyStagedState,
     authority: &unica_workspace::actor::XdtoApplyAuthority<'_>,
@@ -3797,5 +3796,27 @@ pub(crate) mod medium_tests {
             assert_eq!(snapshot_tree(&fixture.source), before);
         }
         fixture.cleanup();
+    }
+}
+
+#[cfg(test)]
+mod host_path_tests {
+    use super::ensure_no_link_components;
+    use std::path::Path;
+    use unica_workspace::test_support::extended_length_spelling_for_test;
+
+    #[test]
+    fn an_absent_resource_stays_inside_a_source_root_of_another_host_spelling() {
+        let temp = tempfile::tempdir().unwrap();
+        let plain = unica_workspace::paths::normalize_path_identity(temp.path()).unwrap();
+        let extended = extended_length_spelling_for_test(&plain);
+        let resource = Path::new("XDTOPackages/Absent.xdto");
+
+        ensure_no_link_components(&extended, &plain.join(resource)).unwrap();
+        ensure_no_link_components(&plain, &extended.join(resource)).unwrap();
+        assert!(
+            ensure_no_link_components(&extended.join("src"), &plain.join("other/Absent.xdto"))
+                .is_err()
+        );
     }
 }

@@ -1,5 +1,4 @@
 //! Canonical metadata descriptor/resource planning over an issued proposal and read observations.
-#[path = "predefined_code_type_plan.rs"]
 mod predefined_code_type_plan;
 pub use predefined_code_type_plan::PredefinedCodeTypePlan;
 

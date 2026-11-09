@@ -293,9 +293,8 @@ fn job_schedule_resolves_to_its_file_only_while_the_file_exists() {
 #[test]
 fn job_schedule_reads_detailed_daily_schedules_in_platform_export_shape() {
     let fixture = RealReaderFixture::new();
-    let bytes = include_bytes!(
-        "../../../../../../tests/fixtures/platform_8_3_27/job_schedule/detailed-daily-schedules.xml"
-    );
+    let bytes =
+        include_bytes!("../../../../tests/fixtures/job_schedule/detailed-daily-schedules.xml");
     assert!(bytes.starts_with(b"\xef\xbb\xbf") && bytes.windows(2).any(|pair| pair == b"\r\n"));
     let path = fixture
         .source

@@ -1,0 +1,25 @@
+{
+  "area": "Формы",
+  "task": "Словарь операций узла языка",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Language.Русский"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/can",
+          "contains": {
+            "op": "supportRule.set",
+            "args": "values"
+          }
+        }
+      ]
+    }
+  ],
+  "id": "S146"
+}

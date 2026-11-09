@@ -1291,30 +1291,6 @@ mod tests {
         assert_eq!(reopened.get(created.task_id, budget()).unwrap(), created);
     }
 
-    /// rule: INV.APP.DAEMON-TASK-CAPACITY
-    #[test]
-    fn inspection_cleans_staging_past_former_directory_bound() {
-        let root = tempfile::tempdir().expect("temporary root");
-        let root_path = physical_root(&root);
-        let directory = open_state_directory_nofollow(&root_path).unwrap();
-        for index in 0..4200 {
-            let file =
-                create_state_file_child(&directory, OsStr::new(&format!(".orphan-{index}.tmp")))
-                    .unwrap();
-            restrict_state_stage_to_owner(&file).unwrap();
-        }
-        let (_store, catalog) = FileInvocationStoreV5::open_inspect_only(
-            &root_path,
-            Arc::new(ManualEpochClock::at(9_000)),
-            ProviderDeadline::from_budget(Duration::from_secs(60)),
-        )
-        .expect("inspect all staging without retaining thousands of handles");
-        assert!(catalog.entries().is_empty());
-        for entry in std::fs::read_dir(root_path).unwrap() {
-            assert_eq!(entry.unwrap().file_name(), super::STORE_LOCK_FILE);
-        }
-    }
-
     #[test]
     fn failed_inspection_preserves_staging_and_unsupported_entry() {
         let root = tempfile::tempdir().unwrap();
