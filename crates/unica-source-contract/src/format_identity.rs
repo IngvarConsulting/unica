@@ -178,6 +178,75 @@ pub fn resolve_read(
     }
 }
 
+/// A Designer export format beyond 2.20 that has dialects and a reference
+/// corpus: a row of the source profile (#2730).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum PlatformXmlRelease {
+    /// Format 2.21, written by platform line 8.5.1.
+    Format2_21,
+    /// Format 2.22, written by platform line 8.5.4.
+    Format2_22,
+}
+
+impl PlatformXmlRelease {
+    /// The release a root recording `raw` exactly belongs to.
+    pub fn for_export_format(raw: &str) -> Option<Self> {
+        [Self::Format2_21, Self::Format2_22]
+            .into_iter()
+            .find(|release| release.export_format() == raw)
+    }
+
+    pub const fn export_format(self) -> &'static str {
+        match self {
+            Self::Format2_21 => "2.21",
+            Self::Format2_22 => "2.22",
+        }
+    }
+
+    pub const fn platform_line(self) -> PlatformLine {
+        match self {
+            Self::Format2_21 => PlatformLine::new(8, 5, 1),
+            Self::Format2_22 => PlatformLine::new(8, 5, 4),
+        }
+    }
+
+    pub const fn platform_line_text(self) -> &'static str {
+        match self {
+            Self::Format2_21 => "8.5.1",
+            Self::Format2_22 => "8.5.4",
+        }
+    }
+
+    pub const fn canonical_id(self) -> &'static str {
+        match self {
+            Self::Format2_21 => "platform-xml-8.5.1-format-2.21",
+            Self::Format2_22 => "platform-xml-8.5.4-format-2.22",
+        }
+    }
+
+    pub const fn stable_discriminants(self) -> [u8; 3] {
+        match self {
+            Self::Format2_21 => [1, 3, 3],
+            Self::Format2_22 => [1, 4, 4],
+        }
+    }
+}
+
+/// The source profile of a Designer export recording `raw` in its root.
+pub(crate) fn platform_xml_profile_for_export_format(raw: &str) -> Option<crate::SourceProfile> {
+    if raw == crate::ACTIVE_SERIALIZATION_FORMAT {
+        return Some(crate::SourceProfile::platform_xml_8_3_27_format_2_20());
+    }
+    PlatformXmlRelease::for_export_format(raw).map(crate::SourceProfile::PlatformXmlRelease)
+}
+
+/// The platform lines whose capabilities are described, with their text.
+pub const DESCRIBED_PLATFORM_LINES: &[(PlatformLine, &str)] = &[
+    (PlatformLine::new(8, 3, 27), "8.3.27"),
+    (PlatformLine::new(8, 5, 1), "8.5.1"),
+    (PlatformLine::new(8, 5, 4), "8.5.4"),
+];
+
 /// A line of the 1C platform, `8.3.27` or `8.5.4`: three numbers, without a
 /// build. One notion for every format family, so lines compare across them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
