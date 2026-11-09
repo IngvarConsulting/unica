@@ -315,6 +315,7 @@ type DecodeResult<T> = Result<T, ContractError>;
 
 fn invalid(path: &str, message: &str) -> ContractError {
     ContractError {
+        enum_value: false,
         path: path.into(),
         message: message.into(),
     }

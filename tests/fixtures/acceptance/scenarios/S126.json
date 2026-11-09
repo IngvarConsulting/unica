@@ -1,0 +1,29 @@
+{
+  "area": "Формы",
+  "task": "Добавить форму элемента",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты",
+        "ops": [
+          {
+            "op": "form.add",
+            "args": {
+              "items": [
+                {
+                  "name": "ФормаЭлементаНовая",
+                  "type": "ObjectForm"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S126"
+}

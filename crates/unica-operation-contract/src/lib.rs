@@ -29,6 +29,8 @@ pub struct OperationContract {
 pub struct ContractError {
     pub path: String,
     pub message: String,
+    /// The value failed an enumerated domain in the argument contract.
+    pub enum_value: bool,
 }
 
 /// A borrowed part of an existing argument contract. Decoders visit it in
@@ -231,6 +233,14 @@ fn error(path: &str, message: impl Into<String>) -> ContractError {
     ContractError {
         path: path.into(),
         message: message.into(),
+        enum_value: false,
+    }
+}
+
+fn enum_error(path: &str, values: &[Value]) -> ContractError {
+    ContractError {
+        enum_value: true,
+        ..error(path, enum_refusal(values))
     }
 }
 
@@ -313,7 +323,7 @@ impl Validator<'_> {
         }
         if let Some(values) = schema["enum"].as_array() {
             if !values.contains(value) {
-                return Err(error(path, enum_refusal(values)));
+                return Err(enum_error(path, values));
             }
         }
         // Различитель выбирает вариант по значению ключа (вид элемента формы):
@@ -349,7 +359,7 @@ impl Validator<'_> {
                             }
                         }
                     }
-                    Err(error(&format!("{path}.{key}"), enum_refusal(&values)))
+                    Err(enum_error(&format!("{path}.{key}"), &values))
                 }
             };
         }
@@ -359,7 +369,7 @@ impl Validator<'_> {
                 .any(|choice| self.validate(choice, value, path).is_ok())
             {
                 if let ClosedEnumDomain::Values(values) = closed_enum_domain(schema, value) {
-                    return Err(error(path, enum_refusal(&values)));
+                    return Err(enum_error(path, &values));
                 }
                 return Err(error(
                     path,
@@ -559,7 +569,41 @@ fn closed_enum_domain(schema: &Value, value: &Value) -> ClosedEnumDomain {
 }
 
 fn enum_refusal(values: &[Value]) -> String {
+    // resource-limit: operation-contract.enum-preview-values
+    // class: result
+    // unit: count
+    // scope: operation
+    // value: 8
+    // resource: Число целых значений перечисления в сообщении отказа.
+    // status: justified
+    // origin: #2015: ограниченный список в отказе аргумента
+    // problem: Большой домен увеличивает ответ агента; полный список остаётся в контекстном контракте Can.
+    // on-reach: Список помечен как сокращённый, названо общее число альтернатив; next ведёт к полному контракту. Допустимые значения не удаляются из схемы.
+    // issue: #2015
+    // evidence: crates/unica-operation-contract/src/lib.rs::enum_preview_boundaries_keep_whole_escaped_json_literals
+    // evidence: crates/unica-daemon/src/infrastructure/daemon/v13_can_honesty_tests.rs::dcs_and_metadata_member_enum_refusals_open_source_backed_contracts
+    // decision: Для компактного сообщения выбран предел восемь целых JSON-значений и 256 UTF-8 байт списка. При достижении предела полный домен доступен через next; это предел представления, а не допустимого ввода.
+    // decision-date: 2026-10-28
+    // decision-source: https://github.com/IngvarConsulting/unica/issues/2015
+    // review: Проверены границы 8/9 значений, 256/257 байт, UTF-8 и открытие полного контракта через MCP.
     const MAX_VALUES: usize = 8;
+    // resource-limit: operation-contract.enum-preview-bytes
+    // class: result
+    // unit: bytes
+    // scope: operation
+    // value: 256
+    // resource: Размер JSON-списка допустимых значений в сообщении отказа перечисления.
+    // status: justified
+    // origin: #2015: ограниченный список в отказе аргумента
+    // problem: Большой домен увеличивает ответ агента; полный список остаётся в контекстном контракте Can.
+    // on-reach: Список помечен как сокращённый, названо общее число альтернатив; next ведёт к полному контракту. Допустимые значения не удаляются из схемы.
+    // issue: #2015
+    // evidence: crates/unica-operation-contract/src/lib.rs::enum_preview_boundaries_keep_whole_escaped_json_literals
+    // evidence: crates/unica-daemon/src/infrastructure/daemon/v13_can_honesty_tests.rs::dcs_and_metadata_member_enum_refusals_open_source_backed_contracts
+    // decision: Для компактного сообщения выбран предел восемь целых JSON-значений и 256 UTF-8 байт списка. При достижении предела полный домен доступен через next; это предел представления, а не допустимого ввода.
+    // decision-date: 2026-10-28
+    // decision-source: https://github.com/IngvarConsulting/unica/issues/2015
+    // review: Проверены границы 8/9 значений, 256/257 байт, UTF-8 и открытие полного контракта через MCP.
     const MAX_PREVIEW_BYTES: usize = 256;
     if values.is_empty() {
         return "this argument has no supported alternatives; read the operation contract".into();
@@ -835,6 +879,7 @@ mod tests {
                 ContractError {
                     path: "ops[2].args.items[0].lower".into(),
                     message: "expected an upper-case word".into(),
+                    enum_value: false,
                 }
             );
         }
@@ -850,6 +895,7 @@ mod tests {
             ContractError {
                 path: "args".into(),
                 message: "argument format has no validator: test-unknown".into(),
+                enum_value: false,
             }
         );
         assert_eq!(
@@ -859,6 +905,7 @@ mod tests {
             ContractError {
                 path: "args".into(),
                 message: "argument format has no validator: test-unknown".into(),
+                enum_value: false,
             }
         );
     }
@@ -965,7 +1012,7 @@ mod tests {
     }
 
     /// Скомпилированная грамматика берётся из кеша по своему шаблону: повторная
-    /// проверка не подменяет одну грамматику другой (#1441).
+    /// проверка не подменяет одну грамматику другой.
     #[test]
     fn a_contract_pattern_keeps_its_own_grammar_on_repeated_validation() {
         let identifier =

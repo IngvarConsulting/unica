@@ -90,7 +90,7 @@ def select(base: dict, head: dict, changes: list[dict]) -> dict:
             decision["reasons"] = [f"full input: {change.get('status', '?')} {path}"]
             return decision
         owner = next(iter(owners))
-        if owner == "unica-coder" or owner not in before or owner not in after:
+        if owner in {"unica-coder", "unica-daemon"} or owner not in before or owner not in after:
             decision["reasons"] = [f"composition or changed graph membership: {owner}"]
             return decision
         # Changed feature declarations invalidate the candidate graph even if

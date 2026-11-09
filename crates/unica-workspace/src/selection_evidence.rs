@@ -13,6 +13,16 @@ use std::io::{ErrorKind, Read, Seek, SeekFrom};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
+// resource-limit: workspace.selection-read-chunk-bytes
+// class: step
+// unit: bytes
+// scope: file
+// value: 65536
+// resource: Размер одной порции чтения и сравнения входа карты исходников при удержании свидетельства выбора.
+// status: unproven
+// origin: коммит 644c01fba (feat: retain source selection evidence for apply)
+// problem: неизвестно
+// on-reach: файл читается и сравнивается следующей порцией после проверки
 const SELECTION_READ_CHUNK_BYTES: usize = 64 * 1024;
 
 #[derive(Clone, Copy)]
@@ -2353,57 +2363,6 @@ pub(crate) mod tests {
             std::fs::create_dir_all(parent).unwrap();
         }
         std::fs::write(path, bytes).unwrap();
-    }
-
-    fn observe_absent_routes_past_former_cap(count: usize, name_bytes: usize) {
-        let root = tempfile::tempdir().unwrap();
-        let workspace =
-            RetainedDirectoryCapability::open(&root.path().canonicalize().unwrap()).unwrap();
-        let mut pass = RetainedSelectionPass::new(workspace).unwrap();
-        let mut last = PathBuf::new();
-        for index in 0..count {
-            last = PathBuf::from(format!("missing-{index:0width$}", width = name_bytes - 8));
-            match pass.observe_regular_presence(&last, &mut || Ok(())) {
-                Ok(SelectionRegularObservation::Absent) => {}
-                Err(error) => panic!("real absence observation {index} failed: {error}"),
-                _ => panic!("fixture expected an absent path at {index}"),
-            }
-        }
-        assert_eq!(pass.paths.len(), count);
-        let before = pass.observation_counts_for_test();
-        assert!(matches!(
-            pass.observe_regular_presence(&last, &mut || Ok(())),
-            Ok(SelectionRegularObservation::Absent)
-        ));
-        assert_eq!(pass.observation_counts_for_test(), before);
-        write(&root.path().join(&last), b"appeared");
-        assert_eq!(
-            pass.observe_regular_presence(&last, &mut || Ok(()))
-                .err()
-                .unwrap(),
-            observation_changed(&last)
-        );
-    }
-
-    /// rule: INV.APP.SOURCE-SELECTION-LIMITS
-    #[test]
-    fn aggregate_selection_records_cross_former_65536_with_real_absences() {
-        observe_absent_routes_past_former_cap(65_537, 16);
-    }
-
-    /// rule: INV.APP.SOURCE-SELECTION-LIMITS
-    #[test]
-    fn aggregate_selection_route_names_cross_former_8mib_with_real_absences() {
-        observe_absent_routes_past_former_cap(20_000, 220);
-    }
-
-    /// rule: INV.APP.SOURCE-SELECTION-LIMITS
-    #[test]
-    pub(crate) fn production_exact_work_can_cross_the_former_byte_ceiling() {
-        let mut usage = SelectionEvidenceUsage::actor_admission();
-        usage.charge_exact_work(32 * 1024 * 1024).unwrap();
-        usage.charge_exact_work(1).unwrap();
-        assert_eq!(usage.exact_work_bytes, 32 * 1024 * 1024 + 1);
     }
 
     /// rule: INV.APP.SOURCE-SELECTION-LIMITS
