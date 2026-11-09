@@ -1679,7 +1679,7 @@ async fn legacy_initialized_session_cannot_escalate_tasks_per_request_case() {
     client.shutdown().await;
 }
 
-async fn modern_initialized_session_retains_native_tasks_case() {
+async fn modern_initialize_offer_falls_back_without_native_tasks_case() {
     use unica_execution_contract::invocation::{InvocationStatus, TaskId};
 
     let task_id = TaskId::new();
@@ -1692,8 +1692,12 @@ async fn modern_initialized_session_retains_native_tasks_case() {
     });
     let get: Arc<CanonicalTaskHandler> =
         Arc::new(move |_, _| Ok(canonical_snapshot(task_id, InvocationStatus::Working, None)));
-    let server = UnicaServer::with_canonical_v13_tasks(call, Arc::clone(&get), get);
-    let (mut client, _) = spawn_unica_server(server);
+    let server = || {
+        UnicaServer::with_canonical_v13_tasks(Arc::clone(&call), Arc::clone(&get), Arc::clone(&get))
+    };
+    let (mut client, _) = spawn_unica_server(server());
+    // 2026-07-28 has no initialize handshake: the offer gets 2025-11-25
+    // even with the Tasks capability, and the session stays legacy.
     client
         .send(json!({
             "jsonrpc":"2.0", "id":0, "method":"initialize",
@@ -1705,7 +1709,7 @@ async fn modern_initialized_session_retains_native_tasks_case() {
         }))
         .await;
     let initialized = client.receive().await;
-    assert_eq!(initialized["result"]["protocolVersion"], "2026-07-28");
+    assert_eq!(initialized["result"]["protocolVersion"], "2025-11-25");
     client
         .send(json!({
             "jsonrpc":"2.0", "id":1, "method":"tools/call",
@@ -1713,8 +1717,22 @@ async fn modern_initialized_session_retains_native_tasks_case() {
         }))
         .await;
     let response = client.receive().await;
-    assert_eq!(response["result"]["resultType"], "task", "{response}");
+    assert_ne!(response["result"]["resultType"], "task", "{response}");
+    assert!(response["result"].get("taskId").is_none(), "{response}");
     client.shutdown().await;
+
+    // The same server gives the native task to a direct 2026-07-28 request
+    // that declares the Tasks capability itself.
+    let (mut direct, _) = spawn_unica_server(server());
+    direct
+        .send(json!({
+            "jsonrpc":"2.0", "id":1, "method":"tools/call",
+            "params":{"name":"unica.check", "arguments":{}, "_meta":modern_tasks_meta()}
+        }))
+        .await;
+    let response = direct.receive().await;
+    assert_eq!(response["result"]["resultType"], "task", "{response}");
+    direct.shutdown().await;
 }
 
 async fn native_task_methods_preserve_one_frontend_transport_cutoff_case() {
@@ -1747,19 +1765,9 @@ async fn native_task_methods_preserve_one_frontend_transport_cutoff_case() {
         ))
     });
     let server = UnicaServer::with_canonical_v13_tasks(call, get, cancel);
+    // Native task methods are direct 2026-07-28 requests: each carries its
+    // own protocol version and Tasks capability.
     let (mut client, _) = spawn_unica_server(server);
-    client
-        .send(json!({
-            "jsonrpc":"2.0", "id":0, "method":"initialize",
-            "params": {
-                "protocolVersion":"2026-07-28",
-                "capabilities":{"extensions":{"io.modelcontextprotocol/tasks":{}}},
-                "clientInfo":{"name":"native-task-deadline-client","version":"1"}
-            }
-        }))
-        .await;
-    let initialized = client.receive().await;
-    assert_eq!(initialized["result"]["protocolVersion"], "2026-07-28");
 
     for (id, method) in [(1, "tasks/get"), (2, "tasks/update"), (3, "tasks/cancel")] {
         let mut params = json!({
@@ -2205,9 +2213,11 @@ async fn legacy_initialized_session_cannot_escalate_tasks_with_modern_request_me
     legacy_initialized_session_cannot_escalate_tasks_per_request_case().await;
 }
 
+/// rule: INV.WIRE.VERSION-TIERS
+/// rule: INV.WIRE.NATIVE-TASK-CAPABILITY
 #[tokio::test]
-async fn modern_initialized_session_can_use_negotiated_native_tasks() {
-    modern_initialized_session_retains_native_tasks_case().await;
+async fn modern_initialize_offer_falls_back_without_native_tasks() {
+    modern_initialize_offer_falls_back_without_native_tasks_case().await;
 }
 
 #[tokio::test]
@@ -2242,7 +2252,7 @@ async fn tasks_hooks_preserve_closed_unknown_expired_invalid_and_update_semantic
 async fn native_task_projection_contract_is_capability_gated_durable_and_replay_free() {
     tasks_direct_first_capability_case().await;
     legacy_initialized_session_cannot_escalate_tasks_per_request_case().await;
-    modern_initialized_session_retains_native_tasks_case().await;
+    modern_initialize_offer_falls_back_without_native_tasks_case().await;
     native_task_methods_preserve_one_frontend_transport_cutoff_case().await;
     tasks_direct_and_completed_get_case().await;
     tasks_projection_rejects_reverse_timestamps_on_wire_case().await;
@@ -2756,10 +2766,16 @@ async fn modern_unknown_version_direct_first_gets_unsupported_error() {
 #[tokio::test]
 async fn modern_partial_meta_opener_is_rejected_before_serving() {
     // A direct-first request with an incomplete reserved set is not a
-    // silent legacy downgrade: admission refuses the connection.
-    for method in ["tools/list", "server/discover"] {
+    // silent legacy downgrade: it gets -32602 and never reaches a handler.
+    for method in ["tools/list", "server/discover", "tools/call"] {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&calls);
+        let handler: Arc<CanonicalCallHandler> = Arc::new(move |_, _, _, _, _| {
+            observed.fetch_add(1, Ordering::SeqCst);
+            direct_outcome(canonical_result("direct"))
+        });
+        let server = UnicaServer::with_canonical_v13(handler);
         let (client_io, server_io) = tokio::io::duplex(4 * 1024 * 1024);
-        let server = canonical_direct_server();
         let handle = tokio::spawn(async move {
             let (read, write) = tokio::io::split(server_io);
             let transport = rmcp::transport::async_rw::AsyncRwTransport::new_server(read, write);
@@ -2772,13 +2788,18 @@ async fn modern_partial_meta_opener_is_rejected_before_serving() {
         });
         let (read_half, mut writer) = tokio::io::split(client_io);
         let mut reader = BufReader::new(read_half).lines();
+        let mut params = json!({ "_meta": {
+            "io.modelcontextprotocol/protocolVersion": "2026-07-28"
+        } });
+        if method == "tools/call" {
+            params["name"] = json!("unica.check");
+            params["arguments"] = json!({});
+        }
         let mut line = json!({
             "jsonrpc": "2.0",
             "id": 0,
             "method": method,
-            "params": { "_meta": {
-                "io.modelcontextprotocol/protocolVersion": "2026-07-28"
-            } }
+            "params": params
         })
         .to_string();
         line.push('\n');
@@ -2787,17 +2808,20 @@ async fn modern_partial_meta_opener_is_rejected_before_serving() {
         let next = timeout(TEST_STEP, reader.next_line())
             .await
             .expect("timed out waiting for admission verdict")
-            .expect("MCP transport failed");
-        assert!(
-            next.is_none(),
-            "{method}: admission must close without serving, got {next:?}"
+            .expect("MCP transport failed")
+            .unwrap_or_else(|| panic!("{method}: connection closed without a verdict"));
+        let response: Value = serde_json::from_str(&next).unwrap();
+        assert_eq!(response["id"], 0, "{method}: {response}");
+        assert_eq!(response["error"]["code"], -32602, "{method}: {response}");
+        assert!(response.get("result").is_none(), "{method}: {response}");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "{method}: incomplete metadata reached the call handler"
         );
-        let outcome = handle.await.unwrap();
-        let error = outcome.expect_err("admission failure surfaces as a serve error");
-        assert!(
-            error.to_lowercase().contains("initialize"),
-            "{method}: unexpected admission error: {error}"
-        );
+        drop(writer);
+        drop(reader);
+        let _ = timeout(TEST_STEP, handle).await;
     }
 }
 

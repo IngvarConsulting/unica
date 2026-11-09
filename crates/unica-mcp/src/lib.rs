@@ -45,7 +45,7 @@ use rmcp::model::{
     InitializeRequestParams, InitializeResult, ListPromptsResult, ListResourceTemplatesResult,
     ListResourcesResult, ListToolsResult, NotificationMetaObject, PaginatedRequestParams,
     ProgressNotificationParam, ProgressToken, ProtocolVersion, RequestMetaObject,
-    ServerCapabilities, ServerInfo, ServerJsonRpcMessage, ServerResult, Tool, UpdateTaskParams,
+    ServerCapabilities, ServerConfig, ServerJsonRpcMessage, ServerResult, Tool, UpdateTaskParams,
     TASKS_EXTENSION_ID,
 };
 use rmcp::service::{NotificationContext, RequestContext, ServerInitializeError};
@@ -735,7 +735,7 @@ impl ServerHandler for UnicaServer {
         std::borrow::Cow::Borrowed(SUPPORTED_PROTOCOL_VERSIONS)
     }
 
-    fn get_info(&self) -> ServerInfo {
+    fn get_info(&self) -> ServerConfig {
         // #490: the negotiation fallback is pinned, not inherited from the
         // SDK LATEST constant, so an SDK bump cannot move it silently.
         //
