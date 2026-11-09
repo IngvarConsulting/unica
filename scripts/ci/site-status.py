@@ -303,6 +303,11 @@ def skipped_by_host(by_host: dict[str, dict[str, int]]) -> str:
     return " · ".join(parts) if parts else "—"
 
 
+# Куда ведёт «Как поставить» карточки: стабильную ставят по разделу установки,
+# кандидата — с канала next, alpha — с её страницы.
+INSTALL_URLS = {"Стабильная": "#install", "Кандидат": "next.html", "Alpha": "alpha.html"}
+
+
 def version_card(kind: str, release: dict, data: Path | None, repo: str) -> dict[str, str]:
     """Карточка версии: тег, дата, проверенный коммит и тесты прогона на нём.
 
@@ -325,6 +330,7 @@ def version_card(kind: str, release: dict, data: Path | None, repo: str) -> dict
     card = {
         "version_kind": kind,
         "version_tag": tag,
+        "install_url": INSTALL_URLS[kind],
         "version_notes_url": str(release["html_url"]),
         "version_published": human(moment(release["published_at"])),
         "version_commit": sha[:7] or "—",

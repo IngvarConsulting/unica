@@ -75,6 +75,21 @@ class HomeStateCardsTests(unittest.TestCase):
         kinds = [kind for kind, _ in self.site_status.site_versions(self.status("v0.12.3"), RELEASES)]
         self.assertNotIn("Кандидат", kinds)
 
+    def test_every_card_says_how_to_install_its_kind_of_version_beside_its_report(self) -> None:
+        cards = self.site_status.site_versions(self.status("v0.13.0-rc.3"), RELEASES)
+        links = {release["tag_name"]: self.site_status.version_card(kind, release, None, "IngvarConsulting/unica")["install_url"]
+                 for kind, release in cards}
+        self.assertEqual(links, {"v0.12.3": "#install", "v0.13.0-rc.3": "next.html",
+                                 "v0.13.0-alpha.8": "alpha.html", "v0.13.0-alpha.7": "alpha.html"})
+        page = self.page("v0.13.0-rc.3")
+        # The candidate is installed from the `next` channel, not from the stable section.
+        self.assertIn('<a href="next.html">Как поставить <span class="vh">v0.13.0-rc.3</span>', page)
+        self.assertIn('<a href="#install">Как поставить <span class="vh">v0.12.3</span>', page)
+        self.assertIn('<a href="alpha.html">Как поставить <span class="vh">v0.13.0-alpha.8</span>', page)
+        # Each footer keeps its report link next to the install link.
+        self.assertEqual(page.count("Как поставить <span"), len(cards))
+        self.assertEqual(page.count('class="card-foot"'), len(cards))
+
     def test_a_version_with_a_stored_report_shows_its_counts_skips_by_os_and_report(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             folder = Path(tmp) / "versions" / "v0.13.0-alpha.8"
