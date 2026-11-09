@@ -237,8 +237,10 @@ pub struct HumanChoice {
 pub struct HumanChoiceOption {
     /// Stable answer value, unique within the choice; never `cancel`.
     pub id: String,
-    /// Short title of the answer, including what it loses.
+    /// Label of the answer as the person sees it.
     pub title: String,
+    /// What the answer loses.
+    pub description: String,
     /// Public tool executing the answer, with its public arguments.
     pub tool: String,
     pub arguments: serde_json::Map<String, Value>,

@@ -48,6 +48,8 @@ use unica_source_contract::workspace::WorkspaceContext;
 use unica_work_control::cancellation::CancellationToken;
 
 pub(super) const OPERATION: &str = "push";
+/// Имя базы в вопросе человеку: адаптер раннера 0.15 обслуживает только её.
+const INFOBASE_NAME: &str = "origin";
 /// Имя команды раннера и в командной строке, и в конверте: с 0.12 раннер
 /// называет её словом словаря.
 const RUNNER_COMMAND: &str = "push";
@@ -1134,48 +1136,18 @@ fn exchange_refusal(
         "reason": "if the sources hold the right state: preview push with force:true, which loads every set in full and overwrites the infobase; changes made in the infobase since this working copy's last exchange are lost"
     }));
     if let (false, Some(source_set)) = (prepared.dry_run, &source_set) {
-        let choice = base_divergence_choice(
-            divergence,
-            source_set,
-            rejection.data.as_ref().unwrap_or(&Value::Null),
-            push_args,
-            pull_args,
-        );
+        let choice = base_divergence_choice(source_set, push_args, pull_args);
         rejection.human_choice = Some(Box::new(choice));
     }
     rejection
 }
 
-/// Вопрос человеку на расхождение базы и набора. Он называет набор, поколения
-/// базы и записи, если раннер их назвал, и для каждого выбора — что будет
-/// потеряно; путей проекта и команд раннера в нём нет. Выбор исполняется
-/// отдельным вызовом: `push` с `force:true` или полный `pull` того же набора.
-fn base_divergence_choice(
-    divergence: BaseDivergence,
-    source_set: &str,
-    data: &Value,
-    push_args: Value,
-    pull_args: Value,
-) -> HumanChoice {
-    let state = match divergence {
-        BaseDivergence::MovedAhead => {
-            "the infobase was changed after this working copy last exchanged it with the source set"
-        }
-        BaseDivergence::Untracked => {
-            "this working copy has no record of exchanging the infobase with the source set, so nothing proves that the sources derive from the infobase"
-        }
-    };
-    let generations = match (
-        data["baseGeneration"].as_str(),
-        data["localGeneration"].as_str(),
-    ) {
-        (Some(base), Some(local)) => format!(
-            " Infobase generation {base}; generation recorded by this working copy {local}."
-        ),
-        (Some(base), None) => format!(" Infobase generation {base}."),
-        (None, Some(local)) => format!(" Generation recorded by this working copy {local}."),
-        (None, None) => String::new(),
-    };
+/// Вопрос человеку на расхождение базы и набора. Надписи вопроса и вариантов
+/// согласованы и закреплены тестом: путей проекта и команд раннера в них нет.
+/// Выбор исполняется отдельным вызовом: `push` с `force:true` или полный
+/// `pull` того же набора. Адаптер раннера 0.15 обслуживает только базу
+/// `infobases.origin`, поэтому вопрос называет её.
+fn base_divergence_choice(source_set: &str, push_args: Value, pull_args: Value) -> HumanChoice {
     let call = |op: &str, args: Value| {
         let mut call = Map::new();
         call.insert("op".to_string(), json!(op));
@@ -1185,22 +1157,20 @@ fn base_divergence_choice(
     };
     HumanChoice {
         question: format!(
-            "push of source set `{source_set}` loaded nothing: {state}.{generations} What should be done with the infobase?"
+            "База «{INFOBASE_NAME}» и исходники набора «{source_set}» разошлись."
         ),
         options: vec![
             HumanChoiceOption {
                 id: "overwrite".to_string(),
-                title: format!(
-                    "Overwrite the infobase with source set `{source_set}`: loads it in full; changes made in the infobase since the last exchange are lost"
-                ),
+                title: "Перезаписать базу".to_string(),
+                description: "Изменения, сделанные в базе, пропадут".to_string(),
                 tool: "unica.run".to_string(),
                 arguments: call(OPERATION, push_args),
             },
             HumanChoiceOption {
                 id: "pull".to_string(),
-                title: format!(
-                    "Take the infobase into source set `{source_set}`: replaces the set; its uncommitted changes are lost"
-                ),
+                title: "Перезаписать исходники".to_string(),
+                description: "Несохранённые правки файлов пропадут".to_string(),
                 tool: "unica.run".to_string(),
                 arguments: call("pull", pull_args),
             },
@@ -2342,9 +2312,9 @@ pub(super) mod tests {
     }
 
     /// Исполняемый `push`, которому база и набор разошлись, несёт вопрос
-    /// человеку: набор, поколения и что теряет каждый выбор, без путей и
-    /// команд раннера, и готовые вызовы — `push` с `force:true` и полный
-    /// `pull` того же набора. Превью вопроса не несёт: выбор исполнял бы
+    /// человеку с согласованными надписями — базу, набор и что теряет каждый
+    /// выбор — и готовые вызовы: `push` с `force:true` и полный `pull` того
+    /// же набора. Превью вопроса не несёт: выбор исполнял бы
     /// изменение. Сам `force` вопрос не добавляет — только выбранный вызов.
     /// rule: INV.RUNTIME.RUNNER-BASE-REFUSALS
     #[test]
@@ -2360,27 +2330,37 @@ pub(super) mod tests {
             &runner,
         );
         let choice = result.human_choice.as_deref().expect("a choice");
-        for named in [
-            "`main`",
-            "59b683d1a9fe984f8fe7fa810e5702a000000000",
-            "32fdb66afb9dda48acedb7152cf0cb3500000000",
-        ] {
-            assert!(choice.question.contains(named), "{named}: {choice:?}");
-        }
-        let texts = std::iter::once(choice.question.as_str())
-            .chain(choice.options.iter().map(|option| option.title.as_str()));
-        for text in texts {
-            assert!(
-                !text.contains("v8-runner")
-                    && !text.contains("--force")
-                    && !text.contains(&root.path().display().to_string()),
-                "{text}"
-            );
-        }
-        let ids: Vec<&str> = choice.options.iter().map(|option| option.id.as_str()).collect();
-        assert_eq!(ids, ["overwrite", "pull"]);
-        assert!(choice.options[0].title.contains("are lost"), "{choice:?}");
-        assert!(choice.options[1].title.contains("are lost"), "{choice:?}");
+        // Надписи согласованы: менять их — только вместе с этим тестом.
+        assert_eq!(
+            choice.question,
+            "База «origin» и исходники набора «main» разошлись."
+        );
+        let labels: Vec<(&str, &str, &str)> = choice
+            .options
+            .iter()
+            .map(|option| {
+                (
+                    option.id.as_str(),
+                    option.title.as_str(),
+                    option.description.as_str(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            labels,
+            [
+                (
+                    "overwrite",
+                    "Перезаписать базу",
+                    "Изменения, сделанные в базе, пропадут"
+                ),
+                (
+                    "pull",
+                    "Перезаписать исходники",
+                    "Несохранённые правки файлов пропадут"
+                ),
+            ]
+        );
         assert_eq!(choice.options[0].tool, "unica.run");
         assert_eq!(
             Value::Object(choice.options[0].arguments.clone()),

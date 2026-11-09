@@ -23,6 +23,8 @@ pub(crate) const CHOICE_INPUT_KEY: &str = "unica.choice";
 const CHOICE_FIELD: &str = "choice";
 /// The answer that keeps the refusal; never an option id.
 const CANCEL: &str = "cancel";
+/// Label of the cancel answer; agreed like every label of a question.
+const CANCEL_TITLE: &str = "Отменить";
 /// A question asked by an `elicitation/create` request waits this long for the
 /// person; past it the refusal stands. The person reads the question and
 /// decides whose change is right, so the wait is minutes, not seconds.
@@ -72,13 +74,10 @@ pub(crate) fn elicitation_params(choice: &HumanChoice) -> ElicitRequestParams {
         .iter()
         .map(|option| json!({"const": option.id, "title": option.title}))
         .collect();
-    one_of.push(json!({
-        "const": CANCEL,
-        "title": "Cancel: change nothing, keep the refusal"
-    }));
+    one_of.push(json!({"const": CANCEL, "title": CANCEL_TITLE}));
     serde_json::from_value(json!({
         "mode": "form",
-        "message": choice.question,
+        "message": question_text(choice),
         "requestedSchema": {
             "type": "object",
             "properties": {
@@ -88,6 +87,19 @@ pub(crate) fn elicitation_params(choice: &HumanChoice) -> ElicitRequestParams {
         }
     }))
     .expect("the choice form is a valid elicitation request")
+}
+
+/// The question with what each answer loses, one line per option: a form
+/// option carries only its label.
+pub(crate) fn question_text(choice: &HumanChoice) -> String {
+    let mut text = choice.question.clone();
+    text.push('
+');
+    for option in &choice.options {
+        text.push_str(&format!("
+{}: {}.", option.title, option.description));
+    }
+    text
 }
 
 /// The `input_required` result asking the question. `requestState` binds the
@@ -184,12 +196,14 @@ mod tests {
                 HumanChoiceOption {
                     id: "overwrite".into(),
                     title: "Overwrite the infobase".into(),
+                    description: "infobase changes are lost".into(),
                     tool: "unica.run".into(),
                     arguments: call("push", json!({"force": true, "sourceSet": "main"})),
                 },
                 HumanChoiceOption {
                     id: "pull".into(),
                     title: "Take the infobase into the set".into(),
+                    description: "unsaved file edits are lost".into(),
                     tool: "unica.run".into(),
                     arguments: call("pull", json!({"force": true, "sourceSet": "main"})),
                 },
@@ -238,7 +252,13 @@ mod tests {
         let form = serde_json::to_value(elicitation_params(&choice())).unwrap();
 
         assert_eq!(form["mode"], "form");
-        assert_eq!(form["message"], "push of source set `main` loaded nothing");
+        assert_eq!(
+            form["message"],
+            "push of source set `main` loaded nothing
+
+Overwrite the infobase: infobase changes are lost.
+Take the infobase into the set: unsaved file edits are lost."
+        );
         let one_of = &form["requestedSchema"]["properties"][CHOICE_FIELD]["oneOf"];
         let ids: Vec<&str> = one_of
             .as_array()
@@ -248,6 +268,7 @@ mod tests {
             .collect();
         assert_eq!(ids, ["overwrite", "pull", CANCEL]);
         assert_eq!(one_of[0]["title"], "Overwrite the infobase");
+        assert_eq!(one_of[2]["title"], CANCEL_TITLE);
         assert_eq!(form["requestedSchema"]["required"], json!([CHOICE_FIELD]));
     }
 

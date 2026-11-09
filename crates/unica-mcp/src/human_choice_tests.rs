@@ -32,12 +32,14 @@ fn choice() -> HumanChoice {
             HumanChoiceOption {
                 id: "overwrite".into(),
                 title: "Overwrite the infobase".into(),
+                description: "infobase changes are lost".into(),
                 tool: "unica.run".into(),
                 arguments: push_call(true),
             },
             HumanChoiceOption {
                 id: "pull".into(),
                 title: "Take the infobase into the set".into(),
+                description: "unsaved file edits are lost".into(),
                 tool: "unica.run".into(),
                 arguments: pull.as_object().unwrap().clone(),
             },
@@ -147,7 +149,7 @@ async fn a_legacy_session_is_asked_and_the_chosen_call_runs() {
     client.send(call_push(1)).await;
     let asked = client.receive().await;
     assert_eq!(asked["method"], "elicitation/create", "{asked}");
-    assert_eq!(asked["params"]["message"], choice().question);
+    assert_eq!(asked["params"]["message"], human_choice::question_text(&choice()));
     client
         .send(json!({
             "jsonrpc": "2.0", "id": asked["id"],
@@ -215,7 +217,7 @@ async fn a_modern_client_answers_by_retrying_the_call() {
     assert_eq!(asked["result"]["resultType"], "input_required", "{asked}");
     let request = &asked["result"]["inputRequests"][human_choice::CHOICE_INPUT_KEY];
     assert_eq!(request["method"], "elicitation/create", "{asked}");
-    assert_eq!(request["params"]["message"], choice().question);
+    assert_eq!(request["params"]["message"], human_choice::question_text(&choice()));
     let state = asked["result"]["requestState"].clone();
     assert_eq!(calls.lock().unwrap().len(), 1);
 
