@@ -9,6 +9,13 @@ files are only read: the copy gets fresh identifiers, is registered in
 platform needs to load it. The result is not a reference by itself: ``refresh-platform-corpus.py``
 loads it into a platform and keeps the platform export.
 
+Three kinds have no object in any fixture and no writer in Unica: a chat bot,
+a WebSocket client and an external data source. ``HAND_WRITTEN`` writes a
+minimal descriptor of each — the root, the generated types the platform
+requires, the name, a module or a table with a field. These descriptors are
+written by hand, not exported; each one loads into 8.3.27, and only the
+platform's export of them becomes the reference.
+
     build-all-kinds.py --out DIR
 
 ``--list`` prints the source of every kind and the repairs without writing.
@@ -311,6 +318,99 @@ def add(out: Path, source: Source) -> str:
     return name
 
 
+# Hand-written seeds of the kinds no fixture has. Not a reference: the platform
+# loads them and its export is kept. Each element below was needed for ibcmd
+# config import on 8.3.27 to accept the object.
+HAND_WRITTEN_KINDS = (
+    ("Bot", "Bots", "AllKindsBot"),
+    ("WebSocketClient", "WebSocketClients", "AllKindsWebSocketClient"),
+    ("ExternalDataSource", "ExternalDataSources", "AllKindsExternalSource"),
+)
+# Without these generated types the import refuses "отсутствует один или более
+# типов объекта" for the source and for its table.
+EXTERNAL_SOURCE_TYPES = (
+    ("ExternalDataSourceManager", "Manager"),
+    ("ExternalDataSourceTablesManager", "TablesManager"),
+    ("ExternalDataSourceCubesManager", "CubesManager"),
+)
+EXTERNAL_TABLE_TYPES = (
+    ("ExternalDataSourceTableRef", "Ref"),
+    ("ExternalDataSourceTableObject", "Object"),
+    ("ExternalDataSourceTableManager", "Manager"),
+    ("ExternalDataSourceTableList", "List"),
+    ("ExternalDataSourceTableRecord", "Record"),
+    ("ExternalDataSourceTableRecordSet", "RecordSet"),
+    ("ExternalDataSourceTableRecordKey", "RecordKey"),
+    ("ExternalDataSourceTableRecordManager", "RecordManager"),
+)
+HAND_WRITTEN_HEAD = (
+    '<?xml version="1.0" encoding="UTF-8"?>\r\n'
+    '<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" '
+    'xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" '
+    'xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.20">\r\n'
+)
+
+
+def hand_written_uuid(*parts: str) -> str:
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, "unica-all-kinds-hand-written|" + "|".join(parts)))
+
+
+def xml_line(depth: int, text: str) -> str:
+    return "\t" * depth + text + "\r\n"
+
+
+def generated_types(owner: str, pairs: Sequence[tuple], depth: int) -> str:
+    text = xml_line(depth, "<InternalInfo>")
+    for prefix, category in pairs:
+        text += xml_line(depth + 1, f'<xr:GeneratedType name="{prefix}.{owner}" category="{category}">')
+        text += xml_line(depth + 2, f"<xr:TypeId>{hand_written_uuid(owner, prefix, 'type')}</xr:TypeId>")
+        text += xml_line(depth + 2, f"<xr:ValueId>{hand_written_uuid(owner, prefix, 'value')}</xr:ValueId>")
+        text += xml_line(depth + 1, "</xr:GeneratedType>")
+    return text + xml_line(depth, "</InternalInfo>")
+
+
+def named_properties(depth: int, name: str, extra: Sequence[str] = ()) -> str:
+    text = xml_line(depth, "<Properties>") + xml_line(depth + 1, f"<Name>{name}</Name>")
+    text += xml_line(depth + 1, "<Synonym/>") + xml_line(depth + 1, "<Comment/>")
+    for item in extra:
+        text += xml_line(depth + 1, item)
+    return text + xml_line(depth, "</Properties>")
+
+
+def write_hand_written(out: Path, kind: str, folder: str, name: str) -> None:
+    """One hand-written object; see ``HAND_WRITTEN_KINDS``."""
+    directory = out / folder
+    directory.mkdir(exist_ok=True)
+    internal, children = "", ""
+    if kind == "ExternalDataSource":
+        # The source lists its table by name; the table is a file of its own
+        # under Tables/, inline it crashes the import with "bad allocation".
+        internal = generated_types(name, EXTERNAL_SOURCE_TYPES, 2)
+        children = xml_line(2, "<ChildObjects>") + xml_line(3, "<Table>Items</Table>") + xml_line(2, "</ChildObjects>")
+        table = f"{name}.Items"
+        field = (xml_line(3, f'<Field uuid="{hand_written_uuid(table, "Code")}">')
+                 + named_properties(4, "Code", ["<NameInDataSource>code</NameInDataSource>"])
+                 + xml_line(3, "</Field>"))
+        body = (HAND_WRITTEN_HEAD + xml_line(1, f'<Table uuid="{hand_written_uuid(table)}">')
+                + generated_types(table, EXTERNAL_TABLE_TYPES, 2)
+                + named_properties(2, "Items", ["<TableDataType>NonobjectData</TableDataType>",
+                                                "<NameInDataSource>items</NameInDataSource>"])
+                + xml_line(2, "<ChildObjects>") + field + xml_line(2, "</ChildObjects>")
+                + xml_line(1, "</Table>") + "</MetaDataObject>\r\n")
+        tables = directory / name / "Tables"
+        tables.mkdir(parents=True)
+        (tables / "Items.xml").write_text(body, encoding="utf-8-sig", newline="")
+    else:
+        module = directory / name / "Ext"
+        module.mkdir(parents=True)
+        (module / "Module.bsl").write_text("\r\n", encoding="utf-8-sig", newline="")
+    descriptor = (HAND_WRITTEN_HEAD + xml_line(1, f'<{kind} uuid="{hand_written_uuid(kind, name)}">')
+                  + internal + named_properties(2, name) + children
+                  + xml_line(1, f"</{kind}>") + "</MetaDataObject>\r\n")
+    (directory / f"{name}.xml").write_text(descriptor, encoding="utf-8-sig", newline="")
+    register(out / "Configuration.xml", kind, name)
+
+
 def build(out: Path) -> List[str]:
     if out.exists():
         raise SystemExit(f"{out} exists; pass a new directory")
@@ -329,6 +429,9 @@ def build(out: Path) -> List[str]:
     for source in SOURCES:
         name = add(out, source)
         report.append(f"{source.kind}.{name}: {source.path}")
+    for kind, folder, name in HAND_WRITTEN_KINDS:
+        write_hand_written(out, kind, folder, name)
+        report.append(f"{kind}.{name}: hand-written")
     for repair in REPAIRS:
         report.append(f"repair ({repair.apply(out)}): {repair.why}")
     return report
@@ -342,6 +445,8 @@ def main(argv: Sequence[str]) -> int:
     if args.list:
         for source in SOURCES:
             print(f"{source.kind}: {source.path}")
+        for kind, _, _ in HAND_WRITTEN_KINDS:
+            print(f"{kind}: hand-written")
         for repair in REPAIRS:
             print(f"repair: {repair.why}")
         return 0
