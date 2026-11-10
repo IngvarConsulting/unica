@@ -10,8 +10,8 @@
 
 use crate::completion::{LspCompletion, LspCompletionRequest};
 use crate::diagnostics::{
-    merge, wire_diagnostics, AnalysisKey, EditorAnalysis, LspAnalysis, LspDiagnosticGap,
-    LspDiagnostics,
+    merge, wire_diagnostics, AnalysisKey, EditorAnalysis, LspAnalysis, LspAnalysisProgress,
+    LspDiagnosticGap, LspDiagnostics,
 };
 use crate::document::ContentChange;
 use crate::documents::ModuleSourceRead;
@@ -35,13 +35,14 @@ use unica_code_model::symbols::{
 use unica_lsp_contract::host::{LspCallContext, LspClientChannel, LspHost};
 use unica_lsp_contract::protocol::{
     V5LspCall, V5LspCapabilities, V5LspContentChange, V5LspFailure, V5LspLocation,
-    V5LspMessageLevel, V5LspNotification, V5LspOpening, V5LspOutcome, V5LspPosition, V5LspRange,
-    V5LspServerNotification, V5LspSessionId, V5LspTextSync, V5LspWorkspaceFolder,
-    V5LspWorkspaceSpace,
+    V5LspMessageLevel, V5LspNotification, V5LspOpening, V5LspOutcome, V5LspPosition,
+    V5LspProgressPhase, V5LspRange, V5LspServerNotification, V5LspSessionId, V5LspTextSync,
+    V5LspWorkspaceFolder, V5LspWorkspaceSpace,
 };
 use unica_lsp_contract::protocol::{
     V5LspCompletionData, V5LspCompletionItem, V5LspCompletionKind, V5LspTextEdit,
 };
+use unica_work_control::cancellation::CancellationToken;
 use unica_work_control::provider_deadline::ProviderDeadline;
 use unica_workspace::actor::WorkspaceActor;
 use unica_workspace::documents::{DocumentOverlay, DocumentOverlayError, DocumentText};
@@ -106,7 +107,14 @@ struct Session {
     documents: LspDocuments,
     spaces: BTreeMap<String, AdmittedSpace>,
     client: LspClientChannel,
+    /// Preparations of this session's spaces still under way, by space: a
+    /// space whose analyzer builds its database answers `warming`.
+    warming: Warming,
+    /// Stops this session's preparations when it closes.
+    preparation: CancellationToken,
 }
+
+type Warming = Arc<Mutex<BTreeMap<String, usize>>>;
 
 struct AdmittedSpace {
     folder: PathBuf,
@@ -167,6 +175,8 @@ impl LspHost for UnicaLspHost {
             })
             .collect();
         let documents = LspDocuments::new(session.as_str(), layouts);
+        let warming = Warming::default();
+        let preparation = CancellationToken::new();
         let mut spaces = BTreeMap::new();
         let mut workspaces = Vec::with_capacity(folders.len());
         for (folder, admitted) in folders.iter().zip(admitted) {
@@ -175,6 +185,7 @@ impl LspHost for UnicaLspHost {
             });
             match named {
                 Some((name, space)) => {
+                    prepare_analysis(&name, &space, &client, &warming, &preparation);
                     workspaces.push(V5LspWorkspaceSpace::opened(&folder.uri, &name));
                     spaces.insert(name, space);
                 }
@@ -190,6 +201,8 @@ impl LspHost for UnicaLspHost {
                 documents,
                 spaces,
                 client,
+                warming,
+                preparation,
             })),
         );
         Ok(V5LspOpening {
@@ -343,6 +356,7 @@ impl LspHost for UnicaLspHost {
             return;
         };
         let session = read(&session);
+        session.preparation.cancel();
         self.analysis
             .forget(&session_waiter(session.documents.session()), None);
         // An open buffer keeps its actor from eviction: every actor of the
@@ -605,6 +619,8 @@ struct DiagnosticCall {
     diagnostics: Arc<dyn LspDiagnostics>,
     session: String,
     client: LspClientChannel,
+    /// The space's analyzer is still building its database.
+    warming: bool,
 }
 
 fn diagnostic_call(session: &Session, uri: &str) -> Result<DiagnosticCall, V5LspFailure> {
@@ -633,6 +649,7 @@ fn diagnostic_call(session: &Session, uri: &str) -> Result<DiagnosticCall, V5Lsp
         saved: (read, target),
         session: session.documents.session().to_owned(),
         client: session.client.clone(),
+        warming: lock(&session.warming).contains_key(&location.document.space),
         folder: space.folder.clone(),
         source_set: location.source_set,
         diagnostics: Arc::clone(&space.diagnostics),
@@ -682,7 +699,11 @@ fn diagnostic_answer(
             None if cancelled(context) => return Ok(V5LspOutcome::Cancelled {}),
             None => LspAnalysis {
                 findings: Vec::new(),
-                gaps: vec![LspDiagnosticGap::AnalysisNotReady],
+                gaps: vec![if asked.warming {
+                    LspDiagnosticGap::AnalysisWarming
+                } else {
+                    LspDiagnosticGap::AnalysisNotReady
+                }],
             },
         },
     };
@@ -699,6 +720,21 @@ const ANALYSIS_WAIT_SLICE: Duration = Duration::from_millis(50);
 /// How long before its deadline a request stops waiting for the analysis,
 /// so that the answer without it still reaches the editor in time.
 const ANALYSIS_ANSWER_RESERVE: Duration = Duration::from_millis(250);
+/// How long a request of an editor that hears the refresh waits for an
+/// analysis: enough for a ready analyzer to answer about one module, so the
+/// answer is whole instead of "not ready" followed by a refresh.
+// resource-limit: lsp.editor-ready-analysis-wait
+// class: deadline
+// unit: ms
+// scope: request
+// value: 1000
+// resource: Ожидание анализа модуля запросом редактора, который слышит `workspace/diagnostic/refresh`.
+// status: unproven
+// origin: #2790
+// problem: неизвестно
+// on-reach: ответ уходит с пометкой `analysis_not_ready`, а по окончании анализа редактор слышит refresh
+// issue: #2790
+const READY_ANALYSIS_WAIT: Duration = Duration::from_secs(1);
 
 /// The request was cancelled by its editor, as opposed to running out of
 /// time: an answer is still owed until the deadline.
@@ -756,15 +792,17 @@ fn analysis_within(
             return Some(done);
         }
         // An editor that hears the refresh asks again once the analysis is
-        // ready, so its answer goes now; another has no such signal and
-        // waits for the analysis as long as its deadline allows.
+        // ready, so it waits only as long as a ready analysis takes to
+        // answer; another has no such signal and waits for the analysis as
+        // long as its deadline allows.
+        let latest = context
+            .deadline()
+            .checked_sub(ANALYSIS_ANSWER_RESERVE)
+            .unwrap_or_else(Instant::now);
         let until = if asked.client.hears_refresh() {
-            Instant::now()
+            latest.min(Instant::now() + READY_ANALYSIS_WAIT)
         } else {
-            context
-                .deadline()
-                .checked_sub(ANALYSIS_ANSWER_RESERVE)
-                .unwrap_or_else(Instant::now)
+            latest
         };
         loop {
             let left = until.saturating_duration_since(Instant::now());
@@ -1025,6 +1063,85 @@ fn document_text(session: &Session, uri: &str) -> Result<String, V5LspFailure> {
         })?
         .ok_or(V5LspFailure::DocumentUnknown)
 }
+
+/// The analysis of an opened space starts preparing at once, in the
+/// background, each source set on its own: the first question about a
+/// module then finds it closer to ready instead of starting it. The editor
+/// hears how the preparation goes; while it goes, the space answers
+/// `warming`.
+fn prepare_analysis(
+    name: &str,
+    space: &AdmittedSpace,
+    client: &LspClientChannel,
+    warming: &Warming,
+    cancellation: &CancellationToken,
+) {
+    for set in &space.source_sets {
+        let diagnostics = Arc::clone(&space.diagnostics);
+        let (space, set) = (name.to_owned(), set.name.clone());
+        let token = format!("{ANALYSIS_PROGRESS_TOKEN}{space}-{set}");
+        let (client, warming, cancellation) =
+            (client.clone(), Arc::clone(warming), cancellation.clone());
+        std::thread::spawn(move || {
+            let began = std::cell::Cell::new(false);
+            let mark = |warm: bool| {
+                let mut spaces = lock(&warming);
+                let count = spaces.entry(space.clone()).or_default();
+                *count = if warm {
+                    *count + 1
+                } else {
+                    count.saturating_sub(1)
+                };
+                if *count == 0 {
+                    spaces.remove(&space);
+                }
+            };
+            let progress = |stage: LspAnalysisProgress| {
+                let (phase, title, message) = match stage {
+                    LspAnalysisProgress::Begin { title, message } => {
+                        if began.replace(true) {
+                            return;
+                        }
+                        mark(true);
+                        (V5LspProgressPhase::Begin, Some(title), message)
+                    }
+                    LspAnalysisProgress::Report { message } => {
+                        if !began.get() {
+                            return;
+                        }
+                        (V5LspProgressPhase::Report, None, message)
+                    }
+                    LspAnalysisProgress::End { message } => {
+                        if !began.replace(false) {
+                            return;
+                        }
+                        mark(false);
+                        (V5LspProgressPhase::End, None, message)
+                    }
+                };
+                client.push(V5LspServerNotification::AnalysisProgress {
+                    token: token.clone(),
+                    phase,
+                    title,
+                    message,
+                });
+            };
+            diagnostics.prepare(&set, &progress, &cancellation);
+            // A preparation that stopped without its end still ends here.
+            if began.get() {
+                progress(LspAnalysisProgress::End {
+                    message: ANALYSIS_STOPPED.to_owned(),
+                });
+            }
+        });
+    }
+}
+
+/// The start of every analysis progress token: the editor tells Unica's
+/// preparations by it.
+const ANALYSIS_PROGRESS_TOKEN: &str = "unica-analysis-";
+/// The end of a preparation that stopped before it could tell its own end.
+const ANALYSIS_STOPPED: &str = "Подготовка анализа остановлена";
 
 /// The admitted space and its actor, held only while the caller needs it.
 fn admit(

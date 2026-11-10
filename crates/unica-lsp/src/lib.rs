@@ -8,6 +8,7 @@
 
 mod codec;
 mod door;
+mod progress;
 
 use std::io;
 use std::sync::Arc;

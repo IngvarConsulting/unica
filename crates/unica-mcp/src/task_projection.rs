@@ -401,8 +401,11 @@ mod tests {
         let plain = super::call_tool_result(&refusal, ResponseBudget::default()).unwrap();
         refusal.human_choice = Some(Box::new(
             unica_execution_contract::invocation::HumanChoice {
+                code: String::new(),
+                data: None,
                 question: "What should be done with the infobase?".into(),
                 options: Vec::new(),
+                proceeds_unasked: false,
             },
         ));
 

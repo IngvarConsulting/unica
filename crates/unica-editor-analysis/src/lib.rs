@@ -20,7 +20,9 @@ mod symbols;
 mod uri;
 
 pub use completion::{LspCompletion, LspCompletionAnswer, LspCompletionRequest};
-pub use diagnostics::{LspAnalysis, LspDiagnosticGap, LspDiagnostics, LspFinding, LspSeverity};
+pub use diagnostics::{
+    LspAnalysis, LspAnalysisProgress, LspDiagnosticGap, LspDiagnostics, LspFinding, LspSeverity,
+};
 pub use documents::{ModuleSourceRead, SourceSetLayout};
 pub use host::{AdmittedWorkspace, LspActor, LspModuleReads, LspWorkspaces, UnicaLspHost};
 pub use module_document::ModuleDocument;

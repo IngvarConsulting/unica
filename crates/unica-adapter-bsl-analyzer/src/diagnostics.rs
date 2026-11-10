@@ -181,11 +181,28 @@ pub mod analyze_timeout_probe {
 
     pub struct RecordingAnalyzeBackend {
         timeouts: std::sync::Mutex<Vec<Option<Duration>>>,
+        resident_calls: std::sync::Mutex<Vec<Value>>,
+        /// Replies to resident `file` questions, in order; without one the
+        /// resident fails, as a probe that answers only analyze.
+        resident_replies: std::sync::Mutex<std::collections::VecDeque<String>>,
     }
 
     impl RecordingAnalyzeBackend {
+        fn new(resident_replies: Vec<String>) -> Self {
+            Self {
+                timeouts: std::sync::Mutex::new(Vec::new()),
+                resident_calls: std::sync::Mutex::new(Vec::new()),
+                resident_replies: std::sync::Mutex::new(resident_replies.into()),
+            }
+        }
+
         pub fn timeouts(&self) -> Vec<Option<Duration>> {
             self.timeouts.lock().unwrap().clone()
+        }
+
+        /// The arguments of every resident question, in order.
+        pub fn resident_calls(&self) -> Vec<Value> {
+            self.resident_calls.lock().unwrap().clone()
         }
     }
 
@@ -197,7 +214,38 @@ pub mod analyze_timeout_probe {
             timeout: Option<Duration>,
             _cancellation: &CancellationToken,
         ) -> Result<BslDiagnosticBackendReply, AnalyzerRunFailure> {
-            self.timeouts.lock().unwrap().push(timeout);
+            match request {
+                BslDiagnosticBackendRequest::Resident { arguments, .. } => {
+                    self.resident_calls.lock().unwrap().push(arguments.clone());
+                    // A status question only brings the resident up: it is
+                    // answered as still building and takes no scripted reply.
+                    if arguments["action"] == "status" {
+                        return Ok(BslDiagnosticBackendReply::Resident(
+                            BslDiagnosticResidentReply {
+                                result_text: json!({"state": "loading", "status": "loading"})
+                                    .to_string(),
+                                stderr: String::new(),
+                                version: Some("probe".to_string()),
+                            },
+                        ));
+                    }
+                    self.timeouts.lock().unwrap().push(timeout);
+                    let reply = self.resident_replies.lock().unwrap().pop_front();
+                    return match reply {
+                        Some(result_text) => Ok(BslDiagnosticBackendReply::Resident(
+                            BslDiagnosticResidentReply {
+                                result_text,
+                                stderr: String::new(),
+                                version: Some("probe".to_string()),
+                            },
+                        )),
+                        None => Err("the analyze probe answers only analyze".to_string().into()),
+                    };
+                }
+                BslDiagnosticBackendRequest::Analyze { .. } => {
+                    self.timeouts.lock().unwrap().push(timeout)
+                }
+            }
             match request {
                 BslDiagnosticBackendRequest::Analyze { .. } => Ok(
                     BslDiagnosticBackendReply::Analyze(Box::new(AnalyzerDiagnosticsBatch {
@@ -221,7 +269,7 @@ pub mod analyze_timeout_probe {
                     })),
                 ),
                 BslDiagnosticBackendRequest::Resident { .. } => {
-                    Err("the analyze probe answers only analyze".to_string().into())
+                    unreachable!("resident questions are answered above")
                 }
             }
         }
@@ -279,14 +327,29 @@ pub mod analyze_timeout_probe {
         &'static RecordingAnalyzeBackend,
     ) {
         let backend: &'static RecordingAnalyzeBackend =
-            Box::leak(Box::new(RecordingAnalyzeBackend {
-                timeouts: std::sync::Mutex::new(Vec::new()),
-            }));
+            Box::leak(Box::new(RecordingAnalyzeBackend::new(Vec::new())));
         (
             std::sync::Arc::new(BslAnalyzerDiagnosticProvider::new(
                 backend,
                 analyze_probe_findings_unavailable,
             )),
+            backend,
+        )
+    }
+
+    /// The real provider over a resident that answers its `file` questions
+    /// with `replies` in order, for the module `findings_module` proves.
+    pub fn resident_provider(
+        findings_module: FindingsModuleResolver,
+        replies: Vec<String>,
+    ) -> (
+        std::sync::Arc<dyn DiagnosticProvider>,
+        &'static RecordingAnalyzeBackend,
+    ) {
+        let backend: &'static RecordingAnalyzeBackend =
+            Box::leak(Box::new(RecordingAnalyzeBackend::new(replies)));
+        (
+            std::sync::Arc::new(BslAnalyzerDiagnosticProvider::new(backend, findings_module)),
             backend,
         )
     }
@@ -652,6 +715,9 @@ struct ResidentStatusReply {
     #[serde(default)]
     reload: String,
     error: Option<String>,
+    files: Option<usize>,
+    attempts: Option<u32>,
+    elapsed_ms: Option<u64>,
 }
 
 pub fn parse_resident_status(
@@ -697,6 +763,11 @@ pub fn parse_resident_status(
                 state,
                 DiagnosticReadinessState::NotStarted | DiagnosticReadinessState::Building
             ),
+            progress: Some(DiagnosticBuildProgress {
+                files: status.files,
+                attempts: status.attempts,
+                elapsed_ms: status.elapsed_ms,
+            }),
         }),
         error: None,
         suppressions: Vec::new(),

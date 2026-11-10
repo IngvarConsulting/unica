@@ -184,6 +184,20 @@ pub fn run_workspace_service(args: &[String]) -> Result<(), String> {
 pub mod diagnostics_probe {
     pub use unica_adapter_bsl_analyzer::adapter::AnalyzerRunFailureKind;
     pub use unica_adapter_bsl_analyzer::diagnostics::analyze_timeout_probe::{
-        failing_provider, recording_provider,
+        failing_provider, recording_provider, RecordingAnalyzeBackend,
     };
+
+    /// The real provider over a resident answering its `file` questions with
+    /// `replies` in order, for the module the product proves.
+    pub fn resident_provider(
+        replies: Vec<String>,
+    ) -> (
+        std::sync::Arc<dyn unica_diagnostics::model::DiagnosticProvider>,
+        &'static RecordingAnalyzeBackend,
+    ) {
+        unica_adapter_bsl_analyzer::diagnostics::analyze_timeout_probe::resident_provider(
+            crate::infrastructure::diagnostics::findings_module_path,
+            replies,
+        )
+    }
 }
