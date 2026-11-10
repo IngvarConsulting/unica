@@ -175,6 +175,7 @@ impl LspHost for UnicaLspHost {
             });
             match named {
                 Some((name, space)) => {
+                    prepare_analysis(&space);
                     workspaces.push(V5LspWorkspaceSpace::opened(&folder.uri, &name));
                     spaces.insert(name, space);
                 }
@@ -1024,6 +1025,23 @@ fn document_text(session: &Session, uri: &str) -> Result<String, V5LspFailure> {
             _ => V5LspFailure::DocumentUnknown,
         })?
         .ok_or(V5LspFailure::DocumentUnknown)
+}
+
+/// The analysis of an opened space starts preparing at once, in the
+/// background: the first question about a module then finds it closer to
+/// ready instead of starting it.
+fn prepare_analysis(space: &AdmittedSpace) {
+    let diagnostics = Arc::clone(&space.diagnostics);
+    let sets = space
+        .source_sets
+        .iter()
+        .map(|set| set.name.clone())
+        .collect::<Vec<_>>();
+    std::thread::spawn(move || {
+        for set in sets {
+            diagnostics.prepare(&set);
+        }
+    });
 }
 
 /// The admitted space and its actor, held only while the caller needs it.

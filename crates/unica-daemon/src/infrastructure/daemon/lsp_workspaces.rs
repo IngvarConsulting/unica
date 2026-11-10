@@ -381,6 +381,30 @@ impl LspDiagnostics for ProductDiagnostics {
             }
         }
     }
+
+    fn prepare(&self, source_set: &str) {
+        let Ok((actor, binding, artifacts)) = self.space.bound(source_set) else {
+            return;
+        };
+        let Some(profile) = bsl_profile_for_source(binding.source_profile()) else {
+            return;
+        };
+        let cancellation = CancellationToken::new();
+        let authority = LogicalViewReadAuthority::with_read_authority_and_registration_cache(
+            &cancellation,
+            self.space.saved_read(binding),
+            profile,
+            ProviderDeadline::no_deadline(),
+            artifacts,
+        );
+        super::lsp_diagnostics::prepare(
+            self.registry.as_ref(),
+            &authority,
+            actor.context(),
+            source_set,
+            &cancellation,
+        );
+    }
 }
 
 /// The symbol service MCP's symbols use, over the saved sources; the
