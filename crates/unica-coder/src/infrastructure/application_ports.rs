@@ -20,7 +20,6 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use unica_adapter_v8_runner::adapter::{RuntimeAdapter, RuntimeInvocation};
-use unica_adapter_v8_runner::full_dump::{FullDumpInvocation, VerifiedFullDumpAdapter};
 use unica_code_intelligence::model::CodeIntelligenceContext;
 use unica_code_intelligence::model::CodeIntelligenceProvider;
 use unica_code_intelligence::model::CodeIntelligenceReadRequest;
@@ -538,14 +537,6 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                 spec.name
             ))));
         }
-        if let Some(invocation) = verified_full_dump_invocation(spec, args, dry_run) {
-            return VerifiedFullDumpAdapter::new(
-                crate::infrastructure::runtime_composition::runtime_environment(),
-                crate::infrastructure::runtime_composition::full_dump_semantics(),
-            )
-            .invoke(spec.name, invocation, args, context, cancellation)
-            .map(HandlerOutcome::plain);
-        }
         match spec.handler {
             ToolHandler::Metadata { .. } => Err(format!(
                 "{} must be dispatched through the provider-neutral metadata coordinator",
@@ -833,31 +824,6 @@ fn normalize_lexical_path(path: &Path) -> PathBuf {
         }
     }
     normalized
-}
-
-fn is_applied_full_dump(args: &Map<String, Value>, dry_run: bool) -> bool {
-    !dry_run && args.get("mode").and_then(Value::as_str) == Some("full")
-}
-
-fn verified_full_dump_invocation(
-    spec: ToolSpec,
-    args: &Map<String, Value>,
-    dry_run: bool,
-) -> Option<FullDumpInvocation> {
-    if !is_applied_full_dump(args, dry_run) {
-        return None;
-    }
-    match spec.handler {
-        ToolHandler::BuildRuntime { command, .. } if command == ["dump"] => {
-            Some(FullDumpInvocation::BuildDump)
-        }
-        ToolHandler::RuntimeAdapter
-            if args.get("operation").and_then(Value::as_str) == Some("dump") =>
-        {
-            Some(FullDumpInvocation::RuntimeExecute)
-        }
-        _ => None,
-    }
 }
 
 fn native_handler_outcome(
@@ -1465,7 +1431,7 @@ mod medium_tests {
     use super::{
         canonical_v13_docs_search, documentation_context, documentation_registry,
         normalize_code_intelligence_read_request, project_platform_version,
-        select_installation_root, select_platform_version, verified_full_dump_invocation,
+        select_installation_root, select_platform_version,
     };
 
     use crate::application::ports::ApplicationPorts;
@@ -1483,8 +1449,6 @@ mod medium_tests {
     use unica_source_contract::workspace::ResolvedSourceRoot;
     use unica_source_contract::workspace::WorkspaceContext;
     use unica_work_control::cancellation::CancellationToken;
-
-    use unica_adapter_v8_runner::full_dump::FullDumpInvocation;
 
     use crate::infrastructure::support_state::SupportStateReaderFactory;
     use serde_json::{json, Map};
@@ -2180,50 +2144,6 @@ mod medium_tests {
                 .unwrap();
             assert_eq!(read.local.support, expected, "state {state:?}");
         }
-    }
-
-    #[test]
-    fn applied_full_dump_routes_only_synchronous_public_entry_points_to_verified_adapter() {
-        let build = spec(
-            "unica.build.dump",
-            ToolHandler::BuildRuntime {
-                command: &["dump"],
-                event: None,
-            },
-        );
-        let runtime = spec("unica.runtime.execute", ToolHandler::RuntimeAdapter);
-        let job = spec(
-            "unica.runtime.job.start",
-            ToolHandler::RuntimeJob {
-                action: RuntimeJobAction::Start,
-            },
-        );
-        let mut build_args = Map::new();
-        build_args.insert("mode".to_string(), json!("full"));
-        let mut runtime_args = build_args.clone();
-        runtime_args.insert("operation".to_string(), json!("dump"));
-
-        assert_eq!(
-            verified_full_dump_invocation(build, &build_args, false),
-            Some(FullDumpInvocation::BuildDump)
-        );
-        assert_eq!(
-            verified_full_dump_invocation(runtime, &runtime_args, false),
-            Some(FullDumpInvocation::RuntimeExecute)
-        );
-        assert_eq!(
-            verified_full_dump_invocation(job, &runtime_args, false),
-            None
-        );
-        assert_eq!(
-            verified_full_dump_invocation(runtime, &runtime_args, true),
-            None
-        );
-        runtime_args.insert("mode".to_string(), json!("partial"));
-        assert_eq!(
-            verified_full_dump_invocation(runtime, &runtime_args, false),
-            None
-        );
     }
 
     fn code_intelligence_context_for_paths() -> (PathBuf, CodeIntelligenceContext) {

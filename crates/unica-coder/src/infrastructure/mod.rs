@@ -97,10 +97,6 @@ mod workspace_actor_contract_tests;
 mod workspace_metadata_publication_tests;
 
 #[cfg(test)]
-#[path = "../../tests/platform/full_dump_integration.rs"]
-mod full_dump_integration;
-
-#[cfg(test)]
 #[path = "source_discovery_integration_tests.rs"]
 mod medium_source_discovery_integration_tests;
 
