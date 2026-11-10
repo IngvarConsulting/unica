@@ -12,7 +12,12 @@ fn runtime_writer_workspace() -> tempfile::TempDir {
     workspace
 }
 
-fn run_request(workspace: &std::path::Path, op: &str, args: serde_json::Value, dry_run: bool) -> InvocationRequest {
+fn run_request(
+    workspace: &std::path::Path,
+    op: &str,
+    args: serde_json::Value,
+    dry_run: bool,
+) -> InvocationRequest {
     InvocationRequest::new(
         ToolIdentity::Run,
         serde_json::json!({"op": op, "args": args, "dryRun": dry_run}),
@@ -51,7 +56,10 @@ fn runtime_writers_share_the_source_write_lane_of_the_admitted_workspace_actor()
     let workspace = runtime_writer_workspace();
     let runtime = bootstrap_runtime();
     let writers = [
-        ("pull", serde_json::json!({"sourceSet": "main", "force": true})),
+        (
+            "pull",
+            serde_json::json!({"sourceSet": "main", "force": true}),
+        ),
         ("push", serde_json::json!({"sourceSet": "main"})),
         ("make", serde_json::json!({"output": "dist/main.cf"})),
     ]
@@ -59,7 +67,10 @@ fn runtime_writers_share_the_source_write_lane_of_the_admitted_workspace_actor()
         let bound = runtime
             .bind(run_request(workspace.path(), op, args.clone(), true))
             .unwrap_or_else(|error| panic!("{op} preview did not bind: {error:?}"));
-        assert!(bound_source_writes(bound).1, "{op} preview would take the lane");
+        assert!(
+            bound_source_writes(bound).1,
+            "{op} preview would take the lane"
+        );
         let bound = runtime
             .bind(run_request(workspace.path(), op, args, false))
             .unwrap_or_else(|error| panic!("{op} did not bind: {error:?}"));
@@ -75,7 +86,11 @@ fn runtime_writers_share_the_source_write_lane_of_the_admitted_workspace_actor()
         7_000,
     )
     .unwrap();
-    let edit = match runtime.bind(view).expect("view admits the workspace actor").0 {
+    let edit = match runtime
+        .bind(view)
+        .expect("view admits the workspace actor")
+        .0
+    {
         ActorBoundCanonicalInvocationState::Workspace { invocation, .. } => invocation,
         _ => panic!("view did not bind to the workspace actor"),
     };
