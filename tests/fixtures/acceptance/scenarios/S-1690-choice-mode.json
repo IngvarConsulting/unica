@@ -23,13 +23,32 @@
           ]
         }
       ],
-      "fileAssertions": [
-        {
-          "path": "src/Catalogs/Codes.xml",
-          "kind": "sha256",
-          "eq": "4beeb87992c242442f2449c76d9996487a7d5f91a8f38aff7a12bbc5370dcd79"
+      "captures": {
+        "unchanged1": {
+          "file": "src/Catalogs/Codes.xml",
+          "kind": "sha256"
+        },
+        "unchanged2": {
+          "file": "src/Enums/Codes.xml",
+          "kind": "sha256"
+        },
+        "unchanged3": {
+          "file": "src/ChartsOfCharacteristicTypes/Codes.xml",
+          "kind": "sha256"
+        },
+        "unchanged4": {
+          "file": "src/ChartsOfCalculationTypes/Codes.xml",
+          "kind": "sha256"
+        },
+        "unchanged5": {
+          "file": "src/ChartsOfAccounts/Codes.xml",
+          "kind": "sha256"
+        },
+        "unchanged6": {
+          "file": "src/ExchangePlans/Codes.xml",
+          "kind": "sha256"
         }
-      ]
+      }
     },
     {
       "tool": "unica.view",
@@ -242,7 +261,7 @@
         {
           "path": "src/Catalogs/Codes.xml",
           "kind": "sha256",
-          "eq": "4beeb87992c242442f2449c76d9996487a7d5f91a8f38aff7a12bbc5370dcd79"
+          "eq": "$capture.unchanged1"
         }
       ]
     },
@@ -322,7 +341,7 @@
         {
           "path": "src/Catalogs/Codes.xml",
           "kind": "sha256",
-          "eq": "4beeb87992c242442f2449c76d9996487a7d5f91a8f38aff7a12bbc5370dcd79"
+          "eq": "$capture.unchanged1"
         }
       ]
     },
@@ -363,7 +382,7 @@
         {
           "path": "src/Enums/Codes.xml",
           "kind": "sha256",
-          "eq": "8a29bf42e97281f3e9c7062c850e496633c29bc6ca3d4064143275298f19c977"
+          "eq": "$capture.unchanged2"
         }
       ]
     },
@@ -578,7 +597,7 @@
         {
           "path": "src/Enums/Codes.xml",
           "kind": "sha256",
-          "eq": "8a29bf42e97281f3e9c7062c850e496633c29bc6ca3d4064143275298f19c977"
+          "eq": "$capture.unchanged2"
         }
       ]
     },
@@ -658,7 +677,7 @@
         {
           "path": "src/Enums/Codes.xml",
           "kind": "sha256",
-          "eq": "8a29bf42e97281f3e9c7062c850e496633c29bc6ca3d4064143275298f19c977"
+          "eq": "$capture.unchanged2"
         }
       ]
     },
@@ -699,7 +718,7 @@
         {
           "path": "src/ChartsOfCharacteristicTypes/Codes.xml",
           "kind": "sha256",
-          "eq": "591457770cf3098a8421a2058e3ffb08bcfbc3ce5850bd648828f48ce7779c76"
+          "eq": "$capture.unchanged3"
         }
       ]
     },
@@ -914,7 +933,7 @@
         {
           "path": "src/ChartsOfCharacteristicTypes/Codes.xml",
           "kind": "sha256",
-          "eq": "591457770cf3098a8421a2058e3ffb08bcfbc3ce5850bd648828f48ce7779c76"
+          "eq": "$capture.unchanged3"
         }
       ]
     },
@@ -994,7 +1013,7 @@
         {
           "path": "src/ChartsOfCharacteristicTypes/Codes.xml",
           "kind": "sha256",
-          "eq": "591457770cf3098a8421a2058e3ffb08bcfbc3ce5850bd648828f48ce7779c76"
+          "eq": "$capture.unchanged3"
         }
       ]
     },
@@ -1035,7 +1054,7 @@
         {
           "path": "src/ChartsOfCalculationTypes/Codes.xml",
           "kind": "sha256",
-          "eq": "006053376e0554e5dc57eefae95eafdd1ea18116102492c9a62ad303f7a1f28c"
+          "eq": "$capture.unchanged4"
         }
       ]
     },
@@ -1250,7 +1269,7 @@
         {
           "path": "src/ChartsOfCalculationTypes/Codes.xml",
           "kind": "sha256",
-          "eq": "006053376e0554e5dc57eefae95eafdd1ea18116102492c9a62ad303f7a1f28c"
+          "eq": "$capture.unchanged4"
         }
       ]
     },
@@ -1330,7 +1349,7 @@
         {
           "path": "src/ChartsOfCalculationTypes/Codes.xml",
           "kind": "sha256",
-          "eq": "006053376e0554e5dc57eefae95eafdd1ea18116102492c9a62ad303f7a1f28c"
+          "eq": "$capture.unchanged4"
         }
       ]
     },
@@ -1371,7 +1390,7 @@
         {
           "path": "src/ChartsOfAccounts/Codes.xml",
           "kind": "sha256",
-          "eq": "c62fd4248bd401d0df1962b9a6e3e975b910b836d80789408027cb66f4cf4b72"
+          "eq": "$capture.unchanged5"
         }
       ]
     },
@@ -1586,7 +1605,7 @@
         {
           "path": "src/ChartsOfAccounts/Codes.xml",
           "kind": "sha256",
-          "eq": "c62fd4248bd401d0df1962b9a6e3e975b910b836d80789408027cb66f4cf4b72"
+          "eq": "$capture.unchanged5"
         }
       ]
     },
@@ -1666,7 +1685,7 @@
         {
           "path": "src/ChartsOfAccounts/Codes.xml",
           "kind": "sha256",
-          "eq": "c62fd4248bd401d0df1962b9a6e3e975b910b836d80789408027cb66f4cf4b72"
+          "eq": "$capture.unchanged5"
         }
       ]
     },
@@ -1707,7 +1726,7 @@
         {
           "path": "src/ExchangePlans/Codes.xml",
           "kind": "sha256",
-          "eq": "36c24d7f35992d68c6fbab3547acb9da9732f0293f41268d7d7529aee929f4b8"
+          "eq": "$capture.unchanged6"
         }
       ]
     },
@@ -1922,7 +1941,7 @@
         {
           "path": "src/ExchangePlans/Codes.xml",
           "kind": "sha256",
-          "eq": "36c24d7f35992d68c6fbab3547acb9da9732f0293f41268d7d7529aee929f4b8"
+          "eq": "$capture.unchanged6"
         }
       ]
     },
@@ -2002,7 +2021,7 @@
         {
           "path": "src/ExchangePlans/Codes.xml",
           "kind": "sha256",
-          "eq": "36c24d7f35992d68c6fbab3547acb9da9732f0293f41268d7d7529aee929f4b8"
+          "eq": "$capture.unchanged6"
         }
       ]
     },

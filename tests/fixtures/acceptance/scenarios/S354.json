@@ -33,18 +33,16 @@
           "eq": true
         }
       ],
-      "fileAssertions": [
-        {
-          "kind": "sha256",
-          "path": "src/Reports/АнализВерсийОбъектов.xml",
-          "eq": "4a5d35f1061d329b0003a90ffe4b3a2ecd37de256a442694061bfc3f19124230"
+      "captures": {
+        "unchanged1": {
+          "file": "src/Configuration.xml",
+          "kind": "sha256"
         },
-        {
-          "kind": "sha256",
-          "path": "src/Configuration.xml",
-          "eq": "41c7a0b8161a1e7661471f225cc24faf46d85761df32ff022b171b525b063989"
+        "unchanged2": {
+          "file": "src/Enums/ВажностьПроблемыУчета.xml",
+          "kind": "sha256"
         }
-      ]
+      }
     },
     {
       "tool": "unica.apply",
@@ -69,7 +67,7 @@
         {
           "kind": "sha256",
           "path": "src/Configuration.xml",
-          "eq": "41c7a0b8161a1e7661471f225cc24faf46d85761df32ff022b171b525b063989"
+          "eq": "$capture.unchanged1"
         }
       ]
     },
@@ -127,7 +125,7 @@
         {
           "kind": "sha256",
           "path": "src/Enums/ВажностьПроблемыУчета.xml",
-          "eq": "447910907ea597f23a78dc42e81b5b6716b6565f696565656eb6ea1f05d08a03"
+          "eq": "$capture.unchanged2"
         }
       ]
     }

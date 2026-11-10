@@ -30,13 +30,20 @@
           "eq": "boolean"
         }
       ],
-      "fileAssertions": [
-        {
-          "path": "src/Catalogs/Codes.xml",
-          "kind": "sha256",
-          "eq": "6f74c957b3e2e828c8cabff51fd8addfe26ab7cbe3c8b3c75e07caf6583c87e7"
+      "captures": {
+        "unchanged1": {
+          "file": "src/Catalogs/Codes.xml",
+          "kind": "sha256"
+        },
+        "unchanged2": {
+          "file": "src/Documents/Приход.xml",
+          "kind": "sha256"
+        },
+        "unchanged3": {
+          "file": "src/InformationRegisters/Цены.xml",
+          "kind": "sha256"
         }
-      ]
+      }
     },
     {
       "tool": "unica.view",
@@ -833,7 +840,7 @@
         {
           "path": "src/Catalogs/Codes.xml",
           "kind": "sha256",
-          "eq": "6f74c957b3e2e828c8cabff51fd8addfe26ab7cbe3c8b3c75e07caf6583c87e7"
+          "eq": "$capture.unchanged1"
         }
       ]
     },
@@ -939,7 +946,7 @@
         {
           "path": "src/Catalogs/Codes.xml",
           "kind": "sha256",
-          "eq": "6f74c957b3e2e828c8cabff51fd8addfe26ab7cbe3c8b3c75e07caf6583c87e7"
+          "eq": "$capture.unchanged1"
         }
       ]
     },
@@ -972,7 +979,7 @@
         {
           "path": "src/Documents/Приход.xml",
           "kind": "sha256",
-          "eq": "2fb973851c3830261cade10a095e78be78bb1bdeb834c3fdc44fc462cfb5a4eb"
+          "eq": "$capture.unchanged2"
         }
       ]
     },
@@ -1771,7 +1778,7 @@
         {
           "path": "src/Documents/Приход.xml",
           "kind": "sha256",
-          "eq": "2fb973851c3830261cade10a095e78be78bb1bdeb834c3fdc44fc462cfb5a4eb"
+          "eq": "$capture.unchanged2"
         }
       ]
     },
@@ -1877,7 +1884,7 @@
         {
           "path": "src/Documents/Приход.xml",
           "kind": "sha256",
-          "eq": "2fb973851c3830261cade10a095e78be78bb1bdeb834c3fdc44fc462cfb5a4eb"
+          "eq": "$capture.unchanged2"
         }
       ]
     },
@@ -1910,7 +1917,7 @@
         {
           "path": "src/InformationRegisters/Цены.xml",
           "kind": "sha256",
-          "eq": "4ce1a29efea258a760998e5736a00c7c7440e921b3e60a66454b8f0f80ca8d7a"
+          "eq": "$capture.unchanged3"
         }
       ]
     },
@@ -2709,7 +2716,7 @@
         {
           "path": "src/InformationRegisters/Цены.xml",
           "kind": "sha256",
-          "eq": "4ce1a29efea258a760998e5736a00c7c7440e921b3e60a66454b8f0f80ca8d7a"
+          "eq": "$capture.unchanged3"
         }
       ]
     },
@@ -2815,7 +2822,7 @@
         {
           "path": "src/InformationRegisters/Цены.xml",
           "kind": "sha256",
-          "eq": "4ce1a29efea258a760998e5736a00c7c7440e921b3e60a66454b8f0f80ca8d7a"
+          "eq": "$capture.unchanged3"
         }
       ]
     },

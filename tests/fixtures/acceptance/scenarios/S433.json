@@ -23,14 +23,7 @@
           "kind": "sha256",
           "file": "src/cf/Reports/F06Report.xml"
         }
-      },
-      "fileAssertions": [
-        {
-          "kind": "sha256",
-          "path": "src/cf/Reports/F06Report/Templates/PlatformExport/Ext/Template.xml",
-          "eq": "2648b2265a7d5e6d96f2f3bcb1a143d2acc585584d724306a7e9c0783ea604bb"
-        }
-      ]
+      }
     },
     {
       "tool": "unica.apply",
@@ -197,7 +190,13 @@
           "path": "src/cf/Reports/F06Report.xml",
           "eq": "$capture.owner"
         }
-      ]
+      ],
+      "captures": {
+        "unchanged1": {
+          "file": "src/cf/Reports/F06Report/Templates/PlatformExport/Ext/Template.xml",
+          "kind": "sha256"
+        }
+      }
     },
     {
       "tool": "unica.view",
@@ -269,7 +268,7 @@
         {
           "kind": "sha256",
           "path": "src/cf/Reports/F06Report/Templates/PlatformExport/Ext/Template.xml",
-          "eq": "85474cc6da131bd40b7579f500f5fa10ab584d2bceb8aa7a530f1211d4d0b274"
+          "eq": "$capture.unchanged1"
         }
       ]
     }

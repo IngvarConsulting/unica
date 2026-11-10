@@ -51,14 +51,17 @@
       "captures": {
         "role_token": {
           "pointer": "/data/executionToken"
+        },
+        "unchanged1": {
+          "file": "other/Configuration.xml",
+          "kind": "sha256"
+        },
+        "unchanged2": {
+          "file": "epf/Import.xml",
+          "kind": "sha256"
         }
       },
       "fileAssertions": [
-        {
-          "path": "src/Configuration.xml",
-          "kind": "sha256",
-          "eq": "5e3fc1bcea82b0f0d16316821ab913b804ca8770b859c4077ada6f4e32251960"
-        },
         {
           "path": "src/Roles/Читатель.xml",
           "kind": "exists",
@@ -131,12 +134,12 @@
         {
           "path": "other/Configuration.xml",
           "kind": "sha256",
-          "eq": "5e3fc1bcea82b0f0d16316821ab913b804ca8770b859c4077ada6f4e32251960"
+          "eq": "$capture.unchanged1"
         },
         {
           "path": "epf/Import.xml",
           "kind": "sha256",
-          "eq": "704ffe52cb1657de9e597103eef8659a60af0e65d4ccdea5812a59a3af1d0357"
+          "eq": "$capture.unchanged2"
         }
       ]
     },
@@ -188,7 +191,7 @@
         {
           "path": "other/Configuration.xml",
           "kind": "sha256",
-          "eq": "5e3fc1bcea82b0f0d16316821ab913b804ca8770b859c4077ada6f4e32251960"
+          "eq": "$capture.unchanged1"
         },
         {
           "path": "other/Subsystems/Показатели.xml",
@@ -239,7 +242,7 @@
         {
           "path": "epf/Import.xml",
           "kind": "sha256",
-          "eq": "704ffe52cb1657de9e597103eef8659a60af0e65d4ccdea5812a59a3af1d0357"
+          "eq": "$capture.unchanged2"
         }
       ]
     },
@@ -280,7 +283,7 @@
         {
           "path": "epf/Import.xml",
           "kind": "sha256",
-          "eq": "704ffe52cb1657de9e597103eef8659a60af0e65d4ccdea5812a59a3af1d0357"
+          "eq": "$capture.unchanged2"
         }
       ]
     },
@@ -321,7 +324,7 @@
         {
           "path": "epf/Import.xml",
           "kind": "sha256",
-          "eq": "704ffe52cb1657de9e597103eef8659a60af0e65d4ccdea5812a59a3af1d0357"
+          "eq": "$capture.unchanged2"
         }
       ]
     },
