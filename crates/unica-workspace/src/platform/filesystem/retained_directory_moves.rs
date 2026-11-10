@@ -4,6 +4,47 @@ use super::{
 use std::ffi::OsStr;
 use std::{fs, io};
 
+/// SHA-256 of the owner and DACL of an open file, to observe that a move
+/// keeps the access control of the directory it carries.
+#[cfg(windows)]
+fn security_descriptor_sha256(file: &fs::File) -> io::Result<[u8; 32]> {
+    use sha2::{Digest, Sha256};
+    use std::os::windows::io::AsRawHandle;
+    use std::ptr;
+    use windows_sys::Win32::Foundation::LocalFree;
+    use windows_sys::Win32::Security::Authorization::{GetSecurityInfo, SE_FILE_OBJECT};
+    use windows_sys::Win32::Security::{
+        GetSecurityDescriptorLength, DACL_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION,
+    };
+
+    let mut descriptor = ptr::null_mut();
+    // SAFETY: file owns a valid handle and descriptor is writable output storage.
+    let status = unsafe {
+        GetSecurityInfo(
+            file.as_raw_handle(),
+            SE_FILE_OBJECT,
+            OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+            ptr::null_mut(),
+            ptr::null_mut(),
+            ptr::null_mut(),
+            ptr::null_mut(),
+            &mut descriptor,
+        )
+    };
+    if status != 0 {
+        return Err(io::Error::from_raw_os_error(status as i32));
+    }
+    // SAFETY: GetSecurityInfo returned a self-relative descriptor of this length.
+    let digest = unsafe {
+        let length = GetSecurityDescriptorLength(descriptor) as usize;
+        let bytes = std::slice::from_raw_parts(descriptor as *const u8, length);
+        Sha256::digest(bytes).into()
+    };
+    // SAFETY: the descriptor was allocated by GetSecurityInfo and is freed once.
+    unsafe { LocalFree(descriptor as _) };
+    Ok(digest)
+}
+
 struct ResetMoveHooks;
 
 impl Drop for ResetMoveHooks {
@@ -50,9 +91,7 @@ fn populated_directory_round_trip_preserves_original_objects_and_permissions() {
         .unwrap()
         .identity();
     #[cfg(windows)]
-    let acl_before = super::capture_windows_immutable_entry_evidence(&expected.retained.directory)
-        .unwrap()
-        .security_descriptor_sha256;
+    let acl_before = security_descriptor_sha256(&expected.retained.directory).unwrap();
 
     let recovery = parent
         .displace_directory_child_no_replace(
@@ -104,9 +143,7 @@ fn populated_directory_round_trip_preserves_original_objects_and_permissions() {
     );
     #[cfg(windows)]
     assert_eq!(
-        super::capture_windows_immutable_entry_evidence(&restored.retained.directory)
-            .unwrap()
-            .security_descriptor_sha256,
+        security_descriptor_sha256(&restored.retained.directory).unwrap(),
         acl_before
     );
 }

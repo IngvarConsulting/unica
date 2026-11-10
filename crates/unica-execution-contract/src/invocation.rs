@@ -224,12 +224,25 @@ pub struct DomainResult {
 /// A question with ready calls for each answer. Cancelling is always
 /// possible and is not an option here: it keeps the refusal the choice came
 /// with. The text names the subject and what each answer loses, never project
-/// paths or provider commands.
+/// paths or provider commands (INV.MCP.HUMAN-CHOICE).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct HumanChoice {
+    /// Stable code of the question: a client draws its own screen by it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub code: String,
     pub question: String,
+    /// Structured facts of the question for such a screen, for example the
+    /// sessions that hold an infobase. Never credentials or project paths.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<Value>,
     pub options: Vec<HumanChoiceOption>,
+    /// A confirmation of the call itself rather than a way out of a refusal:
+    /// a client that cannot ask runs the first option as if the person had
+    /// chosen it, so it works as it did before the question existed. Asked
+    /// and not answered, it keeps the refusal, which then means «cancelled».
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub proceeds_unasked: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -244,6 +257,127 @@ pub struct HumanChoiceOption {
     /// Public tool executing the answer, with its public arguments.
     pub tool: String,
     pub arguments: serde_json::Map<String, Value>,
+    /// Calls that follow the first one, in order. A refused call stops the
+    /// chain: the calls after it do not run.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub then: Vec<HumanChoiceCall>,
+}
+
+/// One more call of a chosen answer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct HumanChoiceCall {
+    pub tool: String,
+    pub arguments: serde_json::Map<String, Value>,
+}
+
+/// Argument that carries a person's confirmation of a destructive call. Only
+/// the door sets it, copying the option it offered; a call that arrives with
+/// it from the model is refused before it reaches the daemon.
+pub const HUMAN_CONFIRMATION_KEY: &str = "humanConfirmation";
+
+impl HumanChoice {
+    /// The question confirming `arguments` of `tool` before it runs: its one
+    /// option is the same call carrying the confirmation of this very
+    /// question. `title` and `description` are the agreed label and what the
+    /// call loses.
+    pub fn confirmation(
+        code: impl Into<String>,
+        question: impl Into<String>,
+        title: impl Into<String>,
+        description: impl Into<String>,
+        tool: impl Into<String>,
+        arguments: &serde_json::Map<String, Value>,
+    ) -> Self {
+        let question = question.into();
+        let tool = tool.into();
+        let mut confirmed = without_confirmation(arguments);
+        confirmed.insert(
+            HUMAN_CONFIRMATION_KEY.to_string(),
+            Value::String(confirmation_token(&question, &tool, &confirmed)),
+        );
+        Self {
+            code: code.into(),
+            question,
+            data: None,
+            options: vec![HumanChoiceOption {
+                id: "confirm".to_string(),
+                title: title.into(),
+                description: description.into(),
+                tool,
+                arguments: confirmed,
+                then: Vec::new(),
+            }],
+            proceeds_unasked: true,
+        }
+    }
+
+    /// The same question with the structured facts a client screen shows.
+    pub fn with_data(mut self, data: Value) -> Self {
+        self.data = Some(data);
+        self
+    }
+
+    /// Whether `arguments` carry the confirmation of exactly this question
+    /// for exactly these arguments. A changed call, set, file or question
+    /// needs a new confirmation.
+    pub fn is_confirmed(
+        question: &str,
+        tool: &str,
+        arguments: &serde_json::Map<String, Value>,
+    ) -> bool {
+        let Some(Value::String(token)) = arguments.get(HUMAN_CONFIRMATION_KEY) else {
+            return false;
+        };
+        *token == confirmation_token(question, tool, &without_confirmation(arguments))
+    }
+}
+
+/// The call without the confirmation it may carry.
+pub fn without_confirmation(
+    arguments: &serde_json::Map<String, Value>,
+) -> serde_json::Map<String, Value> {
+    let mut arguments = arguments.clone();
+    arguments.remove(HUMAN_CONFIRMATION_KEY);
+    arguments
+}
+
+fn confirmation_token(
+    question: &str,
+    tool: &str,
+    arguments: &serde_json::Map<String, Value>,
+) -> String {
+    use sha2::{Digest, Sha256};
+    let bytes = serde_json::to_vec(&serde_json::json!({
+        "question": question,
+        "tool": tool,
+        "arguments": canonical(&Value::Object(arguments.clone())),
+    }))
+    .expect("a confirmed call serializes");
+    let digest = Sha256::digest(bytes);
+    let hex: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
+    format!("unica-confirmation-1:{hex}")
+}
+
+/// Keys sorted at every level: the token does not depend on the order the
+/// caller wrote them in.
+fn canonical(value: &Value) -> Value {
+    match value {
+        Value::Object(map) => {
+            let sorted: std::collections::BTreeMap<&String, Value> = map
+                .iter()
+                .map(|(key, value)| (key, canonical(value)))
+                .collect();
+            Value::Object(
+                sorted
+                    .into_iter()
+                    .map(|(key, value)| (key.clone(), value))
+                    .collect(),
+            )
+        }
+        Value::Array(items) => Value::Array(items.iter().map(canonical).collect()),
+        other => other.clone(),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -364,6 +498,111 @@ impl InvocationFailure {
             code: code.into(),
             message: message.into(),
         }
+    }
+}
+
+#[cfg(test)]
+mod confirmation_tests {
+    use super::{HumanChoice, HUMAN_CONFIRMATION_KEY};
+    use serde_json::{json, Map, Value};
+
+    const QUESTION: &str = "Перезаписать базу «origin» исходниками набора «main»?";
+
+    fn call(value: Value) -> Map<String, Value> {
+        value.as_object().unwrap().clone()
+    }
+
+    /// The confirmation offers the same call with a mark bound to this
+    /// question and these arguments; a client that cannot ask runs it.
+    /// rule: INV.MCP.HUMAN-CHOICE
+    #[test]
+    fn a_confirmation_offers_the_same_call_marked_as_confirmed() {
+        let push =
+            call(json!({"op":"push","args":{"force":true,"sourceSet":"main"},"dryRun":false}));
+        let choice = HumanChoice::confirmation(
+            "infobase.push_force",
+            QUESTION,
+            "Перезаписать базу",
+            "lost",
+            "unica.run",
+            &push,
+        );
+
+        assert!(choice.proceeds_unasked);
+        assert_eq!(choice.options.len(), 1);
+        let confirmed = &choice.options[0].arguments;
+        assert!(confirmed.contains_key(HUMAN_CONFIRMATION_KEY));
+        assert_eq!(super::without_confirmation(confirmed), push);
+        assert!(HumanChoice::is_confirmed(QUESTION, "unica.run", confirmed));
+        assert!(!HumanChoice::is_confirmed(QUESTION, "unica.run", &push));
+    }
+
+    /// The mark confirms only the question and the call it was given for;
+    /// the order the caller wrote the arguments in does not matter.
+    /// rule: INV.MCP.HUMAN-CHOICE
+    #[test]
+    fn a_confirmation_does_not_carry_over_to_another_call_or_question() {
+        let push =
+            call(json!({"op":"push","args":{"force":true,"sourceSet":"main"},"dryRun":false}));
+        let confirmed = HumanChoice::confirmation(
+            "infobase.push_force",
+            QUESTION,
+            "t",
+            "d",
+            "unica.run",
+            &push,
+        )
+        .options[0]
+            .arguments
+            .clone();
+        let mark = confirmed[HUMAN_CONFIRMATION_KEY].clone();
+        let with_mark = |mut other: Map<String, Value>| {
+            other.insert(HUMAN_CONFIRMATION_KEY.into(), mark.clone());
+            other
+        };
+
+        let reordered =
+            call(json!({"dryRun":false,"args":{"sourceSet":"main","force":true},"op":"push"}));
+        assert!(HumanChoice::is_confirmed(
+            QUESTION,
+            "unica.run",
+            &with_mark(reordered)
+        ));
+        let other_set =
+            call(json!({"op":"push","args":{"force":true,"sourceSet":"ext"},"dryRun":false}));
+        assert!(!HumanChoice::is_confirmed(
+            QUESTION,
+            "unica.run",
+            &with_mark(other_set)
+        ));
+        assert!(!HumanChoice::is_confirmed(
+            "Другой вопрос?",
+            "unica.run",
+            &confirmed
+        ));
+        assert!(!HumanChoice::is_confirmed(
+            QUESTION,
+            "unica.apply",
+            &confirmed
+        ));
+        let mut forged = push.clone();
+        forged.insert(
+            HUMAN_CONFIRMATION_KEY.into(),
+            json!("unica-confirmation-1:forged"),
+        );
+        assert!(!HumanChoice::is_confirmed(QUESTION, "unica.run", &forged));
+    }
+
+    /// Old records without the new fields read back unchanged, and a choice
+    /// without them writes the same bytes as before.
+    /// rule: INV.MCP.HUMAN-CHOICE
+    #[test]
+    fn a_choice_without_a_chain_or_confirmation_keeps_its_bytes() {
+        let old = json!({"question":"q","options":[{"id":"a","title":"t","description":"d","tool":"unica.run","arguments":{"op":"pull"}}]});
+        let choice: HumanChoice = serde_json::from_value(old.clone()).unwrap();
+        assert!(!choice.proceeds_unasked);
+        assert!(choice.options[0].then.is_empty());
+        assert_eq!(serde_json::to_value(&choice).unwrap(), old);
     }
 }
 

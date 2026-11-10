@@ -1,21 +1,25 @@
 //! A refusal that offers a person a choice (`HumanChoice`) instead of a dead
-//! end. The door asks the person in the course of the call when the client
-//! can ask: by an `elicitation/create` request before protocol `2026-07-28`
-//! and by an `input_required` result from `2026-07-28` on. The chosen answer
-//! runs as its own call, and the response names it. A client that cannot ask,
-//! a cancelled or declined question, an answer outside the offered options
-//! and a question nobody answered in time all keep the refusal.
+//! end, or that asks the person to confirm a destructive call. The door asks
+//! the person in the course of the call when the client can ask: by an
+//! `elicitation/create` request before protocol `2026-07-28` and by an
+//! `input_required` result from `2026-07-28` on. The chosen answer runs as
+//! its own call or chain of calls, and the response names it. A cancelled or
+//! declined question, an answer outside the offered options and a question
+//! nobody answered in time all keep the refusal. A client that cannot ask
+//! keeps the refusal of a choice and runs a confirmed call as before.
 //!
-//! rule: INV.RUNTIME.RUNNER-BASE-REFUSALS
+//! rule: INV.MCP.HUMAN-CHOICE
 
 use rmcp::model::{
     CallToolResult, ClientCapabilities, ContentBlock, ElicitRequestParams, ElicitResult,
     ElicitationAction, InputRequest, InputRequests, InputRequiredResult, InputResponses,
 };
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use std::time::Duration;
-use unica_execution_contract::invocation::{HumanChoice, HumanChoiceOption};
+use unica_execution_contract::invocation::{
+    without_confirmation, HumanChoice, HumanChoiceOption, HUMAN_CONFIRMATION_KEY,
+};
 
 /// Key of the question in `inputRequests` and `inputResponses`.
 pub(crate) const CHOICE_INPUT_KEY: &str = "unica.choice";
@@ -77,6 +81,7 @@ pub(crate) fn elicitation_params(choice: &HumanChoice) -> ElicitRequestParams {
     one_of.push(json!({"const": CANCEL, "title": CANCEL_TITLE}));
     serde_json::from_value(json!({
         "mode": "form",
+        "_meta": {QUESTION_META_KEY: question_meta(choice)},
         "message": question_text(choice),
         "requestedSchema": {
             "type": "object",
@@ -87,6 +92,32 @@ pub(crate) fn elicitation_params(choice: &HumanChoice) -> ElicitRequestParams {
         }
     }))
     .expect("the choice form is a valid elicitation request")
+}
+
+/// Key of the question's structured description in the form's `_meta`.
+pub(crate) const QUESTION_META_KEY: &str = "unica/question";
+
+/// What a client needs to draw its own screen for the question: its stable
+/// code, its structured facts and, per answer value, the label and what the
+/// answer loses. The answer is still one value of the form's enumeration.
+pub(crate) fn question_meta(choice: &HumanChoice) -> Value {
+    let mut options: Vec<Value> = choice
+        .options
+        .iter()
+        .map(|option| {
+            json!({"value": option.id, "title": option.title, "description": option.description})
+        })
+        .collect();
+    options.push(json!({"value": CANCEL, "title": CANCEL_TITLE}));
+    let mut meta = json!({
+        "code": choice.code,
+        "kind": if choice.proceeds_unasked { "confirmation" } else { "choice" },
+        "options": options,
+    });
+    if let Some(data) = &choice.data {
+        meta["data"] = data.clone();
+    }
+    meta
 }
 
 /// The question with what each answer loses, one line per option: a form
@@ -157,20 +188,86 @@ pub(crate) fn chosen<'a>(
     choice.options.iter().find(|option| option.id == id)
 }
 
-/// The response of the chosen call names the choice before its own content.
+/// The calls of a chosen answer, in order: its own call and the ones that
+/// follow it.
+pub(crate) fn calls(option: &HumanChoiceOption) -> Vec<(&str, &Map<String, Value>)> {
+    std::iter::once((option.tool.as_str(), &option.arguments))
+        .chain(
+            option
+                .then
+                .iter()
+                .map(|call| (call.tool.as_str(), &call.arguments)),
+        )
+        .collect()
+}
+
+/// Whether a call names the confirmation only the door may set.
+pub(crate) fn carries_confirmation(arguments: Option<&Map<String, Value>>) -> bool {
+    arguments.is_some_and(|arguments| arguments.contains_key(HUMAN_CONFIRMATION_KEY))
+}
+
+/// How one call of a chosen answer ended.
+pub(crate) struct StepReport {
+    pub(crate) tool: String,
+    pub(crate) arguments: Map<String, Value>,
+    pub(crate) refused: bool,
+}
+
+impl StepReport {
+    pub(crate) fn of(tool: &str, arguments: &Map<String, Value>, result: &CallToolResult) -> Self {
+        Self {
+            tool: tool.to_string(),
+            arguments: without_confirmation(arguments),
+            refused: result.is_error == Some(true),
+        }
+    }
+}
+
+/// The response of the chosen answer names the choice and, for a chain, how
+/// each call ended before the content of the last call that ran.
 pub(crate) fn name_the_choice(
     mut result: CallToolResult,
+    choice: &HumanChoice,
     option: &HumanChoiceOption,
+    steps: &[StepReport],
 ) -> CallToolResult {
-    result.content.insert(
-        0,
-        ContentBlock::text(format!(
-            "Chosen by the person instead of the refusal: {} ({} {}).",
-            option.title,
-            option.tool,
-            serde_json::to_string(&option.arguments).expect("arguments serialize"),
-        )),
-    );
+    let call = |step: &StepReport| {
+        format!(
+            "{} {}",
+            step.tool,
+            serde_json::to_string(&step.arguments).expect("arguments serialize")
+        )
+    };
+    let mut text = if choice.proceeds_unasked {
+        format!("Confirmed by the person: {}", option.title)
+    } else {
+        format!(
+            "Chosen by the person instead of the refusal: {}",
+            option.title
+        )
+    };
+    match steps {
+        [only] if option.then.is_empty() => text.push_str(&format!(" ({}).", call(only))),
+        _ => {
+            text.push('.');
+            let total = 1 + option.then.len();
+            for (index, step) in steps.iter().enumerate() {
+                let outcome = if step.refused { "refused" } else { "done" };
+                text.push_str(&format!(
+                    "\n{}/{total} {outcome}: {}",
+                    index + 1,
+                    call(step)
+                ));
+            }
+            if steps.len() < total {
+                text.push_str(&format!(
+                    "\nThe remaining {} call(s) did not run.",
+                    total - steps.len()
+                ));
+            }
+        }
+    }
+    result.content.insert(0, ContentBlock::text(text));
     result
 }
 
@@ -189,7 +286,9 @@ mod tests {
             arguments
         };
         HumanChoice {
+            code: "source.base_divergence".into(),
             question: "push of source set `main` loaded nothing".into(),
+            data: Some(json!({"sourceSet": "main"})),
             options: vec![
                 HumanChoiceOption {
                     id: "overwrite".into(),
@@ -197,6 +296,7 @@ mod tests {
                     description: "infobase changes are lost".into(),
                     tool: "unica.run".into(),
                     arguments: call("push", json!({"force": true, "sourceSet": "main"})),
+                    then: Vec::new(),
                 },
                 HumanChoiceOption {
                     id: "pull".into(),
@@ -204,8 +304,10 @@ mod tests {
                     description: "unsaved file edits are lost".into(),
                     tool: "unica.run".into(),
                     arguments: call("pull", json!({"force": true, "sourceSet": "main"})),
+                    then: Vec::new(),
                 },
             ],
+            proceeds_unasked: false,
         }
     }
 
@@ -215,7 +317,7 @@ mod tests {
 
     /// Only a client that declared form elicitation is asked; the protocol
     /// revision picks the channel.
-    /// rule: INV.RUNTIME.RUNNER-BASE-REFUSALS
+    /// rule: INV.MCP.HUMAN-CHOICE
     #[test]
     fn only_a_client_that_can_ask_is_asked() {
         let none = ClientCapabilities::default();
@@ -267,6 +369,38 @@ mod tests {
         assert_eq!(one_of[0]["title"], "Overwrite the infobase");
         assert_eq!(one_of[2]["title"], CANCEL_TITLE);
         assert_eq!(form["requestedSchema"]["required"], json!([CHOICE_FIELD]));
+    }
+
+    /// The form's `_meta` carries the stable code of the question, its
+    /// structured facts and every answer value with its label and loss, so a
+    /// client can draw its own screen; the answer stays an enumerated value.
+    /// rule: INV.MCP.HUMAN-CHOICE
+    #[test]
+    fn the_form_names_the_question_code_and_its_facts() {
+        let form = serde_json::to_value(elicitation_params(&choice())).unwrap();
+        let meta = &form["_meta"][QUESTION_META_KEY];
+
+        assert_eq!(meta["code"], "source.base_divergence");
+        assert_eq!(meta["kind"], "choice");
+        assert_eq!(meta["data"], json!({"sourceSet": "main"}));
+        let values: Vec<&str> = meta["options"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|option| option["value"].as_str().unwrap())
+            .collect();
+        assert_eq!(values, ["overwrite", "pull", CANCEL]);
+        assert_eq!(
+            meta["options"][0]["description"],
+            "infobase changes are lost"
+        );
+
+        let mut confirmation = choice();
+        confirmation.proceeds_unasked = true;
+        confirmation.data = None;
+        let form = serde_json::to_value(elicitation_params(&confirmation)).unwrap();
+        assert_eq!(form["_meta"][QUESTION_META_KEY]["kind"], "confirmation");
+        assert!(form["_meta"][QUESTION_META_KEY].get("data").is_none());
     }
 
     /// The agreed text of the base divergence question: the heading, a line
@@ -373,7 +507,8 @@ mod tests {
         let mut result = CallToolResult::default();
         result.content.push(ContentBlock::text("loaded"));
 
-        let named = name_the_choice(result, &choice.options[0]);
+        let step = StepReport::of("unica.run", &choice.options[0].arguments, &result);
+        let named = name_the_choice(result, &choice, &choice.options[0], &[step]);
 
         let first = serde_json::to_value(&named.content[0]).unwrap();
         let text = first["text"].as_str().unwrap();

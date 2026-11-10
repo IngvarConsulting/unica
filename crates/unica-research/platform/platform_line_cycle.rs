@@ -1,8 +1,7 @@
 //! Full cycle on an installed platform line, through the product adapters.
 //!
 //! The reference `all_kinds` export of the line's format is loaded into a new
-//! file infobase, exported back by the verified full dump (which checks the
-//! export with the Designer semantics), packaged into a `.cf`, loaded into a
+//! file infobase, exported back by the runner's full dump, packaged into a `.cf`, loaded into a
 //! second infobase and exported again. Both exports must equal the reference
 //! byte for byte, apart from `ConfigDumpInfo.xml`, which the reference does not
 //! keep.
@@ -18,9 +17,7 @@ use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use unica_adapter_v8_runner::adapter::{RuntimeAdapter, RuntimeEnvironment};
-use unica_adapter_v8_runner::full_dump::{
-    default_platform_roots, FullDumpInvocation, SystemPlatformResolver, VerifiedFullDumpAdapter,
-};
+use unica_adapter_v8_runner::full_dump::default_platform_roots;
 use unica_artifact_delivery::engine::BundledTool;
 use unica_execution::runner::attempt::RuntimeWorkspaceObservation;
 use unica_execution_contract::adapter_outcome::AdapterOutcome;
@@ -171,21 +168,9 @@ impl Cycle {
             ("operation".to_string(), Value::String("dump".to_string())),
             ("mode".to_string(), Value::String("full".to_string())),
         ]);
-        VerifiedFullDumpAdapter::with_dependencies(
-            system_process_runner(),
-            &SystemPlatformResolver,
-            self.environment.program.clone(),
-            &self.environment,
-            unica_coder::infrastructure::runtime_composition::full_dump_semantics(),
-        )
-        .invoke(
-            "unica.runtime.execute",
-            FullDumpInvocation::RuntimeExecute,
-            &args,
-            context,
-            &CancellationToken::new(),
-        )
-        .expect("verified full dump")
+        RuntimeAdapter::with_runner(system_process_runner(), &self.environment)
+            .invoke("unica.runtime.execute", &args, context, false, true)
+            .expect("full dump")
     }
 
     /// Create the infobase of the workspace from its sources.

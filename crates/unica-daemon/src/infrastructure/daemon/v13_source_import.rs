@@ -1192,7 +1192,9 @@ fn base_divergence_choice(source_set: &str, push_args: Value, pull_args: Value) 
         call
     };
     HumanChoice {
+        code: "source.base_divergence".to_string(),
         question: format!("База «{INFOBASE_NAME}» и исходники набора «{source_set}» разошлись."),
+        data: Some(json!({"infobase": INFOBASE_NAME, "sourceSet": source_set})),
         options: vec![
             HumanChoiceOption {
                 id: "overwrite".to_string(),
@@ -1200,6 +1202,7 @@ fn base_divergence_choice(source_set: &str, push_args: Value, pull_args: Value) 
                 description: "изменения, сделанные в базе, пропадут".to_string(),
                 tool: "unica.run".to_string(),
                 arguments: call(OPERATION, push_args),
+                then: Vec::new(),
             },
             HumanChoiceOption {
                 id: "pull".to_string(),
@@ -1207,8 +1210,10 @@ fn base_divergence_choice(source_set: &str, push_args: Value, pull_args: Value) 
                 description: "несохранённые правки файлов пропадут".to_string(),
                 tool: "unica.run".to_string(),
                 arguments: call("pull", pull_args),
+                then: Vec::new(),
             },
         ],
+        proceeds_unasked: false,
     }
 }
 

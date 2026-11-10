@@ -7,15 +7,11 @@
 //! the daemon's code. Analysis providers reach the daemon through the ports
 //! of `code-intelligence` and `diagnostics`, chosen in `analysis_composition`.
 
-/// The platform runtime: its job request and the full dump publication.
+/// The platform runtime: its job request and the runner project projection.
 pub mod runtime {
-    pub use unica_adapter_v8_runner::full_dump::{
-        attest_selected_local, prepare_publication, write_projection, FullDumpSelection,
-    };
+    pub use unica_adapter_v8_runner::full_dump::write_projection;
     pub use unica_adapter_v8_runner::request::RuntimeJobRequest;
 
     #[cfg(any(test, feature = "test-support"))]
     pub use unica_adapter_v8_runner::backend::CoordinationOnlyRunner;
-    #[cfg(any(test, feature = "test-support"))]
-    pub use unica_adapter_v8_runner::full_dump::with_test_platform;
 }
