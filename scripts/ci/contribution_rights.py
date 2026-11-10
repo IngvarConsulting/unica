@@ -29,12 +29,16 @@ PARTICIPANTS = "Участники"
 EXEMPT = "Без оферты"
 COLUMNS = {
     PARTICIPANTS: ("GitHub", "ID", "Оферта", "PR", "Почты"),
-    EXEMPT: ("Кто", "Почты", "Почему"),
+    EXEMPT: ("Кто", "Почты", "Почему", "Допустимо в PR от"),
 }
+# Слово в «Допустимо в PR от»: PR от любого, у кого есть строка «Участники».
+ANY_PARTICIPANT = "участники"
 LOGIN = re.compile(r"@[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}")
+AUTHOR = re.compile(r"@[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}(?:\[bot\])?")
 ACCOUNT_ID = re.compile(r"[1-9][0-9]*")
 VERSION = re.compile(r"[0-9]+(?:\.[0-9]+)*")
-PR_NUMBER = re.compile(r"#[1-9][0-9]*")
+# `#0` — заготовка до открытия PR; изменённая строка с ней не проходит сверку номера.
+PR_NUMBER = re.compile(r"#(?:0|[1-9][0-9]*)")
 EMAIL = re.compile(r"[^\s@,<>|]+@[^\s@,<>|]+\.[^\s@,<>|]+")
 SEPARATOR = re.compile(r":?-{3,}:?")
 OFFER = re.compile(
@@ -67,9 +71,19 @@ class Exempt:
     who: str
     emails: tuple[str, ...]
     why: str
+    allowed: tuple[str, ...]
 
     def content(self) -> tuple[str, ...]:
-        return (self.who, self.why, *self.emails)
+        return (self.who, self.why, *self.emails, "|", *self.allowed)
+
+    def admits(self, author: str, registry: Registry) -> bool:
+        """Допустима ли почта строки в PR этого автора."""
+        for token in self.allowed:
+            if token == ANY_PARTICIPANT and registry.participant(author) is not None:
+                return True
+            if token.startswith("@") and token[1:] == author.lower():
+                return True
+        return False
 
 
 @dataclass
@@ -82,6 +96,9 @@ class Registry:
             if email in row.emails:
                 return row
         return None
+
+    def participant(self, login: str) -> Participant | None:
+        return next((row for row in self.participants if row.key == login.lower()), None)
 
 
 def cells(line: str) -> list[str] | None:
@@ -96,6 +113,13 @@ def emails_of(text: str) -> tuple[str, ...] | None:
     if not found or not all(EMAIL.fullmatch(email) for email in found):
         return None
     return found
+
+
+def allowed_of(text: str) -> tuple[str, ...] | None:
+    found = tuple(part.strip() for part in text.split(","))
+    if not found or not all(token == ANY_PARTICIPANT or AUTHOR.fullmatch(token) for token in found):
+        return None
+    return tuple(token.lower() for token in found)
 
 
 def parse(text: str) -> tuple[Registry, list[str]]:
@@ -143,6 +167,7 @@ def parse(text: str) -> tuple[Registry, list[str]]:
         if len(row) != len(columns):
             problems.append(f"{where(number)}: в разделе «{section}» нужно {len(columns)} столбцов, а их {len(row)}")
             continue
+        entry: Participant | Exempt | None = None
         if section == PARTICIPANTS:
             login, account_id, offer, pr, emails = row
             parsed = emails_of(emails)
@@ -159,22 +184,24 @@ def parse(text: str) -> tuple[Registry, list[str]]:
             ]
             if not errors and login[1:].lower() in seen_logins:
                 errors.append(f"{login} уже записан в строке {seen_logins[login[1:].lower()]}")
-            entry: Participant | Exempt | None = None
             if not errors:
                 entry = Participant(number, login, account_id, offer, pr, parsed)
         else:
-            who, emails, why = row
+            who, emails, why, allowed = row
             parsed = emails_of(emails)
+            admitted = allowed_of(allowed)
             errors = [
                 message
                 for ok, message in (
                     (who, "не указано, кто это"),
                     (parsed, f"почты «{emails}» должны идти через запятую"),
                     (why, "не указана причина"),
+                    (admitted, f"«{allowed}»: перечислите через запятую @login или «{ANY_PARTICIPANT}»"),
                 )
                 if not ok
             ]
-            entry = None if errors else Exempt(number, who, parsed, why)
+            if not errors:
+                entry = Exempt(number, who, parsed, why, admitted)
         if entry is not None:
             for email in entry.emails:
                 if email in seen_emails:
@@ -215,6 +242,7 @@ def check(pr: dict, commits: list[dict], base: str | None, head: str | None, hol
     previous = parse(base)[0] if base is not None else Registry()
     author = (pr.get("user") or {}).get("login") or ""
     author_id = str((pr.get("user") or {}).get("id") or "")
+    number = f"#{pr.get('number')}"
     body = pr.get("body") or ""
 
     reported: set[str] = set()
@@ -231,6 +259,12 @@ def check(pr: dict, commits: list[dict], base: str | None, head: str | None, hol
                         f"в раздел «{PARTICIPANTS}» файла {REGISTRY} и отметьте пункт «Права на вклад» в описании PR"
                     )
                 continue
+            if isinstance(row, Exempt) and not row.admits(author, registry) and email not in reported:
+                reported.add(email)
+                problems.append(
+                    f"Коммит {sha}: почта {role} {email} из таблицы «{EXEMPT}» допустима только в PR "
+                    f"от {', '.join(row.allowed)}, а PR открыл @{author}"
+                )
             named = row.login if isinstance(row, Participant) else row.who
             if login and named.startswith("@") and named[1:].lower() != login.lower():
                 problems.append(
@@ -244,15 +278,18 @@ def check(pr: dict, commits: list[dict], base: str | None, head: str | None, hol
                      if key not in before or key not in after or before[key].content() != after[key].content())
     offers = OFFER.findall(body)
     for key in changed:
-        row = after.get(key) or before[key]
-        place = f"строка {row.line}" if key in after else "удалена"
-        if key != author.lower():
-            problems.append(f"Строку {row.login} ({place}) меняет только её владелец, а PR открыл @{author}")
-            continue
         if key not in after:
+            if author.lower() != holder.lower():
+                problems.append(f"Строку {before[key].login} удалил PR от @{author}: удалять строки «{PARTICIPANTS}» может только @{holder}")
+            continue
+        row = after[key]
+        if key != author.lower():
+            problems.append(f"Строку {row.login} (строка {row.line}) меняет только её владелец, а PR открыл @{author}")
             continue
         if row.account_id != author_id:
             problems.append(f"Строка {row.line}: ID {row.account_id} не совпадает с ID аккаунта @{author} ({author_id})")
+        if row.pr != number:
+            problems.append(f"Строка {row.line}: в столбце PR {row.pr}, а это PR {number}")
         if not offers:
             problems.append("Отметьте в описании PR принятие оферты Unica CLA: блок «Права на вклад» шаблона PR")
         elif row.offer not in offers:

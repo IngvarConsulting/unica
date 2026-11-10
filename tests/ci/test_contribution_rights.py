@@ -23,12 +23,13 @@ import contribution_rights as rights  # noqa: E402
 METADATA = ROOT / ".github/workflows/pr-metadata.yml"
 HOLDER = "zeegin"
 OFFER = "- [x] Я принимаю оферту Unica CLA версии 1.0 (CLA.md) как физическое лицо от своего имени."
-EXEMPT_TABLE = """## Без оферты
+BOT_EMAIL = "49699333+dependabot[bot]@users.noreply.github.com"
+EXEMPT_TABLE = f"""## Без оферты
 
-| Кто | Почты | Почему |
-| --- | --- | --- |
-| @zeegin | i@ingvar.pro, 729213+zeegin@users.noreply.github.com | правообладатель |
-| Claude | noreply@anthropic.com | агент, работает по поручению правообладателя |
+| Кто | Почты | Почему | Допустимо в PR от |
+| --- | --- | --- | --- |
+| Claude | noreply@anthropic.com | агент, работает по поручению правообладателя | @zeegin, участники |
+| @dependabot[bot] | {BOT_EMAIL} | бот | @dependabot[bot] |
 """
 
 
@@ -41,12 +42,15 @@ def registry(*participants: str, exempt: str = EXEMPT_TABLE) -> str:
     )
 
 
+# Первая строка таблицы «Участники» в `registry()` — строка 9 файла.
+FIRST_ROW = 9
 ALICE = "| @alice | 101 | 1.0 | #7 | alice@example.com, alice@work.example |"
 BOB = "| @bob | 202 | 1.0 | #5 | bob@example.com |"
+ZEEGIN = "| @zeegin | 729213 | 1.0 | #1 | i@ingvar.pro, 729213+zeegin@users.noreply.github.com |"
 
 
-def pr(login: str = "alice", account_id: int = 101, body: str = OFFER) -> dict:
-    return {"number": 7, "user": {"login": login, "id": account_id}, "body": body}
+def pr(login: str = "alice", account_id: int = 101, body: str | None = OFFER, number: int = 7) -> dict:
+    return {"number": number, "user": {"login": login, "id": account_id}, "body": body}
 
 
 def commit(email: str, login: str | None = None, message: str = "Правка", sha: str = "abcdef1234") -> dict:
@@ -58,8 +62,12 @@ class ParseTests(unittest.TestCase):
     def test_the_repository_registry_is_well_formed(self) -> None:
         parsed, problems = rights.parse((ROOT / "CONTRIBUTORS.md").read_text(encoding="utf-8"))
         self.assertEqual(problems, [])
-        self.assertEqual(parsed.participants, [])
-        self.assertEqual([row.who for row in parsed.exempt], ["@zeegin", "Claude", "codex", "@dependabot[bot]"])
+        self.assertEqual([(row.login, row.account_id, row.offer) for row in parsed.participants], [("@zeegin", "729213", "1.0")])
+        self.assertEqual([(row.who, row.allowed) for row in parsed.exempt], [
+            ("Claude", ("@zeegin", "участники")),
+            ("codex", ("@zeegin", "участники")),
+            ("@dependabot[bot]", ("@dependabot[bot]",)),
+        ])
 
     def test_a_good_row_is_read_with_its_emails_in_lower_case(self) -> None:
         parsed, problems = rights.parse(registry("| @Alice | 101 | 1.0 | #7 | Alice@Example.com,alice@work.example |"))
@@ -71,10 +79,9 @@ class ParseTests(unittest.TestCase):
 
     def test_a_broken_row_is_refused_with_its_line_number(self) -> None:
         text = registry(ALICE, "| alice2 | x1 | v1 | 7 | not-an-email |")
-        line = text.splitlines().index("| alice2 | x1 | v1 | 7 | not-an-email |") + 1
         parsed, problems = rights.parse(text)
         self.assertEqual([row.login for row in parsed.participants], ["@alice"])
-        prefix = f"CONTRIBUTORS.md, строка {line}: "
+        prefix = f"CONTRIBUTORS.md, строка {FIRST_ROW + 1}: "
         for message in ("логин «alice2»", "ID «x1»", "версия оферты «v1»", "PR «7»", "почты «not-an-email»"):
             self.assertTrue(any(problem.startswith(prefix) and message in problem for problem in problems), (message, problems))
 
@@ -83,10 +90,14 @@ class ParseTests(unittest.TestCase):
         self.assertTrue(any("нужно 5 столбцов, а их 4" in problem for problem in problems), problems)
         _, problems = rights.parse(registry("| @alice | 101 | 1.0 | #7 | alice@example.com"))
         self.assertTrue(any("начинаться и заканчиваться «|»" in problem for problem in problems), problems)
+        _, problems = rights.parse(registry(exempt=EXEMPT_TABLE + "| bot | bot@example.com | бот |\n"))
+        self.assertTrue(any("нужно 4 столбцов, а их 3" in problem for problem in problems), problems)
 
     def test_the_header_and_both_sections_are_fixed(self) -> None:
         _, problems = rights.parse(registry(ALICE).replace("| GitHub | ID |", "| Логин | ID |"))
         self.assertTrue(any("заголовок раздела «Участники»" in problem for problem in problems), problems)
+        _, problems = rights.parse(registry(ALICE).replace(" | Допустимо в PR от |", " |"))
+        self.assertTrue(any("заголовок раздела «Без оферты»" in problem for problem in problems), problems)
         _, problems = rights.parse(registry(ALICE, exempt=""))
         self.assertIn("CONTRIBUTORS.md: нет раздела «## Без оферты»", problems)
         _, problems = rights.parse(registry(ALICE) + "\n## Прочее\n\n| a | b |\n")
@@ -100,10 +111,19 @@ class ParseTests(unittest.TestCase):
         _, problems = rights.parse(registry(ALICE, "| @ALICE | 101 | 1.0 | #8 | other@example.com |"))
         self.assertTrue(any("@ALICE уже записан в строке" in problem for problem in problems), problems)
 
-    def test_an_exempt_row_needs_who_emails_and_why(self) -> None:
-        exempt = EXEMPT_TABLE + "| bot | bot@example.com |  |\n"
-        _, problems = rights.parse(registry(exempt=exempt))
+    def test_an_exempt_row_needs_who_emails_why_and_who_may_use_it(self) -> None:
+        _, problems = rights.parse(registry(exempt=EXEMPT_TABLE + "| bot | bot@example.com |  | @zeegin |\n"))
         self.assertTrue(any("не указана причина" in problem for problem in problems), problems)
+        for allowed in ("", "zeegin", "@zeegin; участники", "все"):
+            with self.subTest(allowed=allowed):
+                _, problems = rights.parse(registry(exempt=EXEMPT_TABLE + f"| bot | bot@example.com | бот | {allowed} |\n"))
+                self.assertTrue(any("перечислите через запятую @login или «участники»" in problem for problem in problems), problems)
+
+    def test_the_pr_column_takes_a_placeholder_until_the_pr_is_opened(self) -> None:
+        _, problems = rights.parse(registry("| @alice | 101 | 1.0 | #0 | alice@example.com |"))
+        self.assertEqual(problems, [])
+        _, problems = rights.parse(registry("| @alice | 101 | 1.0 | #07 | alice@example.com |"))
+        self.assertTrue(any("PR «#07»" in problem for problem in problems), problems)
 
 
 class CheckTests(unittest.TestCase):
@@ -114,13 +134,14 @@ class CheckTests(unittest.TestCase):
         self.assertEqual(self.check(pr(), [], None), ["В PR нет файла CONTRIBUTORS.md"])
 
     def test_every_commit_author_email_is_in_the_registry(self) -> None:
-        head = registry(BOB)
-        base = registry(BOB)
-        allowed = [commit("bob@example.com"), commit("i@ingvar.pro"), commit("NoReply@Anthropic.com")]
-        self.assertEqual(self.check(pr("bob", 202, ""), allowed, head, base), [])
-        problems = self.check(pr("bob", 202, ""), [commit("stranger@example.com", sha="1234567890")], head, base)
-        self.assertEqual(len(problems), 1)
-        self.assertIn("Коммит 1234567: почта автора stranger@example.com не указана в CONTRIBUTORS.md", problems[0])
+        head = registry(ZEEGIN, BOB)
+        allowed = [commit("bob@example.com"), commit("I@Ingvar.pro"), commit("NoReply@Anthropic.com")]
+        self.assertEqual(self.check(pr("bob", 202, ""), allowed, head, head), [])
+        problems = self.check(pr("bob", 202, ""), [commit("stranger@example.com", sha="1234567890")], head, head)
+        self.assertEqual(problems, [
+            "Коммит 1234567: почта автора stranger@example.com не указана в CONTRIBUTORS.md. "
+            "Примите оферту Unica CLA (CLA.md): добавьте свою строку с этой почтой в раздел «Участники» "
+            "файла CONTRIBUTORS.md и отметьте пункт «Права на вклад» в описании PR"])
 
     def test_every_co_author_email_is_in_the_registry(self) -> None:
         head = registry(BOB)
@@ -135,25 +156,65 @@ class CheckTests(unittest.TestCase):
         commits = [commit("x@example.com", sha="1" * 10), commit("x@example.com", sha="2" * 10)]
         self.assertEqual(len(self.check(pr("bob", 202, ""), commits, registry(BOB), registry(BOB))), 1)
 
-    def test_the_owner_adds_their_row_with_their_id_and_the_offer_mark(self) -> None:
+    def test_an_exempt_email_is_admitted_only_in_prs_of_the_authors_it_names(self) -> None:
+        head = registry(ZEEGIN, BOB)
+        claude = "Правка\n\nCo-authored-by: Claude <noreply@anthropic.com>\n"
+        # «@zeegin» и «участники»: правообладатель и участник со строкой.
+        self.assertEqual(self.check(pr("zeegin", 729213, ""), [commit("i@ingvar.pro", message=claude)], head, head), [])
+        self.assertEqual(self.check(pr("bob", 202, ""), [commit("bob@example.com", message=claude)], head, head), [])
+        self.assertEqual(self.check(pr("bob", 202, ""), [commit("noreply@anthropic.com")], head, head), [])
+        # Автор без строки «Участники» с почтой агента — отказ, даже если сама почта в реестре есть.
+        problems = self.check(pr("mallory", 404, ""), [commit("noreply@anthropic.com", sha="beefbeef00")], head, head)
+        self.assertEqual(problems, [
+            "Коммит beefbee: почта автора noreply@anthropic.com из таблицы «Без оферты» допустима только в PR "
+            "от @zeegin, участники, а PR открыл @mallory"])
+        problems = self.check(pr("mallory", 404, ""), [commit("bob@example.com", message=claude)], head, head)
+        self.assertTrue(any("почта соавтора noreply@anthropic.com из таблицы «Без оферты»" in problem for problem in problems),
+                        problems)
+        # Бот допустим только в своих PR.
+        self.assertEqual(self.check(pr("dependabot[bot]", 49699333, ""), [commit(BOT_EMAIL, "dependabot[bot]")], head, head), [])
+        problems = self.check(pr("bob", 202, ""), [commit(BOT_EMAIL)], head, head)
+        self.assertTrue(any("допустима только в PR от @dependabot[bot], а PR открыл @bob" in problem for problem in problems),
+                        problems)
+
+    def test_the_owner_adds_their_row_with_their_id_this_pr_and_the_offer_mark(self) -> None:
         self.assertEqual(self.check(pr(), [commit("alice@example.com", "alice")], registry(ALICE)), [])
 
     def test_someone_else_may_not_add_or_change_a_row(self) -> None:
-        problems = self.check(pr("bob", 202), [], registry(ALICE))
-        self.assertTrue(any(problem.startswith("Строку @alice") and "меняет только её владелец, а PR открыл @bob" in problem
-                            for problem in problems), problems)
-        changed = ALICE.replace("#7", "#8")
-        problems = self.check(pr("bob", 202), [], registry(changed), registry(ALICE))
-        self.assertTrue(any("Строку @alice" in problem for problem in problems), problems)
-        problems = self.check(pr("bob", 202), [], registry(), registry(ALICE))
-        self.assertTrue(any("Строку @alice (удалена)" in problem for problem in problems), problems)
+        for request in (pr("bob", 202), pr("zeegin", 729213)):
+            with self.subTest(author=request["user"]["login"]):
+                problems = self.check(request, [], registry(ALICE))
+                self.assertIn(f"Строку @alice (строка {FIRST_ROW}) меняет только её владелец, "
+                              f"а PR открыл @{request['user']['login']}", problems)
+        problems = self.check(pr("bob", 202), [], registry(ALICE.replace("#7", "#8")), registry(ALICE))
+        self.assertTrue(any(problem.startswith("Строку @alice") for problem in problems), problems)
+
+    def test_only_the_rights_holder_removes_a_row(self) -> None:
+        self.assertEqual(self.check(pr("zeegin", 729213, ""), [], registry(ZEEGIN), registry(ZEEGIN, ALICE)), [])
+        for request in (pr(), pr("bob", 202)):
+            with self.subTest(author=request["user"]["login"]):
+                problems = self.check(request, [], registry(ZEEGIN), registry(ZEEGIN, ALICE))
+                self.assertEqual(problems, [f"Строку @alice удалил PR от @{request['user']['login']}: "
+                                            "удалять строки «Участники» может только @zeegin"])
 
     def test_rows_the_pr_does_not_touch_need_nothing_from_its_author(self) -> None:
         self.assertEqual(self.check(pr("bob", 202, ""), [commit("bob@example.com")], registry(ALICE, BOB), registry(ALICE, BOB)), [])
 
     def test_the_row_id_is_the_id_of_the_authors_account(self) -> None:
         problems = self.check(pr(account_id=999), [], registry(ALICE))
-        self.assertEqual(problems, ["Строка 9: ID 101 не совпадает с ID аккаунта @alice (999)"])
+        self.assertEqual(problems, [f"Строка {FIRST_ROW}: ID 101 не совпадает с ID аккаунта @alice (999)"])
+
+    def test_an_added_or_changed_row_names_this_pr(self) -> None:
+        self.assertEqual(self.check(pr(number=7), [], registry(ALICE)), [])
+        self.assertEqual(self.check(pr(number=12), [], registry(ALICE)),
+                         [f"Строка {FIRST_ROW}: в столбце PR #7, а это PR #12"])
+        changed = ALICE.replace("alice@work.example", "alice@new.example")
+        self.assertEqual(self.check(pr(number=7), [], registry(changed), registry(ALICE)), [])
+        self.assertEqual(self.check(pr(number=9), [], registry(changed), registry(ALICE)),
+                         [f"Строка {FIRST_ROW}: в столбце PR #7, а это PR #9"])
+        placeholder = ALICE.replace("#7", "#0")
+        self.assertEqual(self.check(pr(number=7), [], registry(placeholder)),
+                         [f"Строка {FIRST_ROW}: в столбце PR #0, а это PR #7"])
 
     def test_the_offer_mark_is_checked_and_its_version_matches_the_row(self) -> None:
         for body in ("", OFFER.replace("[x]", "[ ]"), None):
@@ -161,33 +222,34 @@ class CheckTests(unittest.TestCase):
                 problems = self.check(pr(body=body), [], registry(ALICE))
                 self.assertEqual(problems, ["Отметьте в описании PR принятие оферты Unica CLA: блок «Права на вклад» шаблона PR"])
         problems = self.check(pr(body=OFFER.replace("версии 1.0", "версии 2.0")), [], registry(ALICE))
-        self.assertEqual(problems, ["Строка 9: оферта версии 1.0, а в описании PR отмечена версия 2.0"])
+        self.assertEqual(problems, [f"Строка {FIRST_ROW}: оферта версии 1.0, а в описании PR отмечена версия 2.0"])
         self.assertEqual(self.check(pr(body=OFFER.replace("[x]", "[X]")), [], registry(ALICE)), [])
 
     def test_the_account_github_links_to_an_email_matches_the_row(self) -> None:
-        head = registry(ALICE, BOB)
+        head = registry(ZEEGIN, ALICE, BOB)
         self.assertEqual(self.check(pr("bob", 202, ""), [commit("bob@example.com", "Bob")], head, head), [])
-        self.assertEqual(self.check(pr("bob", 202, ""), [commit("i@ingvar.pro", "zeegin")], head, head), [])
+        self.assertEqual(self.check(pr("zeegin", 729213, ""), [commit("i@ingvar.pro", "zeegin")], head, head), [])
         # Строка без логина: сравнивать не с чем.
         self.assertEqual(self.check(pr("bob", 202, ""), [commit("noreply@anthropic.com", "claude")], head, head), [])
         problems = self.check(pr("bob", 202, ""), [commit("alice@example.com", "bob", sha="feedface00")], head, head)
-        self.assertEqual(len(problems), 1)
-        self.assertIn("Коммит feedfac: GitHub связывает почту alice@example.com с @bob, а в CONTRIBUTORS.md она записана за @alice",
-                      problems[0])
-        problems = self.check(pr("bob", 202, ""), [commit("i@ingvar.pro", "bob")], head, head)
-        self.assertTrue(any("записана за @zeegin" in problem for problem in problems), problems)
+        self.assertEqual(problems, ["Коммит feedfac: GitHub связывает почту alice@example.com с @bob, "
+                                    "а в CONTRIBUTORS.md она записана за @alice (строка 10)"])
+        problems = self.check(pr("bob", 202, ""), [commit(BOT_EMAIL, "bob")], head, head)
+        self.assertTrue(any("записана за @dependabot[bot]" in problem for problem in problems), problems)
 
     def test_only_the_rights_holder_changes_the_exempt_table(self) -> None:
-        exempt = EXEMPT_TABLE + "| codex | codex@openai.com | агент, работает по поручению правообладателя |\n"
-        self.assertEqual(self.check(pr("zeegin", 729213, ""), [], registry(exempt=exempt)), [])
-        problems = self.check(pr("bob", 202, ""), [], registry(exempt=exempt))
-        self.assertEqual(problems, ["Таблицу «Без оферты» меняет только @zeegin, а PR открыл @bob"])
-        self.assertEqual(self.check(pr("bob", 202, ""), [], registry(exempt=EXEMPT_TABLE.replace("агент,", "агент;"))),
-                         ["Таблицу «Без оферты» меняет только @zeegin, а PR открыл @bob"])
+        added = EXEMPT_TABLE + "| codex | codex@openai.com | агент, работает по поручению правообладателя | @zeegin, участники |\n"
+        reworded = EXEMPT_TABLE.replace("агент,", "агент;")
+        widened = EXEMPT_TABLE.replace("| @dependabot[bot] |\n", "| @dependabot[bot], участники |\n")
+        for exempt in (added, reworded, widened):
+            with self.subTest(exempt=exempt):
+                self.assertEqual(self.check(pr("zeegin", 729213, ""), [], registry(exempt=exempt)), [])
+                self.assertEqual(self.check(pr("bob", 202, ""), [], registry(exempt=exempt)),
+                                 ["Таблицу «Без оферты» меняет только @zeegin, а PR открыл @bob"])
 
     def test_a_format_problem_in_the_pr_version_is_reported(self) -> None:
         problems = self.check(pr("bob", 202, ""), [], registry(BOB, "| @carol | 303 |"), registry(BOB))
-        self.assertTrue(any(problem.startswith("CONTRIBUTORS.md, строка 10:") for problem in problems), problems)
+        self.assertTrue(any(problem.startswith(f"CONTRIBUTORS.md, строка {FIRST_ROW + 1}:") for problem in problems), problems)
 
     def test_the_main_reads_files_and_sets_the_exit_code(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -308,8 +370,9 @@ class StepTests(unittest.TestCase):
     def test_a_missing_registry_in_the_pr_is_a_problem(self) -> None:
         completed, _ = self.run_step(commits=[], head="")
         self.assertEqual(completed.returncode, 1)
+        self.assertIn("::error::В PR нет файла CONTRIBUTORS.md", completed.stdout)
         completed, _ = self.run_step(commits=[], head=registry(BOB, "| @carol |"))
-        self.assertIn("::error::CONTRIBUTORS.md, строка 10:", completed.stdout)
+        self.assertIn(f"::error::CONTRIBUTORS.md, строка {FIRST_ROW + 1}:", completed.stdout)
 
     def test_without_the_script_in_main_nothing_is_checked_so_the_pr_bringing_it_can_merge(self) -> None:
         completed, calls = self.run_step(commits=[commit("stranger@example.com")], script=False)
