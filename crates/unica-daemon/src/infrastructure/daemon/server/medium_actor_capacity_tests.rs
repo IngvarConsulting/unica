@@ -14395,9 +14395,10 @@ fn assert_development_cycle_admission(selected: &str) {
         }
         for dry_run in [false, true] {
             let mut arguments = serde_json::json!({"op":op,"args":args,"dryRun":dry_run});
-            if op == "push" && !dry_run {
-                // Исполняемый push с force:true допускается только после
-                // согласия человека: дверь подаёт аргументы выбранного варианта.
+            if matches!(op, "push" | "pull") && !dry_run {
+                // Исполняемые push и pull с force:true над набором вне git
+                // допускаются только после согласия человека: дверь подаёт
+                // аргументы выбранного варианта.
                 let unconfirmed = InvocationRequest::new(
                     ToolIdentity::Run,
                     arguments,
@@ -14407,11 +14408,11 @@ fn assert_development_cycle_admission(selected: &str) {
                 .unwrap();
                 let refused = match runtime.bind(unconfirmed) {
                     Err(V5CanonicalPrepareError::Rejected(result)) => result,
-                    Ok(_) => panic!("an unconfirmed push with force:true was admitted"),
-                    Err(other) => panic!("push: {other:?}"),
+                    Ok(_) => panic!("an unconfirmed {op} with force:true was admitted"),
+                    Err(other) => panic!("{op}: {other:?}"),
                 };
                 assert_eq!(refused.diagnostics[0]["code"], "cancelled");
-                let choice = refused.human_choice.expect("push asks the person");
+                let choice = refused.human_choice.expect("the call asks the person");
                 arguments = serde_json::Value::Object(choice.options[0].arguments.clone());
             }
             let request = InvocationRequest::new(
