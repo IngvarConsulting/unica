@@ -35,7 +35,7 @@ use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use unica_execution_contract::invocation::{DomainResult, SafeIdentityHash};
+use unica_execution_contract::invocation::{DomainResult, HumanChoice, SafeIdentityHash};
 use unica_redaction::redactor;
 use unica_refusal::RefusalCode;
 use unica_work_control::cancellation::CancellationToken;
@@ -155,6 +155,29 @@ impl PreparedSourceExport {
             json!(if force { "full" } else { "incremental" }),
         );
         let arguments = parse_export_arguments(&public)?;
+        // Полная выгрузка заменяет весь набор: с несохранёнными правками или
+        // без git она исполняется только с согласия человека. Вопрос
+        // задаётся до допуска: вызов, ушедший в фоновую задачу, спросить уже
+        // не может. Превью и чистый набор не спрашивают. Набор, который по
+        // проекту не определить, разбирает исполнение своим отказом.
+        if force && !dry_run {
+            if let Some((source_set, directory)) =
+                selected_source_set(&context.workspace_root, &arguments)
+            {
+                let local =
+                    local_changes(&SystemProcessRunner, &directory, &CancellationToken::new())
+                        .map_err(|(code, error)| reject(code, error))?;
+                if let Some(question) = pull_unsaved_question(&source_set, local) {
+                    if !HumanChoice::is_confirmed(&question, "unica.run", request.arguments()) {
+                        return Err(pull_unsaved_unconfirmed(
+                            &source_set,
+                            local,
+                            request.arguments(),
+                        ));
+                    }
+                }
+            }
+        }
         Ok(Self {
             arguments,
             dry_run,
@@ -567,21 +590,96 @@ fn parse_runner_output(output: ProcessOutput) -> Result<Value, (DomainResult, Va
 /// Цель выбранного набора по `v8project.yaml` до запуска раннера: `None`, если
 /// набор не определить (тогда решает ответ раннера).
 fn selected_target_exists(prepared: &PreparedSourceExport, root: &Path) -> Option<bool> {
+    let (_, directory) = selected_source_set(root, &prepared.arguments)?;
+    Some(directory.is_dir())
+}
+
+/// Выбранный набор по `v8project.yaml`: его имя и каталог. Без `sourceSet` —
+/// набор конфигурации. `None`, если набор не определить.
+fn selected_source_set(root: &Path, arguments: &ExportArguments) -> Option<(String, PathBuf)> {
     let text = std::fs::read_to_string(root.join(CONFIG_NAME)).ok()?;
     let document: serde_yaml::Value = serde_yaml::from_str(&text).ok()?;
     let entry = document
         .get("source-set")?
         .as_sequence()?
         .iter()
-        .find(|entry| match &prepared.arguments.source_set {
+        .find(|entry| match &arguments.source_set {
             Some(name) => entry.get("name").and_then(serde_yaml::Value::as_str) == Some(name),
             None => entry
                 .get("type")
                 .and_then(serde_yaml::Value::as_str)
                 .is_some_and(|kind| kind.eq_ignore_ascii_case("CONFIGURATION")),
         })?;
+    let name = entry.get("name").and_then(serde_yaml::Value::as_str)?;
     let path = entry.get("path").and_then(serde_yaml::Value::as_str)?;
-    Some(root.join(path).is_dir())
+    Some((name.to_string(), root.join(path)))
+}
+
+/// Код вопроса о полной выгрузке поверх несохранённых правок.
+const PULL_UNSAVED_CODE: &str = "source.pull_unsaved";
+
+/// Согласованный текст вопроса о полной выгрузке; `None` — чистый набор, о
+/// нём не спрашивают. Число правок входит в текст: согласие на другое число
+/// не годится.
+fn pull_unsaved_question(source_set: &str, local: LocalChanges) -> Option<String> {
+    match local {
+        LocalChanges::Files(0) => None,
+        LocalChanges::Files(files) => Some(format!(
+            "В исходниках набора «{source_set}» есть несохранённые правки, файлов: {files}."
+        )),
+        LocalChanges::NotUnderGit => Some(format!(
+            "Исходники набора «{source_set}» не под git: несохранённые правки проверить нельзя."
+        )),
+    }
+}
+
+/// Подтверждение полной выгрузки этим же вызовом: надписи согласованы и
+/// закреплены тестом.
+fn pull_unsaved_confirmation(
+    source_set: &str,
+    local: LocalChanges,
+    call: &Map<String, Value>,
+) -> Option<HumanChoice> {
+    let question = pull_unsaved_question(source_set, local)?;
+    let (description, cancel, facts) = match local {
+        LocalChanges::Files(files) => (
+            format!("правки пропадут, файлов: {files}"),
+            Some("сохраните правки в git и повторите".to_string()),
+            json!({"sourceSet": source_set, "underGit": true, "files": files}),
+        ),
+        LocalChanges::NotUnderGit => (
+            "правки в файлах набора пропадут".to_string(),
+            None,
+            json!({"sourceSet": source_set, "underGit": false}),
+        ),
+    };
+    let mut choice = HumanChoice::confirmation(
+        PULL_UNSAVED_CODE,
+        question,
+        "Перезаписать исходники",
+        description,
+        "unica.run",
+        call,
+    )
+    .with_data(facts);
+    choice.cancel_description = cancel;
+    Some(choice)
+}
+
+/// Отказ `cancelled` без согласия человека: исходники не тронуты. Клиенту,
+/// который умеет спрашивать, дверь задаёт вопрос; остальным исполняет вызов
+/// как прежде.
+fn pull_unsaved_unconfirmed(
+    source_set: &str,
+    local: LocalChanges,
+    call: &Map<String, Value>,
+) -> DomainResult {
+    let mut rejection = reject(
+        RefusalCode::Cancelled,
+        "pull with force:true replaces the whole source set, which has unsaved changes or is not under git; it runs only with the person's confirmation, it was not given, and the sources are unchanged",
+    );
+    rejection.human_choice = pull_unsaved_confirmation(source_set, local, call).map(Box::new);
+    rejection
 }
 
 /// Несохранённые правки каталога набора перед полной выгрузкой: она
@@ -2020,5 +2118,166 @@ mod medium_tests {
             let local = &result.data.as_ref().unwrap()["plan"]["localChanges"];
             assert_eq!(!local.is_null(), expected, "{mode:?}: {local}");
         }
+    }
+
+    fn pull_request(root: &Path, arguments: Value) -> InvocationRequest {
+        InvocationRequest::new(
+            ToolIdentity::Run,
+            arguments,
+            root.display().to_string(),
+            7000,
+        )
+        .unwrap()
+    }
+
+    /// Проект под git с набором `main`, сохранённым в коммите.
+    fn committed_workspace() -> tempfile::TempDir {
+        let root = workspace();
+        let set = root.path().join("main");
+        fs::create_dir_all(set.join("CommonModules")).unwrap();
+        fs::write(set.join("Configuration.xml"), "configuration").unwrap();
+        fs::write(set.join("CommonModules/A.bsl"), "a").unwrap();
+        fs::write(set.join("CommonModules/B.bsl"), "b").unwrap();
+        git(root.path(), &["init", "-q"]);
+        git(root.path(), &["config", "user.email", "t@example.com"]);
+        git(root.path(), &["config", "user.name", "test"]);
+        git(root.path(), &["add", "-A"]);
+        git(
+            root.path(),
+            &[
+                "-c",
+                "commit.gpgsign=false",
+                "-c",
+                "core.hooksPath=",
+                "commit",
+                "-qm",
+                "init",
+            ],
+        );
+        root
+    }
+
+    /// Исполняемый полный `pull` поверх несохранённых правок идёт только с
+    /// согласия человека. Вопрос называет число правок по согласованному
+    /// тексту, при отмене советует сохранить их в git. Согласие годится только
+    /// для того же числа правок. Чистый набор и превью не спрашивают.
+    /// rule: INV.RUNTIME.DESTRUCTIVE-CONFIRMATION
+    /// rule: INV.WIRE.SOURCE-EXPORT-TARGET-STAYS-INSIDE-THE-WORKSPACE
+    /// rule: INV.MCP.HUMAN-CHOICE
+    #[test]
+    fn a_full_pull_over_unsaved_changes_runs_only_with_the_persons_confirmation() {
+        let root = committed_workspace();
+        let call =
+            json!({"op": "pull", "args": {"force": true, "sourceSet": "main"}, "dryRun": false});
+
+        // Чистый набор: вопроса нет.
+        PreparedSourceExport::parse(&pull_request(root.path(), call.clone()))
+            .expect("a clean source set is not asked");
+
+        fs::write(root.path().join("main/CommonModules/A.bsl"), "edited").unwrap();
+        let refused = PreparedSourceExport::parse(&pull_request(root.path(), call.clone()))
+            .expect_err("unsaved changes need a confirmation");
+        assert_eq!(refused.diagnostics[0]["code"], "cancelled");
+        let choice = refused.human_choice.as_deref().expect("a confirmation");
+        // Надписи согласованы: менять их — только вместе с этим тестом.
+        assert_eq!(choice.code, "source.pull_unsaved");
+        assert_eq!(
+            choice.question,
+            "В исходниках набора «main» есть несохранённые правки, файлов: 1."
+        );
+        assert!(choice.proceeds_unasked);
+        assert_eq!(choice.options.len(), 1);
+        assert_eq!(choice.options[0].title, "Перезаписать исходники");
+        assert_eq!(choice.options[0].description, "правки пропадут, файлов: 1");
+        assert_eq!(
+            choice.cancel_description.as_deref(),
+            Some("сохраните правки в git и повторите")
+        );
+        assert_eq!(
+            choice.data,
+            Some(json!({"sourceSet": "main", "underGit": true, "files": 1}))
+        );
+        assert_eq!(
+            Value::Object(unica_execution_contract::invocation::without_confirmation(
+                &choice.options[0].arguments
+            )),
+            call
+        );
+
+        let confirmed = choice.options[0].arguments.clone();
+        let executed = PreparedSourceExport::parse(&pull_request(
+            root.path(),
+            Value::Object(confirmed.clone()),
+        ))
+        .expect("a confirmed full pull is executed");
+        assert_eq!(executed.arguments.mode, ExportMode::Full);
+
+        // Правок стало больше: прежнее согласие не годится.
+        fs::write(root.path().join("main/CommonModules/New.bsl"), "new").unwrap();
+        let again =
+            PreparedSourceExport::parse(&pull_request(root.path(), Value::Object(confirmed)))
+                .expect_err("another count needs a new confirmation");
+        assert_eq!(
+            again.human_choice.as_deref().unwrap().question,
+            "В исходниках набора «main» есть несохранённые правки, файлов: 2."
+        );
+
+        // Без `sourceSet` считается набор конфигурации.
+        let unnamed = PreparedSourceExport::parse(&pull_request(
+            root.path(),
+            json!({"op": "pull", "args": {"force": true}, "dryRun": false}),
+        ))
+        .expect_err("the configuration set is counted too");
+        assert!(unnamed.human_choice.is_some());
+
+        for unasked in [
+            json!({"op": "pull", "args": {"force": true, "sourceSet": "main"}, "dryRun": true}),
+            json!({"op": "pull", "args": {"sourceSet": "main"}, "dryRun": false}),
+        ] {
+            PreparedSourceExport::parse(&pull_request(root.path(), unasked.clone()))
+                .unwrap_or_else(|refused| panic!("{unasked} is not asked: {refused:?}"));
+        }
+    }
+
+    /// Набор не под git: правки проверить нельзя, и полный `pull` спрашивает
+    /// по согласованному тексту.
+    /// rule: INV.RUNTIME.DESTRUCTIVE-CONFIRMATION
+    #[test]
+    fn a_full_pull_of_a_set_outside_git_asks_the_person() {
+        let root = workspace();
+        let set = root.path().join("main");
+        fs::create_dir_all(&set).unwrap();
+        fs::write(set.join("Configuration.xml"), "configuration").unwrap();
+        // Каталог временный, но может лежать внутри чужого репозитория.
+        let outside = std::process::Command::new("git")
+            .args(["rev-parse", "--is-inside-work-tree"])
+            .current_dir(&set)
+            .output()
+            .map(|output| !output.status.success())
+            .unwrap_or(true);
+        if !outside {
+            return;
+        }
+        let refused = PreparedSourceExport::parse(&pull_request(
+            root.path(),
+            json!({"op": "pull", "args": {"force": true, "sourceSet": "main"}, "dryRun": false}),
+        ))
+        .expect_err("a set outside git needs a confirmation");
+        let choice = refused.human_choice.as_deref().expect("a confirmation");
+        assert_eq!(choice.code, "source.pull_unsaved");
+        assert_eq!(
+            choice.question,
+            "Исходники набора «main» не под git: несохранённые правки проверить нельзя."
+        );
+        assert_eq!(choice.options[0].title, "Перезаписать исходники");
+        assert_eq!(
+            choice.options[0].description,
+            "правки в файлах набора пропадут"
+        );
+        assert_eq!(choice.cancel_description, None);
+        assert_eq!(
+            choice.data,
+            Some(json!({"sourceSet": "main", "underGit": false}))
+        );
     }
 }
