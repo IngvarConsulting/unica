@@ -38,6 +38,9 @@ pub fn direct_result(outcome: Result<CanonicalCallOutcome, ErrorData>) -> CallTo
         Ok(CanonicalCallOutcome::Task(snapshot)) => {
             panic!("unexpected Task handoff: {snapshot:?}")
         }
+        Ok(CanonicalCallOutcome::Choice { choice, .. }) => {
+            panic!("unexpected choice: {choice:?}")
+        }
         Err(error) => panic!("unexpected refusal: {error}"),
     }
 }
@@ -47,6 +50,7 @@ pub fn lost_task(outcome: Result<CanonicalCallOutcome, ErrorData>) -> V5DaemonTa
     let task = match outcome {
         Ok(CanonicalCallOutcome::Task(task)) => task,
         Ok(CanonicalCallOutcome::Direct(result)) => panic!("unexpected direct: {result:?}"),
+        Ok(CanonicalCallOutcome::Choice { choice, .. }) => panic!("unexpected choice: {choice:?}"),
         Err(error) => panic!("unexpected refusal: {error}"),
     };
     assert_eq!(

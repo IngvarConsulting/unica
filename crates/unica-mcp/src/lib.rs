@@ -10,6 +10,7 @@
 mod canonical_cancellation;
 mod catalog;
 mod daemon_router;
+mod human_choice;
 mod in_flight;
 mod surface;
 mod task_projection;
@@ -99,6 +100,12 @@ enum SurfaceToolOutcome {
     },
     /// An acknowledged Direct terminal, already the final `CallToolResult`.
     Direct(CallToolResult),
+    /// An acknowledged Direct refusal that offers a person a choice: the
+    /// door asks it when the client can ask, else answers the refusal.
+    Choice {
+        refusal: CallToolResult,
+        choice: Box<unica_execution_contract::invocation::HumanChoice>,
+    },
     Task(V5DaemonTaskSnapshot),
 }
 
@@ -376,6 +383,9 @@ fn execute_surface_tool(
             })?;
             match (router.call)(tool, arguments, host, deadline, cancellation)? {
                 CanonicalCallOutcome::Direct(result) => Ok(SurfaceToolOutcome::Direct(result)),
+                CanonicalCallOutcome::Choice { refusal, choice } => {
+                    Ok(SurfaceToolOutcome::Choice { refusal, choice })
+                }
                 CanonicalCallOutcome::Task(snapshot) if client_supports_tasks => {
                     Ok(SurfaceToolOutcome::Task(snapshot))
                 }
@@ -895,7 +905,6 @@ impl ServerHandler for UnicaServer {
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
         let received_at = Instant::now();
-        let client_supports_tasks = native_task_capability(&context);
         // The SDK may place wire metadata in the request or the context.
         // Keep it separate from model-selected tool arguments.
         let mut metadata = context.meta.0 .0.clone();
@@ -918,142 +927,87 @@ impl ServerHandler for UnicaServer {
             roots,
             response_budget,
         };
-        let admission = self
-            .in_flight
-            .admit()
-            .map_err(|message| ErrorData::new(ErrorCode::INTERNAL_ERROR, message, None))?;
-        let canonical = matches!(self.router, SurfaceToolRouter::CanonicalV13(_));
-        let (manual_owner, standalone_admission, cancellation) = if canonical {
-            match self.manual_calls.enter(context.id.clone(), admission) {
-                Ok(owner) => {
-                    let cancellation = owner.cancellation();
-                    (Some(owner), None, cancellation)
-                }
-                Err(admission) => (None, Some(admission), CanonicalCancellation::default()),
-            }
-        } else {
-            let cancellation = CanonicalCancellation::from(admission.token());
-            (None, Some(admission), cancellation)
-        };
-        // SDK normal completion and run_stdio's EOF drain are independent
-        // from canonical manual cancellation. Legacy calls retain their
-        // established SDK/admission cancellation behavior.
-        let bridge = (!canonical).then(|| {
-            let sdk_token = context.ct.clone();
-            let bridged = cancellation.token();
-            tokio::spawn(async move {
-                sdk_token.cancelled().await;
-                bridged.cancel();
-            })
-        });
-
-        let router = self.router.clone();
-        let name = request.name.to_string();
-        let handler_name = name.clone();
         let progress_token = request
             .meta
             .as_ref()
             .and_then(RequestMetaObject::get_progress_token)
             .or_else(|| context.meta.get_progress_token());
-        let arguments = request.arguments.unwrap_or_default();
-        let progress_forwarding = if let Some(progress_token) = progress_token {
-            let (sender, mut receiver) =
-                tokio::sync::mpsc::unbounded_channel::<Option<ProgressEvent>>();
-            let sink: Arc<dyn ProgressSink> = Arc::new(McpProgressSink {
-                sender: sender.clone(),
-            });
-            let peer = context.peer.clone();
-            let forwarder = tokio::spawn(async move {
-                while let Some(message) = receiver.recv().await {
-                    let Some(event) = message else {
-                        break;
-                    };
-                    let notification = progress_notification(progress_token.clone(), &event);
-                    let _ = peer.notify_progress(notification).await;
-                }
-            });
-            McpProgressForwarding {
-                sink,
-                forwarder: Some(forwarder),
-                stop: Some(sender),
-            }
-        } else {
-            McpProgressForwarding {
-                sink: Arc::new(NoopProgressSink),
-                forwarder: None,
-                stop: None,
-            }
-        };
-        let McpProgressForwarding {
-            sink: progress,
-            forwarder: progress_forwarder,
-            stop: progress_stop,
-        } = progress_forwarding;
-        let result = tokio::task::spawn_blocking(move || {
-            // The actual blocking operation owns completion even if the SDK
-            // drops its asynchronous handler while draining stdin EOF.
-            let _manual_owner = manual_owner;
-            let _standalone_admission = standalone_admission;
-            let deadline = FrontendInvocationDeadline::new(received_at, None);
-            execute_surface_tool(
-                &router,
-                SurfaceToolCall {
-                    name: &handler_name,
-                    arguments: &arguments,
-                    host: &host,
-                },
-                cancellation,
-                progress,
-                deadline,
-                client_supports_tasks,
-            )
-        })
+        let name = request.name.to_string();
+        let input_responses = request.input_responses;
+        let request_state = request.request_state;
+        let outcome = invoke_surface_tool(
+            self,
+            SurfaceInvocation {
+                name: name.clone(),
+                arguments: request.arguments.unwrap_or_default(),
+                host: host.clone(),
+                progress_token: progress_token.clone(),
+                received_at,
+            },
+            &context,
+        )
         .await;
-        if let Some(stop) = progress_stop {
-            let _ = stop.send(None);
-        }
-        if let Some(forwarder) = progress_forwarder {
-            let _ = forwarder.await;
-        }
-        if let Some(bridge) = bridge {
-            bridge.abort();
-        }
-
-        let outcome = match result {
-            Ok(Ok(SurfaceToolOutcome::Legacy(result))) => {
-                render_tool_result(self.structured_tools.contains(name.as_str()), *result)
-                    .map(CallToolResponse::from)
+        let (refusal, choice) = match outcome {
+            Ok(SurfaceToolOutcome::Choice { refusal, choice }) => (refusal, choice),
+            outcome => {
+                return project_surface_outcome(self, &name, outcome, response_budget, received_at)
             }
-            Ok(Ok(SurfaceToolOutcome::CompatibilityTask { result, timing })) => {
-                compatibility_result_before(
-                    &result,
-                    response_budget,
-                    received_at,
-                    timing,
-                    Instant::now,
-                )
-                .map(CallToolResponse::from)
-                .map_err(crate::task_projection::projection_error)
-            }
-            Ok(Ok(SurfaceToolOutcome::Canonical(result))) => {
-                crate::task_projection::call_tool_result(&result, response_budget)
-                    .map(CallToolResponse::from)
-                    .map_err(crate::task_projection::projection_error)
-            }
-            Ok(Ok(SurfaceToolOutcome::Direct(result))) => Ok(CallToolResponse::from(result)),
-            Ok(Ok(SurfaceToolOutcome::Task(snapshot))) => {
-                crate::task_projection::create_task_result_v5(&snapshot)
-                    .map(CallToolResponse::from)
-                    .map_err(crate::task_projection::projection_error)
-            }
-            Ok(Err(error)) => Err(error),
-            Err(join_error) => Err(ErrorData::new(
-                ErrorCode::INTERNAL_ERROR,
-                format!("tool worker failed: {join_error}"),
-                None,
-            )),
         };
-        outcome
+        // The refusal offers a choice: ask the person when the client can ask.
+        let answer = match human_choice::choice_channel(
+            context.client_capabilities().as_ref(),
+            modern_peer(&context),
+        ) {
+            human_choice::ChoiceChannel::None => None,
+            human_choice::ChoiceChannel::Request => elicit_choice(&context, &choice).await,
+            human_choice::ChoiceChannel::InputRequired => {
+                match human_choice::retried_answer(
+                    &choice,
+                    input_responses.as_ref(),
+                    request_state.as_deref(),
+                ) {
+                    Some(answer) => Some(answer),
+                    None => {
+                        return Ok(CallToolResponse::from(human_choice::input_required(
+                            &choice,
+                        )))
+                    }
+                }
+            }
+        };
+        let Some(option) = answer
+            .as_ref()
+            .and_then(|answer| human_choice::chosen(&choice, answer))
+        else {
+            return Ok(CallToolResponse::from(refusal));
+        };
+        let chosen_at = Instant::now();
+        let outcome = invoke_surface_tool(
+            self,
+            SurfaceInvocation {
+                name: option.tool.clone(),
+                arguments: option.arguments.clone(),
+                host,
+                progress_token,
+                received_at: chosen_at,
+            },
+            &context,
+        )
+        .await;
+        // A chosen call refused with a choice of its own is not asked again:
+        // one call asks the person once.
+        let outcome = match outcome {
+            Ok(SurfaceToolOutcome::Choice { refusal, .. }) => {
+                Ok(SurfaceToolOutcome::Direct(refusal))
+            }
+            other => other,
+        };
+        match project_surface_outcome(self, &option.tool, outcome, response_budget, chosen_at)? {
+            CallToolResponse::Complete(result) => Ok(CallToolResponse::from(
+                human_choice::name_the_choice(result, option),
+            )),
+            other => Ok(other),
+        }
     }
 
     async fn get_task(
@@ -1088,7 +1042,8 @@ impl ServerHandler for UnicaServer {
         ensure_native_task_protocol(&context)?;
         let task_id = parse_task_id(&request.task_id)?;
         let handler = canonical_task_router(&self.router)?.get;
-        // v0.13 never enters input_required. Still prove the task is a current
+        // A Task never enters input_required: a person is asked only within
+        // a synchronous tools/call (`human_choice`). Still prove the task is a current
         // daemon-owned identity before returning the stable unsupported-input
         // classification; unknown and expired identities retain their codes.
         let deadline = FrontendInvocationDeadline::new(received_at, None);
@@ -1294,6 +1249,181 @@ fn task_internal_error_detailed(detail: RefusalDetail) -> ErrorData {
     )
 }
 
+/// One tool call the door runs for a `tools/call`: the requested call, or
+/// the call a person chose instead of a refusal.
+struct SurfaceInvocation {
+    name: String,
+    arguments: Map<String, Value>,
+    host: unica_bootstrap::HostRequest,
+    progress_token: Option<ProgressToken>,
+    received_at: Instant,
+}
+
+async fn invoke_surface_tool(
+    server: &UnicaServer,
+    invocation: SurfaceInvocation,
+    context: &RequestContext<RoleServer>,
+) -> Result<SurfaceToolOutcome, ErrorData> {
+    let SurfaceInvocation {
+        name,
+        arguments,
+        host,
+        progress_token,
+        received_at,
+    } = invocation;
+    let client_supports_tasks = native_task_capability(context);
+    let admission = server
+        .in_flight
+        .admit()
+        .map_err(|message| ErrorData::new(ErrorCode::INTERNAL_ERROR, message, None))?;
+    let canonical = matches!(server.router, SurfaceToolRouter::CanonicalV13(_));
+    let (manual_owner, standalone_admission, cancellation) = if canonical {
+        match server.manual_calls.enter(context.id.clone(), admission) {
+            Ok(owner) => {
+                let cancellation = owner.cancellation();
+                (Some(owner), None, cancellation)
+            }
+            Err(admission) => (None, Some(admission), CanonicalCancellation::default()),
+        }
+    } else {
+        let cancellation = CanonicalCancellation::from(admission.token());
+        (None, Some(admission), cancellation)
+    };
+    // SDK normal completion and run_stdio's EOF drain are independent
+    // from canonical manual cancellation. Legacy calls retain their
+    // established SDK/admission cancellation behavior.
+    let bridge = (!canonical).then(|| {
+        let sdk_token = context.ct.clone();
+        let bridged = cancellation.token();
+        tokio::spawn(async move {
+            sdk_token.cancelled().await;
+            bridged.cancel();
+        })
+    });
+
+    let router = server.router.clone();
+    let progress_forwarding = if let Some(progress_token) = progress_token {
+        let (sender, mut receiver) =
+            tokio::sync::mpsc::unbounded_channel::<Option<ProgressEvent>>();
+        let sink: Arc<dyn ProgressSink> = Arc::new(McpProgressSink {
+            sender: sender.clone(),
+        });
+        let peer = context.peer.clone();
+        let forwarder = tokio::spawn(async move {
+            while let Some(message) = receiver.recv().await {
+                let Some(event) = message else {
+                    break;
+                };
+                let notification = progress_notification(progress_token.clone(), &event);
+                let _ = peer.notify_progress(notification).await;
+            }
+        });
+        McpProgressForwarding {
+            sink,
+            forwarder: Some(forwarder),
+            stop: Some(sender),
+        }
+    } else {
+        McpProgressForwarding {
+            sink: Arc::new(NoopProgressSink),
+            forwarder: None,
+            stop: None,
+        }
+    };
+    let McpProgressForwarding {
+        sink: progress,
+        forwarder: progress_forwarder,
+        stop: progress_stop,
+    } = progress_forwarding;
+    let result = tokio::task::spawn_blocking(move || {
+        // The actual blocking operation owns completion even if the SDK
+        // drops its asynchronous handler while draining stdin EOF.
+        let _manual_owner = manual_owner;
+        let _standalone_admission = standalone_admission;
+        let deadline = FrontendInvocationDeadline::new(received_at, None);
+        execute_surface_tool(
+            &router,
+            SurfaceToolCall {
+                name: &name,
+                arguments: &arguments,
+                host: &host,
+            },
+            cancellation,
+            progress,
+            deadline,
+            client_supports_tasks,
+        )
+    })
+    .await;
+    if let Some(stop) = progress_stop {
+        let _ = stop.send(None);
+    }
+    if let Some(forwarder) = progress_forwarder {
+        let _ = forwarder.await;
+    }
+    if let Some(bridge) = bridge {
+        bridge.abort();
+    }
+    match result {
+        Ok(outcome) => outcome,
+        Err(join_error) => Err(ErrorData::new(
+            ErrorCode::INTERNAL_ERROR,
+            format!("tool worker failed: {join_error}"),
+            None,
+        )),
+    }
+}
+
+fn project_surface_outcome(
+    server: &UnicaServer,
+    name: &str,
+    outcome: Result<SurfaceToolOutcome, ErrorData>,
+    response_budget: unica_bootstrap::ResponseBudget,
+    received_at: Instant,
+) -> Result<CallToolResponse, ErrorData> {
+    match outcome? {
+        SurfaceToolOutcome::Legacy(result) => {
+            render_tool_result(server.structured_tools.contains(name), *result)
+                .map(CallToolResponse::from)
+        }
+        SurfaceToolOutcome::CompatibilityTask { result, timing } => {
+            compatibility_result_before(&result, response_budget, received_at, timing, Instant::now)
+                .map(CallToolResponse::from)
+                .map_err(crate::task_projection::projection_error)
+        }
+        SurfaceToolOutcome::Canonical(result) => {
+            crate::task_projection::call_tool_result(&result, response_budget)
+                .map(CallToolResponse::from)
+                .map_err(crate::task_projection::projection_error)
+        }
+        SurfaceToolOutcome::Direct(result) => Ok(CallToolResponse::from(result)),
+        // Nobody is asked here: the refusal the choice came with is the answer.
+        SurfaceToolOutcome::Choice { refusal, .. } => Ok(CallToolResponse::from(refusal)),
+        SurfaceToolOutcome::Task(snapshot) => {
+            crate::task_projection::create_task_result_v5(&snapshot)
+                .map(CallToolResponse::from)
+                .map_err(crate::task_projection::projection_error)
+        }
+    }
+}
+
+/// Ask the person by an `elicitation/create` request (sessions before
+/// `2026-07-28`). A failed exchange, an expired wait and a cancelled call are
+/// no answer.
+async fn elicit_choice(
+    context: &RequestContext<RoleServer>,
+    choice: &unica_execution_contract::invocation::HumanChoice,
+) -> Option<rmcp::model::ElicitResult> {
+    let asked = context.peer.create_elicitation_with_timeout(
+        human_choice::elicitation_params(choice),
+        Some(human_choice::ELICITATION_TIMEOUT),
+    );
+    tokio::select! {
+        answer = asked => answer.ok(),
+        () = context.ct.cancelled() => None,
+    }
+}
+
 struct McpProgressForwarding {
     sink: Arc<dyn ProgressSink>,
     forwarder: Option<tokio::task::JoinHandle<()>>,
@@ -1366,5 +1496,7 @@ fn call_tool_result(
     call_tool_result_observed(app, name, args, cancellation, Arc::new(NoopProgressSink))
 }
 
+#[cfg(test)]
+mod human_choice_tests;
 #[cfg(test)]
 mod medium_tests;
