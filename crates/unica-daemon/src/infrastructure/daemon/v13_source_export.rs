@@ -454,7 +454,7 @@ fn execute_with_resolved_runner(
             // git — не раннер: его зовёт обычный процесс, без обёртки v8-runner.
             match local_changes(&SystemProcessRunner, &plan.target_absolute, &cancellation) {
                 Ok(local) => Some(local),
-                Err(error) => return reject(RefusalCode::InvalidState, error),
+                Err((code, error)) => return reject(code, error),
             }
         } else {
             None
@@ -607,11 +607,17 @@ impl LocalChanges {
 /// Считает по git несохранённые правки в `target`. Отсутствующий каталог —
 /// правок нет. Каталог вне рабочего дерева git или без git на машине —
 /// `NotUnderGit`; ответ git, который не прочитать, — отказ, а не ноль.
+/// `git status` of a whole set: one record per file, tens of thousands of
+/// files with long paths in an untracked set on its first pull.
+const GIT_STATUS_OUTPUT_LIMIT: usize = 128 * 1024 * 1024;
+/// A git that does not answer must not hold the preview forever.
+const GIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
 pub(super) fn local_changes(
     runner: &dyn ProcessRunner,
     target: &Path,
     cancellation: &CancellationToken,
-) -> Result<LocalChanges, String> {
+) -> Result<LocalChanges, (RefusalCode, String)> {
     if !target.is_dir() {
         return Ok(LocalChanges::Files(0));
     }
@@ -620,7 +626,12 @@ pub(super) fn local_changes(
             program: PathBuf::from("git"),
             args: args.iter().map(|arg| (*arg).to_string()).collect(),
             cwd: target.to_path_buf(),
-            env: vec![("GIT_OPTIONAL_LOCKS".into(), "0".into())],
+            // Messages stay in English: "not a git repository" is read below.
+            env: vec![
+                ("GIT_OPTIONAL_LOCKS".into(), "0".into()),
+                ("LC_ALL".into(), "C".into()),
+                ("LANGUAGE".into(), "C".into()),
+            ],
             env_remove: [
                 "GIT_DIR",
                 "GIT_WORK_TREE",
@@ -630,26 +641,69 @@ pub(super) fn local_changes(
             .into_iter()
             .map(Into::into)
             .collect(),
-            capture_limits: Some((RUNNER_OUTPUT_LIMIT, RUNNER_OUTPUT_LIMIT)),
-            timeout: None,
+            capture_limits: Some((GIT_STATUS_OUTPUT_LIMIT, RUNNER_OUTPUT_LIMIT)),
+            timeout: Some(GIT_TIMEOUT),
             cancellation: cancellation.clone(),
         })
+    };
+    let failed = |what: &str, output: &ProcessOutput| -> Option<(RefusalCode, String)> {
+        if output.cancelled {
+            Some((
+                RefusalCode::Cancelled,
+                format!("pull cancelled during git {what}"),
+            ))
+        } else if output.timed_out {
+            Some((
+                RefusalCode::DeadlineExceeded,
+                format!("git {what} did not answer in time"),
+            ))
+        } else {
+            None
+        }
     };
     let inside = match git(&["rev-parse", "--is-inside-work-tree"]) {
         Ok(output) => output,
         // Нет git на машине: правки проверить нельзя, как и вне репозитория.
         Err(ProcessStreamFailure::Spawn(_)) => return Ok(LocalChanges::NotUnderGit),
         Err(error) => {
-            return Err(format!(
-                "git rev-parse failed: {}",
-                redactor(error.message())
+            return Err((
+                RefusalCode::InvalidState,
+                format!("git rev-parse failed: {}", redactor(error.message())),
             ))
         }
     };
-    if inside.cancelled {
-        return Err("git status was cancelled".to_string());
+    if let Some(refusal) = failed("rev-parse", &inside) {
+        return Err(refusal);
     }
-    if !inside.status_success || inside.stdout.trim() != "true" {
+    if !inside.status_success {
+        // Вне репозитория правок не проверить; любой другой отказ git
+        // (например, чужой владелец репозитория) — не «не под git».
+        if inside.stderr.contains("not a git repository") {
+            return Ok(LocalChanges::NotUnderGit);
+        }
+        return Err((
+            RefusalCode::InvalidState,
+            format!(
+                "git could not tell whether the source set is under git: {}",
+                redactor(inside.stderr.trim())
+            ),
+        ));
+    }
+    if inside.stdout.trim() != "true" {
+        return Ok(LocalChanges::NotUnderGit);
+    }
+    // Каталог набора целиком исключён `.gitignore`: git его не хранит, и
+    // «правок нет» соврало бы — набор пропадёт весь.
+    let ignored = git(&["check-ignore", "-q", "."]).map_err(|error| {
+        (
+            RefusalCode::InvalidState,
+            format!("git check-ignore failed: {}", redactor(error.message())),
+        )
+    })?;
+    if let Some(refusal) = failed("check-ignore", &ignored) {
+        return Err(refusal);
+    }
+    if ignored.status_success {
         return Ok(LocalChanges::NotUnderGit);
     }
     let status = git(&[
@@ -661,12 +715,20 @@ pub(super) fn local_changes(
         "--",
         ".",
     ])
-    .map_err(|error| format!("git status failed: {}", redactor(error.message())))?;
-    if status.cancelled {
-        return Err("git status was cancelled".to_string());
+    .map_err(|error| {
+        (
+            RefusalCode::InvalidState,
+            format!("git status failed: {}", redactor(error.message())),
+        )
+    })?;
+    if let Some(refusal) = failed("status", &status) {
+        return Err(refusal);
     }
     if !status.status_success || status.stdout_truncated || status.stdout_had_invalid_utf8 {
-        return Err("git status did not report the changes of the source set".to_string());
+        return Err((
+            RefusalCode::InvalidState,
+            "git status did not report the changes of the source set".to_string(),
+        ));
     }
     Ok(LocalChanges::Files(
         status
@@ -1753,6 +1815,7 @@ mod medium_tests {
             .env_remove("GIT_DIR")
             .env_remove("GIT_WORK_TREE")
             .env_remove("GIT_INDEX_FILE")
+            .env_remove("GIT_COMMON_DIR")
             .status()
             .unwrap();
         assert!(status.success(), "git {args:?}");
@@ -1779,7 +1842,18 @@ mod medium_tests {
         )
         .unwrap();
         git(root.path(), &["add", "-A"]);
-        git(root.path(), &["commit", "-qm", "init"]);
+        git(
+            root.path(),
+            &[
+                "-c",
+                "commit.gpgsign=false",
+                "-c",
+                "core.hooksPath=",
+                "commit",
+                "-qm",
+                "init",
+            ],
+        );
         let cancellation = CancellationToken::new();
 
         assert_eq!(
@@ -1827,6 +1901,60 @@ mod medium_tests {
         }
     }
 
+    /// Каталог набора, целиком исключённый `.gitignore`, git не хранит: это
+    /// «не под git», а не «правок нет».
+    /// rule: INV.WIRE.SOURCE-EXPORT-TARGET-STAYS-INSIDE-THE-WORKSPACE
+    #[test]
+    fn a_set_ignored_by_git_is_not_under_git() {
+        let root = tempfile::tempdir().unwrap();
+        git(root.path(), &["init", "-q"]);
+        fs::write(
+            root.path().join(".gitignore"),
+            "main/
+",
+        )
+        .unwrap();
+        let set = root.path().join("main");
+        fs::create_dir_all(&set).unwrap();
+        fs::write(set.join("Configuration.xml"), "configuration").unwrap();
+        assert_eq!(
+            local_changes(&SystemProcessRunner, &set, &CancellationToken::new()).unwrap(),
+            LocalChanges::NotUnderGit
+        );
+    }
+
+    /// Отмена — `cancelled`; отказ git по иной причине, чем «не репозиторий»,
+    /// не выдаётся за «не под git».
+    /// rule: INV.WIRE.SOURCE-EXPORT-TARGET-STAYS-INSIDE-THE-WORKSPACE
+    #[test]
+    fn a_cancelled_or_refusing_git_is_not_taken_for_a_set_outside_git() {
+        let root = tempfile::tempdir().unwrap();
+        let mut cancelled = process(json!(null), false);
+        cancelled.cancelled = true;
+        let runner = SequenceRunner::new(vec![cancelled]);
+        let (code, _) = local_changes(&runner, root.path(), &CancellationToken::new()).unwrap_err();
+        assert_eq!(code, RefusalCode::Cancelled);
+
+        let mut dubious = process(json!(null), false);
+        dubious.stdout = String::new();
+        dubious.stderr = "fatal: detected dubious ownership in repository".to_string();
+        let runner = SequenceRunner::new(vec![dubious]);
+        let (code, error) =
+            local_changes(&runner, root.path(), &CancellationToken::new()).unwrap_err();
+        assert_eq!(code, RefusalCode::InvalidState);
+        assert!(error.contains("dubious ownership"), "{error}");
+
+        let mut outside = process(json!(null), false);
+        outside.stdout = String::new();
+        outside.stderr =
+            "fatal: not a git repository (or any of the parent directories): .git".to_string();
+        let runner = SequenceRunner::new(vec![outside]);
+        assert_eq!(
+            local_changes(&runner, root.path(), &CancellationToken::new()).unwrap(),
+            LocalChanges::NotUnderGit
+        );
+    }
+
     /// Ответ git, который не прочитать, — отказ, а не «правок нет».
     /// rule: INV.WIRE.SOURCE-EXPORT-TARGET-STAYS-INSIDE-THE-WORKSPACE
     #[test]
@@ -1838,10 +1966,14 @@ mod medium_tests {
         .to_string();
         let mut failed = process(json!(null), false);
         failed.stdout = String::new();
-        let runner = SequenceRunner::new(vec![inside, failed]);
-        let error = local_changes(&runner, root.path(), &CancellationToken::new()).unwrap_err();
+        let mut not_ignored = process(json!(null), false);
+        not_ignored.stdout = String::new();
+        let runner = SequenceRunner::new(vec![inside, not_ignored, failed]);
+        let (code, error) =
+            local_changes(&runner, root.path(), &CancellationToken::new()).unwrap_err();
+        assert_eq!(code, RefusalCode::InvalidState);
         assert!(error.contains("git status"), "{error}");
-        let args: Vec<String> = runner.calls.lock().unwrap()[1].args.clone();
+        let args: Vec<String> = runner.calls.lock().unwrap()[2].args.clone();
         assert!(
             args.contains(&"--untracked-files=all".to_string()),
             "{args:?}"
