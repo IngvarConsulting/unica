@@ -30,13 +30,6 @@
           "eq": "boolean"
         }
       ],
-      "fileAssertions": [
-        {
-          "path": "src/Catalogs/Codes.xml",
-          "kind": "sha256",
-          "eq": "6f74c957b3e2e828c8cabff51fd8addfe26ab7cbe3c8b3c75e07caf6583c87e7"
-        }
-      ],
       "captures": {
         "unchanged1": {
           "file": "src/Catalogs/Codes.xml",

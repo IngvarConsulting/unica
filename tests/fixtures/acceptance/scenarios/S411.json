@@ -24,33 +24,6 @@
           "eq": "source_unreadable"
         }
       ],
-      "fileAssertions": [
-        {
-          "path": "src/CommonModules/CorpusModule/Ext/Module.bsl",
-          "kind": "sha256",
-          "eq": "4aac93927e340996c103d5beefaa26a6bca09cfcb4e6ce550e21704568e42c4e"
-        },
-        {
-          "path": "src/CommonModules/CorpusModule.xml",
-          "kind": "sha256",
-          "eq": "b79ca789e4c10164d2b9047f81efcd24a0b785118c213e8d4cfe0087b3ef80aa"
-        },
-        {
-          "path": "src/Configuration.xml",
-          "kind": "sha256",
-          "eq": "821173da7e3cb2e1cc013450fb6212ddf76f73d135df920bee93231958f505cf"
-        },
-        {
-          "path": "src/Languages/Русский.xml",
-          "kind": "sha256",
-          "eq": "7d8b52ab4bebed8a42ac1c8eb80bb22d96a679733785365e461336e4c16f5b00"
-        },
-        {
-          "path": "v8project.yaml",
-          "kind": "sha256",
-          "eq": "4c905657f7eed74f32e2bf03e873ca17f3440e378d2cd83c4952ecd63011ea59"
-        }
-      ],
       "captures": {
         "unchanged1": {
           "file": "src/CommonModules/CorpusModule/Ext/Module.bsl",

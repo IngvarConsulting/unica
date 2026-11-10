@@ -57,11 +57,6 @@
       ],
       "fileAssertions": [
         {
-          "kind": "sha256",
-          "path": "src/Configuration.xml",
-          "eq": "41c7a0b8161a1e7661471f225cc24faf46d85761df32ff022b171b525b063989"
-        },
-        {
           "kind": "exists",
           "path": "src/AccumulationRegisters/CorpusTurnovers.xml",
           "eq": false

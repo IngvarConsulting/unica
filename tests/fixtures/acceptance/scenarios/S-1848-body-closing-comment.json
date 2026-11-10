@@ -20,13 +20,6 @@
       },
       "expect": [
         "ok"
-      ],
-      "fileAssertions": [
-        {
-          "path": "src/CommonModules/Probe/Ext/Module.bsl",
-          "kind": "sha256",
-          "eq": "06e6740a8b5bf78f00bebb76e0f91956a97d690e5b78aaa088858b0487cee937"
-        }
       ]
     },
     {

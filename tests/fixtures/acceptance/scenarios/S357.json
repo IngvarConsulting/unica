@@ -33,13 +33,6 @@
           "eq": "main:CommonModule.GoogleПереводчик.Can.code.replace"
         }
       ],
-      "fileAssertions": [
-        {
-          "kind": "sha256",
-          "path": "src/CommonModules/GoogleПереводчик/Ext/Module.bsl",
-          "eq": "9242a8a0392611dcdf09cbd630fed8b6565a4940cdc3d69bc7b53db177d3f376"
-        }
-      ],
       "refusal": "bad_value: unknown argument; selector accepts only anchor",
       "captures": {
         "unchanged1": {

@@ -23,13 +23,6 @@
           ]
         }
       ],
-      "fileAssertions": [
-        {
-          "path": "src/Catalogs/Codes.xml",
-          "kind": "sha256",
-          "eq": "4beeb87992c242442f2449c76d9996487a7d5f91a8f38aff7a12bbc5370dcd79"
-        }
-      ],
       "captures": {
         "unchanged1": {
           "file": "src/Catalogs/Codes.xml",

@@ -33,53 +33,6 @@
           "contains": "compilation contexts are unknown because the borrowed common module does not state its execution environment"
         }
       ],
-      "fileAssertions": [
-        {
-          "path": "src/Catalogs/CorpusCatalog.xml",
-          "kind": "sha256",
-          "eq": "0ce535de5f0b4295212b7c20de8514944b33f6566143ad1632f11024c819313b"
-        },
-        {
-          "path": "src/ChartsOfCalculationTypes/CorpusCalculationTypes.xml",
-          "kind": "sha256",
-          "eq": "bcdef0a5c0c732a4e27ce57692e1930c506f3c4fca531f535d82af01d1644491"
-        },
-        {
-          "path": "src/CommonModules/CorpusModule/Ext/Module.bsl",
-          "kind": "sha256",
-          "eq": "4aac93927e340996c103d5beefaa26a6bca09cfcb4e6ce550e21704568e42c4e"
-        },
-        {
-          "path": "src/CommonModules/CorpusModule.xml",
-          "kind": "sha256",
-          "eq": "c00a82ba7181202e43c1f38b47748155923d65b6f4b53624d5afeb9e149c1890"
-        },
-        {
-          "path": "src/Configuration.xml",
-          "kind": "sha256",
-          "eq": "541a30541727a522c29e118bfae3caad145d226f09e42d4e24ca81e36a965b06"
-        },
-        {
-          "path": "src/Documents/CorpusDocument.xml",
-          "kind": "sha256",
-          "eq": "f5db7ff2e306f41046abae9ab4d537178705f083d38d2804638bde6e0c64e5c8"
-        },
-        {
-          "path": "src/InformationRegisters/CorpusRegister.xml",
-          "kind": "sha256",
-          "eq": "63d463efbe9c304594e65bc0e137f4da809013c277d353521c987067c85c1ef6"
-        },
-        {
-          "path": "src/Languages/Русский.xml",
-          "kind": "sha256",
-          "eq": "7d8b52ab4bebed8a42ac1c8eb80bb22d96a679733785365e461336e4c16f5b00"
-        },
-        {
-          "path": "v8project.yaml",
-          "kind": "sha256",
-          "eq": "4c905657f7eed74f32e2bf03e873ca17f3440e378d2cd83c4952ecd63011ea59"
-        }
-      ],
       "captures": {
         "unchanged1": {
           "file": "src/Catalogs/CorpusCatalog.xml",

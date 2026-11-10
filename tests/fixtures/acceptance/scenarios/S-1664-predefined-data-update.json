@@ -23,18 +23,6 @@
           ]
         }
       ],
-      "fileAssertions": [
-        {
-          "path": "src/Catalogs/Codes.xml",
-          "kind": "sha256",
-          "eq": "ff05f5cfce36326850447d289178225119502c2b6c5cc64f1664ce37de831b48"
-        },
-        {
-          "path": "src/Catalogs/Codes/Ext/Predefined.xml",
-          "kind": "sha256",
-          "eq": "9fcd9340b2136b5df8c29c37052d97a6ee0b48ce3b4822066b2033eaf9276aca"
-        }
-      ],
       "captures": {
         "unchanged1": {
           "file": "src/Catalogs/Codes/Ext/Predefined.xml",

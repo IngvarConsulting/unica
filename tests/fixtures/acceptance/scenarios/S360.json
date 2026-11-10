@@ -26,13 +26,6 @@
           "eq": null
         }
       ],
-      "fileAssertions": [
-        {
-          "kind": "sha256",
-          "path": "v8project.yaml",
-          "eq": "8fac3c46841b4eadb76154ed64f2996efcbf08c3ac6c87dd39cf646818be6d09"
-        }
-      ],
       "captures": {
         "unchanged1": {
           "file": "v8project.yaml",

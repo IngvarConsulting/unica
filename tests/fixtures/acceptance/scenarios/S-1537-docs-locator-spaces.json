@@ -28,14 +28,7 @@
           "file": "platform/8.3.27.2074/shcntx_ru.hbk",
           "kind": "sha256"
         }
-      },
-      "fileAssertions": [
-        {
-          "path": "platform/8.3.27.2074/shcntx_ru.hbk",
-          "kind": "sha256",
-          "eq": "7986a7d3c82931e47bf5c100438689a1fa7583a49a3a3583c3185746fcfb60ab"
-        }
-      ]
+      }
     },
     {
       "tool": "unica.docs",

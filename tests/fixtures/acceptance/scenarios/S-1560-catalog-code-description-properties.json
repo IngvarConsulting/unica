@@ -39,13 +39,6 @@
           "pointer": "/data/branches/1/at",
           "eq": "main:Catalog.Items.StandardAttribute"
         }
-      ],
-      "fileAssertions": [
-        {
-          "path": "src/Catalogs/Items.xml",
-          "kind": "sha256",
-          "eq": "61d513d709997e7259d10ff9f91c4be8012f19604f2e3bb6542a5914d4249ecf"
-        }
       ]
     },
     {

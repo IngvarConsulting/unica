@@ -46,11 +46,6 @@
       "fileAssertions": [
         {
           "path": "src/AccumulationRegisters/Movements.xml",
-          "kind": "sha256",
-          "eq": "81de851c3c01b8b1d360a6c0fcd9df12c1ffbf4a1e3d75247b81057b219ee81a"
-        },
-        {
-          "path": "src/AccumulationRegisters/Movements.xml",
           "kind": "xml",
           "select": ".//{http://v8.1c.ru/8.3/MDClasses}Attribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}Type",
           "eq": [

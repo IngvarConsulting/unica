@@ -33,18 +33,6 @@
           "eq": true
         }
       ],
-      "fileAssertions": [
-        {
-          "kind": "sha256",
-          "path": "src/Reports/АнализВерсийОбъектов.xml",
-          "eq": "4a5d35f1061d329b0003a90ffe4b3a2ecd37de256a442694061bfc3f19124230"
-        },
-        {
-          "kind": "sha256",
-          "path": "src/Configuration.xml",
-          "eq": "41c7a0b8161a1e7661471f225cc24faf46d85761df32ff022b171b525b063989"
-        }
-      ],
       "captures": {
         "unchanged1": {
           "file": "src/Configuration.xml",

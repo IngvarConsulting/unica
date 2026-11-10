@@ -22,18 +22,6 @@
           ]
         }
       ],
-      "fileAssertions": [
-        {
-          "path": "src/Catalogs/Codes.xml",
-          "kind": "sha256",
-          "eq": "6f74c957b3e2e828c8cabff51fd8addfe26ab7cbe3c8b3c75e07caf6583c87e7"
-        },
-        {
-          "path": "src/Configuration.xml",
-          "kind": "sha256",
-          "eq": "1bf62d96859b90525180783385f6972f5ed3d69b2e64ae85bb527ba66387223f"
-        }
-      ],
       "captures": {
         "unchanged1": {
           "file": "src/Configuration.xml",

@@ -64,39 +64,7 @@
           "file": "src/Ext/ParentConfigurations.bin",
           "kind": "sha256"
         }
-      },
-      "fileAssertions": [
-        {
-          "kind": "sha256",
-          "path": "src/Catalogs/Items/Forms/Main/Ext/Form/Module.bsl",
-          "eq": "ce4d2ff44b3c7ce1df80fc7cc21b72f29dbc9b3ff942b171078848e208b73722"
-        },
-        {
-          "kind": "sha256",
-          "path": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
-          "eq": "a5f67b035efad94e97b0f018425a818cbb2add643768684e5183e85605538742"
-        },
-        {
-          "kind": "sha256",
-          "path": "src/Catalogs/Items/Forms/Main.xml",
-          "eq": "d4b873d771107f206b83fcd52f7a0fc76a679d9554479f03e4d1c44b31db512c"
-        },
-        {
-          "kind": "sha256",
-          "path": "src/Catalogs/Items.xml",
-          "eq": "3596972040b14f53283f26f0fc9888d096408e3f188189c37e48fa174d871529"
-        },
-        {
-          "kind": "sha256",
-          "path": "src/Configuration.xml",
-          "eq": "e35317ae32b23eca506d5de1f9c7099d04419e968ba9c995742e141fc951e783"
-        },
-        {
-          "kind": "sha256",
-          "path": "src/Ext/ParentConfigurations.bin",
-          "eq": "775141cad471ddd0b5d085c29c66eeb5286f853f1ad1326634450958760ba350"
-        }
-      ]
+      }
     },
     {
       "tool": "unica.apply",

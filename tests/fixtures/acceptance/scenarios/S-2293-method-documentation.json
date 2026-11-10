@@ -19,13 +19,6 @@
           "eq": "// Returns the sample value.\r\n// Number.\r\n// Returns the sample value.\r\n// Number.\r\nFunction Target() Export\r\n    Return 1;\r\nEndFunction\r\n"
         }
       ],
-      "fileAssertions": [
-        {
-          "path": "src/CommonModules/Probe/Ext/Module.bsl",
-          "kind": "sha256",
-          "eq": "3cc8bb6b2c57db60137fc2ec613dbb9d2d1dcb4c62292bc5d6302a7aac89c84b"
-        }
-      ],
       "captures": {
         "unchanged1": {
           "file": "src/CommonModules/Probe/Ext/Module.bsl",

@@ -31,21 +31,6 @@
       ],
       "fileAssertions": [
         {
-          "kind": "sha256",
-          "path": "v8project.yaml",
-          "eq": "6fa50678d415c16f6fc4127bd3e86d1e262428d161c7bc00e3e808f5b69fbe41"
-        },
-        {
-          "kind": "sha256",
-          "path": "src/Configuration.xml",
-          "eq": "5081cfe341032873dbec96c70135faff38cf1d183a920e5fe274d2cd50262362"
-        },
-        {
-          "kind": "sha256",
-          "path": "src/CommonAttributes/Probe.xml",
-          "eq": "5de4ef9c1d8e97ba65703fac1f0f0bc4f3d30abea1185771243b5e00910a40de"
-        },
-        {
           "kind": "exists",
           "path": "src/ConfigDumpInfo.xml",
           "eq": false

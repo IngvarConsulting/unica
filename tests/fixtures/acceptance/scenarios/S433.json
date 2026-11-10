@@ -23,14 +23,7 @@
           "kind": "sha256",
           "file": "src/cf/Reports/F06Report.xml"
         }
-      },
-      "fileAssertions": [
-        {
-          "kind": "sha256",
-          "path": "src/cf/Reports/F06Report/Templates/PlatformExport/Ext/Template.xml",
-          "eq": "2648b2265a7d5e6d96f2f3bcb1a143d2acc585584d724306a7e9c0783ea604bb"
-        }
-      ]
+      }
     },
     {
       "tool": "unica.apply",

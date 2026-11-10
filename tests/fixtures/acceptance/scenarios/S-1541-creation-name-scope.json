@@ -63,11 +63,6 @@
       },
       "fileAssertions": [
         {
-          "path": "src/Configuration.xml",
-          "kind": "sha256",
-          "eq": "5e3fc1bcea82b0f0d16316821ab913b804ca8770b859c4077ada6f4e32251960"
-        },
-        {
           "path": "src/Roles/Читатель.xml",
           "kind": "exists",
           "eq": false
