@@ -240,3 +240,50 @@ fn the_persons_answer_plans_the_support_change_and_the_edit_together() {
     let changed = std::fs::read(source.join("Ext/ParentConfigurations.bin")).unwrap();
     assert_ne!(changed, marker, "the plan takes the object off support");
 }
+
+/// The plan the person's answer prepares is checked like any other: a
+/// support marker changed on disk between planning and execution refuses
+/// the execution with `stale_revision`, writes nothing and leaves the
+/// foreign change in place.
+/// rule: INV.SOURCE.REVISION-PROJECTION-CAPTURE-EQUALITY
+/// rule: INV.SOURCE.SUPPORT-SEPARATE-APPLY
+#[test]
+fn a_support_marker_changed_after_the_answer_makes_its_plan_stale() {
+    let runtime = runtime();
+    let workspace = vendor_workspace(0, true);
+    let source = workspace.path().join("src");
+    let call = serde_json::json!({"at": "main:Document.First", "ops": [{"op": "object.remove"}]});
+
+    let refused = apply(&runtime, workspace.path(), call);
+    let answer = refused.human_choice.expect("deny asks the person").options[0]
+        .arguments
+        .clone();
+    let planned = apply(
+        &runtime,
+        workspace.path(),
+        serde_json::Value::Object(answer),
+    );
+    assert!(planned.ok, "{planned:?}");
+    let token = planned.data.as_ref().unwrap()["executionToken"].clone();
+
+    let marker = source.join("Ext/ParentConfigurations.bin");
+    let foreign = std::fs::read_to_string(&marker)
+        .unwrap()
+        .replace("\"1.0\"", "\"1.1\"");
+    std::fs::write(&marker, &foreign).unwrap();
+    let changed = unica_workspace::test_support::tree_snapshot(&source);
+
+    let stale = apply(
+        &runtime,
+        workspace.path(),
+        serde_json::json!({"executionToken": token}),
+    );
+    assert!(!stale.ok, "{stale:?}");
+    assert_eq!(stale.diagnostics[0]["code"], "stale_revision", "{stale:?}");
+    assert_eq!(
+        unica_workspace::test_support::tree_snapshot(&source),
+        changed
+    );
+    assert!(source.join("Documents/First.xml").exists());
+    assert_eq!(std::fs::read_to_string(&marker).unwrap(), foreign);
+}
