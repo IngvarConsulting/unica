@@ -49,7 +49,7 @@ use unica_work_control::cancellation::CancellationToken;
 
 pub(super) const OPERATION: &str = "push";
 /// Имя базы в вопросе человеку: адаптер раннера 0.15 обслуживает только её.
-const INFOBASE_NAME: &str = "origin";
+pub(super) const INFOBASE_NAME: &str = "origin";
 /// Имя команды раннера и в командной строке, и в конверте: с 0.12 раннер
 /// называет её словом словаря.
 const RUNNER_COMMAND: &str = "push";
