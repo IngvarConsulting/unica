@@ -20,6 +20,138 @@
       "captures": {
         "config": {
           "pointer": "/next/0/args/at"
+        },
+        "unchanged1": {
+          "file": "src/Configuration.xml",
+          "kind": "sha256"
+        },
+        "unchanged2": {
+          "file": "src/Constants/AliasFamily.xml",
+          "kind": "sha256"
+        },
+        "unchanged3": {
+          "file": "src/Constants/BadFixedFamily.xml",
+          "kind": "sha256"
+        },
+        "unchanged4": {
+          "file": "src/Constants/BadNumberFamily.xml",
+          "kind": "sha256"
+        },
+        "unchanged5": {
+          "file": "src/Constants/BadStorageFamily.xml",
+          "kind": "sha256"
+        },
+        "unchanged6": {
+          "file": "src/Constants/BooleanControl.xml",
+          "kind": "sha256"
+        },
+        "unchanged7": {
+          "file": "src/Constants/DateControl.xml",
+          "kind": "sha256"
+        },
+        "unchanged8": {
+          "file": "src/Constants/DateTimeControl.xml",
+          "kind": "sha256"
+        },
+        "unchanged9": {
+          "file": "src/Constants/FixedString.xml",
+          "kind": "sha256"
+        },
+        "unchanged10": {
+          "file": "src/Constants/ForeignFamily.xml",
+          "kind": "sha256"
+        },
+        "unchanged11": {
+          "file": "src/Constants/MalformedQName.xml",
+          "kind": "sha256"
+        },
+        "unchanged12": {
+          "file": "src/Constants/MissingType.xml",
+          "kind": "sha256"
+        },
+        "unchanged13": {
+          "file": "src/Constants/MixedPlan.xml",
+          "kind": "sha256"
+        },
+        "unchanged14": {
+          "file": "src/Constants/NamedPlan.xml",
+          "kind": "sha256"
+        },
+        "unchanged15": {
+          "file": "src/Constants/NumberAny.xml",
+          "kind": "sha256"
+        },
+        "unchanged16": {
+          "file": "src/Constants/NumberNonNegative.xml",
+          "kind": "sha256"
+        },
+        "unchanged17": {
+          "file": "src/Constants/TimeControl.xml",
+          "kind": "sha256"
+        },
+        "unchanged18": {
+          "file": "src/Constants/UUIDControl.xml",
+          "kind": "sha256"
+        },
+        "unchanged19": {
+          "file": "src/Constants/UnknownFamily.xml",
+          "kind": "sha256"
+        },
+        "unchanged20": {
+          "file": "src/Constants/ValueStorageControl.xml",
+          "kind": "sha256"
+        },
+        "unchanged21": {
+          "file": "src/Constants/VariableString.xml",
+          "kind": "sha256"
+        },
+        "unchanged22": {
+          "file": "src/Constants/ВидКартыСерверЛояльности.xml",
+          "kind": "sha256"
+        },
+        "unchanged23": {
+          "file": "src/Constants/ГлавныйУзел.xml",
+          "kind": "sha256"
+        },
+        "unchanged24": {
+          "file": "src/Constants/ЕдиницаИзмеренияКилограммИС.xml",
+          "kind": "sha256"
+        },
+        "unchanged25": {
+          "file": "src/Constants/ЕдиницаИзмеренияЛитрИС.xml",
+          "kind": "sha256"
+        },
+        "unchanged26": {
+          "file": "src/Constants/ПрофильБезопасностиИнформационнойБазы.xml",
+          "kind": "sha256"
+        },
+        "unchanged27": {
+          "file": "src/DefinedTypes/ВидКартыСерверЛояльности.xml",
+          "kind": "sha256"
+        },
+        "unchanged28": {
+          "file": "src/DefinedTypes/ЕдиницаИзмеренияКилограммИС.xml",
+          "kind": "sha256"
+        },
+        "unchanged29": {
+          "file": "src/DefinedTypes/ЕдиницаИзмеренияЛитрИС.xml",
+          "kind": "sha256"
+        },
+        "unchanged30": {
+          "file": "src/DefinedTypes/ПрофильБезопасностиИнформационнойБазы.xml",
+          "kind": "sha256"
+        },
+        "unchanged31": {
+          "file": "src/ExchangePlans/Node.xml",
+          "kind": "sha256"
+        },
+        "unchanged32": {
+          "file": "src/ExchangePlans/Other.xml",
+          "kind": "sha256"
+        },
+        "unchanged33": {
+          "file": "src/Languages/Русский.xml",
+          "kind": "sha256"
         }
       }
     },
@@ -1428,167 +1560,167 @@
         {
           "path": "src/Configuration.xml",
           "kind": "sha256",
-          "eq": "c80f359ad2c154e34d58fe48e643cc0a75f6348a2b94b2c1b48beb5b0618243d"
+          "eq": "$capture.unchanged1"
         },
         {
           "path": "src/Constants/AliasFamily.xml",
           "kind": "sha256",
-          "eq": "8e5566d95de92e777b23f84030081ea3e638e6b0c02104381a135223758eb14d"
+          "eq": "$capture.unchanged2"
         },
         {
           "path": "src/Constants/BadFixedFamily.xml",
           "kind": "sha256",
-          "eq": "3c811e63fa693119381caa2d826b9bfa5057d34046689b1ea342b4a7a6a7b538"
+          "eq": "$capture.unchanged3"
         },
         {
           "path": "src/Constants/BadNumberFamily.xml",
           "kind": "sha256",
-          "eq": "8502a6b84c2ef1b640202291f7c69d93ddb2b67774f106ea8206a3af7f6689a2"
+          "eq": "$capture.unchanged4"
         },
         {
           "path": "src/Constants/BadStorageFamily.xml",
           "kind": "sha256",
-          "eq": "a8488816185d1eaffd4db6a7a9562205d99787eb0856e494f6c06f507a92a33b"
+          "eq": "$capture.unchanged5"
         },
         {
           "path": "src/Constants/BooleanControl.xml",
           "kind": "sha256",
-          "eq": "4926832dd6bb051492dba714be0ba6f6781ac882b7bc95cfccbcb2ce35606a99"
+          "eq": "$capture.unchanged6"
         },
         {
           "path": "src/Constants/DateControl.xml",
           "kind": "sha256",
-          "eq": "d4db3038699919e622a626a9ac0aaf77af4e21a059ca3366b889278212ac5e54"
+          "eq": "$capture.unchanged7"
         },
         {
           "path": "src/Constants/DateTimeControl.xml",
           "kind": "sha256",
-          "eq": "aa93b214bff7acd0a6a36306b4841565a51792625785abf4448ce382c41002f0"
+          "eq": "$capture.unchanged8"
         },
         {
           "path": "src/Constants/FixedString.xml",
           "kind": "sha256",
-          "eq": "dbb315a7ede724c39d90096aa060ec71cbaeb1f684e29ccd4a40fada67beedfc"
+          "eq": "$capture.unchanged9"
         },
         {
           "path": "src/Constants/ForeignFamily.xml",
           "kind": "sha256",
-          "eq": "2d720b88a63c153c743039c0e10dc70e18a72f842764e48fafb01d5278f5e2c4"
+          "eq": "$capture.unchanged10"
         },
         {
           "path": "src/Constants/MalformedQName.xml",
           "kind": "sha256",
-          "eq": "9ca0c1e5718796df9ed14c4b20fb071d748b6e76497d6cd76143cbddc58ad9fe"
+          "eq": "$capture.unchanged11"
         },
         {
           "path": "src/Constants/MissingType.xml",
           "kind": "sha256",
-          "eq": "07b7377986451af450de300908de44a01d9d49768164557e43af641e6d6428c5"
+          "eq": "$capture.unchanged12"
         },
         {
           "path": "src/Constants/MixedPlan.xml",
           "kind": "sha256",
-          "eq": "d999ff8a03bab93ed67b1e4f7465c5bcfb160db129de7ab1600af8d8b2577fa8"
+          "eq": "$capture.unchanged13"
         },
         {
           "path": "src/Constants/NamedPlan.xml",
           "kind": "sha256",
-          "eq": "018a39826c844e71b7be55f5018efd9771f50349c01f2656b5d5f66c290eae9c"
+          "eq": "$capture.unchanged14"
         },
         {
           "path": "src/Constants/NumberAny.xml",
           "kind": "sha256",
-          "eq": "177a9b77b410bdf3370577a51020874f462ee4fafba298a16696b5a89b98943c"
+          "eq": "$capture.unchanged15"
         },
         {
           "path": "src/Constants/NumberNonNegative.xml",
           "kind": "sha256",
-          "eq": "d47d7f604ed07d7e60dfc542dcd0c1b24b4dc55fa37118f8d875a5ce26ab72b2"
+          "eq": "$capture.unchanged16"
         },
         {
           "path": "src/Constants/TimeControl.xml",
           "kind": "sha256",
-          "eq": "0e7d5e6ff7a1f628ab7e93dfa288c683f5317d0f682f901ea72de5f4bd08d5b0"
+          "eq": "$capture.unchanged17"
         },
         {
           "path": "src/Constants/UUIDControl.xml",
           "kind": "sha256",
-          "eq": "144b90eaf19e1b879315164bf091896c4da26d3651df88948ac3412a18b22472"
+          "eq": "$capture.unchanged18"
         },
         {
           "path": "src/Constants/UnknownFamily.xml",
           "kind": "sha256",
-          "eq": "70512dbcbd14e8dbaf5c635bdedf3e7421f0d9c0f28cffef77a0d944b748c107"
+          "eq": "$capture.unchanged19"
         },
         {
           "path": "src/Constants/ValueStorageControl.xml",
           "kind": "sha256",
-          "eq": "38b8edae517de6aa531447d31310b7ecf2cd3ebfdd9535a204811e93374d2774"
+          "eq": "$capture.unchanged20"
         },
         {
           "path": "src/Constants/VariableString.xml",
           "kind": "sha256",
-          "eq": "d0019a852a86089b40e77006f906a384ea96c3ada9be5a48b7ad560a60c11dc3"
+          "eq": "$capture.unchanged21"
         },
         {
           "path": "src/Constants/ВидКартыСерверЛояльности.xml",
           "kind": "sha256",
-          "eq": "b7d332972d87eca18f193812c8155845313cf1d309d4409052080490a0100f61"
+          "eq": "$capture.unchanged22"
         },
         {
           "path": "src/Constants/ГлавныйУзел.xml",
           "kind": "sha256",
-          "eq": "3566d7a4fe2be8710bdcfb37c568ea0d9fa355b3b83b455fe522ee51c8d2cb28"
+          "eq": "$capture.unchanged23"
         },
         {
           "path": "src/Constants/ЕдиницаИзмеренияКилограммИС.xml",
           "kind": "sha256",
-          "eq": "66b333490e9e4d79941eac7be1386c79b7c191a98e8f4112640aa72078be92b9"
+          "eq": "$capture.unchanged24"
         },
         {
           "path": "src/Constants/ЕдиницаИзмеренияЛитрИС.xml",
           "kind": "sha256",
-          "eq": "a9906e9109b1679638e0f1369abf91b03e7906eb829e6e046f0e5b54ffce0235"
+          "eq": "$capture.unchanged25"
         },
         {
           "path": "src/Constants/ПрофильБезопасностиИнформационнойБазы.xml",
           "kind": "sha256",
-          "eq": "f46e05e9936e387f2da47c05a86608adcf9cbf0f7b343e05868709fad2dbb49a"
+          "eq": "$capture.unchanged26"
         },
         {
           "path": "src/DefinedTypes/ВидКартыСерверЛояльности.xml",
           "kind": "sha256",
-          "eq": "9ac12e6e4ef6b64a46319a44932e2ff525071562444a827375a22a55e196bca7"
+          "eq": "$capture.unchanged27"
         },
         {
           "path": "src/DefinedTypes/ЕдиницаИзмеренияКилограммИС.xml",
           "kind": "sha256",
-          "eq": "78a2cf965f72a0ca16b9c0ed9467ed2c34bba30efeb5c1eb954e7373da33fcfc"
+          "eq": "$capture.unchanged28"
         },
         {
           "path": "src/DefinedTypes/ЕдиницаИзмеренияЛитрИС.xml",
           "kind": "sha256",
-          "eq": "45553eb0b182360431589d4815a729e194ff06001d38b418e58fa078556cf213"
+          "eq": "$capture.unchanged29"
         },
         {
           "path": "src/DefinedTypes/ПрофильБезопасностиИнформационнойБазы.xml",
           "kind": "sha256",
-          "eq": "51d45b6951a5888f1801477a9a3f105f3cbff5a424b63a34a30b66822279b9c8"
+          "eq": "$capture.unchanged30"
         },
         {
           "path": "src/ExchangePlans/Node.xml",
           "kind": "sha256",
-          "eq": "79e2cf282c9602c8c5ae66089c85ca6947705a25ef1ff80b295636fec75a4c41"
+          "eq": "$capture.unchanged31"
         },
         {
           "path": "src/ExchangePlans/Other.xml",
           "kind": "sha256",
-          "eq": "d6d7cf811e5d454980242cc92f74e8e42db208a6d0fd7c479b034d0ae8ea92c1"
+          "eq": "$capture.unchanged32"
         },
         {
           "path": "src/Languages/Русский.xml",
           "kind": "sha256",
-          "eq": "7654708398f01cf93b276ea1cb3fe49efb45cf6e49dc9c0de83af972c2a0faa8"
+          "eq": "$capture.unchanged33"
         }
       ]
     }

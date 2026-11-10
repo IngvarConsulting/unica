@@ -22,13 +22,24 @@
           ]
         }
       ],
-      "fileAssertions": [
-        {
-          "path": "src/Catalogs/Codes.xml",
-          "kind": "sha256",
-          "eq": "5edbdd501b57180e289743e6a9ec90f3b230470f5b502902797009b52552e27c"
+      "captures": {
+        "unchanged1": {
+          "file": "src/Catalogs/Codes.xml",
+          "kind": "sha256"
+        },
+        "unchanged2": {
+          "file": "src/ChartsOfCharacteristicTypes/Codes.xml",
+          "kind": "sha256"
+        },
+        "unchanged3": {
+          "file": "src/ChartsOfCalculationTypes/Codes.xml",
+          "kind": "sha256"
+        },
+        "unchanged4": {
+          "file": "src/ExchangePlans/Codes.xml",
+          "kind": "sha256"
         }
-      ]
+      }
     },
     {
       "tool": "unica.view",
@@ -246,7 +257,7 @@
         {
           "path": "src/Catalogs/Codes.xml",
           "kind": "sha256",
-          "eq": "5edbdd501b57180e289743e6a9ec90f3b230470f5b502902797009b52552e27c"
+          "eq": "$capture.unchanged1"
         }
       ]
     },
@@ -286,7 +297,7 @@
         {
           "path": "src/ChartsOfCharacteristicTypes/Codes.xml",
           "kind": "sha256",
-          "eq": "677e551ab0a228956e7b02b5b52d7b0cbaca99917fffe7d23908853bbcf13af3"
+          "eq": "$capture.unchanged2"
         }
       ]
     },
@@ -506,7 +517,7 @@
         {
           "path": "src/ChartsOfCharacteristicTypes/Codes.xml",
           "kind": "sha256",
-          "eq": "677e551ab0a228956e7b02b5b52d7b0cbaca99917fffe7d23908853bbcf13af3"
+          "eq": "$capture.unchanged2"
         }
       ]
     },
@@ -546,7 +557,7 @@
         {
           "path": "src/ChartsOfCalculationTypes/Codes.xml",
           "kind": "sha256",
-          "eq": "97f681f288c2d9f383fe9d4aedc2a86496dd216a26e3da53d1d49f48e96dc839"
+          "eq": "$capture.unchanged3"
         }
       ]
     },
@@ -766,7 +777,7 @@
         {
           "path": "src/ChartsOfCalculationTypes/Codes.xml",
           "kind": "sha256",
-          "eq": "97f681f288c2d9f383fe9d4aedc2a86496dd216a26e3da53d1d49f48e96dc839"
+          "eq": "$capture.unchanged3"
         }
       ]
     },
@@ -806,7 +817,7 @@
         {
           "path": "src/ExchangePlans/Codes.xml",
           "kind": "sha256",
-          "eq": "074753c3826ebc91e6c51734eaff334cb7fcef01c53777ddf420074537de47fe"
+          "eq": "$capture.unchanged4"
         }
       ]
     },
@@ -1026,7 +1037,7 @@
         {
           "path": "src/ExchangePlans/Codes.xml",
           "kind": "sha256",
-          "eq": "074753c3826ebc91e6c51734eaff334cb7fcef01c53777ddf420074537de47fe"
+          "eq": "$capture.unchanged4"
         }
       ]
     },

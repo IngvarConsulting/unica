@@ -26,7 +26,13 @@
             }
           }
         }
-      ]
+      ],
+      "captures": {
+        "unchanged1": {
+          "file": "src/DefinedTypes/CatalogObjects.xml",
+          "kind": "sha256"
+        }
+      }
     },
     {
       "tool": "unica.view",
@@ -203,7 +209,7 @@
         {
           "path": "src/DefinedTypes/CatalogObjects.xml",
           "kind": "sha256",
-          "eq": "8a7e1968b2cb14254c90e2e1c7dd5c164a1e9e63035d717a876eb31a8baa2c8f"
+          "eq": "$capture.unchanged1"
         }
       ]
     },
@@ -227,7 +233,13 @@
           "kind": "sha256",
           "eq": "e17cb7aa847ef1db81da56669657df055a0c205917ea09a70757a542fa946c44"
         }
-      ]
+      ],
+      "captures": {
+        "unchanged2": {
+          "file": "src/DefinedTypes/CatalogObjects.xml",
+          "kind": "sha256"
+        }
+      }
     },
     {
       "tool": "unica.view",
@@ -282,7 +294,7 @@
         {
           "path": "src/DefinedTypes/CatalogObjects.xml",
           "kind": "sha256",
-          "eq": "e17cb7aa847ef1db81da56669657df055a0c205917ea09a70757a542fa946c44"
+          "eq": "$capture.unchanged2"
         }
       ]
     }

@@ -23,41 +23,33 @@
           "eq": 2
         }
       ],
-      "fileAssertions": [
-        {
-          "path": "src/Documents/Orders.xml",
-          "kind": "sha256",
-          "eq": "1132b9852322ec910dae988e3f0e4f8a9e144fdb93d4a9d0cd6dbd28abfa02a5"
-        },
-        {
-          "path": "src/InformationRegisters/Facts.xml",
-          "kind": "sha256",
-          "eq": "0a9ddcdffc1415daf0687c088607bbe3e7f9e7211f9312adeea676fd693933b9"
-        },
-        {
-          "path": "src/AccumulationRegisters/Movements.xml",
-          "kind": "sha256",
-          "eq": "21a879f7ee1d04ce0e823493eaa2a4768196816a50be982a18c776b25be9eb4d"
-        },
-        {
-          "path": "src/DocumentJournals/Entries.xml",
-          "kind": "sha256",
-          "eq": "d12cf85e15584417ea79d280f843e5f2cacadb4001ab3595f37678f463c06bb3"
-        },
-        {
-          "path": "src/Documents/Orders/Commands/Probe/Ext/CommandModule.bsl",
-          "kind": "sha256",
-          "eq": "f62e3f16ec34b7c3d43a603ce482759dd24c50b9c40bd13e5690ce05712172a3"
-        },
-        {
-          "path": "src/Documents/Orders/Commands/Other/Ext/CommandModule.bsl",
-          "kind": "sha256",
-          "eq": "f62e3f16ec34b7c3d43a603ce482759dd24c50b9c40bd13e5690ce05712172a3"
-        }
-      ],
       "captures": {
         "collection0": {
           "pointer": "/data/branches/3/at"
+        },
+        "unchanged1": {
+          "file": "src/Documents/Orders.xml",
+          "kind": "sha256"
+        },
+        "unchanged2": {
+          "file": "src/InformationRegisters/Facts.xml",
+          "kind": "sha256"
+        },
+        "unchanged3": {
+          "file": "src/AccumulationRegisters/Movements.xml",
+          "kind": "sha256"
+        },
+        "unchanged4": {
+          "file": "src/DocumentJournals/Entries.xml",
+          "kind": "sha256"
+        },
+        "unchanged5": {
+          "file": "src/Documents/Orders/Commands/Probe/Ext/CommandModule.bsl",
+          "kind": "sha256"
+        },
+        "unchanged6": {
+          "file": "src/Documents/Orders/Commands/Other/Ext/CommandModule.bsl",
+          "kind": "sha256"
         }
       }
     },
@@ -175,32 +167,32 @@
         {
           "path": "src/Documents/Orders.xml",
           "kind": "sha256",
-          "eq": "1132b9852322ec910dae988e3f0e4f8a9e144fdb93d4a9d0cd6dbd28abfa02a5"
+          "eq": "$capture.unchanged1"
         },
         {
           "path": "src/InformationRegisters/Facts.xml",
           "kind": "sha256",
-          "eq": "0a9ddcdffc1415daf0687c088607bbe3e7f9e7211f9312adeea676fd693933b9"
+          "eq": "$capture.unchanged2"
         },
         {
           "path": "src/AccumulationRegisters/Movements.xml",
           "kind": "sha256",
-          "eq": "21a879f7ee1d04ce0e823493eaa2a4768196816a50be982a18c776b25be9eb4d"
+          "eq": "$capture.unchanged3"
         },
         {
           "path": "src/DocumentJournals/Entries.xml",
           "kind": "sha256",
-          "eq": "d12cf85e15584417ea79d280f843e5f2cacadb4001ab3595f37678f463c06bb3"
+          "eq": "$capture.unchanged4"
         },
         {
           "path": "src/Documents/Orders/Commands/Probe/Ext/CommandModule.bsl",
           "kind": "sha256",
-          "eq": "f62e3f16ec34b7c3d43a603ce482759dd24c50b9c40bd13e5690ce05712172a3"
+          "eq": "$capture.unchanged5"
         },
         {
           "path": "src/Documents/Orders/Commands/Other/Ext/CommandModule.bsl",
           "kind": "sha256",
-          "eq": "f62e3f16ec34b7c3d43a603ce482759dd24c50b9c40bd13e5690ce05712172a3"
+          "eq": "$capture.unchanged6"
         }
       ],
       "captures": {
@@ -278,32 +270,32 @@
         {
           "path": "src/Documents/Orders.xml",
           "kind": "sha256",
-          "eq": "1132b9852322ec910dae988e3f0e4f8a9e144fdb93d4a9d0cd6dbd28abfa02a5"
+          "eq": "$capture.unchanged1"
         },
         {
           "path": "src/InformationRegisters/Facts.xml",
           "kind": "sha256",
-          "eq": "0a9ddcdffc1415daf0687c088607bbe3e7f9e7211f9312adeea676fd693933b9"
+          "eq": "$capture.unchanged2"
         },
         {
           "path": "src/AccumulationRegisters/Movements.xml",
           "kind": "sha256",
-          "eq": "21a879f7ee1d04ce0e823493eaa2a4768196816a50be982a18c776b25be9eb4d"
+          "eq": "$capture.unchanged3"
         },
         {
           "path": "src/DocumentJournals/Entries.xml",
           "kind": "sha256",
-          "eq": "d12cf85e15584417ea79d280f843e5f2cacadb4001ab3595f37678f463c06bb3"
+          "eq": "$capture.unchanged4"
         },
         {
           "path": "src/Documents/Orders/Commands/Probe/Ext/CommandModule.bsl",
           "kind": "sha256",
-          "eq": "f62e3f16ec34b7c3d43a603ce482759dd24c50b9c40bd13e5690ce05712172a3"
+          "eq": "$capture.unchanged5"
         },
         {
           "path": "src/Documents/Orders/Commands/Other/Ext/CommandModule.bsl",
           "kind": "sha256",
-          "eq": "f62e3f16ec34b7c3d43a603ce482759dd24c50b9c40bd13e5690ce05712172a3"
+          "eq": "$capture.unchanged6"
         }
       ],
       "captures": {
@@ -370,32 +362,32 @@
         {
           "path": "src/Documents/Orders.xml",
           "kind": "sha256",
-          "eq": "1132b9852322ec910dae988e3f0e4f8a9e144fdb93d4a9d0cd6dbd28abfa02a5"
+          "eq": "$capture.unchanged1"
         },
         {
           "path": "src/InformationRegisters/Facts.xml",
           "kind": "sha256",
-          "eq": "0a9ddcdffc1415daf0687c088607bbe3e7f9e7211f9312adeea676fd693933b9"
+          "eq": "$capture.unchanged2"
         },
         {
           "path": "src/AccumulationRegisters/Movements.xml",
           "kind": "sha256",
-          "eq": "21a879f7ee1d04ce0e823493eaa2a4768196816a50be982a18c776b25be9eb4d"
+          "eq": "$capture.unchanged3"
         },
         {
           "path": "src/DocumentJournals/Entries.xml",
           "kind": "sha256",
-          "eq": "d12cf85e15584417ea79d280f843e5f2cacadb4001ab3595f37678f463c06bb3"
+          "eq": "$capture.unchanged4"
         },
         {
           "path": "src/Documents/Orders/Commands/Probe/Ext/CommandModule.bsl",
           "kind": "sha256",
-          "eq": "f62e3f16ec34b7c3d43a603ce482759dd24c50b9c40bd13e5690ce05712172a3"
+          "eq": "$capture.unchanged5"
         },
         {
           "path": "src/Documents/Orders/Commands/Other/Ext/CommandModule.bsl",
           "kind": "sha256",
-          "eq": "f62e3f16ec34b7c3d43a603ce482759dd24c50b9c40bd13e5690ce05712172a3"
+          "eq": "$capture.unchanged6"
         }
       ]
     },
@@ -421,32 +413,32 @@
         {
           "path": "src/Documents/Orders.xml",
           "kind": "sha256",
-          "eq": "1132b9852322ec910dae988e3f0e4f8a9e144fdb93d4a9d0cd6dbd28abfa02a5"
+          "eq": "$capture.unchanged1"
         },
         {
           "path": "src/InformationRegisters/Facts.xml",
           "kind": "sha256",
-          "eq": "0a9ddcdffc1415daf0687c088607bbe3e7f9e7211f9312adeea676fd693933b9"
+          "eq": "$capture.unchanged2"
         },
         {
           "path": "src/AccumulationRegisters/Movements.xml",
           "kind": "sha256",
-          "eq": "21a879f7ee1d04ce0e823493eaa2a4768196816a50be982a18c776b25be9eb4d"
+          "eq": "$capture.unchanged3"
         },
         {
           "path": "src/DocumentJournals/Entries.xml",
           "kind": "sha256",
-          "eq": "d12cf85e15584417ea79d280f843e5f2cacadb4001ab3595f37678f463c06bb3"
+          "eq": "$capture.unchanged4"
         },
         {
           "path": "src/Documents/Orders/Commands/Probe/Ext/CommandModule.bsl",
           "kind": "sha256",
-          "eq": "f62e3f16ec34b7c3d43a603ce482759dd24c50b9c40bd13e5690ce05712172a3"
+          "eq": "$capture.unchanged5"
         },
         {
           "path": "src/Documents/Orders/Commands/Other/Ext/CommandModule.bsl",
           "kind": "sha256",
-          "eq": "f62e3f16ec34b7c3d43a603ce482759dd24c50b9c40bd13e5690ce05712172a3"
+          "eq": "$capture.unchanged6"
         }
       ],
       "captures": {
@@ -601,32 +593,32 @@
         {
           "path": "src/Documents/Orders.xml",
           "kind": "sha256",
-          "eq": "1132b9852322ec910dae988e3f0e4f8a9e144fdb93d4a9d0cd6dbd28abfa02a5"
+          "eq": "$capture.unchanged1"
         },
         {
           "path": "src/InformationRegisters/Facts.xml",
           "kind": "sha256",
-          "eq": "0a9ddcdffc1415daf0687c088607bbe3e7f9e7211f9312adeea676fd693933b9"
+          "eq": "$capture.unchanged2"
         },
         {
           "path": "src/AccumulationRegisters/Movements.xml",
           "kind": "sha256",
-          "eq": "21a879f7ee1d04ce0e823493eaa2a4768196816a50be982a18c776b25be9eb4d"
+          "eq": "$capture.unchanged3"
         },
         {
           "path": "src/DocumentJournals/Entries.xml",
           "kind": "sha256",
-          "eq": "d12cf85e15584417ea79d280f843e5f2cacadb4001ab3595f37678f463c06bb3"
+          "eq": "$capture.unchanged4"
         },
         {
           "path": "src/Documents/Orders/Commands/Probe/Ext/CommandModule.bsl",
           "kind": "sha256",
-          "eq": "f62e3f16ec34b7c3d43a603ce482759dd24c50b9c40bd13e5690ce05712172a3"
+          "eq": "$capture.unchanged5"
         },
         {
           "path": "src/Documents/Orders/Commands/Other/Ext/CommandModule.bsl",
           "kind": "sha256",
-          "eq": "f62e3f16ec34b7c3d43a603ce482759dd24c50b9c40bd13e5690ce05712172a3"
+          "eq": "$capture.unchanged6"
         }
       ],
       "captures": {
@@ -716,32 +708,32 @@
         {
           "path": "src/Documents/Orders.xml",
           "kind": "sha256",
-          "eq": "1132b9852322ec910dae988e3f0e4f8a9e144fdb93d4a9d0cd6dbd28abfa02a5"
+          "eq": "$capture.unchanged1"
         },
         {
           "path": "src/InformationRegisters/Facts.xml",
           "kind": "sha256",
-          "eq": "0a9ddcdffc1415daf0687c088607bbe3e7f9e7211f9312adeea676fd693933b9"
+          "eq": "$capture.unchanged2"
         },
         {
           "path": "src/AccumulationRegisters/Movements.xml",
           "kind": "sha256",
-          "eq": "21a879f7ee1d04ce0e823493eaa2a4768196816a50be982a18c776b25be9eb4d"
+          "eq": "$capture.unchanged3"
         },
         {
           "path": "src/DocumentJournals/Entries.xml",
           "kind": "sha256",
-          "eq": "d12cf85e15584417ea79d280f843e5f2cacadb4001ab3595f37678f463c06bb3"
+          "eq": "$capture.unchanged4"
         },
         {
           "path": "src/Documents/Orders/Commands/Probe/Ext/CommandModule.bsl",
           "kind": "sha256",
-          "eq": "f62e3f16ec34b7c3d43a603ce482759dd24c50b9c40bd13e5690ce05712172a3"
+          "eq": "$capture.unchanged5"
         },
         {
           "path": "src/Documents/Orders/Commands/Other/Ext/CommandModule.bsl",
           "kind": "sha256",
-          "eq": "f62e3f16ec34b7c3d43a603ce482759dd24c50b9c40bd13e5690ce05712172a3"
+          "eq": "$capture.unchanged6"
         }
       ]
     },
@@ -815,32 +807,32 @@
         {
           "path": "src/Documents/Orders.xml",
           "kind": "sha256",
-          "eq": "1132b9852322ec910dae988e3f0e4f8a9e144fdb93d4a9d0cd6dbd28abfa02a5"
+          "eq": "$capture.unchanged1"
         },
         {
           "path": "src/InformationRegisters/Facts.xml",
           "kind": "sha256",
-          "eq": "0a9ddcdffc1415daf0687c088607bbe3e7f9e7211f9312adeea676fd693933b9"
+          "eq": "$capture.unchanged2"
         },
         {
           "path": "src/AccumulationRegisters/Movements.xml",
           "kind": "sha256",
-          "eq": "21a879f7ee1d04ce0e823493eaa2a4768196816a50be982a18c776b25be9eb4d"
+          "eq": "$capture.unchanged3"
         },
         {
           "path": "src/DocumentJournals/Entries.xml",
           "kind": "sha256",
-          "eq": "d12cf85e15584417ea79d280f843e5f2cacadb4001ab3595f37678f463c06bb3"
+          "eq": "$capture.unchanged4"
         },
         {
           "path": "src/Documents/Orders/Commands/Probe/Ext/CommandModule.bsl",
           "kind": "sha256",
-          "eq": "f62e3f16ec34b7c3d43a603ce482759dd24c50b9c40bd13e5690ce05712172a3"
+          "eq": "$capture.unchanged5"
         },
         {
           "path": "src/Documents/Orders/Commands/Other/Ext/CommandModule.bsl",
           "kind": "sha256",
-          "eq": "f62e3f16ec34b7c3d43a603ce482759dd24c50b9c40bd13e5690ce05712172a3"
+          "eq": "$capture.unchanged6"
         }
       ]
     },
@@ -866,32 +858,32 @@
         {
           "path": "src/Documents/Orders.xml",
           "kind": "sha256",
-          "eq": "1132b9852322ec910dae988e3f0e4f8a9e144fdb93d4a9d0cd6dbd28abfa02a5"
+          "eq": "$capture.unchanged1"
         },
         {
           "path": "src/InformationRegisters/Facts.xml",
           "kind": "sha256",
-          "eq": "0a9ddcdffc1415daf0687c088607bbe3e7f9e7211f9312adeea676fd693933b9"
+          "eq": "$capture.unchanged2"
         },
         {
           "path": "src/AccumulationRegisters/Movements.xml",
           "kind": "sha256",
-          "eq": "21a879f7ee1d04ce0e823493eaa2a4768196816a50be982a18c776b25be9eb4d"
+          "eq": "$capture.unchanged3"
         },
         {
           "path": "src/DocumentJournals/Entries.xml",
           "kind": "sha256",
-          "eq": "d12cf85e15584417ea79d280f843e5f2cacadb4001ab3595f37678f463c06bb3"
+          "eq": "$capture.unchanged4"
         },
         {
           "path": "src/Documents/Orders/Commands/Probe/Ext/CommandModule.bsl",
           "kind": "sha256",
-          "eq": "f62e3f16ec34b7c3d43a603ce482759dd24c50b9c40bd13e5690ce05712172a3"
+          "eq": "$capture.unchanged5"
         },
         {
           "path": "src/Documents/Orders/Commands/Other/Ext/CommandModule.bsl",
           "kind": "sha256",
-          "eq": "f62e3f16ec34b7c3d43a603ce482759dd24c50b9c40bd13e5690ce05712172a3"
+          "eq": "$capture.unchanged6"
         }
       ],
       "captures": {
@@ -1032,32 +1024,32 @@
         {
           "path": "src/Documents/Orders.xml",
           "kind": "sha256",
-          "eq": "1132b9852322ec910dae988e3f0e4f8a9e144fdb93d4a9d0cd6dbd28abfa02a5"
+          "eq": "$capture.unchanged1"
         },
         {
           "path": "src/InformationRegisters/Facts.xml",
           "kind": "sha256",
-          "eq": "0a9ddcdffc1415daf0687c088607bbe3e7f9e7211f9312adeea676fd693933b9"
+          "eq": "$capture.unchanged2"
         },
         {
           "path": "src/AccumulationRegisters/Movements.xml",
           "kind": "sha256",
-          "eq": "21a879f7ee1d04ce0e823493eaa2a4768196816a50be982a18c776b25be9eb4d"
+          "eq": "$capture.unchanged3"
         },
         {
           "path": "src/DocumentJournals/Entries.xml",
           "kind": "sha256",
-          "eq": "d12cf85e15584417ea79d280f843e5f2cacadb4001ab3595f37678f463c06bb3"
+          "eq": "$capture.unchanged4"
         },
         {
           "path": "src/Documents/Orders/Commands/Probe/Ext/CommandModule.bsl",
           "kind": "sha256",
-          "eq": "f62e3f16ec34b7c3d43a603ce482759dd24c50b9c40bd13e5690ce05712172a3"
+          "eq": "$capture.unchanged5"
         },
         {
           "path": "src/Documents/Orders/Commands/Other/Ext/CommandModule.bsl",
           "kind": "sha256",
-          "eq": "f62e3f16ec34b7c3d43a603ce482759dd24c50b9c40bd13e5690ce05712172a3"
+          "eq": "$capture.unchanged6"
         }
       ],
       "captures": {
@@ -1136,32 +1128,32 @@
         {
           "path": "src/Documents/Orders.xml",
           "kind": "sha256",
-          "eq": "1132b9852322ec910dae988e3f0e4f8a9e144fdb93d4a9d0cd6dbd28abfa02a5"
+          "eq": "$capture.unchanged1"
         },
         {
           "path": "src/InformationRegisters/Facts.xml",
           "kind": "sha256",
-          "eq": "0a9ddcdffc1415daf0687c088607bbe3e7f9e7211f9312adeea676fd693933b9"
+          "eq": "$capture.unchanged2"
         },
         {
           "path": "src/AccumulationRegisters/Movements.xml",
           "kind": "sha256",
-          "eq": "21a879f7ee1d04ce0e823493eaa2a4768196816a50be982a18c776b25be9eb4d"
+          "eq": "$capture.unchanged3"
         },
         {
           "path": "src/DocumentJournals/Entries.xml",
           "kind": "sha256",
-          "eq": "d12cf85e15584417ea79d280f843e5f2cacadb4001ab3595f37678f463c06bb3"
+          "eq": "$capture.unchanged4"
         },
         {
           "path": "src/Documents/Orders/Commands/Probe/Ext/CommandModule.bsl",
           "kind": "sha256",
-          "eq": "f62e3f16ec34b7c3d43a603ce482759dd24c50b9c40bd13e5690ce05712172a3"
+          "eq": "$capture.unchanged5"
         },
         {
           "path": "src/Documents/Orders/Commands/Other/Ext/CommandModule.bsl",
           "kind": "sha256",
-          "eq": "f62e3f16ec34b7c3d43a603ce482759dd24c50b9c40bd13e5690ce05712172a3"
+          "eq": "$capture.unchanged6"
         }
       ]
     },
@@ -1232,32 +1224,32 @@
         {
           "path": "src/Documents/Orders.xml",
           "kind": "sha256",
-          "eq": "1132b9852322ec910dae988e3f0e4f8a9e144fdb93d4a9d0cd6dbd28abfa02a5"
+          "eq": "$capture.unchanged1"
         },
         {
           "path": "src/InformationRegisters/Facts.xml",
           "kind": "sha256",
-          "eq": "0a9ddcdffc1415daf0687c088607bbe3e7f9e7211f9312adeea676fd693933b9"
+          "eq": "$capture.unchanged2"
         },
         {
           "path": "src/AccumulationRegisters/Movements.xml",
           "kind": "sha256",
-          "eq": "21a879f7ee1d04ce0e823493eaa2a4768196816a50be982a18c776b25be9eb4d"
+          "eq": "$capture.unchanged3"
         },
         {
           "path": "src/DocumentJournals/Entries.xml",
           "kind": "sha256",
-          "eq": "d12cf85e15584417ea79d280f843e5f2cacadb4001ab3595f37678f463c06bb3"
+          "eq": "$capture.unchanged4"
         },
         {
           "path": "src/Documents/Orders/Commands/Probe/Ext/CommandModule.bsl",
           "kind": "sha256",
-          "eq": "f62e3f16ec34b7c3d43a603ce482759dd24c50b9c40bd13e5690ce05712172a3"
+          "eq": "$capture.unchanged5"
         },
         {
           "path": "src/Documents/Orders/Commands/Other/Ext/CommandModule.bsl",
           "kind": "sha256",
-          "eq": "f62e3f16ec34b7c3d43a603ce482759dd24c50b9c40bd13e5690ce05712172a3"
+          "eq": "$capture.unchanged6"
         }
       ]
     },
@@ -1283,32 +1275,32 @@
         {
           "path": "src/Documents/Orders.xml",
           "kind": "sha256",
-          "eq": "1132b9852322ec910dae988e3f0e4f8a9e144fdb93d4a9d0cd6dbd28abfa02a5"
+          "eq": "$capture.unchanged1"
         },
         {
           "path": "src/InformationRegisters/Facts.xml",
           "kind": "sha256",
-          "eq": "0a9ddcdffc1415daf0687c088607bbe3e7f9e7211f9312adeea676fd693933b9"
+          "eq": "$capture.unchanged2"
         },
         {
           "path": "src/AccumulationRegisters/Movements.xml",
           "kind": "sha256",
-          "eq": "21a879f7ee1d04ce0e823493eaa2a4768196816a50be982a18c776b25be9eb4d"
+          "eq": "$capture.unchanged3"
         },
         {
           "path": "src/DocumentJournals/Entries.xml",
           "kind": "sha256",
-          "eq": "d12cf85e15584417ea79d280f843e5f2cacadb4001ab3595f37678f463c06bb3"
+          "eq": "$capture.unchanged4"
         },
         {
           "path": "src/Documents/Orders/Commands/Probe/Ext/CommandModule.bsl",
           "kind": "sha256",
-          "eq": "f62e3f16ec34b7c3d43a603ce482759dd24c50b9c40bd13e5690ce05712172a3"
+          "eq": "$capture.unchanged5"
         },
         {
           "path": "src/Documents/Orders/Commands/Other/Ext/CommandModule.bsl",
           "kind": "sha256",
-          "eq": "f62e3f16ec34b7c3d43a603ce482759dd24c50b9c40bd13e5690ce05712172a3"
+          "eq": "$capture.unchanged6"
         }
       ],
       "captures": {
@@ -1475,32 +1467,32 @@
         {
           "path": "src/Documents/Orders.xml",
           "kind": "sha256",
-          "eq": "1132b9852322ec910dae988e3f0e4f8a9e144fdb93d4a9d0cd6dbd28abfa02a5"
+          "eq": "$capture.unchanged1"
         },
         {
           "path": "src/InformationRegisters/Facts.xml",
           "kind": "sha256",
-          "eq": "0a9ddcdffc1415daf0687c088607bbe3e7f9e7211f9312adeea676fd693933b9"
+          "eq": "$capture.unchanged2"
         },
         {
           "path": "src/AccumulationRegisters/Movements.xml",
           "kind": "sha256",
-          "eq": "21a879f7ee1d04ce0e823493eaa2a4768196816a50be982a18c776b25be9eb4d"
+          "eq": "$capture.unchanged3"
         },
         {
           "path": "src/DocumentJournals/Entries.xml",
           "kind": "sha256",
-          "eq": "d12cf85e15584417ea79d280f843e5f2cacadb4001ab3595f37678f463c06bb3"
+          "eq": "$capture.unchanged4"
         },
         {
           "path": "src/Documents/Orders/Commands/Probe/Ext/CommandModule.bsl",
           "kind": "sha256",
-          "eq": "f62e3f16ec34b7c3d43a603ce482759dd24c50b9c40bd13e5690ce05712172a3"
+          "eq": "$capture.unchanged5"
         },
         {
           "path": "src/Documents/Orders/Commands/Other/Ext/CommandModule.bsl",
           "kind": "sha256",
-          "eq": "f62e3f16ec34b7c3d43a603ce482759dd24c50b9c40bd13e5690ce05712172a3"
+          "eq": "$capture.unchanged6"
         }
       ],
       "captures": {
@@ -1573,32 +1565,32 @@
         {
           "path": "src/Documents/Orders.xml",
           "kind": "sha256",
-          "eq": "1132b9852322ec910dae988e3f0e4f8a9e144fdb93d4a9d0cd6dbd28abfa02a5"
+          "eq": "$capture.unchanged1"
         },
         {
           "path": "src/InformationRegisters/Facts.xml",
           "kind": "sha256",
-          "eq": "0a9ddcdffc1415daf0687c088607bbe3e7f9e7211f9312adeea676fd693933b9"
+          "eq": "$capture.unchanged2"
         },
         {
           "path": "src/AccumulationRegisters/Movements.xml",
           "kind": "sha256",
-          "eq": "21a879f7ee1d04ce0e823493eaa2a4768196816a50be982a18c776b25be9eb4d"
+          "eq": "$capture.unchanged3"
         },
         {
           "path": "src/DocumentJournals/Entries.xml",
           "kind": "sha256",
-          "eq": "d12cf85e15584417ea79d280f843e5f2cacadb4001ab3595f37678f463c06bb3"
+          "eq": "$capture.unchanged4"
         },
         {
           "path": "src/Documents/Orders/Commands/Probe/Ext/CommandModule.bsl",
           "kind": "sha256",
-          "eq": "f62e3f16ec34b7c3d43a603ce482759dd24c50b9c40bd13e5690ce05712172a3"
+          "eq": "$capture.unchanged5"
         },
         {
           "path": "src/Documents/Orders/Commands/Other/Ext/CommandModule.bsl",
           "kind": "sha256",
-          "eq": "f62e3f16ec34b7c3d43a603ce482759dd24c50b9c40bd13e5690ce05712172a3"
+          "eq": "$capture.unchanged6"
         }
       ]
     },
@@ -1660,32 +1652,32 @@
         {
           "path": "src/Documents/Orders.xml",
           "kind": "sha256",
-          "eq": "1132b9852322ec910dae988e3f0e4f8a9e144fdb93d4a9d0cd6dbd28abfa02a5"
+          "eq": "$capture.unchanged1"
         },
         {
           "path": "src/InformationRegisters/Facts.xml",
           "kind": "sha256",
-          "eq": "0a9ddcdffc1415daf0687c088607bbe3e7f9e7211f9312adeea676fd693933b9"
+          "eq": "$capture.unchanged2"
         },
         {
           "path": "src/AccumulationRegisters/Movements.xml",
           "kind": "sha256",
-          "eq": "21a879f7ee1d04ce0e823493eaa2a4768196816a50be982a18c776b25be9eb4d"
+          "eq": "$capture.unchanged3"
         },
         {
           "path": "src/DocumentJournals/Entries.xml",
           "kind": "sha256",
-          "eq": "d12cf85e15584417ea79d280f843e5f2cacadb4001ab3595f37678f463c06bb3"
+          "eq": "$capture.unchanged4"
         },
         {
           "path": "src/Documents/Orders/Commands/Probe/Ext/CommandModule.bsl",
           "kind": "sha256",
-          "eq": "f62e3f16ec34b7c3d43a603ce482759dd24c50b9c40bd13e5690ce05712172a3"
+          "eq": "$capture.unchanged5"
         },
         {
           "path": "src/Documents/Orders/Commands/Other/Ext/CommandModule.bsl",
           "kind": "sha256",
-          "eq": "f62e3f16ec34b7c3d43a603ce482759dd24c50b9c40bd13e5690ce05712172a3"
+          "eq": "$capture.unchanged6"
         }
       ]
     },
@@ -1747,32 +1739,32 @@
         {
           "path": "src/Documents/Orders.xml",
           "kind": "sha256",
-          "eq": "1132b9852322ec910dae988e3f0e4f8a9e144fdb93d4a9d0cd6dbd28abfa02a5"
+          "eq": "$capture.unchanged1"
         },
         {
           "path": "src/InformationRegisters/Facts.xml",
           "kind": "sha256",
-          "eq": "0a9ddcdffc1415daf0687c088607bbe3e7f9e7211f9312adeea676fd693933b9"
+          "eq": "$capture.unchanged2"
         },
         {
           "path": "src/AccumulationRegisters/Movements.xml",
           "kind": "sha256",
-          "eq": "21a879f7ee1d04ce0e823493eaa2a4768196816a50be982a18c776b25be9eb4d"
+          "eq": "$capture.unchanged3"
         },
         {
           "path": "src/DocumentJournals/Entries.xml",
           "kind": "sha256",
-          "eq": "d12cf85e15584417ea79d280f843e5f2cacadb4001ab3595f37678f463c06bb3"
+          "eq": "$capture.unchanged4"
         },
         {
           "path": "src/Documents/Orders/Commands/Probe/Ext/CommandModule.bsl",
           "kind": "sha256",
-          "eq": "f62e3f16ec34b7c3d43a603ce482759dd24c50b9c40bd13e5690ce05712172a3"
+          "eq": "$capture.unchanged5"
         },
         {
           "path": "src/Documents/Orders/Commands/Other/Ext/CommandModule.bsl",
           "kind": "sha256",
-          "eq": "f62e3f16ec34b7c3d43a603ce482759dd24c50b9c40bd13e5690ce05712172a3"
+          "eq": "$capture.unchanged6"
         }
       ]
     },
@@ -1794,32 +1786,32 @@
         {
           "path": "src/Documents/Orders.xml",
           "kind": "sha256",
-          "eq": "1132b9852322ec910dae988e3f0e4f8a9e144fdb93d4a9d0cd6dbd28abfa02a5"
+          "eq": "$capture.unchanged1"
         },
         {
           "path": "src/InformationRegisters/Facts.xml",
           "kind": "sha256",
-          "eq": "0a9ddcdffc1415daf0687c088607bbe3e7f9e7211f9312adeea676fd693933b9"
+          "eq": "$capture.unchanged2"
         },
         {
           "path": "src/AccumulationRegisters/Movements.xml",
           "kind": "sha256",
-          "eq": "21a879f7ee1d04ce0e823493eaa2a4768196816a50be982a18c776b25be9eb4d"
+          "eq": "$capture.unchanged3"
         },
         {
           "path": "src/DocumentJournals/Entries.xml",
           "kind": "sha256",
-          "eq": "d12cf85e15584417ea79d280f843e5f2cacadb4001ab3595f37678f463c06bb3"
+          "eq": "$capture.unchanged4"
         },
         {
           "path": "src/Documents/Orders/Commands/Probe/Ext/CommandModule.bsl",
           "kind": "sha256",
-          "eq": "f62e3f16ec34b7c3d43a603ce482759dd24c50b9c40bd13e5690ce05712172a3"
+          "eq": "$capture.unchanged5"
         },
         {
           "path": "src/Documents/Orders/Commands/Other/Ext/CommandModule.bsl",
           "kind": "sha256",
-          "eq": "f62e3f16ec34b7c3d43a603ce482759dd24c50b9c40bd13e5690ce05712172a3"
+          "eq": "$capture.unchanged6"
         }
       ],
       "captures": {
@@ -1846,32 +1838,32 @@
         {
           "path": "src/Documents/Orders.xml",
           "kind": "sha256",
-          "eq": "1132b9852322ec910dae988e3f0e4f8a9e144fdb93d4a9d0cd6dbd28abfa02a5"
+          "eq": "$capture.unchanged1"
         },
         {
           "path": "src/InformationRegisters/Facts.xml",
           "kind": "sha256",
-          "eq": "0a9ddcdffc1415daf0687c088607bbe3e7f9e7211f9312adeea676fd693933b9"
+          "eq": "$capture.unchanged2"
         },
         {
           "path": "src/AccumulationRegisters/Movements.xml",
           "kind": "sha256",
-          "eq": "21a879f7ee1d04ce0e823493eaa2a4768196816a50be982a18c776b25be9eb4d"
+          "eq": "$capture.unchanged3"
         },
         {
           "path": "src/DocumentJournals/Entries.xml",
           "kind": "sha256",
-          "eq": "d12cf85e15584417ea79d280f843e5f2cacadb4001ab3595f37678f463c06bb3"
+          "eq": "$capture.unchanged4"
         },
         {
           "path": "src/Documents/Orders/Commands/Probe/Ext/CommandModule.bsl",
           "kind": "sha256",
-          "eq": "f62e3f16ec34b7c3d43a603ce482759dd24c50b9c40bd13e5690ce05712172a3"
+          "eq": "$capture.unchanged5"
         },
         {
           "path": "src/Documents/Orders/Commands/Other/Ext/CommandModule.bsl",
           "kind": "sha256",
-          "eq": "f62e3f16ec34b7c3d43a603ce482759dd24c50b9c40bd13e5690ce05712172a3"
+          "eq": "$capture.unchanged6"
         }
       ]
     }

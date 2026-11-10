@@ -27,31 +27,25 @@
           "eq": "ForItem"
         }
       ],
-      "fileAssertions": [
-        {
-          "kind": "sha256",
-          "path": "src/Catalogs/Damaged.xml",
-          "eq": "33cd8747cf28ea3d88d5efbb77944cecf221bb5f7ca35db9c81d1707f00c46dc"
-        },
-        {
-          "kind": "sha256",
-          "path": "src/Catalogs/Items.xml",
-          "eq": "347baca42eaff89b90ff2c1b0513b38ac9b9f8bb49888b86960c6950693dbb1f"
-        },
-        {
-          "kind": "sha256",
-          "path": "src/Configuration.xml",
-          "eq": "230f40d5e7226cd5a952964a0aa01bfaac902429b0ed1cde77ec3a86d82c8875"
-        },
-        {
-          "kind": "sha256",
-          "path": "v8project.yaml",
-          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
-        }
-      ],
       "captures": {
         "section": {
           "pointer": "/data/items/0/at"
+        },
+        "unchanged1": {
+          "file": "src/Catalogs/Damaged.xml",
+          "kind": "sha256"
+        },
+        "unchanged2": {
+          "file": "src/Catalogs/Items.xml",
+          "kind": "sha256"
+        },
+        "unchanged3": {
+          "file": "src/Configuration.xml",
+          "kind": "sha256"
+        },
+        "unchanged4": {
+          "file": "v8project.yaml",
+          "kind": "sha256"
         }
       }
     },
@@ -85,22 +79,22 @@
         {
           "kind": "sha256",
           "path": "src/Catalogs/Damaged.xml",
-          "eq": "33cd8747cf28ea3d88d5efbb77944cecf221bb5f7ca35db9c81d1707f00c46dc"
+          "eq": "$capture.unchanged1"
         },
         {
           "kind": "sha256",
           "path": "src/Catalogs/Items.xml",
-          "eq": "347baca42eaff89b90ff2c1b0513b38ac9b9f8bb49888b86960c6950693dbb1f"
+          "eq": "$capture.unchanged2"
         },
         {
           "kind": "sha256",
           "path": "src/Configuration.xml",
-          "eq": "230f40d5e7226cd5a952964a0aa01bfaac902429b0ed1cde77ec3a86d82c8875"
+          "eq": "$capture.unchanged3"
         },
         {
           "kind": "sha256",
           "path": "v8project.yaml",
-          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+          "eq": "$capture.unchanged4"
         }
       ],
       "captures": {
@@ -159,22 +153,22 @@
         {
           "kind": "sha256",
           "path": "src/Catalogs/Damaged.xml",
-          "eq": "33cd8747cf28ea3d88d5efbb77944cecf221bb5f7ca35db9c81d1707f00c46dc"
+          "eq": "$capture.unchanged1"
         },
         {
           "kind": "sha256",
           "path": "src/Catalogs/Items.xml",
-          "eq": "347baca42eaff89b90ff2c1b0513b38ac9b9f8bb49888b86960c6950693dbb1f"
+          "eq": "$capture.unchanged2"
         },
         {
           "kind": "sha256",
           "path": "src/Configuration.xml",
-          "eq": "230f40d5e7226cd5a952964a0aa01bfaac902429b0ed1cde77ec3a86d82c8875"
+          "eq": "$capture.unchanged3"
         },
         {
           "kind": "sha256",
           "path": "v8project.yaml",
-          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+          "eq": "$capture.unchanged4"
         }
       ],
       "captures": {
@@ -240,22 +234,22 @@
         {
           "kind": "sha256",
           "path": "src/Catalogs/Damaged.xml",
-          "eq": "33cd8747cf28ea3d88d5efbb77944cecf221bb5f7ca35db9c81d1707f00c46dc"
+          "eq": "$capture.unchanged1"
         },
         {
           "kind": "sha256",
           "path": "src/Catalogs/Items.xml",
-          "eq": "347baca42eaff89b90ff2c1b0513b38ac9b9f8bb49888b86960c6950693dbb1f"
+          "eq": "$capture.unchanged2"
         },
         {
           "kind": "sha256",
           "path": "src/Configuration.xml",
-          "eq": "230f40d5e7226cd5a952964a0aa01bfaac902429b0ed1cde77ec3a86d82c8875"
+          "eq": "$capture.unchanged3"
         },
         {
           "kind": "sha256",
           "path": "v8project.yaml",
-          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+          "eq": "$capture.unchanged4"
         }
       ]
     },
@@ -314,22 +308,22 @@
         {
           "kind": "sha256",
           "path": "src/Catalogs/Damaged.xml",
-          "eq": "33cd8747cf28ea3d88d5efbb77944cecf221bb5f7ca35db9c81d1707f00c46dc"
+          "eq": "$capture.unchanged1"
         },
         {
           "kind": "sha256",
           "path": "src/Catalogs/Items.xml",
-          "eq": "347baca42eaff89b90ff2c1b0513b38ac9b9f8bb49888b86960c6950693dbb1f"
+          "eq": "$capture.unchanged2"
         },
         {
           "kind": "sha256",
           "path": "src/Configuration.xml",
-          "eq": "230f40d5e7226cd5a952964a0aa01bfaac902429b0ed1cde77ec3a86d82c8875"
+          "eq": "$capture.unchanged3"
         },
         {
           "kind": "sha256",
           "path": "v8project.yaml",
-          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+          "eq": "$capture.unchanged4"
         }
       ]
     },
@@ -351,22 +345,22 @@
         {
           "kind": "sha256",
           "path": "src/Catalogs/Damaged.xml",
-          "eq": "33cd8747cf28ea3d88d5efbb77944cecf221bb5f7ca35db9c81d1707f00c46dc"
+          "eq": "$capture.unchanged1"
         },
         {
           "kind": "sha256",
           "path": "src/Catalogs/Items.xml",
-          "eq": "347baca42eaff89b90ff2c1b0513b38ac9b9f8bb49888b86960c6950693dbb1f"
+          "eq": "$capture.unchanged2"
         },
         {
           "kind": "sha256",
           "path": "src/Configuration.xml",
-          "eq": "230f40d5e7226cd5a952964a0aa01bfaac902429b0ed1cde77ec3a86d82c8875"
+          "eq": "$capture.unchanged3"
         },
         {
           "kind": "sha256",
           "path": "v8project.yaml",
-          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+          "eq": "$capture.unchanged4"
         }
       ]
     },
@@ -396,22 +390,22 @@
         {
           "kind": "sha256",
           "path": "src/Catalogs/Damaged.xml",
-          "eq": "33cd8747cf28ea3d88d5efbb77944cecf221bb5f7ca35db9c81d1707f00c46dc"
+          "eq": "$capture.unchanged1"
         },
         {
           "kind": "sha256",
           "path": "src/Catalogs/Items.xml",
-          "eq": "347baca42eaff89b90ff2c1b0513b38ac9b9f8bb49888b86960c6950693dbb1f"
+          "eq": "$capture.unchanged2"
         },
         {
           "kind": "sha256",
           "path": "src/Configuration.xml",
-          "eq": "230f40d5e7226cd5a952964a0aa01bfaac902429b0ed1cde77ec3a86d82c8875"
+          "eq": "$capture.unchanged3"
         },
         {
           "kind": "sha256",
           "path": "v8project.yaml",
-          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+          "eq": "$capture.unchanged4"
         }
       ],
       "captures": {
@@ -442,22 +436,22 @@
         {
           "kind": "sha256",
           "path": "src/Catalogs/Damaged.xml",
-          "eq": "33cd8747cf28ea3d88d5efbb77944cecf221bb5f7ca35db9c81d1707f00c46dc"
+          "eq": "$capture.unchanged1"
         },
         {
           "kind": "sha256",
           "path": "src/Catalogs/Items.xml",
-          "eq": "347baca42eaff89b90ff2c1b0513b38ac9b9f8bb49888b86960c6950693dbb1f"
+          "eq": "$capture.unchanged2"
         },
         {
           "kind": "sha256",
           "path": "src/Configuration.xml",
-          "eq": "230f40d5e7226cd5a952964a0aa01bfaac902429b0ed1cde77ec3a86d82c8875"
+          "eq": "$capture.unchanged3"
         },
         {
           "kind": "sha256",
           "path": "v8project.yaml",
-          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+          "eq": "$capture.unchanged4"
         }
       ],
       "captures": {
@@ -504,22 +498,22 @@
         {
           "kind": "sha256",
           "path": "src/Catalogs/Damaged.xml",
-          "eq": "33cd8747cf28ea3d88d5efbb77944cecf221bb5f7ca35db9c81d1707f00c46dc"
+          "eq": "$capture.unchanged1"
         },
         {
           "kind": "sha256",
           "path": "src/Catalogs/Items.xml",
-          "eq": "347baca42eaff89b90ff2c1b0513b38ac9b9f8bb49888b86960c6950693dbb1f"
+          "eq": "$capture.unchanged2"
         },
         {
           "kind": "sha256",
           "path": "src/Configuration.xml",
-          "eq": "230f40d5e7226cd5a952964a0aa01bfaac902429b0ed1cde77ec3a86d82c8875"
+          "eq": "$capture.unchanged3"
         },
         {
           "kind": "sha256",
           "path": "v8project.yaml",
-          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+          "eq": "$capture.unchanged4"
         }
       ],
       "captures": {
@@ -570,22 +564,22 @@
         {
           "kind": "sha256",
           "path": "src/Catalogs/Damaged.xml",
-          "eq": "33cd8747cf28ea3d88d5efbb77944cecf221bb5f7ca35db9c81d1707f00c46dc"
+          "eq": "$capture.unchanged1"
         },
         {
           "kind": "sha256",
           "path": "src/Catalogs/Items.xml",
-          "eq": "347baca42eaff89b90ff2c1b0513b38ac9b9f8bb49888b86960c6950693dbb1f"
+          "eq": "$capture.unchanged2"
         },
         {
           "kind": "sha256",
           "path": "src/Configuration.xml",
-          "eq": "230f40d5e7226cd5a952964a0aa01bfaac902429b0ed1cde77ec3a86d82c8875"
+          "eq": "$capture.unchanged3"
         },
         {
           "kind": "sha256",
           "path": "v8project.yaml",
-          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+          "eq": "$capture.unchanged4"
         }
       ]
     }
