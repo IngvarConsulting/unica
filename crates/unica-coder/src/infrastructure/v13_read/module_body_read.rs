@@ -415,39 +415,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
         at: &QualifiedAddress,
     ) -> Result<(Option<Value>, Vec<String>), ViewError> {
         self.read_checkpoint()?;
-        let owner = MetadataAddress::parse_logical(&at.logical_path()).map_err(|error| {
-            ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
-        })?;
-        let descriptor = self.read.metadata_descriptor(&owner)?;
-        let text = std::str::from_utf8(&descriptor).map_err(|error| {
-            ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
-        })?;
-        let properties = crate::infrastructure::family_codecs::metadata_read_codec()
-            .common_module_properties(text)
-            .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?;
-        let observation = properties.info("Synonym");
-        let mut props = Map::new();
-        let mut limits = Vec::new();
-        match observation {
-            Ok(Some(unica_metadata::MetaInfoPropertyValue::String(text))) if !text.is_empty() => {
-                crate::infrastructure::v13_read_projection::place_prop(
-                    &mut props,
-                    &mut limits,
-                    at,
-                    "synonym",
-                    &json!(text),
-                    false,
-                    "common module Synonym",
-                );
-            }
-            Ok(None | Some(unica_metadata::MetaInfoPropertyValue::String(_))) => {}
-            Ok(Some(_)) => unreachable!("the closed Synonym profile yields a string"),
-            Err(error) => limits.push(format!(
-                "properties.Synonym is unreadable: {}",
-                error.message
-            )),
-        }
-        Ok((props.remove("synonym"), limits))
+        self.read.common_module_synonym(at)
     }
 
     pub(super) fn module_projection(

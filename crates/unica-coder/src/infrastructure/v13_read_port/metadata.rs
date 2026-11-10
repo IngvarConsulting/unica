@@ -3,6 +3,7 @@ use super::{
 };
 use serde_json::{json, Value};
 use std::path::Path;
+use std::sync::Arc;
 use unica_address::source_target::MetadataAddress;
 use unica_metadata::{MetaPredefinedItemsData, MetadataKind};
 use unica_refusal::{RefusalCode, RefusalDetail};
@@ -302,6 +303,106 @@ impl ProviderReadAuthority {
     }
 
     pub(crate) fn metadata_owner_evidence(
+        &self,
+        target: &MetadataAddress,
+        checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
+    ) -> Result<PlatformXmlSourceSetOwnerEvidence, ViewError> {
+        // The actor retains the proof under the stamp the descriptor had
+        // before it was read (INV.SOURCE.CONFIGURATION-ROOT-CACHE-REUSE).
+        // Without a stamp the descriptor is read as before, with its own
+        // refusals and checkpoints. An external set finds its descriptor
+        // through its inventory under the caller's checkpoint: it keeps that
+        // path.
+        if self.is_external_source_set() {
+            return self.metadata_owner_evidence_uncached(target, checkpoint);
+        }
+        let Some((relative, stamp)) = self
+            .metadata_descriptor_relative(target)
+            .ok()
+            .and_then(|relative| Some((relative.clone(), self.descriptor_stamp(&relative)?)))
+        else {
+            return self.metadata_owner_evidence_uncached(target, checkpoint);
+        };
+        if let Some(evidence) = self.artifacts.retained_owner_evidence(&relative, &stamp) {
+            checkpoint()?;
+            return Ok((*evidence).clone());
+        }
+        let evidence = self.metadata_owner_evidence_uncached(target, checkpoint)?;
+        self.artifacts
+            .retain_owner_evidence(relative, stamp, Arc::new(evidence.clone()));
+        Ok(evidence)
+    }
+
+    /// The synonym of a common module for its collection row and its node,
+    /// with the limits naming a damaged one. The actor retains it with the
+    /// owner facts, under the descriptor's stamp before it was read.
+    pub(crate) fn common_module_synonym(
+        &self,
+        at: &unica_address::address::QualifiedAddress,
+    ) -> Result<(Option<Value>, Vec<String>), ViewError> {
+        let owner = MetadataAddress::parse_logical(&at.logical_path()).map_err(|error| {
+            ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+        })?;
+        if self.is_external_source_set() {
+            return self.common_module_synonym_uncached(at, &owner);
+        }
+        let Some((relative, stamp)) = self
+            .metadata_descriptor_relative(&owner)
+            .ok()
+            .and_then(|relative| Some((relative.clone(), self.descriptor_stamp(&relative)?)))
+        else {
+            return self.common_module_synonym_uncached(at, &owner);
+        };
+        if let Some(fact) = self
+            .artifacts
+            .retained_common_module_synonym(&relative, &stamp)
+        {
+            return Ok((*fact).clone());
+        }
+        let fact = self.common_module_synonym_uncached(at, &owner)?;
+        self.artifacts
+            .retain_common_module_synonym(relative, stamp, Arc::new(fact.clone()));
+        Ok(fact)
+    }
+
+    fn common_module_synonym_uncached(
+        &self,
+        at: &unica_address::address::QualifiedAddress,
+        owner: &MetadataAddress,
+    ) -> Result<(Option<Value>, Vec<String>), ViewError> {
+        let descriptor = self.metadata_descriptor(owner)?;
+        let text = std::str::from_utf8(&descriptor).map_err(|error| {
+            ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+        })?;
+        let properties = crate::infrastructure::family_codecs::metadata_read_codec()
+            .common_module_properties(text)
+            .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?;
+        let observation = properties.info("Synonym");
+        let mut props = serde_json::Map::new();
+        let mut limits = Vec::new();
+        match observation {
+            Ok(Some(unica_metadata::MetaInfoPropertyValue::String(text))) if !text.is_empty() => {
+                crate::infrastructure::v13_read_projection::place_prop(
+                    &mut props,
+                    &mut limits,
+                    at,
+                    "synonym",
+                    &json!(text),
+                    false,
+                    "common module Synonym",
+                );
+            }
+            Ok(None | Some(unica_metadata::MetaInfoPropertyValue::String(_))) => {}
+            Ok(Some(_)) => unreachable!("the closed Synonym profile yields a string"),
+            Err(error) => limits.push(format!(
+                "properties.Synonym is unreadable: {}",
+                error.message
+            )),
+        }
+        Ok((props.remove("synonym"), limits))
+    }
+
+    fn metadata_owner_evidence_uncached(
         &self,
         target: &MetadataAddress,
         checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,

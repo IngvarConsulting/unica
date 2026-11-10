@@ -255,11 +255,30 @@ pub struct RegistrationCache {
     support: Mutex<Option<RetainedSupportState>>,
     subsystems: Mutex<Option<RetainedSubsystemTopology>>,
     settle_window: std::time::Duration,
+    /// Proven owner descriptors by source-root-relative path, each under the
+    /// stamp it had before it was read.
+    owner_evidence: Mutex<
+        RetainedByDescriptor<unica_source_designer::owner::PlatformXmlSourceSetOwnerEvidence>,
+    >,
+    /// Common module synonyms (with the limits of a damaged one) by
+    /// descriptor path, each under the stamp it had before it was read.
+    common_module_synonyms: Mutex<RetainedByDescriptor<CommonModuleSynonym>>,
+    /// The background proof of all top-level descriptors has been started.
+    /// Test builds start it marked, so tests that watch which files a call
+    /// opens see only that call; the test of the warm-up clears the mark.
+    owner_warmup: std::sync::atomic::AtomicBool,
     #[cfg(any(test, feature = "test-support"))]
     registration_builds: std::sync::atomic::AtomicUsize,
     #[cfg(any(test, feature = "test-support"))]
     after_parse: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
+
+/// Records retained per descriptor path, each under the stamp the
+/// descriptor had before it was read.
+type RetainedByDescriptor<T> = std::collections::HashMap<std::path::PathBuf, (FileStamp, Arc<T>)>;
+
+/// The synonym of a common module and the limits naming a damaged one.
+pub(crate) type CommonModuleSynonym = (Option<Value>, Vec<String>);
 
 /// Timestamp granularity window: a stamp younger than this is never cached.
 // resource-limit: view.registration-settle-window-ms
@@ -283,6 +302,12 @@ impl Default for RegistrationCache {
             support: Mutex::new(None),
             subsystems: Mutex::new(None),
             settle_window: SETTLE_WINDOW,
+            owner_evidence: Mutex::new(std::collections::HashMap::new()),
+            common_module_synonyms: Mutex::new(std::collections::HashMap::new()),
+            owner_warmup: std::sync::atomic::AtomicBool::new(cfg!(any(
+                test,
+                feature = "test-support"
+            ))),
             #[cfg(any(test, feature = "test-support"))]
             registration_builds: std::sync::atomic::AtomicUsize::new(0),
             #[cfg(any(test, feature = "test-support"))]
@@ -385,6 +410,70 @@ impl RegistrationCache {
     /// The set's name index, kept with its other retained artifacts.
     pub(crate) fn names(&self) -> &Arc<crate::infrastructure::name_index::SourceNameIndex> {
         &self.names
+    }
+
+    pub(crate) fn retained_common_module_synonym(
+        &self,
+        relative: &std::path::Path,
+        stamp: &FileStamp,
+    ) -> Option<Arc<(Option<Value>, Vec<String>)>> {
+        let synonyms = self.common_module_synonyms.lock().ok()?;
+        synonyms
+            .get(relative)
+            .filter(|(cached, _)| cached == stamp)
+            .map(|(_, fact)| Arc::clone(fact))
+    }
+
+    pub(crate) fn retain_common_module_synonym(
+        &self,
+        relative: std::path::PathBuf,
+        stamp: FileStamp,
+        fact: Arc<(Option<Value>, Vec<String>)>,
+    ) {
+        if self.retains(&stamp) {
+            if let Ok(mut synonyms) = self.common_module_synonyms.lock() {
+                synonyms.insert(relative, (stamp, fact));
+            }
+        }
+    }
+
+    /// Lets a test build start the descriptor warm-up of this cache.
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn allow_owner_warmup_for_test(&self) {
+        self.owner_warmup
+            .store(false, std::sync::atomic::Ordering::Release);
+    }
+
+    /// True for the one caller that starts the descriptor warm-up.
+    pub(crate) fn claim_owner_warmup(&self) -> bool {
+        !self
+            .owner_warmup
+            .swap(true, std::sync::atomic::Ordering::AcqRel)
+    }
+
+    pub(crate) fn retained_owner_evidence(
+        &self,
+        relative: &std::path::Path,
+        stamp: &FileStamp,
+    ) -> Option<Arc<unica_source_designer::owner::PlatformXmlSourceSetOwnerEvidence>> {
+        let owners = self.owner_evidence.lock().ok()?;
+        owners
+            .get(relative)
+            .filter(|(cached, _)| cached == stamp)
+            .map(|(_, evidence)| Arc::clone(evidence))
+    }
+
+    pub(crate) fn retain_owner_evidence(
+        &self,
+        relative: std::path::PathBuf,
+        stamp: FileStamp,
+        evidence: Arc<unica_source_designer::owner::PlatformXmlSourceSetOwnerEvidence>,
+    ) {
+        if self.retains(&stamp) {
+            if let Ok(mut owners) = self.owner_evidence.lock() {
+                owners.insert(relative, (stamp, evidence));
+            }
+        }
     }
 
     fn retains(&self, stamp: &FileStamp) -> bool {
