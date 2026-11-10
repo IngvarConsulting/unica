@@ -405,6 +405,7 @@ mod tests {
                 data: None,
                 question: "What should be done with the infobase?".into(),
                 options: Vec::new(),
+                cancel_description: None,
                 proceeds_unasked: false,
             },
         ));

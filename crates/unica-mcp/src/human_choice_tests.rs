@@ -51,6 +51,7 @@ fn choice() -> HumanChoice {
                 then: Vec::new(),
             },
         ],
+        cancel_description: None,
         proceeds_unasked: false,
     }
 }
