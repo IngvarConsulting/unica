@@ -955,6 +955,39 @@ fn parse_runner_output(
     Ok(envelope)
 }
 
+/// Расхождение памяти рабочей копии о базе с самой базой: база ушла вперёд
+/// записанного поколения или памяти о ней нет. Выбирать между выгрузкой базы
+/// и её перезаписью должен человек. Имена кодов раннера живут только здесь:
+/// раннер 0.17 переименует `no_memory` в `untracked_base`, и перевод на него —
+/// правка этого словаря.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum BaseDivergence {
+    /// `non_fast_forward`: база ушла вперёд записанного поколения.
+    MovedAhead,
+    /// `no_memory`: памяти рабочей копии о базе нет.
+    Untracked,
+}
+
+impl BaseDivergence {
+    const MOVED_AHEAD: &'static str = "non_fast_forward";
+    const UNTRACKED: &'static str = "no_memory";
+
+    pub(super) fn from_runner_code(code: &str) -> Option<Self> {
+        match code {
+            Self::MOVED_AHEAD => Some(Self::MovedAhead),
+            Self::UNTRACKED => Some(Self::Untracked),
+            _ => None,
+        }
+    }
+
+    pub(super) fn runner_code(self) -> &'static str {
+        match self {
+            Self::MovedAhead => Self::MOVED_AHEAD,
+            Self::Untracked => Self::UNTRACKED,
+        }
+    }
+}
+
 /// Полный словарь кодов, которые раннер кладёт в `error.code`.
 ///
 /// Он закрытый: шестнадцать значений `ErrorCode` конверта раннера 0.14, одни и те же
@@ -977,8 +1010,8 @@ const RUNNER_WIRE_CODES: [&str; 16] = [
     "timed_out",
     "workspace_busy",
     "infobase_busy",
-    "non_fast_forward",
-    "no_memory",
+    BaseDivergence::MOVED_AHEAD,
+    BaseDivergence::UNTRACKED,
 ];
 
 /// Отображает код раннера в наш отказ, а значит и в исход для агента.
@@ -1254,6 +1287,13 @@ pub(super) fn note_another_copy(result: &mut DomainResult, envelope: &Value) {
 }
 
 pub(super) fn map_runner_code(code: &str) -> RefusalCode {
+    // Память копии о базе и сама база разошлись: база ушла вперёд записанного
+    // поколения или памяти о ней нет. Правкой вызова это не снять, повтором —
+    // тоже: выбрать между выгрузкой базы и её перезаписью должен тот, кто
+    // знает, чья правка верна.
+    if BaseDivergence::from_runner_code(code).is_some() {
+        return RefusalCode::InvalidState;
+    }
     match code {
         // Платформа сказала нет: авторизация, права, лицензия, занятая база.
         "platform_failure" => RefusalCode::ProviderUnavailable,
@@ -1269,11 +1309,6 @@ pub(super) fn map_runner_code(code: &str) -> RefusalCode {
         // Рабочий каталог или файловую базу держит другая команда: занятость
         // проходит, тот же вызов можно повторить, когда та закончит.
         "workspace_busy" | "infobase_busy" => RefusalCode::ConcurrentChange,
-        // Память копии о базе и сама база разошлись: база ушла вперёд записанного
-        // поколения или памяти о ней нет. Правкой вызова это не снять, повтором —
-        // тоже: выбрать между выгрузкой базы и её перезаписью должен тот, кто
-        // знает, чья правка верна.
-        "non_fast_forward" | "no_memory" => RefusalCode::InvalidState,
         "invalid_argument" => RefusalCode::BadValue,
         // Раннер отдал негодный результат: аргументы вызывающего тут не виноваты.
         "invalid_output" => RefusalCode::InvalidResult,

@@ -23,7 +23,7 @@ use unica_execution::invocation::{
     RESPONSE_SERIALIZATION_MARGIN, RESPONSE_SERIALIZATION_MARGIN_MS,
 };
 use unica_execution::receipt_ledger::{
-    request_scope_hash, ReceiptKey, RequestIdentity, V5ToolIdentity,
+    request_scope_hash, ReceiptKey, ReceiptTerminalOutcome, RequestIdentity, V5ToolIdentity,
     MAX_ORIGINAL_RESPONSE_BUDGET_MS,
 };
 use unica_execution::receipt_runtime::response::{
@@ -142,6 +142,12 @@ pub fn remaining_invocation_budget(
 #[derive(Debug)]
 pub enum CanonicalCallOutcome {
     Direct(CallToolResult),
+    /// A Direct refusal whose private result offers a person a choice; the
+    /// refusal is already projected without it.
+    Choice {
+        refusal: CallToolResult,
+        choice: Box<unica_execution_contract::invocation::HumanChoice>,
+    },
     /// The Task the call continues as: the daemon's handoff, or, when the
     /// submit answer was lost and could not be recovered, the queued Task
     /// reserved for the call.
@@ -640,6 +646,12 @@ fn settle(
             // cannot be built stays unacknowledged and expires on its own.
             let projection = task_projection::project_direct_terminal(receipt.terminal(), budget)
                 .map_err(task_projection::projection_error)?;
+            let choice = match receipt.terminal() {
+                ReceiptTerminalOutcome::Completed { result } if !result.ok => {
+                    result.human_choice.clone()
+                }
+                _ => None,
+            };
             let acknowledgement_deadline = Instant::now() + ACKNOWLEDGEMENT_BUDGET;
             // The acknowledgement proves the transfer daemon → frontend and
             // nothing more: its own outcome cannot change what the host gets.
@@ -649,6 +661,12 @@ fn settle(
                 acknowledgement_deadline,
             );
             match projection {
+                DirectProjection::Result(refusal) if choice.is_some() => {
+                    Ok(CanonicalCallOutcome::Choice {
+                        refusal,
+                        choice: choice.expect("checked above"),
+                    })
+                }
                 DirectProjection::Result(result) => Ok(CanonicalCallOutcome::Direct(result)),
                 DirectProjection::Error(error) => Err(error),
             }
