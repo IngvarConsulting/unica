@@ -997,7 +997,9 @@ impl ServerHandler for UnicaServer {
         // A chosen call refused with a choice of its own is not asked again:
         // one call asks the person once.
         let outcome = match outcome {
-            Ok(SurfaceToolOutcome::Choice { refusal, .. }) => Ok(SurfaceToolOutcome::Direct(refusal)),
+            Ok(SurfaceToolOutcome::Choice { refusal, .. }) => {
+                Ok(SurfaceToolOutcome::Direct(refusal))
+            }
             other => other,
         };
         match project_surface_outcome(self, &option.tool, outcome, response_budget, chosen_at)? {
@@ -1301,7 +1303,8 @@ async fn invoke_surface_tool(
 
     let router = server.router.clone();
     let progress_forwarding = if let Some(progress_token) = progress_token {
-        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel::<Option<ProgressEvent>>();
+        let (sender, mut receiver) =
+            tokio::sync::mpsc::unbounded_channel::<Option<ProgressEvent>>();
         let sink: Arc<dyn ProgressSink> = Arc::new(McpProgressSink {
             sender: sender.clone(),
         });
@@ -1383,15 +1386,11 @@ fn project_surface_outcome(
             render_tool_result(server.structured_tools.contains(name), *result)
                 .map(CallToolResponse::from)
         }
-        SurfaceToolOutcome::CompatibilityTask { result, timing } => compatibility_result_before(
-            &result,
-            response_budget,
-            received_at,
-            timing,
-            Instant::now,
-        )
-        .map(CallToolResponse::from)
-        .map_err(crate::task_projection::projection_error),
+        SurfaceToolOutcome::CompatibilityTask { result, timing } => {
+            compatibility_result_before(&result, response_budget, received_at, timing, Instant::now)
+                .map(CallToolResponse::from)
+                .map_err(crate::task_projection::projection_error)
+        }
         SurfaceToolOutcome::Canonical(result) => {
             crate::task_projection::call_tool_result(&result, response_budget)
                 .map(CallToolResponse::from)

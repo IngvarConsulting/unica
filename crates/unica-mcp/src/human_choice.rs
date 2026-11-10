@@ -10,7 +10,7 @@
 
 use rmcp::model::{
     CallToolResult, ClientCapabilities, ContentBlock, ElicitRequestParams, ElicitResult,
-    ElicitationAction, InputRequest, InputRequiredResult, InputRequests, InputResponses,
+    ElicitationAction, InputRequest, InputRequests, InputRequiredResult, InputResponses,
 };
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -379,6 +379,9 @@ mod tests {
         let text = first["text"].as_str().unwrap();
         assert!(text.contains("Overwrite the infobase"), "{text}");
         assert!(text.contains("\"force\":true"), "{text}");
-        assert_eq!(serde_json::to_value(&named.content[1]).unwrap()["text"], "loaded");
+        assert_eq!(
+            serde_json::to_value(&named.content[1]).unwrap()["text"],
+            "loaded"
+        );
     }
 }

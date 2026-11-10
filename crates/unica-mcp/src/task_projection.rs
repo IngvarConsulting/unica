@@ -398,7 +398,7 @@ mod tests {
             unica_refusal::RefusalCode::InvalidState,
             "push loaded nothing",
         );
-        let plain = call_tool_result(&refusal, ResponseBudget::default()).unwrap();
+        let plain = super::call_tool_result(&refusal, ResponseBudget::default()).unwrap();
         refusal.human_choice = Some(Box::new(
             unica_execution_contract::invocation::HumanChoice {
                 question: "What should be done with the infobase?".into(),
@@ -406,7 +406,7 @@ mod tests {
             },
         ));
 
-        let projected = call_tool_result(&refusal, ResponseBudget::default()).unwrap();
+        let projected = super::call_tool_result(&refusal, ResponseBudget::default()).unwrap();
 
         assert_eq!(
             serde_json::to_value(&projected).unwrap(),

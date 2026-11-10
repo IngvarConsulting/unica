@@ -1156,9 +1156,7 @@ fn base_divergence_choice(source_set: &str, push_args: Value, pull_args: Value) 
         call
     };
     HumanChoice {
-        question: format!(
-            "База «{INFOBASE_NAME}» и исходники набора «{source_set}» разошлись."
-        ),
+        question: format!("База «{INFOBASE_NAME}» и исходники набора «{source_set}» разошлись."),
         options: vec![
             HumanChoiceOption {
                 id: "overwrite".to_string(),
