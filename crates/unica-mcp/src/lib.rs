@@ -301,15 +301,6 @@ impl UnicaServer {
         Self::canonical_v13_daemon(owner.into(), workspace_hint.into(), None)
     }
 
-    fn in_flight(&self) -> Arc<InFlightRegistry> {
-        Arc::clone(&self.in_flight)
-    }
-}
-
-/// Сборка сервера двери для тестов демона: маршрутизатор к живому демону
-/// и реестр вызовов, за которым тест следит.
-#[cfg(any(test, feature = "test-support"))]
-impl UnicaServer {
     /// Run the calls of a chosen answer in order. A refused call stops the
     /// chain; a call that continues as a Task ends it, and its Task is the
     /// answer. A call refused with a choice of its own is not asked again:
@@ -361,6 +352,15 @@ impl UnicaServer {
         Ok((CallToolResponse::from(result), steps))
     }
 
+    fn in_flight(&self) -> Arc<InFlightRegistry> {
+        Arc::clone(&self.in_flight)
+    }
+}
+
+/// Сборка сервера двери для тестов демона: маршрутизатор к живому демону
+/// и реестр вызовов, за которым тест следит.
+#[cfg(any(test, feature = "test-support"))]
+impl UnicaServer {
     pub fn with_canonical_v13_router(router: CanonicalDaemonRouter) -> Self {
         Self {
             router: SurfaceToolRouter::CanonicalV13(router),
