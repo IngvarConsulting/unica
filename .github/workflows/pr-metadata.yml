@@ -147,15 +147,15 @@ jobs:
       # и коммиты читаются через API как данные. Разбор и правила — скрипт
       # scripts/ci/contribution_rights.py: шаг скачивает его через API из main
       # и запускает `python3 -I`, поэтому правка скрипта в PR действует только после
-      # вливания. Пока скрипта нет в main, шаг сообщает об этом и ничего не проверяет.
-      # STRICT=false: проблемы видны как notice, проверка не падает.
+      # вливания. Любая найденная проблема роняет проверку. Пока скрипта нет в main,
+      # шаг пишет notice и пропускает PR: иначе не влился бы и PR, который его вносит.
       - name: Права на вклад
         if: ${{ !cancelled() }}
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           RIGHTS_HOLDER: zeegin
-          STRICT: "false"
+          STRICT: "true"
         run: |
           set -euo pipefail
           number="${PR_NUMBER:-$(sed -nE 's#^refs/heads/gh-readonly-queue/[^/]+/pr-([0-9]+)-[0-9a-f]+$#\1#p' <<<"$GITHUB_REF")}"
@@ -167,8 +167,7 @@ jobs:
           work="$(mktemp -d)"
           raw=(-H "Accept: application/vnd.github.raw")
           if ! gh api "repos/$GITHUB_REPOSITORY/contents/scripts/ci/contribution_rights.py?ref=main" "${raw[@]}" > "$work/check.py"; then
-            echo "::$level::Скрипта scripts/ci/contribution_rights.py нет в main: права на вклад не проверены"
-            if [ "$STRICT" = true ]; then exit 1; fi
+            echo "::notice::Скрипта scripts/ci/contribution_rights.py нет в main: права на вклад не проверены"
             exit 0
           fi
           gh api "repos/$GITHUB_REPOSITORY/pulls/$number" > "$work/pr.json"

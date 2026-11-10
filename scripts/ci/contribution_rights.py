@@ -227,7 +227,8 @@ def check(pr: dict, commits: list[dict], base: str | None, head: str | None, hol
                     reported.add(email)
                     problems.append(
                         f"Коммит {sha}: почта {role} {email} не указана в {REGISTRY}. "
-                        f"Добавьте её в свою строку раздела «{PARTICIPANTS}» и примите оферту (CLA.md)"
+                        f"Примите оферту Unica CLA (CLA.md): добавьте свою строку с этой почтой "
+                        f"в раздел «{PARTICIPANTS}» файла {REGISTRY} и отметьте пункт «Права на вклад» в описании PR"
                     )
                 continue
             named = row.login if isinstance(row, Participant) else row.who

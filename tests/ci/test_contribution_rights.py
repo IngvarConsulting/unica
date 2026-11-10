@@ -245,7 +245,7 @@ class StepTests(unittest.TestCase):
         self.step = next(step for step in yaml.safe_load(METADATA.read_text(encoding="utf-8"))["jobs"]["metadata"]["steps"]
                          if step["name"] == "Права на вклад")
 
-    def run_step(self, *, commits, head=None, script=True, strict=False, **variables):
+    def run_step(self, *, commits, head=None, script=True, strict=True, **variables):
         bash = shutil.which("bash")
         if bash is None:
             self.skipTest("bash is not available")
@@ -275,9 +275,9 @@ class StepTests(unittest.TestCase):
             calls = (root / "calls").read_text(encoding="utf-8") if (root / "calls").exists() else ""
         return completed, calls
 
-    def test_the_step_runs_the_script_from_main_and_does_not_fail_yet(self) -> None:
+    def test_the_step_runs_the_script_from_main_and_blocks_at_once(self) -> None:
         self.assertEqual(self.step["if"], "${{ !cancelled() }}")
-        self.assertEqual(self.step["env"]["STRICT"], "false")
+        self.assertEqual(self.step["env"]["STRICT"], "true")
         self.assertEqual(self.step["env"]["RIGHTS_HOLDER"], HOLDER)
         self.assertIn("contents/scripts/ci/contribution_rights.py?ref=main", self.step["run"])
         self.assertIn('python3 -I "$work/check.py"', self.step["run"])
@@ -292,22 +292,26 @@ class StepTests(unittest.TestCase):
         self.assertIn(f"contents/CONTRIBUTORS.md?ref={MERGE_BASE}", calls)
         self.assertIn(f"compare/{BASE}...{HEAD}", calls)
 
-    def test_problems_are_notices_until_strict(self) -> None:
-        completed, _ = self.run_step(commits=[commit("stranger@example.com")])
-        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
-        self.assertIn("::notice::Коммит abcdef1: почта автора stranger@example.com не указана", completed.stdout)
-        self.assertNotIn("::error::", completed.stdout)
-        completed, _ = self.run_step(commits=[commit("stranger@example.com")], strict=True)
-        self.assertEqual(completed.returncode, 1)
-        self.assertIn("::error::Коммит abcdef1", completed.stdout)
+    def test_an_unknown_email_fails_the_check_and_says_what_to_do(self) -> None:
+        for message in ("Права на вклад\n\nCo-authored-by: Dave <dave@example.com>\n", "Права на вклад"):
+            email = "dave@example.com" if "Dave" in message else "stranger@example.com"
+            author = "bob@example.com" if "Dave" in message else email
+            with self.subTest(email=email):
+                completed, _ = self.run_step(commits=[commit(author, message=message)])
+                self.assertEqual(completed.returncode, 1, completed.stdout + completed.stderr)
+                self.assertIn("::error::Коммит abcdef1: почта", completed.stdout)
+                self.assertIn(email, completed.stdout)
+                for step in ("Примите оферту Unica CLA", "добавьте свою строку", "отметьте пункт «Права на вклад» в описании PR"):
+                    self.assertIn(step, completed.stdout)
+                self.assertNotIn("::notice::", completed.stdout)
 
     def test_a_missing_registry_in_the_pr_is_a_problem(self) -> None:
-        completed, _ = self.run_step(commits=[], head="", strict=True)
+        completed, _ = self.run_step(commits=[], head="")
         self.assertEqual(completed.returncode, 1)
-        completed, _ = self.run_step(commits=[], head=registry(BOB, "| @carol |"), strict=True)
+        completed, _ = self.run_step(commits=[], head=registry(BOB, "| @carol |"))
         self.assertIn("::error::CONTRIBUTORS.md, строка 10:", completed.stdout)
 
-    def test_without_the_script_in_main_nothing_is_checked(self) -> None:
+    def test_without_the_script_in_main_nothing_is_checked_so_the_pr_bringing_it_can_merge(self) -> None:
         completed, calls = self.run_step(commits=[commit("stranger@example.com")], script=False)
         self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
         self.assertIn("::notice::Скрипта scripts/ci/contribution_rights.py нет в main", completed.stdout)
