@@ -303,6 +303,7 @@ impl unica_diagnostics::model::DiagnosticProvider for DiagnosticsBoundaryProvide
                 .then_some(unica_diagnostics::model::DiagnosticReadiness {
                     state: unica_diagnostics::model::DiagnosticReadinessState::Ready,
                     retryable: false,
+                    progress: None,
                 }),
             error: None,
             suppressions: Vec::new(),

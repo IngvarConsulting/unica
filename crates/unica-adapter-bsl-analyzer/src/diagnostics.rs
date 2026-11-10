@@ -715,6 +715,9 @@ struct ResidentStatusReply {
     #[serde(default)]
     reload: String,
     error: Option<String>,
+    files: Option<usize>,
+    attempts: Option<u32>,
+    elapsed_ms: Option<u64>,
 }
 
 pub fn parse_resident_status(
@@ -760,6 +763,11 @@ pub fn parse_resident_status(
                 state,
                 DiagnosticReadinessState::NotStarted | DiagnosticReadinessState::Building
             ),
+            progress: Some(DiagnosticBuildProgress {
+                files: status.files,
+                attempts: status.attempts,
+                elapsed_ms: status.elapsed_ms,
+            }),
         }),
         error: None,
         suppressions: Vec::new(),

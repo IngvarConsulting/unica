@@ -484,7 +484,27 @@ pub enum V5LspSeverity {
     Hint,
 }
 
+/// Причина, по которой в ответе о находках нет части находок. Список
+/// закрыт: редактор показывает причину, не разбирая текст отметки.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum V5LspIncompleteReason {
+    /// Анализатор ещё строит базу рабочей области.
+    Warming,
+    /// База готова, анализ модуля идёт или ждёт очереди.
+    Analysing,
+    /// Анализатор ответил отказом или упал.
+    AnalyzerUnavailable,
+    /// Анализатора нет на машине, или он не запускается.
+    AnalyzerAbsent,
+    /// Буфер расходится с сохранённым файлом, а анализ видит только файл.
+    UnsavedBuffer,
+    /// Находок больше, чем несёт один ответ.
+    Capped,
+}
+
 /// Находка в документе: код и текст Unica, без слов поставщика анализа.
+/// Отметка неполного ответа называет свои причины в `reasons`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct V5LspDiagnostic {
@@ -492,6 +512,8 @@ pub struct V5LspDiagnostic {
     pub severity: V5LspSeverity,
     pub code: String,
     pub message: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reasons: Vec<V5LspIncompleteReason>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -561,6 +583,23 @@ pub enum V5LspServerNotification {
     /// Источник находок стал готов или его стоит спросить заново: редактору
     /// предлагают запросить находки открытых документов.
     DiagnosticsRefresh {},
+    /// Ход подготовки анализа: начало, стадия или конец. `token` один на
+    /// подготовку набора исходников; `title` есть только у начала.
+    AnalysisProgress {
+        token: String,
+        phase: V5LspProgressPhase,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+        message: String,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum V5LspProgressPhase {
+    Begin,
+    Report,
+    End,
 }
 
 impl V5LspServerNotification {
@@ -569,7 +608,20 @@ impl V5LspServerNotification {
             Self::LogMessage { message, .. } if message.len() > MAX_LSP_LOG_MESSAGE_BYTES => {
                 Err("v5 lsp log message exceeds its limit".to_string())
             }
-            Self::LogMessage { .. } | Self::DiagnosticsRefresh {} => Ok(()),
+            Self::AnalysisProgress {
+                token,
+                title,
+                message,
+                ..
+            } if token.len() > MAX_LSP_FOLDER_NAME_BYTES * 2
+                || title.as_ref().map_or(0, String::len) + message.len()
+                    > MAX_LSP_LOG_MESSAGE_BYTES =>
+            {
+                Err("v5 lsp analysis progress exceeds its limit".to_string())
+            }
+            Self::LogMessage { .. } | Self::DiagnosticsRefresh {} | Self::AnalysisProgress { .. } => {
+                Ok(())
+            }
         }
     }
 }

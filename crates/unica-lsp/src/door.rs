@@ -16,6 +16,8 @@ use unica_lsp_contract::protocol::{
 };
 use unica_lsp_contract::protocol::{V5LspCompletionData, V5LspCompletionItem, V5LspCompletionKind};
 
+use crate::progress::WorkDoneProgress;
+
 /// Бюджет запроса на полосе демона.
 // resource-limit: lsp.call-budget
 // class: deadline
@@ -114,6 +116,7 @@ pub fn serve(
         in_flight: Arc::new(Mutex::new(HashMap::new())),
         next_request: 0,
         unsynced: std::collections::HashSet::new(),
+        progress: Arc::new(WorkDoneProgress::new(false)),
     };
     let code = loop {
         let body = match crate::codec::read_message(&mut input) {
@@ -150,6 +153,8 @@ pub struct Frontend {
     /// Documents whose text the daemon lost track of. Requests about them
     /// are refused until the editor opens them again.
     unsynced: std::collections::HashSet<String>,
+    /// Work done progress tokens of this editor.
+    progress: Arc<WorkDoneProgress>,
 }
 
 pub enum Phase {
@@ -198,10 +203,15 @@ impl Frontend {
         match (method, id) {
             (Some(method), Some(id)) => self.request(method, id, params),
             (Some(method), None) => self.notification(method, params),
-            // Answers to server requests: this server sends none.
-            (None, Some(_))
+            // Answers to server requests: a created progress token lets its
+            // waiting progress go; other answers need nothing.
+            (None, Some(id))
                 if message.get("result").is_some() || message.get("error").is_some() =>
             {
+                let created = message.get("error").is_none();
+                for waiting in self.progress.answered(&id, created).unwrap_or_default() {
+                    self.send(waiting);
+                }
                 Flow::Continue
             }
             (None, id) => {
@@ -342,6 +352,12 @@ impl Frontend {
             .pointer("/capabilities/workspace/diagnostics/refreshSupport")
             .and_then(Value::as_bool)
             .unwrap_or(false);
+        self.progress = Arc::new(WorkDoneProgress::new(
+            params
+                .pointer("/capabilities/window/workDoneProgress")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+        ));
         let opened = self
             .client
             .connect_peer_before(deadline)
@@ -370,6 +386,7 @@ impl Frontend {
             Arc::clone(&poll_stop),
             Arc::clone(&self.session_lost),
             refresh,
+            Arc::clone(&self.progress),
         );
         self.phase = Phase::Running(Box::new(Session {
             id: session,
@@ -618,6 +635,7 @@ pub fn spawn_poller(
     stop: Arc<AtomicBool>,
     session_lost: SessionLost,
     refresh: bool,
+    progress: Arc<WorkDoneProgress>,
 ) {
     let _ = thread::Builder::new()
         .name("unica-lsp-notifications".into())
@@ -644,7 +662,20 @@ pub fn spawn_poller(
                     Ok(items) => {
                         failures = 0;
                         for item in items {
-                            if let Some(message) = server_notification_json(item, refresh) {
+                            if let V5LspServerNotification::AnalysisProgress {
+                                token,
+                                phase,
+                                title,
+                                message,
+                            } = &item
+                            {
+                                for message in
+                                    progress.stage(token, *phase, title.as_deref(), message)
+                                {
+                                    write(&output, &message);
+                                }
+                            } else if let Some(message) = server_notification_json(item, refresh)
+                            {
                                 write(&output, &message);
                             }
                         }
@@ -863,13 +894,19 @@ pub fn diagnostic_json(item: &V5LspDiagnostic) -> Value {
         V5LspSeverity::Information => 3,
         V5LspSeverity::Hint => 4,
     };
-    json!({
+    let mut diagnostic = json!({
         "range": item.range,
         "severity": severity,
         "code": item.code,
         "source": "unica",
         "message": item.message,
-    })
+    });
+    // The incomplete answer's marker names its reasons as codes, so the
+    // editor shows them without reading the message.
+    if !item.reasons.is_empty() {
+        diagnostic["data"] = json!({"reasons": item.reasons});
+    }
+    diagnostic
 }
 
 /// A notification of the daemon as the editor's message. A diagnostics
@@ -892,6 +929,8 @@ pub fn server_notification_json(
                 "method": "workspace/diagnostic/refresh",
             })
         }
+        // Progress needs its token created first: the poller sends it.
+        V5LspServerNotification::AnalysisProgress { .. } => return None,
         V5LspServerNotification::LogMessage { level, message } => {
             let kind = match level {
                 V5LspMessageLevel::Error => 1,

@@ -17,7 +17,9 @@ use unica_diagnostics::model::{
     DiagnosticProviderRegistry, DiagnosticProviderStatus, DiagnosticReadinessState,
     DiagnosticRequest, DiagnosticResult, DiagnosticSeverity,
 };
-use unica_editor_analysis::{LspAnalysis, LspDiagnosticGap, LspFinding, LspSeverity};
+use unica_editor_analysis::{
+    LspAnalysis, LspAnalysisProgress, LspDiagnosticGap, LspFinding, LspSeverity,
+};
 use unica_work_control::cancellation::CancellationToken;
 use unica_work_control::provider_deadline::ProviderDeadline;
 
@@ -152,7 +154,10 @@ pub(super) fn analyse(
             return not_ready();
         }
         if Instant::now() + RESIDENT_READINESS_POLL > waiting_until {
-            return resident;
+            return LspAnalysis {
+                findings: Vec::new(),
+                gaps: vec![LspDiagnosticGap::AnalysisWarming],
+            };
         }
         std::thread::sleep(RESIDENT_READINESS_POLL);
         if cancellation.is_cancelled() {
@@ -197,15 +202,125 @@ fn not_ready() -> LspAnalysis {
     }
 }
 
+/// Как часто подготовка анализа спрашивает резидента о его базе.
+// resource-limit: lsp.editor-prepare-poll
+// class: retry
+// unit: ms
+// scope: request
+// value: 1000
+// resource: Пауза между вопросами о состоянии базы резидента при подготовке анализа для редактора.
+// status: unproven
+// origin: #2790
+// problem: неизвестно
+// on-reach: подготовка спрашивает резидента снова; готовая база кончает подготовку
+// issue: #2790
+const PREPARE_POLL: Duration = Duration::from_secs(1);
+/// Как часто редактор слышит, сколько уже строится база.
+// resource-limit: lsp.editor-prepare-report
+// class: retry
+// unit: ms
+// scope: request
+// value: 5000
+// resource: Пауза между сообщениями редактору о ходе построения базы анализатора.
+// status: unproven
+// origin: #2790
+// problem: неизвестно
+// on-reach: редактор получает следующее сообщение о стадии
+// issue: #2790
+const PREPARE_REPORT_EVERY: Duration = Duration::from_secs(5);
+
+const PREPARE_TITLE: &str = "Анализатор готовит базу";
+const PREPARE_STARTING: &str = "Запуск анализатора";
+const PREPARE_UNAVAILABLE: &str = "Анализатор недоступен";
+
+/// What the resident says of its database.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ResidentDatabase {
+    /// Building: since `elapsed_ms`, retrying after `attempts` failures.
+    Building {
+        elapsed_ms: Option<u64>,
+        attempts: Option<u32>,
+    },
+    /// Ready, serving `files` modules.
+    Ready { files: Option<usize> },
+    /// No resident answers: absent, refused or failed for good.
+    Unavailable,
+}
+
+/// The resident's database as one status question answers it.
+pub(super) fn resident_database(result: &DiagnosticResult) -> ResidentDatabase {
+    let mut building = None;
+    for section in &result.providers {
+        match (&section.readiness, section.status) {
+            (Some(readiness), _) => match readiness.state {
+                DiagnosticReadinessState::Ready | DiagnosticReadinessState::Stale => {
+                    return ResidentDatabase::Ready {
+                        files: readiness.progress.as_ref().and_then(|progress| progress.files),
+                    }
+                }
+                DiagnosticReadinessState::NotStarted | DiagnosticReadinessState::Building => {
+                    let progress = readiness.progress.clone().unwrap_or_default();
+                    building = Some(ResidentDatabase::Building {
+                        elapsed_ms: progress.elapsed_ms,
+                        attempts: progress.attempts,
+                    });
+                }
+            },
+            // A build that failed is retried by the resident itself.
+            (None, DiagnosticProviderStatus::Unavailable | DiagnosticProviderStatus::Failed)
+                if section
+                    .error
+                    .as_ref()
+                    .is_some_and(|error| error.code == "provider_not_ready") =>
+            {
+                building.get_or_insert(ResidentDatabase::Building {
+                    elapsed_ms: None,
+                    attempts: None,
+                });
+            }
+            _ => {}
+        }
+    }
+    building.unwrap_or(ResidentDatabase::Unavailable)
+}
+
+/// The stage the editor hears while the database builds.
+pub(super) fn building_message(elapsed: Duration, attempts: Option<u32>) -> String {
+    match attempts.filter(|attempts| *attempts > 0) {
+        Some(failed) => format!("Повтор после сбоя, попытка {}", failed + 1),
+        None => format!("Строится база: {} с", elapsed.as_secs()),
+    }
+}
+
+/// The end the editor hears once the database is ready.
+pub(super) fn ready_message(files: Option<usize>) -> String {
+    match files {
+        Some(files) => format!("База готова: {files} {}", modules_word(files)),
+        None => "База готова".to_owned(),
+    }
+}
+
+/// «модуль», «модуля» или «модулей» после числа.
+fn modules_word(count: usize) -> &'static str {
+    match (count % 10, count % 100) {
+        (_, 11..=14) => "модулей",
+        (1, _) => "модуль",
+        (2..=4, _) => "модуля",
+        _ => "модулей",
+    }
+}
+
 /// The resident analysis of `source_set` starts building as soon as an
-/// editor opens it: one status question to the configuration root brings
-/// the resident up. Its answer is not needed: the analysis of a module asks
-/// for itself.
+/// editor opens it, and the editor hears how it goes: a status question to
+/// the configuration root brings the resident up, and the same question,
+/// asked again until the database is ready or the resident gives up, gives
+/// the stages. A begun preparation always ends, ready or not.
 pub(super) fn prepare(
     registry: &dyn Fn() -> Result<DiagnosticProviderRegistry, String>,
     authority: &LogicalViewReadAuthority<'_>,
     workspace: &unica_source_contract::workspace::WorkspaceContext,
     source_set: &str,
+    progress: &dyn Fn(LspAnalysisProgress),
     cancellation: &CancellationToken,
 ) {
     let Ok(running) = registry() else {
@@ -229,8 +344,49 @@ pub(super) fn prepare(
         limit: 0,
         timeout: Some(RESIDENT_CALL_BUDGET),
     };
-    let _ =
-        DiagnosticCoordinator::new(running, &mapping).execute(&request, workspace, cancellation);
+    let coordinator = DiagnosticCoordinator::new(running, &mapping);
+    progress(LspAnalysisProgress::Begin {
+        title: PREPARE_TITLE.to_owned(),
+        message: PREPARE_STARTING.to_owned(),
+    });
+    let started = Instant::now();
+    let mut reported = started;
+    let end = |message: String| progress(LspAnalysisProgress::End { message });
+    loop {
+        let database = match coordinator.execute(&request, workspace, cancellation) {
+            Ok(result) => resident_database(&result),
+            Err(error) if error.code == "cancelled" => return,
+            Err(_) => ResidentDatabase::Unavailable,
+        };
+        match database {
+            ResidentDatabase::Ready { files } => return end(ready_message(files)),
+            ResidentDatabase::Unavailable => return end(PREPARE_UNAVAILABLE.to_owned()),
+            ResidentDatabase::Building {
+                elapsed_ms,
+                attempts,
+            } => {
+                if reported.elapsed() >= PREPARE_REPORT_EVERY {
+                    reported = Instant::now();
+                    let elapsed = elapsed_ms
+                        .map(Duration::from_millis)
+                        .unwrap_or_else(|| started.elapsed());
+                    progress(LspAnalysisProgress::Report {
+                        message: building_message(elapsed, attempts),
+                    });
+                }
+            }
+        }
+        if started.elapsed() >= RESIDENT_READINESS_WAIT {
+            return end(PREPARE_UNAVAILABLE.to_owned());
+        }
+        if cancellation.is_cancelled() {
+            return;
+        }
+        std::thread::sleep(PREPARE_POLL);
+        if cancellation.is_cancelled() {
+            return;
+        }
+    }
 }
 
 /// The provider part of a document's findings in Unica's words. Each finding
