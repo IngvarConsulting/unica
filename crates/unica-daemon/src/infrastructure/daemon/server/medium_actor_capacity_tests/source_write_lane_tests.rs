@@ -51,6 +51,7 @@ fn bound_source_writes(bound: V5ActorBoundCanonicalInvocation) -> (SourceWriteLa
 /// `pull`, `push` and `make` take the lane that the workspace actor admitted
 /// for an edit publishes under: an edit and a runtime writer exclude each
 /// other whichever of them came first.
+/// rule: INV.RUNTIME.SOURCE-SET-WRITE-EXCLUSION
 #[test]
 fn runtime_writers_share_the_source_write_lane_of_the_admitted_workspace_actor() {
     let workspace = runtime_writer_workspace();
@@ -111,6 +112,7 @@ fn runtime_writers_share_the_source_write_lane_of_the_admitted_workspace_actor()
 
 /// A preview neither writes nor loads sources and runs at once; an execution
 /// waits for the lane and names its operation when cancelled during the wait.
+/// rule: INV.RUNTIME.SOURCE-SET-WRITE-EXCLUSION
 #[test]
 fn runtime_writer_execution_waits_for_the_lane_and_a_preview_does_not() {
     let workspace = runtime_writer_workspace();
