@@ -179,6 +179,46 @@ pub(super) fn mode_raise_request(read_only: &ReadOnlyMode, source_set: &str) -> 
     }
 }
 
+const REMOVE_SUPPORT_CODE: &str = "support.state_unreadable";
+const REMOVE_SUPPORT: &str = "remove-support";
+
+fn remove_support_question(source_set: &str) -> String {
+    format!("Состояние поддержки поставщика у набора «{source_set}» повреждено и не читается.")
+}
+
+/// The question about a vendor-support state that cannot be read, asked
+/// with the agreed words (INV.SAFETY.APPLY-SUPPORT-GATE): the one way out
+/// is taking the configuration off support entirely.
+pub(super) fn remove_support_choice(source_set: &str, call: &Map<String, Value>) -> HumanChoice {
+    let question = remove_support_question(source_set);
+    HumanChoice {
+        code: REMOVE_SUPPORT_CODE.to_string(),
+        options: vec![HumanChoiceOption {
+            id: REMOVE_SUPPORT.to_string(),
+            title: "Снять с поддержки полностью".to_string(),
+            description:
+                "сведения о поставщике и правила объектов пропадут, обновления поставщика перестанут приходить"
+                    .to_string(),
+            tool: APPLY_TOOL.to_string(),
+            arguments: confirmed(REMOVE_SUPPORT_CODE, &question, REMOVE_SUPPORT, call),
+            then: Vec::new(),
+        }],
+        data: Some(json!({"sourceSet": source_set})),
+        question,
+        cancel_description: Some(
+            "восстановите базу из резервной копии и выгрузите набор заново".to_string(),
+        ),
+        proceeds_unasked: false,
+    }
+}
+
+/// Whether `call` carries the person's answer to take the configuration off
+/// support entirely.
+pub(super) fn remove_support_chosen(source_set: &str, call: &Map<String, Value>) -> bool {
+    let question = remove_support_question(source_set);
+    HumanChoice::is_confirmed(&format!("{question}\n{REMOVE_SUPPORT}"), APPLY_TOOL, call)
+}
+
 const MODE_CODE: &str = "source.compatibility_mode";
 const RAISE_MODE: &str = "raise";
 

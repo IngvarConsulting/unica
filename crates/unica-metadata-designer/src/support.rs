@@ -290,6 +290,11 @@ pub fn parse_support_state_compat_bytes(data: Option<&[u8]>) -> Option<SupportSt
 
 /// Parses already-admitted support-state bytes with the same semantics as the
 /// path wrapper. The caller owns file identity/no-follow checks.
+/// The marker the platform writes for a configuration taken off vendor support
+/// entirely (8.3.27 and 8.5.1 write the same bytes; fixture
+/// `support-markers/removed.bin`).
+pub const REMOVED_SUPPORT_MARKER: &[u8] = b"\xef\xbb\xbf{6,0,0,0,1,0}";
+
 pub fn parse_support_state_strict_bytes(
     data: Option<&[u8]>,
 ) -> Result<Option<SupportState>, SupportReadError> {
@@ -468,6 +473,7 @@ mod support_stream_tests {
     fn the_platform_marker_of_removed_support_reads_as_removed() {
         let bytes = marker("removed");
         assert_eq!(bytes, "\u{feff}{6,0,0,0,1,0}".as_bytes());
+        assert_eq!(bytes, REMOVED_SUPPORT_MARKER);
         for state in both(&bytes) {
             assert!(state.removed());
             assert!(state.global_editing_enabled());

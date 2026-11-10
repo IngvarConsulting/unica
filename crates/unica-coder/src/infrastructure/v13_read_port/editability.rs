@@ -64,8 +64,9 @@ pub const fn policy_name(policy: SupportPolicyMode) -> &'static str {
 pub struct NodeEditability {
     pub reason: SupportReason,
     pub policy: SupportPolicyMode,
-    /// The support marker itself cannot be read: `apply` refuses under
-    /// `deny` and `off` alike (INV.SAFETY.APPLY-SUPPORT-GATE).
+    /// The support cannot be read — a damaged marker or an owner whose
+    /// descriptor names no uuid: `apply` refuses under `deny` and `off` alike
+    /// (INV.SAFETY.APPLY-SUPPORT-GATE).
     pub marker_unreadable: bool,
 }
 
