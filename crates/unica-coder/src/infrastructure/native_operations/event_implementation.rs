@@ -105,7 +105,7 @@ fn plan_one_event(
                 &method.signature,
                 method.method_kind,
                 method.directive,
-                method.region,
+                &method.region,
                 unica_source_designer::language::staged_script_variant(
                     staged,
                     source_set_kind,
@@ -182,7 +182,7 @@ fn plan_one_event(
             &method.signature,
             method.method_kind,
             method.directive,
-            method.region,
+            &method.region,
             unica_source_designer::language::staged_script_variant(staged, source_set_kind, "at")?,
         )
     }?;

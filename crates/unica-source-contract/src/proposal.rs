@@ -81,6 +81,16 @@ pub struct SupportLock {
     pub owner: String,
 }
 
+/// A source set that is read-only by its compatibility mode: the person may
+/// raise the mode to the oldest editable one (INV.SOURCE.WRITABLE-PROFILE).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReadOnlyMode {
+    pub mode: crate::compatibility::CompatibilityMode,
+    /// `CompatibilityMode` of a configuration or
+    /// `ConfigurationExtensionCompatibilityMode` of an extension.
+    pub property: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApplyPlanError {
     kind: ApplyPlanErrorKind,
@@ -93,6 +103,8 @@ pub struct ApplyPlanError {
     diagnostics: Vec<serde_json::Value>,
     /// The vendor-support lock behind an `invalid_state` refusal.
     support_lock: Option<Box<SupportLock>>,
+    /// The compatibility mode that keeps the set read-only.
+    read_only_mode: Option<Box<ReadOnlyMode>>,
 }
 
 impl ApplyPlanError {
@@ -104,7 +116,17 @@ impl ApplyPlanError {
             next: None,
             diagnostics: Vec::new(),
             support_lock: None,
+            read_only_mode: None,
         }
+    }
+
+    pub fn with_read_only_mode(mut self, mode: ReadOnlyMode) -> Self {
+        self.read_only_mode = Some(Box::new(mode));
+        self
+    }
+
+    pub fn read_only_mode(&self) -> Option<&ReadOnlyMode> {
+        self.read_only_mode.as_deref()
     }
 
     pub fn with_support_lock(mut self, lock: SupportLock) -> Self {

@@ -4,6 +4,7 @@
 
 use super::protocol::InvocationRequest;
 use super::runner_015::Runner015ProcessRunner;
+use super::v13_source_import::INFOBASE_NAME;
 use crate::domain::engine::MissingEngineRefusal;
 use crate::infrastructure::bundled_tools::{bundled_tool_version, resolve_bundled_tool};
 use crate::infrastructure::plugin_runtime::find_plugin_root;
@@ -17,7 +18,9 @@ use unica_artifact_delivery::engine::BundledTool;
 use unica_artifact_delivery::engine::BundledToolError;
 use unica_artifact_delivery::engine::MissingEngine;
 use unica_execution::invocation_store::ToolIdentity;
-use unica_execution_contract::invocation::{DomainResult, SafeIdentityHash};
+use unica_execution_contract::invocation::{
+    DomainResult, HumanChoice, HumanChoiceOption, SafeIdentityHash,
+};
 use unica_process::runner::{ProcessCommand, ProcessOutput, ProcessRunner, ProcessStreamFailure};
 use unica_redaction::redactor;
 use unica_refusal::{RefusalCode, RefusalDetail};
@@ -215,6 +218,25 @@ impl PreparedInfobaseExport {
                 )
             })?;
         let arguments = parse_export_arguments(operation, args, &context)?;
+        // Замена данных базы исполняется только с согласия человека. Вопрос
+        // задаётся до допуска: вызов, ушедший в фоновую задачу, спросить уже
+        // не может. Превью базу не меняет и не спрашивает.
+        if operation == ExportOperation::Restore
+            && arguments.restore_mode == Some(RestoreMode::Replace)
+            && !dry_run
+        {
+            let file = dt_file_name(&arguments.named_file_relative);
+            if !HumanChoice::is_confirmed(
+                &restore_replace_question(&file),
+                "unica.run",
+                request.arguments(),
+            ) {
+                return Err(restore_replace_unconfirmed(
+                    &arguments.named_file_relative,
+                    request.arguments(),
+                ));
+            }
+        }
         Ok(Self {
             operation,
             arguments,
@@ -888,7 +910,125 @@ fn invoke_runner(
             ));
         }
     };
-    parse_runner_output(prepared.operation, output, dry_run)
+    // `mode: create` над базой, которая уже есть: выбрать замену её данных
+    // может только человек. Спрашивает только исполнение: превью отдаёт
+    // прежний отказ.
+    let target_exists = !dry_run
+        && prepared.operation == ExportOperation::Restore
+        && prepared.arguments.restore_mode == Some(RestoreMode::Create)
+        && !output.status_success
+        && restore_target_exists(&output.stdout);
+    parse_runner_output(prepared.operation, output, dry_run).map_err(|mut rejection| {
+        if target_exists {
+            rejection.human_choice = Some(Box::new(restore_exists_choice(prepared)));
+        }
+        rejection
+    })
+}
+
+/// Код вопроса о замене данных базы: по нему клиент рисует свой экран.
+const RESTORE_REPLACE_CODE: &str = "infobase.restore_replace";
+/// Код вопроса о загрузке с `mode: create` в базу, которая уже есть.
+const RESTORE_EXISTS_CODE: &str = "infobase.restore_exists";
+
+/// Устойчивая часть отказа раннера 0.15 на `infobase restore --create`, когда
+/// база уже есть. Кода у этого отказа нет: это ошибка проверки
+/// `invalid_argument`, и опознаётся она по этой части текста, как
+/// предупреждение о базе другой копии. Тест на конверте раннера упадёт, если
+/// раннер сменит прозу.
+const RESTORE_TARGET_EXISTS_FRAGMENT: &str =
+    "--create was requested but the target infobase already exists";
+
+fn restore_target_exists(stdout: &str) -> bool {
+    serde_json::from_str::<Value>(stdout).is_ok_and(|envelope| {
+        envelope["error"]["code"] == "invalid_argument"
+            && envelope["error"]["message"]
+                .as_str()
+                .is_some_and(|message| message.contains(RESTORE_TARGET_EXISTS_FRAGMENT))
+    })
+}
+
+/// Имя DT без пути: в тексте вопроса путей проекта нет.
+fn dt_file_name(relative: &Path) -> String {
+    relative
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path_text(relative))
+}
+
+/// Факты вопроса для экрана клиента: база, имя DT и его путь от корня проекта.
+fn restore_facts(relative: &Path) -> Value {
+    json!({
+        "infobase": INFOBASE_NAME,
+        "file": dt_file_name(relative),
+        "input": path_text(relative),
+    })
+}
+
+/// Согласованный текст вопроса о замене данных базы.
+fn restore_replace_question(file: &str) -> String {
+    format!("Заменить данные базы «{INFOBASE_NAME}» данными из «{file}»?")
+}
+
+/// Подтверждение замены данных базы этим же вызовом: надпись варианта и то,
+/// что пропадёт, согласованы и закреплены тестом.
+fn restore_replace_confirmation(relative: &Path, call: &Map<String, Value>) -> HumanChoice {
+    HumanChoice::confirmation(
+        RESTORE_REPLACE_CODE,
+        restore_replace_question(&dt_file_name(relative)),
+        "Заменить данные",
+        "данные и конфигурация базы пропадут",
+        "unica.run",
+        call,
+    )
+    .with_data(restore_facts(relative))
+}
+
+/// Отказ `cancelled` без согласия человека: база не тронута. Клиенту, который
+/// умеет спрашивать, дверь задаёт вопрос; остальным исполняет вызов как прежде.
+fn restore_replace_unconfirmed(relative: &Path, call: &Map<String, Value>) -> DomainResult {
+    let mut rejection = reject(
+        ExportOperation::Restore,
+        RefusalCode::Cancelled,
+        "infobase.restore with mode: replace discards the data of the infobase and runs only with the person's confirmation; it was not given, and the infobase is unchanged",
+    );
+    rejection.human_choice = Some(Box::new(restore_replace_confirmation(relative, call)));
+    rejection
+}
+
+/// Вопрос исполняемой загрузки с `mode: create` в базу, которая уже есть.
+/// Вариант — тот же вызов с `mode: replace`, и он уже несёт согласие на
+/// замену данных: второй вопрос тот же вызов не задаёт.
+fn restore_exists_choice(prepared: &PreparedInfobaseExport) -> HumanChoice {
+    let relative = &prepared.arguments.named_file_relative;
+    let mut args = public_arguments(prepared);
+    args["mode"] = json!(RestoreMode::Replace.as_str());
+    let mut call = Map::new();
+    call.insert("op".to_string(), json!(prepared.operation.name()));
+    call.insert("args".to_string(), args);
+    call.insert("dryRun".to_string(), Value::Bool(false));
+    let arguments = restore_replace_confirmation(relative, &call)
+        .options
+        .remove(0)
+        .arguments;
+    HumanChoice {
+        code: RESTORE_EXISTS_CODE.to_string(),
+        question: format!("База «{INFOBASE_NAME}» уже существует."),
+        data: Some(restore_facts(relative)),
+        options: vec![HumanChoiceOption {
+            id: "replace".to_string(),
+            title: format!(
+                "Заменить данные базы данными из «{}»",
+                dt_file_name(relative)
+            ),
+            description: "данные и конфигурация базы пропадут".to_string(),
+            tool: "unica.run".to_string(),
+            arguments,
+            then: Vec::new(),
+        }],
+        cancel_description: None,
+        proceeds_unasked: false,
+    }
 }
 
 fn parse_runner_output(
@@ -2983,5 +3123,213 @@ mod tests {
         assert!(!prepared.arguments.named_file.exists());
         let encoded = serde_json::to_string(&result).unwrap();
         assert!(!encoded.contains("provider details remain private"));
+    }
+
+    fn restore_workspace() -> tempfile::TempDir {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join(CONFIG_NAME), "format: DESIGNER\n").unwrap();
+        fs::create_dir_all(root.path().join("transfer")).unwrap();
+        fs::write(root.path().join("transfer/base.dt"), b"transfer bytes").unwrap();
+        fs::write(root.path().join("transfer/other.dt"), b"other bytes").unwrap();
+        root
+    }
+
+    fn restore_request(root: &Path, arguments: Value) -> InvocationRequest {
+        InvocationRequest::new(
+            ToolIdentity::Run,
+            arguments,
+            root.display().to_string(),
+            7000,
+        )
+        .unwrap()
+    }
+
+    /// Отказ раннера 0.15 на `infobase restore --create`, когда база уже есть:
+    /// код проверки и проза, по которой Unica его опознаёт.
+    fn restore_target_exists_envelope(dry_run: bool) -> Value {
+        json!({
+            "command": "infobase.restore",
+            "data": {
+                "mode": if dry_run { "preview" } else { "apply" },
+                "provider_dispatched": if dry_run { json!(false) } else { Value::Null },
+                "subject": "infobase",
+                "artifact_kind": "dt",
+                "target_mode": "create",
+                "restored": false,
+                "target_state": "unchanged",
+                "execution": {"status": "failed"}
+            },
+            "error": {
+                "code": "invalid_argument",
+                "message": "--create was requested but the target infobase already exists; pass --replace to discard its data"
+            }
+        })
+    }
+
+    /// Исполняемый `infobase.restore` с `mode: replace` идёт только с согласия
+    /// человека. Без него — отказ `cancelled` с вопросом-подтверждением по
+    /// согласованному тексту: база и имя DT без пути. Подтверждение годится
+    /// только для того же вызова. Превью и `mode: create` не спрашивают.
+    /// rule: INV.RUNTIME.DESTRUCTIVE-CONFIRMATION
+    /// rule: INV.MCP.HUMAN-CHOICE
+    #[test]
+    fn an_executing_restore_with_replace_runs_only_with_the_persons_confirmation() {
+        let root = restore_workspace();
+        let call = json!({
+            "op": "infobase.restore",
+            "args": {"input": "transfer/base.dt", "mode": "replace"},
+            "dryRun": false
+        });
+
+        let refused = PreparedInfobaseExport::parse(
+            &restore_request(root.path(), call.clone()),
+            ExportOperation::Restore,
+        )
+        .expect_err("replace without a confirmation is not executed");
+        assert_eq!(refused.diagnostics[0]["code"], "cancelled");
+        let choice = refused.human_choice.as_deref().expect("a confirmation");
+        // Надписи согласованы: менять их — только вместе с этим тестом.
+        assert_eq!(choice.code, "infobase.restore_replace");
+        assert_eq!(
+            choice.question,
+            "Заменить данные базы «origin» данными из «base.dt»?"
+        );
+        assert!(choice.proceeds_unasked);
+        assert_eq!(choice.options.len(), 1);
+        assert_eq!(choice.options[0].title, "Заменить данные");
+        assert_eq!(
+            choice.options[0].description,
+            "данные и конфигурация базы пропадут"
+        );
+        assert_eq!(
+            choice.data,
+            Some(json!({"infobase": "origin", "file": "base.dt", "input": "transfer/base.dt"}))
+        );
+        assert_eq!(
+            Value::Object(unica_execution_contract::invocation::without_confirmation(
+                &choice.options[0].arguments
+            )),
+            call
+        );
+
+        let confirmed = choice.options[0].arguments.clone();
+        let executed = PreparedInfobaseExport::parse(
+            &restore_request(root.path(), Value::Object(confirmed.clone())),
+            ExportOperation::Restore,
+        )
+        .expect("a confirmed replace is executed");
+        assert_eq!(executed.arguments.restore_mode, Some(RestoreMode::Replace));
+        assert!(!executed.dry_run);
+
+        // Согласие на один файл не загружает в базу другой.
+        let mut other = confirmed;
+        other["args"]["input"] = json!("transfer/other.dt");
+        assert!(PreparedInfobaseExport::parse(
+            &restore_request(root.path(), Value::Object(other)),
+            ExportOperation::Restore,
+        )
+        .is_err());
+
+        for unasked in [
+            json!({"op": "infobase.restore", "args": {"input": "transfer/base.dt", "mode": "replace"}, "dryRun": true}),
+            json!({"op": "infobase.restore", "args": {"input": "transfer/base.dt", "mode": "create"}, "dryRun": false}),
+        ] {
+            PreparedInfobaseExport::parse(
+                &restore_request(root.path(), unasked.clone()),
+                ExportOperation::Restore,
+            )
+            .unwrap_or_else(|refused| panic!("{unasked} is not asked: {refused:?}"));
+        }
+    }
+
+    /// Исполняемый `mode: create` над базой, которая уже есть, отказывает
+    /// вопросом человеку с согласованными надписями. Вариант — тот же вызов с
+    /// `mode: replace`, и он уже несёт согласие на замену данных. Превью и
+    /// другой отказ раннера вопроса не несут.
+    /// rule: INV.RUNTIME.INFOBASE-IMPORT-MODE
+    /// rule: INV.MCP.HUMAN-CHOICE
+    #[test]
+    fn restore_create_over_an_existing_infobase_offers_to_replace_its_data() {
+        let root = restore_workspace();
+        let tool = BundledTool {
+            program: root.path().join("v8-runner"),
+            warnings: Vec::new(),
+            missing: None,
+        };
+        {
+            let prepared = prepared_restore(root.path(), false, RestoreMode::Create);
+            let runner =
+                SequenceRunner::new(vec![failed_process(restore_target_exists_envelope(false))]);
+            let result = execute_with_resolved_runner(
+                &prepared,
+                &runner,
+                CancellationToken::new(),
+                &tool,
+                "0.15.3",
+            );
+            assert!(!result.ok, "{result:?}");
+            let choice = result.human_choice.as_deref().expect("a question");
+            // Надписи согласованы: менять их — только вместе с этим тестом.
+            assert_eq!(choice.code, "infobase.restore_exists");
+            assert_eq!(choice.question, "База «origin» уже существует.");
+            assert!(!choice.proceeds_unasked);
+            assert_eq!(choice.options.len(), 1);
+            let option = &choice.options[0];
+            assert_eq!(option.title, "Заменить данные базы данными из «base.dt»");
+            assert_eq!(option.description, "данные и конфигурация базы пропадут");
+            assert_eq!(option.tool, "unica.run");
+            assert_eq!(
+                choice.data,
+                Some(json!({"infobase": "origin", "file": "base.dt", "input": "transfer/base.dt"}))
+            );
+            let replace = json!({
+                "op": "infobase.restore",
+                "args": {"input": "transfer/base.dt", "mode": "replace"},
+                "dryRun": false
+            });
+            assert_eq!(
+                Value::Object(unica_execution_contract::invocation::without_confirmation(
+                    &option.arguments
+                )),
+                replace
+            );
+            // Выбор варианта уже согласие на замену: второй вопрос не задаётся.
+            assert!(HumanChoice::is_confirmed(
+                &restore_replace_question("base.dt"),
+                "unica.run",
+                &option.arguments
+            ));
+            PreparedInfobaseExport::parse(
+                &restore_request(root.path(), Value::Object(option.arguments.clone())),
+                ExportOperation::Restore,
+            )
+            .expect("the chosen call is admitted without a second question");
+        }
+
+        // Превью спрашивать не может: оно отдаёт прежний отказ.
+        let preview = execute_with_resolved_runner(
+            &prepared_restore(root.path(), true, RestoreMode::Create),
+            &SequenceRunner::new(vec![failed_process(restore_target_exists_envelope(true))]),
+            CancellationToken::new(),
+            &tool,
+            "0.15.3",
+        );
+        assert!(!preview.ok);
+        assert!(preview.human_choice.is_none(), "{preview:?}");
+
+        let prepared = prepared_restore(root.path(), false, RestoreMode::Create);
+        let mut other = restore_target_exists_envelope(false);
+        other["error"]["message"] =
+            json!("--input 'transfer/base.dt' is not a non-empty regular file");
+        let runner = SequenceRunner::new(vec![failed_process(other)]);
+        let result = execute_with_resolved_runner(
+            &prepared,
+            &runner,
+            CancellationToken::new(),
+            &tool,
+            "0.15.3",
+        );
+        assert!(!result.ok);
+        assert!(result.human_choice.is_none(), "{result:?}");
     }
 }

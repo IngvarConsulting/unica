@@ -90,6 +90,16 @@ use unica_execution::receipt_runtime::response::V5DaemonTaskSnapshot;
 // on-reach: незавершённые задачи рантайма бросаются при выходе
 const RUNTIME_SHUTDOWN_GRACE: Duration = Duration::from_millis(250);
 
+/// How a chosen answer ended: its calls ran, or its own call ran into a new
+/// question about the same call.
+enum ChosenOutcome {
+    Ran(CallToolResponse, Vec<human_choice::StepReport>),
+    Asks {
+        refusal: CallToolResult,
+        choice: Box<unica_execution_contract::invocation::HumanChoice>,
+    },
+}
+
 enum SurfaceToolOutcome {
     Legacy(Box<OperationResult>),
     /// A compatibility Task tool answered with a canonical result to project.
@@ -303,8 +313,10 @@ impl UnicaServer {
 
     /// Run the calls of a chosen answer in order. A refused call stops the
     /// chain; a call that continues as a Task ends it, and its Task is the
-    /// answer. A call refused with a choice of its own is not asked again:
-    /// one call asks the person once.
+    /// answer. When the answer's own call runs into a new question about the
+    /// same call, that question comes back to be asked in turn
+    /// (INV.MCP.HUMAN-CHOICE); a later call of a chain refused with a
+    /// question keeps its refusal.
     async fn run_chosen(
         &self,
         option: &unica_execution_contract::invocation::HumanChoiceOption,
@@ -312,10 +324,10 @@ impl UnicaServer {
         progress_token: Option<ProgressToken>,
         context: &RequestContext<RoleServer>,
         response_budget: unica_bootstrap::ResponseBudget,
-    ) -> Result<(CallToolResponse, Vec<human_choice::StepReport>), ErrorData> {
+    ) -> Result<ChosenOutcome, ErrorData> {
         let mut steps = Vec::new();
         let mut last = None;
-        for (tool, arguments) in human_choice::calls(option) {
+        for (index, (tool, arguments)) in human_choice::calls(option).into_iter().enumerate() {
             let started = Instant::now();
             let outcome = invoke_surface_tool(
                 self,
@@ -330,6 +342,11 @@ impl UnicaServer {
             )
             .await;
             let outcome = match outcome {
+                Ok(SurfaceToolOutcome::Choice { refusal, choice })
+                    if index == 0 && option.then.is_empty() =>
+                {
+                    return Ok(ChosenOutcome::Asks { refusal, choice });
+                }
                 Ok(SurfaceToolOutcome::Choice { refusal, .. }) => {
                     Ok(SurfaceToolOutcome::Direct(refusal))
                 }
@@ -345,11 +362,11 @@ impl UnicaServer {
                         break;
                     }
                 }
-                other => return Ok((other, steps)),
+                other => return Ok(ChosenOutcome::Ran(other, steps)),
             }
         }
         let result = last.expect("a chosen answer runs at least its own call");
-        Ok((CallToolResponse::from(result), steps))
+        Ok(ChosenOutcome::Ran(CallToolResponse::from(result), steps))
     }
 
     fn in_flight(&self) -> Arc<InFlightRegistry> {
@@ -1009,58 +1026,95 @@ impl ServerHandler for UnicaServer {
             &context,
         )
         .await;
-        let (refusal, choice) = match outcome {
+        let (mut refusal, mut choice) = match outcome {
             Ok(SurfaceToolOutcome::Choice { refusal, choice }) => (refusal, choice),
             outcome => {
                 return project_surface_outcome(self, &name, outcome, response_budget, received_at)
             }
         };
         // The refusal offers a choice: ask the person when the client can ask.
-        let answer = match human_choice::choice_channel(
+        // An answer that runs into a new question about the same call asks it
+        // too, up to MAX_QUESTIONS_PER_CALL; the answers accumulate and the
+        // call runs once.
+        let channel = human_choice::choice_channel(
             context.client_capabilities().as_ref(),
             modern_peer(&context),
-        ) {
-            // A confirmation runs for a client that cannot ask, as before the
-            // question existed; a choice keeps its refusal.
-            human_choice::ChoiceChannel::None if choice.proceeds_unasked => {
-                let option = &choice.options[0];
-                let (response, _) = self
-                    .run_chosen(option, &host, progress_token, &context, response_budget)
-                    .await?;
-                return Ok(response);
-            }
-            human_choice::ChoiceChannel::None => None,
-            human_choice::ChoiceChannel::Request => elicit_choice(&context, &choice).await,
-            human_choice::ChoiceChannel::InputRequired => {
-                match human_choice::retried_answer(
-                    &choice,
-                    input_responses.as_ref(),
-                    request_state.as_deref(),
-                ) {
-                    Some(answer) => Some(answer),
-                    None => {
-                        return Ok(CallToolResponse::from(human_choice::input_required(
-                            &choice,
-                        )))
+        );
+        let retried = human_choice::RetriedChain::parse(request_state.as_deref());
+        let mut answered: Vec<(
+            Box<unica_execution_contract::invocation::HumanChoice>,
+            rmcp::model::ElicitResult,
+        )> = Vec::new();
+        for index in 0..human_choice::MAX_QUESTIONS_PER_CALL {
+            let answer = match channel {
+                // A confirmation runs for a client that cannot ask, as before
+                // the question existed; a choice keeps its refusal.
+                human_choice::ChoiceChannel::None if choice.proceeds_unasked => {
+                    Some(human_choice::unasked_confirmation(&choice))
+                }
+                human_choice::ChoiceChannel::None => None,
+                human_choice::ChoiceChannel::Request => elicit_choice(&context, &choice).await,
+                human_choice::ChoiceChannel::InputRequired => {
+                    match retried.answer(index, &choice, input_responses.as_ref()) {
+                        Some(answer) => Some(answer),
+                        None => {
+                            let before = answered
+                                .iter()
+                                .map(|(question, answer)| (question.as_ref(), answer))
+                                .collect::<Vec<_>>();
+                            return Ok(CallToolResponse::from(human_choice::input_required_after(
+                                &choice, &before,
+                            )));
+                        }
                     }
                 }
+            };
+            let Some(option) = answer
+                .as_ref()
+                .and_then(|answer| human_choice::chosen(&choice, answer))
+                .cloned()
+            else {
+                return Ok(CallToolResponse::from(refusal));
+            };
+            match self
+                .run_chosen(
+                    &option,
+                    &host,
+                    progress_token.clone(),
+                    &context,
+                    response_budget,
+                )
+                .await?
+            {
+                ChosenOutcome::Ran(CallToolResponse::Complete(result), steps) => {
+                    if matches!(channel, human_choice::ChoiceChannel::None) {
+                        return Ok(CallToolResponse::Complete(result));
+                    }
+                    let result = human_choice::name_the_choice(result, &choice, &option, &steps);
+                    let earlier = answered
+                        .iter()
+                        .filter_map(|(question, answer)| {
+                            human_choice::chosen(question, answer)
+                                .map(|option| (question.as_ref(), option))
+                        })
+                        .collect::<Vec<_>>();
+                    return Ok(CallToolResponse::from(human_choice::name_earlier_choices(
+                        result, &earlier,
+                    )));
+                }
+                ChosenOutcome::Ran(other, _) => return Ok(other),
+                ChosenOutcome::Asks {
+                    refusal: next_refusal,
+                    choice: next_choice,
+                } => {
+                    answered.push((choice, answer.expect("an option was chosen")));
+                    refusal = next_refusal;
+                    choice = next_choice;
+                }
             }
-        };
-        let Some(option) = answer
-            .as_ref()
-            .and_then(|answer| human_choice::chosen(&choice, answer))
-        else {
-            return Ok(CallToolResponse::from(refusal));
-        };
-        match self
-            .run_chosen(option, &host, progress_token, &context, response_budget)
-            .await?
-        {
-            (CallToolResponse::Complete(result), steps) => Ok(CallToolResponse::from(
-                human_choice::name_the_choice(result, &choice, option, &steps),
-            )),
-            (other, _) => Ok(other),
         }
+        // More questions than one call asks: the call keeps its refusal.
+        Ok(CallToolResponse::from(refusal))
     }
 
     async fn get_task(

@@ -11,7 +11,7 @@ use unica_operations::OperationDescriptor;
 use unica_operations::OperationFamily;
 use unica_source_contract::proposal::{
     hidden_apply_family_unimplemented, ApplyPlanError, ApplyPlanErrorKind, PlannedApplyEffects,
-    SupportLock, SupportLockKind,
+    ReadOnlyMode, SupportLock, SupportLockKind,
 };
 use unica_source_contract::proposal::{
     reconcile_effects, IndexedPlanOperation, ProvisionalApplyEffect,
@@ -1297,7 +1297,15 @@ pub fn plan_hidden_v13_apply(
     binding: &ProviderRootBinding,
     admission: &ApplyAdmission,
 ) -> Result<(ApplyStagedState, PlannedApplyEffects), ApplyPlanError> {
-    plan_apply(request, binding, admission, None)
+    plan_apply(
+        request,
+        binding,
+        admission,
+        PersonChosenChanges {
+            mode_raise: None,
+            support: None,
+        },
+    )
 }
 
 /// The change of vendor support a person chose in the question about a
@@ -1317,15 +1325,53 @@ pub fn plan_hidden_v13_apply_with_person_chosen_support(
     admission: &ApplyAdmission,
     change: PersonChosenSupportChange<'_>,
 ) -> Result<(ApplyStagedState, PlannedApplyEffects), ApplyPlanError> {
-    plan_apply(request, binding, admission, Some(change))
+    plan_apply(
+        request,
+        binding,
+        admission,
+        PersonChosenChanges {
+            mode_raise: None,
+            support: Some(change),
+        },
+    )
+}
+
+/// The raise of a read-only compatibility mode a person chose in the
+/// question about it (INV.SOURCE.WRITABLE-PROFILE): `request` sets the
+/// set's own mode property on its root and nothing else.
+pub struct PersonChosenModeRaise<'a> {
+    pub read_only: &'a ReadOnlyMode,
+    pub request: &'a ApplyRequest,
+}
+
+/// Everything a person chose for one call, planned before its edits in this
+/// order: the mode of the set, then its vendor support.
+pub struct PersonChosenChanges<'a> {
+    pub mode_raise: Option<PersonChosenModeRaise<'a>>,
+    pub support: Option<PersonChosenSupportChange<'a>>,
+}
+
+/// Plans `request` together with the changes a person chose: all of them go
+/// into one plan and publish together, or none does.
+pub fn plan_hidden_v13_apply_with_person_choices(
+    request: &ApplyRequest,
+    binding: &ProviderRootBinding,
+    admission: &ApplyAdmission,
+    chosen: PersonChosenChanges<'_>,
+) -> Result<(ApplyStagedState, PlannedApplyEffects), ApplyPlanError> {
+    plan_apply(request, binding, admission, chosen)
 }
 
 fn plan_apply(
     request: &ApplyRequest,
     binding: &ProviderRootBinding,
     admission: &ApplyAdmission,
-    chosen_support: Option<PersonChosenSupportChange<'_>>,
+    chosen: PersonChosenChanges<'_>,
 ) -> Result<(ApplyStagedState, PlannedApplyEffects), ApplyPlanError> {
+    let PersonChosenChanges {
+        mode_raise,
+        support: chosen_support,
+    } = chosen;
     let mut parsed = request
         .ops()
         .iter()
@@ -1340,15 +1386,39 @@ fn plan_apply(
     let configuration = staged
         .read(std::path::Path::new("Configuration.xml"))
         .map_err(|error| ApplyPlanError::staging(error, request.at().to_string()))?;
-    unica_source_designer::extension_mode::refuse_edit_below_minimum_mode(
+    let mode_check = unica_source_designer::extension_mode::refuse_edit_below_minimum_mode(
         configuration.as_deref(),
         binding.source_kind(),
         raised_compatibility_mode(request, binding.source_kind()),
         &request.at().to_string(),
-    )?;
+    );
+    match (&mode_raise, mode_check) {
+        (None, check) => check?,
+        // The person raises exactly the mode they were asked about.
+        (Some(raise), Err(error)) if error.read_only_mode() == Some(raise.read_only) => {
+            if raise.request.at().to_string() != format!("{}:Configuration", binding.source_set_name())
+                || raised_compatibility_mode(raise.request, binding.source_kind())
+                    .is_none_or(|mode| !mode.editable())
+            {
+                return Err(ApplyPlanError::new(
+                    ApplyPlanErrorKind::InvalidState,
+                    "a person-chosen mode raise sets only the set's own compatibility mode",
+                )
+                .at_path("ops"));
+            }
+        }
+        (Some(_), Err(error)) => return Err(error),
+        (Some(_), Ok(())) => {
+            return Err(ApplyPlanError::new(
+                ApplyPlanErrorKind::InvalidState,
+                "the compatibility mode changed after the person's answer; repeat the apply to be asked again",
+            )
+            .at_path(request.at().to_string()))
+        }
+    }
     refuse_targets_outside_writable_profile(request, binding, &mut staged)?;
     let gate = refuse_targets_on_locked_vendor_objects(request, binding, admission, &mut staged);
-    let support_warning = match (&chosen_support, gate) {
+    let mut support_warning = match (&chosen_support, gate) {
         (None, gate) => gate?,
         // The person lifts exactly the lock they were asked about.
         (Some(chosen), Err(error)) if error.support_lock() == Some(chosen.lock) => None,
@@ -1398,6 +1468,38 @@ fn plan_apply(
         }
         support.append(&mut parsed);
         parsed = support;
+    }
+    if let Some(raise) = &mode_raise {
+        // The raise edits the configuration root: vendor support guards it
+        // as any edit. Only the lock of the whole configuration the person
+        // also lifted lets it pass.
+        match refuse_targets_on_locked_vendor_objects(
+            raise.request,
+            binding,
+            admission,
+            &mut staged,
+        ) {
+            Ok(warning) => {
+                if support_warning.is_none() {
+                    support_warning = warning;
+                }
+            }
+            Err(error)
+                if error.support_lock().is_some_and(|lock| {
+                    lock.kind == SupportLockKind::ConfigurationLocked
+                        && chosen_support.as_ref().is_some_and(|chosen| {
+                            chosen.lock.kind == SupportLockKind::ConfigurationLocked
+                                && chosen.lock.source_set == lock.source_set
+                        })
+                }) => {}
+            Err(error) => return Err(error),
+        }
+        let mut raised = Vec::with_capacity(raise.request.ops().len() + parsed.len());
+        for operation in raise.request.ops() {
+            raised.push(parse_apply_operation(0, operation, binding)?);
+        }
+        raised.append(&mut parsed);
+        parsed = raised;
     }
     let code_type_plan = unica_metadata_designer::planner::PredefinedCodeTypePlan::from_operations(
         parsed.iter().filter_map(|operation| match operation {

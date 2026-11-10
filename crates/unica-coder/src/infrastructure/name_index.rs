@@ -87,7 +87,7 @@ impl Drop for ForegroundCall {
     }
 }
 
-fn foreground_calls() -> usize {
+pub(crate) fn foreground_calls() -> usize {
     FOREGROUND_CALLS.load(Ordering::Acquire)
 }
 

@@ -3,6 +3,7 @@ use super::{
 };
 use serde_json::{json, Value};
 use std::path::Path;
+use std::sync::Arc;
 use unica_address::source_target::MetadataAddress;
 use unica_metadata::{MetaPredefinedItemsData, MetadataKind};
 use unica_refusal::{RefusalCode, RefusalDetail};
@@ -302,6 +303,116 @@ impl ProviderReadAuthority {
     }
 
     pub(crate) fn metadata_owner_evidence(
+        &self,
+        target: &MetadataAddress,
+        checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
+    ) -> Result<PlatformXmlSourceSetOwnerEvidence, ViewError> {
+        // The actor retains the proof under the stamp the descriptor had
+        // before it was read (INV.SOURCE.CONFIGURATION-ROOT-CACHE-REUSE).
+        // Without a stamp the descriptor is read as before, with its own
+        // refusals and checkpoints. An external set finds its descriptor
+        // through its inventory under the caller's checkpoint: it keeps that
+        // path.
+        if self.is_external_source_set() {
+            return self.metadata_owner_evidence_uncached(target, checkpoint);
+        }
+        let Some((relative, stamp)) = self
+            .metadata_descriptor_relative(target)
+            .ok()
+            .and_then(|relative| Some((relative.clone(), self.descriptor_stamp(&relative)?)))
+        else {
+            return self.metadata_owner_evidence_uncached(target, checkpoint);
+        };
+        if let Some(evidence) = self.artifacts.retained_owner_evidence(&relative, &stamp) {
+            checkpoint()?;
+            return Ok((*evidence).clone());
+        }
+        let evidence = self.metadata_owner_evidence_uncached(target, checkpoint)?;
+        self.artifacts
+            .retain_owner_evidence(relative, stamp, Arc::new(evidence.clone()));
+        Ok(evidence)
+    }
+
+    /// The synonym of a common module for its collection row and its node,
+    /// with the limits naming a damaged or oversized one. The actor retains
+    /// the synonym as read, under the descriptor's stamp before the read; the
+    /// size limit of the answer is applied on every use, since a read of the
+    /// property itself takes it whole.
+    pub(crate) fn common_module_synonym(
+        &self,
+        at: &unica_address::address::QualifiedAddress,
+    ) -> Result<(Option<Value>, Vec<String>), ViewError> {
+        let owner = MetadataAddress::parse_logical(&at.logical_path()).map_err(|error| {
+            ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+        })?;
+        let observed = if self.is_external_source_set() {
+            self.common_module_synonym_observed(&owner)?
+        } else if let Some((relative, stamp)) = self
+            .metadata_descriptor_relative(&owner)
+            .ok()
+            .and_then(|relative| Some((relative.clone(), self.descriptor_stamp(&relative)?)))
+        {
+            match self
+                .artifacts
+                .retained_common_module_synonym(&relative, &stamp)
+            {
+                Some(observed) => (*observed).clone(),
+                None => {
+                    let observed = self.common_module_synonym_observed(&owner)?;
+                    self.artifacts.retain_common_module_synonym(
+                        relative,
+                        stamp,
+                        Arc::new(observed.clone()),
+                    );
+                    observed
+                }
+            }
+        } else {
+            self.common_module_synonym_observed(&owner)?
+        };
+        let mut props = serde_json::Map::new();
+        let mut limits = Vec::new();
+        match observed {
+            Ok(Some(text)) => crate::infrastructure::v13_read_projection::place_prop(
+                &mut props,
+                &mut limits,
+                at,
+                "synonym",
+                &json!(text),
+                false,
+                "common module Synonym",
+            ),
+            Ok(None) => {}
+            Err(message) => limits.push(format!("properties.Synonym is unreadable: {message}")),
+        }
+        Ok((props.remove("synonym"), limits))
+    }
+
+    /// The synonym as the descriptor states it: `Ok(None)` when it is absent
+    /// or empty, `Err` with the reason when the property cannot be read.
+    fn common_module_synonym_observed(
+        &self,
+        owner: &MetadataAddress,
+    ) -> Result<crate::infrastructure::v13_large_configuration::CommonModuleSynonym, ViewError>
+    {
+        let descriptor = self.metadata_descriptor(owner)?;
+        let text = std::str::from_utf8(&descriptor).map_err(|error| {
+            ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+        })?;
+        let properties = crate::infrastructure::family_codecs::metadata_read_codec()
+            .common_module_properties(text)
+            .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?;
+        Ok(match properties.info("Synonym") {
+            Ok(Some(unica_metadata::MetaInfoPropertyValue::String(text))) if !text.is_empty() => {
+                Ok(Some(text))
+            }
+            Ok(None | Some(unica_metadata::MetaInfoPropertyValue::String(_))) => Ok(None),
+            Ok(Some(_)) => unreachable!("the closed Synonym profile yields a string"),
+            Err(error) => Err(error.message),
+        })
+    }
+
+    fn metadata_owner_evidence_uncached(
         &self,
         target: &MetadataAddress,
         checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,

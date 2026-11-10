@@ -242,6 +242,17 @@ pub trait SourceDirectoryReadPort: Debug + Send + Sync {
         maximum_bytes: usize,
     ) -> io::Result<Vec<u8>>;
     fn relative_file_stamp(&self, relative: &Path) -> io::Result<Option<FileStamp>>;
+    /// The stamps of the regular files directly in the relative directory,
+    /// taken in one pass over it: the same facts [`Self::relative_file_stamp`]
+    /// gives each file, without opening it. `None` when the directory is
+    /// absent or the port does not list stamps this way; links and other
+    /// non-regular entries are left out.
+    fn relative_directory_file_stamps(
+        &self,
+        _relative: &Path,
+    ) -> io::Result<Option<Vec<(OsString, FileStamp)>>> {
+        Ok(None)
+    }
     fn open_relative_regular_nofollow(&self, relative: &Path) -> io::Result<ReadFile>;
     fn read_immediate_names_with_limit(
         &self,
@@ -311,6 +322,12 @@ impl SourceDirectory {
     }
     pub fn relative_file_stamp(&self, relative: &Path) -> io::Result<Option<FileStamp>> {
         self.0.relative_file_stamp(relative)
+    }
+    pub fn relative_directory_file_stamps(
+        &self,
+        relative: &Path,
+    ) -> io::Result<Option<Vec<(OsString, FileStamp)>>> {
+        self.0.relative_directory_file_stamps(relative)
     }
     pub fn open_relative_regular_nofollow(&self, relative: &Path) -> io::Result<ReadFile> {
         self.0.open_relative_regular_nofollow(relative)

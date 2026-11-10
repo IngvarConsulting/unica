@@ -285,6 +285,11 @@ impl HumanChoice {
     /// option is the same call carrying the confirmation of this very
     /// question. `title` and `description` are the agreed label and what the
     /// call loses.
+    ///
+    /// The confirmations the call already carries go with the new one: a
+    /// call the person answered several questions about is asked them one by
+    /// one and runs once. Each mark stays bound to its question and to these
+    /// arguments, so a changed call keeps none of them.
     pub fn confirmation(
         code: impl Into<String>,
         question: impl Into<String>,
@@ -296,9 +301,14 @@ impl HumanChoice {
         let question = question.into();
         let tool = tool.into();
         let mut confirmed = without_confirmation(arguments);
+        let token = confirmation_token(&question, &tool, &confirmed);
+        let mut marks = confirmation_marks(arguments);
+        if !marks.contains(&token.as_str()) {
+            marks.push(&token);
+        }
         confirmed.insert(
             HUMAN_CONFIRMATION_KEY.to_string(),
-            Value::String(confirmation_token(&question, &tool, &confirmed)),
+            Value::String(marks.join(" ")),
         );
         Self {
             code: code.into(),
@@ -331,10 +341,16 @@ impl HumanChoice {
         tool: &str,
         arguments: &serde_json::Map<String, Value>,
     ) -> bool {
-        let Some(Value::String(token)) = arguments.get(HUMAN_CONFIRMATION_KEY) else {
-            return false;
-        };
-        *token == confirmation_token(question, tool, &without_confirmation(arguments))
+        let expected = confirmation_token(question, tool, &without_confirmation(arguments));
+        confirmation_marks(arguments).contains(&expected.as_str())
+    }
+}
+
+/// The confirmation marks a call carries, one per answered question.
+fn confirmation_marks(arguments: &serde_json::Map<String, Value>) -> Vec<&str> {
+    match arguments.get(HUMAN_CONFIRMATION_KEY) {
+        Some(Value::String(marks)) => marks.split(' ').filter(|mark| !mark.is_empty()).collect(),
+        _ => Vec::new(),
     }
 }
 
@@ -596,6 +612,52 @@ mod confirmation_tests {
             json!("unica-confirmation-1:forged"),
         );
         assert!(!HumanChoice::is_confirmed(QUESTION, "unica.run", &forged));
+    }
+
+    /// A call the person answered two questions about carries both marks:
+    /// the second question keeps the first answer, each mark confirms only
+    /// its own question, and a changed call keeps neither.
+    /// rule: INV.MCP.HUMAN-CHOICE
+    /// rule: INV.RUNTIME.DESTRUCTIVE-CONFIRMATION
+    #[test]
+    fn marks_of_several_questions_accumulate_for_one_call() {
+        let edit = call(json!({"at":"main:Document.First","ops":[{"op":"object.remove"}]}));
+        let first = HumanChoice::confirmation("a", "Первый?", "t", "d", "unica.apply", &edit)
+            .options
+            .remove(0)
+            .arguments;
+        let both = HumanChoice::confirmation("b", "Второй?", "t", "d", "unica.apply", &first)
+            .options
+            .remove(0)
+            .arguments;
+
+        assert!(HumanChoice::is_confirmed("Первый?", "unica.apply", &both));
+        assert!(HumanChoice::is_confirmed("Второй?", "unica.apply", &both));
+        assert!(!HumanChoice::is_confirmed("Третий?", "unica.apply", &both));
+        assert_eq!(super::without_confirmation(&both), edit);
+        // Asking the same question again adds no second copy of its mark.
+        let again = HumanChoice::confirmation("b", "Второй?", "t", "d", "unica.apply", &both)
+            .options
+            .remove(0)
+            .arguments;
+        assert_eq!(again, both);
+
+        // The marks bind the arguments: another call keeps none of them.
+        let mut changed = call(json!({"at":"main:Document.Second","ops":[{"op":"object.remove"}]}));
+        changed.insert(
+            HUMAN_CONFIRMATION_KEY.into(),
+            both[HUMAN_CONFIRMATION_KEY].clone(),
+        );
+        assert!(!HumanChoice::is_confirmed(
+            "Первый?",
+            "unica.apply",
+            &changed
+        ));
+        assert!(!HumanChoice::is_confirmed(
+            "Второй?",
+            "unica.apply",
+            &changed
+        ));
     }
 
     /// Old records without the new fields read back unchanged, and a choice
