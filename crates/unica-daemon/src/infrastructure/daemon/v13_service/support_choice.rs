@@ -149,7 +149,7 @@ pub(super) fn mode_choice(
         data: Some(json!({
             "sourceSet": source_set,
             "mode": human_mode(read_only.mode),
-            "minimumMode": "8.3.8",
+            "minimumMode": human_mode(minimum_editable_mode()),
         })),
         question,
         cancel_description: None,
@@ -171,7 +171,7 @@ pub(super) fn mode_raise_chosen(
 pub(super) fn mode_raise_request(read_only: &ReadOnlyMode, source_set: &str) -> Map<String, Value> {
     match json!({
         "at": format!("{source_set}:Configuration"),
-        "ops": [{"op": "props.set", "args": {"values": {read_only.property.as_str(): "Version8_3_8"}}}],
+        "ops": [{"op": "props.set", "args": {"values": {read_only.property.as_str(): minimum_editable_mode().to_string()}}}],
         "dryRun": true,
     }) {
         Value::Object(request) => request,
@@ -187,6 +187,11 @@ fn mode_question(read_only: &ReadOnlyMode, source_set: &str) -> String {
         "Набор «{source_set}» в режиме совместимости {} можно только читать. Правки доступны с режима 8.3.8.",
         human_mode(read_only.mode)
     )
+}
+
+/// The oldest mode Unica edits, the one the answer raises the set to.
+fn minimum_editable_mode() -> CompatibilityMode {
+    CompatibilityMode::Version(unica_source_contract::compatibility::MINIMUM_EDITABLE_MODE)
 }
 
 /// `Version8_2_13` as the person reads it: `8.2.13`.

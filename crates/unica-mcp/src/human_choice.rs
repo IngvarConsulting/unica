@@ -167,6 +167,16 @@ pub(crate) fn choice_state(choice: &HumanChoice) -> String {
 /// Questions one call asks at most: an answer that runs into a new question
 /// about the same call asks it too, up to this many in all; past it the call
 /// keeps its refusal (INV.MCP.HUMAN-CHOICE).
+// resource-limit: max-questions-per-call
+// class: step
+// unit: count
+// scope: request
+// value: 3
+// resource: Вопросов человеку в ходе одного вызова tools/call.
+// status: unproven
+// origin: #2843
+// problem: Ответ, который снова и снова упирается в новый вопрос, не должен держать человека в бесконечной цепочке.
+// on-reach: Вызов получает прежний отказ последнего вопроса; ничего не исполняется.
 pub(crate) const MAX_QUESTIONS_PER_CALL: usize = 3;
 
 const CHAIN_STATE_PREFIX: &str = "unica-choice-chain-1:";
