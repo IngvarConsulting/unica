@@ -5172,7 +5172,13 @@
           "kind": "sha256",
           "eq": "$capture.initial37"
         }
-      ]
+      ],
+      "captures": {
+        "unchanged1": {
+          "file": "src/Subsystems/Администрирование/Subsystems/КонтрольРаботыПользователей.xml",
+          "kind": "sha256"
+        }
+      }
     },
     {
       "tool": "unica.view",
@@ -5364,7 +5370,7 @@
         {
           "path": "src/Subsystems/Администрирование/Subsystems/КонтрольРаботыПользователей.xml",
           "kind": "sha256",
-          "eq": "33496cee08e3256bb5d2215919f5e663e925c996134fc20df2610320a441f788"
+          "eq": "$capture.unchanged1"
         },
         {
           "path": "src/WebServices/ОбменДанными.xml",

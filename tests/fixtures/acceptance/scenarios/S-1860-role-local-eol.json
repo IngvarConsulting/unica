@@ -26,6 +26,30 @@
       "captures": {
         "rights": {
           "pointer": "/data/branches/0/at"
+        },
+        "unchanged1": {
+          "file": "src/Roles/Reader/Ext/Rights.xml",
+          "kind": "sha256"
+        },
+        "unchanged3": {
+          "file": "src/Catalogs/Existing.xml",
+          "kind": "sha256"
+        },
+        "unchanged4": {
+          "file": "src/Configuration.xml",
+          "kind": "sha256"
+        },
+        "unchanged5": {
+          "file": "src/Documents/New.xml",
+          "kind": "sha256"
+        },
+        "unchanged6": {
+          "file": "src/Roles/Reader.xml",
+          "kind": "sha256"
+        },
+        "unchanged7": {
+          "file": "v8project.yaml",
+          "kind": "sha256"
         }
       }
     },
@@ -82,7 +106,7 @@
         {
           "path": "src/Roles/Reader/Ext/Rights.xml",
           "kind": "sha256",
-          "eq": "69db99258b4ddbe2c62b90bdc3bef0cf6f2f26e903d614fb7216f0ebd18858ed"
+          "eq": "$capture.unchanged1"
         }
       ]
     },
@@ -110,7 +134,13 @@
           "kind": "sha256",
           "eq": "b78a145053e5f26697ec492ed1930a6843c11f97cf31fa61c9b741bd95157e96"
         }
-      ]
+      ],
+      "captures": {
+        "unchanged2": {
+          "file": "src/Roles/Reader/Ext/Rights.xml",
+          "kind": "sha256"
+        }
+      }
     },
     {
       "tool": "unica.apply",
@@ -149,7 +179,7 @@
         {
           "path": "src/Roles/Reader/Ext/Rights.xml",
           "kind": "sha256",
-          "eq": "b78a145053e5f26697ec492ed1930a6843c11f97cf31fa61c9b741bd95157e96"
+          "eq": "$capture.unchanged2"
         }
       ]
     },
@@ -241,27 +271,27 @@
         {
           "path": "src/Catalogs/Existing.xml",
           "kind": "sha256",
-          "eq": "5d38546a26b0e58d395857f30a08b4c3f56266f6df5b1fcf77535b6e2d3ed899"
+          "eq": "$capture.unchanged3"
         },
         {
           "path": "src/Configuration.xml",
           "kind": "sha256",
-          "eq": "77b56c4e0652508a8e5fa4cb034a180c39d8e94ab2471928818b252af0fefb92"
+          "eq": "$capture.unchanged4"
         },
         {
           "path": "src/Documents/New.xml",
           "kind": "sha256",
-          "eq": "25c1f33f1b2e1d7845c3089e022e650ccc1c33e770507934e4440d1e0be39508"
+          "eq": "$capture.unchanged5"
         },
         {
           "path": "src/Roles/Reader.xml",
           "kind": "sha256",
-          "eq": "23d9ed5f7371f9f14f649e5183359466dfad0d527ee9902ecaf631f558a826ad"
+          "eq": "$capture.unchanged6"
         },
         {
           "path": "v8project.yaml",
           "kind": "sha256",
-          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+          "eq": "$capture.unchanged7"
         }
       ],
       "status": "passed",

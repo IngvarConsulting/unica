@@ -137,7 +137,93 @@
           "pointer": "/data/validators",
           "absent": true
         }
-      ]
+      ],
+      "captures": {
+        "unchanged1": {
+          "file": "epf/Import/Ext/ObjectModule.bsl",
+          "kind": "sha256"
+        },
+        "unchanged2": {
+          "file": "epf/Import/Forms/Main/Ext/Form/Module.bsl",
+          "kind": "sha256"
+        },
+        "unchanged3": {
+          "file": "epf/Import/Forms/Main/Ext/Form.xml",
+          "kind": "sha256"
+        },
+        "unchanged4": {
+          "file": "epf/Import/Forms/Main.xml",
+          "kind": "sha256"
+        },
+        "unchanged5": {
+          "file": "epf/Import/Forms/Orphan/Ext/Form.xml",
+          "kind": "sha256"
+        },
+        "unchanged6": {
+          "file": "epf/Import/Forms/Orphan.xml",
+          "kind": "sha256"
+        },
+        "unchanged7": {
+          "file": "epf/Import/Templates/Orphan/Ext/Template.xml",
+          "kind": "sha256"
+        },
+        "unchanged8": {
+          "file": "epf/Import/Templates/Orphan.xml",
+          "kind": "sha256"
+        },
+        "unchanged9": {
+          "file": "epf/Import/Templates/Print/Ext/Template.xml",
+          "kind": "sha256"
+        },
+        "unchanged10": {
+          "file": "epf/Import/Templates/Print.xml",
+          "kind": "sha256"
+        },
+        "unchanged11": {
+          "file": "epf/Import.xml",
+          "kind": "sha256"
+        },
+        "unchanged12": {
+          "file": "epf/Other/Ext/ObjectModule.bsl",
+          "kind": "sha256"
+        },
+        "unchanged13": {
+          "file": "epf/Other/Forms/Main/Ext/Form/Module.bsl",
+          "kind": "sha256"
+        },
+        "unchanged14": {
+          "file": "epf/Other/Forms/Main/Ext/Form.xml",
+          "kind": "sha256"
+        },
+        "unchanged15": {
+          "file": "epf/Other/Forms/Main.xml",
+          "kind": "sha256"
+        },
+        "unchanged16": {
+          "file": "epf/Other.xml",
+          "kind": "sha256"
+        },
+        "unchanged17": {
+          "file": "erf/Sales/Ext/ObjectModule.bsl",
+          "kind": "sha256"
+        },
+        "unchanged18": {
+          "file": "erf/Sales/Forms/Main/Ext/Form/Module.bsl",
+          "kind": "sha256"
+        },
+        "unchanged19": {
+          "file": "erf/Sales/Forms/Main/Ext/Form.xml",
+          "kind": "sha256"
+        },
+        "unchanged20": {
+          "file": "erf/Sales/Forms/Main.xml",
+          "kind": "sha256"
+        },
+        "unchanged21": {
+          "file": "erf/Sales.xml",
+          "kind": "sha256"
+        }
+      }
     },
     {
       "tool": "unica.check",
@@ -155,107 +241,107 @@
         {
           "kind": "sha256",
           "path": "epf/Import/Ext/ObjectModule.bsl",
-          "eq": "f1b7425b5791d9202de242f0c82c8bbac1a1792b09645e4ed0b2ee9e7a766b58"
+          "eq": "$capture.unchanged1"
         },
         {
           "kind": "sha256",
           "path": "epf/Import/Forms/Main/Ext/Form/Module.bsl",
-          "eq": "ed481aee46aaa389d526f2db784b5931d323af6ba0282cbf28c008203aab0819"
+          "eq": "$capture.unchanged2"
         },
         {
           "kind": "sha256",
           "path": "epf/Import/Forms/Main/Ext/Form.xml",
-          "eq": "0fdbb62909e8393e353282fa02ff4acb93d96943cddcd14c8c19de1a118a535f"
+          "eq": "$capture.unchanged3"
         },
         {
           "kind": "sha256",
           "path": "epf/Import/Forms/Main.xml",
-          "eq": "095935ef4941f7f6febc5c3f53d8c8c8ce7b4f87be8ba1992e52dd5c1271dc7b"
+          "eq": "$capture.unchanged4"
         },
         {
           "kind": "sha256",
           "path": "epf/Import/Forms/Orphan/Ext/Form.xml",
-          "eq": "88de8e6e97a972c5e01968eef2e8c871e6ef8229cbd6505591b3bf3c31fc5b82"
+          "eq": "$capture.unchanged5"
         },
         {
           "kind": "sha256",
           "path": "epf/Import/Forms/Orphan.xml",
-          "eq": "d3c7c1f4f34133849ea550fa3ab2ec0c35f0f5a88a9caa760746968402cb6f2c"
+          "eq": "$capture.unchanged6"
         },
         {
           "kind": "sha256",
           "path": "epf/Import/Templates/Orphan/Ext/Template.xml",
-          "eq": "88de8e6e97a972c5e01968eef2e8c871e6ef8229cbd6505591b3bf3c31fc5b82"
+          "eq": "$capture.unchanged7"
         },
         {
           "kind": "sha256",
           "path": "epf/Import/Templates/Orphan.xml",
-          "eq": "45c165fd3809e3b8f06e487faf0807f06873736a56960b61612f373e8e9aedb3"
+          "eq": "$capture.unchanged8"
         },
         {
           "kind": "sha256",
           "path": "epf/Import/Templates/Print/Ext/Template.xml",
-          "eq": "0011badfe537312fb636a58211f147cd039acd0634d0aca3e83eed958023aa74"
+          "eq": "$capture.unchanged9"
         },
         {
           "kind": "sha256",
           "path": "epf/Import/Templates/Print.xml",
-          "eq": "f97b2180ee69015867cbbaf023a513c4939fa3f6b8ff73bd2d34e4bdc63cfb8e"
+          "eq": "$capture.unchanged10"
         },
         {
           "kind": "sha256",
           "path": "epf/Import.xml",
-          "eq": "737f80c93c8008690326301b0bdc01522243c7b4fa04bdf8204e4df7dca78ef6"
+          "eq": "$capture.unchanged11"
         },
         {
           "kind": "sha256",
           "path": "epf/Other/Ext/ObjectModule.bsl",
-          "eq": "579dfd1c8f9fddb28e702132627a50e7c159dbb8f6493998b0f01a82c5ea5ed7"
+          "eq": "$capture.unchanged12"
         },
         {
           "kind": "sha256",
           "path": "epf/Other/Forms/Main/Ext/Form/Module.bsl",
-          "eq": "ed481aee46aaa389d526f2db784b5931d323af6ba0282cbf28c008203aab0819"
+          "eq": "$capture.unchanged13"
         },
         {
           "kind": "sha256",
           "path": "epf/Other/Forms/Main/Ext/Form.xml",
-          "eq": "0fdbb62909e8393e353282fa02ff4acb93d96943cddcd14c8c19de1a118a535f"
+          "eq": "$capture.unchanged14"
         },
         {
           "kind": "sha256",
           "path": "epf/Other/Forms/Main.xml",
-          "eq": "b3ad12f8747f92e4f7b142f5cff393831d42dd6589251570ada0254373b309a6"
+          "eq": "$capture.unchanged15"
         },
         {
           "kind": "sha256",
           "path": "epf/Other.xml",
-          "eq": "af8a1a124a377ef3ab73ad276a38abbc3dfbc92be0bf24b6a556464e62f77b20"
+          "eq": "$capture.unchanged16"
         },
         {
           "kind": "sha256",
           "path": "erf/Sales/Ext/ObjectModule.bsl",
-          "eq": "eca4dd79c0fd4cf30930bcb3ca7698fb9d1434925e42e8700ceb4780b0771b5a"
+          "eq": "$capture.unchanged17"
         },
         {
           "kind": "sha256",
           "path": "erf/Sales/Forms/Main/Ext/Form/Module.bsl",
-          "eq": "ed481aee46aaa389d526f2db784b5931d323af6ba0282cbf28c008203aab0819"
+          "eq": "$capture.unchanged18"
         },
         {
           "kind": "sha256",
           "path": "erf/Sales/Forms/Main/Ext/Form.xml",
-          "eq": "0fdbb62909e8393e353282fa02ff4acb93d96943cddcd14c8c19de1a118a535f"
+          "eq": "$capture.unchanged19"
         },
         {
           "kind": "sha256",
           "path": "erf/Sales/Forms/Main.xml",
-          "eq": "594a6876b6eca926613939b2a7c9e9bae45b4f4f959695c556f2075ff514dc9e"
+          "eq": "$capture.unchanged20"
         },
         {
           "kind": "sha256",
           "path": "erf/Sales.xml",
-          "eq": "77f602d36888d062828083f13be264cb2f38f925a2ce6a0db71b0a6be574f70c"
+          "eq": "$capture.unchanged21"
         }
       ]
     },
@@ -275,107 +361,107 @@
         {
           "kind": "sha256",
           "path": "epf/Import/Ext/ObjectModule.bsl",
-          "eq": "f1b7425b5791d9202de242f0c82c8bbac1a1792b09645e4ed0b2ee9e7a766b58"
+          "eq": "$capture.unchanged1"
         },
         {
           "kind": "sha256",
           "path": "epf/Import/Forms/Main/Ext/Form/Module.bsl",
-          "eq": "ed481aee46aaa389d526f2db784b5931d323af6ba0282cbf28c008203aab0819"
+          "eq": "$capture.unchanged2"
         },
         {
           "kind": "sha256",
           "path": "epf/Import/Forms/Main/Ext/Form.xml",
-          "eq": "0fdbb62909e8393e353282fa02ff4acb93d96943cddcd14c8c19de1a118a535f"
+          "eq": "$capture.unchanged3"
         },
         {
           "kind": "sha256",
           "path": "epf/Import/Forms/Main.xml",
-          "eq": "095935ef4941f7f6febc5c3f53d8c8c8ce7b4f87be8ba1992e52dd5c1271dc7b"
+          "eq": "$capture.unchanged4"
         },
         {
           "kind": "sha256",
           "path": "epf/Import/Forms/Orphan/Ext/Form.xml",
-          "eq": "88de8e6e97a972c5e01968eef2e8c871e6ef8229cbd6505591b3bf3c31fc5b82"
+          "eq": "$capture.unchanged5"
         },
         {
           "kind": "sha256",
           "path": "epf/Import/Forms/Orphan.xml",
-          "eq": "d3c7c1f4f34133849ea550fa3ab2ec0c35f0f5a88a9caa760746968402cb6f2c"
+          "eq": "$capture.unchanged6"
         },
         {
           "kind": "sha256",
           "path": "epf/Import/Templates/Orphan/Ext/Template.xml",
-          "eq": "88de8e6e97a972c5e01968eef2e8c871e6ef8229cbd6505591b3bf3c31fc5b82"
+          "eq": "$capture.unchanged7"
         },
         {
           "kind": "sha256",
           "path": "epf/Import/Templates/Orphan.xml",
-          "eq": "45c165fd3809e3b8f06e487faf0807f06873736a56960b61612f373e8e9aedb3"
+          "eq": "$capture.unchanged8"
         },
         {
           "kind": "sha256",
           "path": "epf/Import/Templates/Print/Ext/Template.xml",
-          "eq": "0011badfe537312fb636a58211f147cd039acd0634d0aca3e83eed958023aa74"
+          "eq": "$capture.unchanged9"
         },
         {
           "kind": "sha256",
           "path": "epf/Import/Templates/Print.xml",
-          "eq": "f97b2180ee69015867cbbaf023a513c4939fa3f6b8ff73bd2d34e4bdc63cfb8e"
+          "eq": "$capture.unchanged10"
         },
         {
           "kind": "sha256",
           "path": "epf/Import.xml",
-          "eq": "737f80c93c8008690326301b0bdc01522243c7b4fa04bdf8204e4df7dca78ef6"
+          "eq": "$capture.unchanged11"
         },
         {
           "kind": "sha256",
           "path": "epf/Other/Ext/ObjectModule.bsl",
-          "eq": "579dfd1c8f9fddb28e702132627a50e7c159dbb8f6493998b0f01a82c5ea5ed7"
+          "eq": "$capture.unchanged12"
         },
         {
           "kind": "sha256",
           "path": "epf/Other/Forms/Main/Ext/Form/Module.bsl",
-          "eq": "ed481aee46aaa389d526f2db784b5931d323af6ba0282cbf28c008203aab0819"
+          "eq": "$capture.unchanged13"
         },
         {
           "kind": "sha256",
           "path": "epf/Other/Forms/Main/Ext/Form.xml",
-          "eq": "0fdbb62909e8393e353282fa02ff4acb93d96943cddcd14c8c19de1a118a535f"
+          "eq": "$capture.unchanged14"
         },
         {
           "kind": "sha256",
           "path": "epf/Other/Forms/Main.xml",
-          "eq": "b3ad12f8747f92e4f7b142f5cff393831d42dd6589251570ada0254373b309a6"
+          "eq": "$capture.unchanged15"
         },
         {
           "kind": "sha256",
           "path": "epf/Other.xml",
-          "eq": "af8a1a124a377ef3ab73ad276a38abbc3dfbc92be0bf24b6a556464e62f77b20"
+          "eq": "$capture.unchanged16"
         },
         {
           "kind": "sha256",
           "path": "erf/Sales/Ext/ObjectModule.bsl",
-          "eq": "eca4dd79c0fd4cf30930bcb3ca7698fb9d1434925e42e8700ceb4780b0771b5a"
+          "eq": "$capture.unchanged17"
         },
         {
           "kind": "sha256",
           "path": "erf/Sales/Forms/Main/Ext/Form/Module.bsl",
-          "eq": "ed481aee46aaa389d526f2db784b5931d323af6ba0282cbf28c008203aab0819"
+          "eq": "$capture.unchanged18"
         },
         {
           "kind": "sha256",
           "path": "erf/Sales/Forms/Main/Ext/Form.xml",
-          "eq": "0fdbb62909e8393e353282fa02ff4acb93d96943cddcd14c8c19de1a118a535f"
+          "eq": "$capture.unchanged19"
         },
         {
           "kind": "sha256",
           "path": "erf/Sales/Forms/Main.xml",
-          "eq": "594a6876b6eca926613939b2a7c9e9bae45b4f4f959695c556f2075ff514dc9e"
+          "eq": "$capture.unchanged20"
         },
         {
           "kind": "sha256",
           "path": "erf/Sales.xml",
-          "eq": "77f602d36888d062828083f13be264cb2f38f925a2ce6a0db71b0a6be574f70c"
+          "eq": "$capture.unchanged21"
         }
       ]
     },
@@ -395,107 +481,107 @@
         {
           "kind": "sha256",
           "path": "epf/Import/Ext/ObjectModule.bsl",
-          "eq": "f1b7425b5791d9202de242f0c82c8bbac1a1792b09645e4ed0b2ee9e7a766b58"
+          "eq": "$capture.unchanged1"
         },
         {
           "kind": "sha256",
           "path": "epf/Import/Forms/Main/Ext/Form/Module.bsl",
-          "eq": "ed481aee46aaa389d526f2db784b5931d323af6ba0282cbf28c008203aab0819"
+          "eq": "$capture.unchanged2"
         },
         {
           "kind": "sha256",
           "path": "epf/Import/Forms/Main/Ext/Form.xml",
-          "eq": "0fdbb62909e8393e353282fa02ff4acb93d96943cddcd14c8c19de1a118a535f"
+          "eq": "$capture.unchanged3"
         },
         {
           "kind": "sha256",
           "path": "epf/Import/Forms/Main.xml",
-          "eq": "095935ef4941f7f6febc5c3f53d8c8c8ce7b4f87be8ba1992e52dd5c1271dc7b"
+          "eq": "$capture.unchanged4"
         },
         {
           "kind": "sha256",
           "path": "epf/Import/Forms/Orphan/Ext/Form.xml",
-          "eq": "88de8e6e97a972c5e01968eef2e8c871e6ef8229cbd6505591b3bf3c31fc5b82"
+          "eq": "$capture.unchanged5"
         },
         {
           "kind": "sha256",
           "path": "epf/Import/Forms/Orphan.xml",
-          "eq": "d3c7c1f4f34133849ea550fa3ab2ec0c35f0f5a88a9caa760746968402cb6f2c"
+          "eq": "$capture.unchanged6"
         },
         {
           "kind": "sha256",
           "path": "epf/Import/Templates/Orphan/Ext/Template.xml",
-          "eq": "88de8e6e97a972c5e01968eef2e8c871e6ef8229cbd6505591b3bf3c31fc5b82"
+          "eq": "$capture.unchanged7"
         },
         {
           "kind": "sha256",
           "path": "epf/Import/Templates/Orphan.xml",
-          "eq": "45c165fd3809e3b8f06e487faf0807f06873736a56960b61612f373e8e9aedb3"
+          "eq": "$capture.unchanged8"
         },
         {
           "kind": "sha256",
           "path": "epf/Import/Templates/Print/Ext/Template.xml",
-          "eq": "0011badfe537312fb636a58211f147cd039acd0634d0aca3e83eed958023aa74"
+          "eq": "$capture.unchanged9"
         },
         {
           "kind": "sha256",
           "path": "epf/Import/Templates/Print.xml",
-          "eq": "f97b2180ee69015867cbbaf023a513c4939fa3f6b8ff73bd2d34e4bdc63cfb8e"
+          "eq": "$capture.unchanged10"
         },
         {
           "kind": "sha256",
           "path": "epf/Import.xml",
-          "eq": "737f80c93c8008690326301b0bdc01522243c7b4fa04bdf8204e4df7dca78ef6"
+          "eq": "$capture.unchanged11"
         },
         {
           "kind": "sha256",
           "path": "epf/Other/Ext/ObjectModule.bsl",
-          "eq": "579dfd1c8f9fddb28e702132627a50e7c159dbb8f6493998b0f01a82c5ea5ed7"
+          "eq": "$capture.unchanged12"
         },
         {
           "kind": "sha256",
           "path": "epf/Other/Forms/Main/Ext/Form/Module.bsl",
-          "eq": "ed481aee46aaa389d526f2db784b5931d323af6ba0282cbf28c008203aab0819"
+          "eq": "$capture.unchanged13"
         },
         {
           "kind": "sha256",
           "path": "epf/Other/Forms/Main/Ext/Form.xml",
-          "eq": "0fdbb62909e8393e353282fa02ff4acb93d96943cddcd14c8c19de1a118a535f"
+          "eq": "$capture.unchanged14"
         },
         {
           "kind": "sha256",
           "path": "epf/Other/Forms/Main.xml",
-          "eq": "b3ad12f8747f92e4f7b142f5cff393831d42dd6589251570ada0254373b309a6"
+          "eq": "$capture.unchanged15"
         },
         {
           "kind": "sha256",
           "path": "epf/Other.xml",
-          "eq": "af8a1a124a377ef3ab73ad276a38abbc3dfbc92be0bf24b6a556464e62f77b20"
+          "eq": "$capture.unchanged16"
         },
         {
           "kind": "sha256",
           "path": "erf/Sales/Ext/ObjectModule.bsl",
-          "eq": "eca4dd79c0fd4cf30930bcb3ca7698fb9d1434925e42e8700ceb4780b0771b5a"
+          "eq": "$capture.unchanged17"
         },
         {
           "kind": "sha256",
           "path": "erf/Sales/Forms/Main/Ext/Form/Module.bsl",
-          "eq": "ed481aee46aaa389d526f2db784b5931d323af6ba0282cbf28c008203aab0819"
+          "eq": "$capture.unchanged18"
         },
         {
           "kind": "sha256",
           "path": "erf/Sales/Forms/Main/Ext/Form.xml",
-          "eq": "0fdbb62909e8393e353282fa02ff4acb93d96943cddcd14c8c19de1a118a535f"
+          "eq": "$capture.unchanged19"
         },
         {
           "kind": "sha256",
           "path": "erf/Sales/Forms/Main.xml",
-          "eq": "594a6876b6eca926613939b2a7c9e9bae45b4f4f959695c556f2075ff514dc9e"
+          "eq": "$capture.unchanged20"
         },
         {
           "kind": "sha256",
           "path": "erf/Sales.xml",
-          "eq": "77f602d36888d062828083f13be264cb2f38f925a2ce6a0db71b0a6be574f70c"
+          "eq": "$capture.unchanged21"
         }
       ]
     }

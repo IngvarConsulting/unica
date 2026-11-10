@@ -59,7 +59,21 @@
           "path": "v8project.yaml",
           "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
         }
-      ]
+      ],
+      "captures": {
+        "unchanged1": {
+          "file": "src/Catalogs/Items.xml",
+          "kind": "sha256"
+        },
+        "unchanged2": {
+          "file": "src/Configuration.xml",
+          "kind": "sha256"
+        },
+        "unchanged3": {
+          "file": "v8project.yaml",
+          "kind": "sha256"
+        }
+      }
     },
     {
       "tool": "unica.view",
@@ -108,17 +122,17 @@
         {
           "kind": "sha256",
           "path": "src/Catalogs/Items.xml",
-          "eq": "2a94c7c22dc32af168c9716cc15c33d8ba8dd8cb3647d783ba996834eca08e7b"
+          "eq": "$capture.unchanged1"
         },
         {
           "kind": "sha256",
           "path": "src/Configuration.xml",
-          "eq": "52480e68d87c3cb65d1f58f2e8f323e9d21857088735335716853d62af755733"
+          "eq": "$capture.unchanged2"
         },
         {
           "kind": "sha256",
           "path": "v8project.yaml",
-          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+          "eq": "$capture.unchanged3"
         }
       ]
     },
@@ -148,17 +162,17 @@
         {
           "kind": "sha256",
           "path": "src/Catalogs/Items.xml",
-          "eq": "2a94c7c22dc32af168c9716cc15c33d8ba8dd8cb3647d783ba996834eca08e7b"
+          "eq": "$capture.unchanged1"
         },
         {
           "kind": "sha256",
           "path": "src/Configuration.xml",
-          "eq": "52480e68d87c3cb65d1f58f2e8f323e9d21857088735335716853d62af755733"
+          "eq": "$capture.unchanged2"
         },
         {
           "kind": "sha256",
           "path": "v8project.yaml",
-          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+          "eq": "$capture.unchanged3"
         }
       ]
     },
@@ -200,17 +214,17 @@
         {
           "kind": "sha256",
           "path": "src/Catalogs/Items.xml",
-          "eq": "2a94c7c22dc32af168c9716cc15c33d8ba8dd8cb3647d783ba996834eca08e7b"
+          "eq": "$capture.unchanged1"
         },
         {
           "kind": "sha256",
           "path": "src/Configuration.xml",
-          "eq": "52480e68d87c3cb65d1f58f2e8f323e9d21857088735335716853d62af755733"
+          "eq": "$capture.unchanged2"
         },
         {
           "kind": "sha256",
           "path": "v8project.yaml",
-          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+          "eq": "$capture.unchanged3"
         },
         {
           "kind": "xml",

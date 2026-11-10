@@ -49,6 +49,14 @@
       "captures": {
         "token": {
           "pointer": "/data/executionToken"
+        },
+        "unchanged1": {
+          "file": "src/Configuration.xml",
+          "kind": "sha256"
+        },
+        "unchanged2": {
+          "file": "src/Ext/ParentConfigurations.bin",
+          "kind": "sha256"
         }
       },
       "fileAssertions": [
@@ -104,12 +112,12 @@
         {
           "kind": "sha256",
           "path": "src/Configuration.xml",
-          "eq": "e35317ae32b23eca506d5de1f9c7099d04419e968ba9c995742e141fc951e783"
+          "eq": "$capture.unchanged1"
         },
         {
           "kind": "sha256",
           "path": "src/Ext/ParentConfigurations.bin",
-          "eq": "2762d952d64311a7bf124d68523ad93ee56c28b3ee9268ca653dd8addee73523"
+          "eq": "$capture.unchanged2"
         }
       ]
     }

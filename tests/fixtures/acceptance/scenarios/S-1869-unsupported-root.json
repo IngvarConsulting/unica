@@ -20,7 +20,17 @@
       },
       "expect": [
         "ok"
-      ]
+      ],
+      "captures": {
+        "unchanged1": {
+          "file": "src/Configuration.xml",
+          "kind": "sha256"
+        },
+        "unchanged2": {
+          "file": "src/keep.bsl",
+          "kind": "sha256"
+        }
+      }
     },
     {
       "tool": "unica.run",
@@ -65,12 +75,12 @@
         {
           "path": "src/Configuration.xml",
           "kind": "sha256",
-          "eq": "dff8b32f9369a539c840a8cc13de76a47b8b962244d2cdc3cf16b4befd72a6ff"
+          "eq": "$capture.unchanged1"
         },
         {
           "path": "src/keep.bsl",
           "kind": "sha256",
-          "eq": "76acd0d32b1532a6aeda5d18eeefcb1988c5114b06f4631c79ff5e189f7e08c3"
+          "eq": "$capture.unchanged2"
         }
       ]
     }

@@ -83,7 +83,53 @@
           "kind": "sha256",
           "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
         }
-      ]
+      ],
+      "captures": {
+        "unchanged1": {
+          "file": "src/InformationRegisters/CorpusRegister.xml",
+          "kind": "sha256"
+        },
+        "unchanged2": {
+          "file": "src/Catalogs/Items.xml",
+          "kind": "sha256"
+        },
+        "unchanged3": {
+          "file": "src/Catalogs/Items/Commands/Blocked/Ext/CommandModule.bsl",
+          "kind": "sha256"
+        },
+        "unchanged4": {
+          "file": "src/Catalogs/Items/Commands/Keep/Ext/CommandModule.bsl",
+          "kind": "sha256"
+        },
+        "unchanged5": {
+          "file": "src/Catalogs/Items/Commands/Refresh/Ext/CommandModule.bsl",
+          "kind": "sha256"
+        },
+        "unchanged6": {
+          "file": "src/Catalogs/Items/Commands/Refresh/Ext/unrelated.txt",
+          "kind": "sha256"
+        },
+        "unchanged7": {
+          "file": "src/Configuration.xml",
+          "kind": "sha256"
+        },
+        "unchanged8": {
+          "file": "src/DocumentJournals/ДокументыОрганизации.xml",
+          "kind": "sha256"
+        },
+        "unchanged9": {
+          "file": "src/Enums/LanguageAware.xml",
+          "kind": "sha256"
+        },
+        "unchanged10": {
+          "file": "src/Languages/Русский.xml",
+          "kind": "sha256"
+        },
+        "unchanged11": {
+          "file": "v8project.yaml",
+          "kind": "sha256"
+        }
+      }
     },
     {
       "tool": "unica.apply",
@@ -138,7 +184,7 @@
         {
           "path": "src/InformationRegisters/CorpusRegister.xml",
           "kind": "sha256",
-          "eq": "0fe585976e95b6efdc619abfe778c1ff8dca36c71c34f5c6213a56b67c5f7735"
+          "eq": "$capture.unchanged1"
         },
         {
           "path": "src/InformationRegisters/CorpusRegister.xml",
@@ -151,52 +197,52 @@
         {
           "path": "src/Catalogs/Items.xml",
           "kind": "sha256",
-          "eq": "c4457e1ea26b6a4f40fd47db925fdb69c79754c52e76245449bcc011082d5a44"
+          "eq": "$capture.unchanged2"
         },
         {
           "path": "src/Catalogs/Items/Commands/Blocked/Ext/CommandModule.bsl",
           "kind": "sha256",
-          "eq": "8fc4182ed0bcbc8670c62c55f88df347a7965f16bede2df092bbd45b77f6da40"
+          "eq": "$capture.unchanged3"
         },
         {
           "path": "src/Catalogs/Items/Commands/Keep/Ext/CommandModule.bsl",
           "kind": "sha256",
-          "eq": "135eb9e0ab9bddae4c34a52adc22182e42e8348289cfd92b543cf5150247861d"
+          "eq": "$capture.unchanged4"
         },
         {
           "path": "src/Catalogs/Items/Commands/Refresh/Ext/CommandModule.bsl",
           "kind": "sha256",
-          "eq": "943bc5afe6c041f1710c435ec0ba0415a55840842345df7f5795c4101675d336"
+          "eq": "$capture.unchanged5"
         },
         {
           "path": "src/Catalogs/Items/Commands/Refresh/Ext/unrelated.txt",
           "kind": "sha256",
-          "eq": "4d38ed0e80e746ae46273fd3cd6ac71c018669fa6061d581c9f860254f9ba40c"
+          "eq": "$capture.unchanged6"
         },
         {
           "path": "src/Configuration.xml",
           "kind": "sha256",
-          "eq": "10588894ac1a018fd72eb6cb2948c4c0b20f36eab6ae2c0364d60412e63f37ca"
+          "eq": "$capture.unchanged7"
         },
         {
           "path": "src/DocumentJournals/ДокументыОрганизации.xml",
           "kind": "sha256",
-          "eq": "f0c09c8e666464fa725bd9d07fcc8fc64d1471467568da6c8370a6c988eaa118"
+          "eq": "$capture.unchanged8"
         },
         {
           "path": "src/Enums/LanguageAware.xml",
           "kind": "sha256",
-          "eq": "70fb99cbc2c28eb36f0181a2b32f397e46680613890665f45c6fa14b7f1db87d"
+          "eq": "$capture.unchanged9"
         },
         {
           "path": "src/Languages/Русский.xml",
           "kind": "sha256",
-          "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+          "eq": "$capture.unchanged10"
         },
         {
           "path": "v8project.yaml",
           "kind": "sha256",
-          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+          "eq": "$capture.unchanged11"
         }
       ]
     },
@@ -243,52 +289,52 @@
         {
           "path": "src/Catalogs/Items.xml",
           "kind": "sha256",
-          "eq": "c4457e1ea26b6a4f40fd47db925fdb69c79754c52e76245449bcc011082d5a44"
+          "eq": "$capture.unchanged2"
         },
         {
           "path": "src/Catalogs/Items/Commands/Blocked/Ext/CommandModule.bsl",
           "kind": "sha256",
-          "eq": "8fc4182ed0bcbc8670c62c55f88df347a7965f16bede2df092bbd45b77f6da40"
+          "eq": "$capture.unchanged3"
         },
         {
           "path": "src/Catalogs/Items/Commands/Keep/Ext/CommandModule.bsl",
           "kind": "sha256",
-          "eq": "135eb9e0ab9bddae4c34a52adc22182e42e8348289cfd92b543cf5150247861d"
+          "eq": "$capture.unchanged4"
         },
         {
           "path": "src/Catalogs/Items/Commands/Refresh/Ext/CommandModule.bsl",
           "kind": "sha256",
-          "eq": "943bc5afe6c041f1710c435ec0ba0415a55840842345df7f5795c4101675d336"
+          "eq": "$capture.unchanged5"
         },
         {
           "path": "src/Catalogs/Items/Commands/Refresh/Ext/unrelated.txt",
           "kind": "sha256",
-          "eq": "4d38ed0e80e746ae46273fd3cd6ac71c018669fa6061d581c9f860254f9ba40c"
+          "eq": "$capture.unchanged6"
         },
         {
           "path": "src/Configuration.xml",
           "kind": "sha256",
-          "eq": "10588894ac1a018fd72eb6cb2948c4c0b20f36eab6ae2c0364d60412e63f37ca"
+          "eq": "$capture.unchanged7"
         },
         {
           "path": "src/DocumentJournals/ДокументыОрганизации.xml",
           "kind": "sha256",
-          "eq": "f0c09c8e666464fa725bd9d07fcc8fc64d1471467568da6c8370a6c988eaa118"
+          "eq": "$capture.unchanged8"
         },
         {
           "path": "src/Enums/LanguageAware.xml",
           "kind": "sha256",
-          "eq": "70fb99cbc2c28eb36f0181a2b32f397e46680613890665f45c6fa14b7f1db87d"
+          "eq": "$capture.unchanged9"
         },
         {
           "path": "src/Languages/Русский.xml",
           "kind": "sha256",
-          "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+          "eq": "$capture.unchanged10"
         },
         {
           "path": "v8project.yaml",
           "kind": "sha256",
-          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+          "eq": "$capture.unchanged11"
         },
         {
           "path": "src/InformationRegisters/CorpusRegister.xml",
@@ -338,7 +384,13 @@
             "Variable"
           ]
         }
-      ]
+      ],
+      "captures": {
+        "unchanged12": {
+          "file": "src/InformationRegisters/CorpusRegister.xml",
+          "kind": "sha256"
+        }
+      }
     },
     {
       "tool": "unica.view",
@@ -366,7 +418,7 @@
         {
           "path": "src/InformationRegisters/CorpusRegister.xml",
           "kind": "sha256",
-          "eq": "b23c5d57d75dfc625c259a6c2d6cf4a1e386d6c4cf58c485d555b7f71d3f2173"
+          "eq": "$capture.unchanged12"
         }
       ]
     },
@@ -412,7 +464,7 @@
         {
           "path": "src/InformationRegisters/CorpusRegister.xml",
           "kind": "sha256",
-          "eq": "b23c5d57d75dfc625c259a6c2d6cf4a1e386d6c4cf58c485d555b7f71d3f2173"
+          "eq": "$capture.unchanged12"
         },
         {
           "path": "src/InformationRegisters/CorpusRegister.xml",
@@ -425,52 +477,52 @@
         {
           "path": "src/Catalogs/Items.xml",
           "kind": "sha256",
-          "eq": "c4457e1ea26b6a4f40fd47db925fdb69c79754c52e76245449bcc011082d5a44"
+          "eq": "$capture.unchanged2"
         },
         {
           "path": "src/Catalogs/Items/Commands/Blocked/Ext/CommandModule.bsl",
           "kind": "sha256",
-          "eq": "8fc4182ed0bcbc8670c62c55f88df347a7965f16bede2df092bbd45b77f6da40"
+          "eq": "$capture.unchanged3"
         },
         {
           "path": "src/Catalogs/Items/Commands/Keep/Ext/CommandModule.bsl",
           "kind": "sha256",
-          "eq": "135eb9e0ab9bddae4c34a52adc22182e42e8348289cfd92b543cf5150247861d"
+          "eq": "$capture.unchanged4"
         },
         {
           "path": "src/Catalogs/Items/Commands/Refresh/Ext/CommandModule.bsl",
           "kind": "sha256",
-          "eq": "943bc5afe6c041f1710c435ec0ba0415a55840842345df7f5795c4101675d336"
+          "eq": "$capture.unchanged5"
         },
         {
           "path": "src/Catalogs/Items/Commands/Refresh/Ext/unrelated.txt",
           "kind": "sha256",
-          "eq": "4d38ed0e80e746ae46273fd3cd6ac71c018669fa6061d581c9f860254f9ba40c"
+          "eq": "$capture.unchanged6"
         },
         {
           "path": "src/Configuration.xml",
           "kind": "sha256",
-          "eq": "10588894ac1a018fd72eb6cb2948c4c0b20f36eab6ae2c0364d60412e63f37ca"
+          "eq": "$capture.unchanged7"
         },
         {
           "path": "src/DocumentJournals/ДокументыОрганизации.xml",
           "kind": "sha256",
-          "eq": "f0c09c8e666464fa725bd9d07fcc8fc64d1471467568da6c8370a6c988eaa118"
+          "eq": "$capture.unchanged8"
         },
         {
           "path": "src/Enums/LanguageAware.xml",
           "kind": "sha256",
-          "eq": "70fb99cbc2c28eb36f0181a2b32f397e46680613890665f45c6fa14b7f1db87d"
+          "eq": "$capture.unchanged9"
         },
         {
           "path": "src/Languages/Русский.xml",
           "kind": "sha256",
-          "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+          "eq": "$capture.unchanged10"
         },
         {
           "path": "v8project.yaml",
           "kind": "sha256",
-          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+          "eq": "$capture.unchanged11"
         },
         {
           "path": "src/InformationRegisters/CorpusRegister.xml",
@@ -565,52 +617,52 @@
         {
           "path": "src/Catalogs/Items.xml",
           "kind": "sha256",
-          "eq": "c4457e1ea26b6a4f40fd47db925fdb69c79754c52e76245449bcc011082d5a44"
+          "eq": "$capture.unchanged2"
         },
         {
           "path": "src/Catalogs/Items/Commands/Blocked/Ext/CommandModule.bsl",
           "kind": "sha256",
-          "eq": "8fc4182ed0bcbc8670c62c55f88df347a7965f16bede2df092bbd45b77f6da40"
+          "eq": "$capture.unchanged3"
         },
         {
           "path": "src/Catalogs/Items/Commands/Keep/Ext/CommandModule.bsl",
           "kind": "sha256",
-          "eq": "135eb9e0ab9bddae4c34a52adc22182e42e8348289cfd92b543cf5150247861d"
+          "eq": "$capture.unchanged4"
         },
         {
           "path": "src/Catalogs/Items/Commands/Refresh/Ext/CommandModule.bsl",
           "kind": "sha256",
-          "eq": "943bc5afe6c041f1710c435ec0ba0415a55840842345df7f5795c4101675d336"
+          "eq": "$capture.unchanged5"
         },
         {
           "path": "src/Catalogs/Items/Commands/Refresh/Ext/unrelated.txt",
           "kind": "sha256",
-          "eq": "4d38ed0e80e746ae46273fd3cd6ac71c018669fa6061d581c9f860254f9ba40c"
+          "eq": "$capture.unchanged6"
         },
         {
           "path": "src/Configuration.xml",
           "kind": "sha256",
-          "eq": "10588894ac1a018fd72eb6cb2948c4c0b20f36eab6ae2c0364d60412e63f37ca"
+          "eq": "$capture.unchanged7"
         },
         {
           "path": "src/DocumentJournals/ДокументыОрганизации.xml",
           "kind": "sha256",
-          "eq": "f0c09c8e666464fa725bd9d07fcc8fc64d1471467568da6c8370a6c988eaa118"
+          "eq": "$capture.unchanged8"
         },
         {
           "path": "src/Enums/LanguageAware.xml",
           "kind": "sha256",
-          "eq": "70fb99cbc2c28eb36f0181a2b32f397e46680613890665f45c6fa14b7f1db87d"
+          "eq": "$capture.unchanged9"
         },
         {
           "path": "src/Languages/Русский.xml",
           "kind": "sha256",
-          "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+          "eq": "$capture.unchanged10"
         },
         {
           "path": "v8project.yaml",
           "kind": "sha256",
-          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+          "eq": "$capture.unchanged11"
         },
         {
           "path": "src/InformationRegisters/CorpusRegister.xml",
@@ -660,7 +712,13 @@
             "Variable"
           ]
         }
-      ]
+      ],
+      "captures": {
+        "unchanged13": {
+          "file": "src/InformationRegisters/CorpusRegister.xml",
+          "kind": "sha256"
+        }
+      }
     },
     {
       "tool": "unica.view",
@@ -688,7 +746,7 @@
         {
           "path": "src/InformationRegisters/CorpusRegister.xml",
           "kind": "sha256",
-          "eq": "1cf96a4009ae03fac3ccf7741f37fc6a21e8e179999487a9e60179370c8dff0b"
+          "eq": "$capture.unchanged13"
         }
       ]
     },
@@ -727,7 +785,7 @@
         {
           "path": "src/InformationRegisters/CorpusRegister.xml",
           "kind": "sha256",
-          "eq": "1cf96a4009ae03fac3ccf7741f37fc6a21e8e179999487a9e60179370c8dff0b"
+          "eq": "$capture.unchanged13"
         },
         {
           "path": "src/InformationRegisters/CorpusRegister.xml",
@@ -740,52 +798,52 @@
         {
           "path": "src/Catalogs/Items.xml",
           "kind": "sha256",
-          "eq": "c4457e1ea26b6a4f40fd47db925fdb69c79754c52e76245449bcc011082d5a44"
+          "eq": "$capture.unchanged2"
         },
         {
           "path": "src/Catalogs/Items/Commands/Blocked/Ext/CommandModule.bsl",
           "kind": "sha256",
-          "eq": "8fc4182ed0bcbc8670c62c55f88df347a7965f16bede2df092bbd45b77f6da40"
+          "eq": "$capture.unchanged3"
         },
         {
           "path": "src/Catalogs/Items/Commands/Keep/Ext/CommandModule.bsl",
           "kind": "sha256",
-          "eq": "135eb9e0ab9bddae4c34a52adc22182e42e8348289cfd92b543cf5150247861d"
+          "eq": "$capture.unchanged4"
         },
         {
           "path": "src/Catalogs/Items/Commands/Refresh/Ext/CommandModule.bsl",
           "kind": "sha256",
-          "eq": "943bc5afe6c041f1710c435ec0ba0415a55840842345df7f5795c4101675d336"
+          "eq": "$capture.unchanged5"
         },
         {
           "path": "src/Catalogs/Items/Commands/Refresh/Ext/unrelated.txt",
           "kind": "sha256",
-          "eq": "4d38ed0e80e746ae46273fd3cd6ac71c018669fa6061d581c9f860254f9ba40c"
+          "eq": "$capture.unchanged6"
         },
         {
           "path": "src/Configuration.xml",
           "kind": "sha256",
-          "eq": "10588894ac1a018fd72eb6cb2948c4c0b20f36eab6ae2c0364d60412e63f37ca"
+          "eq": "$capture.unchanged7"
         },
         {
           "path": "src/DocumentJournals/ДокументыОрганизации.xml",
           "kind": "sha256",
-          "eq": "f0c09c8e666464fa725bd9d07fcc8fc64d1471467568da6c8370a6c988eaa118"
+          "eq": "$capture.unchanged8"
         },
         {
           "path": "src/Enums/LanguageAware.xml",
           "kind": "sha256",
-          "eq": "70fb99cbc2c28eb36f0181a2b32f397e46680613890665f45c6fa14b7f1db87d"
+          "eq": "$capture.unchanged9"
         },
         {
           "path": "src/Languages/Русский.xml",
           "kind": "sha256",
-          "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+          "eq": "$capture.unchanged10"
         },
         {
           "path": "v8project.yaml",
           "kind": "sha256",
-          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+          "eq": "$capture.unchanged11"
         },
         {
           "path": "src/InformationRegisters/CorpusRegister.xml",
@@ -867,7 +925,7 @@
         {
           "path": "src/InformationRegisters/CorpusRegister.xml",
           "kind": "sha256",
-          "eq": "0fe585976e95b6efdc619abfe778c1ff8dca36c71c34f5c6213a56b67c5f7735"
+          "eq": "$capture.unchanged1"
         },
         {
           "path": "src/InformationRegisters/CorpusRegister.xml",
@@ -880,52 +938,52 @@
         {
           "path": "src/Catalogs/Items.xml",
           "kind": "sha256",
-          "eq": "c4457e1ea26b6a4f40fd47db925fdb69c79754c52e76245449bcc011082d5a44"
+          "eq": "$capture.unchanged2"
         },
         {
           "path": "src/Catalogs/Items/Commands/Blocked/Ext/CommandModule.bsl",
           "kind": "sha256",
-          "eq": "8fc4182ed0bcbc8670c62c55f88df347a7965f16bede2df092bbd45b77f6da40"
+          "eq": "$capture.unchanged3"
         },
         {
           "path": "src/Catalogs/Items/Commands/Keep/Ext/CommandModule.bsl",
           "kind": "sha256",
-          "eq": "135eb9e0ab9bddae4c34a52adc22182e42e8348289cfd92b543cf5150247861d"
+          "eq": "$capture.unchanged4"
         },
         {
           "path": "src/Catalogs/Items/Commands/Refresh/Ext/CommandModule.bsl",
           "kind": "sha256",
-          "eq": "943bc5afe6c041f1710c435ec0ba0415a55840842345df7f5795c4101675d336"
+          "eq": "$capture.unchanged5"
         },
         {
           "path": "src/Catalogs/Items/Commands/Refresh/Ext/unrelated.txt",
           "kind": "sha256",
-          "eq": "4d38ed0e80e746ae46273fd3cd6ac71c018669fa6061d581c9f860254f9ba40c"
+          "eq": "$capture.unchanged6"
         },
         {
           "path": "src/Configuration.xml",
           "kind": "sha256",
-          "eq": "10588894ac1a018fd72eb6cb2948c4c0b20f36eab6ae2c0364d60412e63f37ca"
+          "eq": "$capture.unchanged7"
         },
         {
           "path": "src/DocumentJournals/ДокументыОрганизации.xml",
           "kind": "sha256",
-          "eq": "f0c09c8e666464fa725bd9d07fcc8fc64d1471467568da6c8370a6c988eaa118"
+          "eq": "$capture.unchanged8"
         },
         {
           "path": "src/Enums/LanguageAware.xml",
           "kind": "sha256",
-          "eq": "70fb99cbc2c28eb36f0181a2b32f397e46680613890665f45c6fa14b7f1db87d"
+          "eq": "$capture.unchanged9"
         },
         {
           "path": "src/Languages/Русский.xml",
           "kind": "sha256",
-          "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+          "eq": "$capture.unchanged10"
         },
         {
           "path": "v8project.yaml",
           "kind": "sha256",
-          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+          "eq": "$capture.unchanged11"
         },
         {
           "path": "src/InformationRegisters/CorpusRegister.xml",

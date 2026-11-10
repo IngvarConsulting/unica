@@ -10,7 +10,13 @@
       },
       "expect": [
         "ok"
-      ]
+      ],
+      "captures": {
+        "unchanged1": {
+          "file": "src/HTTPServices/ПроверкаСвязи.xml",
+          "kind": "sha256"
+        }
+      }
     },
     {
       "tool": "unica.view",
@@ -47,7 +53,7 @@
         {
           "kind": "sha256",
           "path": "src/HTTPServices/ПроверкаСвязи.xml",
-          "eq": "4fa183eaf063769b291158ac318b7c2d1a5135134fbe19392d7d8ee4b55f8acf"
+          "eq": "$capture.unchanged1"
         },
         {
           "kind": "xml",

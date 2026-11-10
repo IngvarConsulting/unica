@@ -56,7 +56,13 @@
           "kind": "sha256",
           "eq": "41c7a0b8161a1e7661471f225cc24faf46d85761df32ff022b171b525b063989"
         }
-      ]
+      ],
+      "captures": {
+        "unchanged1": {
+          "file": "src/Configuration.xml",
+          "kind": "sha256"
+        }
+      }
     },
     {
       "tool": "unica.apply",
@@ -99,7 +105,7 @@
         {
           "path": "src/Configuration.xml",
           "kind": "sha256",
-          "eq": "41c7a0b8161a1e7661471f225cc24faf46d85761df32ff022b171b525b063989"
+          "eq": "$capture.unchanged1"
         }
       ],
       "captures": {
@@ -126,7 +132,7 @@
         {
           "path": "src/Configuration.xml",
           "kind": "sha256",
-          "eq": "41c7a0b8161a1e7661471f225cc24faf46d85761df32ff022b171b525b063989"
+          "eq": "$capture.unchanged1"
         }
       ]
     },

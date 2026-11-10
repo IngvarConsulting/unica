@@ -197,7 +197,13 @@
           "path": "src/cf/Reports/F06Report.xml",
           "eq": "$capture.owner"
         }
-      ]
+      ],
+      "captures": {
+        "unchanged1": {
+          "file": "src/cf/Reports/F06Report/Templates/PlatformExport/Ext/Template.xml",
+          "kind": "sha256"
+        }
+      }
     },
     {
       "tool": "unica.view",
@@ -269,7 +275,7 @@
         {
           "kind": "sha256",
           "path": "src/cf/Reports/F06Report/Templates/PlatformExport/Ext/Template.xml",
-          "eq": "85474cc6da131bd40b7579f500f5fa10ab584d2bceb8aa7a530f1211d4d0b274"
+          "eq": "$capture.unchanged1"
         }
       ]
     }

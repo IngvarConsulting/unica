@@ -8,6 +8,7 @@
  "wire": [
   {
    "tool": "unica.apply",
+   "captures": {"unchanged1": {"file": "src/Configuration.xml", "kind": "sha256"}, "unchanged2": {"file": "src/Catalogs/Items.xml", "kind": "sha256"}, "unchanged3": {"file": "src/Catalogs/Items/Forms/Main.xml", "kind": "sha256"}, "unchanged4": {"file": "src/Catalogs/Items/Forms/Main/Ext/Form.xml", "kind": "sha256"}, "unchanged5": {"file": "src/Catalogs/Items/Forms/Main/Ext/Form/Module.bsl", "kind": "sha256"}, "unchanged6": {"file": "src/Catalogs/Items/Forms/Other.xml", "kind": "sha256"}, "unchanged7": {"file": "src/Catalogs/Items/Forms/Other/Ext/Form.xml", "kind": "sha256"}, "unchanged8": {"file": "src/Catalogs/Items/Forms/Other/Ext/Form/Module.bsl", "kind": "sha256"}, "unchanged9": {"file": "src/Ext/ParentConfigurations.bin", "kind": "sha256"}},
    "args": {
     "at": "main:Catalog.Items.Form.Main.Module.Form",
     "ops": [
@@ -100,47 +101,47 @@
     {
      "kind": "sha256",
      "path": "src/Configuration.xml",
-     "eq": "5dc9e01de802985f8944346f4303b520c889dff194446955b7d53d897ba4e547"
+     "eq": "$capture.unchanged1"
     },
     {
      "kind": "sha256",
      "path": "src/Catalogs/Items.xml",
-     "eq": "5036c9ec3477269115d11a117e503f866fe6779e2759b9a93b2537b190cc4220"
+     "eq": "$capture.unchanged2"
     },
     {
      "kind": "sha256",
      "path": "src/Catalogs/Items/Forms/Main.xml",
-     "eq": "fe617398b73bf445efdc7457d2bf4ed84954ccca5bd03740836d6b65b4098ec1"
+     "eq": "$capture.unchanged3"
     },
     {
      "kind": "sha256",
      "path": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
-     "eq": "73225264880eca28dd53834a14222eee5b205dd063ff5617a36820383eda596f"
+     "eq": "$capture.unchanged4"
     },
     {
      "kind": "sha256",
      "path": "src/Catalogs/Items/Forms/Main/Ext/Form/Module.bsl",
-     "eq": "0b26b53049dc212d0ac00e76b9071695f0ac554ce0cde6bffc7a6c2c0d3c0daa"
+     "eq": "$capture.unchanged5"
     },
     {
      "kind": "sha256",
      "path": "src/Catalogs/Items/Forms/Other.xml",
-     "eq": "fcee95c674a5a3b047d9aed32e1004bfc60e3483693a9a515ee3de1f7ea5244c"
+     "eq": "$capture.unchanged6"
     },
     {
      "kind": "sha256",
      "path": "src/Catalogs/Items/Forms/Other/Ext/Form.xml",
-     "eq": "73225264880eca28dd53834a14222eee5b205dd063ff5617a36820383eda596f"
+     "eq": "$capture.unchanged7"
     },
     {
      "kind": "sha256",
      "path": "src/Catalogs/Items/Forms/Other/Ext/Form/Module.bsl",
-     "eq": "0b26b53049dc212d0ac00e76b9071695f0ac554ce0cde6bffc7a6c2c0d3c0daa"
+     "eq": "$capture.unchanged8"
     },
     {
      "kind": "sha256",
      "path": "src/Ext/ParentConfigurations.bin",
-     "eq": "096a8d156b5648b6c84d094837034f914946bea24d64c9180280fd5409facd3a"
+     "eq": "$capture.unchanged9"
     }
    ],
    "refusal": "invalid_state: support changes require a separate apply before ordinary edits"
@@ -167,52 +168,53 @@
     {
      "kind": "sha256",
      "path": "src/Configuration.xml",
-     "eq": "5dc9e01de802985f8944346f4303b520c889dff194446955b7d53d897ba4e547"
+     "eq": "$capture.unchanged1"
     },
     {
      "kind": "sha256",
      "path": "src/Catalogs/Items.xml",
-     "eq": "5036c9ec3477269115d11a117e503f866fe6779e2759b9a93b2537b190cc4220"
+     "eq": "$capture.unchanged2"
     },
     {
      "kind": "sha256",
      "path": "src/Catalogs/Items/Forms/Main.xml",
-     "eq": "fe617398b73bf445efdc7457d2bf4ed84954ccca5bd03740836d6b65b4098ec1"
+     "eq": "$capture.unchanged3"
     },
     {
      "kind": "sha256",
      "path": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
-     "eq": "73225264880eca28dd53834a14222eee5b205dd063ff5617a36820383eda596f"
+     "eq": "$capture.unchanged4"
     },
     {
      "kind": "sha256",
      "path": "src/Catalogs/Items/Forms/Main/Ext/Form/Module.bsl",
-     "eq": "0b26b53049dc212d0ac00e76b9071695f0ac554ce0cde6bffc7a6c2c0d3c0daa"
+     "eq": "$capture.unchanged5"
     },
     {
      "kind": "sha256",
      "path": "src/Catalogs/Items/Forms/Other.xml",
-     "eq": "fcee95c674a5a3b047d9aed32e1004bfc60e3483693a9a515ee3de1f7ea5244c"
+     "eq": "$capture.unchanged6"
     },
     {
      "kind": "sha256",
      "path": "src/Catalogs/Items/Forms/Other/Ext/Form.xml",
-     "eq": "73225264880eca28dd53834a14222eee5b205dd063ff5617a36820383eda596f"
+     "eq": "$capture.unchanged7"
     },
     {
      "kind": "sha256",
      "path": "src/Catalogs/Items/Forms/Other/Ext/Form/Module.bsl",
-     "eq": "0b26b53049dc212d0ac00e76b9071695f0ac554ce0cde6bffc7a6c2c0d3c0daa"
+     "eq": "$capture.unchanged8"
     },
     {
      "kind": "sha256",
      "path": "src/Ext/ParentConfigurations.bin",
-     "eq": "096a8d156b5648b6c84d094837034f914946bea24d64c9180280fd5409facd3a"
+     "eq": "$capture.unchanged9"
     }
    ]
   },
   {
    "tool": "unica.apply",
+   "captures": {"unchanged10": {"file": "src/Ext/ParentConfigurations.bin", "kind": "sha256"}},
    "args": {
     "executionToken": "$executionToken"
    },
@@ -223,42 +225,42 @@
     {
      "kind": "sha256",
      "path": "src/Configuration.xml",
-     "eq": "5dc9e01de802985f8944346f4303b520c889dff194446955b7d53d897ba4e547"
+     "eq": "$capture.unchanged1"
     },
     {
      "kind": "sha256",
      "path": "src/Catalogs/Items.xml",
-     "eq": "5036c9ec3477269115d11a117e503f866fe6779e2759b9a93b2537b190cc4220"
+     "eq": "$capture.unchanged2"
     },
     {
      "kind": "sha256",
      "path": "src/Catalogs/Items/Forms/Main.xml",
-     "eq": "fe617398b73bf445efdc7457d2bf4ed84954ccca5bd03740836d6b65b4098ec1"
+     "eq": "$capture.unchanged3"
     },
     {
      "kind": "sha256",
      "path": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
-     "eq": "73225264880eca28dd53834a14222eee5b205dd063ff5617a36820383eda596f"
+     "eq": "$capture.unchanged4"
     },
     {
      "kind": "sha256",
      "path": "src/Catalogs/Items/Forms/Main/Ext/Form/Module.bsl",
-     "eq": "0b26b53049dc212d0ac00e76b9071695f0ac554ce0cde6bffc7a6c2c0d3c0daa"
+     "eq": "$capture.unchanged5"
     },
     {
      "kind": "sha256",
      "path": "src/Catalogs/Items/Forms/Other.xml",
-     "eq": "fcee95c674a5a3b047d9aed32e1004bfc60e3483693a9a515ee3de1f7ea5244c"
+     "eq": "$capture.unchanged6"
     },
     {
      "kind": "sha256",
      "path": "src/Catalogs/Items/Forms/Other/Ext/Form.xml",
-     "eq": "73225264880eca28dd53834a14222eee5b205dd063ff5617a36820383eda596f"
+     "eq": "$capture.unchanged7"
     },
     {
      "kind": "sha256",
      "path": "src/Catalogs/Items/Forms/Other/Ext/Form/Module.bsl",
-     "eq": "0b26b53049dc212d0ac00e76b9071695f0ac554ce0cde6bffc7a6c2c0d3c0daa"
+     "eq": "$capture.unchanged8"
     },
     {
      "kind": "sha256",
@@ -287,52 +289,53 @@
     {
      "kind": "sha256",
      "path": "src/Configuration.xml",
-     "eq": "5dc9e01de802985f8944346f4303b520c889dff194446955b7d53d897ba4e547"
+     "eq": "$capture.unchanged1"
     },
     {
      "kind": "sha256",
      "path": "src/Catalogs/Items.xml",
-     "eq": "5036c9ec3477269115d11a117e503f866fe6779e2759b9a93b2537b190cc4220"
+     "eq": "$capture.unchanged2"
     },
     {
      "kind": "sha256",
      "path": "src/Catalogs/Items/Forms/Main.xml",
-     "eq": "fe617398b73bf445efdc7457d2bf4ed84954ccca5bd03740836d6b65b4098ec1"
+     "eq": "$capture.unchanged3"
     },
     {
      "kind": "sha256",
      "path": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
-     "eq": "73225264880eca28dd53834a14222eee5b205dd063ff5617a36820383eda596f"
+     "eq": "$capture.unchanged4"
     },
     {
      "kind": "sha256",
      "path": "src/Catalogs/Items/Forms/Main/Ext/Form/Module.bsl",
-     "eq": "0b26b53049dc212d0ac00e76b9071695f0ac554ce0cde6bffc7a6c2c0d3c0daa"
+     "eq": "$capture.unchanged5"
     },
     {
      "kind": "sha256",
      "path": "src/Catalogs/Items/Forms/Other.xml",
-     "eq": "fcee95c674a5a3b047d9aed32e1004bfc60e3483693a9a515ee3de1f7ea5244c"
+     "eq": "$capture.unchanged6"
     },
     {
      "kind": "sha256",
      "path": "src/Catalogs/Items/Forms/Other/Ext/Form.xml",
-     "eq": "73225264880eca28dd53834a14222eee5b205dd063ff5617a36820383eda596f"
+     "eq": "$capture.unchanged7"
     },
     {
      "kind": "sha256",
      "path": "src/Catalogs/Items/Forms/Other/Ext/Form/Module.bsl",
-     "eq": "0b26b53049dc212d0ac00e76b9071695f0ac554ce0cde6bffc7a6c2c0d3c0daa"
+     "eq": "$capture.unchanged8"
     },
     {
      "kind": "sha256",
      "path": "src/Ext/ParentConfigurations.bin",
-     "eq": "c847800dac9cac0be244006ddc5107f979fed9a13868069789a8b5d14fba1b64"
+     "eq": "$capture.unchanged10"
     }
    ]
   },
   {
    "tool": "unica.apply",
+   "captures": {"unchanged11": {"file": "src/Catalogs/Items/Forms/Main/Ext/Form/Module.bsl", "kind": "sha256"}},
    "args": {
     "executionToken": "$executionToken"
    },
@@ -343,22 +346,22 @@
     {
      "kind": "sha256",
      "path": "src/Configuration.xml",
-     "eq": "5dc9e01de802985f8944346f4303b520c889dff194446955b7d53d897ba4e547"
+     "eq": "$capture.unchanged1"
     },
     {
      "kind": "sha256",
      "path": "src/Catalogs/Items.xml",
-     "eq": "5036c9ec3477269115d11a117e503f866fe6779e2759b9a93b2537b190cc4220"
+     "eq": "$capture.unchanged2"
     },
     {
      "kind": "sha256",
      "path": "src/Catalogs/Items/Forms/Main.xml",
-     "eq": "fe617398b73bf445efdc7457d2bf4ed84954ccca5bd03740836d6b65b4098ec1"
+     "eq": "$capture.unchanged3"
     },
     {
      "kind": "sha256",
      "path": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
-     "eq": "73225264880eca28dd53834a14222eee5b205dd063ff5617a36820383eda596f"
+     "eq": "$capture.unchanged4"
     },
     {
      "kind": "sha256",
@@ -368,22 +371,22 @@
     {
      "kind": "sha256",
      "path": "src/Catalogs/Items/Forms/Other.xml",
-     "eq": "fcee95c674a5a3b047d9aed32e1004bfc60e3483693a9a515ee3de1f7ea5244c"
+     "eq": "$capture.unchanged6"
     },
     {
      "kind": "sha256",
      "path": "src/Catalogs/Items/Forms/Other/Ext/Form.xml",
-     "eq": "73225264880eca28dd53834a14222eee5b205dd063ff5617a36820383eda596f"
+     "eq": "$capture.unchanged7"
     },
     {
      "kind": "sha256",
      "path": "src/Catalogs/Items/Forms/Other/Ext/Form/Module.bsl",
-     "eq": "0b26b53049dc212d0ac00e76b9071695f0ac554ce0cde6bffc7a6c2c0d3c0daa"
+     "eq": "$capture.unchanged8"
     },
     {
      "kind": "sha256",
      "path": "src/Ext/ParentConfigurations.bin",
-     "eq": "c847800dac9cac0be244006ddc5107f979fed9a13868069789a8b5d14fba1b64"
+     "eq": "$capture.unchanged10"
     }
    ]
   },
@@ -407,47 +410,47 @@
     {
      "kind": "sha256",
      "path": "src/Configuration.xml",
-     "eq": "5dc9e01de802985f8944346f4303b520c889dff194446955b7d53d897ba4e547"
+     "eq": "$capture.unchanged1"
     },
     {
      "kind": "sha256",
      "path": "src/Catalogs/Items.xml",
-     "eq": "5036c9ec3477269115d11a117e503f866fe6779e2759b9a93b2537b190cc4220"
+     "eq": "$capture.unchanged2"
     },
     {
      "kind": "sha256",
      "path": "src/Catalogs/Items/Forms/Main.xml",
-     "eq": "fe617398b73bf445efdc7457d2bf4ed84954ccca5bd03740836d6b65b4098ec1"
+     "eq": "$capture.unchanged3"
     },
     {
      "kind": "sha256",
      "path": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
-     "eq": "73225264880eca28dd53834a14222eee5b205dd063ff5617a36820383eda596f"
+     "eq": "$capture.unchanged4"
     },
     {
      "kind": "sha256",
      "path": "src/Catalogs/Items/Forms/Main/Ext/Form/Module.bsl",
-     "eq": "06c2deaa5af5486feb67f5c06c2717f86d920ccdd7de9545422a396ed8686f89"
+     "eq": "$capture.unchanged11"
     },
     {
      "kind": "sha256",
      "path": "src/Catalogs/Items/Forms/Other.xml",
-     "eq": "fcee95c674a5a3b047d9aed32e1004bfc60e3483693a9a515ee3de1f7ea5244c"
+     "eq": "$capture.unchanged6"
     },
     {
      "kind": "sha256",
      "path": "src/Catalogs/Items/Forms/Other/Ext/Form.xml",
-     "eq": "73225264880eca28dd53834a14222eee5b205dd063ff5617a36820383eda596f"
+     "eq": "$capture.unchanged7"
     },
     {
      "kind": "sha256",
      "path": "src/Catalogs/Items/Forms/Other/Ext/Form/Module.bsl",
-     "eq": "0b26b53049dc212d0ac00e76b9071695f0ac554ce0cde6bffc7a6c2c0d3c0daa"
+     "eq": "$capture.unchanged8"
     },
     {
      "kind": "sha256",
      "path": "src/Ext/ParentConfigurations.bin",
-     "eq": "c847800dac9cac0be244006ddc5107f979fed9a13868069789a8b5d14fba1b64"
+     "eq": "$capture.unchanged10"
     }
    ],
    "refusal": "invalid_state: actor support policy denies editing this protected module owner"
@@ -474,52 +477,53 @@
     {
      "kind": "sha256",
      "path": "src/Configuration.xml",
-     "eq": "5dc9e01de802985f8944346f4303b520c889dff194446955b7d53d897ba4e547"
+     "eq": "$capture.unchanged1"
     },
     {
      "kind": "sha256",
      "path": "src/Catalogs/Items.xml",
-     "eq": "5036c9ec3477269115d11a117e503f866fe6779e2759b9a93b2537b190cc4220"
+     "eq": "$capture.unchanged2"
     },
     {
      "kind": "sha256",
      "path": "src/Catalogs/Items/Forms/Main.xml",
-     "eq": "fe617398b73bf445efdc7457d2bf4ed84954ccca5bd03740836d6b65b4098ec1"
+     "eq": "$capture.unchanged3"
     },
     {
      "kind": "sha256",
      "path": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
-     "eq": "73225264880eca28dd53834a14222eee5b205dd063ff5617a36820383eda596f"
+     "eq": "$capture.unchanged4"
     },
     {
      "kind": "sha256",
      "path": "src/Catalogs/Items/Forms/Main/Ext/Form/Module.bsl",
-     "eq": "06c2deaa5af5486feb67f5c06c2717f86d920ccdd7de9545422a396ed8686f89"
+     "eq": "$capture.unchanged11"
     },
     {
      "kind": "sha256",
      "path": "src/Catalogs/Items/Forms/Other.xml",
-     "eq": "fcee95c674a5a3b047d9aed32e1004bfc60e3483693a9a515ee3de1f7ea5244c"
+     "eq": "$capture.unchanged6"
     },
     {
      "kind": "sha256",
      "path": "src/Catalogs/Items/Forms/Other/Ext/Form.xml",
-     "eq": "73225264880eca28dd53834a14222eee5b205dd063ff5617a36820383eda596f"
+     "eq": "$capture.unchanged7"
     },
     {
      "kind": "sha256",
      "path": "src/Catalogs/Items/Forms/Other/Ext/Form/Module.bsl",
-     "eq": "0b26b53049dc212d0ac00e76b9071695f0ac554ce0cde6bffc7a6c2c0d3c0daa"
+     "eq": "$capture.unchanged8"
     },
     {
      "kind": "sha256",
      "path": "src/Ext/ParentConfigurations.bin",
-     "eq": "c847800dac9cac0be244006ddc5107f979fed9a13868069789a8b5d14fba1b64"
+     "eq": "$capture.unchanged10"
     }
    ]
   },
   {
    "tool": "unica.apply",
+   "captures": {"unchanged12": {"file": "src/Ext/ParentConfigurations.bin", "kind": "sha256"}},
    "args": {
     "executionToken": "$executionToken"
    },
@@ -530,42 +534,42 @@
     {
      "kind": "sha256",
      "path": "src/Configuration.xml",
-     "eq": "5dc9e01de802985f8944346f4303b520c889dff194446955b7d53d897ba4e547"
+     "eq": "$capture.unchanged1"
     },
     {
      "kind": "sha256",
      "path": "src/Catalogs/Items.xml",
-     "eq": "5036c9ec3477269115d11a117e503f866fe6779e2759b9a93b2537b190cc4220"
+     "eq": "$capture.unchanged2"
     },
     {
      "kind": "sha256",
      "path": "src/Catalogs/Items/Forms/Main.xml",
-     "eq": "fe617398b73bf445efdc7457d2bf4ed84954ccca5bd03740836d6b65b4098ec1"
+     "eq": "$capture.unchanged3"
     },
     {
      "kind": "sha256",
      "path": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
-     "eq": "73225264880eca28dd53834a14222eee5b205dd063ff5617a36820383eda596f"
+     "eq": "$capture.unchanged4"
     },
     {
      "kind": "sha256",
      "path": "src/Catalogs/Items/Forms/Main/Ext/Form/Module.bsl",
-     "eq": "06c2deaa5af5486feb67f5c06c2717f86d920ccdd7de9545422a396ed8686f89"
+     "eq": "$capture.unchanged11"
     },
     {
      "kind": "sha256",
      "path": "src/Catalogs/Items/Forms/Other.xml",
-     "eq": "fcee95c674a5a3b047d9aed32e1004bfc60e3483693a9a515ee3de1f7ea5244c"
+     "eq": "$capture.unchanged6"
     },
     {
      "kind": "sha256",
      "path": "src/Catalogs/Items/Forms/Other/Ext/Form.xml",
-     "eq": "73225264880eca28dd53834a14222eee5b205dd063ff5617a36820383eda596f"
+     "eq": "$capture.unchanged7"
     },
     {
      "kind": "sha256",
      "path": "src/Catalogs/Items/Forms/Other/Ext/Form/Module.bsl",
-     "eq": "0b26b53049dc212d0ac00e76b9071695f0ac554ce0cde6bffc7a6c2c0d3c0daa"
+     "eq": "$capture.unchanged8"
     },
     {
      "kind": "sha256",
@@ -594,47 +598,47 @@
     {
      "kind": "sha256",
      "path": "src/Configuration.xml",
-     "eq": "5dc9e01de802985f8944346f4303b520c889dff194446955b7d53d897ba4e547"
+     "eq": "$capture.unchanged1"
     },
     {
      "kind": "sha256",
      "path": "src/Catalogs/Items.xml",
-     "eq": "5036c9ec3477269115d11a117e503f866fe6779e2759b9a93b2537b190cc4220"
+     "eq": "$capture.unchanged2"
     },
     {
      "kind": "sha256",
      "path": "src/Catalogs/Items/Forms/Main.xml",
-     "eq": "fe617398b73bf445efdc7457d2bf4ed84954ccca5bd03740836d6b65b4098ec1"
+     "eq": "$capture.unchanged3"
     },
     {
      "kind": "sha256",
      "path": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
-     "eq": "73225264880eca28dd53834a14222eee5b205dd063ff5617a36820383eda596f"
+     "eq": "$capture.unchanged4"
     },
     {
      "kind": "sha256",
      "path": "src/Catalogs/Items/Forms/Main/Ext/Form/Module.bsl",
-     "eq": "06c2deaa5af5486feb67f5c06c2717f86d920ccdd7de9545422a396ed8686f89"
+     "eq": "$capture.unchanged11"
     },
     {
      "kind": "sha256",
      "path": "src/Catalogs/Items/Forms/Other.xml",
-     "eq": "fcee95c674a5a3b047d9aed32e1004bfc60e3483693a9a515ee3de1f7ea5244c"
+     "eq": "$capture.unchanged6"
     },
     {
      "kind": "sha256",
      "path": "src/Catalogs/Items/Forms/Other/Ext/Form.xml",
-     "eq": "73225264880eca28dd53834a14222eee5b205dd063ff5617a36820383eda596f"
+     "eq": "$capture.unchanged7"
     },
     {
      "kind": "sha256",
      "path": "src/Catalogs/Items/Forms/Other/Ext/Form/Module.bsl",
-     "eq": "0b26b53049dc212d0ac00e76b9071695f0ac554ce0cde6bffc7a6c2c0d3c0daa"
+     "eq": "$capture.unchanged8"
     },
     {
      "kind": "sha256",
      "path": "src/Ext/ParentConfigurations.bin",
-     "eq": "68eae2b0dd5b5ac0a636b06d302219f6e0e49b5de348bebca749f946dd1b6fbb"
+     "eq": "$capture.unchanged12"
     }
    ],
    "refusal": "invalid_state: `main:Catalog.Items` is a vendor object with the support rule `locked`; allow editing with `supportRule.set` in a separate apply before ordinary edits"
@@ -661,47 +665,47 @@
     {
      "kind": "sha256",
      "path": "src/Configuration.xml",
-     "eq": "5dc9e01de802985f8944346f4303b520c889dff194446955b7d53d897ba4e547"
+     "eq": "$capture.unchanged1"
     },
     {
      "kind": "sha256",
      "path": "src/Catalogs/Items.xml",
-     "eq": "5036c9ec3477269115d11a117e503f866fe6779e2759b9a93b2537b190cc4220"
+     "eq": "$capture.unchanged2"
     },
     {
      "kind": "sha256",
      "path": "src/Catalogs/Items/Forms/Main.xml",
-     "eq": "fe617398b73bf445efdc7457d2bf4ed84954ccca5bd03740836d6b65b4098ec1"
+     "eq": "$capture.unchanged3"
     },
     {
      "kind": "sha256",
      "path": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
-     "eq": "73225264880eca28dd53834a14222eee5b205dd063ff5617a36820383eda596f"
+     "eq": "$capture.unchanged4"
     },
     {
      "kind": "sha256",
      "path": "src/Catalogs/Items/Forms/Main/Ext/Form/Module.bsl",
-     "eq": "06c2deaa5af5486feb67f5c06c2717f86d920ccdd7de9545422a396ed8686f89"
+     "eq": "$capture.unchanged11"
     },
     {
      "kind": "sha256",
      "path": "src/Catalogs/Items/Forms/Other.xml",
-     "eq": "fcee95c674a5a3b047d9aed32e1004bfc60e3483693a9a515ee3de1f7ea5244c"
+     "eq": "$capture.unchanged6"
     },
     {
      "kind": "sha256",
      "path": "src/Catalogs/Items/Forms/Other/Ext/Form.xml",
-     "eq": "73225264880eca28dd53834a14222eee5b205dd063ff5617a36820383eda596f"
+     "eq": "$capture.unchanged7"
     },
     {
      "kind": "sha256",
      "path": "src/Catalogs/Items/Forms/Other/Ext/Form/Module.bsl",
-     "eq": "0b26b53049dc212d0ac00e76b9071695f0ac554ce0cde6bffc7a6c2c0d3c0daa"
+     "eq": "$capture.unchanged8"
     },
     {
      "kind": "sha256",
      "path": "src/Ext/ParentConfigurations.bin",
-     "eq": "68eae2b0dd5b5ac0a636b06d302219f6e0e49b5de348bebca749f946dd1b6fbb"
+     "eq": "$capture.unchanged12"
     }
    ]
   },
@@ -717,42 +721,47 @@
     {
      "kind": "sha256",
      "path": "src/Configuration.xml",
-     "eq": "5dc9e01de802985f8944346f4303b520c889dff194446955b7d53d897ba4e547"
+     "eq": "$capture.unchanged1"
     },
     {
      "kind": "sha256",
      "path": "src/Catalogs/Items.xml",
-     "eq": "5036c9ec3477269115d11a117e503f866fe6779e2759b9a93b2537b190cc4220"
+     "eq": "$capture.unchanged2"
     },
     {
      "kind": "sha256",
      "path": "src/Catalogs/Items/Forms/Main.xml",
-     "eq": "fe617398b73bf445efdc7457d2bf4ed84954ccca5bd03740836d6b65b4098ec1"
+     "eq": "$capture.unchanged3"
     },
     {
      "kind": "sha256",
      "path": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
-     "eq": "73225264880eca28dd53834a14222eee5b205dd063ff5617a36820383eda596f"
+     "eq": "$capture.unchanged4"
     },
     {
      "kind": "sha256",
      "path": "src/Catalogs/Items/Forms/Main/Ext/Form/Module.bsl",
-     "eq": "06c2deaa5af5486feb67f5c06c2717f86d920ccdd7de9545422a396ed8686f89"
+     "eq": "$capture.unchanged11"
     },
     {
      "kind": "sha256",
      "path": "src/Catalogs/Items/Forms/Other.xml",
-     "eq": "fcee95c674a5a3b047d9aed32e1004bfc60e3483693a9a515ee3de1f7ea5244c"
+     "eq": "$capture.unchanged6"
     },
     {
      "kind": "sha256",
      "path": "src/Catalogs/Items/Forms/Other/Ext/Form.xml",
-     "eq": "73225264880eca28dd53834a14222eee5b205dd063ff5617a36820383eda596f"
+     "eq": "$capture.unchanged7"
     },
     {
      "kind": "sha256",
      "path": "src/Catalogs/Items/Forms/Other/Ext/Form/Module.bsl",
-     "eq": "0b26b53049dc212d0ac00e76b9071695f0ac554ce0cde6bffc7a6c2c0d3c0daa"
+     "eq": "$capture.unchanged8"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Ext/ParentConfigurations.bin",
+     "eq": "26e2bd5102811193ecab466644e7d125fc4af46268923dc90b16373e1ed26a8d"
     }
    ],
    "captures": {
@@ -782,42 +791,42 @@
     {
      "kind": "sha256",
      "path": "src/Configuration.xml",
-     "eq": "5dc9e01de802985f8944346f4303b520c889dff194446955b7d53d897ba4e547"
+     "eq": "$capture.unchanged1"
     },
     {
      "kind": "sha256",
      "path": "src/Catalogs/Items.xml",
-     "eq": "5036c9ec3477269115d11a117e503f866fe6779e2759b9a93b2537b190cc4220"
+     "eq": "$capture.unchanged2"
     },
     {
      "kind": "sha256",
      "path": "src/Catalogs/Items/Forms/Main.xml",
-     "eq": "fe617398b73bf445efdc7457d2bf4ed84954ccca5bd03740836d6b65b4098ec1"
+     "eq": "$capture.unchanged3"
     },
     {
      "kind": "sha256",
      "path": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
-     "eq": "73225264880eca28dd53834a14222eee5b205dd063ff5617a36820383eda596f"
+     "eq": "$capture.unchanged4"
     },
     {
      "kind": "sha256",
      "path": "src/Catalogs/Items/Forms/Main/Ext/Form/Module.bsl",
-     "eq": "06c2deaa5af5486feb67f5c06c2717f86d920ccdd7de9545422a396ed8686f89"
+     "eq": "$capture.unchanged11"
     },
     {
      "kind": "sha256",
      "path": "src/Catalogs/Items/Forms/Other.xml",
-     "eq": "fcee95c674a5a3b047d9aed32e1004bfc60e3483693a9a515ee3de1f7ea5244c"
+     "eq": "$capture.unchanged6"
     },
     {
      "kind": "sha256",
      "path": "src/Catalogs/Items/Forms/Other/Ext/Form.xml",
-     "eq": "73225264880eca28dd53834a14222eee5b205dd063ff5617a36820383eda596f"
+     "eq": "$capture.unchanged7"
     },
     {
      "kind": "sha256",
      "path": "src/Catalogs/Items/Forms/Other/Ext/Form/Module.bsl",
-     "eq": "0b26b53049dc212d0ac00e76b9071695f0ac554ce0cde6bffc7a6c2c0d3c0daa"
+     "eq": "$capture.unchanged8"
     },
     {
      "kind": "sha256",

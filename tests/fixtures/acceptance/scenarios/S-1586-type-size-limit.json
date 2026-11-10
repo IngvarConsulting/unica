@@ -19,6 +19,10 @@
         },
         "type_limit": {
           "pointer": "/data/items/0/limits/0"
+        },
+        "unchanged1": {
+          "file": "src/AccumulationRegisters/Movements.xml",
+          "kind": "sha256"
         }
       },
       "assertions": [
@@ -108,7 +112,7 @@
         {
           "path": "src/AccumulationRegisters/Movements.xml",
           "kind": "sha256",
-          "eq": "81de851c3c01b8b1d360a6c0fcd9df12c1ffbf4a1e3d75247b81057b219ee81a"
+          "eq": "$capture.unchanged1"
         }
       ]
     },
@@ -179,7 +183,7 @@
         {
           "path": "src/AccumulationRegisters/Movements.xml",
           "kind": "sha256",
-          "eq": "81de851c3c01b8b1d360a6c0fcd9df12c1ffbf4a1e3d75247b81057b219ee81a"
+          "eq": "$capture.unchanged1"
         }
       ]
     },
@@ -245,7 +249,7 @@
         {
           "path": "src/AccumulationRegisters/Movements.xml",
           "kind": "sha256",
-          "eq": "81de851c3c01b8b1d360a6c0fcd9df12c1ffbf4a1e3d75247b81057b219ee81a"
+          "eq": "$capture.unchanged1"
         }
       ]
     }

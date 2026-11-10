@@ -49,7 +49,13 @@
           "path": "src/Ext/ParentConfigurations.bin",
           "eq": "2762d952d64311a7bf124d68523ad93ee56c28b3ee9268ca653dd8addee73523"
         }
-      ]
+      ],
+      "captures": {
+        "unchanged1": {
+          "file": "src/Ext/ParentConfigurations.bin",
+          "kind": "sha256"
+        }
+      }
     },
     {
       "tool": "unica.apply",
@@ -82,7 +88,7 @@
         {
           "kind": "sha256",
           "path": "src/Ext/ParentConfigurations.bin",
-          "eq": "2762d952d64311a7bf124d68523ad93ee56c28b3ee9268ca653dd8addee73523"
+          "eq": "$capture.unchanged1"
         },
         {
           "kind": "xml",

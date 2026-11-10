@@ -22,6 +22,26 @@
       "captures": {
         "dynamicItems": {
           "pointer": "/data/branches/0/at"
+        },
+        "unchanged1": {
+          "file": "src/Configuration.xml",
+          "kind": "sha256"
+        },
+        "unchanged2": {
+          "file": "src/Catalogs/Items.xml",
+          "kind": "sha256"
+        },
+        "unchanged3": {
+          "file": "src/Catalogs/Items/Forms/List.xml",
+          "kind": "sha256"
+        },
+        "unchanged4": {
+          "file": "src/Catalogs/Items/Forms/List/Ext/Form.xml",
+          "kind": "sha256"
+        },
+        "unchanged5": {
+          "file": "src/Catalogs/Items/Forms/List/Ext/Form/Module.bsl",
+          "kind": "sha256"
         }
       }
     },
@@ -154,27 +174,27 @@
         {
           "path": "src/Configuration.xml",
           "kind": "sha256",
-          "eq": "5c282279a4045d4e56323d57a81f1602b7f6a5e7ae5b081227722f2b1c507eb1"
+          "eq": "$capture.unchanged1"
         },
         {
           "path": "src/Catalogs/Items.xml",
           "kind": "sha256",
-          "eq": "5d8d6500f9207fd80569ba5840c1417cece4547b63ca52dfff21d3a40637cbfd"
+          "eq": "$capture.unchanged2"
         },
         {
           "path": "src/Catalogs/Items/Forms/List.xml",
           "kind": "sha256",
-          "eq": "68792f24ad39ddef4e34d0c2be7223af90259bc40bf2a9dafd2290c8f9c8a558"
+          "eq": "$capture.unchanged3"
         },
         {
           "path": "src/Catalogs/Items/Forms/List/Ext/Form.xml",
           "kind": "sha256",
-          "eq": "4637726831209bacb3a1f5bee3bd128ac02acf967588a610134bc092f402b612"
+          "eq": "$capture.unchanged4"
         },
         {
           "path": "src/Catalogs/Items/Forms/List/Ext/Form/Module.bsl",
           "kind": "sha256",
-          "eq": "c08ef3aa0117ea5fe8ca9b611135af4f154f8cd7929cc070b94ef4f98008d3b2"
+          "eq": "$capture.unchanged5"
         }
       ]
     }

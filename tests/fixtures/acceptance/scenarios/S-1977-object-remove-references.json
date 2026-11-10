@@ -51,7 +51,13 @@
           "path": "src/CommonModules/EventHandlers/Ext/Module.bsl",
           "eq": "bbb99d8473d791b06f943687d6231011b55b8d1834c7296a3c4e5ce7bcced3e6"
         }
-      ]
+      ],
+      "captures": {
+        "unchanged1": {
+          "file": "src/CommonModules/EventHandlers/Ext/Module.bsl",
+          "kind": "sha256"
+        }
+      }
     },
     {
       "tool": "unica.apply",
@@ -133,7 +139,7 @@
         {
           "kind": "sha256",
           "path": "src/CommonModules/EventHandlers/Ext/Module.bsl",
-          "eq": "bbb99d8473d791b06f943687d6231011b55b8d1834c7296a3c4e5ce7bcced3e6"
+          "eq": "$capture.unchanged1"
         }
       ]
     },
@@ -176,7 +182,7 @@
         {
           "kind": "sha256",
           "path": "src/CommonModules/EventHandlers/Ext/Module.bsl",
-          "eq": "bbb99d8473d791b06f943687d6231011b55b8d1834c7296a3c4e5ce7bcced3e6"
+          "eq": "$capture.unchanged1"
         },
         {
           "kind": "xml",

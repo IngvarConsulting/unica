@@ -28,7 +28,17 @@
           "kind": "sha256",
           "eq": "0b8ebff2e61d9a50e5a6d58cd285bd434dd270b0315d91f5621c8c5e3a39bd5a"
         }
-      ]
+      ],
+      "captures": {
+        "unchanged1": {
+          "file": "src/BusinessProcesses/Approval.xml",
+          "kind": "sha256"
+        },
+        "unchanged2": {
+          "file": "src/Tasks/Work.xml",
+          "kind": "sha256"
+        }
+      }
     },
     {
       "tool": "unica.view",
@@ -241,7 +251,7 @@
         {
           "path": "src/BusinessProcesses/Approval.xml",
           "kind": "sha256",
-          "eq": "0b8ebff2e61d9a50e5a6d58cd285bd434dd270b0315d91f5621c8c5e3a39bd5a"
+          "eq": "$capture.unchanged1"
         }
       ]
     },
@@ -281,7 +291,7 @@
         {
           "path": "src/Tasks/Work.xml",
           "kind": "sha256",
-          "eq": "bb63aa36178433b05018af88f36d3f151ce704738060f82dc33fe364253f8456"
+          "eq": "$capture.unchanged2"
         }
       ]
     },
@@ -496,7 +506,7 @@
         {
           "path": "src/Tasks/Work.xml",
           "kind": "sha256",
-          "eq": "bb63aa36178433b05018af88f36d3f151ce704738060f82dc33fe364253f8456"
+          "eq": "$capture.unchanged2"
         }
       ]
     },
@@ -539,7 +549,7 @@
         {
           "path": "src/BusinessProcesses/Approval.xml",
           "kind": "sha256",
-          "eq": "0b8ebff2e61d9a50e5a6d58cd285bd434dd270b0315d91f5621c8c5e3a39bd5a"
+          "eq": "$capture.unchanged1"
         }
       ]
     },
@@ -904,7 +914,7 @@
         {
           "path": "src/BusinessProcesses/Approval.xml",
           "kind": "sha256",
-          "eq": "0b8ebff2e61d9a50e5a6d58cd285bd434dd270b0315d91f5621c8c5e3a39bd5a"
+          "eq": "$capture.unchanged1"
         }
       ]
     },

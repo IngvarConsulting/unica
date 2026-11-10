@@ -16,6 +16,62 @@
       "captures": {
         "xdtoPackages": {
           "pointer": "/data/branches/19/at"
+        },
+        "unchanged1": {
+          "file": "README.md",
+          "kind": "sha256"
+        },
+        "unchanged2": {
+          "file": "alt/Configuration.xml",
+          "kind": "sha256"
+        },
+        "unchanged3": {
+          "file": "alt/XDTOPackages/Control/Ext/Package.bin",
+          "kind": "sha256"
+        },
+        "unchanged4": {
+          "file": "alt/XDTOPackages/Control.xml",
+          "kind": "sha256"
+        },
+        "unchanged5": {
+          "file": "src/Configuration.xml",
+          "kind": "sha256"
+        },
+        "unchanged6": {
+          "file": "src/XDTOPackages/Control/Ext/Package.bin",
+          "kind": "sha256"
+        },
+        "unchanged7": {
+          "file": "src/XDTOPackages/Control.xml",
+          "kind": "sha256"
+        },
+        "unchanged8": {
+          "file": "src/XDTOPackages/Mixed/Ext/Package.bin",
+          "kind": "sha256"
+        },
+        "unchanged9": {
+          "file": "src/XDTOPackages/Mixed.xml",
+          "kind": "sha256"
+        },
+        "unchanged10": {
+          "file": "src/XDTOPackages/Paged/Ext/Package.bin",
+          "kind": "sha256"
+        },
+        "unchanged11": {
+          "file": "src/XDTOPackages/Paged.xml",
+          "kind": "sha256"
+        },
+        "unchanged12": {
+          "file": "src/XDTOPackages/Unsupported/Ext/Package.bin",
+          "kind": "sha256"
+        },
+        "unchanged13": {
+          "file": "src/XDTOPackages/Unsupported.xml",
+          "kind": "sha256"
+        },
+        "unchanged14": {
+          "file": "v8project.yaml",
+          "kind": "sha256"
         }
       },
       "assertions": [
@@ -1572,72 +1628,72 @@
         {
           "path": "README.md",
           "kind": "sha256",
-          "eq": "17ce52e06718e556f3e8db32465a927302a813f0489e0d9779dfdb99a57bf951"
+          "eq": "$capture.unchanged1"
         },
         {
           "path": "alt/Configuration.xml",
           "kind": "sha256",
-          "eq": "6c4a778c1b052668d7e926672df1400c0d6c916ec8418d0e5059eaa0f1c194af"
+          "eq": "$capture.unchanged2"
         },
         {
           "path": "alt/XDTOPackages/Control/Ext/Package.bin",
           "kind": "sha256",
-          "eq": "bd69d67846bfc616e0c155865d0316400bc1e56699ea481375925609a827b0ad"
+          "eq": "$capture.unchanged3"
         },
         {
           "path": "alt/XDTOPackages/Control.xml",
           "kind": "sha256",
-          "eq": "65c5a74eb59ea0165775a38693cab7c922f9953e41dd8192b78932bf1bb99530"
+          "eq": "$capture.unchanged4"
         },
         {
           "path": "src/Configuration.xml",
           "kind": "sha256",
-          "eq": "0a1d6ddfd2e901291a5c74668dd130cf05c1c7c7921629594584843022e6d2f7"
+          "eq": "$capture.unchanged5"
         },
         {
           "path": "src/XDTOPackages/Control/Ext/Package.bin",
           "kind": "sha256",
-          "eq": "bd69d67846bfc616e0c155865d0316400bc1e56699ea481375925609a827b0ad"
+          "eq": "$capture.unchanged6"
         },
         {
           "path": "src/XDTOPackages/Control.xml",
           "kind": "sha256",
-          "eq": "65c5a74eb59ea0165775a38693cab7c922f9953e41dd8192b78932bf1bb99530"
+          "eq": "$capture.unchanged7"
         },
         {
           "path": "src/XDTOPackages/Mixed/Ext/Package.bin",
           "kind": "sha256",
-          "eq": "455c5d0bea918d01df8c8aee781850cc2d6882239eb233c20964f2999c1a6371"
+          "eq": "$capture.unchanged8"
         },
         {
           "path": "src/XDTOPackages/Mixed.xml",
           "kind": "sha256",
-          "eq": "8de3a13006c43be24fcccdc3896a3a0c1cd1c53d9339e11067b4bfe5f97ff339"
+          "eq": "$capture.unchanged9"
         },
         {
           "path": "src/XDTOPackages/Paged/Ext/Package.bin",
           "kind": "sha256",
-          "eq": "11e7e611dd0e88c8b75e7a521c4639e70fad71f82749254c7eb182e357fdecb0"
+          "eq": "$capture.unchanged10"
         },
         {
           "path": "src/XDTOPackages/Paged.xml",
           "kind": "sha256",
-          "eq": "3ec3a34489c79dd9100b0088c7d4a940637038029fa76e8226a2e13f7fdae897"
+          "eq": "$capture.unchanged11"
         },
         {
           "path": "src/XDTOPackages/Unsupported/Ext/Package.bin",
           "kind": "sha256",
-          "eq": "56649102ad8bd105f40dfe1776cb057b997514497dac28a2fca4783b808db3bb"
+          "eq": "$capture.unchanged12"
         },
         {
           "path": "src/XDTOPackages/Unsupported.xml",
           "kind": "sha256",
-          "eq": "da3fa73d94711a3cffd9f6a86c50761fbf826d3f3d51687c0bedacf295972c66"
+          "eq": "$capture.unchanged13"
         },
         {
           "path": "v8project.yaml",
           "kind": "sha256",
-          "eq": "80e8c8d49361f3fc9b007d7bb02ffd4fe7ad6bb368a80c58d21b341555e461c1"
+          "eq": "$capture.unchanged14"
         }
       ]
     }

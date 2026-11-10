@@ -19,7 +19,13 @@
           "kind": "sha256",
           "eq": "06e6740a8b5bf78f00bebb76e0f91956a97d690e5b78aaa088858b0487cee937"
         }
-      ]
+      ],
+      "captures": {
+        "unchanged1": {
+          "file": "src/CommonModules/Probe/Ext/Module.bsl",
+          "kind": "sha256"
+        }
+      }
     },
     {
       "tool": "unica.apply",
@@ -41,7 +47,7 @@
         {
           "path": "src/CommonModules/Probe/Ext/Module.bsl",
           "kind": "sha256",
-          "eq": "06e6740a8b5bf78f00bebb76e0f91956a97d690e5b78aaa088858b0487cee937"
+          "eq": "$capture.unchanged1"
         }
       ]
     },
@@ -59,7 +65,13 @@
           "kind": "sha256",
           "eq": "77d85b4d113150d7ae805cd3019c156e5c04e07ae4ae8ed5520bc7507507af75"
         }
-      ]
+      ],
+      "captures": {
+        "unchanged2": {
+          "file": "src/CommonModules/Probe/Ext/Module.bsl",
+          "kind": "sha256"
+        }
+      }
     },
     {
       "tool": "unica.apply",
@@ -81,7 +93,7 @@
         {
           "path": "src/CommonModules/Probe/Ext/Module.bsl",
           "kind": "sha256",
-          "eq": "77d85b4d113150d7ae805cd3019c156e5c04e07ae4ae8ed5520bc7507507af75"
+          "eq": "$capture.unchanged2"
         }
       ]
     },
@@ -99,7 +111,13 @@
           "kind": "sha256",
           "eq": "fdbf97807c3d8c61eeae6be4763440754f6fb0745c370f93b1bd8e5bdca74495"
         }
-      ]
+      ],
+      "captures": {
+        "unchanged3": {
+          "file": "src/CommonModules/Probe/Ext/Module.bsl",
+          "kind": "sha256"
+        }
+      }
     },
     {
       "tool": "unica.apply",
@@ -121,7 +139,7 @@
         {
           "path": "src/CommonModules/Probe/Ext/Module.bsl",
           "kind": "sha256",
-          "eq": "fdbf97807c3d8c61eeae6be4763440754f6fb0745c370f93b1bd8e5bdca74495"
+          "eq": "$capture.unchanged3"
         }
       ],
       "assertions": [
@@ -143,7 +161,7 @@
         {
           "path": "src/CommonModules/Probe/Ext/Module.bsl",
           "kind": "sha256",
-          "eq": "fdbf97807c3d8c61eeae6be4763440754f6fb0745c370f93b1bd8e5bdca74495"
+          "eq": "$capture.unchanged3"
         }
       ],
       "assertions": [
@@ -171,7 +189,7 @@
         {
           "path": "src/CommonModules/Probe/Ext/Module.bsl",
           "kind": "sha256",
-          "eq": "fdbf97807c3d8c61eeae6be4763440754f6fb0745c370f93b1bd8e5bdca74495"
+          "eq": "$capture.unchanged3"
         }
       ]
     }

@@ -45,6 +45,7 @@
   },
   {
    "tool": "unica.apply",
+   "captures": {"unchanged1": {"file": "src/CommonModules/GoogleПереводчик/Ext/Module.bsl", "kind": "sha256"}},
    "args": {
     "executionToken": "$executionToken"
    },
@@ -95,12 +96,13 @@
     {
      "kind": "sha256",
      "path": "src/CommonModules/GoogleПереводчик/Ext/Module.bsl",
-     "eq": "8d90bd7e6d80882a35b7fc11be4b663e962a2b0694d41f74bf43ccd9e59e9348"
+     "eq": "$capture.unchanged1"
     }
    ]
   },
   {
    "tool": "unica.apply",
+   "captures": {"unchanged2": {"file": "src/CommonModules/GoogleПереводчик/Ext/Module.bsl", "kind": "sha256"}},
    "args": {
     "executionToken": "$executionToken"
    },
@@ -151,7 +153,7 @@
     {
      "kind": "sha256",
      "path": "src/CommonModules/GoogleПереводчик/Ext/Module.bsl",
-     "eq": "71f446479c01db4503598144f2977920ab895fab79dd1b431b28757cfa6d2af8"
+     "eq": "$capture.unchanged2"
     }
    ]
   }
