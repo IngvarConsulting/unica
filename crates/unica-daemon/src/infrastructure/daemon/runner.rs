@@ -3,7 +3,9 @@
 //! read.
 //!
 //! The runner reads `v8project.yaml` and `v8project.local.yaml` of the working
-//! copy in place, from the `--config` argument; Unica does not copy them. The
+//! copy in place, from the `--config` argument; Unica does not copy them,
+//! except for a re-export, which runs on a config of its own
+//! ([`write_reexport_config`]). The
 //! only key Unica writes is the strict platform choice in the local file, once
 //! per operation and before the operation reads its inputs
 //! ([`prepare_working_copy`]). The runner records the directory of that config
@@ -654,6 +656,139 @@ fn merge_yaml_values(base: &mut Value, overlay: Value) {
     }
 }
 
+/// The config of a re-export (INV.SOURCE.WRITABLE-PROFILE), written into
+/// `directory`, the re-export's own: the project's source sets at their own
+/// directories, a temporary file infobase `directory/ib`, the runner's working
+/// files and personal state inside `directory`, and the platform line that
+/// writes the target format. The project's own config, infobase, `.local` and
+/// the runner's memory of them stay untouched. Only the shared settings of the
+/// two layers are carried over: infobase sections with their credentials, the
+/// platform location and the test and MCP settings are not. Returns the
+/// private `v8project.yaml`; the runner reads its sibling local file.
+pub(super) fn write_reexport_config(
+    root: &Path,
+    directory: &Path,
+    platform_line: &str,
+) -> Result<PathBuf, String> {
+    let root = normalize_path_identity(root).map_err(|error| error.to_string())?;
+    let mut base =
+        read_yaml_config(&root, BASE_NAME)?.ok_or_else(|| format!("{BASE_NAME} is absent"))?;
+    let mut local =
+        read_yaml_config(&root, LOCAL_NAME)?.unwrap_or_else(|| Value::Mapping(Mapping::new()));
+    for (layer, file) in [(&mut base, BASE_NAME), (&mut local, LOCAL_NAME)] {
+        let map = layer
+            .as_mapping_mut()
+            .ok_or_else(|| format!("{file} must be a mapping"))?;
+        for key in [
+            "workPath",
+            "localPath",
+            "infobases",
+            "infobase",
+            "tests",
+            "mcp",
+        ] {
+            map.remove(Value::from(key));
+        }
+        if let Some(platform) = map
+            .get_mut(Value::from("tools"))
+            .and_then(Value::as_mapping_mut)
+            .and_then(|tools| tools.get_mut(Value::from("platform")))
+            .and_then(Value::as_mapping_mut)
+        {
+            platform.remove(Value::from("path"));
+            platform.remove(Value::from("version"));
+        }
+        absolutize_shared_paths(layer, &root, file)?;
+    }
+    let base_map = base.as_mapping_mut().expect("checked mapping");
+    base_map.insert(
+        Value::from("workPath"),
+        Value::from(directory.join("work").display().to_string()),
+    );
+    base_map.insert(
+        Value::from("localPath"),
+        Value::from(directory.join("local").display().to_string()),
+    );
+    let local_map = local.as_mapping_mut().expect("checked mapping");
+    let mut origin = Mapping::new();
+    origin.insert(
+        Value::from("connection"),
+        Value::from(format!("File=\"{}\"", directory.join("ib").display())),
+    );
+    let mut infobases = Mapping::new();
+    infobases.insert(Value::from(ORIGIN), Value::Mapping(origin));
+    local_map.insert(Value::from("infobases"), Value::Mapping(infobases));
+    let tools = local_map
+        .entry(Value::from("tools"))
+        .or_insert_with(|| Value::Mapping(Mapping::new()))
+        .as_mapping_mut()
+        .ok_or_else(|| format!("tools in {LOCAL_NAME} must be a mapping"))?;
+    tools
+        .entry(Value::from("platform"))
+        .or_insert_with(|| Value::Mapping(Mapping::new()))
+        .as_mapping_mut()
+        .ok_or_else(|| format!("tools.platform in {LOCAL_NAME} must be a mapping"))?
+        .insert(Value::from("version"), Value::from(platform_line));
+    std::fs::create_dir_all(directory).map_err(|error| error.to_string())?;
+    for (name, layer) in [(BASE_NAME, &base), (LOCAL_NAME, &local)] {
+        let text = serde_yaml::to_string(layer).map_err(|error| error.to_string())?;
+        std::fs::write(directory.join(name), text).map_err(|error| error.to_string())?;
+    }
+    Ok(directory.join(BASE_NAME))
+}
+
+/// The runner resolves relative paths from the directory of its config. In a
+/// config written elsewhere the shared paths of a layer become absolute from
+/// the working-copy root: the source sets and the tools the runner may start.
+/// A bare EDT name without a directory is a discovery hint, not a path.
+fn absolutize_shared_paths(layer: &mut Value, root: &Path, file: &str) -> Result<(), String> {
+    if let Some(sets) = layer.get_mut("source-set").and_then(Value::as_sequence_mut) {
+        for set in sets {
+            absolutize(set, &["path"], root, file)?;
+        }
+    }
+    for parts in [
+        &["tools", "va", "epf_path"][..],
+        &["tools", "designer_agent", "host-key"],
+        &["tools", "designer_agent", "base-dir"],
+        &["tools", "client_mcp", "extension", "source", "path"],
+        &["tools", "client_mcp", "extension", "artifact", "path"],
+    ] {
+        absolutize(layer, parts, root, file)?;
+    }
+    if let Some(edt) = layer
+        .get_mut("tools")
+        .and_then(|tools| tools.get_mut("edt_cli"))
+        .and_then(|edt| edt.get_mut("path"))
+    {
+        if let Some(text) = edt
+            .as_str()
+            .filter(|text| Path::new(text).components().count() > 1)
+        {
+            *edt = Value::from(root.join(text).display().to_string());
+        }
+    }
+    Ok(())
+}
+
+fn absolutize(value: &mut Value, parts: &[&str], root: &Path, file: &str) -> Result<(), String> {
+    let mut current = value;
+    for part in parts {
+        match current.get_mut(*part) {
+            Some(next) => current = next,
+            None => return Ok(()),
+        }
+    }
+    if current.is_null() {
+        return Ok(());
+    }
+    let text = current
+        .as_str()
+        .ok_or_else(|| format!("{} in {file} must be a path", parts.join(".")))?;
+    *current = Value::from(root.join(text).display().to_string());
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1083,5 +1218,67 @@ source-set:
         ] {
             assert!(check_version(version).is_err());
         }
+    }
+}
+
+#[cfg(test)]
+mod reexport_config_tests {
+    use super::*;
+
+    /// The config of a re-export keeps the project's sets at their own
+    /// directories and names a temporary file infobase, the runner's own
+    /// working files and personal state and the platform line of the target
+    /// format; credentials and the platform location are not carried over and
+    /// the project files are not written.
+    /// rule: INV.SOURCE.WRITABLE-PROFILE
+    #[test]
+    fn a_reexport_config_points_at_a_temporary_infobase_and_the_target_line() {
+        let root = tempfile::tempdir().unwrap();
+        let base = "format: DESIGNER\nlocalPath: personal\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n";
+        let local = "infobases:\n  origin:\n    connection: 'File=base'\n    user: Admin\n    password: secret\ntools:\n  platform:\n    path: 'C:/Program Files/1cv8/8.3.24'\n    version: '8.3.24'\nproviders:\n  pull: designer\n";
+        std::fs::write(root.path().join(BASE_NAME), base).unwrap();
+        std::fs::write(root.path().join(LOCAL_NAME), local).unwrap();
+        let work = root.path().join(".build/unica/reexport/one");
+        let config = write_reexport_config(root.path(), &work, "8.5.4").unwrap();
+        assert_eq!(config, work.join(BASE_NAME));
+        let projected: Value =
+            serde_yaml::from_str(&std::fs::read_to_string(&config).unwrap()).unwrap();
+        let private_text = std::fs::read_to_string(work.join(LOCAL_NAME)).unwrap();
+        let private: Value = serde_yaml::from_str(&private_text).unwrap();
+        let root_identity = normalize_path_identity(root.path()).unwrap();
+        assert_eq!(
+            projected["source-set"][0]["path"]
+                .as_str()
+                .map(PathBuf::from),
+            Some(root_identity.join("src"))
+        );
+        assert_eq!(
+            projected["workPath"].as_str().map(PathBuf::from),
+            Some(work.join("work"))
+        );
+        assert_eq!(
+            projected["localPath"].as_str().map(PathBuf::from),
+            Some(work.join("local"))
+        );
+        assert_eq!(
+            private["infobases"]["origin"]["connection"].as_str(),
+            Some(format!("File=\"{}\"", work.join("ib").display()).as_str())
+        );
+        assert!(private["infobases"]["origin"].get("user").is_none());
+        assert!(!private_text.contains("secret"));
+        assert_eq!(
+            private["tools"]["platform"]["version"],
+            Value::from("8.5.4")
+        );
+        assert!(private["tools"]["platform"].get("path").is_none());
+        assert_eq!(private["providers"]["pull"], Value::from("designer"));
+        assert_eq!(
+            std::fs::read_to_string(root.path().join(BASE_NAME)).unwrap(),
+            base
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.path().join(LOCAL_NAME)).unwrap(),
+            local
+        );
     }
 }

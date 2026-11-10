@@ -44,6 +44,7 @@ pub enum RunIntent {
     InfobaseCreate,
     SourceImport,
     SourceExport,
+    SourceReexport,
     ArtifactBuild,
     CfExport,
     CfImport,
@@ -74,6 +75,7 @@ impl RunOperation {
             RunIntent::InfobaseCreate => "infobase.create",
             RunIntent::SourceImport => "push",
             RunIntent::SourceExport => "pull",
+            RunIntent::SourceReexport => "source.reexport",
             RunIntent::ArtifactBuild => "make",
             RunIntent::CfExport => "download",
             RunIntent::CfImport => "upload",
@@ -97,6 +99,9 @@ impl RunOperation {
             }
             RunIntent::SourceExport => {
                 "Fully replace a source set from the infobase with explicit force. Local-work protection and merge are unavailable."
+            }
+            RunIntent::SourceReexport => {
+                "Re-export a source set in a writable export format through a temporary file infobase: the set is loaded into it with the platform line of the format and exported back in full, replacing the files of the set. The project infobase and files stay unchanged."
             }
             RunIntent::ArtifactBuild => {
                 "Build a CF, CFE, EPF or ERF artifact from attached sources. External artifacts require a singleton Designer sourceSet and a declared main configuration."
@@ -146,6 +151,7 @@ impl RunOperation {
             RunIntent::SourceExport | RunIntent::CfExport | RunIntent::InfobaseExport => {
                 &["infobaseRead", "workspaceFiles"]
             }
+            RunIntent::SourceReexport => &["workspaceFiles"],
             RunIntent::InfobaseCreate
             | RunIntent::SourceImport
             | RunIntent::CfImport
@@ -207,6 +213,9 @@ impl RunOperation {
                 },
                 "required": ["output"]
             })),
+            RunIntent::SourceReexport => Some(
+                json!({"type":"object","additionalProperties":false,"required":["sourceSet","format"],"properties":{"sourceSet":{"type":"string","description":"Declared source set to re-export."},"format":{"type":"string","enum":["2.20","2.21","2.22"],"description":"Writable export format: 2.20 is written by 1C 8.3.27, 2.21 by 8.5.1, 2.22 by 8.5.4; that platform line must be installed."}}}),
+            ),
             RunIntent::SourceExport => Some(
                 json!({"type":"object","additionalProperties":false,"properties":{"sourceSet":{"type":"string","description":"Declared source set to export from the infobase; omit for the main configuration."},"extension":{"type":"string","description":"1C extension name; required for an extension source set and must match it."},"force":{"type":"boolean","description":"true exports the whole set and replaces it, including uncommitted and untracked files. Omit to let the runner choose a partial or full export by its memory of earlier exchanges."}}}),
             ),
@@ -500,6 +509,7 @@ fn run_dictionary() -> Vec<RunOperation> {
         RunIntent::InfobaseCreate,
         RunIntent::SourceImport,
         RunIntent::SourceExport,
+        RunIntent::SourceReexport,
         RunIntent::ArtifactBuild,
         RunIntent::CfExport,
         RunIntent::CfImport,
@@ -605,6 +615,7 @@ mod tests {
                 "infobase.create",
                 "push",
                 "pull",
+                "source.reexport",
                 "make",
                 "download",
                 "upload",
@@ -1034,6 +1045,7 @@ mod tests {
                 RunIntent::InfobaseCreate,
                 RunIntent::SourceImport,
                 RunIntent::SourceExport,
+                RunIntent::SourceReexport,
                 RunIntent::ArtifactBuild,
                 RunIntent::CfExport,
                 RunIntent::CfImport,
@@ -1068,6 +1080,7 @@ mod tests {
                 "infobase.create",
                 "push",
                 "pull",
+                "source.reexport",
                 "make",
                 "download",
                 "infobase.dump",
@@ -1187,6 +1200,7 @@ mod tests {
                 "infobase.create",
                 "push",
                 "pull",
+                "source.reexport",
                 "make",
                 "download",
                 "upload",
@@ -1225,6 +1239,7 @@ mod tests {
                 "infobase.create",
                 "push",
                 "pull",
+                "source.reexport",
                 "make",
                 "download",
                 "infobase.dump",
@@ -1258,7 +1273,7 @@ mod tests {
                 .iter()
                 .filter(|operation| operation.implemented)
                 .count()
-                == 10,
+                == 11,
             "only the proven runner 0.14 subset is implemented"
         );
     }

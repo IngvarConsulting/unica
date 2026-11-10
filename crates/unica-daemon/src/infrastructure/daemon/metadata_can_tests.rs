@@ -1098,6 +1098,66 @@ fn canonical_apply_refuses_inexact_export_format_and_offers_platform_reexport() 
             ] {
                 assert!(message.contains(expected), "{raw}: {message}");
             }
+            // The person may re-export the set and make the edit again, with
+            // the agreed words (INV.SOURCE.WRITABLE-PROFILE).
+            let choice = refused.human_choice.as_deref().expect("a question");
+            assert_eq!(choice.code, "source.format_old");
+            assert_eq!(
+                choice.question,
+                "Набор «main» выгружен в формате 2.19. Правки доступны с формата 2.20 (платформа 8.3.27)."
+            );
+            assert_eq!(choice.options.len(), 1);
+            let option = &choice.options[0];
+            assert_eq!(option.title, "Перевыгрузить набор в формате 2.20");
+            assert_eq!(
+                option.description,
+                "файлы набора перезапишутся, несохранённые правки в них пропадут"
+            );
+            // One call re-exports the set and makes the same edit: a long
+            // re-export continues as one Task together with the edit.
+            assert_eq!(option.tool, "unica.apply");
+            assert!(option.then.is_empty());
+            let mut edit = option.arguments.clone();
+            assert_eq!(
+                edit.remove(unica_execution_contract::invocation::HUMAN_REEXPORT_KEY),
+                Some(json!({"sourceSet": "main", "format": "2.20"}))
+            );
+            assert_eq!(Value::Object(edit), args);
+            // The answer is known long, so it is a Task. A re-export the
+            // runner refuses is its result: the edit does not run and the
+            // sources stay as they are.
+            let request = InvocationRequest::new(
+                ToolIdentity::Apply,
+                Value::Object(option.arguments.clone()),
+                fixture.workspace.to_string_lossy(),
+                7_000,
+            )
+            .unwrap();
+            let Ok(bound) = runtime.bind(request) else {
+                panic!("the answer is admitted");
+            };
+            let prepared = bound.prepare().expect("the answer is prepared");
+            assert!(matches!(
+                prepared.execution_class(),
+                ExecutionClass::KnownLong(_)
+            ));
+            let answered = prepared
+                .execute(CancellationToken::new())
+                .expect("the Task ends with a result");
+            assert!(!answered.ok, "{answered:?}");
+            assert_eq!(
+                answered.at.as_deref(),
+                Some("source.reexport"),
+                "{answered:?}"
+            );
+            assert!(answered.changed.is_empty(), "{answered:?}");
+            assert_eq!(
+                unica_workspace::test_support::tree_snapshot(&fixture.workspace),
+                before,
+                "{raw}"
+            );
+        } else {
+            assert!(refused.human_choice.is_none(), "{raw}: {refused:?}");
         }
         assert!(
             refused

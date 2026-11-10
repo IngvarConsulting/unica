@@ -69,6 +69,18 @@ Support-state checks come from `unica.view` on the configuration root (`support`
 ([#1246](https://github.com/IngvarConsulting/unica/issues/1246)): сообщай это
 как пробел контракта Unica MCP и не заменяй их прямым запуском раннера.
 
+## Old or mixed export format
+
+Набор, выгруженный старше записываемого формата `2.20` или с корнями в разных
+форматах, только читается: правка отказывает `formatMigrationAvailable` или
+`formatVersionMixed`. Клиенту, который умеет спрашивать, Unica задаёт вопрос и
+по выбору человека перевыгружает набор, затем повторяет правку. Без вопроса
+перевыгрузка — `unica.run` с `op: "source.reexport"`, `args: {"sourceSet": "<набор>",
+"format": "2.20"}` (`2.21` — платформа 8.5.1, `2.22` — 8.5.4), сначала
+`dryRun: true`, затем `dryRun: false`. Она заменяет файлы набора выгрузкой из
+временной файловой базы; база и файлы проекта не меняются. Несохранённые правки
+набора пропадут: перед исполнением сохрани их в git. Это долгий вызов.
+
 ## Review checklist
 
 - Поставка и поддержка are explicit release decisions, not hidden in generated churn.

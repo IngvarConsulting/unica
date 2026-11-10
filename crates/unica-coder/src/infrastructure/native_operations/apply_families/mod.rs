@@ -80,9 +80,32 @@ fn refuse_targets_outside_writable_profile(
                 binding.source_profile().serialization_format(),
             )
         {
-            return Err(
-                ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, finding.message).at_path(at),
-            );
+            let set_format = binding.source_profile().serialization_format();
+            // An older or mixed export the person may re-export in a writable
+            // format (INV.SOURCE.WRITABLE-PROFILE); other findings have no way out.
+            let reexport = match (finding.code, finding.actual.clone(), set_format) {
+                ("formatMigrationAvailable", Some(actual), _) => {
+                    Some(unica_source_contract::proposal::FormatReexportKind::Old { actual })
+                }
+                ("formatVersionMixed", Some(other), Some(set_format)) => {
+                    Some(unica_source_contract::proposal::FormatReexportKind::Mixed {
+                        set_format: set_format.to_string(),
+                        other,
+                    })
+                }
+                _ => None,
+            };
+            let error =
+                ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, finding.message).at_path(at);
+            return Err(match reexport {
+                Some(kind) => {
+                    error.with_format_reexport(unica_source_contract::proposal::FormatReexport {
+                        source_set: binding.source_set_name().to_string(),
+                        kind,
+                    })
+                }
+                None => error,
+            });
         }
     }
     Ok(())
