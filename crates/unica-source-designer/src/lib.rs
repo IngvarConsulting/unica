@@ -3,7 +3,6 @@
 pub mod format_profile;
 pub mod probe;
 
-pub mod full_dump_validation;
 pub mod layout;
 pub mod owner;
 pub mod roots;
