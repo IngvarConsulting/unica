@@ -84,7 +84,6 @@ crates/unica-dcs-designer/tests/fixtures/** text eol=lf
 tests/fixtures/acceptance/workspace-exchange-content/src/ExchangePlans/*/Ext/Content.xml -text -whitespace
 
 # Runtime refusal corpus preserves the native owner seed bytes.
-tests/fixtures/acceptance/workspace-pull-validation/src/Configuration.xml -text whitespace=cr-at-eol
 # #1404: 8.3.27 export pairs; their BOM and CRLF bytes are the asserted parity.
 crates/unica-metadata-designer/tests/platform/dump_parity/*.xml -text -whitespace
 crates/unica-forms-designer/tests/platform/dump_parity/*.xml -text -whitespace

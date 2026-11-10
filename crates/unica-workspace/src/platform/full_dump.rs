@@ -858,7 +858,6 @@ mod windows_anchor_tests {
         fs::remove_dir_all(root).unwrap();
     }
 
-    /// rule: INV.RUNTIME.FULL-EXPORT-RETAINED-IDENTITY
     #[test]
     fn windows_private_stage_cleanup_retries_after_compartment_anchor_release() {
         let root = unique_temp_root("private-stage-released-compartment-retry");

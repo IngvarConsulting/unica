@@ -462,7 +462,6 @@ mod tests {
         );
     }
 
-    /// rule: INV.RUNTIME.FULL-EXPORT-RETAINED-IDENTITY
     #[test]
     fn effective_config_preparation_failure_reports_retained_foreign_data() {
         let (root, context, _) = workspace("effective-config-prepare-retention");
@@ -549,7 +548,6 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
-    /// rule: INV.RUNTIME.FULL-EXPORT-PRIVATE-STAGING
     #[cfg(windows)]
     #[test]
     fn windows_applied_full_dump_rejects_effective_config_acl_mutation_before_runner_and_cleans_created_identity(
@@ -1096,7 +1094,6 @@ mod tests {
         }
     }
 
-    /// rule: INV.RUNTIME.FULL-EXPORT-RETAINED-IDENTITY
     #[test]
     fn unconfirmed_runner_retains_private_stage_for_late_writer() {
         for finish in [
@@ -1161,7 +1158,6 @@ mod tests {
         }
     }
 
-    /// rule: INV.RUNTIME.FULL-EXPORT-RETAINED-IDENTITY
     #[test]
     fn runner_unwind_retains_private_stage_for_late_writer() {
         let (root, context, _) = workspace("runner-unwind-late-writer");
@@ -1214,7 +1210,6 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
-    /// rule: INV.RUNTIME.FULL-EXPORT-RETAINED-IDENTITY
     #[test]
     fn confirmed_spawn_failure_preserves_unexpected_staged_output() {
         let (root, context, _) = workspace("spawn-failure-foreign-output");
@@ -1262,7 +1257,6 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
-    /// rule: INV.RUNTIME.FULL-EXPORT-RETAINED-IDENTITY
     #[test]
     fn staged_replacement_after_completion_capture_remains_unowned() {
         let (root, context, _) = workspace("staged-replacement-after-completion");
@@ -1362,7 +1356,6 @@ mod tests {
         }
     }
 
-    /// rule: INV.RUNTIME.FULL-EXPORT-RETAINED-IDENTITY
     #[test]
     fn output_appearing_after_absent_completion_capture_remains_unowned() {
         let (root, context, _) = workspace("staged-appearance-after-completion");
@@ -1432,7 +1425,6 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
-    /// rule: INV.RUNTIME.FULL-EXPORT-RETAINED-IDENTITY
     #[test]
     fn confirmed_spawn_failure_cleans_unused_private_stage() {
         let (root, context, _) = workspace("spawn-failure-cleans-stage");
@@ -1629,7 +1621,6 @@ mod tests {
         );
     }
 
-    /// rule: INV.RUNTIME.FULL-EXPORT-RETAINED-IDENTITY
     #[test]
     fn invalid_staged_xml_never_changes_visible_target() {
         for (case, owner_xml, expected) in [
@@ -1700,7 +1691,6 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
-    /// rule: INV.RUNTIME.FULL-EXPORT-PLATFORM-TRUST
     #[test]
     fn platform_resolver_does_not_trust_an_explicit_platform_path_or_broad_claim() {
         let root = std::env::temp_dir().join(format!(
@@ -1847,8 +1837,6 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
-    /// rule: INV.RUNTIME.FULL-EXPORT-PLATFORM-TRUST
-    /// rule: INV.RUNTIME.FULL-EXPORT-RETAINED-IDENTITY
     #[test]
     fn platform_executable_or_install_swap_after_runner_prevents_publication() {
         for case in ["file", "install"] {
@@ -1925,7 +1913,6 @@ mod tests {
         }
     }
 
-    /// rule: INV.RUNTIME.FULL-EXPORT-PUBLICATION
     #[test]
     fn publication_failure_after_backup_restores_original_tree() {
         let (root, context, _) = workspace("rollback");
@@ -2077,21 +2064,18 @@ mod tests {
         }
     }
 
-    /// rule: INV.RUNTIME.FULL-EXPORT-RETAINED-IDENTITY
     #[cfg(unix)]
     #[test]
     fn concurrent_target_during_capture_error_quarantine_is_preserved() {
         assert_concurrent_target_survives_quarantine(QuarantineRace::Directory);
     }
 
-    /// rule: INV.RUNTIME.FULL-EXPORT-RETAINED-IDENTITY
     #[cfg(unix)]
     #[test]
     fn concurrent_file_during_capture_error_quarantine_is_preserved() {
         assert_concurrent_target_survives_quarantine(QuarantineRace::File);
     }
 
-    /// rule: INV.RUNTIME.FULL-EXPORT-RETAINED-IDENTITY
     #[cfg(unix)]
     #[test]
     fn concurrent_target_during_capture_error_quarantine_survives_recovery_failure() {
@@ -2283,7 +2267,6 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
-    /// rule: INV.RUNTIME.FULL-EXPORT-PUBLICATION
     #[test]
     fn concurrent_target_directory_before_first_installed_probe_survives_rollback() {
         for had_target in [true, false] {
@@ -2291,7 +2274,6 @@ mod tests {
         }
     }
 
-    /// rule: INV.RUNTIME.FULL-EXPORT-PUBLICATION
     #[test]
     fn concurrent_target_file_before_first_installed_probe_survives_rollback() {
         for had_target in [true, false] {
@@ -2450,7 +2432,6 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
-    /// rule: INV.RUNTIME.FULL-EXPORT-PUBLICATION
     #[test]
     fn stage_bytes_changed_after_validation_are_never_published() {
         // Содержимое разбирается один раз, поэтому подмену после проверки ловит только
@@ -2490,7 +2471,6 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
-    /// rule: INV.RUNTIME.FULL-EXPORT-PUBLICATION
     #[test]
     fn installed_tree_interior_mutation_is_quarantined_and_rolled_back() {
         for checkpoint in [
@@ -2531,7 +2511,6 @@ mod tests {
         }
     }
 
-    /// rule: INV.RUNTIME.FULL-EXPORT-PUBLICATION
     #[cfg(unix)]
     #[test]
     fn installed_tree_capture_error_with_same_root_identity_is_quarantined_and_rolled_back() {
@@ -2580,7 +2559,6 @@ mod tests {
         }
     }
 
-    /// rule: INV.RUNTIME.FULL-EXPORT-RETAINED-IDENTITY
     #[cfg(unix)]
     #[test]
     fn stage_name_replacement_before_publish_never_becomes_visible() {
@@ -2634,21 +2612,18 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
-    /// rule: INV.RUNTIME.FULL-EXPORT-RETAINED-IDENTITY
     #[cfg(unix)]
     #[test]
     fn reappeared_execution_stage_survives_success_and_rollback() {
         assert_reappeared_private_stage_is_preserved(true);
     }
 
-    /// rule: INV.RUNTIME.FULL-EXPORT-RETAINED-IDENTITY
     #[cfg(unix)]
     #[test]
     fn cleanup_open_replacement_preserves_owned_and_foreign_trees() {
         assert_cleanup_open_preserves_foreign_data(false);
     }
 
-    /// rule: INV.RUNTIME.FULL-EXPORT-RETAINED-IDENTITY
     #[cfg(unix)]
     #[test]
     fn cleanup_open_preserves_unknown_descendants_of_owned_tree() {
@@ -2719,7 +2694,6 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
-    /// rule: INV.RUNTIME.FULL-EXPORT-RETAINED-IDENTITY
     #[cfg(unix)]
     #[test]
     fn reappeared_sealed_stage_survives_success_and_rollback() {
@@ -2899,14 +2873,12 @@ mod tests {
         }
     }
 
-    /// rule: INV.RUNTIME.FULL-EXPORT-RETAINED-IDENTITY
     #[cfg(unix)]
     #[test]
     fn private_stage_swap_before_seal_precheck_preserves_data_and_scrubs_credentials() {
         assert_private_stage_swap_during_seal_is_preserved(true);
     }
 
-    /// rule: INV.RUNTIME.FULL-EXPORT-RETAINED-IDENTITY
     #[cfg(unix)]
     #[test]
     fn private_stage_swap_after_seal_precheck_preserves_data_and_scrubs_credentials() {
@@ -3038,14 +3010,12 @@ mod tests {
         }
     }
 
-    /// rule: INV.RUNTIME.FULL-EXPORT-PUBLICATION
     #[cfg(unix)]
     #[test]
     fn sealed_source_swap_after_identity_precheck_preserves_data_and_reports_unknown() {
         assert_sealed_source_swap_after_precheck_reports_unknown(true);
     }
 
-    /// rule: INV.RUNTIME.FULL-EXPORT-PUBLICATION
     #[cfg(unix)]
     #[test]
     fn sealed_source_swap_after_identity_precheck_without_original_reports_unknown() {
@@ -3297,8 +3267,6 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
-    /// rule: INV.RUNTIME.FULL-EXPORT-PRIVATE-STAGING
-    /// rule: INV.RUNTIME.FULL-EXPORT-RETAINED-IDENTITY
     #[cfg(unix)]
     #[test]
     fn private_root_swap_cannot_escape_secret_scrubbing_or_anchor_cleanup() {
@@ -3422,7 +3390,6 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
-    /// rule: INV.RUNTIME.FULL-EXPORT-RETAINED-IDENTITY
     #[test]
     fn private_recovery_artifacts_require_the_retained_directory_identity() {
         unica_workspace::full_dump::test_support::retained_recovery_identity_contract(
@@ -3440,7 +3407,6 @@ mod tests {
         );
     }
 
-    /// rule: INV.RUNTIME.FULL-EXPORT-RETAINED-IDENTITY
     #[cfg(windows)]
     #[test]
     fn windows_pending_writer_scrub_failure_preserves_data_and_retries_without_unlink() {
@@ -3497,7 +3463,6 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
-    /// rule: INV.RUNTIME.FULL-EXPORT-RETAINED-IDENTITY
     #[cfg(unix)]
     #[test]
     fn symlink_in_private_stage_is_rejected_before_publication() {
@@ -4595,7 +4560,6 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
-    /// rule: INV.RUNTIME.FULL-EXPORT-RETAINED-IDENTITY
     #[cfg(unix)]
     #[test]
     fn canonical_selected_parent_abort_preserves_a_replaced_parent_identity() {
@@ -4764,7 +4728,6 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
-    /// rule: INV.RUNTIME.FULL-EXPORT-PUBLICATION
     #[test]
     fn canonical_shared_publisher_keeps_post_rename_content_checks_and_rolls_back_mutation() {
         let (root, context, config) = workspace("canonical-post-rename-content-change");
@@ -5178,7 +5141,6 @@ mod tests {
         );
     }
 
-    /// rule: INV.RUNTIME.FULL-EXPORT-RETAINED-IDENTITY
     #[test]
     fn runner_project_projection_foreign_local_in_the_gap_is_preserved_with_the_null_guard() {
         let root = tempfile::tempdir().unwrap();
@@ -5332,7 +5294,6 @@ mod tests {
         );
     }
 
-    /// rule: INV.RUNTIME.FULL-EXPORT-PRIVATE-STAGING
     #[cfg(windows)]
     #[test]
     fn windows_runner_project_layers_are_owner_only_before_secret_bytes_are_written() {
@@ -5463,7 +5424,6 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
-    /// rule: INV.RUNTIME.FULL-EXPORT-RETAINED-IDENTITY
     #[test]
     fn canonical_preparation_failure_reports_retained_projection_and_private_data() {
         let (root, context, config) = workspace("canonical-prepare-retention");
@@ -5657,13 +5617,11 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
-    /// rule: INV.RUNTIME.FULL-EXPORT-RETAINED-IDENTITY
     #[test]
     fn canonical_ready_invalid_owned_xml_cleans_after_test_owned_writer_finishes() {
         verify_canonical_ready_owned_output_cleanup(false);
     }
 
-    /// rule: INV.RUNTIME.FULL-EXPORT-RETAINED-IDENTITY
     #[test]
     fn canonical_ready_platform_recheck_refusal_cleans_after_test_owned_writer_finishes() {
         verify_canonical_ready_owned_output_cleanup(true);
@@ -5682,7 +5640,6 @@ mod tests {
         .unwrap();
     }
 
-    /// rule: INV.RUNTIME.FULL-EXPORT-PUBLICATION
     #[cfg(unix)]
     #[test]
     fn canonical_ready_root_replacement_after_capture_remains_unowned() {
@@ -5750,7 +5707,6 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
-    /// rule: INV.RUNTIME.FULL-EXPORT-PUBLICATION
     #[test]
     fn canonical_ready_same_inode_mutation_after_capture_is_not_recaptured() {
         let (root, context, config) = workspace("canonical-ready-content-mutation");
@@ -5801,7 +5757,6 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
-    /// rule: INV.RUNTIME.FULL-EXPORT-RETAINED-IDENTITY
     #[test]
     fn canonical_published_repeat_never_adopts_a_new_stage_name() {
         let (root, context, config) = workspace("canonical-published-foreign-stage");
