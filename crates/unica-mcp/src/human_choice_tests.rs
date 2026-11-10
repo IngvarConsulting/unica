@@ -559,3 +559,182 @@ async fn a_call_cannot_bring_its_own_confirmation() {
     assert!(calls.lock().unwrap().is_empty());
     client.shutdown().await;
 }
+
+fn staged_question(index: usize) -> String {
+    format!("Question {index}?")
+}
+
+/// A daemon fake that asks `needed` questions about one call in turn: each
+/// one appears once the call carries the answers to all before it, and the
+/// call runs once it carries every answer. Every call's arguments are
+/// recorded.
+fn staged_server(needed: usize) -> (UnicaServer, Calls) {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let observed = Arc::clone(&calls);
+    let handler: Arc<CanonicalCallHandler> = Arc::new(move |_, arguments, _, _, _| {
+        observed.lock().unwrap().push(arguments.clone());
+        let unanswered = (1..=needed).find(|index| {
+            !HumanChoice::is_confirmed(&staged_question(*index), "unica.run", arguments)
+        });
+        let Some(index) = unanswered else {
+            return loaded();
+        };
+        let mut asked = HumanChoice::confirmation(
+            format!("test.question_{index}"),
+            staged_question(index),
+            format!("Answer {index}"),
+            "nothing is lost",
+            "unica.run",
+            arguments,
+        );
+        asked.proceeds_unasked = false;
+        Ok(CanonicalCallOutcome::Choice {
+            refusal: refusal_result(unica_refusal::RefusalCode::InvalidState, REFUSAL),
+            choice: Box::new(asked),
+        })
+    });
+    (UnicaServer::with_canonical_v13(handler), calls)
+}
+
+fn ran(calls: &Calls, needed: usize) -> bool {
+    calls.lock().unwrap().iter().any(|arguments| {
+        (1..=needed)
+            .all(|index| HumanChoice::is_confirmed(&staged_question(index), "unica.run", arguments))
+    })
+}
+
+/// Answers each `elicitation/create` of a legacy session with `answers`
+/// in turn and returns the response of the call.
+async fn answer_legacy(client: &mut McpClient, answers: &[Value]) -> Value {
+    client.send(call_push(1)).await;
+    for answer in answers {
+        let asked = client.receive().await;
+        assert_eq!(asked["method"], "elicitation/create", "{asked}");
+        client
+            .send(json!({"jsonrpc": "2.0", "id": asked["id"], "result": answer}))
+            .await;
+    }
+    client.receive().await
+}
+
+fn accept(_question: usize) -> Value {
+    json!({"action": "accept", "content": {"choice": "confirm"}})
+}
+
+/// An answer that runs into a new question about the same call asks it in
+/// the same `tools/call`; the answers accumulate and the call runs once,
+/// and the response names both answers.
+/// rule: INV.MCP.HUMAN-CHOICE
+#[tokio::test]
+async fn a_legacy_session_is_asked_a_second_question_in_the_same_call() {
+    let (server, calls) = staged_server(2);
+    let (mut client, _) = spawn_unica_server(server);
+    initialize_with(&mut client, json!({"elicitation": {}})).await;
+
+    let response = answer_legacy(&mut client, &[accept(1), accept(2)]).await;
+
+    assert_eq!(response["id"], 1, "{response}");
+    assert_ne!(response["result"]["isError"], true, "{response}");
+    assert_eq!(response["result"]["structuredContent"]["summary"], LOADED);
+    let text = texts(&response);
+    let first = text.find("Answer 1").expect("the first answer is named");
+    let second = text.find("Answer 2").expect("the second answer is named");
+    assert!(first < second, "{text}");
+    assert_eq!(calls.lock().unwrap().len(), 3);
+    client.shutdown().await;
+}
+
+/// Refusing the second question runs nothing: the call keeps its refusal.
+/// rule: INV.MCP.HUMAN-CHOICE
+#[tokio::test]
+async fn refusing_the_second_question_runs_nothing() {
+    for refused in [
+        json!({"action": "decline"}),
+        json!({"action": "accept", "content": {"choice": "cancel"}}),
+    ] {
+        let (server, calls) = staged_server(2);
+        let (mut client, _) = spawn_unica_server(server);
+        initialize_with(&mut client, json!({"elicitation": {}})).await;
+
+        let response = answer_legacy(&mut client, &[accept(1), refused.clone()]).await;
+
+        assert_eq!(response["result"]["isError"], true, "{refused}: {response}");
+        assert!(texts(&response).contains(REFUSAL), "{response}");
+        assert!(!ran(&calls, 2), "{refused}");
+        assert_eq!(calls.lock().unwrap().len(), 2, "{refused}");
+        client.shutdown().await;
+    }
+}
+
+/// A call asks at most three questions: an answer that runs into a fourth
+/// keeps the refusal, and the call does not run.
+/// rule: INV.MCP.HUMAN-CHOICE
+#[tokio::test]
+async fn a_fourth_question_keeps_the_refusal() {
+    let (server, calls) = staged_server(4);
+    let (mut client, _) = spawn_unica_server(server);
+    initialize_with(&mut client, json!({"elicitation": {}})).await;
+
+    let response = answer_legacy(&mut client, &[accept(1), accept(2), accept(3)]).await;
+
+    assert_eq!(response["result"]["isError"], true, "{response}");
+    assert!(texts(&response).contains(REFUSAL), "{response}");
+    assert!(!ran(&calls, 4));
+    assert_eq!(calls.lock().unwrap().len(), 4);
+    client.shutdown().await;
+}
+
+/// A `2026-07-28` client: each retry answers the current question, and its
+/// `requestState` carries the answers before it, so the call runs once all
+/// are given; the fourth question keeps the refusal there too.
+/// rule: INV.MCP.HUMAN-CHOICE
+#[tokio::test]
+async fn a_modern_client_answers_questions_in_turn_by_retrying() {
+    for (needed, runs) in [(2, true), (4, false)] {
+        let (server, calls) = staged_server(needed);
+        let (mut client, _) = spawn_unica_server(server);
+        let params = json!({
+            "name": "unica.run",
+            "arguments": push_call(false),
+            "_meta": modern_elicitation_meta()
+        });
+        client
+            .send(json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": params}))
+            .await;
+        let mut response = client.receive().await;
+        let mut asked = 0;
+        while response["result"]["resultType"] == "input_required" {
+            asked += 1;
+            let request = &response["result"]["inputRequests"][human_choice::CHOICE_INPUT_KEY];
+            assert!(
+                request["params"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with(&staged_question(asked)),
+                "{response}"
+            );
+            let mut retry = params.clone();
+            retry["requestState"] = response["result"]["requestState"].clone();
+            retry["inputResponses"] = json!({
+                human_choice::CHOICE_INPUT_KEY: {"action": "accept", "content": {"choice": "confirm"}}
+            });
+            client
+                .send(json!({"jsonrpc": "2.0", "id": 1 + asked, "method": "tools/call", "params": retry}))
+                .await;
+            response = client.receive().await;
+        }
+
+        if runs {
+            assert_eq!(asked, 2, "{response}");
+            assert_ne!(response["result"]["isError"], true, "{response}");
+            assert_eq!(response["result"]["structuredContent"]["summary"], LOADED);
+            assert!(ran(&calls, needed));
+        } else {
+            assert_eq!(asked, 3, "{response}");
+            assert_eq!(response["result"]["isError"], true, "{response}");
+            assert!(texts(&response).contains(REFUSAL), "{response}");
+            assert!(!ran(&calls, needed));
+        }
+        client.shutdown().await;
+    }
+}

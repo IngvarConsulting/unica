@@ -67,7 +67,6 @@ use {
 
 use crate::domain::call_graph_identity::{CallGraphIdentity, CallGraphIdentityError};
 use crate::infrastructure::capacity_observation::CapacityObserver;
-use crate::infrastructure::native_operations::apply_families::plan_hidden_v13_apply;
 use crate::infrastructure::v13_find::{
     FindBuildError, LayoutFindSource, WorkspaceFindDirectoryBuilder,
 };
