@@ -20,16 +20,20 @@
           "eq": "main:Catalog.Items.Form.Main"
         },
         {
-          "pointer": "/data/props/support",
-          "eq": "locked"
+          "pointer": "/data/props/support/reason",
+          "eq": "editableWithSupport"
         },
         {
-          "pointer": "/data/props/supportRule",
-          "eq": "locked"
+          "pointer": "/data/props/support/editable",
+          "eq": true
         },
         {
-          "pointer": "/data/props/directEditSafe",
-          "eq": false
+          "pointer": "/data/props/support/policy",
+          "eq": "deny"
+        },
+        {
+          "pointer": "/data/props/support/rule",
+          "eq": "locked"
         }
       ],
       "captures": {
@@ -85,7 +89,19 @@
           "eq": "main:Catalog.Items"
         },
         {
-          "pointer": "/data/props/support",
+          "pointer": "/data/props/support/reason",
+          "eq": "editableWithSupport"
+        },
+        {
+          "pointer": "/data/props/support/editable",
+          "eq": true
+        },
+        {
+          "pointer": "/data/props/support/policy",
+          "eq": "deny"
+        },
+        {
+          "pointer": "/data/props/support/rule",
           "eq": "editableWithSupport"
         }
       ]
@@ -104,16 +120,20 @@
           "eq": "main:Catalog.Items.Form.Other"
         },
         {
-          "pointer": "/data/props/support",
-          "eq": "locked"
+          "pointer": "/data/props/support/reason",
+          "eq": "editableWithSupport"
         },
         {
-          "pointer": "/data/props/supportRule",
-          "eq": "locked"
+          "pointer": "/data/props/support/editable",
+          "eq": true
         },
         {
-          "pointer": "/data/props/directEditSafe",
-          "eq": false
+          "pointer": "/data/props/support/policy",
+          "eq": "deny"
+        },
+        {
+          "pointer": "/data/props/support/rule",
+          "eq": "locked"
         }
       ]
     },
@@ -253,16 +273,20 @@
           "eq": "main:Catalog.Items.Form.Main"
         },
         {
-          "pointer": "/data/props/support",
+          "pointer": "/data/props/support/reason",
           "eq": "editableWithSupport"
         },
         {
-          "pointer": "/data/props/supportRule",
-          "eq": "editableWithSupport"
-        },
-        {
-          "pointer": "/data/props/directEditSafe",
+          "pointer": "/data/props/support/editable",
           "eq": true
+        },
+        {
+          "pointer": "/data/props/support/policy",
+          "eq": "deny"
+        },
+        {
+          "pointer": "/data/props/support/rule",
+          "eq": "editableWithSupport"
         }
       ]
     },
@@ -280,16 +304,20 @@
           "eq": "main:Catalog.Items.Form.Other"
         },
         {
-          "pointer": "/data/props/support",
-          "eq": "locked"
+          "pointer": "/data/props/support/reason",
+          "eq": "editableWithSupport"
         },
         {
-          "pointer": "/data/props/supportRule",
-          "eq": "locked"
+          "pointer": "/data/props/support/editable",
+          "eq": true
         },
         {
-          "pointer": "/data/props/directEditSafe",
-          "eq": false
+          "pointer": "/data/props/support/policy",
+          "eq": "deny"
+        },
+        {
+          "pointer": "/data/props/support/rule",
+          "eq": "locked"
         }
       ]
     },
@@ -335,16 +363,20 @@
           "eq": "main:Catalog.Items.Form.Main"
         },
         {
-          "pointer": "/data/props/support",
-          "eq": "editableWithSupport"
+          "pointer": "/data/props/support/reason",
+          "eq": "locked"
         },
         {
-          "pointer": "/data/props/supportRule",
-          "eq": "editableWithSupport"
-        },
-        {
-          "pointer": "/data/props/directEditSafe",
+          "pointer": "/data/props/support/editable",
           "eq": false
+        },
+        {
+          "pointer": "/data/props/support/policy",
+          "eq": "deny"
+        },
+        {
+          "pointer": "/data/props/support/rule",
+          "eq": "editableWithSupport"
         }
       ]
     },
@@ -362,7 +394,19 @@
           "eq": "main:Catalog.Items"
         },
         {
-          "pointer": "/data/props/support",
+          "pointer": "/data/props/support/reason",
+          "eq": "locked"
+        },
+        {
+          "pointer": "/data/props/support/editable",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/support/policy",
+          "eq": "deny"
+        },
+        {
+          "pointer": "/data/props/support/rule",
           "eq": "locked"
         }
       ]
@@ -409,16 +453,20 @@
           "eq": "main:Catalog.Items.Form.Main"
         },
         {
-          "pointer": "/data/props/support",
+          "pointer": "/data/props/support/reason",
           "eq": "configurationReadOnly"
         },
         {
-          "pointer": "/data/props/supportRule",
-          "eq": "locked"
+          "pointer": "/data/props/support/editable",
+          "eq": false
         },
         {
-          "pointer": "/data/props/directEditSafe",
-          "eq": false
+          "pointer": "/data/props/support/policy",
+          "eq": "deny"
+        },
+        {
+          "pointer": "/data/props/support/rule",
+          "eq": "locked"
         }
       ]
     },
@@ -436,8 +484,20 @@
           "eq": "main:Catalog.Items"
         },
         {
-          "pointer": "/data/props/support",
+          "pointer": "/data/props/support/reason",
           "eq": "configurationReadOnly"
+        },
+        {
+          "pointer": "/data/props/support/editable",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/support/policy",
+          "eq": "deny"
+        },
+        {
+          "pointer": "/data/props/support/rule",
+          "eq": "locked"
         }
       ]
     }
