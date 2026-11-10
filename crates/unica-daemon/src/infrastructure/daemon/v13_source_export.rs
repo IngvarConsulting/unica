@@ -25,7 +25,9 @@ use super::v13_infobase_exports::{
 use super::v13_source_set_name::{source_set_name_guidance, valid_source_set_name};
 use unica_artifact_delivery::engine::BundledTool;
 use unica_execution::invocation_store::ToolIdentity;
-use unica_process::runner::{ProcessCommand, ProcessOutput, ProcessRunner};
+use unica_process::runner::{
+    ProcessCommand, ProcessOutput, ProcessRunner, ProcessStreamFailure, SystemProcessRunner,
+};
 use unica_source_contract::workspace::WorkspaceContext;
 
 use crate::infrastructure::workspace::discover_workspace;
@@ -446,7 +448,18 @@ fn execute_with_resolved_runner(
         plan.existed = existed;
     }
     if prepared.dry_run {
-        preview_result(prepared, plan, &envelope)
+        // Полная выгрузка заменяет весь набор: превью называет, сколько
+        // несохранённых в git правок она сотрёт, или что набор не под git.
+        let local = if prepared.arguments.mode == ExportMode::Full {
+            // git — не раннер: его зовёт обычный процесс, без обёртки v8-runner.
+            match local_changes(&SystemProcessRunner, &plan.target_absolute, &cancellation) {
+                Ok(local) => Some(local),
+                Err(error) => return reject(RefusalCode::InvalidState, error),
+            }
+        } else {
+            None
+        };
+        preview_result(prepared, plan, &envelope, local)
     } else {
         applied_result(prepared, plan, &envelope)
     }
@@ -571,6 +584,99 @@ fn selected_target_exists(prepared: &PreparedSourceExport, root: &Path) -> Optio
     Some(root.join(path).is_dir())
 }
 
+/// Несохранённые правки каталога набора перед полной выгрузкой: она
+/// заменяет весь набор, и правки, не сохранённые в git, пропадут.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum LocalChanges {
+    /// Изменённые, удалённые и неотслеживаемые файлы, не исключённые
+    /// `.gitignore`; ноль — правок нет.
+    Files(usize),
+    /// Каталог набора не под git: правки проверить нельзя.
+    NotUnderGit,
+}
+
+impl LocalChanges {
+    fn public(self) -> Value {
+        match self {
+            Self::Files(files) => json!({"underGit": true, "files": files}),
+            Self::NotUnderGit => json!({"underGit": false}),
+        }
+    }
+}
+
+/// Считает по git несохранённые правки в `target`. Отсутствующий каталог —
+/// правок нет. Каталог вне рабочего дерева git или без git на машине —
+/// `NotUnderGit`; ответ git, который не прочитать, — отказ, а не ноль.
+pub(super) fn local_changes(
+    runner: &dyn ProcessRunner,
+    target: &Path,
+    cancellation: &CancellationToken,
+) -> Result<LocalChanges, String> {
+    if !target.is_dir() {
+        return Ok(LocalChanges::Files(0));
+    }
+    let git = |args: &[&str]| {
+        runner.run_staged(&ProcessCommand {
+            program: PathBuf::from("git"),
+            args: args.iter().map(|arg| (*arg).to_string()).collect(),
+            cwd: target.to_path_buf(),
+            env: vec![("GIT_OPTIONAL_LOCKS".into(), "0".into())],
+            env_remove: [
+                "GIT_DIR",
+                "GIT_WORK_TREE",
+                "GIT_INDEX_FILE",
+                "GIT_COMMON_DIR",
+            ]
+            .into_iter()
+            .map(Into::into)
+            .collect(),
+            capture_limits: Some((RUNNER_OUTPUT_LIMIT, RUNNER_OUTPUT_LIMIT)),
+            timeout: None,
+            cancellation: cancellation.clone(),
+        })
+    };
+    let inside = match git(&["rev-parse", "--is-inside-work-tree"]) {
+        Ok(output) => output,
+        // Нет git на машине: правки проверить нельзя, как и вне репозитория.
+        Err(ProcessStreamFailure::Spawn(_)) => return Ok(LocalChanges::NotUnderGit),
+        Err(error) => {
+            return Err(format!(
+                "git rev-parse failed: {}",
+                redactor(error.message())
+            ))
+        }
+    };
+    if inside.cancelled {
+        return Err("git status was cancelled".to_string());
+    }
+    if !inside.status_success || inside.stdout.trim() != "true" {
+        return Ok(LocalChanges::NotUnderGit);
+    }
+    let status = git(&[
+        "status",
+        "--porcelain=v1",
+        "-z",
+        "--untracked-files=all",
+        "--no-renames",
+        "--",
+        ".",
+    ])
+    .map_err(|error| format!("git status failed: {}", redactor(error.message())))?;
+    if status.cancelled {
+        return Err("git status was cancelled".to_string());
+    }
+    if !status.status_success || status.stdout_truncated || status.stdout_had_invalid_utf8 {
+        return Err("git status did not report the changes of the source set".to_string());
+    }
+    Ok(LocalChanges::Files(
+        status
+            .stdout
+            .split('\0')
+            .filter(|entry| !entry.is_empty())
+            .count(),
+    ))
+}
+
 /// Unica не сохраняет прежние исходники и не откатывает выгрузку: отказ
 /// исполнения после запуска раннера говорит, что цель может содержать
 /// частичную выгрузку, и предлагает повторить её полностью.
@@ -640,6 +746,7 @@ fn preview_result(
     prepared: &PreparedSourceExport,
     plan: ExportPlan,
     envelope: &Value,
+    local: Option<LocalChanges>,
 ) -> DomainResult {
     let force = prepared.arguments.mode == ExportMode::Full;
     let mut result = DomainResult::success(format!(
@@ -659,6 +766,7 @@ fn preview_result(
             "targetExists": plan.existed,
             "force": force,
             "replacesLocalSources": force,
+            "localChanges": local.map(LocalChanges::public),
         },
         "providerDispatched": false,
         "requiresPlatform": true,
@@ -1635,6 +1743,133 @@ mod medium_tests {
             );
             assert_eq!(result.diagnostics[0]["code"], expected, "{code}");
             assert_eq!(map_runner_code(code).outcome(), outcome, "{code}");
+        }
+    }
+
+    fn git(dir: &Path, args: &[&str]) {
+        let status = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
+            .status()
+            .unwrap();
+        assert!(status.success(), "git {args:?}");
+    }
+
+    /// Полная выгрузка заменяет набор: подсчёт видит изменённые, удалённые
+    /// и неотслеживаемые файлы, но не исключённые `.gitignore`.
+    /// rule: INV.WIRE.SOURCE-EXPORT-TARGET-STAYS-INSIDE-THE-WORKSPACE
+    #[test]
+    fn local_changes_count_changed_deleted_and_untracked_files_under_git() {
+        let root = tempfile::tempdir().unwrap();
+        git(root.path(), &["init", "-q"]);
+        git(root.path(), &["config", "user.email", "t@example.com"]);
+        git(root.path(), &["config", "user.name", "test"]);
+        let set = root.path().join("main");
+        fs::create_dir_all(set.join("CommonModules")).unwrap();
+        fs::write(set.join("Configuration.xml"), "configuration").unwrap();
+        fs::write(set.join("CommonModules/A.bsl"), "a").unwrap();
+        fs::write(set.join("CommonModules/B.bsl"), "b").unwrap();
+        fs::write(
+            root.path().join(".gitignore"),
+            "main/*.log
+",
+        )
+        .unwrap();
+        git(root.path(), &["add", "-A"]);
+        git(root.path(), &["commit", "-qm", "init"]);
+        let cancellation = CancellationToken::new();
+
+        assert_eq!(
+            local_changes(&SystemProcessRunner, &set, &cancellation).unwrap(),
+            LocalChanges::Files(0)
+        );
+        fs::write(set.join("CommonModules/A.bsl"), "edited").unwrap();
+        fs::remove_file(set.join("CommonModules/B.bsl")).unwrap();
+        fs::write(set.join("CommonModules/New.bsl"), "new").unwrap();
+        fs::write(set.join("ignored.log"), "ignored").unwrap();
+        fs::write(root.path().join("outside.txt"), "outside the set").unwrap();
+        assert_eq!(
+            local_changes(&SystemProcessRunner, &set, &cancellation).unwrap(),
+            LocalChanges::Files(3)
+        );
+    }
+
+    /// Каталог вне git — правки проверить нельзя; отсутствующий каталог —
+    /// правок нет.
+    /// rule: INV.WIRE.SOURCE-EXPORT-TARGET-STAYS-INSIDE-THE-WORKSPACE
+    #[test]
+    fn local_changes_name_a_set_outside_git_and_an_absent_one() {
+        let root = tempfile::tempdir().unwrap();
+        let set = root.path().join("main");
+        let cancellation = CancellationToken::new();
+        assert_eq!(
+            local_changes(&SystemProcessRunner, &set, &cancellation).unwrap(),
+            LocalChanges::Files(0)
+        );
+        fs::create_dir_all(&set).unwrap();
+        fs::write(set.join("Configuration.xml"), "configuration").unwrap();
+        // Каталог временный, но может лежать внутри чужого репозитория:
+        // ответ тогда — число, а не «не под git»; проверяется только вне git.
+        let outside = std::process::Command::new("git")
+            .args(["rev-parse", "--is-inside-work-tree"])
+            .current_dir(&set)
+            .output()
+            .map(|output| !output.status.success())
+            .unwrap_or(true);
+        if outside {
+            assert_eq!(
+                local_changes(&SystemProcessRunner, &set, &cancellation).unwrap(),
+                LocalChanges::NotUnderGit
+            );
+        }
+    }
+
+    /// Ответ git, который не прочитать, — отказ, а не «правок нет».
+    /// rule: INV.WIRE.SOURCE-EXPORT-TARGET-STAYS-INSIDE-THE-WORKSPACE
+    #[test]
+    fn an_unreadable_git_answer_is_refused_rather_than_counted_as_clean() {
+        let root = tempfile::tempdir().unwrap();
+        let mut inside = process(json!(null), true);
+        inside.stdout = "true
+"
+        .to_string();
+        let mut failed = process(json!(null), false);
+        failed.stdout = String::new();
+        let runner = SequenceRunner::new(vec![inside, failed]);
+        let error = local_changes(&runner, root.path(), &CancellationToken::new()).unwrap_err();
+        assert!(error.contains("git status"), "{error}");
+        let args: Vec<String> = runner.calls.lock().unwrap()[1].args.clone();
+        assert!(
+            args.contains(&"--untracked-files=all".to_string()),
+            "{args:?}"
+        );
+    }
+
+    /// Превью полной выгрузки называет несохранённые правки; частичная
+    /// выгрузка набор не заменяет и их не считает.
+    /// rule: INV.WIRE.SOURCE-EXPORT-TARGET-STAYS-INSIDE-THE-WORKSPACE
+    #[test]
+    fn a_full_pull_preview_names_local_changes_and_a_partial_one_does_not() {
+        let root = workspace();
+        for (mode, runner_mode, expected) in [
+            (ExportMode::Full, "FULL", true),
+            (ExportMode::Incremental, "INCREMENTAL", false),
+        ] {
+            let runner = SequenceRunner::new(vec![process(
+                envelope(root.path(), "main", runner_mode, None, false),
+                true,
+            )]);
+            let result = run(
+                root.path(),
+                &prepared(root.path(), mode, Some("main"), None, true),
+                &runner,
+            );
+            assert!(result.ok, "{result:?}");
+            let local = &result.data.as_ref().unwrap()["plan"]["localChanges"];
+            assert_eq!(!local.is_null(), expected, "{mode:?}: {local}");
         }
     }
 }
