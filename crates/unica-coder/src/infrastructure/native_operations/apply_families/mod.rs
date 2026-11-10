@@ -1243,6 +1243,7 @@ pub fn plan_hidden_v13_apply(
         )
         .at_path("ops"));
     }
+    let mut member_choices = unica_metadata_designer::planner::MemberChoicePlan::default();
     let code_type_plan = unica_metadata_designer::planner::PredefinedCodeTypePlan::from_operations(
         parsed.iter().filter_map(|operation| match operation {
             ParsedApplyOperation::Metadata(operation) => Some(operation),
@@ -1362,7 +1363,7 @@ pub fn plan_hidden_v13_apply(
                     .collect::<Vec<_>>();
                 let authority = admission.metadata_planning_authority(binding)?;
                 let planned =
-                    unica_metadata_designer::planner::plan_metadata_batch(&crate::infrastructure::native_operations::meta::template_source::MetadataPlanningReadAdapter::new(&authority),unica_metadata_designer::planner::TemplateSeedEmitter(unica_templates_designer::mxl_root::empty_spreadsheet_document_xml),&mut staged.proposal(), &authority, &operations, &code_type_plan)?;
+                    unica_metadata_designer::planner::plan_metadata_batch(&crate::infrastructure::native_operations::meta::template_source::MetadataPlanningReadAdapter::new(&authority),unica_metadata_designer::planner::TemplateSeedEmitter(unica_templates_designer::mxl_root::empty_spreadsheet_document_xml),&mut staged.proposal(), &authority, &operations, &code_type_plan, &mut member_choices)?;
                 provisional.extend(planned);
             }
             ParsedApplyOperation::FormResource(_) => {
@@ -1400,19 +1401,18 @@ pub fn plan_hidden_v13_apply(
     }
 
     code_type_plan.validate_final(&mut staged.proposal(), binding.source_kind())?;
-    unica_metadata_designer::planner::validate_final_numerators(
+    unica_metadata_designer::planner::validate_final_metadata(
         &mut staged.proposal(),
+        binding.source_set_name(),
+        binding.source_kind(),
         parsed.iter().filter_map(|operation| match operation {
             ParsedApplyOperation::Metadata(operation) => {
                 Some((operation.index(), operation.operation()))
             }
             _ => None,
         }),
-    )?;
-    unica_metadata_designer::planner::validate_final_object_integrity(
-        &mut staged.proposal(),
-        binding.source_set_name(),
-        binding.source_kind(),
+        &member_choices,
+        unica_forms_designer::standard_choice::validate,
     )?;
     let dcs_edits = parsed
         .iter()

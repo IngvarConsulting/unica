@@ -70,6 +70,22 @@ pub fn parse_metadata_request_after_shape(
     operation: MetadataOperation,
     args: &Map<String, Value>,
 ) -> Result<MetadataRequest, MetaFailure> {
+    parse_request_with_profile(operation, args, false)
+}
+
+/// Decode the synthetic metadata edit issued by the addressed Apply family.
+pub fn parse_apply_metadata_edit(
+    args: &Map<String, Value>,
+) -> Result<MetadataRequest, MetaFailure> {
+    validate_metadata_argument_shape(MetadataOperation::Edit, args)?;
+    parse_request_with_profile(MetadataOperation::Edit, args, true)
+}
+
+fn parse_request_with_profile(
+    operation: MetadataOperation,
+    args: &Map<String, Value>,
+    allow_member_choice: bool,
+) -> Result<MetadataRequest, MetaFailure> {
     let source_set = required_string(args, "sourceSet")?;
     match operation {
         MetadataOperation::Info => {
@@ -118,7 +134,13 @@ pub fn parse_metadata_request_after_shape(
         MetadataOperation::Edit => {
             let metadata_path = required_metadata_path(args, "metadataPath")?;
             let kind = metadata_kind_for_address(&metadata_path)?;
-            let operations = parse_operations(args.get("operations"), true, kind, &metadata_path)?;
+            let operations = parse_operations_with_profile(
+                args.get("operations"),
+                true,
+                kind,
+                &metadata_path,
+                allow_member_choice,
+            )?;
             let dry_run = optional_bool(args, "dryRun", true)?;
             Ok(MetadataRequest::Edit(MetaEditRequest {
                 source_set,
@@ -168,6 +190,16 @@ pub fn parse_operations(
     kind: MetadataKind,
     owner: &MetadataAddress,
 ) -> Result<Vec<MetaEditOperation>, MetaFailure> {
+    parse_operations_with_profile(value, required, kind, owner, false)
+}
+
+fn parse_operations_with_profile(
+    value: Option<&Value>,
+    required: bool,
+    kind: MetadataKind,
+    owner: &MetadataAddress,
+    allow_member_choice: bool,
+) -> Result<Vec<MetaEditOperation>, MetaFailure> {
     let Some(value) = value else {
         return if required {
             Err(invalid("operations", "`operations` is required").into())
@@ -187,6 +219,20 @@ pub fn parse_operations(
         .map(|(index, raw_operation)| {
             let operation = parse_edit_operation(raw_operation, kind)
                 .map_err(|diagnostic| diagnostic.with_operation_index(index))?;
+            if !allow_member_choice {
+                if let MetaEditOperation::Update { elements, .. } = &operation {
+                    for (element, update) in elements.iter().enumerate() {
+                        if let Some((property, _)) = update.choice.0.first() {
+                            let key = property.argument();
+                            return Err(invalid(
+                                format!("elements[{element}].{key}"),
+                                format!("unknown field `{key}`"),
+                            )
+                            .with_operation_index(index));
+                        }
+                    }
+                }
+            }
             validate_metadata_operation_capabilities(kind, owner, &operation)
                 .map_err(|diagnostic| diagnostic.with_operation_index(index))?;
             Ok(operation)
@@ -832,6 +878,18 @@ pub fn parse_element_update(
         MetadataArgumentReader::new(object, metadata_element_input_schema(true, false), field);
     reader.reject_unknown()?;
     Ok(MetaElementUpdateInput {
+        choice: crate::MemberChoiceChanges(
+            crate::MemberChoiceProperty::ALL
+                .iter()
+                .filter_map(
+                    |property| match reader.read(property.argument(), optional_string_at) {
+                        Ok(Some(value)) => Some(Ok((*property, value))),
+                        Ok(None) => None,
+                        Err(error) => Some(Err(error)),
+                    },
+                )
+                .collect::<Result<Vec<_>, _>>()?,
+        ),
         indexing: reader.read("indexing", optional_string_at)?,
         master: reader.read("master", optional_bool_at)?,
         main_filter: reader.read("mainFilter", optional_bool_at)?,
@@ -1918,5 +1976,24 @@ mod reduction_tests {
             )
             .is_ok());
         }
+    }
+}
+
+#[cfg(test)]
+mod member_choice_regression {
+    #[test]
+    fn existing_member_choice_settings_decode_through_productive_parser() {
+        use super::*;
+        let values = json!({"name":"Product", "choiceFoldersAndItems":"FoldersAndItems",
+            "choiceForm":"Catalog.Products.Form.Choice", "choiceHistoryOnInput":"DontUse",
+            "quickChoice":"Use", "createOnInput":"DontUse"});
+        let input = parse_element_update(&values, "element").unwrap();
+        assert_eq!(input.choice.0.len(), MemberChoiceProperty::ALL.len());
+
+        let args = json!({"sourceSet":"main", "metadataPath":"Catalog.Products",
+            "operations":[{"op":"update", "collection":"attributes", "elements":[values]}]});
+        let args = args.as_object().unwrap();
+        assert!(parse_apply_metadata_edit(args).is_ok());
+        assert!(parse_metadata_request(MetadataOperation::Edit, args).is_err());
     }
 }

@@ -157,7 +157,11 @@ fn catalog_tabular_native_context_does_not_admit_other_platform_owner_kinds() {
     for section in &info.collections.tabular_sections {
         assert_no_pilot_properties(section);
         for attribute in &section.attributes {
-            assert!(attribute.properties.is_empty());
+            assert!(attribute.properties.iter().all(|property| {
+                unica_metadata::MemberChoiceProperty::ALL
+                    .iter()
+                    .any(|choice| property.name == choice.public_name())
+            }));
         }
     }
     assert_eq!(info.name, "АктОбУничтоженииПерсональныхДанных");
@@ -319,6 +323,26 @@ fn nested_optional_fact_damage_is_local_and_missing_never_infers_defaults() {
 
 #[test]
 fn reduction_profile_reads_three_values_and_keeps_missing_and_damaged_facts_local() {
+    fn assert_choice_facts(dimension: &unica_metadata::MetaElementData) {
+        for (name, expected) in [
+            ("ChoiceFoldersAndItems", "Items"),
+            ("ChoiceForm", ""),
+            ("ChoiceHistoryOnInput", "Auto"),
+            ("QuickChoice", "Auto"),
+            ("CreateOnInput", "Auto"),
+        ] {
+            let found = dimension
+                .properties
+                .iter()
+                .filter(|p| p.name == name)
+                .collect::<Vec<_>>();
+            assert_eq!(found.len(), 1);
+            assert_eq!(
+                serde_json::to_value(&found[0].value).unwrap(),
+                json!({"kind":"text","value":expected})
+            );
+        }
+    }
     let native = include_str!("../../../../tests/fixtures/acceptance/workspace-register-dimensions/src/InformationRegisters/Цены.xml");
     let original = "<TypeReductionMode>TransformValues</TypeReductionMode>";
     for value in ["TransformValues", "Deny", "DeleteData"] {
@@ -332,6 +356,7 @@ fn reduction_profile_reads_three_values_and_keeps_missing_and_damaged_facts_loca
             Some(SourceSetKind::Configuration),
         );
         let dimension = &info.collections.dimensions[0];
+        assert_choice_facts(dimension);
         // The dimension also carries its other observed facts.
         let reduction = dimension
             .properties
@@ -356,6 +381,7 @@ fn reduction_profile_reads_three_values_and_keeps_missing_and_damaged_facts_loca
             "InformationRegister.Цены",
             Some(SourceSetKind::Configuration),
         );
+        assert_choice_facts(&info.collections.dimensions[0]);
         assert!(!info.collections.dimensions[0]
             .properties
             .iter()
@@ -374,7 +400,8 @@ fn reduction_profile_reads_three_values_and_keeps_missing_and_damaged_facts_loca
     ] {
         let info = read(native, "InformationRegister.Цены", kind);
         assert!(info.member_read_profile.is_none());
-        assert!(info.collections.dimensions[0].properties.is_empty());
+        let dimension = &info.collections.dimensions[0];
+        assert!(dimension.properties.is_empty());
     }
 }
 

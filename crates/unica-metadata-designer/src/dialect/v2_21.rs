@@ -7,6 +7,7 @@ pub(crate) static DIALECT: MetadataDialect = MetadataDialect {
     version: "2.21",
     platform_line: "8.5.1",
     kind_declares_child_objects: super::v2_20::kind_declares_child_objects,
+    member_choice_name: super::v2_20::member_choice_name,
     boolean_properties: super::v2_20::boolean_properties,
     line_compatibility_modes: &["Version8_5_1"],
 };

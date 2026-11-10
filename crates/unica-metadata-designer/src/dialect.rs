@@ -17,6 +17,7 @@ pub(crate) struct MetadataDialect {
     /// The platform line that writes that version.
     pub(crate) platform_line: &'static str,
     pub(crate) kind_declares_child_objects: fn(MetadataKind) -> bool,
+    pub(crate) member_choice_name: fn(unica_metadata::MemberChoiceProperty) -> &'static str,
     pub(crate) boolean_properties: fn(&str) -> &'static [&'static str],
     /// Compatibility modes the platform line adds to the 8.3 modes every
     /// line knows: the line writes its own mode into the configuration.
@@ -35,6 +36,7 @@ static V2_20: MetadataDialect = MetadataDialect {
     version: root_version::writable(),
     platform_line: root_version::writable_platform_line_const(),
     kind_declares_child_objects: v2_20::kind_declares_child_objects,
+    member_choice_name: v2_20::member_choice_name,
     boolean_properties: v2_20::boolean_properties,
     line_compatibility_modes: &[],
 };

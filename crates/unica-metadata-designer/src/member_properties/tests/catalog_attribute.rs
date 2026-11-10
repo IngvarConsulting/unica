@@ -202,7 +202,19 @@ fn catalog_attribute_native_profile_reads_each_closed_enum_value() {
             let xml = replace_column_property(name, &format!("<{name}>{value}</{name}>"));
             let info = read_catalog(&xml);
             let attribute = column(&info);
-            assert_eq!(attribute.properties.len(), ENUMS.len() + 1);
+            assert_eq!(attribute.properties.len(), ENUMS.len() + 6);
+            for (choice, expected) in [
+                ("ChoiceFoldersAndItems", "Items"),
+                ("ChoiceForm", ""),
+                ("ChoiceHistoryOnInput", "Auto"),
+                ("QuickChoice", "Auto"),
+                ("CreateOnInput", "Auto"),
+            ] {
+                assert_eq!(
+                    observed(attribute, choice),
+                    Some(json!({"kind":"text","value":expected}))
+                );
+            }
             assert_eq!(
                 observed(attribute, name),
                 Some(json!({"kind": "text", "value": value}))

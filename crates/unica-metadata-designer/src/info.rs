@@ -792,7 +792,8 @@ pub fn parse_typed_meta_local_info_inner(
             attributes: typed_root_collection(
                 xml,
                 child_objects,
-                collection_route("Attribute", false, "collections.attributes"),
+                collection_route("Attribute", false, "collections.attributes")
+                    .with_member_read_profile(member_read_profile),
                 target,
                 &mut diagnostics,
             ),
@@ -815,7 +816,8 @@ pub fn parse_typed_meta_local_info_inner(
             resources: typed_root_collection(
                 xml,
                 child_objects,
-                collection_route("Resource", false, "collections.resources"),
+                collection_route("Resource", false, "collections.resources")
+                    .with_member_read_profile(member_read_profile),
                 target,
                 &mut diagnostics,
             ),

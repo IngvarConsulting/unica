@@ -1,0 +1,1882 @@
+{
+  "id": "S-1669-member-choice",
+  "issue": 1669,
+  "area": "Метаданные",
+  "task": "Изменить настройки выбора существующих реквизитов, измерения и ресурса; проверить Can, preview, token, XML, post-image и конфликт без частичной записи.",
+  "workspace": "tests/fixtures/acceptance/workspace-member-choice",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Валюты.Attribute.ОсновнаяВалюта.Can.attribute.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/quickChoice/enum",
+          "eq": [
+            "Auto",
+            "Use",
+            "DontUse"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Валюты.Attribute.ОсновнаяВалюта"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before1": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Валюты.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты.Attribute.ОсновнаяВалюта",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "choiceFoldersAndItems": "FoldersAndItems",
+                "choiceHistoryOnInput": "DontUse",
+                "choiceForm": "Catalog.Валюты.Form.ФормаСписка"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Валюты.xml",
+          "kind": "sha256",
+          "eq": "$capture.before1"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Валюты.Attribute.ОсновнаяВалюта"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/ChoiceFoldersAndItems",
+          "eq": "FoldersAndItems"
+        },
+        {
+          "pointer": "/data/props/ChoiceHistoryOnInput",
+          "eq": "DontUse"
+        },
+        {
+          "pointer": "/data/props/ChoiceForm",
+          "eq": "Catalog.Валюты.Form.ФормаСписка"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты.Attribute.ОсновнаяВалюта",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "quickChoice": "Use"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Валюты.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}ChildObjects/{*}Attribute/{*}Properties[{*}Name=\"ОсновнаяВалюта\"]/{*}QuickChoice",
+          "eq": [
+            "Use"
+          ]
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Валюты.Attribute.ОсновнаяВалюта"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/QuickChoice",
+          "eq": "Use"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты.Attribute.ОсновнаяВалюта",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "quickChoice": "DontUse"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Валюты.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}ChildObjects/{*}Attribute/{*}Properties[{*}Name=\"ОсновнаяВалюта\"]/{*}QuickChoice",
+          "eq": [
+            "DontUse"
+          ]
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Валюты.Attribute.ОсновнаяВалюта"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/QuickChoice",
+          "eq": "DontUse"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты.Attribute.ОсновнаяВалюта",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "quickChoice": "Auto"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Валюты.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}ChildObjects/{*}Attribute/{*}Properties[{*}Name=\"ОсновнаяВалюта\"]/{*}QuickChoice",
+          "eq": [
+            "Auto"
+          ]
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Валюты.Attribute.ОсновнаяВалюта"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/QuickChoice",
+          "eq": "Auto"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты.Attribute.ОсновнаяВалюта",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "createOnInput": "Use"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Валюты.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}ChildObjects/{*}Attribute/{*}Properties[{*}Name=\"ОсновнаяВалюта\"]/{*}CreateOnInput",
+          "eq": [
+            "Use"
+          ]
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Валюты.Attribute.ОсновнаяВалюта"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/CreateOnInput",
+          "eq": "Use"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты.Attribute.ОсновнаяВалюта",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "createOnInput": "DontUse"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Валюты.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}ChildObjects/{*}Attribute/{*}Properties[{*}Name=\"ОсновнаяВалюта\"]/{*}CreateOnInput",
+          "eq": [
+            "DontUse"
+          ]
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Валюты.Attribute.ОсновнаяВалюта"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/CreateOnInput",
+          "eq": "DontUse"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты.Attribute.ОсновнаяВалюта",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "createOnInput": "Auto"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Валюты.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}ChildObjects/{*}Attribute/{*}Properties[{*}Name=\"ОсновнаяВалюта\"]/{*}CreateOnInput",
+          "eq": [
+            "Auto"
+          ]
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Валюты.Attribute.ОсновнаяВалюта"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/CreateOnInput",
+          "eq": "Auto"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Валюты.TabularSection.Представления.Attribute.КодЯзыка.Can.attribute.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/quickChoice/enum",
+          "eq": [
+            "Auto",
+            "Use",
+            "DontUse"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Валюты.TabularSection.Представления.Attribute.КодЯзыка"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before24": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Валюты.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты.TabularSection.Представления.Attribute.КодЯзыка",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "choiceFoldersAndItems": "FoldersAndItems",
+                "choiceHistoryOnInput": "DontUse",
+                "choiceForm": "Catalog.Валюты.Form.ФормаСписка"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Валюты.xml",
+          "kind": "sha256",
+          "eq": "$capture.before24"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Валюты.TabularSection.Представления.Attribute.КодЯзыка"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/ChoiceFoldersAndItems",
+          "eq": "FoldersAndItems"
+        },
+        {
+          "pointer": "/data/props/ChoiceHistoryOnInput",
+          "eq": "DontUse"
+        },
+        {
+          "pointer": "/data/props/ChoiceForm",
+          "eq": "Catalog.Валюты.Form.ФормаСписка"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты.TabularSection.Представления.Attribute.КодЯзыка",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "quickChoice": "Use"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Валюты.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}ChildObjects/{*}TabularSection/{*}ChildObjects/{*}Attribute/{*}Properties[{*}Name=\"КодЯзыка\"]/{*}QuickChoice",
+          "eq": [
+            "Use"
+          ]
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Валюты.TabularSection.Представления.Attribute.КодЯзыка"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/QuickChoice",
+          "eq": "Use"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты.TabularSection.Представления.Attribute.КодЯзыка",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "quickChoice": "DontUse"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Валюты.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}ChildObjects/{*}TabularSection/{*}ChildObjects/{*}Attribute/{*}Properties[{*}Name=\"КодЯзыка\"]/{*}QuickChoice",
+          "eq": [
+            "DontUse"
+          ]
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Валюты.TabularSection.Представления.Attribute.КодЯзыка"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/QuickChoice",
+          "eq": "DontUse"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты.TabularSection.Представления.Attribute.КодЯзыка",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "quickChoice": "Auto"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Валюты.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}ChildObjects/{*}TabularSection/{*}ChildObjects/{*}Attribute/{*}Properties[{*}Name=\"КодЯзыка\"]/{*}QuickChoice",
+          "eq": [
+            "Auto"
+          ]
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Валюты.TabularSection.Представления.Attribute.КодЯзыка"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/QuickChoice",
+          "eq": "Auto"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты.TabularSection.Представления.Attribute.КодЯзыка",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "createOnInput": "Use"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Валюты.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}ChildObjects/{*}TabularSection/{*}ChildObjects/{*}Attribute/{*}Properties[{*}Name=\"КодЯзыка\"]/{*}CreateOnInput",
+          "eq": [
+            "Use"
+          ]
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Валюты.TabularSection.Представления.Attribute.КодЯзыка"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/CreateOnInput",
+          "eq": "Use"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты.TabularSection.Представления.Attribute.КодЯзыка",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "createOnInput": "DontUse"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Валюты.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}ChildObjects/{*}TabularSection/{*}ChildObjects/{*}Attribute/{*}Properties[{*}Name=\"КодЯзыка\"]/{*}CreateOnInput",
+          "eq": [
+            "DontUse"
+          ]
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Валюты.TabularSection.Представления.Attribute.КодЯзыка"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/CreateOnInput",
+          "eq": "DontUse"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты.TabularSection.Представления.Attribute.КодЯзыка",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "createOnInput": "Auto"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Валюты.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}ChildObjects/{*}TabularSection/{*}ChildObjects/{*}Attribute/{*}Properties[{*}Name=\"КодЯзыка\"]/{*}CreateOnInput",
+          "eq": [
+            "Auto"
+          ]
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Валюты.TabularSection.Представления.Attribute.КодЯзыка"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/CreateOnInput",
+          "eq": "Auto"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.Цены.Dimension.Товар.Can.dimension.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/quickChoice/enum",
+          "eq": [
+            "Auto",
+            "Use",
+            "DontUse"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.Цены.Dimension.Товар"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before47": {
+          "kind": "sha256",
+          "file": "src/InformationRegisters/Цены.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:InformationRegister.Цены.Dimension.Товар",
+        "ops": [
+          {
+            "op": "dimension.set",
+            "args": {
+              "values": {
+                "choiceFoldersAndItems": "FoldersAndItems",
+                "choiceHistoryOnInput": "DontUse",
+                "choiceForm": "Catalog.Валюты.Form.ФормаСписка"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/Цены.xml",
+          "kind": "sha256",
+          "eq": "$capture.before47"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.Цены.Dimension.Товар"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/ChoiceFoldersAndItems",
+          "eq": "FoldersAndItems"
+        },
+        {
+          "pointer": "/data/props/ChoiceHistoryOnInput",
+          "eq": "DontUse"
+        },
+        {
+          "pointer": "/data/props/ChoiceForm",
+          "eq": "Catalog.Валюты.Form.ФормаСписка"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:InformationRegister.Цены.Dimension.Товар",
+        "ops": [
+          {
+            "op": "dimension.set",
+            "args": {
+              "values": {
+                "quickChoice": "Use"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/Цены.xml",
+          "kind": "xml",
+          "select": "./{*}InformationRegister/{*}ChildObjects/{*}Dimension/{*}Properties/{*}QuickChoice",
+          "eq": [
+            "Use"
+          ]
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.Цены.Dimension.Товар"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/QuickChoice",
+          "eq": "Use"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:InformationRegister.Цены.Dimension.Товар",
+        "ops": [
+          {
+            "op": "dimension.set",
+            "args": {
+              "values": {
+                "quickChoice": "DontUse"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/Цены.xml",
+          "kind": "xml",
+          "select": "./{*}InformationRegister/{*}ChildObjects/{*}Dimension/{*}Properties/{*}QuickChoice",
+          "eq": [
+            "DontUse"
+          ]
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.Цены.Dimension.Товар"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/QuickChoice",
+          "eq": "DontUse"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:InformationRegister.Цены.Dimension.Товар",
+        "ops": [
+          {
+            "op": "dimension.set",
+            "args": {
+              "values": {
+                "quickChoice": "Auto"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/Цены.xml",
+          "kind": "xml",
+          "select": "./{*}InformationRegister/{*}ChildObjects/{*}Dimension/{*}Properties/{*}QuickChoice",
+          "eq": [
+            "Auto"
+          ]
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.Цены.Dimension.Товар"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/QuickChoice",
+          "eq": "Auto"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:InformationRegister.Цены.Dimension.Товар",
+        "ops": [
+          {
+            "op": "dimension.set",
+            "args": {
+              "values": {
+                "createOnInput": "Use"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/Цены.xml",
+          "kind": "xml",
+          "select": "./{*}InformationRegister/{*}ChildObjects/{*}Dimension/{*}Properties/{*}CreateOnInput",
+          "eq": [
+            "Use"
+          ]
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.Цены.Dimension.Товар"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/CreateOnInput",
+          "eq": "Use"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:InformationRegister.Цены.Dimension.Товар",
+        "ops": [
+          {
+            "op": "dimension.set",
+            "args": {
+              "values": {
+                "createOnInput": "DontUse"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/Цены.xml",
+          "kind": "xml",
+          "select": "./{*}InformationRegister/{*}ChildObjects/{*}Dimension/{*}Properties/{*}CreateOnInput",
+          "eq": [
+            "DontUse"
+          ]
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.Цены.Dimension.Товар"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/CreateOnInput",
+          "eq": "DontUse"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:InformationRegister.Цены.Dimension.Товар",
+        "ops": [
+          {
+            "op": "dimension.set",
+            "args": {
+              "values": {
+                "createOnInput": "Auto"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/Цены.xml",
+          "kind": "xml",
+          "select": "./{*}InformationRegister/{*}ChildObjects/{*}Dimension/{*}Properties/{*}CreateOnInput",
+          "eq": [
+            "Auto"
+          ]
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.Цены.Dimension.Товар"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/CreateOnInput",
+          "eq": "Auto"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.Цены.Resource.Цена.Can.resource.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/quickChoice/enum",
+          "eq": [
+            "Auto",
+            "Use",
+            "DontUse"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.Цены.Resource.Цена"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before70": {
+          "kind": "sha256",
+          "file": "src/InformationRegisters/Цены.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:InformationRegister.Цены.Resource.Цена",
+        "ops": [
+          {
+            "op": "resource.set",
+            "args": {
+              "values": {
+                "choiceFoldersAndItems": "FoldersAndItems",
+                "choiceHistoryOnInput": "DontUse",
+                "choiceForm": "Catalog.Валюты.Form.ФормаСписка"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/Цены.xml",
+          "kind": "sha256",
+          "eq": "$capture.before70"
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.Цены.Resource.Цена"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/ChoiceFoldersAndItems",
+          "eq": "FoldersAndItems"
+        },
+        {
+          "pointer": "/data/props/ChoiceHistoryOnInput",
+          "eq": "DontUse"
+        },
+        {
+          "pointer": "/data/props/ChoiceForm",
+          "eq": "Catalog.Валюты.Form.ФормаСписка"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:InformationRegister.Цены.Resource.Цена",
+        "ops": [
+          {
+            "op": "resource.set",
+            "args": {
+              "values": {
+                "quickChoice": "Use"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/Цены.xml",
+          "kind": "xml",
+          "select": "./{*}InformationRegister/{*}ChildObjects/{*}Resource/{*}Properties/{*}QuickChoice",
+          "eq": [
+            "Use"
+          ]
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.Цены.Resource.Цена"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/QuickChoice",
+          "eq": "Use"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:InformationRegister.Цены.Resource.Цена",
+        "ops": [
+          {
+            "op": "resource.set",
+            "args": {
+              "values": {
+                "quickChoice": "DontUse"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/Цены.xml",
+          "kind": "xml",
+          "select": "./{*}InformationRegister/{*}ChildObjects/{*}Resource/{*}Properties/{*}QuickChoice",
+          "eq": [
+            "DontUse"
+          ]
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.Цены.Resource.Цена"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/QuickChoice",
+          "eq": "DontUse"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:InformationRegister.Цены.Resource.Цена",
+        "ops": [
+          {
+            "op": "resource.set",
+            "args": {
+              "values": {
+                "quickChoice": "Auto"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/Цены.xml",
+          "kind": "xml",
+          "select": "./{*}InformationRegister/{*}ChildObjects/{*}Resource/{*}Properties/{*}QuickChoice",
+          "eq": [
+            "Auto"
+          ]
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.Цены.Resource.Цена"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/QuickChoice",
+          "eq": "Auto"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:InformationRegister.Цены.Resource.Цена",
+        "ops": [
+          {
+            "op": "resource.set",
+            "args": {
+              "values": {
+                "createOnInput": "Use"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/Цены.xml",
+          "kind": "xml",
+          "select": "./{*}InformationRegister/{*}ChildObjects/{*}Resource/{*}Properties/{*}CreateOnInput",
+          "eq": [
+            "Use"
+          ]
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.Цены.Resource.Цена"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/CreateOnInput",
+          "eq": "Use"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:InformationRegister.Цены.Resource.Цена",
+        "ops": [
+          {
+            "op": "resource.set",
+            "args": {
+              "values": {
+                "createOnInput": "DontUse"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/Цены.xml",
+          "kind": "xml",
+          "select": "./{*}InformationRegister/{*}ChildObjects/{*}Resource/{*}Properties/{*}CreateOnInput",
+          "eq": [
+            "DontUse"
+          ]
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.Цены.Resource.Цена"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/CreateOnInput",
+          "eq": "DontUse"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:InformationRegister.Цены.Resource.Цена",
+        "ops": [
+          {
+            "op": "resource.set",
+            "args": {
+              "values": {
+                "createOnInput": "Auto"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/Цены.xml",
+          "kind": "xml",
+          "select": "./{*}InformationRegister/{*}ChildObjects/{*}Resource/{*}Properties/{*}CreateOnInput",
+          "eq": [
+            "Auto"
+          ]
+        }
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.Цены.Resource.Цена"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/CreateOnInput",
+          "eq": "Auto"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты.Attribute.ОсновнаяВалюта",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "quickChoice": "Use"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "stale": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты.Attribute.ОсновнаяВалюта",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "createOnInput": "DontUse"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "current": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Валюты.xml"
+        }
+      },
+      "awaitTask": true
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.stale"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "stale_revision: retained apply preimage changed: Catalogs/Валюты.xml; input `Catalogs/Валюты.xml`: source write target; the plan retains its original state to prevent overwriti",
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Валюты.xml",
+          "kind": "sha256",
+          "eq": "$capture.current"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты.Attribute.ОсновнаяВалюта",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "choiceForm": "Document.Приход.Form.Choose"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: choiceForm: standard choice form main table does not match the field reference type",
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Валюты.xml",
+          "kind": "sha256",
+          "eq": "$capture.current"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты.Attribute.ОсновнаяВалюта",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "choiceForm": "Catalog.Codes.Form.Choose"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: choiceForm: executable BSL is outside the standard choice form profile",
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Валюты.xml",
+          "kind": "sha256",
+          "eq": "$capture.current"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты.Attribute.ОсновнаяВалюта",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "type": {
+                  "variants": [
+                    {
+                      "kind": "boolean"
+                    }
+                  ]
+                },
+                "fillValue": {
+                  "kind": "boolean",
+                  "value": false
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: choiceForm: choiceForm supports only a single CatalogRef or DocumentRef",
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Валюты.xml",
+          "kind": "sha256",
+          "eq": "$capture.current"
+        }
+      ]
+    }
+  ]
+}

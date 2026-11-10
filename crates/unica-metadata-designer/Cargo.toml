@@ -34,6 +34,7 @@ file-io = "none"
 inputs = [
     "tests/fixtures/acceptance/workspace-information-register-dimension-flags",
     "tests/fixtures/acceptance/workspace-metadata-edit-type",
+    "tests/fixtures/acceptance/workspace-member-choice",
     "tests/fixtures/acceptance/workspace-register-dimensions",
     "tests/fixtures/acceptance/workspace-tabular-attribute-copy",
     "tests/fixtures/acceptance/workspace/src/Subsystems",

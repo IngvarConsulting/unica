@@ -188,6 +188,7 @@ pub fn metadata_element_input_schema(update: bool, attributes: bool) -> &'static
             }
         } else {
             fields.remove("templateType");
+            add_member_choice_fields(&mut fields);
             fields.insert("typeReductionMode".into(), json!({"type":"string", "enum":["Deny", "TransformValues"]}));
         }
         json!({"type":"object","additionalProperties":false,"required":["name"],"properties":fields})
@@ -262,6 +263,16 @@ fn metadata_element_schema(
         );
     }
     let selector = if update { "newName" } else { "name" };
+    if update
+        && matches!(
+            collection,
+            MetaCollection::Attributes | MetaCollection::Dimensions | MetaCollection::Resources
+        )
+        && site
+            .is_none_or(|site| crate::member_choice_site(site.owner, collection, site.in_section))
+    {
+        add_member_choice_fields(&mut fields);
+    }
     fields[selector]
         .as_object_mut()
         .expect("identifier field")
@@ -287,6 +298,18 @@ fn metadata_element_schema(
         schema["required"] = metadata_element_input_schema(false, false)["required"].clone();
     }
     schema
+}
+
+fn add_member_choice_fields(fields: &mut Map<String, Value>) {
+    for property in crate::MemberChoiceProperty::ALL {
+        let mut shape = json!({"type":"string"});
+        if let Some(values) = property.values() {
+            shape["enum"] = json!(values);
+        } else {
+            shape["description"] = json!("Configuration only: registered managed standard list for one CatalogRef/DocumentRef with table ChoiceMode=true; no executable form BSL or custom commands; empty string clears the setting");
+        }
+        fields.insert(property.argument().into(), shape);
+    }
 }
 
 /// The existing host input knows every predefined field. Identifier, UUID

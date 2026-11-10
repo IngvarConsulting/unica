@@ -1,4 +1,7 @@
-use super::{MetaObservedPropertyValue, MetadataKind};
+use super::{
+    member_choice_site, MemberChoiceProperty, MetaCollection, MetaObservedPropertyValue,
+    MetadataKind,
+};
 use serde::{Deserialize, Serialize};
 use unica_address::address::{NodeKind, QualifiedAddress};
 use unica_source_contract::SourceSetKind;
@@ -18,6 +21,8 @@ pub enum MetaMemberReadProfile {
 pub enum MetaMemberReadContext {
     TabularSection,
     TabularAttribute,
+    Attribute,
+    InformationRegisterResource,
     DocumentCommand,
     InformationRegisterDimension,
     AccumulationRegisterDimension,
@@ -31,6 +36,7 @@ pub enum MetaMemberValueKind {
     CommandGroup,
     Text(&'static [&'static str]),
     LocalizedString,
+    Choice(MemberChoiceProperty),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -177,7 +183,7 @@ impl MetaMemberReadProfile {
     pub fn properties(
         self,
         context: MetaMemberReadContext,
-    ) -> impl Iterator<Item = &'static MetaMemberPropertySpec> {
+    ) -> impl Iterator<Item = MetaMemberPropertySpec> {
         let properties = match self {
             Self::CatalogTabularSection220 => CATALOG_MEMBER_PROPERTIES,
             Self::DocumentCommand220 => DOCUMENT_COMMAND_PROPERTIES,
@@ -185,12 +191,56 @@ impl MetaMemberReadProfile {
             Self::AccumulationRegisterDimension220 => ACCUMULATION_DIMENSION_PROPERTIES,
             Self::DocumentJournalColumn220 => JOURNAL_COLUMN_PROPERTIES,
         };
+        let site = match context {
+            MetaMemberReadContext::Attribute => Some((MetaCollection::Attributes, false)),
+            MetaMemberReadContext::TabularAttribute => Some((MetaCollection::Attributes, true)),
+            MetaMemberReadContext::InformationRegisterDimension => {
+                Some((MetaCollection::Dimensions, false))
+            }
+            MetaMemberReadContext::InformationRegisterResource => {
+                Some((MetaCollection::Resources, false))
+            }
+            _ => None,
+        };
+        let choices = site.is_some_and(|(collection, in_section)| {
+            member_choice_site(self.owner_kind(), collection, in_section)
+        });
         properties
             .iter()
+            .copied()
             .filter(move |spec| spec.context == context)
+            .chain(
+                MemberChoiceProperty::ALL
+                    .iter()
+                    .filter(move |_| choices)
+                    .map(move |&property| MetaMemberPropertySpec {
+                        name: property.public_name(),
+                        public_name: property.public_name(),
+                        context,
+                        kind: MetaMemberValueKind::Choice(property),
+                    }),
+            )
     }
 
     pub fn context_for_field(self, field: &str) -> Option<MetaMemberReadContext> {
+        let owner = self.owner_kind();
+        if member_choice_site(owner, MetaCollection::Attributes, false)
+            && indexed_field_suffix(field, "collections.attributes[") == Some("")
+        {
+            return Some(MetaMemberReadContext::Attribute);
+        }
+        if owner == MetadataKind::InformationRegister
+            && indexed_field_suffix(field, "collections.resources[") == Some("")
+        {
+            return Some(MetaMemberReadContext::InformationRegisterResource);
+        }
+        if owner == MetadataKind::Document
+            && indexed_field_suffix(field, "collections.tabularSections[")
+                .and_then(|rest| indexed_field_suffix(rest, ".attributes["))
+                == Some("")
+        {
+            return Some(MetaMemberReadContext::TabularAttribute);
+        }
         let direct = match self {
             Self::CatalogTabularSection220 => None,
             Self::DocumentCommand220 => Some((
@@ -229,6 +279,40 @@ impl MetaMemberReadProfile {
         address: &QualifiedAddress,
         kind: NodeKind,
     ) -> Option<MetaMemberReadContext> {
+        let owner_kind = self.owner_kind();
+        match address.segments() {
+            [owner, member]
+                if owner.kind().as_str() == owner_kind.as_str()
+                    && owner.name().is_some()
+                    && member.name().is_some()
+                    && member.kind() == kind =>
+            {
+                match kind {
+                    NodeKind::Attribute
+                        if member_choice_site(owner_kind, MetaCollection::Attributes, false) =>
+                    {
+                        return Some(MetaMemberReadContext::Attribute)
+                    }
+                    NodeKind::Resource if owner_kind == MetadataKind::InformationRegister => {
+                        return Some(MetaMemberReadContext::InformationRegisterResource)
+                    }
+                    _ => {}
+                }
+            }
+            [owner, section, member]
+                if owner_kind == MetadataKind::Document
+                    && owner.kind() == NodeKind::Document
+                    && owner.name().is_some()
+                    && section.kind() == NodeKind::TabularSection
+                    && section.name().is_some()
+                    && member.kind() == NodeKind::Attribute
+                    && member.name().is_some()
+                    && kind == NodeKind::Attribute =>
+            {
+                return Some(MetaMemberReadContext::TabularAttribute);
+            }
+            _ => {}
+        }
         if self != Self::CatalogTabularSection220 {
             let [owner, member] = address.segments() else {
                 return None;
@@ -296,7 +380,8 @@ impl MetaMemberReadContext {
     pub fn xml_tag(self) -> &'static str {
         match self {
             Self::TabularSection => "TabularSection",
-            Self::TabularAttribute => "Attribute",
+            Self::TabularAttribute | Self::Attribute => "Attribute",
+            Self::InformationRegisterResource => "Resource",
             Self::DocumentCommand => "Command",
             Self::InformationRegisterDimension | Self::AccumulationRegisterDimension => "Dimension",
             Self::DocumentJournalColumn => "Column",
@@ -332,6 +417,13 @@ impl MetaMemberPropertySpec {
                         value: value.into(),
                     })
             }
+            MetaMemberValueKind::Choice(property) => {
+                property
+                    .accepts(value)
+                    .then(|| MetaObservedPropertyValue::Text {
+                        value: value.into(),
+                    })
+            }
             MetaMemberValueKind::LocalizedString => None,
         }
     }
@@ -346,6 +438,9 @@ impl MetaMemberPropertySpec {
                 MetaMemberValueKind::UnsignedInteger,
                 MetaObservedPropertyValue::UnsignedInteger { .. },
             ) => true,
+            (MetaMemberValueKind::Choice(property), MetaObservedPropertyValue::Text { value }) => {
+                property.accepts(value)
+            }
             (MetaMemberValueKind::Text(values), MetaObservedPropertyValue::Text { value }) => {
                 values.contains(&value.as_str())
             }

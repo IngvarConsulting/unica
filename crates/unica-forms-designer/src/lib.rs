@@ -2,6 +2,7 @@
 pub mod form_move;
 pub mod form_root_properties;
 pub mod root;
+pub mod standard_choice;
 
 mod dialect;
 

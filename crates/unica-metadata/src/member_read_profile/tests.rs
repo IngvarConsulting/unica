@@ -5,6 +5,7 @@ use unica_address::address::{NodeKind, QualifiedAddress};
 fn member_profile_context_requires_the_complete_named_catalog_path() {
     let profile = MetaMemberReadProfile::CatalogTabularSection220;
     for (at, kind) in [
+        ("main:Catalog.Items.Attribute.Header", NodeKind::Attribute),
         (
             "main:Catalog.Items.TabularSection.Lines",
             NodeKind::TabularSection,
@@ -22,7 +23,6 @@ fn member_profile_context_requires_the_complete_named_catalog_path() {
     }
     for (at, kind) in [
         ("main:Catalog.Items", NodeKind::Catalog),
-        ("main:Catalog.Items.Attribute.Header", NodeKind::Attribute),
         (
             "main:Catalog.Items.TabularSection",
             NodeKind::TabularSection,
@@ -119,7 +119,7 @@ fn nested_profiles_are_closed_by_source_owner_version_and_exact_member_context()
             NodeKind::Dimension,
             "dimensions",
             MetaMemberReadContext::InformationRegisterDimension,
-            4,
+            9,
         ),
         (
             MetadataKind::AccumulationRegister,
@@ -172,7 +172,7 @@ fn nested_profiles_are_closed_by_source_owner_version_and_exact_member_context()
             format!("collections.{field}[]"),
             format!("collections.{field}[x]"),
             format!("collections.{field}[0].attributes[1]"),
-            "collections.attributes[0]".into(),
+            "collections.attributes[0].attributes[1]".into(),
         ] {
             assert!(profile.context_for_field(&field).is_none(), "{field}");
         }
@@ -199,7 +199,7 @@ fn nested_profiles_are_closed_by_source_owner_version_and_exact_member_context()
 fn nested_profile_scalar_domains_preserve_false_and_accept_native_group_forms() {
     use crate::{MetaMemberReadContext, MetaObservedPropertyValue};
     let command = MetaMemberReadProfile::DocumentCommand220;
-    let group = *command
+    let group = command
         .properties(MetaMemberReadContext::DocumentCommand)
         .find(|spec| spec.name == "Group")
         .unwrap();
@@ -231,7 +231,7 @@ fn nested_profile_scalar_domains_preserve_false_and_accept_native_group_forms() 
     ] {
         assert!(group.parse_text(invalid).is_none(), "{invalid}");
     }
-    let modifies = *command
+    let modifies = command
         .properties(MetaMemberReadContext::DocumentCommand)
         .find(|spec| spec.name == "ModifiesData")
         .unwrap();
@@ -274,15 +274,15 @@ fn reduction_profile_requires_exact_source_owner_format_and_dimension_context() 
         profile
             .properties(MetaMemberReadContext::InformationRegisterDimension)
             .count(),
-        // Master, MainFilter, DenyIncompleteValues and TypeReductionMode.
-        4
+        // Four dimension facts and five field choice settings.
+        9
     );
     assert!(profile
         .context_for_field("collections.dimensions[0]")
         .is_some());
     for field in [
         "collections.dimensions[]",
-        "collections.resources[0]",
+        "collections.resources[0].attributes[0]",
         "collections.dimensions[0].attributes[0]",
         "collections.tabularSections[0]",
     ] {

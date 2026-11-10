@@ -231,11 +231,22 @@ impl unica_operations::FamilyOperation for MetadataOperation {
             .segments()
             .iter()
             .any(|segment| segment.kind() == unica_address::address::NodeKind::TabularSection);
-        Some(
-            self.contract_at(
-                owner.map(|owner| crate::contracts::MetadataSite { owner, in_section }),
-            ),
-        )
+        let mut contract = self
+            .contract_at(owner.map(|owner| crate::contracts::MetadataSite { owner, in_section }));
+        if site.source().kind() != unica_source_contract::SourceSetKind::Configuration
+            || !site.source().is_writable()
+        {
+            if let Some(values) = contract
+                .schema
+                .pointer_mut("/properties/values/properties")
+                .and_then(serde_json::Value::as_object_mut)
+            {
+                for property in crate::MemberChoiceProperty::ALL {
+                    values.remove(property.argument());
+                }
+            }
+        }
+        Some(contract)
     }
 }
 
@@ -725,6 +736,7 @@ mod tests {
                         master: None,
                         main_filter: None,
                         type_reduction_mode: None,
+                        choice: Default::default(),
                     }],
                 },
             )

@@ -34,11 +34,16 @@ pub fn observe(
     };
     let mut observed = Vec::new();
     let mut limits = Vec::new();
+    let dialect = crate::dialect::for_version(node.document().root_element().attribute("version"));
     for spec in profile.properties(context) {
+        let name = match spec.value_kind() {
+            MetaMemberValueKind::Choice(property) => (dialect.member_choice_name)(property),
+            _ => spec.name,
+        };
         let nodes = properties
             .into_iter()
             .flat_map(|properties| properties.children())
-            .filter(|child| child.is_element() && child.tag_name().name() == spec.name)
+            .filter(|child| child.is_element() && child.tag_name().name() == name)
             .collect::<Vec<_>>();
         if properties.is_some() && nodes.is_empty() {
             continue;
@@ -52,6 +57,12 @@ pub fn observe(
                     MetaMemberValueKind::LocalizedString => {
                         crate::info_projection::strict_localized_meta_info_property_value(*value)
                     }
+                    MetaMemberValueKind::Choice(_)
+                        if value.children().all(|child| child.is_text()) =>
+                    {
+                        spec.parse_text(&crate::info_projection::direct_text_content(*value))
+                    }
+                    MetaMemberValueKind::Choice(_) => None,
                     _ if !value.children().any(|child| child.is_element()) => {
                         let text = crate::info_projection::direct_text_content(*value);
                         // Information register dimension flags are also read
