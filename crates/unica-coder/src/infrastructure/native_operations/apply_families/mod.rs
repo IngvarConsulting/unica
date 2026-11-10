@@ -217,7 +217,7 @@ fn refuse_targets_on_locked_vendor_objects(
     staged: &mut ApplyStagedState,
 ) -> Result<Option<serde_json::Value>, ApplyPlanError> {
     use unica_metadata_designer::support::{
-        parse_support_state_compat_bytes, support_root_uuid_from_bytes,
+        parse_support_state_strict_bytes, support_root_uuid_from_bytes,
     };
     use unica_source_contract::proposal::SupportPolicyMode;
 
@@ -251,8 +251,29 @@ fn refuse_targets_on_locked_vendor_objects(
     let marker = staged
         .read(marker_path)
         .map_err(|error| ApplyPlanError::staging(error, at.clone()))?;
-    let Some(state) = parse_support_state_compat_bytes(marker.as_deref()) else {
-        return Ok(None);
+    // An unreadable or damaged state is not the absence of support
+    // (INV.APP.SUPPORT-STATE): it refuses under `deny`, as a lock would.
+    let state = match parse_support_state_strict_bytes(marker.as_deref()) {
+        Ok(Some(state)) => state,
+        Ok(None) => return Ok(None),
+        Err(error) => {
+            let reason = format!("the vendor support state `Ext/ParentConfigurations.bin` cannot be read ({error}); Unica does not take an unreadable support state for no support");
+            if !deny {
+                let owner = support_owner_relative(request, binding.source_kind())
+                    .map_or_else(|| "Configuration".to_string(), |(owner, _)| owner);
+                return Ok(Some(support_locked(
+                    &owner,
+                    format!("{reason}; the project support policy `warn` permits this edit"),
+                )));
+            }
+            return Err(ApplyPlanError::new(
+                ApplyPlanErrorKind::InvalidSource,
+                format!(
+                    "{reason}; restore the file from the vendor delivery or from version control"
+                ),
+            )
+            .at_path(at));
+        }
     };
     if state.removed() {
         return Ok(None);
