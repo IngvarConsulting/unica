@@ -80,7 +80,9 @@ fn absent_and_unreadable_support_are_told_apart() {
         support(&free),
         &json!({"editable": true, "reason": "notSupported", "policy": "deny"})
     );
-    assert!(blocked_ops(&free).iter().all(|(_, blocked)| blocked.is_none()));
+    assert!(blocked_ops(&free)
+        .iter()
+        .all(|(_, blocked)| blocked.is_none()));
 
     // A set whose support state cannot be read refuses the view of its
     // objects: unreadable is not "not on support".
@@ -112,5 +114,7 @@ fn a_warn_policy_makes_a_locked_object_editable() {
         support(&object),
         &json!({"editable": true, "reason": "locked", "policy": "warn", "rule": "locked"})
     );
-    assert!(blocked_ops(&object).iter().all(|(_, blocked)| blocked.is_none()));
+    assert!(blocked_ops(&object)
+        .iter()
+        .all(|(_, blocked)| blocked.is_none()));
 }

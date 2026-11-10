@@ -190,20 +190,18 @@ impl ProviderReadAuthority {
     /// and the owner's descriptor; `None` without one.
     fn owner_record_rule(&self, at: &QualifiedAddress) -> Result<Option<u8>, ViewError> {
         use crate::infrastructure::native_operations::apply_families::support_owner_relative;
-        use unica_metadata_designer::support::{
-            parse_support_state_compat_bytes, support_root_uuid_from_bytes,
-        };
         let Some((_, relative)) = support_owner_relative(at, self.source_set_kind) else {
             return Ok(None);
         };
-        let marker =
-            self.read_optional_relative_whole(Path::new("Ext/ParentConfigurations.bin"))?;
-        let Some(state) = parse_support_state_compat_bytes(marker.as_deref()) else {
+        let Some(state) = self.support_marker(&mut || Ok(()))? else {
             return Ok(None);
         };
         Ok(self
             .read_optional_relative_whole(&relative)?
-            .and_then(|bytes| support_root_uuid_from_bytes(&bytes))
+            .and_then(|bytes| {
+                crate::infrastructure::family_codecs::metadata_read_codec()
+                    .support_root_uuid(&bytes)
+            })
             .and_then(|uuid| state.object_rule(&uuid)))
     }
 
@@ -258,7 +256,16 @@ fn descriptor_tree(root: &SourceDirectory, relative: &Path) -> Result<Vec<PathBu
             Err(error) => return Err(unreadable(error)),
         }
     }
-    // The depth bound of the apply namespace listing (MAX_APPLY_NAMESPACE_DEPTH).
+    // resource-limit: view.support-removal-tree-depth
+    // class: format
+    // unit: depth
+    // scope: request
+    // value: 256
+    // resource: Глубина каталога объекта, который `view` обходит ради пометки удаления в `can`; та же граница, что у перечисления `apply` (MAX_APPLY_NAMESPACE_DEPTH).
+    // status: unproven
+    // origin: #2877
+    // problem: неизвестно
+    // on-reach: состояние поддержки удаления — `unknown`, удаление помечено `blocked`, как `apply` отказывает перечислению глубже границы
     const MAX_DEPTH: usize = 256;
     let initial_depth = relative.components().count();
     let mut files = Vec::new();
