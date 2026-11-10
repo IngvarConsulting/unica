@@ -700,6 +700,21 @@ const ANALYSIS_WAIT_SLICE: Duration = Duration::from_millis(50);
 /// How long before its deadline a request stops waiting for the analysis,
 /// so that the answer without it still reaches the editor in time.
 const ANALYSIS_ANSWER_RESERVE: Duration = Duration::from_millis(250);
+/// How long a request of an editor that hears the refresh waits for an
+/// analysis: enough for a ready analyzer to answer about one module, so the
+/// answer is whole instead of "not ready" followed by a refresh.
+// resource-limit: lsp.editor-ready-analysis-wait
+// class: deadline
+// unit: ms
+// scope: request
+// value: 1000
+// resource: Ожидание анализа модуля запросом редактора, который слышит `workspace/diagnostic/refresh`.
+// status: unproven
+// origin: #2790
+// problem: неизвестно
+// on-reach: ответ уходит с пометкой `analysis_not_ready`, а по окончании анализа редактор слышит refresh
+// issue: #2790
+const READY_ANALYSIS_WAIT: Duration = Duration::from_secs(1);
 
 /// The request was cancelled by its editor, as opposed to running out of
 /// time: an answer is still owed until the deadline.
@@ -757,15 +772,17 @@ fn analysis_within(
             return Some(done);
         }
         // An editor that hears the refresh asks again once the analysis is
-        // ready, so its answer goes now; another has no such signal and
-        // waits for the analysis as long as its deadline allows.
+        // ready, so it waits only as long as a ready analysis takes to
+        // answer; another has no such signal and waits for the analysis as
+        // long as its deadline allows.
+        let latest = context
+            .deadline()
+            .checked_sub(ANALYSIS_ANSWER_RESERVE)
+            .unwrap_or_else(Instant::now);
         let until = if asked.client.hears_refresh() {
-            Instant::now()
+            latest.min(Instant::now() + READY_ANALYSIS_WAIT)
         } else {
-            context
-                .deadline()
-                .checked_sub(ANALYSIS_ANSWER_RESERVE)
-                .unwrap_or_else(Instant::now)
+            latest
         };
         loop {
             let left = until.saturating_duration_since(Instant::now());

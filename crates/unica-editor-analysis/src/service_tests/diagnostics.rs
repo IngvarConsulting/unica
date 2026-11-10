@@ -300,6 +300,38 @@ fn an_editor_that_hears_the_refresh_is_answered_without_waiting_for_the_analysis
     assert_eq!(workspaces.diagnostics.runs.load(Ordering::SeqCst), 1);
 }
 
+/// An analysis that answers at once, as a ready resident analyzer does, is
+/// whole in the first answer even to an editor that hears the refresh: it
+/// is not told "not ready" only to ask again (#2790).
+///
+/// rule: INV.LSP.PARTIAL-ANSWERS
+#[test]
+fn an_editor_that_hears_the_refresh_gets_a_quick_analysis_in_the_first_answer() {
+    let workspace = workspace();
+    let (host, workspaces) = service();
+    *workspaces.diagnostics.answer.lock().unwrap() = analysis_finding();
+    let session = V5LspSessionId::new();
+    let (client, inbox) = LspClientChannel::pair(true);
+    host.open(
+        &session,
+        &[folder(workspace.path(), "Work")],
+        client,
+        soon(),
+    )
+    .unwrap();
+
+    let first = items(diagnostic(
+        &host,
+        &session,
+        &LspCallContext::for_test(Instant::now() + Duration::from_secs(60)),
+    ));
+    assert_eq!(codes(&first), ["bsl.style.line_length"]);
+    // The session still hears that the analysis ended; asking again is
+    // answered from the same analysis.
+    drop(inbox);
+    assert_eq!(workspaces.diagnostics.runs.load(Ordering::SeqCst), 1);
+}
+
 /// rule: INV.LSP.MCP-PRIORITY
 #[test]
 fn closing_the_document_cancels_an_analysis_nobody_else_waits_for() {
