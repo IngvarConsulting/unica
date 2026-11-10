@@ -1552,6 +1552,50 @@ impl RetainedDirectoryCapability {
         }
     }
 
+    /// The stamps of the regular files directly in a relative directory,
+    /// taken in one pass over its retained descriptor; `None` when the
+    /// directory is absent. On Unix `fstatat` reads each inode, so every
+    /// stamp equals [`Self::relative_file_stamp`] of that file.
+    #[cfg(unix)]
+    pub(crate) fn relative_directory_file_stamps(
+        &self,
+        relative: &Path,
+    ) -> io::Result<Option<Vec<(std::ffi::OsString, FileStamp)>>> {
+        use std::path::Component;
+
+        let mut directory = self.retained.directory.try_clone()?;
+        for component in relative.components() {
+            let Component::Normal(name) = component else {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "relative directory path contains a non-normal component",
+                ));
+            };
+            directory = match open_directory_child_nofollow(&directory, name) {
+                Ok(child) => child,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+                Err(error) => return Err(error),
+            };
+        }
+        #[cfg(any(test, feature = "test-support"))]
+        retained_read_probe::record(|| {
+            retained_read_probe::RetainedRead::Listed(self.path.join(relative))
+        });
+        directory_regular_file_stamps(&directory).map(Some)
+    }
+
+    /// Elsewhere stamps are taken from each opened file. On Windows a
+    /// directory enumeration reports the length and times of the directory
+    /// entry, which NTFS updates lazily (on close, for the name written
+    /// through) and SMB caches: they need not match the file.
+    #[cfg(not(unix))]
+    pub(crate) fn relative_directory_file_stamps(
+        &self,
+        _relative: &Path,
+    ) -> io::Result<Option<Vec<(std::ffi::OsString, FileStamp)>>> {
+        Ok(None)
+    }
+
     pub(crate) fn open_relative_regular_nofollow(&self, relative: &Path) -> io::Result<fs::File> {
         use std::path::Component;
 
@@ -2616,6 +2660,56 @@ pub(crate) fn read_directory_names_with_limit(
     }
     names.sort();
     Ok(names)
+}
+
+/// The stamps of the regular files in `directory`: `fstatat` without
+/// following links for each name of one `readdir` pass.
+#[cfg(unix)]
+fn directory_regular_file_stamps(
+    directory: &fs::File,
+) -> io::Result<Vec<(std::ffi::OsString, FileStamp)>> {
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::io::AsRawFd;
+
+    let mut stamps = Vec::new();
+    for entry in cap_primitives::fs::read_base_dir(directory)? {
+        let name = entry?.file_name();
+        let Ok(c_name) = std::ffi::CString::new(name.as_bytes()) else {
+            continue;
+        };
+        let mut status = std::mem::MaybeUninit::<libc::stat>::uninit();
+        // SAFETY: the directory descriptor stays open, the name is NUL-terminated and
+        // `status` is writable storage that fstatat fully initializes on success.
+        let result = unsafe {
+            libc::fstatat(
+                directory.as_raw_fd(),
+                c_name.as_ptr(),
+                status.as_mut_ptr(),
+                libc::AT_SYMLINK_NOFOLLOW,
+            )
+        };
+        if result != 0 {
+            let error = io::Error::last_os_error();
+            if error.kind() == io::ErrorKind::NotFound {
+                continue;
+            }
+            return Err(error);
+        }
+        // SAFETY: fstatat returned success, so it initialized `status`.
+        let status = unsafe { status.assume_init() };
+        if status.st_mode & libc::S_IFMT != libc::S_IFREG {
+            continue;
+        }
+        #[allow(clippy::unnecessary_cast)]
+        let stamp = FileStamp::from_observation(
+            FileIdentity::from_observation(status.st_dev as u64, status.st_ino as u64),
+            status.st_size as u64,
+            change_time_as_system_time((status.st_mtime as i64, status.st_mtime_nsec as i64)),
+            change_time_as_system_time((status.st_ctime as i64, status.st_ctime_nsec as i64)),
+        );
+        stamps.push((name, stamp));
+    }
+    Ok(stamps)
 }
 
 #[cfg(unix)]
@@ -8788,5 +8882,72 @@ mod host_path_comparison_tests {
             Path::new("/work/Foo"),
             Path::new("/work/foo")
         ));
+    }
+}
+
+#[cfg(test)]
+mod directory_stamp_tests {
+    use crate::read::open_source_directory;
+    use std::path::Path;
+
+    /// On Unix one pass over a directory gives each regular file the stamp
+    /// its own open gives, so retained proofs compare equal whichever way the
+    /// stamp was taken; links, directories and an absent directory are left
+    /// out.
+    /// rule: INV.SOURCE.CONFIGURATION-ROOT-CACHE-REUSE
+    #[cfg(unix)]
+    #[test]
+    fn directory_stamps_equal_the_stamps_of_opened_files() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(directory.path()).unwrap();
+        std::fs::create_dir_all(root.join("CommonModules/Nested")).unwrap();
+        std::fs::write(root.join("CommonModules/First.xml"), b"first").unwrap();
+        std::fs::write(root.join("CommonModules/Second.xml"), b"second, longer").unwrap();
+        std::os::unix::fs::symlink(
+            root.join("CommonModules/First.xml"),
+            root.join("CommonModules/Linked.xml"),
+        )
+        .unwrap();
+        let source = open_source_directory(&root).unwrap();
+
+        let mut stamps = source
+            .relative_directory_file_stamps(Path::new("CommonModules"))
+            .unwrap()
+            .expect("an existing directory is listed");
+        stamps.sort_by(|left, right| left.0.cmp(&right.0));
+        let names = stamps
+            .iter()
+            .map(|(name, _)| name.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(names, ["First.xml", "Second.xml"]);
+        for (name, stamp) in &stamps {
+            let opened = source
+                .relative_file_stamp(&Path::new("CommonModules").join(name))
+                .unwrap()
+                .unwrap();
+            assert_eq!(*stamp, opened, "{name:?}");
+        }
+        assert!(source
+            .relative_directory_file_stamps(Path::new("Absent"))
+            .unwrap()
+            .is_none());
+    }
+
+    /// A Windows directory entry need not carry the file's own length and
+    /// times, so the port takes no stamps from it: every stamp comes from the
+    /// opened file.
+    /// rule: INV.SOURCE.CONFIGURATION-ROOT-CACHE-REUSE
+    #[cfg(not(unix))]
+    #[test]
+    fn directory_stamps_are_not_taken_from_directory_entries() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(directory.path()).unwrap();
+        std::fs::create_dir_all(root.join("CommonModules")).unwrap();
+        std::fs::write(root.join("CommonModules/First.xml"), b"first").unwrap();
+        let source = open_source_directory(&root).unwrap();
+        assert!(source
+            .relative_directory_file_stamps(Path::new("CommonModules"))
+            .unwrap()
+            .is_none());
     }
 }
