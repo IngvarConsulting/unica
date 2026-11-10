@@ -14,8 +14,10 @@
 пропускается; вручную его запускает
 `scripts/dev/run-research.py --profile platform`. Нужны переменные:
 
-- `UNICA_BIN` — бинарь `unica` внутри пакета плагина с закреплённым
-  v8-runner (`plugins/unica/third-party/tools.lock.json`);
+- `UNICA_BIN` — бинарь `unica` внутри собранного пакета плагина:
+  рядом должен лежать `third-party/manifest.json` с закреплённым
+  v8-runner. Пакет из набора инструментов собирает
+  `scripts/ci/package-unica-plugin.py`;
 - `UNICA_PLATFORM_BUILD` — установленная сборка платформы, например
   `8.3.27.2342`.
 
@@ -30,6 +32,7 @@ import shutil
 import subprocess
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from typing import Any
@@ -45,7 +48,7 @@ HOST_PROJECT_VARIABLES = ("CLAUDE_PROJECT_DIR", "ZCODE_PROJECT_DIR")
 
 
 class McpClient:
-    """Минимальный MCP-клиент по stdio: запросы по очереди, без задач."""
+    """Минимальный MCP-клиент по stdio: запросы по очереди."""
 
     def __init__(self, binary: Path, workspace: Path, state: Path) -> None:
         env = dict(os.environ)
@@ -100,11 +103,24 @@ class McpClient:
                     raise AssertionError(f"{method}: {message['error']}")
                 return message["result"]
 
+    def call(self, tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        return self.request("tools/call", {"name": tool, "arguments": arguments})
+
     def run(self, op: str, args: dict[str, Any]) -> dict[str, Any]:
-        return self.request(
-            "tools/call",
-            {"name": "unica.run", "arguments": {"op": op, "args": args, "dryRun": False}},
-        )
+        """Вызов до итога: долгая операция становится задачей, её ждём."""
+        deadline = time.monotonic() + CALL_TIMEOUT_SECONDS
+        result = self.call("unica.run", {"op": op, "args": args, "dryRun": False})
+        task_id = None
+        while True:
+            content = result.get("structuredContent") or {}
+            task = (content.get("data") or {}).get("task")
+            if not (content.get("ok") is True and task):
+                return result
+            current = task.get("taskId")
+            assert current and task_id in (None, current), outcome(result)
+            task_id = current
+            assert time.monotonic() < deadline, f"{op}: задача не завершилась; {outcome(result)}"
+            result = self.call("unica.task.result", {"taskId": task_id, "waitMs": 7000})
 
     def stderr_tail(self) -> str:
         self.stderr.seek(0)
@@ -118,6 +134,8 @@ class McpClient:
         except subprocess.TimeoutExpired:
             self.process.kill()
             self.process.wait()
+        if self.process.stdout is not None:
+            self.process.stdout.close()
         self.stderr.close()
 
 
