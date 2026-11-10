@@ -115,7 +115,6 @@ from tests.ci.acceptance_profiles import (
     prepare_source_workspace, select_profile, HOST_CONTEXT_MISSING_WORKSPACE, missing_host_context_environment,
 )
 
-from tests.ci.acceptance_pull_validation import WORKSPACE as PULL_VALIDATION_WORKSPACE
 
 REFUSAL_DICTIONARY = REPO_ROOT / "crates/unica-refusal/src/lib.rs"
 

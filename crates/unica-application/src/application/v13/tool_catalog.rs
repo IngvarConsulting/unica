@@ -127,7 +127,7 @@ impl RunOperation {
                 Some(RUNNER_LOAD_GAP)
             }
             RunIntent::SourceImport => Some("source push applies the database configuration; the generation check covers only the sets the runner loads, force:true overwrites the infobase without it, and noApply:true is unavailable"),
-            RunIntent::SourceExport => Some("pull requires force:true and replaces one full source set, deleting its uncommitted and untracked files without a copy; local-work protection and all mode are unavailable"),
+            RunIntent::SourceExport => Some("pull exports one source set with the runner; without force the runner chooses a partial or full export by its memory of earlier exchanges, force:true exports in full and replaces uncommitted and untracked files; Unica keeps no copy of the previous sources, and a failed export may leave a partial target"),
             RunIntent::InfobaseCreate => Some("creates an absent infobase; a file infobase gets the main configuration of the project from its sources, a cluster infobase is created empty; the answer names whether sources were loaded (initializesSources)"),
             _ => None,
         }
@@ -208,7 +208,7 @@ impl RunOperation {
                 "required": ["output"]
             })),
             RunIntent::SourceExport => Some(
-                json!({"type":"object","additionalProperties":false,"required":["force"],"properties":{"sourceSet":{"type":"string","description":"Declared source set to fully replace from the infobase; omit for the main configuration."},"extension":{"type":"string","description":"1C extension name; required for an extension source set and must match it."},"force":{"const":true,"description":"Must be true; pull fully replaces one source set without protecting local changes."}}}),
+                json!({"type":"object","additionalProperties":false,"properties":{"sourceSet":{"type":"string","description":"Declared source set to export from the infobase; omit for the main configuration."},"extension":{"type":"string","description":"1C extension name; required for an extension source set and must match it."},"force":{"type":"boolean","description":"true exports the whole set and replaces it, including uncommitted and untracked files. Omit to let the runner choose a partial or full export by its memory of earlier exchanges."}}}),
             ),
             RunIntent::SourceImport => Some(
                 json!({"type":"object","additionalProperties":false,"properties":{"sourceSet":{"type":"string","description":"Declared source set to push; omit to push all declared sets."},"full":{"type":"boolean","description":"Request a full rebuild instead of letting the runner choose the loading mode."},"force":{"type":"boolean","description":"true overwrites the infobase: every selected set is loaded in full without checking the infobase generation or this working copy's memory of it, and changes made in the infobase are lost. Omit to push with the generation check."},"noApply":{"const":false,"description":"Must be false if supplied; source push always applies the database configuration."},"delete":{"type":"string","description":"Installed extension platform name to delete, including its data. Exclusive with source sending options."}},"oneOf":[{"required":["delete"],"not":{"anyOf":[{"required":["sourceSet"]},{"required":["full"]},{"required":["force"]},{"required":["noApply"]}]}},{"not":{"required":["delete"]}}]}),
@@ -1272,7 +1272,12 @@ mod tests {
             .find(|op| op.name() == "pull")
             .unwrap();
         assert!(op.implemented);
-        assert!(op.support_reason().unwrap().contains("protection"));
+        assert!(op.support_reason().unwrap().contains("keeps no copy"));
+        assert!(op.args_schema().unwrap().get("required").is_none());
+        assert_eq!(
+            op.args_schema().unwrap()["properties"]["force"]["type"],
+            "boolean"
+        );
         assert_eq!(op.args_schema().unwrap()["additionalProperties"], false);
         assert!(op.args_schema().unwrap()["properties"]
             .get("mode")
