@@ -310,6 +310,57 @@ impl UnicaServer {
 /// и реестр вызовов, за которым тест следит.
 #[cfg(any(test, feature = "test-support"))]
 impl UnicaServer {
+    /// Run the calls of a chosen answer in order. A refused call stops the
+    /// chain; a call that continues as a Task ends it, and its Task is the
+    /// answer. A call refused with a choice of its own is not asked again:
+    /// one call asks the person once.
+    async fn run_chosen(
+        &self,
+        option: &unica_execution_contract::invocation::HumanChoiceOption,
+        host: &unica_bootstrap::HostRequest,
+        progress_token: Option<ProgressToken>,
+        context: &RequestContext<RoleServer>,
+        response_budget: unica_bootstrap::ResponseBudget,
+    ) -> Result<(CallToolResponse, Vec<human_choice::StepReport>), ErrorData> {
+        let mut steps = Vec::new();
+        let mut last = None;
+        for (tool, arguments) in human_choice::calls(option) {
+            let started = Instant::now();
+            let outcome = invoke_surface_tool(
+                self,
+                SurfaceInvocation {
+                    name: tool.to_string(),
+                    arguments: arguments.clone(),
+                    host: host.clone(),
+                    progress_token: progress_token.clone(),
+                    received_at: started,
+                },
+                context,
+            )
+            .await;
+            let outcome = match outcome {
+                Ok(SurfaceToolOutcome::Choice { refusal, .. }) => {
+                    Ok(SurfaceToolOutcome::Direct(refusal))
+                }
+                other => other,
+            };
+            match project_surface_outcome(self, tool, outcome, response_budget, started)? {
+                CallToolResponse::Complete(result) => {
+                    let step = human_choice::StepReport::of(tool, arguments, &result);
+                    let refused = step.refused;
+                    steps.push(step);
+                    last = Some(result);
+                    if refused {
+                        break;
+                    }
+                }
+                other => return Ok((other, steps)),
+            }
+        }
+        let result = last.expect("a chosen answer runs at least its own call");
+        Ok((CallToolResponse::from(result), steps))
+    }
+
     pub fn with_canonical_v13_router(router: CanonicalDaemonRouter) -> Self {
         Self {
             router: SurfaceToolRouter::CanonicalV13(router),
@@ -933,6 +984,17 @@ impl ServerHandler for UnicaServer {
             .and_then(RequestMetaObject::get_progress_token)
             .or_else(|| context.meta.get_progress_token());
         let name = request.name.to_string();
+        // Only the door confirms a call, from a person's answer; a call that
+        // brings a confirmation of its own would skip the question.
+        if human_choice::carries_confirmation(request.arguments.as_ref()) {
+            return Err(ErrorData::invalid_params(
+                format!(
+                    "`{}` is set only from a person's answer to a question; a call does not carry it",
+                    unica_execution_contract::invocation::HUMAN_CONFIRMATION_KEY
+                ),
+                None,
+            ));
+        }
         let input_responses = request.input_responses;
         let request_state = request.request_state;
         let outcome = invoke_surface_tool(
@@ -958,6 +1020,15 @@ impl ServerHandler for UnicaServer {
             context.client_capabilities().as_ref(),
             modern_peer(&context),
         ) {
+            // A confirmation runs for a client that cannot ask, as before the
+            // question existed; a choice keeps its refusal.
+            human_choice::ChoiceChannel::None if choice.proceeds_unasked => {
+                let option = &choice.options[0];
+                let (response, _) = self
+                    .run_chosen(option, &host, progress_token, &context, response_budget)
+                    .await?;
+                return Ok(response);
+            }
             human_choice::ChoiceChannel::None => None,
             human_choice::ChoiceChannel::Request => elicit_choice(&context, &choice).await,
             human_choice::ChoiceChannel::InputRequired => {
@@ -981,32 +1052,14 @@ impl ServerHandler for UnicaServer {
         else {
             return Ok(CallToolResponse::from(refusal));
         };
-        let chosen_at = Instant::now();
-        let outcome = invoke_surface_tool(
-            self,
-            SurfaceInvocation {
-                name: option.tool.clone(),
-                arguments: option.arguments.clone(),
-                host,
-                progress_token,
-                received_at: chosen_at,
-            },
-            &context,
-        )
-        .await;
-        // A chosen call refused with a choice of its own is not asked again:
-        // one call asks the person once.
-        let outcome = match outcome {
-            Ok(SurfaceToolOutcome::Choice { refusal, .. }) => {
-                Ok(SurfaceToolOutcome::Direct(refusal))
-            }
-            other => other,
-        };
-        match project_surface_outcome(self, &option.tool, outcome, response_budget, chosen_at)? {
-            CallToolResponse::Complete(result) => Ok(CallToolResponse::from(
-                human_choice::name_the_choice(result, option),
+        match self
+            .run_chosen(option, &host, progress_token, &context, response_budget)
+            .await?
+        {
+            (CallToolResponse::Complete(result), steps) => Ok(CallToolResponse::from(
+                human_choice::name_the_choice(result, &choice, option, &steps),
             )),
-            other => Ok(other),
+            (other, _) => Ok(other),
         }
     }
 
