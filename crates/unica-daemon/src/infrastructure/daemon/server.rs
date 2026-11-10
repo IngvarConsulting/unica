@@ -840,7 +840,7 @@ impl V5CanonicalInvocationRuntime {
             .map_err(|error| {
                 V5CanonicalPrepareError::Rejected(Box::new(DomainResult::canonical_rejection(
                     None,
-                    RefusalCode::ProviderUnavailable,
+                    RefusalCode::InvalidState,
                     format!("workspace source write lane is unavailable: {error}"),
                 )))
             })
