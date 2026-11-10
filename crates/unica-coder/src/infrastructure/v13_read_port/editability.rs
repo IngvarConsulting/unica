@@ -64,10 +64,19 @@ pub const fn policy_name(policy: SupportPolicyMode) -> &'static str {
 pub struct NodeEditability {
     pub reason: SupportReason,
     pub policy: SupportPolicyMode,
+    /// The support marker itself cannot be read: `apply` refuses under
+    /// `deny` and `off` alike (INV.SAFETY.APPLY-SUPPORT-GATE).
+    pub marker_unreadable: bool,
 }
 
 impl NodeEditability {
+    /// What `apply` does without a support change: a lock refuses only under
+    /// `deny`; support that cannot be read refuses under `deny` and `off`
+    /// and is edited, with a warning, only under `warn`.
     pub fn editable(&self) -> bool {
+        if self.marker_unreadable {
+            return self.policy == SupportPolicyMode::Warn;
+        }
         self.reason.permits_edit() || self.policy != SupportPolicyMode::Deny
     }
 }
@@ -123,6 +132,7 @@ impl ProviderReadAuthority {
                 NodeEditability {
                     reason: SupportReason::Extension,
                     policy,
+                    marker_unreadable: false,
                 },
                 none,
             ));
@@ -133,6 +143,7 @@ impl ProviderReadAuthority {
                     NodeEditability {
                         reason: SupportReason::Unknown,
                         policy,
+                        marker_unreadable: true,
                     },
                     none,
                 ));
@@ -148,6 +159,7 @@ impl ProviderReadAuthority {
                     NodeEditability {
                         reason: SupportReason::Unknown,
                         policy,
+                        marker_unreadable: false,
                     },
                     none,
                 ));
@@ -155,6 +167,7 @@ impl ProviderReadAuthority {
             Err(error) => return Err(error),
         };
         let reason = match (&facts.lock, facts.marker) {
+            _ if facts.unreadable.is_some() => SupportReason::Unknown,
             (Some(lock), _) if lock.kind == SupportLockKind::ConfigurationLocked => {
                 SupportReason::ConfigurationReadOnly
             }
@@ -181,7 +194,11 @@ impl ProviderReadAuthority {
             facts.owner_rule
         };
         Ok((
-            NodeEditability { reason, policy },
+            NodeEditability {
+                reason,
+                policy,
+                marker_unreadable: facts.unreadable.is_some(),
+            },
             OwnerRecord { rule, records },
         ))
     }
@@ -213,9 +230,14 @@ impl ProviderReadAuthority {
         at: &QualifiedAddress,
         editability: &NodeEditability,
     ) -> Result<Option<SupportReason>, ViewError> {
-        if editability.policy != SupportPolicyMode::Deny
-            || editability.reason == SupportReason::Extension
-        {
+        if editability.reason == SupportReason::Extension {
+            return Ok(None);
+        }
+        // Support that cannot be read refuses the removal under `off` too.
+        if editability.marker_unreadable && editability.policy == SupportPolicyMode::Off {
+            return Ok(Some(SupportReason::Unknown));
+        }
+        if editability.policy != SupportPolicyMode::Deny {
             return Ok(None);
         }
         if matches!(
@@ -462,6 +484,7 @@ mod tests {
         let editability = NodeEditability {
             reason: SupportReason::Unknown,
             policy: SupportPolicyMode::Deny,
+            marker_unreadable: false,
         };
         attach_editability(&mut data, &editability, None, Some(SupportReason::Unknown));
         assert_eq!(
@@ -469,6 +492,29 @@ mod tests {
             json!({"support": {"editable": false, "reason": "unknown", "policy": "deny"}})
         );
         assert_eq!(blocked(&data), [Some("unknown"), Some("unknown"), None]);
+    }
+
+    /// A support marker that cannot be read is not editable under `deny`
+    /// and `off`, as `apply` refuses it there, and editable under `warn`.
+    /// rule: INV.APP.SUPPORT-STATE
+    /// rule: INV.SAFETY.APPLY-SUPPORT-GATE
+    #[test]
+    fn an_unreadable_marker_is_editable_only_under_warn() {
+        for (policy, editable) in [
+            (SupportPolicyMode::Deny, false),
+            (SupportPolicyMode::Off, false),
+            (SupportPolicyMode::Warn, true),
+        ] {
+            let editability = NodeEditability {
+                reason: SupportReason::Unknown,
+                policy,
+                marker_unreadable: true,
+            };
+            assert_eq!(editability.editable(), editable, "{policy:?}");
+            let mut data = node();
+            attach_editability(&mut data, &editability, None, None);
+            assert_eq!(data["props"]["support"]["editable"], editable, "{policy:?}");
+        }
     }
 
     /// `warn` and `off` let `apply` edit whatever the reason: nothing is
@@ -481,6 +527,7 @@ mod tests {
             let editability = NodeEditability {
                 reason: SupportReason::Locked,
                 policy,
+                marker_unreadable: false,
             };
             attach_editability(&mut data, &editability, Some("locked"), None);
             assert_eq!(data["props"]["support"]["editable"], true);
@@ -500,6 +547,7 @@ mod tests {
         let editability = NodeEditability {
             reason: SupportReason::EditableWithSupport,
             policy: SupportPolicyMode::Deny,
+            marker_unreadable: false,
         };
         attach_editability(&mut data, &editability, None, None);
         assert_eq!(

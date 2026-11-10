@@ -220,11 +220,10 @@ fn refuse_targets_on_locked_vendor_objects(
 ) -> Result<Option<serde_json::Value>, ApplyPlanError> {
     use unica_source_contract::proposal::SupportPolicyMode;
 
-    let deny = match admission.support_policy_mode() {
-        SupportPolicyMode::Deny => true,
-        SupportPolicyMode::Warn => false,
-        SupportPolicyMode::Off => return Ok(None),
-    };
+    let policy = admission.support_policy_mode();
+    // `off` silences locks but not a support state that cannot be read: the
+    // gate reads the marker under every policy.
+    let deny = policy == SupportPolicyMode::Deny;
     if request
         .ops()
         .iter()
@@ -250,7 +249,8 @@ fn refuse_targets_on_locked_vendor_objects(
     let facts = support_gate_facts(
         request.at(),
         binding.source_kind(),
-        removes,
+        // `off` asks only whether the marker can be read: no child listing.
+        removes && policy != SupportPolicyMode::Off,
         &mut |relative| staged.borrow_mut().read(relative),
         &mut |relative| {
             staged
@@ -260,6 +260,27 @@ fn refuse_targets_on_locked_vendor_objects(
         },
     )
     .map_err(|error| ApplyPlanError::staging(error, at.clone()))?;
+    // Support that cannot be read is not the absence of support
+    // (INV.APP.SUPPORT-STATE): `deny` and `off` refuse before any byte is
+    // written, `warn` permits the edit with a warning.
+    if let Some(reason) = facts.unreadable {
+        if policy == SupportPolicyMode::Warn {
+            let owner = support_owner_relative(request.at(), binding.source_kind())
+                .map_or_else(|| "Configuration".to_string(), |(owner, _)| owner);
+            return Ok(Some(support_locked(
+                &owner,
+                format!("{reason}; the project support policy `warn` permits this edit"),
+            )));
+        }
+        return Err(ApplyPlanError::new(
+            ApplyPlanErrorKind::InvalidSource,
+            format!("{reason}; restore it from the vendor delivery or from version control"),
+        )
+        .at_path(at));
+    }
+    if policy == SupportPolicyMode::Off {
+        return Ok(None);
+    }
     let Some(lock) = facts.lock else {
         return Ok(None);
     };
@@ -327,6 +348,9 @@ pub(crate) struct SupportGateFacts {
     /// be looked up (the gate then does not lock, see #2883).
     pub(crate) owner_uuid_missing: bool,
     pub(crate) lock: Option<SupportGateLock>,
+    /// Why the support of the target cannot be read: the marker is damaged.
+    /// Not the absence of support (INV.APP.SUPPORT-STATE).
+    pub(crate) unreadable: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -355,7 +379,7 @@ pub(crate) fn support_gate_facts<E>(
     enumerate: &mut GateEnumerate<'_, E>,
 ) -> Result<SupportGateFacts, E> {
     use unica_metadata_designer::support::{
-        parse_support_state_compat_bytes, support_root_uuid_from_bytes,
+        parse_support_state_strict_bytes, support_root_uuid_from_bytes,
     };
 
     let free = |marker, owner_rule| SupportGateFacts {
@@ -363,11 +387,24 @@ pub(crate) fn support_gate_facts<E>(
         owner_rule,
         owner_uuid_missing: false,
         lock: None,
+        unreadable: None,
     };
     let source_set = at.source_set();
     let marker = read(std::path::Path::new("Ext/ParentConfigurations.bin"))?;
-    let Some(state) = parse_support_state_compat_bytes(marker.as_deref()) else {
-        return Ok(free(None, None));
+    let state = match parse_support_state_strict_bytes(marker.as_deref()) {
+        Ok(Some(state)) => state,
+        Ok(None) => return Ok(free(None, None)),
+        Err(error) => {
+            return Ok(SupportGateFacts {
+                marker: None,
+                owner_rule: None,
+                owner_uuid_missing: false,
+                lock: None,
+                unreadable: Some(format!(
+                    "the vendor support state `Ext/ParentConfigurations.bin` cannot be read ({error}); Unica does not take an unreadable support state for no support"
+                )),
+            })
+        }
     };
     if state.removed() {
         return Ok(free(Some(SupportGateMarker::Removed), None));
@@ -386,6 +423,7 @@ pub(crate) fn support_gate_facts<E>(
                 owner,
                 reason: "the configuration is on vendor support with changes disabled".to_string(),
             }),
+            unreadable: None,
         });
     }
     let Some((owner, owner_relative)) = owner else {
@@ -402,6 +440,7 @@ pub(crate) fn support_gate_facts<E>(
         owner_rule,
         owner_uuid_missing,
         lock: None,
+        unreadable: None,
     };
     let locked = |kind, reason: String| SupportGateFacts {
         marker,
@@ -412,6 +451,7 @@ pub(crate) fn support_gate_facts<E>(
             owner: owner.clone(),
             reason,
         }),
+        unreadable: None,
     };
     if removes {
         // An editable vendor object is removed without leaving support, as

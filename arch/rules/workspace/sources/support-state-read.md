@@ -1,6 +1,5 @@
 ---
 id: INV.APP.SUPPORT-STATE
-gap: https://github.com/IngvarConsulting/unica/issues/2883
 ---
 
 # Невозможность прочитать поддержку не означает её отсутствие
@@ -22,7 +21,8 @@ gap: https://github.com/IngvarConsulting/unica/issues/2883
 `locked`, `configurationReadOnly`, `extension`, `unknown`. Запрет всей
 конфигурации важнее правила объекта, правило объекта — правила подчинённого;
 нечитаемое состояние — `unknown`. `editable` истинно, если причина не
-запрещает правку или политика не `deny`; оно совпадает с тем, что сделает
+запрещает правку или политика не `deny`, а при нечитаемом
+`ParentConfigurations.bin` — только при политике `warn`; оно совпадает с тем, что сделает
 [планировщик](../support-locked-owner.md) без изменения поддержки. Узел со
 своей записью поддержки показывает и своё правило в `rule`.
 

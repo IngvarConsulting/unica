@@ -454,9 +454,25 @@ mod support_stream_tests {
                 include_bytes!("../tests/fixtures/support-markers/editable.bin").as_slice()
             }
             "locked" => include_bytes!("../tests/fixtures/support-markers/locked.bin").as_slice(),
+            "removed" => include_bytes!("../tests/fixtures/support-markers/removed.bin").as_slice(),
             other => panic!("no support marker fixture `{other}`"),
         }
         .to_vec()
+    }
+
+    /// The marker of a configuration taken off vendor support entirely, as
+    /// the platform writes it (8.3.27 and 8.5.1): both readers take it for
+    /// removed support, with editing enabled and no object rules.
+    /// rule: INV.APP.SUPPORT-STATE
+    #[test]
+    fn the_platform_marker_of_removed_support_reads_as_removed() {
+        let bytes = marker("removed");
+        assert_eq!(bytes, "\u{feff}{6,0,0,0,1,0}".as_bytes());
+        for state in both(&bytes) {
+            assert!(state.removed());
+            assert!(state.global_editing_enabled());
+            assert_eq!(state.counts(), [0, 0, 0]);
+        }
     }
 
     fn both(bytes: &[u8]) -> [SupportState; 2] {

@@ -953,6 +953,45 @@ fn a_person_chosen_support_change_and_the_edit_form_one_plan() {
     }
 }
 
+/// An unreadable or damaged support state is not the absence of support:
+/// under `deny` and `off` the edit is refused before any byte is written,
+/// under `warn` it proceeds with `support_locked`.
+/// rule: INV.SAFETY.APPLY-SUPPORT-GATE
+/// rule: INV.APP.SUPPORT-STATE
+#[test]
+fn a_damaged_support_state_refuses_the_edit_under_deny() {
+    for damaged in [
+        // A header the strict reader does not accept (INV.APP.SUPPORT-STATE).
+        "\u{feff}{6,0,1}",
+        // Not the platform's marker of removed support: that is
+        // `{6,0,0,0,1,0}` (fixture `support-markers/removed.bin`).
+        "\u{feff}{6,0,0}",
+        // Not the support state at all.
+        "not a support state, but long enough to be read as one",
+    ] {
+        let (outcome, unchanged, _) = plan_vendor_removal("deny", damaged, |_| {});
+        let error = outcome.expect_err("deny refuses an edit over an unreadable support state");
+        assert_eq!(error.kind(), ApplyPlanErrorKind::InvalidSource, "{error}");
+        assert!(
+            error.to_string().contains("Ext/ParentConfigurations.bin"),
+            "{error}"
+        );
+        assert!(unchanged, "{damaged}");
+
+        let (outcome, unchanged, _) = plan_vendor_removal("warn", damaged, |_| {});
+        let warnings = outcome.expect("warn permits the edit");
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert_eq!(warnings[0]["code"], "support_locked");
+        assert!(unchanged);
+
+        // `off` silences locks, not a support state that cannot be read.
+        let (outcome, unchanged, _) = plan_vendor_removal("off", damaged, |_| {});
+        let error = outcome.expect_err("off refuses an unreadable support state too");
+        assert_eq!(error.kind(), ApplyPlanErrorKind::InvalidSource, "{error}");
+        assert!(unchanged);
+    }
+}
+
 fn vendor_removal_support_marker(rule: u8, editing_enabled: bool) -> String {
     let global_flag = u8::from(!editing_enabled);
     format!(
@@ -968,7 +1007,19 @@ fn vendor_object_removal_preserves_allowed_support_states() {
     for (policy, marker) in [
         ("deny", None),
         ("deny", Some(vendor_removal_support_marker(2, true))),
-        ("deny", Some("\u{feff}{6,0,0}".to_string())),
+        // The platform's marker of a configuration taken off support.
+        (
+            "deny",
+            Some(
+                String::from_utf8(
+                    include_bytes!(
+                        "../../../../../unica-metadata-designer/tests/fixtures/support-markers/removed.bin"
+                    )
+                    .to_vec(),
+                )
+                .unwrap(),
+            ),
+        ),
         // A locked object the removed one does not contain does not keep it.
         (
             "deny",
