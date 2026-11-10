@@ -381,7 +381,7 @@ enum JsonlEvent {
 struct StartEvent {
     total_files: usize,
     version: String,
-    /// bsl-analyzer 0.4.4+ states the coordinate base of every finding; the
+    /// bsl-analyzer 0.4.5 states the coordinate base of every finding; the
     /// adapter reads 0-based lines and columns only.
     line_base: Option<u32>,
     column_base: Option<u32>,
@@ -1105,7 +1105,7 @@ mod tests {
     }
 
     /// rule: INV.ANALYSIS.ANALYZER-JSONL-COMPLETION
-    /// bsl-analyzer 0.4.4+ states the coordinate base in `start`: the adapter
+    /// bsl-analyzer 0.4.5 states the coordinate base in `start`: the adapter
     /// reads 0-based coordinates, so a stream on another base is invalid.
     #[test]
     fn start_states_a_zero_coordinate_base_or_the_stream_is_invalid() {
