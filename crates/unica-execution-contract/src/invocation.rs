@@ -237,6 +237,10 @@ pub struct HumanChoice {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data: Option<Value>,
     pub options: Vec<HumanChoiceOption>,
+    /// What the person can do instead when they cancel, shown with the
+    /// cancel answer, for example a way that keeps the refused data.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cancel_description: Option<String>,
     /// A confirmation of the call itself rather than a way out of a refusal:
     /// a client that cannot ask runs the first option as if the person had
     /// chosen it, so it works as it did before the question existed. Asked
@@ -308,6 +312,7 @@ impl HumanChoice {
                 arguments: confirmed,
                 then: Vec::new(),
             }],
+            cancel_description: None,
             proceeds_unasked: true,
         }
     }

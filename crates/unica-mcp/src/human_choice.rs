@@ -108,7 +108,11 @@ pub(crate) fn question_meta(choice: &HumanChoice) -> Value {
             json!({"value": option.id, "title": option.title, "description": option.description})
         })
         .collect();
-    options.push(json!({"value": CANCEL, "title": CANCEL_TITLE}));
+    let mut cancel = json!({"value": CANCEL, "title": CANCEL_TITLE});
+    if let Some(description) = &choice.cancel_description {
+        cancel["description"] = json!(description);
+    }
+    options.push(cancel);
     let mut meta = json!({
         "code": choice.code,
         "kind": if choice.proceeds_unasked { "confirmation" } else { "choice" },
@@ -127,6 +131,9 @@ pub(crate) fn question_text(choice: &HumanChoice) -> String {
     text.push('\n');
     for option in &choice.options {
         text.push_str(&format!("\n{}: {}.", option.title, option.description));
+    }
+    if let Some(description) = &choice.cancel_description {
+        text.push_str(&format!("\n{CANCEL_TITLE}: {description}."));
     }
     text
 }
@@ -307,6 +314,7 @@ mod tests {
                     then: Vec::new(),
                 },
             ],
+            cancel_description: None,
             proceeds_unasked: false,
         }
     }
@@ -434,6 +442,38 @@ mod tests {
             titles,
             ["Перезаписать базу", "Перезаписать исходники", "Отменить"]
         );
+    }
+
+    /// What the person can do instead of an answer goes with «Отменить»: a
+    /// last line of the question and the description of the cancel answer.
+    /// rule: INV.MCP.HUMAN-CHOICE
+    #[test]
+    fn the_cancel_answer_carries_its_own_line_when_the_question_has_one() {
+        let mut asked = choice();
+        asked.options.truncate(1);
+        asked.cancel_description = Some("доработку можно внести в расширение".into());
+
+        let form = serde_json::to_value(elicitation_params(&asked)).unwrap();
+
+        assert_eq!(
+            form["message"],
+            "push of source set `main` loaded nothing\n\n\
+             Overwrite the infobase: infobase changes are lost.\n\
+             Отменить: доработку можно внести в расширение."
+        );
+        let options = form["_meta"][QUESTION_META_KEY]["options"]
+            .as_array()
+            .unwrap();
+        assert_eq!(options[1]["value"], CANCEL);
+        assert_eq!(
+            options[1]["description"],
+            "доработку можно внести в расширение"
+        );
+        let plain = serde_json::to_value(elicitation_params(&choice())).unwrap();
+        let options = plain["_meta"][QUESTION_META_KEY]["options"]
+            .as_array()
+            .unwrap();
+        assert!(options.last().unwrap().get("description").is_none());
     }
 
     /// Only an accepted offered option is a choice; everything else keeps
