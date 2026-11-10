@@ -105,6 +105,9 @@ pub struct ApplyPlanError {
     support_lock: Option<Box<SupportLock>>,
     /// The compatibility mode that keeps the set read-only.
     read_only_mode: Option<Box<ReadOnlyMode>>,
+    /// The vendor-support marker cannot be read: the person may take the
+    /// configuration off support entirely.
+    support_state_unreadable: bool,
 }
 
 impl ApplyPlanError {
@@ -117,7 +120,17 @@ impl ApplyPlanError {
             diagnostics: Vec::new(),
             support_lock: None,
             read_only_mode: None,
+            support_state_unreadable: false,
         }
+    }
+
+    pub fn with_support_state_unreadable(mut self) -> Self {
+        self.support_state_unreadable = true;
+        self
+    }
+
+    pub fn support_state_unreadable(&self) -> bool {
+        self.support_state_unreadable
     }
 
     pub fn with_read_only_mode(mut self, mode: ReadOnlyMode) -> Self {

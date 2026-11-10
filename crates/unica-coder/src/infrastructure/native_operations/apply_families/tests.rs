@@ -992,6 +992,99 @@ fn a_damaged_support_state_refuses_the_edit_under_deny() {
     }
 }
 
+/// An owner on support whose descriptor names no uuid has a rule nobody can
+/// look up: its support cannot be read. `deny` and `off` refuse before any
+/// byte is written, `warn` permits the edit with `support_locked`.
+/// rule: INV.SAFETY.APPLY-SUPPORT-GATE
+/// rule: INV.APP.SUPPORT-STATE
+#[test]
+fn an_owner_without_a_uuid_follows_the_unreadable_support_policy() {
+    let strip_uuid = |source: &std::path::Path| {
+        let path = source.join("Documents/First.xml");
+        let xml = std::fs::read_to_string(&path).unwrap();
+        let start = xml.find(" uuid=\"").expect("the fixture owner has a uuid");
+        let end = start + 7 + xml[start + 7..].find('"').unwrap() + 1;
+        std::fs::write(&path, format!("{}{}", &xml[..start], &xml[end..])).unwrap();
+    };
+    let marker = vendor_removal_support_marker(1, true);
+    for policy in ["deny", "off"] {
+        let (outcome, unchanged, _) = plan_vendor_removal(policy, &marker, strip_uuid);
+        let error = outcome.expect_err("an owner whose rule cannot be read is refused");
+        assert_eq!(
+            error.kind(),
+            ApplyPlanErrorKind::InvalidSource,
+            "{policy}: {error}"
+        );
+        assert!(error.to_string().contains("names no uuid"), "{error}");
+        // Not the marker: the person is not offered to take support off.
+        assert!(!error.support_state_unreadable(), "{policy}");
+        assert!(unchanged);
+    }
+    let (outcome, _, _) = plan_vendor_removal("warn", &marker, strip_uuid);
+    let warnings = outcome.expect("warn permits the edit");
+    assert_eq!(warnings[0]["code"], "support_locked", "{warnings:?}");
+}
+
+/// A person who takes the configuration off support entirely gets one plan:
+/// the unreadable marker is replaced by the platform's marker of removed
+/// support and the edit is made, and the sources stay as they are until the
+/// plan is published.
+/// rule: INV.SAFETY.APPLY-SUPPORT-GATE
+#[test]
+fn taking_support_off_replaces_an_unreadable_marker_in_the_same_plan() {
+    use super::{plan_hidden_v13_apply_with_person_choices, PersonChosenChanges};
+    use unica_workspace::test_support::tree_snapshot;
+
+    for policy in ["deny", "off"] {
+        let fixture = ApplySeamFixture::new();
+        let source = fixture.source_dir();
+        std::fs::write(
+            source.parent().unwrap().join(".v8-project.json"),
+            serde_json::json!({"editingAllowedCheck": policy}).to_string(),
+        )
+        .unwrap();
+        std::fs::create_dir_all(source.join("Ext")).unwrap();
+        std::fs::write(
+            source.join("Ext/ParentConfigurations.bin"),
+            "\u{feff}{6,0,1}",
+        )
+        .unwrap();
+        let before = tree_snapshot(&source);
+        let request = seam_request(
+            "main:Document.First",
+            "object.remove",
+            serde_json::json!({}),
+        );
+        let refused = plan_hidden_v13_apply(&request, &fixture.binding, &fixture.admission())
+            .expect_err("an unreadable marker refuses");
+        assert!(refused.support_state_unreadable(), "{policy}");
+
+        let (mut staged, _) = plan_hidden_v13_apply_with_person_choices(
+            &request,
+            &fixture.binding,
+            &fixture.admission(),
+            PersonChosenChanges {
+                mode_raise: None,
+                support: None,
+                remove_support: true,
+            },
+        )
+        .unwrap_or_else(|error| panic!("{policy}: {error}"));
+        assert_eq!(
+            staged
+                .read(std::path::Path::new("Ext/ParentConfigurations.bin"))
+                .unwrap()
+                .as_deref(),
+            Some(unica_metadata_designer::support::REMOVED_SUPPORT_MARKER)
+        );
+        assert!(staged
+            .read(std::path::Path::new("Documents/First.xml"))
+            .unwrap()
+            .is_none());
+        assert_eq!(tree_snapshot(&source), before, "{policy}");
+    }
+}
+
 fn vendor_removal_support_marker(rule: u8, editing_enabled: bool) -> String {
     let global_flag = u8::from(!editing_enabled);
     format!(

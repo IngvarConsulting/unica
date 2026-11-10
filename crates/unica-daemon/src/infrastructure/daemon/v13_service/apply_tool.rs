@@ -177,6 +177,7 @@ impl CanonicalV13ReadService {
             unica_source_contract::proposal::SupportLock,
             Vec<crate::domain::apply::ApplyOp>,
         )> = None;
+        let mut remove_support = false;
         let planned = loop {
             let planned = families::plan_hidden_v13_apply_with_person_choices(
                 &request,
@@ -189,6 +190,7 @@ impl CanonicalV13ReadService {
                     support: support.as_ref().map(|(lock, operations)| {
                         families::PersonChosenSupportChange { lock, operations }
                     }),
+                    remove_support,
                 },
             );
             let Err(error) = &planned else {
@@ -213,6 +215,13 @@ impl CanonicalV13ReadService {
                     }
                     continue;
                 }
+            }
+            if error.support_state_unreadable()
+                && !remove_support
+                && support_choice::remove_support_chosen(&source_set, invocation.arguments())
+            {
+                remove_support = true;
+                continue;
             }
             if let Some(lock) = error.support_lock().filter(|_| support.is_none()) {
                 if let Some(answer) = support_choice::chosen_answer(lock, invocation.arguments()) {
@@ -268,6 +277,9 @@ impl CanonicalV13ReadService {
                     (None, Some(lock)) => {
                         support_choice::support_choice(lock, invocation.arguments())
                     }
+                    (None, None) if error.support_state_unreadable() => Some(
+                        support_choice::remove_support_choice(&source_set, invocation.arguments()),
+                    ),
                     (None, None) => None,
                 };
                 if let Some(choice) = choice {

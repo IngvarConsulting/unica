@@ -263,7 +263,8 @@ fn refuse_targets_on_locked_vendor_objects(
     // Support that cannot be read is not the absence of support
     // (INV.APP.SUPPORT-STATE): `deny` and `off` refuse before any byte is
     // written, `warn` permits the edit with a warning.
-    if let Some(reason) = facts.unreadable {
+    if let Some(unreadable) = facts.unreadable {
+        let reason = unreadable.reason;
         if policy == SupportPolicyMode::Warn {
             let owner = support_owner_relative(request.at(), binding.source_kind())
                 .map_or_else(|| "Configuration".to_string(), |(owner, _)| owner);
@@ -272,11 +273,21 @@ fn refuse_targets_on_locked_vendor_objects(
                 format!("{reason}; the project support policy `warn` permits this edit"),
             )));
         }
+        if !unreadable.marker {
+            return Err(ApplyPlanError::new(
+                ApplyPlanErrorKind::InvalidSource,
+                format!(
+                    "{reason}; restore the descriptor from version control or export the set again"
+                ),
+            )
+            .at_path(at));
+        }
         return Err(ApplyPlanError::new(
             ApplyPlanErrorKind::InvalidSource,
-            format!("{reason}; restore it from the vendor delivery or from version control"),
+            format!("{reason}; restore the infobase from a backup and export the set again, or take the configuration off support entirely"),
         )
-        .at_path(at));
+        .at_path(at)
+        .with_support_state_unreadable());
     }
     if policy == SupportPolicyMode::Off {
         return Ok(None);
@@ -345,12 +356,21 @@ pub(crate) struct SupportGateFacts {
     /// support, 2 taken off support; `None` without a record.
     pub(crate) owner_rule: Option<u8>,
     /// The owner's descriptor was read but names no uuid: its rule cannot
-    /// be looked up (the gate then does not lock, see #2883).
+    /// be looked up, and its support is unreadable.
     pub(crate) owner_uuid_missing: bool,
     pub(crate) lock: Option<SupportGateLock>,
-    /// Why the support of the target cannot be read: the marker is damaged.
-    /// Not the absence of support (INV.APP.SUPPORT-STATE).
-    pub(crate) unreadable: Option<String>,
+    /// Why the support of the target cannot be read. Not the absence of
+    /// support (INV.APP.SUPPORT-STATE).
+    pub(crate) unreadable: Option<SupportUnreadable>,
+}
+
+/// Support that cannot be read: the marker itself, or the owner's
+/// descriptor that names no uuid to look its rule up.
+pub(crate) struct SupportUnreadable {
+    pub(crate) reason: String,
+    /// The marker is damaged: taking the configuration off support entirely
+    /// repairs it. A descriptor without a uuid is repaired by restoring it.
+    pub(crate) marker: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -400,9 +420,10 @@ pub(crate) fn support_gate_facts<E>(
                 owner_rule: None,
                 owner_uuid_missing: false,
                 lock: None,
-                unreadable: Some(format!(
-                    "the vendor support state `Ext/ParentConfigurations.bin` cannot be read ({error}); Unica does not take an unreadable support state for no support"
-                )),
+                unreadable: Some(SupportUnreadable {
+                    reason: format!("the vendor support state `Ext/ParentConfigurations.bin` cannot be read ({error}); Unica does not take an unreadable support state for no support"),
+                    marker: true,
+                }),
             })
         }
     };
@@ -434,6 +455,20 @@ pub(crate) fn support_gate_facts<E>(
     };
     let owner_uuid = support_root_uuid_from_bytes(&bytes);
     let owner_uuid_missing = owner_uuid.is_none();
+    if owner_uuid_missing {
+        // An owner whose descriptor names no uuid has a rule nobody can look
+        // up: its support cannot be read (INV.APP.SUPPORT-STATE).
+        return Ok(SupportGateFacts {
+            marker,
+            owner_rule: None,
+            owner_uuid_missing,
+            lock: None,
+            unreadable: Some(SupportUnreadable {
+                reason: format!("the descriptor of `{source_set}:{owner}` names no uuid, so its vendor support rule cannot be read"),
+                marker: false,
+            }),
+        });
+    }
     let support_rule = owner_uuid.and_then(|uuid| state.object_rule(&uuid));
     let free = |marker, owner_rule| SupportGateFacts {
         marker,
@@ -1362,6 +1397,7 @@ pub fn plan_hidden_v13_apply(
         PersonChosenChanges {
             mode_raise: None,
             support: None,
+            remove_support: false,
         },
     )
 }
@@ -1390,6 +1426,7 @@ pub fn plan_hidden_v13_apply_with_person_chosen_support(
         PersonChosenChanges {
             mode_raise: None,
             support: Some(change),
+            remove_support: false,
         },
     )
 }
@@ -1407,6 +1444,10 @@ pub struct PersonChosenModeRaise<'a> {
 pub struct PersonChosenChanges<'a> {
     pub mode_raise: Option<PersonChosenModeRaise<'a>>,
     pub support: Option<PersonChosenSupportChange<'a>>,
+    /// The person took the configuration off vendor support entirely: its
+    /// unreadable marker is replaced by the platform's marker of removed
+    /// support before the edits (INV.SAFETY.APPLY-SUPPORT-GATE).
+    pub remove_support: bool,
 }
 
 /// Plans `request` together with the changes a person chose: all of them go
@@ -1429,6 +1470,7 @@ fn plan_apply(
     let PersonChosenChanges {
         mode_raise,
         support: chosen_support,
+        remove_support,
     } = chosen;
     let mut parsed = request
         .ops()
@@ -1476,6 +1518,40 @@ fn plan_apply(
     }
     refuse_targets_outside_writable_profile(request, binding, &mut staged)?;
     let gate = refuse_targets_on_locked_vendor_objects(request, binding, admission, &mut staged);
+    let gate = match gate {
+        // The person takes the configuration off support: its unreadable
+        // marker no longer stands in the way.
+        Err(error) if remove_support && error.support_state_unreadable() => Ok(None),
+        Err(error) => Err(error),
+        Ok(_) if remove_support => {
+            return Err(ApplyPlanError::new(
+                ApplyPlanErrorKind::InvalidState,
+                "the vendor support state changed after the person's answer; repeat the apply to be asked again",
+            )
+            .at_path(request.at().to_string()))
+        }
+        Ok(warning) => Ok(warning),
+    };
+    if remove_support {
+        let marker = std::path::Path::new("Ext/ParentConfigurations.bin");
+        let current = staged
+            .read(marker)
+            .map_err(|error| ApplyPlanError::staging(error, request.at().to_string()))?
+            .ok_or_else(|| {
+                ApplyPlanError::new(
+                    ApplyPlanErrorKind::InvalidState,
+                    "the vendor support state changed after the person's answer; repeat the apply to be asked again",
+                )
+                .at_path(request.at().to_string())
+            })?;
+        staged
+            .replace(
+                marker,
+                &current,
+                unica_metadata_designer::support::REMOVED_SUPPORT_MARKER.to_vec(),
+            )
+            .map_err(|error| ApplyPlanError::staging(error, request.at().to_string()))?;
+    }
     let mut support_warning = match (&chosen_support, gate) {
         (None, gate) => gate?,
         // The person lifts exactly the lock they were asked about.

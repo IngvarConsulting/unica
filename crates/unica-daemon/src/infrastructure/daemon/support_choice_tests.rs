@@ -22,7 +22,7 @@ fn vendor_workspace(rule: u8, editing_enabled: bool) -> tempfile::TempDir {
     .unwrap();
     std::fs::write(
         source.join("Configuration.xml"),
-        r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Store</Name><DefaultLanguage>Language.Русский</DefaultLanguage></Properties><ChildObjects><Language>Русский</Language><Document>First</Document></ChildObjects></Configuration></MetaDataObject>"#,
+        r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration uuid="22222222-2222-4222-8222-222222222222"><Properties><Name>Store</Name><DefaultLanguage>Language.Русский</DefaultLanguage></Properties><ChildObjects><Language>Русский</Language><Document>First</Document></ChildObjects></Configuration></MetaDataObject>"#,
     )
     .unwrap();
     std::fs::write(
@@ -458,4 +458,83 @@ fn a_read_only_mode_and_a_vendor_lock_are_asked_in_turn_and_planned_once() {
     );
     let document = std::fs::read_to_string(source.join("Documents/First.xml")).unwrap();
     assert!(document.contains("local"), "{document}");
+}
+
+/// A support state that cannot be read asks the person in the agreed words
+/// under `deny` and `off`; without an answer the edit stays refused, and the
+/// answer takes the configuration off support entirely in one plan with the
+/// edit, writing the platform's marker of removed support.
+/// rule: INV.SAFETY.APPLY-SUPPORT-GATE
+/// rule: INV.MCP.HUMAN-CHOICE
+#[test]
+fn an_unreadable_support_state_asks_to_take_support_off_entirely() {
+    for policy in ["deny", "off"] {
+        let runtime = runtime();
+        let workspace = vendor_workspace(0, true);
+        std::fs::write(
+            workspace.path().join(".v8-project.json"),
+            serde_json::json!({"editingAllowedCheck": policy}).to_string(),
+        )
+        .unwrap();
+        let source = workspace.path().join("src");
+        std::fs::write(
+            source.join("Ext/ParentConfigurations.bin"),
+            "\u{feff}{6,0,1}",
+        )
+        .unwrap();
+        let before = unica_workspace::test_support::tree_snapshot(&source);
+        let call =
+            serde_json::json!({"at": "main:Document.First", "ops": [{"op": "object.remove"}]});
+
+        let refused = apply(&runtime, workspace.path(), call);
+        assert!(!refused.ok, "{policy}: {refused:?}");
+        assert_eq!(
+            refused.diagnostics[0]["code"], "invalid_source",
+            "{refused:?}"
+        );
+        let choice = refused.human_choice.expect("the person is asked");
+        assert_eq!(choice.code, "support.state_unreadable");
+        assert_eq!(
+            choice.question,
+            "Состояние поддержки поставщика у набора «main» повреждено и не читается."
+        );
+        assert_eq!(choice.options.len(), 1);
+        assert_eq!(choice.options[0].title, "Снять с поддержки полностью");
+        assert_eq!(
+            choice.options[0].description,
+            "сведения о поставщике и правила объектов пропадут, обновления поставщика перестанут приходить"
+        );
+        assert_eq!(
+            choice.cancel_description.as_deref(),
+            Some("восстановите базу из резервной копии и выгрузите набор заново")
+        );
+        assert!(!choice.proceeds_unasked);
+        assert_eq!(
+            unica_workspace::test_support::tree_snapshot(&source),
+            before
+        );
+
+        let planned = apply(
+            &runtime,
+            workspace.path(),
+            serde_json::Value::Object(choice.options[0].arguments.clone()),
+        );
+        assert!(planned.ok, "{policy}: {planned:?}");
+        assert_eq!(
+            unica_workspace::test_support::tree_snapshot(&source),
+            before
+        );
+        let token = planned.data.as_ref().unwrap()["executionToken"].clone();
+        let published = apply(
+            &runtime,
+            workspace.path(),
+            serde_json::json!({"executionToken": token}),
+        );
+        assert!(published.ok, "{published:?}");
+        assert!(!source.join("Documents/First.xml").exists());
+        assert_eq!(
+            std::fs::read(source.join("Ext/ParentConfigurations.bin")).unwrap(),
+            "\u{feff}{6,0,0,0,1,0}".as_bytes()
+        );
+    }
 }
