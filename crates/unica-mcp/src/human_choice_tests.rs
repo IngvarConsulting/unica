@@ -4,11 +4,14 @@
 //! `2026-07-28` client an `input_required` result.
 //!
 //! rule: INV.RUNTIME.RUNNER-BASE-REFUSALS
+//! rule: INV.MCP.HUMAN-CHOICE
 
 use super::*;
 use crate::test_support::*;
 use serde_json::json;
-use unica_execution_contract::invocation::{DomainResult, HumanChoice, HumanChoiceOption};
+use unica_execution_contract::invocation::{
+    DomainResult, HumanChoice, HumanChoiceCall, HumanChoiceOption,
+};
 
 const REFUSAL: &str = "push loaded nothing";
 const LOADED: &str = "loaded with force";
@@ -27,7 +30,9 @@ fn push_call(force: bool) -> Map<String, Value> {
 fn choice() -> HumanChoice {
     let pull = json!({"op": "pull", "args": {"force": true, "sourceSet": "main"}, "dryRun": false});
     HumanChoice {
+        code: "source.base_divergence".into(),
         question: "push of source set `main` loaded nothing".into(),
+        data: None,
         options: vec![
             HumanChoiceOption {
                 id: "overwrite".into(),
@@ -35,6 +40,7 @@ fn choice() -> HumanChoice {
                 description: "infobase changes are lost".into(),
                 tool: "unica.run".into(),
                 arguments: push_call(true),
+                then: Vec::new(),
             },
             HumanChoiceOption {
                 id: "pull".into(),
@@ -42,8 +48,10 @@ fn choice() -> HumanChoice {
                 description: "unsaved file edits are lost".into(),
                 tool: "unica.run".into(),
                 arguments: pull.as_object().unwrap().clone(),
+                then: Vec::new(),
             },
         ],
+        proceeds_unasked: false,
     }
 }
 
@@ -273,5 +281,280 @@ async fn a_retry_with_a_foreign_state_is_asked_again() {
 
     assert_eq!(asked["result"]["resultType"], "input_required", "{asked}");
     assert_eq!(calls.lock().unwrap().as_slice(), [push_call(false)]);
+    client.shutdown().await;
+}
+
+fn pull_call() -> Map<String, Value> {
+    json!({"op": "pull", "args": {"force": true, "sourceSet": "main"}, "dryRun": false})
+        .as_object()
+        .unwrap()
+        .clone()
+}
+
+fn refusal_result(code: unica_refusal::RefusalCode, message: &str) -> CallToolResult {
+    crate::task_projection::call_tool_result(
+        &DomainResult::canonical_rejection(None, code, message),
+        unica_bootstrap::ResponseBudget::default(),
+    )
+    .unwrap()
+}
+
+/// A daemon fake answering each call by `answer`; every call is recorded.
+fn scripted_server(
+    answer: impl Fn(&Map<String, Value>) -> Result<CanonicalCallOutcome, ErrorData>
+        + Send
+        + Sync
+        + 'static,
+) -> (UnicaServer, Calls) {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let observed = Arc::clone(&calls);
+    let handler: Arc<CanonicalCallHandler> = Arc::new(move |_, arguments, _, _, _| {
+        observed.lock().unwrap().push(arguments.clone());
+        answer(arguments)
+    });
+    (UnicaServer::with_canonical_v13(handler), calls)
+}
+
+fn loaded() -> Result<CanonicalCallOutcome, ErrorData> {
+    direct_outcome(DomainResult::success(LOADED))
+}
+
+/// A choice whose one answer is a chain: overwrite the infobase, then take
+/// it back into the set.
+fn chain_choice() -> HumanChoice {
+    let mut choice = choice();
+    choice.options.truncate(1);
+    choice.options[0].id = "both".into();
+    choice.options[0].title = "Overwrite, then pull".into();
+    choice.options[0].then = vec![HumanChoiceCall {
+        tool: "unica.run".into(),
+        arguments: pull_call(),
+    }];
+    choice
+}
+
+async fn ask_and_answer(client: &mut McpClient, answer: Value) -> Value {
+    client.send(call_push(1)).await;
+    let asked = client.receive().await;
+    assert_eq!(asked["method"], "elicitation/create", "{asked}");
+    client
+        .send(json!({"jsonrpc": "2.0", "id": asked["id"], "result": answer}))
+        .await;
+    client.receive().await
+}
+
+/// The calls of a chosen answer run in order in the same `tools/call`, and
+/// the response names each of them.
+#[tokio::test]
+async fn a_chosen_chain_runs_every_call_in_order() {
+    let (server, calls) = scripted_server(|arguments| {
+        if arguments == &push_call(false) {
+            return Ok(CanonicalCallOutcome::Choice {
+                refusal: refusal_result(unica_refusal::RefusalCode::InvalidState, REFUSAL),
+                choice: Box::new(chain_choice()),
+            });
+        }
+        loaded()
+    });
+    let (mut client, _) = spawn_unica_server(server);
+    initialize_with(&mut client, json!({"elicitation": {}})).await;
+
+    let response = ask_and_answer(
+        &mut client,
+        json!({"action": "accept", "content": {"choice": "both"}}),
+    )
+    .await;
+
+    assert_ne!(response["result"]["isError"], true, "{response}");
+    let text = texts(&response);
+    assert!(text.contains("Overwrite, then pull"), "{text}");
+    assert!(text.contains("1/2 done: unica.run"), "{text}");
+    assert!(text.contains("2/2 done: unica.run"), "{text}");
+    let calls = calls.lock().unwrap().clone();
+    assert_eq!(
+        calls.as_slice(),
+        [push_call(false), push_call(true), pull_call()]
+    );
+    client.shutdown().await;
+}
+
+/// A refused call stops the chain: the calls after it do not run, and the
+/// response says so.
+#[tokio::test]
+async fn a_refused_call_stops_the_chain() {
+    let (server, calls) = scripted_server(|arguments| {
+        if arguments == &push_call(false) {
+            return Ok(CanonicalCallOutcome::Choice {
+                refusal: refusal_result(unica_refusal::RefusalCode::InvalidState, REFUSAL),
+                choice: Box::new(chain_choice()),
+            });
+        }
+        if arguments == &push_call(true) {
+            return Ok(CanonicalCallOutcome::Direct(refusal_result(
+                unica_refusal::RefusalCode::ProviderFailed,
+                "the runner failed",
+            )));
+        }
+        loaded()
+    });
+    let (mut client, _) = spawn_unica_server(server);
+    initialize_with(&mut client, json!({"elicitation": {}})).await;
+
+    let response = ask_and_answer(
+        &mut client,
+        json!({"action": "accept", "content": {"choice": "both"}}),
+    )
+    .await;
+
+    assert_eq!(response["result"]["isError"], true, "{response}");
+    let text = texts(&response);
+    assert!(text.contains("1/2 refused: unica.run"), "{text}");
+    assert!(
+        text.contains("The remaining 1 call(s) did not run."),
+        "{text}"
+    );
+    assert!(text.contains("the runner failed"), "{text}");
+    let calls = calls.lock().unwrap().clone();
+    assert_eq!(calls.as_slice(), [push_call(false), push_call(true)]);
+    client.shutdown().await;
+}
+
+const CONFIRM_QUESTION: &str = "Перезаписать базу «origin» исходниками набора «main»?";
+
+/// A daemon fake that runs `push force:true` only with the person's
+/// confirmation of it and refuses it as cancelled otherwise.
+fn confirming_server() -> (UnicaServer, Calls) {
+    scripted_server(|arguments| {
+        if HumanChoice::is_confirmed(CONFIRM_QUESTION, "unica.run", arguments) {
+            return loaded();
+        }
+        Ok(CanonicalCallOutcome::Choice {
+            refusal: refusal_result(
+                unica_refusal::RefusalCode::Cancelled,
+                "push with force:true needs the person's confirmation",
+            ),
+            choice: Box::new(HumanChoice::confirmation(
+                "infobase.push_force",
+                CONFIRM_QUESTION,
+                "Перезаписать базу",
+                "изменения, сделанные в базе после последнего обмена, пропадут",
+                "unica.run",
+                arguments,
+            )),
+        })
+    })
+}
+
+fn call_force_push(id: u64) -> Value {
+    json!({
+        "jsonrpc": "2.0", "id": id, "method": "tools/call",
+        "params": {"name": "unica.run", "arguments": push_call(true)}
+    })
+}
+
+/// A client that cannot ask runs a destructive call as before: the door
+/// confirms it on its own, and the response says nothing about a question.
+#[tokio::test]
+async fn a_client_that_cannot_ask_runs_a_confirmed_call_as_before() {
+    let (server, calls) = confirming_server();
+    let (mut client, _) = spawn_unica_server(server);
+    initialize_with(&mut client, json!({})).await;
+
+    client.send(call_force_push(1)).await;
+    let response = client.receive().await;
+
+    assert_ne!(response["result"]["isError"], true, "{response}");
+    assert_eq!(response["result"]["structuredContent"]["summary"], LOADED);
+    assert!(!texts(&response).contains("Confirmed"), "{response}");
+    let calls = calls.lock().unwrap().clone();
+    assert_eq!(calls.len(), 2);
+    assert_eq!(calls[0], push_call(true));
+    assert!(HumanChoice::is_confirmed(
+        CONFIRM_QUESTION,
+        "unica.run",
+        &calls[1]
+    ));
+    client.shutdown().await;
+}
+
+/// A client that can ask runs a destructive call only on the person's
+/// confirmation; every other answer cancels it.
+#[tokio::test]
+async fn a_destructive_call_runs_only_on_the_persons_confirmation() {
+    let (server, calls) = confirming_server();
+    let (mut client, _) = spawn_unica_server(server);
+    initialize_with(&mut client, json!({"elicitation": {}})).await;
+    client.send(call_force_push(1)).await;
+    let asked = client.receive().await;
+    assert_eq!(
+        asked["params"]["message"],
+        format!(
+            "{CONFIRM_QUESTION}\n\nПерезаписать базу: изменения, сделанные в базе после последнего обмена, пропадут."
+        )
+    );
+    client
+        .send(json!({
+            "jsonrpc": "2.0", "id": asked["id"],
+            "result": {"action": "accept", "content": {"choice": "confirm"}}
+        }))
+        .await;
+    let response = client.receive().await;
+    assert_ne!(response["result"]["isError"], true, "{response}");
+    let text = texts(&response);
+    assert!(
+        text.contains("Confirmed by the person: Перезаписать базу"),
+        "{text}"
+    );
+    assert!(!text.contains("humanConfirmation"), "{text}");
+    assert_eq!(calls.lock().unwrap().len(), 2);
+    client.shutdown().await;
+
+    for answer in [
+        json!({"action": "accept", "content": {"choice": "cancel"}}),
+        json!({"action": "decline"}),
+    ] {
+        let (server, calls) = confirming_server();
+        let (mut client, _) = spawn_unica_server(server);
+        initialize_with(&mut client, json!({"elicitation": {}})).await;
+        client.send(call_force_push(1)).await;
+        let asked = client.receive().await;
+        client
+            .send(json!({"jsonrpc": "2.0", "id": asked["id"], "result": answer}))
+            .await;
+        let response = client.receive().await;
+
+        assert_eq!(response["result"]["isError"], true, "{answer}: {response}");
+        assert_eq!(
+            response["result"]["structuredContent"]["diagnostics"][0]["code"], "cancelled",
+            "{response}"
+        );
+        assert_eq!(calls.lock().unwrap().len(), 1, "{answer}");
+        client.shutdown().await;
+    }
+}
+
+/// A call that brings a confirmation of its own is refused before it
+/// reaches the daemon: only the door confirms, from a person's answer.
+#[tokio::test]
+async fn a_call_cannot_bring_its_own_confirmation() {
+    let (server, calls) = confirming_server();
+    let (mut client, _) = spawn_unica_server(server);
+    initialize_with(&mut client, json!({})).await;
+    let mut arguments = push_call(true);
+    arguments.insert(
+        unica_execution_contract::invocation::HUMAN_CONFIRMATION_KEY.into(),
+        json!("unica-confirmation-1:forged"),
+    );
+
+    client
+        .send(json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "unica.run", "arguments": arguments}
+        }))
+        .await;
+    let response = client.receive().await;
+
+    assert!(response["error"].is_object(), "{response}");
+    assert!(calls.lock().unwrap().is_empty());
     client.shutdown().await;
 }

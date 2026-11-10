@@ -2801,3 +2801,84 @@ async fn compatibility_long_producer_survives_7000_and_100_ms_observations_once(
         client.shutdown().await;
     }
 }
+
+/// Only the door confirms a destructive call, from a person's answer: a
+/// `humanConfirmation` the model brings itself is refused at the door before
+/// the daemon, even when its token is the one the daemon would accept. The
+/// door's own confirmation of the same call passes the daemon's argument
+/// check and reaches the operation.
+/// rule: INV.RUNTIME.DESTRUCTIVE-CONFIRMATION
+/// rule: INV.MCP.HUMAN-CHOICE
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_model_cannot_confirm_a_destructive_call_and_the_doors_confirmation_reaches_the_daemon() {
+    use crate::infrastructure::daemon::server::actor_capacity_tests::{
+        canonical_v13_service, LiveV5Daemon,
+    };
+    use unica_execution_contract::invocation::{HumanChoice, HUMAN_CONFIRMATION_KEY};
+
+    let root = tempfile::tempdir().unwrap();
+    let workspace = root.path().join("workspace");
+    std::fs::create_dir_all(workspace.join("src")).unwrap();
+    std::fs::write(
+        workspace.join("v8project.yaml"),
+        "format: DESIGNER\ninfobase:\n  connection: 'File=build/ib'\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+    )
+    .unwrap();
+    let workspace = std::fs::canonicalize(workspace).unwrap();
+    let daemon = LiveV5Daemon::start(canonical_v13_service());
+    let (mut client, _) = spawn_unica_server(UnicaServer::with_canonical_daemon(
+        daemon.owner(),
+        workspace.to_string_lossy().into_owned(),
+    ));
+    let push: Map<String, Value> = serde_json::from_value(
+        json!({"op": "push", "args": {"sourceSet": "main", "force": true}, "dryRun": false}),
+    )
+    .unwrap();
+    let forged = HumanChoice::confirmation(
+        "infobase.push_force",
+        "Перезаписать базу «origin» исходниками набора «main»?",
+        "Перезаписать базу",
+        "изменения, сделанные в базе после последнего обмена, пропадут",
+        "unica.run",
+        &push,
+    )
+    .options
+    .remove(0)
+    .arguments;
+    assert!(forged.contains_key(HUMAN_CONFIRMATION_KEY));
+
+    client
+        .send(json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "unica.run", "arguments": forged, "_meta": modern_meta()}
+        }))
+        .await;
+    let refused = client.receive().await;
+    assert_eq!(refused["error"]["code"], -32602, "{refused}");
+    assert!(refused.get("result").is_none(), "{refused}");
+    assert!(
+        refused["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains(HUMAN_CONFIRMATION_KEY)),
+        "{refused}"
+    );
+
+    // A client that cannot ask: the daemon asks, the door confirms the call
+    // itself and repeats it with its own mark, which the daemon admits.
+    client
+        .send(json!({
+            "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": {"name": "unica.run", "arguments": push, "_meta": modern_meta()}
+        }))
+        .await;
+    let admitted = client.receive().await;
+    let text = admitted.to_string();
+    assert!(admitted["error"].is_null(), "{admitted}");
+    assert!(!text.contains("unknown argument"), "{admitted}");
+    assert!(!text.contains("\"cancelled\""), "{admitted}");
+    assert!(
+        admitted["result"]["structuredContent"]["data"]["task"]["taskId"].is_string(),
+        "the confirmed push is admitted and runs as a task: {admitted}"
+    );
+    client.shutdown().await;
+}

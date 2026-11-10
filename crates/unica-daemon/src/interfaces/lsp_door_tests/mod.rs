@@ -914,6 +914,7 @@ impl LspHost for HeldHost {
                         severity: V5LspSeverity::Warning,
                         code: "bsl.code.known".into(),
                         message: "Текст Unica".into(),
+                        reasons: Vec::new(),
                     }],
                 };
             }
@@ -1282,4 +1283,32 @@ fn a_diagnostics_refresh_is_asked_only_of_an_editor_that_supports_it() {
     assert!(
         server_notification_json(V5LspServerNotification::DiagnosticsRefresh {}, false).is_none()
     );
+}
+
+/// The marker of an incomplete answer names its reasons as codes in
+/// `data.reasons`; a finding has no `data` (#2790).
+///
+/// rule: INV.LSP.PARTIAL-ANSWERS
+#[test]
+fn an_incomplete_marker_names_its_reasons_in_data() {
+    let start = V5LspPosition {
+        line: 0,
+        character: 0,
+    };
+    let mut marker = V5LspDiagnostic {
+        range: V5LspRange { start, end: start },
+        severity: V5LspSeverity::Information,
+        code: "unica.diagnostics_incomplete".into(),
+        message: "Unica: показаны не все находки: анализ кода ещё идёт (analysis_not_ready)".into(),
+        reasons: vec![
+            unica_lsp_contract::protocol::V5LspIncompleteReason::Warming,
+            unica_lsp_contract::protocol::V5LspIncompleteReason::UnsavedBuffer,
+        ],
+    };
+    assert_eq!(
+        diagnostic_json(&marker)["data"],
+        serde_json::json!({"reasons": ["warming", "unsaved_buffer"]})
+    );
+    marker.reasons.clear();
+    assert!(diagnostic_json(&marker).get("data").is_none());
 }

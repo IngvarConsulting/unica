@@ -18,9 +18,9 @@ use unica_code_intelligence::completion::{CompletionMethod, PlatformMember};
 use unica_code_intelligence::symbols::SymbolRequestContext;
 use unica_diagnostics::model::DiagnosticProviderRegistry;
 use unica_editor_analysis::{
-    AdmittedWorkspace, LspAnalysis, LspDiagnosticGap, LspDiagnostics, LspFinding, LspModuleReads,
-    LspSymbolAnswer, LspSymbolOperation, LspSymbolRequest, LspSymbols, LspWorkspaces,
-    ModuleSourceRead, SourceSetLayout,
+    AdmittedWorkspace, LspAnalysis, LspAnalysisProgress, LspDiagnosticGap, LspDiagnostics,
+    LspFinding, LspModuleReads, LspSymbolAnswer, LspSymbolOperation, LspSymbolRequest, LspSymbols,
+    LspWorkspaces, ModuleSourceRead, SourceSetLayout,
 };
 use unica_editor_analysis::{
     LspCompletion, LspCompletionAnswer, LspCompletionRequest, ModuleDocument,
@@ -380,6 +380,35 @@ impl LspDiagnostics for ProductDiagnostics {
                 gaps: vec![LspDiagnosticGap::AnalysisNotReady],
             }
         }
+    }
+
+    fn prepare(
+        &self,
+        source_set: &str,
+        progress: &dyn Fn(LspAnalysisProgress),
+        cancellation: &CancellationToken,
+    ) {
+        let Ok((actor, binding, artifacts)) = self.space.bound(source_set) else {
+            return;
+        };
+        let Some(profile) = bsl_profile_for_source(binding.source_profile()) else {
+            return;
+        };
+        let authority = LogicalViewReadAuthority::with_read_authority_and_registration_cache(
+            cancellation,
+            self.space.saved_read(binding),
+            profile,
+            ProviderDeadline::no_deadline(),
+            artifacts,
+        );
+        super::lsp_diagnostics::prepare(
+            self.registry.as_ref(),
+            &authority,
+            actor.context(),
+            source_set,
+            progress,
+            cancellation,
+        );
     }
 }
 

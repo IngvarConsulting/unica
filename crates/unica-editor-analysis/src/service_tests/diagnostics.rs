@@ -3,10 +3,13 @@
 //! чего в нём нет.
 
 use super::*;
-use crate::{LspAnalysis, LspDiagnostics, LspFinding, LspSeverity};
+use crate::{LspAnalysis, LspAnalysisProgress, LspDiagnostics, LspFinding, LspSeverity};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{mpsc, Mutex};
-use unica_lsp_contract::protocol::{V5LspDiagnostic, V5LspSeverity};
+use unica_lsp_contract::protocol::{
+    V5LspDiagnostic, V5LspIncompleteReason, V5LspProgressPhase, V5LspServerNotification,
+    V5LspSeverity,
+};
 use unica_work_control::cancellation::CancellationToken;
 
 /// A port whose own check flags every line that says `Bad`, and whose
@@ -17,12 +20,20 @@ pub(super) struct ScriptedDiagnostics {
     runs: AtomicUsize,
     gate: Mutex<Option<mpsc::Receiver<()>>>,
     answer: Mutex<LspAnalysis>,
+    /// When set, a preparation begins and ends only once released.
+    preparation: Mutex<Option<mpsc::Receiver<()>>>,
 }
 
 impl ScriptedDiagnostics {
     fn hold(&self) -> mpsc::Sender<()> {
         let (release, wait) = mpsc::channel();
         *self.gate.lock().unwrap() = Some(wait);
+        release
+    }
+
+    fn hold_preparation(&self) -> mpsc::Sender<()> {
+        let (release, wait) = mpsc::channel();
+        *self.preparation.lock().unwrap() = Some(wait);
         release
     }
 }
@@ -65,6 +76,20 @@ impl LspDiagnostics for ScriptedDiagnostics {
             let _ = gate.recv();
         }
         self.answer.lock().unwrap().clone()
+    }
+
+    fn prepare(&self, _: &str, progress: &dyn Fn(LspAnalysisProgress), _: &CancellationToken) {
+        let Some(gate) = self.preparation.lock().unwrap().take() else {
+            return;
+        };
+        progress(LspAnalysisProgress::Begin {
+            title: "Анализатор готовит базу".into(),
+            message: "Запуск анализатора".into(),
+        });
+        let _ = gate.recv();
+        progress(LspAnalysisProgress::End {
+            message: "База готова: 1 модуль".into(),
+        });
     }
 }
 
@@ -298,6 +323,93 @@ fn an_editor_that_hears_the_refresh_is_answered_without_waiting_for_the_analysis
     ));
     assert_eq!(codes(&late), ["bsl.style.line_length"]);
     assert_eq!(workspaces.diagnostics.runs.load(Ordering::SeqCst), 1);
+}
+
+/// An analysis that answers at once, as a ready resident analyzer does, is
+/// whole in the first answer even to an editor that hears the refresh: it
+/// is not told "not ready" only to ask again (#2790).
+///
+/// rule: INV.LSP.PARTIAL-ANSWERS
+#[test]
+fn an_editor_that_hears_the_refresh_gets_a_quick_analysis_in_the_first_answer() {
+    let workspace = workspace();
+    let (host, workspaces) = service();
+    *workspaces.diagnostics.answer.lock().unwrap() = analysis_finding();
+    let session = V5LspSessionId::new();
+    let (client, inbox) = LspClientChannel::pair(true);
+    host.open(
+        &session,
+        &[folder(workspace.path(), "Work")],
+        client,
+        soon(),
+    )
+    .unwrap();
+
+    let first = items(diagnostic(
+        &host,
+        &session,
+        &LspCallContext::for_test(Instant::now() + Duration::from_secs(60)),
+    ));
+    assert_eq!(codes(&first), ["bsl.style.line_length"]);
+    // The session still hears that the analysis ended; asking again is
+    // answered from the same analysis.
+    drop(inbox);
+    assert_eq!(workspaces.diagnostics.runs.load(Ordering::SeqCst), 1);
+}
+
+/// The editor hears the preparation of an opened space begin and end, and
+/// an answer that lacks the analysis names why by code: the database still
+/// building is `warming`, an analysis still going after it is `analysing`.
+///
+/// rule: INV.LSP.PARTIAL-ANSWERS
+#[test]
+fn the_preparation_is_heard_and_an_incomplete_answer_names_its_reason() {
+    let workspace = workspace();
+    let (host, workspaces) = service();
+    let prepared = workspaces.diagnostics.hold_preparation();
+    let _analysed = workspaces.diagnostics.hold();
+    let session = V5LspSessionId::new();
+    let (client, inbox) = LspClientChannel::pair(false);
+    host.open(
+        &session,
+        &[folder(workspace.path(), "Work")],
+        client,
+        soon(),
+    )
+    .unwrap();
+    let began = inbox.take_before(soon()).unwrap();
+    assert_eq!(
+        began,
+        [V5LspServerNotification::AnalysisProgress {
+            token: "unica-analysis-work-main".into(),
+            phase: V5LspProgressPhase::Begin,
+            title: Some("Анализатор готовит базу".into()),
+            message: "Запуск анализатора".into(),
+        }]
+    );
+
+    let reasons = |context: LspCallContext| {
+        items(diagnostic(&host, &session, &context))
+            .into_iter()
+            .find(|item| item.code == "unica.diagnostics_incomplete")
+            .map(|item| item.reasons)
+            .unwrap()
+    };
+    let near = || LspCallContext::for_test(Instant::now() + Duration::from_millis(300));
+    assert_eq!(reasons(near()), [V5LspIncompleteReason::Warming]);
+
+    prepared.send(()).unwrap();
+    let ended = inbox.take_before(soon()).unwrap();
+    assert!(
+        ended.contains(&V5LspServerNotification::AnalysisProgress {
+            token: "unica-analysis-work-main".into(),
+            phase: V5LspProgressPhase::End,
+            title: None,
+            message: "База готова: 1 модуль".into(),
+        }),
+        "{ended:?}"
+    );
+    assert_eq!(reasons(near()), [V5LspIncompleteReason::Analysing]);
 }
 
 /// rule: INV.LSP.MCP-PRIORITY
