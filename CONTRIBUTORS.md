@@ -8,6 +8,7 @@
 | GitHub | ID | Оферта | PR | Почты |
 | --- | --- | --- | --- | --- |
 | @zeegin | 729213 | 1.0 | #2853 | i@ingvar.pro, zeegin@zeegin.com, 729213+zeegin@users.noreply.github.com |
+| @korolevpavel | 12083359 | 1.0 | #2858 | korolev.vrn@gmail.com |
 | @VictorMurashkin | 23651763 | 1.0 | #2857 | murashkin.victor@gmail.com, 23651763+VictorMurashkin@users.noreply.github.com, murashkin@balanceprof.ru |
 
 ## Без оферты

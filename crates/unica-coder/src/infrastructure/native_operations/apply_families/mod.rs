@@ -11,6 +11,7 @@ use unica_operations::OperationDescriptor;
 use unica_operations::OperationFamily;
 use unica_source_contract::proposal::{
     hidden_apply_family_unimplemented, ApplyPlanError, ApplyPlanErrorKind, PlannedApplyEffects,
+    SupportLock, SupportLockKind,
 };
 use unica_source_contract::proposal::{
     reconcile_effects, IndexedPlanOperation, ProvisionalApplyEffect,
@@ -256,10 +257,15 @@ fn refuse_targets_on_locked_vendor_objects(
     if state.removed() {
         return Ok(None);
     }
+    let lock = |kind, owner: &str| unica_source_contract::proposal::SupportLock {
+        kind,
+        source_set: source_set.to_string(),
+        owner: owner.to_string(),
+    };
     if !state.global_editing_enabled() {
+        let owner = support_owner_relative(request, binding.source_kind())
+            .map_or_else(|| "Configuration".to_string(), |(owner, _)| owner);
         if !deny {
-            let owner = support_owner_relative(request, binding.source_kind())
-                .map_or_else(|| "Configuration".to_string(), |(owner, _)| owner);
             let permits = if removes { "its removal" } else { "this edit" };
             return Ok(Some(support_locked(
                 &owner,
@@ -271,7 +277,8 @@ fn refuse_targets_on_locked_vendor_objects(
             ApplyPlanErrorKind::InvalidState,
             format!("the configuration is on vendor support with changes disabled; enable editing with `supportCapability.set` in a separate apply before {before}"),
         )
-        .at_path(at));
+        .at_path(at)
+        .with_support_lock(lock(SupportLockKind::ConfigurationLocked, &owner)));
     }
     let Some((owner, owner_relative)) = support_owner_relative(request, binding.source_kind())
     else {
@@ -324,7 +331,8 @@ fn refuse_targets_on_locked_vendor_objects(
                 "{reason}; take the object off support with `supportRule.set` and the rule `off-support` in a separate apply before removal"
             ),
         )
-        .at_path(at));
+        .at_path(at)
+        .with_support_lock(lock(SupportLockKind::RemovalLocked, &owner)));
     }
     if support_rule == Some(0) {
         if !deny {
@@ -339,7 +347,8 @@ fn refuse_targets_on_locked_vendor_objects(
                 "`{source_set}:{owner}` is a vendor object with the support rule `locked`; allow editing with `supportRule.set` in a separate apply before ordinary edits"
             ),
         )
-        .at_path(at));
+        .at_path(at)
+        .with_support_lock(lock(SupportLockKind::ObjectLocked, &owner)));
     }
     Ok(None)
 }
@@ -1208,7 +1217,36 @@ pub fn plan_hidden_v13_apply(
     binding: &ProviderRootBinding,
     admission: &ApplyAdmission,
 ) -> Result<(ApplyStagedState, PlannedApplyEffects), ApplyPlanError> {
-    let parsed = request
+    plan_apply(request, binding, admission, None)
+}
+
+/// The change of vendor support a person chose in the question about a
+/// `deny` lock: the support operations that lift exactly `lock`, planned
+/// before the edits of the same request (INV.SOURCE.SUPPORT-SEPARATE-APPLY).
+pub struct PersonChosenSupportChange<'a> {
+    pub lock: &'a SupportLock,
+    pub operations: &'a [crate::domain::apply::ApplyOp],
+}
+
+/// Plans `request` together with the support change a person chose: both
+/// go into one plan and publish together. The change lifts only the lock
+/// the person was asked about; another lock, or none, refuses as before.
+pub fn plan_hidden_v13_apply_with_person_chosen_support(
+    request: &ApplyRequest,
+    binding: &ProviderRootBinding,
+    admission: &ApplyAdmission,
+    change: PersonChosenSupportChange<'_>,
+) -> Result<(ApplyStagedState, PlannedApplyEffects), ApplyPlanError> {
+    plan_apply(request, binding, admission, Some(change))
+}
+
+fn plan_apply(
+    request: &ApplyRequest,
+    binding: &ProviderRootBinding,
+    admission: &ApplyAdmission,
+    chosen_support: Option<PersonChosenSupportChange<'_>>,
+) -> Result<(ApplyStagedState, PlannedApplyEffects), ApplyPlanError> {
+    let mut parsed = request
         .ops()
         .iter()
         .enumerate()
@@ -1229,8 +1267,21 @@ pub fn plan_hidden_v13_apply(
         &request.at().to_string(),
     )?;
     refuse_targets_outside_writable_profile(request, binding, &mut staged)?;
-    let support_warning =
-        refuse_targets_on_locked_vendor_objects(request, binding, admission, &mut staged)?;
+    let gate = refuse_targets_on_locked_vendor_objects(request, binding, admission, &mut staged);
+    let support_warning = match (&chosen_support, gate) {
+        (None, gate) => gate?,
+        // The person lifts exactly the lock they were asked about.
+        (Some(chosen), Err(error)) if error.support_lock() == Some(chosen.lock) => None,
+        (Some(_), Err(error)) => return Err(error),
+        (Some(_), Ok(_)) => {
+            return Err(ApplyPlanError::new(
+                ApplyPlanErrorKind::InvalidState,
+                "the vendor support state changed after the person's answer; repeat the apply to be asked again",
+            )
+            .at_path(request.at().to_string()))
+        }
+    };
+    // The request the model composed never mixes support and ordinary edits.
     let support_operations = request
         .ops()
         .iter()
@@ -1242,6 +1293,31 @@ pub fn plan_hidden_v13_apply(
             "support changes require a separate apply before ordinary edits",
         )
         .at_path("ops"));
+    }
+    if let Some(chosen) = &chosen_support {
+        // The chosen support change runs first, so every family plans the
+        // edits against the support state the person agreed to.
+        let lock = chosen.lock;
+        let owner = format!("{}:{}", lock.source_set, lock.owner);
+        let root = format!("{}:Configuration", lock.source_set);
+        let mut support = Vec::with_capacity(chosen.operations.len());
+        for operation in chosen.operations {
+            let target = operation.at().to_string();
+            let lifts_this_lock = target == owner
+                || (target == root && lock.kind == SupportLockKind::ConfigurationLocked);
+            if !lifts_this_lock
+                || !changes_support_state(operation.name(), Some(operation.at()), binding)
+            {
+                return Err(ApplyPlanError::new(
+                    ApplyPlanErrorKind::InvalidState,
+                    "a person-chosen support change carries only support operations",
+                )
+                .at_path("ops"));
+            }
+            support.push(parse_apply_operation(0, operation, binding)?);
+        }
+        support.append(&mut parsed);
+        parsed = support;
     }
     let code_type_plan = unica_metadata_designer::planner::PredefinedCodeTypePlan::from_operations(
         parsed.iter().filter_map(|operation| match operation {
