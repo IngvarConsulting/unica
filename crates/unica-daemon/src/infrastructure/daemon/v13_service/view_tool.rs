@@ -391,6 +391,22 @@ impl CanonicalV13ReadService {
                 }
                 None => {
                     attach_can_with_color(&mut data, can_context, &color);
+                    // Возможность правки узла — ответ того же гейта поддержки,
+                    // что спросит `apply`, при политике проекта (#2877).
+                    let policy = || {
+                        unica_workspace::policy_evidence::observe_support_policy_mode(
+                            &invocation.workspace_context().workspace_root,
+                            source.retained_root().path(),
+                            source.deadline(),
+                            cancellation,
+                        )
+                    };
+                    source
+                        .logical_view_read_authority(cancellation)
+                        .map_err(|message| {
+                            ViewError::detailed(RefusalDetail::ProviderAbsent, message)
+                        })?
+                        .attach_editability(&address, &mut data, policy)?;
                     Ok(data)
                 }
             }

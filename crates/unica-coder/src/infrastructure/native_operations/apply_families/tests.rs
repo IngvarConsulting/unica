@@ -989,6 +989,32 @@ fn a_damaged_support_state_refuses_the_edit_under_deny() {
     }
 }
 
+/// An owner on support whose descriptor names no uuid has a rule nobody can
+/// look up: its support cannot be read, and `deny` refuses as `view` shows
+/// it (`unknown`, not editable).
+/// rule: INV.SAFETY.APPLY-SUPPORT-GATE
+/// rule: INV.APP.SUPPORT-STATE
+#[test]
+fn an_owner_without_a_uuid_refuses_the_edit_under_deny() {
+    let strip_uuid = |source: &std::path::Path| {
+        let path = source.join("Documents/First.xml");
+        let xml = std::fs::read_to_string(&path).unwrap();
+        let start = xml.find(" uuid=\"").expect("the fixture owner has a uuid");
+        let end = start + xml[start + 7..].find('"').unwrap() + 8;
+        std::fs::write(&path, format!("{}{}", &xml[..start], &xml[end..])).unwrap();
+    };
+    let marker = vendor_removal_support_marker(1, true);
+    let (outcome, unchanged, _) = plan_vendor_removal("deny", &marker, strip_uuid);
+    let error = outcome.expect_err("deny refuses an owner whose rule cannot be read");
+    assert_eq!(error.kind(), ApplyPlanErrorKind::InvalidSource, "{error}");
+    assert!(error.to_string().contains("names no uuid"), "{error}");
+    assert!(unchanged);
+
+    let (outcome, _, _) = plan_vendor_removal("warn", &marker, strip_uuid);
+    let warnings = outcome.expect("warn permits the edit");
+    assert_eq!(warnings[0]["code"], "support_locked", "{warnings:?}");
+}
+
 fn vendor_removal_support_marker(rule: u8, editing_enabled: bool) -> String {
     let global_flag = u8::from(!editing_enabled);
     format!(

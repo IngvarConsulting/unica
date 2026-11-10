@@ -909,8 +909,9 @@ pub(super) fn project_registered_metadata_branch_names(
     )
 }
 
-/// Член коллекции несёт `props.support` только в состоянии, отличном от «не на
-/// поддержке»: замок в дереве виден без чтения каждого объекта (#2158).
+/// Член коллекции несёт `support` только в состоянии, отличном от «не на
+/// поддержке»: замок в дереве виден без чтения каждого объекта (#2158, #2877).
+/// Это состояние по правилу поставщика, без учёта политики проекта.
 fn project_registered_metadata_branch_names_inner<'a>(
     address: &QualifiedAddress,
     kind: NodeKind,
@@ -919,18 +920,17 @@ fn project_registered_metadata_branch_names_inner<'a>(
 ) -> Result<NodeViewData, ViewError> {
     let items = names
         .map(|name| {
-            let props = support
-                .states
-                .remove(name)
-                .map(|state| Map::from_iter([("support".to_string(), state)]))
-                .unwrap_or_default();
-            serde_json::to_value(NodeView::new(
+            let mut item = serde_json::to_value(NodeView::new(
                 member_address(address, name),
                 kind.as_str(),
                 name,
-                props,
+                Map::new(),
             ))
-            .expect("NodeView always serializes")
+            .expect("NodeView always serializes");
+            if let Some(state) = support.states.remove(name) {
+                item["support"] = state;
+            }
+            item
         })
         .collect();
     Ok(NodeViewData::Collection(CollectionView::new(

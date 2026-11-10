@@ -312,6 +312,14 @@ pub fn property(
     props: &Value,
     name: &str,
 ) -> Option<PropertySpec> {
+    // Every node of an object names its editability under vendor support
+    // (INV.APP.SUPPORT-STATE); `supportRule.set` changes the rule, not this.
+    if name == "support" {
+        return Some(derived(
+            "support",
+            "Editability of the node under vendor support and the project policy",
+        ));
+    }
     if matches!(reader, LogicalReader::Dcs | LogicalReader::Xdto)
         && matches!(kind, NodeKind::Template | NodeKind::XdtoPackage)
     {
