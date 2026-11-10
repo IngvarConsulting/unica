@@ -17,7 +17,9 @@ use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
-use unica_lsp_contract::protocol::{V5LspDiagnostic, V5LspPosition, V5LspRange, V5LspSeverity};
+use unica_lsp_contract::protocol::{
+    V5LspDiagnostic, V5LspIncompleteReason, V5LspPosition, V5LspRange, V5LspSeverity,
+};
 use unica_work_control::cancellation::CancellationToken;
 
 /// Уровень находки.
@@ -45,6 +47,8 @@ pub struct LspFinding {
 /// Почему в ответе нет части находок. Каждая причина называет источник.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum LspDiagnosticGap {
+    /// Анализатор ещё строит базу рабочей области.
+    AnalysisWarming,
     /// Анализ кода ещё не закончился.
     AnalysisNotReady,
     /// Анализ кода ответил отказом.
@@ -60,7 +64,7 @@ pub enum LspDiagnosticGap {
 impl LspDiagnosticGap {
     fn code(self) -> &'static str {
         match self {
-            Self::AnalysisNotReady => "analysis_not_ready",
+            Self::AnalysisWarming | Self::AnalysisNotReady => "analysis_not_ready",
             Self::AnalysisUnavailable => "analysis_unavailable",
             Self::AnalysisAbsent => "analysis_absent",
             Self::UnsavedBuffer => "unsaved_buffer",
@@ -70,11 +74,23 @@ impl LspDiagnosticGap {
 
     fn message(self) -> &'static str {
         match self {
-            Self::AnalysisNotReady => "анализ кода ещё идёт",
+            Self::AnalysisWarming | Self::AnalysisNotReady => "анализ кода ещё идёт",
             Self::AnalysisUnavailable => "анализ кода недоступен",
             Self::AnalysisAbsent => "анализ кода не установлен или не запускается",
             Self::UnsavedBuffer => "анализ кода видит только сохранённый файл",
             Self::Capped => "показаны не все находки",
+        }
+    }
+
+    /// Код причины для редактора, из закрытого списка протокола.
+    fn reason(self) -> V5LspIncompleteReason {
+        match self {
+            Self::AnalysisWarming => V5LspIncompleteReason::Warming,
+            Self::AnalysisNotReady => V5LspIncompleteReason::Analysing,
+            Self::AnalysisUnavailable => V5LspIncompleteReason::AnalyzerUnavailable,
+            Self::AnalysisAbsent => V5LspIncompleteReason::AnalyzerAbsent,
+            Self::UnsavedBuffer => V5LspIncompleteReason::UnsavedBuffer,
+            Self::Capped => V5LspIncompleteReason::Capped,
         }
     }
 }
@@ -104,8 +120,24 @@ pub trait LspDiagnostics: Send + Sync {
     ) -> LspAnalysis;
     /// Подготовка анализа набора `source_set`, как только сессия его
     /// открыла: поставщик начинает строить свою базу до первого вопроса.
-    /// Зовётся в фоне, ничего не возвращает и ничего не обещает.
-    fn prepare(&self, _source_set: &str) {}
+    /// Зовётся в фоне и возвращается, когда база готова, отказала или
+    /// `cancellation` отменена. Ход подготовки сообщается в `progress`:
+    /// начатая подготовка всегда кончается сообщением `End`.
+    fn prepare(
+        &self,
+        _source_set: &str,
+        _progress: &dyn Fn(LspAnalysisProgress),
+        _cancellation: &CancellationToken,
+    ) {
+    }
+}
+
+/// Ход подготовки анализа набора исходников, словами Unica.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LspAnalysisProgress {
+    Begin { title: String, message: String },
+    Report { message: String },
+    End { message: String },
 }
 
 /// Код находки-отметки неполного ответа.
@@ -208,6 +240,10 @@ pub(crate) fn merge(own: Vec<LspFinding>, analysis: LspAnalysis) -> DocumentDiag
     }
     gaps.sort();
     gaps.dedup();
+    // A database still building is why the analysis is not done yet.
+    if gaps.contains(&LspDiagnosticGap::AnalysisWarming) {
+        gaps.retain(|gap| *gap != LspDiagnosticGap::AnalysisNotReady);
+    }
     DocumentDiagnostics { findings, gaps }
 }
 
@@ -241,6 +277,7 @@ pub(crate) fn wire_diagnostics(
             },
             code: finding.code.clone(),
             message: finding.message.clone(),
+            reasons: Vec::new(),
         })
         .collect::<Vec<_>>();
     if !diagnostics.gaps.is_empty() {
@@ -248,17 +285,18 @@ pub(crate) fn wire_diagnostics(
             line: 0,
             character: 0,
         };
-        let named = diagnostics
+        let mut named = diagnostics
             .gaps
             .iter()
             .map(|gap| format!("{} ({})", gap.message(), gap.code()))
-            .collect::<Vec<_>>()
-            .join("; ");
+            .collect::<Vec<_>>();
+        named.dedup();
         items.push(V5LspDiagnostic {
             range: V5LspRange { start, end: start },
             severity: V5LspSeverity::Information,
             code: INCOMPLETE_CODE.to_owned(),
-            message: format!("Unica: показаны не все находки: {named}"),
+            message: format!("Unica: показаны не все находки: {}", named.join("; ")),
+            reasons: diagnostics.gaps.iter().map(|gap| gap.reason()).collect(),
         });
     }
     items

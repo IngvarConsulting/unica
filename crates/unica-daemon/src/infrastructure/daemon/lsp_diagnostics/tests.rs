@@ -168,3 +168,103 @@ fn own_findings_follow_the_text_and_speak_unica() {
     assert_eq!(findings[0].start_line, 2);
     assert!(own_findings("Перем Рано;\r\nПроцедура А()\r\nКонецПроцедуры\r\n").is_empty());
 }
+
+fn status(
+    readiness: Option<unica_diagnostics::model::DiagnosticReadiness>,
+    error: Option<&str>,
+) -> DiagnosticResult {
+    let mut result = result(
+        if error.is_some() {
+            DiagnosticProviderStatus::Unavailable
+        } else {
+            DiagnosticProviderStatus::Completed
+        },
+        error,
+    );
+    result.items.clear();
+    result.providers[0].readiness = readiness;
+    result
+}
+
+fn readiness(
+    state: DiagnosticReadinessState,
+    progress: unica_diagnostics::model::DiagnosticBuildProgress,
+) -> Option<unica_diagnostics::model::DiagnosticReadiness> {
+    Some(unica_diagnostics::model::DiagnosticReadiness {
+        state,
+        retryable: true,
+        progress: Some(progress),
+    })
+}
+
+/// The preparation reads the resident's own facts: the build's age and
+/// retries while it builds, the modules once ready; a build that failed is
+/// retried by the resident, anything else is no resident (#2790).
+#[test]
+fn a_status_answer_tells_how_the_resident_database_goes() {
+    use unica_diagnostics::model::DiagnosticBuildProgress;
+    assert_eq!(
+        resident_database(&status(
+            readiness(
+                DiagnosticReadinessState::Building,
+                DiagnosticBuildProgress {
+                    elapsed_ms: Some(25_000),
+                    attempts: Some(1),
+                    files: None,
+                },
+            ),
+            None,
+        )),
+        ResidentDatabase::Building {
+            elapsed_ms: Some(25_000),
+            attempts: Some(1),
+        }
+    );
+    assert_eq!(
+        resident_database(&status(
+            readiness(
+                DiagnosticReadinessState::Ready,
+                DiagnosticBuildProgress {
+                    files: Some(5902),
+                    ..DiagnosticBuildProgress::default()
+                },
+            ),
+            None,
+        )),
+        ResidentDatabase::Ready { files: Some(5902) }
+    );
+    assert_eq!(
+        resident_database(&status(None, Some("provider_not_ready"))),
+        ResidentDatabase::Building {
+            elapsed_ms: None,
+            attempts: None,
+        }
+    );
+    assert_eq!(
+        resident_database(&status(None, Some("provider_start_failed"))),
+        ResidentDatabase::Unavailable
+    );
+}
+
+#[test]
+fn the_stages_are_told_in_unica_words() {
+    assert_eq!(
+        building_message(Duration::from_millis(25_400), None),
+        "Строится база: 25 с"
+    );
+    assert_eq!(
+        building_message(Duration::from_secs(3), Some(1)),
+        "Повтор после сбоя, попытка 2"
+    );
+    for (files, told) in [
+        (5902, "База готова: 5902 модуля"),
+        (1, "База готова: 1 модуль"),
+        (11, "База готова: 11 модулей"),
+        (21, "База готова: 21 модуль"),
+        (25, "База готова: 25 модулей"),
+        (112, "База готова: 112 модулей"),
+    ] {
+        assert_eq!(ready_message(Some(files)), told);
+    }
+    assert_eq!(ready_message(None), "База готова");
+}
