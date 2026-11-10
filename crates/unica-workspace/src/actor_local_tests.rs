@@ -898,6 +898,7 @@ pub(crate) fn apply_publication_result_exposes_the_effect_receipt_accessor() {
     ) -> &'a ApplyEffectReceipt = super::ApplyPublicationResult::effects;
 }
 
+/// rule: INV.RUNTIME.SOURCE-SET-WRITE-EXCLUSION
 #[test]
 fn actors_of_one_workspace_root_share_the_lane_a_runtime_writer_takes_before_them() {
     let root = temp_root("source-write-lane-shared");
@@ -942,6 +943,7 @@ fn actors_of_one_workspace_root_share_the_lane_a_runtime_writer_takes_before_the
     let _ = std::fs::remove_dir_all(other);
 }
 
+/// rule: INV.RUNTIME.SOURCE-SET-WRITE-EXCLUSION
 #[test]
 fn a_runtime_writer_waits_for_an_actor_publication_and_reports_deadline_or_cancellation() {
     let root = temp_root("source-write-lane-wait");
@@ -1011,6 +1013,7 @@ fn a_runtime_writer_waits_for_an_actor_publication_and_reports_deadline_or_cance
     let _ = std::fs::remove_dir_all(root);
 }
 
+/// rule: INV.RUNTIME.SOURCE-SET-WRITE-EXCLUSION
 #[test]
 fn a_panicking_runtime_writer_releases_the_lane_without_poisoning_the_actor() {
     let root = temp_root("source-write-lane-panic");
