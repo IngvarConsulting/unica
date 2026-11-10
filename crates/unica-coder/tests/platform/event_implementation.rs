@@ -51,7 +51,8 @@ fn shape(
         region: match owner {
             EventImplementationOwner::Form => "ОбработчикиСобытийФормы",
             _ => "ОбработчикиСобытий",
-        },
+        }
+        .to_string(),
     }
 }
 
