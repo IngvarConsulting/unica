@@ -2485,6 +2485,7 @@ pub(super) mod tests {
     /// же набора. Превью вопроса не несёт: выбор исполнял бы
     /// изменение. Сам `force` вопрос не добавляет — только выбранный вызов.
     /// rule: INV.RUNTIME.RUNNER-BASE-REFUSALS
+    /// rule: INV.RUNTIME.DESTRUCTIVE-CONFIRMATION
     #[test]
     fn an_executing_push_offers_the_person_a_choice_and_a_preview_does_not() {
         let root = workspace();
@@ -2545,6 +2546,11 @@ pub(super) mod tests {
             Value::Object(choice.options[1].arguments.clone()),
             json!({"op": "pull", "args": {"force": true, "sourceSet": "main"}, "dryRun": false})
         );
+        // «Перезаписать исходники» согласием не засчитывается: несохранённые
+        // правки проверяет вопрос самого `pull` (INV.RUNTIME.DESTRUCTIVE-CONFIRMATION).
+        assert!(!choice.options[1]
+            .arguments
+            .contains_key(unica_execution_contract::invocation::HUMAN_CONFIRMATION_KEY));
 
         let runner = SequenceRunner::new(vec![process(
             captured("push-no-memory-preview.json"),
