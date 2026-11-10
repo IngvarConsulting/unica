@@ -1280,6 +1280,7 @@ fn base_divergence_choice(source_set: &str, push_args: Value, pull_args: Value) 
                 then: Vec::new(),
             },
         ],
+        cancel_description: None,
         proceeds_unasked: false,
     }
 }

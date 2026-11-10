@@ -1781,6 +1781,9 @@ mod metadata_can_tests;
 #[cfg(test)]
 mod retained_directory_removal_tests;
 #[cfg(test)]
+#[path = "support_choice_tests.rs"]
+mod support_choice_tests;
+#[cfg(test)]
 #[path = "xdto_can_tests.rs"]
 mod xdto_can_tests;
 

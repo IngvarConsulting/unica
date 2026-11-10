@@ -56,7 +56,12 @@ impl CanonicalV13ReadService {
             );
         }
         let source_sets = invocation.admitted_source_set_names();
-        let mut planning_arguments = invocation.arguments().clone();
+        // A person's answer to the question about a vendor-support lock comes
+        // back as the same call with the door's confirmation mark.
+        let call =
+            unica_execution_contract::invocation::without_confirmation(invocation.arguments());
+        let answered = call.len() != invocation.arguments().len();
+        let mut planning_arguments = call.clone();
         planning_arguments.insert("dryRun".into(), json!(true));
         let request = match parse_apply_request(&planning_arguments, &source_sets) {
             Ok(request) => request,
@@ -160,7 +165,40 @@ impl CanonicalV13ReadService {
                 )
             }),
         );
-        let (staged, mut effects) = match plan_hidden_v13_apply(&request, &binding, &admission) {
+        let planned = match plan_hidden_v13_apply(&request, &binding, &admission) {
+            Err(error) if answered && error.support_lock().is_some() => {
+                let lock = error.support_lock().expect("checked above").clone();
+                match support_choice::chosen_answer(&lock, invocation.arguments()) {
+                    Some(answer) => {
+                        let mut operations = Vec::new();
+                        for support in support_choice::support_requests(&lock, &answer) {
+                            match parse_apply_request(&support, &source_sets) {
+                                Ok(support) => operations.extend(support.ops().iter().cloned()),
+                                Err(error) => {
+                                    return error_result(
+                                        Some(error.location().to_string()),
+                                        error.code(),
+                                        error.to_string(),
+                                    )
+                                }
+                            }
+                        }
+                        crate::infrastructure::native_operations::apply_families::plan_hidden_v13_apply_with_person_chosen_support(
+                            &request,
+                            &binding,
+                            &admission,
+                            crate::infrastructure::native_operations::apply_families::PersonChosenSupportChange {
+                                lock: &lock,
+                                operations: &operations,
+                            },
+                        )
+                    }
+                    None => Err(error),
+                }
+            }
+            planned => planned,
+        };
+        let (staged, mut effects) = match planned {
             Err(error)
                 if error.kind() == ApplyPlanErrorKind::ProviderUnavailable
                     && error.to_string().contains("not implemented") =>
@@ -180,7 +218,15 @@ impl CanonicalV13ReadService {
                 };
                 let refusal = with_missing_target_parent(refusal, &request, &error, &node_exists);
                 let refusal = with_unknown_argument_contract(refusal, &request, traits);
-                return with_argument_dictionary(refusal, &request, &error, traits, &node_exists);
+                let mut refusal =
+                    with_argument_dictionary(refusal, &request, &error, traits, &node_exists);
+                if let Some(choice) = error
+                    .support_lock()
+                    .and_then(|lock| support_choice::support_choice(lock, &call))
+                {
+                    refusal.human_choice = Some(Box::new(choice));
+                }
+                return refusal;
             }
             Ok(planned) => planned,
         };
