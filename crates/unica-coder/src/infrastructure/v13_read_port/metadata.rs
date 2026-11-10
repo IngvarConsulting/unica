@@ -334,8 +334,10 @@ impl ProviderReadAuthority {
     }
 
     /// The synonym of a common module for its collection row and its node,
-    /// with the limits naming a damaged one. The actor retains it with the
-    /// owner facts, under the descriptor's stamp before it was read.
+    /// with the limits naming a damaged or oversized one. The actor retains
+    /// the synonym as read, under the descriptor's stamp before the read; the
+    /// size limit of the answer is applied on every use, since a read of the
+    /// property itself takes it whole.
     pub(crate) fn common_module_synonym(
         &self,
         at: &unica_address::address::QualifiedAddress,
@@ -343,33 +345,56 @@ impl ProviderReadAuthority {
         let owner = MetadataAddress::parse_logical(&at.logical_path()).map_err(|error| {
             ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
         })?;
-        if self.is_external_source_set() {
-            return self.common_module_synonym_uncached(at, &owner);
-        }
-        let Some((relative, stamp)) = self
+        let observed = if self.is_external_source_set() {
+            self.common_module_synonym_observed(&owner)?
+        } else if let Some((relative, stamp)) = self
             .metadata_descriptor_relative(&owner)
             .ok()
             .and_then(|relative| Some((relative.clone(), self.descriptor_stamp(&relative)?)))
-        else {
-            return self.common_module_synonym_uncached(at, &owner);
-        };
-        if let Some(fact) = self
-            .artifacts
-            .retained_common_module_synonym(&relative, &stamp)
         {
-            return Ok((*fact).clone());
+            match self
+                .artifacts
+                .retained_common_module_synonym(&relative, &stamp)
+            {
+                Some(observed) => (*observed).clone(),
+                None => {
+                    let observed = self.common_module_synonym_observed(&owner)?;
+                    self.artifacts.retain_common_module_synonym(
+                        relative,
+                        stamp,
+                        Arc::new(observed.clone()),
+                    );
+                    observed
+                }
+            }
+        } else {
+            self.common_module_synonym_observed(&owner)?
+        };
+        let mut props = serde_json::Map::new();
+        let mut limits = Vec::new();
+        match observed {
+            Ok(Some(text)) => crate::infrastructure::v13_read_projection::place_prop(
+                &mut props,
+                &mut limits,
+                at,
+                "synonym",
+                &json!(text),
+                false,
+                "common module Synonym",
+            ),
+            Ok(None) => {}
+            Err(message) => limits.push(format!("properties.Synonym is unreadable: {message}")),
         }
-        let fact = self.common_module_synonym_uncached(at, &owner)?;
-        self.artifacts
-            .retain_common_module_synonym(relative, stamp, Arc::new(fact.clone()));
-        Ok(fact)
+        Ok((props.remove("synonym"), limits))
     }
 
-    fn common_module_synonym_uncached(
+    /// The synonym as the descriptor states it: `Ok(None)` when it is absent
+    /// or empty, `Err` with the reason when the property cannot be read.
+    fn common_module_synonym_observed(
         &self,
-        at: &unica_address::address::QualifiedAddress,
         owner: &MetadataAddress,
-    ) -> Result<(Option<Value>, Vec<String>), ViewError> {
+    ) -> Result<crate::infrastructure::v13_large_configuration::CommonModuleSynonym, ViewError>
+    {
         let descriptor = self.metadata_descriptor(owner)?;
         let text = std::str::from_utf8(&descriptor).map_err(|error| {
             ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
@@ -377,29 +402,14 @@ impl ProviderReadAuthority {
         let properties = crate::infrastructure::family_codecs::metadata_read_codec()
             .common_module_properties(text)
             .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?;
-        let observation = properties.info("Synonym");
-        let mut props = serde_json::Map::new();
-        let mut limits = Vec::new();
-        match observation {
+        Ok(match properties.info("Synonym") {
             Ok(Some(unica_metadata::MetaInfoPropertyValue::String(text))) if !text.is_empty() => {
-                crate::infrastructure::v13_read_projection::place_prop(
-                    &mut props,
-                    &mut limits,
-                    at,
-                    "synonym",
-                    &json!(text),
-                    false,
-                    "common module Synonym",
-                );
+                Ok(Some(text))
             }
-            Ok(None | Some(unica_metadata::MetaInfoPropertyValue::String(_))) => {}
+            Ok(None | Some(unica_metadata::MetaInfoPropertyValue::String(_))) => Ok(None),
             Ok(Some(_)) => unreachable!("the closed Synonym profile yields a string"),
-            Err(error) => limits.push(format!(
-                "properties.Synonym is unreadable: {}",
-                error.message
-            )),
-        }
-        Ok((props.remove("synonym"), limits))
+            Err(error) => Err(error.message),
+        })
     }
 
     fn metadata_owner_evidence_uncached(

@@ -206,3 +206,57 @@ fn background_warmup_retains_top_level_descriptors_for_the_next_operation() {
         .unwrap();
     assert_eq!(next.metadata_descriptor_read_count("Catalog.Items"), 0);
 }
+
+/// The retained synonym is the one the descriptor states, not its compact
+/// form: a long synonym named by a limit in a branch row is still read whole
+/// through its property from the same retained record.
+/// rule: INV.SOURCE.CONFIGURATION-ROOT-CACHE-REUSE
+#[test]
+fn a_retained_long_synonym_is_still_read_whole() {
+    let fixture = RealReaderFixture::new();
+    let artifacts = Arc::new(RegistrationCache::with_settle_window_for_test(
+        std::time::Duration::ZERO,
+    ));
+    let descriptor = fixture.source.join("CommonModules/РеактивныйСервер.xml");
+    let text = fs::read_to_string(&descriptor).unwrap();
+    let start = text.find("<Synonym>").unwrap();
+    let end = text.find("</Synonym>").unwrap() + "</Synonym>".len();
+    let long = "Сервер".repeat(1_000);
+    fs::write(
+        &descriptor,
+        format!(
+            "{}<Synonym><v8:item><v8:lang>ru</v8:lang><v8:content>{long}</v8:content></v8:item></Synonym>{}",
+            &text[..start],
+            &text[end..]
+        ),
+    )
+    .unwrap();
+    let at = QualifiedAddress::parse(MODULE).unwrap();
+
+    let (compact, limits) = operation(&fixture, &artifacts)
+        .common_module_synonym(&at)
+        .unwrap();
+    assert_eq!(compact, None);
+    assert_eq!(limits.len(), 1, "{limits:?}");
+
+    let whole = crate::infrastructure::v13_read_projection::with_whole_prop("synonym", || {
+        operation(&fixture, &artifacts)
+            .common_module_synonym(&at)
+            .unwrap()
+    });
+    let fresh = Arc::new(RegistrationCache::default());
+    let expected = crate::infrastructure::v13_read_projection::with_whole_prop("synonym", || {
+        operation(&fixture, &fresh)
+            .common_module_synonym(&at)
+            .unwrap()
+    });
+    assert!(
+        expected
+            .0
+            .as_ref()
+            .and_then(|value| value.as_str())
+            .is_some_and(|value| value.len() > 4096),
+        "{expected:?}"
+    );
+    assert_eq!(whole, expected);
+}

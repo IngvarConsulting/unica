@@ -277,8 +277,9 @@ pub struct RegistrationCache {
 /// descriptor had before it was read.
 type RetainedByDescriptor<T> = std::collections::HashMap<std::path::PathBuf, (FileStamp, Arc<T>)>;
 
-/// The synonym of a common module and the limits naming a damaged one.
-pub(crate) type CommonModuleSynonym = (Option<Value>, Vec<String>);
+/// The synonym of a common module as its descriptor states it: absent or
+/// empty is `Ok(None)`, an unreadable property is `Err` with its reason.
+pub(crate) type CommonModuleSynonym = Result<Option<String>, String>;
 
 /// Timestamp granularity window: a stamp younger than this is never cached.
 // resource-limit: view.registration-settle-window-ms
@@ -416,7 +417,7 @@ impl RegistrationCache {
         &self,
         relative: &std::path::Path,
         stamp: &FileStamp,
-    ) -> Option<Arc<(Option<Value>, Vec<String>)>> {
+    ) -> Option<Arc<CommonModuleSynonym>> {
         let synonyms = self.common_module_synonyms.lock().ok()?;
         synonyms
             .get(relative)
@@ -428,7 +429,7 @@ impl RegistrationCache {
         &self,
         relative: std::path::PathBuf,
         stamp: FileStamp,
-        fact: Arc<(Option<Value>, Vec<String>)>,
+        fact: Arc<CommonModuleSynonym>,
     ) {
         if self.retains(&stamp) {
             if let Ok(mut synonyms) = self.common_module_synonyms.lock() {
