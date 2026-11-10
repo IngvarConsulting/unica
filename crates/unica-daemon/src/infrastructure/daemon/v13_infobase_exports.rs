@@ -606,30 +606,30 @@ fn execute_with_resolved_runner(
         Ok(inputs) => inputs,
         Err(result) => return result,
     };
-    let preview = match invoke_runner(prepared, tool, runner, &cancellation, true) {
-        Ok(envelope) => envelope,
-        Err(result) => return result,
-    };
-    let plan = match validate_preview(prepared, &preview) {
-        Ok(plan) => plan,
-        Err(result) => return result,
-    };
-    let after = match capture_inputs(prepared) {
-        Ok(inputs) => inputs,
-        Err(result) => return result,
-    };
-    if before != after {
-        return reject(
-            prepared.operation,
-            RefusalCode::ConcurrentChange,
-            format!(
-                "{} inputs changed during preview; run dryRun: true again",
-                prepared.operation.name()
-            ),
-        );
-    }
-
     if prepared.dry_run {
+        let preview = match invoke_runner(prepared, tool, runner, &cancellation, true) {
+            Ok(envelope) => envelope,
+            Err(result) => return result,
+        };
+        let plan = match validate_preview(prepared, &preview) {
+            Ok(plan) => plan,
+            Err(result) => return result,
+        };
+        let after = match capture_inputs(prepared) {
+            Ok(inputs) => inputs,
+            Err(result) => return result,
+        };
+        if before != after {
+            return reject(
+                prepared.operation,
+                RefusalCode::ConcurrentChange,
+                format!(
+                    "{} inputs changed during preview; run dryRun: true again",
+                    prepared.operation.name()
+                ),
+            );
+        }
+
         let mut result = DomainResult::success(format!(
             "{} planned without changing the infobase or workspace files",
             prepared.operation.name()
@@ -667,9 +667,12 @@ fn execute_with_resolved_runner(
         Ok(envelope) => envelope,
         Err(result) => return result,
     };
-    if let Err(result) = validate_apply(prepared, &plan, &applied) {
-        return result;
-    }
+    // Исполнение не повторяет preview раннера: исполнитель и его квитанция
+    // берутся из ответа исполнения.
+    let provider = match validate_apply(prepared, &applied) {
+        Ok(provider) => provider,
+        Err(result) => return result,
+    };
     let (sha256, size) = match digest_optional_workspace_file(
         &prepared.context.workspace_root,
         &prepared.arguments.named_file_relative,
@@ -722,7 +725,7 @@ fn execute_with_resolved_runner(
         result.data = Some(json!({
             "op": prepared.operation.name(),
             "dryRun": false,
-            "provider": plan.provider,
+            "provider": provider,
             "source": {
                 "kind": prepared.operation.artifact_kind(None),
                 "path": path_text(&prepared.arguments.named_file_relative),
@@ -753,7 +756,7 @@ fn execute_with_resolved_runner(
     result.data = Some(json!({
         "op": prepared.operation.name(),
         "dryRun": false,
-        "provider": plan.provider,
+        "provider": provider,
         "artifact": {
             "kind": prepared.operation.artifact_kind(prepared.arguments.extension.as_deref()),
             "path": path_text(&prepared.arguments.named_file_relative),
@@ -1323,7 +1326,6 @@ pub(super) fn map_runner_code(code: &str) -> RefusalCode {
 #[derive(Debug, Clone)]
 struct PreviewPlan {
     provider: String,
-    output: String,
     receipt: Value,
 }
 
@@ -1413,11 +1415,7 @@ fn validate_preview(
             format!("v8-runner preview resolved a different {plan_path_key}"),
         ));
     }
-    Ok(PreviewPlan {
-        provider,
-        output,
-        receipt,
-    })
+    Ok(PreviewPlan { provider, receipt })
 }
 
 /// Validate the pinned runner's structured receipt. Prose and absolute override paths
@@ -1504,10 +1502,13 @@ fn valid_provider_id(value: &str) -> bool {
 
 fn validate_apply(
     prepared: &PreparedInfobaseExport,
-    preview: &PreviewPlan,
     envelope: &Value,
-) -> Result<(), DomainResult> {
+) -> Result<String, DomainResult> {
     let data = &envelope["data"];
+    let provider = validate_provider_receipt(&data["provider"])
+        .ok()
+        .and_then(|receipt| receipt["selected"].as_str().map(str::to_owned))
+        .filter(|provider| valid_provider_id(provider));
     let applied = if prepared.operation.writes_named_file() {
         data["published"] == true
     } else {
@@ -1520,14 +1521,14 @@ fn validate_apply(
             != prepared
                 .operation
                 .artifact_kind(prepared.arguments.extension.as_deref())
-        || validate_provider_receipt(&data["provider"]).ok().as_ref() != Some(&preview.receipt)
+        || provider.is_none()
         || !matches!(data["target_state"].as_str(), Some("created" | "replaced"))
         || !runner_subject_matches(prepared, data)
     {
         return Err(reject(
             prepared.operation,
             RefusalCode::InvalidResult,
-            "v8-runner apply result does not match the previewed export contract",
+            "v8-runner apply result does not match the export contract",
         ));
     }
     let applied_path_key = if prepared.operation.writes_named_file() {
@@ -1557,14 +1558,14 @@ fn validate_apply(
                 format!("failed to resolve the expected output: {error}"),
             )
         })?;
-    if applied_output != expected_output || output != preview.output {
+    if applied_output != expected_output {
         return Err(reject(
             prepared.operation,
             RefusalCode::InvalidResult,
-            "v8-runner apply published a different output than the previewed target",
+            "v8-runner apply published a different output than the requested target",
         ));
     }
-    Ok(())
+    Ok(provider.unwrap_or_default())
 }
 
 fn runner_subject_matches(prepared: &PreparedInfobaseExport, data: &Value) -> bool {
@@ -2227,10 +2228,9 @@ mod tests {
         assert!(preview_result.rev.is_none());
 
         let apply = prepared_restore(root.path(), false, RestoreMode::Replace);
-        let runner = SequenceRunner::new(vec![
-            process(restore_preview_envelope(&input, "replace")),
-            process(restore_apply_envelope(&input, "replace", "replaced")),
-        ]);
+        let runner = SequenceRunner::new(vec![process(restore_apply_envelope(
+            &input, "replace", "replaced",
+        ))]);
         let result =
             execute_with_resolved_runner(&apply, &runner, CancellationToken::new(), &tool, "0.8.1");
 
@@ -2245,8 +2245,8 @@ mod tests {
         assert_eq!(result.changed[0]["infobase"], true);
         assert!(result.changed[0].get("path").is_none());
         assert!(result.artifacts.is_empty());
-        // Превью повторяется перед применением, то есть два вызова раннера.
-        assert_eq!(runner.calls.lock().unwrap().len(), 2);
+        // Исполнение не повторяет превью: один вызов раннера.
+        assert_eq!(runner.calls.lock().unwrap().len(), 1);
         // Источник обязан дойти неизменным.
         assert_eq!(
             fs::read(root.path().join("transfer/base.dt")).unwrap(),
@@ -2306,7 +2306,7 @@ mod tests {
         assert!(result.ok, "{result:?}");
         super::super::v13_source_import::tests::assert_another_copy_is_named(&result);
 
-        let runner = SequenceRunner::new(vec![process(preview), process(applied)]);
+        let runner = SequenceRunner::new(vec![process(applied)]);
         let result = execute_with_resolved_runner(
             &prepared_restore(root.path(), false, RestoreMode::Replace),
             &runner,
@@ -2496,7 +2496,7 @@ mod tests {
 
     /// rule: INV.RUNTIME.V13-INFOBASE-EXPORTS
     #[test]
-    fn apply_repeats_preflight_and_returns_an_independent_file_receipt() {
+    fn apply_runs_the_runner_once_and_returns_an_independent_file_receipt() {
         for published in [Some(&b"verified cf"[..]), None, Some(&b""[..])] {
             let root = tempfile::tempdir().unwrap();
             fs::write(root.path().join(CONFIG_NAME), "format: DESIGNER\n").unwrap();
@@ -2518,10 +2518,7 @@ mod tests {
             assert!(preview_result.ok);
             assert!(preview_result.rev.is_none());
             let apply = prepared(root.path(), false);
-            let responses = vec![
-                process(preview_envelope(&output)),
-                process(apply_envelope(&output)),
-            ];
+            let responses = vec![process(apply_envelope(&output))];
             let runner = match published {
                 Some(bytes) => SequenceRunner::publishing(responses, bytes),
                 None => SequenceRunner::new(responses),
@@ -2535,11 +2532,8 @@ mod tests {
                 "0.7.0",
             );
 
-            assert_eq!(runner.calls.lock().unwrap().len(), 2);
-            assert!(runner.calls.lock().unwrap()[0]
-                .args
-                .contains(&"--dry-run".to_string()));
-            assert!(!runner.calls.lock().unwrap()[1]
+            assert_eq!(runner.calls.lock().unwrap().len(), 1);
+            assert!(!runner.calls.lock().unwrap()[0]
                 .args
                 .contains(&"--dry-run".to_string()));
             if published.is_none_or(|bytes| bytes.is_empty()) {
@@ -2583,19 +2577,14 @@ mod tests {
             warnings: vec![],
             missing: None,
         };
-        let runner = SequenceRunner::publishing(
-            vec![
-                process(preview_envelope(&output)),
-                process(apply_envelope(&output)),
-            ],
-            b"verified cf",
-        );
+        let runner =
+            SequenceRunner::publishing(vec![process(apply_envelope(&output))], b"verified cf");
         assert!(!apply.arguments.named_file.exists());
         let result =
             execute_with_resolved_runner(&apply, &runner, CancellationToken::new(), &tool, "0.7.0");
         assert!(result.ok, "{result:?}");
         assert!(result.rev.is_none());
-        assert_eq!(runner.calls.lock().unwrap().len(), 2);
+        assert_eq!(runner.calls.lock().unwrap().len(), 1);
         assert_eq!(
             fs::read(&apply.arguments.named_file).unwrap(),
             b"verified cf"
@@ -2603,20 +2592,23 @@ mod tests {
         assert_eq!(result.data.as_ref().unwrap()["artifact"]["size"], 11);
     }
 
-    /// Раннер 0.12 называет в квитанции применения точку входа сессии агента, а в
-    /// квитанции превью её нет: сессия на превью не открывается. Это та же
-    /// квитанция, а неверная точка входа — негодный ответ.
+    /// Раннер 0.12 называет в квитанции применения точку входа сессии агента:
+    /// годная точка входа принимается, неверная — негодный ответ. Исполнение
+    /// не повторяет preview, поэтому исполнитель берётся из этой квитанции.
     #[test]
-    fn apply_receipt_with_a_session_endpoint_matches_its_preview() {
+    fn apply_receipt_accepts_a_session_endpoint_and_rejects_a_malformed_one() {
         let root = tempfile::tempdir().unwrap();
         let prepared = prepared(root.path(), false);
         let output = normalize_path_identity(&prepared.arguments.named_file).unwrap();
-        let plan = validate_preview(&prepared, &preview_envelope(&output)).unwrap();
         for mode in ["managed", "attached", "gate"] {
             let mut applied = apply_envelope(&output);
             applied["data"]["provider"]["endpoint"] =
                 json!({"mode": mode, "address": "127.0.0.1:1543"});
-            assert!(validate_apply(&prepared, &plan, &applied).is_ok(), "{mode}");
+            assert_eq!(
+                validate_apply(&prepared, &applied).as_deref(),
+                Ok("designer"),
+                "{mode}"
+            );
         }
         for endpoint in [
             json!({"mode": "remote", "address": "127.0.0.1:1543"}),
@@ -2626,15 +2618,8 @@ mod tests {
         ] {
             let mut applied = apply_envelope(&output);
             applied["data"]["provider"]["endpoint"] = endpoint.clone();
-            assert!(
-                validate_apply(&prepared, &plan, &applied).is_err(),
-                "{endpoint}"
-            );
+            assert!(validate_apply(&prepared, &applied).is_err(), "{endpoint}");
         }
-        let mut other = apply_envelope(&output);
-        other["data"]["provider"] = json!({"selected": "ibcmd", "origin": {"kind": "default"},
-            "endpoint": {"mode": "gate", "address": "127.0.0.1:1543"}});
-        assert!(validate_apply(&prepared, &plan, &other).is_err());
     }
 
     /// Раннер 0.14 без имени набора обходит все наборы в каталог и путь к одному
@@ -2824,11 +2809,10 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let prepared = prepared(root.path(), false);
         let output = normalize_path_identity(&prepared.arguments.named_file).unwrap();
-        let plan = validate_preview(&prepared, &preview_envelope(&output)).unwrap();
         let mut applied = apply_envelope(&output);
         applied["data"]["output"] = json!(root.path().join("dist/other.cf"));
 
-        let rejection = validate_apply(&prepared, &plan, &applied).unwrap_err();
+        let rejection = validate_apply(&prepared, &applied).unwrap_err();
 
         assert_eq!(rejection.diagnostics[0]["code"], "invalid_result");
 
