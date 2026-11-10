@@ -158,6 +158,7 @@ struct OwnerEdgeCacheKey {
 }
 
 mod diagnostic_scope;
+mod editability_view;
 mod form_payload;
 mod module_body_read;
 mod typed_payload_read;
