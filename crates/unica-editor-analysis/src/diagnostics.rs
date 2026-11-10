@@ -102,6 +102,10 @@ pub trait LspDiagnostics: Send + Sync {
         saved: &str,
         cancellation: &CancellationToken,
     ) -> LspAnalysis;
+    /// Подготовка анализа набора `source_set`, как только сессия его
+    /// открыла: поставщик начинает строить свою базу до первого вопроса.
+    /// Зовётся в фоне, ничего не возвращает и ничего не обещает.
+    fn prepare(&self, _source_set: &str) {}
 }
 
 /// Код находки-отметки неполного ответа.

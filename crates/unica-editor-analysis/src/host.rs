@@ -175,6 +175,7 @@ impl LspHost for UnicaLspHost {
             });
             match named {
                 Some((name, space)) => {
+                    prepare_analysis(&space);
                     workspaces.push(V5LspWorkspaceSpace::opened(&folder.uri, &name));
                     spaces.insert(name, space);
                 }
@@ -699,6 +700,21 @@ const ANALYSIS_WAIT_SLICE: Duration = Duration::from_millis(50);
 /// How long before its deadline a request stops waiting for the analysis,
 /// so that the answer without it still reaches the editor in time.
 const ANALYSIS_ANSWER_RESERVE: Duration = Duration::from_millis(250);
+/// How long a request of an editor that hears the refresh waits for an
+/// analysis: enough for a ready analyzer to answer about one module, so the
+/// answer is whole instead of "not ready" followed by a refresh.
+// resource-limit: lsp.editor-ready-analysis-wait
+// class: deadline
+// unit: ms
+// scope: request
+// value: 1000
+// resource: Ожидание анализа модуля запросом редактора, который слышит `workspace/diagnostic/refresh`.
+// status: unproven
+// origin: #2790
+// problem: неизвестно
+// on-reach: ответ уходит с пометкой `analysis_not_ready`, а по окончании анализа редактор слышит refresh
+// issue: #2790
+const READY_ANALYSIS_WAIT: Duration = Duration::from_secs(1);
 
 /// The request was cancelled by its editor, as opposed to running out of
 /// time: an answer is still owed until the deadline.
@@ -756,15 +772,17 @@ fn analysis_within(
             return Some(done);
         }
         // An editor that hears the refresh asks again once the analysis is
-        // ready, so its answer goes now; another has no such signal and
-        // waits for the analysis as long as its deadline allows.
+        // ready, so it waits only as long as a ready analysis takes to
+        // answer; another has no such signal and waits for the analysis as
+        // long as its deadline allows.
+        let latest = context
+            .deadline()
+            .checked_sub(ANALYSIS_ANSWER_RESERVE)
+            .unwrap_or_else(Instant::now);
         let until = if asked.client.hears_refresh() {
-            Instant::now()
+            latest.min(Instant::now() + READY_ANALYSIS_WAIT)
         } else {
-            context
-                .deadline()
-                .checked_sub(ANALYSIS_ANSWER_RESERVE)
-                .unwrap_or_else(Instant::now)
+            latest
         };
         loop {
             let left = until.saturating_duration_since(Instant::now());
@@ -1024,6 +1042,23 @@ fn document_text(session: &Session, uri: &str) -> Result<String, V5LspFailure> {
             _ => V5LspFailure::DocumentUnknown,
         })?
         .ok_or(V5LspFailure::DocumentUnknown)
+}
+
+/// The analysis of an opened space starts preparing at once, in the
+/// background: the first question about a module then finds it closer to
+/// ready instead of starting it.
+fn prepare_analysis(space: &AdmittedSpace) {
+    let diagnostics = Arc::clone(&space.diagnostics);
+    let sets = space
+        .source_sets
+        .iter()
+        .map(|set| set.name.clone())
+        .collect::<Vec<_>>();
+    std::thread::spawn(move || {
+        for set in sets {
+            diagnostics.prepare(&set);
+        }
+    });
 }
 
 /// The admitted space and its actor, held only while the caller needs it.
