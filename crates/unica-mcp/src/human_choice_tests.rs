@@ -49,7 +49,10 @@ fn choice() -> HumanChoice {
 
 /// A daemon fake: a push without `force` is refused with the choice, any
 /// other call succeeds. Every call's arguments are recorded.
-fn choosing_server() -> (UnicaServer, Arc<Mutex<Vec<Map<String, Value>>>>) {
+/// Every call's arguments, in order.
+type Calls = Arc<Mutex<Vec<Map<String, Value>>>>;
+
+fn choosing_server() -> (UnicaServer, Calls) {
     let calls = Arc::new(Mutex::new(Vec::new()));
     let observed = Arc::clone(&calls);
     let handler: Arc<CanonicalCallHandler> = Arc::new(move |_, arguments, _, _, _| {
@@ -166,9 +169,8 @@ async fn a_legacy_session_is_asked_and_the_chosen_call_runs() {
     let text = texts(&response);
     assert!(text.contains("Overwrite the infobase"), "{text}");
     assert_eq!(response["result"]["structuredContent"]["summary"], LOADED);
-    let calls = calls.lock().unwrap();
+    let calls = calls.lock().unwrap().clone();
     assert_eq!(calls.as_slice(), [push_call(false), push_call(true)]);
-    drop(calls);
     client.shutdown().await;
 }
 
@@ -240,13 +242,12 @@ async fn a_modern_client_answers_by_retrying_the_call() {
     assert_eq!(response["id"], 2, "{response}");
     assert_ne!(response["result"]["isError"], true, "{response}");
     assert!(texts(&response).contains("Take the infobase into the set"));
-    let calls = calls.lock().unwrap();
+    let calls = calls.lock().unwrap().clone();
     assert_eq!(calls.len(), 3);
     assert_eq!(calls[0], push_call(false));
     assert_eq!(calls[1], push_call(false));
     assert_eq!(calls[2]["op"], "pull");
     assert_eq!(calls[2]["args"]["force"], true);
-    drop(calls);
     client.shutdown().await;
 }
 
