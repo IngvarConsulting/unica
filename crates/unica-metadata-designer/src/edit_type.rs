@@ -123,7 +123,7 @@ pub(crate) fn guard(
     if !root_version::is_writable(root.version()) || !root.registers(kind.as_str(), name) {
         return Err(invalid(format!(
             "EditType owner is not registered in a format {} configuration",
-            root_version::writable()
+            root_version::writable_formats()
         )));
     }
     let relative = unica_source_designer::layout::metadata_descriptor_relative(target, source_kind)

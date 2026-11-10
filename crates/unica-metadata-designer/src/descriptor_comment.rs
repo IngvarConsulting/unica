@@ -232,7 +232,7 @@ mod tests {
         }
         let source = descriptor("<m:Comment/>");
         for damaged in [
-            source.replace("2.20", "2.21"),
+            source.replace("2.20", "2.23"),
             source.replace("2.20", "2.&#50;0"),
             source.replace("Probe", "Other"),
             source.replace("m:SessionParameter", "m:CommonAttribute"),

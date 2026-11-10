@@ -711,7 +711,7 @@ pub fn validate_exact_version_xml(
     if !root_version::is_writable(root_version_literal(source, root).as_deref()) {
         return Err(format!(
             "{role} must use export format {}",
-            root_version::writable()
+            root_version::writable_formats()
         ));
     }
     Ok(())
@@ -1667,7 +1667,7 @@ pub fn validate_child_resource(
             if !root_version::is_writable(root_version_literal(source, root).as_deref()) {
                 return Err(format!(
                     "form content must use export format {}",
-                    root_version::writable()
+                    root_version::writable_formats()
                 ));
             }
             Ok(())

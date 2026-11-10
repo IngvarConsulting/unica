@@ -529,9 +529,8 @@ pub fn validate_predefined_text_with_checkpoint(
         )
     {
         return Err(format!(
-            "Predefined.xml does not match the exact {}/{} profile for {}",
-            root_version::writable_platform_line(),
-            root_version::writable(),
+            "Predefined.xml does not match a writable export format ({}) for {}",
+            root_version::writable_formats(),
             kind.as_str()
         ));
     }

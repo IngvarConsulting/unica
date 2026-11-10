@@ -4447,7 +4447,7 @@ pub(crate) mod medium_tests {
             ),
             (
                 "version",
-                br#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.21"/>"#.as_slice(),
+                br#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.23"/>"#.as_slice(),
             ),
         ] {
             let fixture = Fixture::new(&format!("retained-form-invalid-{label}"));

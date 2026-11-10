@@ -736,11 +736,13 @@ fn assert_typed_role_edit_failure(
     assert!(!encoded.contains("Rights.xml"), "{encoded}");
 }
 
+/// rule: INV.SOURCE.WRITABLE-PROFILE
+/// Older than 2.20 and newer than 2.22 are refused without changing bytes.
 #[test]
-fn role_edit_application_projects_2_19_and_2_21_format_blocks_to_typed_data() {
+fn role_edit_application_projects_2_19_and_2_23_format_blocks_to_typed_data() {
     for (version, code) in [
         ("2.19", "formatMigrationAvailable"),
-        ("2.21", "platformVersionUnsupported"),
+        ("2.23", "platformVersionUnsupported"),
     ] {
         let (root, workspace, args) = role_edit_application_workspace(
             &format!("unica-role-edit-format-{version}"),
@@ -753,6 +755,35 @@ fn role_edit_application_projects_2_19_and_2_21_format_blocks_to_typed_data() {
         assert_eq!(
             std::fs::read(workspace.join("src/Roles/Demo/Ext/Rights.xml")).unwrap(),
             before
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+/// rule: INV.SOURCE.WRITABLE-PROFILE
+/// A set in a writable format beyond 2.20 is edited in its own format.
+#[test]
+fn role_edit_application_edits_2_21_and_2_22_sets_in_their_own_format() {
+    for version in ["2.21", "2.22"] {
+        let (root, workspace, mut args) = role_edit_application_workspace(
+            &format!("unica-role-edit-keeps-{version}"),
+            version,
+            false,
+        );
+        let rights = workspace.join("src/Roles/Demo/Ext/Rights.xml");
+        let own_format = std::fs::read_to_string(&rights)
+            .unwrap()
+            .replace(r#"version="2.20""#, &format!(r#"version="{version}""#));
+        std::fs::write(&rights, own_format).unwrap();
+        args.insert("dryRun".to_string(), json!(false));
+        let applied =
+            call_public_tool_from_workspace(&workspace, "unica.role.edit", &args).unwrap();
+        assert!(applied.ok, "{version}: {applied:?}");
+        assert_eq!(applied.data.as_ref().unwrap()["changed"], true, "{version}");
+        let edited = std::fs::read_to_string(&rights).unwrap();
+        assert!(
+            edited.contains(&format!(r#"version="{version}""#)) && !edited.contains("2.20"),
+            "{version}: {edited}"
         );
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -2112,7 +2143,7 @@ fn declared_form_output_with_nonstandard_suffix_still_blocks_newer_owner() {
         let output = workspace.join(file_name);
         std::fs::write(
             &output,
-            br#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.21"/>"#,
+            br#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.23"/>"#,
         )
         .unwrap();
         let before = std::fs::read(&output).unwrap();
@@ -2143,7 +2174,7 @@ fn declared_form_output_with_nonstandard_suffix_still_blocks_newer_owner() {
             "{file_name}: {result:?}"
         );
         assert_eq!(
-            diagnostic["actualFormat"], "2.21",
+            diagnostic["actualFormat"], "2.23",
             "{file_name}: {result:?}"
         );
         assert_eq!(std::fs::read(&output).unwrap(), before, "{file_name}");
@@ -2158,7 +2189,7 @@ fn declared_form_output_with_nonstandard_suffix_still_blocks_newer_owner() {
 fn cf_edit_validation_dependencies_block_incompatible_home_page_file() {
     let newer_home_page = String::from_utf8(cf_edit_home_page_bytes())
         .unwrap()
-        .replacen(r#"version="2.20""#, r#"version="2.21""#, 1)
+        .replacen(r#"version="2.20""#, r#"version="2.23""#, 1)
         .into_bytes();
     let cases = [
         (
@@ -2248,7 +2279,7 @@ fn cf_edit_add_child_object_prioritizes_newer_existing_target_descriptor() {
     let target_path = config_path.parent().unwrap().join("Catalogs/Future.xml");
     std::fs::create_dir_all(target_path.parent().unwrap()).unwrap();
     let newer_target = support_test_catalog_xml("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
-        .replacen(r#"version="2.20""#, r#"version="2.21""#, 1)
+        .replacen(r#"version="2.20""#, r#"version="2.23""#, 1)
         .replacen("<Name>Items</Name>", "<Name>Future</Name>", 1);
     std::fs::write(&target_path, newer_target).unwrap();
     let config_before = std::fs::read(&config_path).unwrap();
@@ -2264,7 +2295,7 @@ fn cf_edit_add_child_object_prioritizes_newer_existing_target_descriptor() {
     assert!(!result.ok, "{result:?}");
     let diagnostic = &result.diagnostics.as_ref().unwrap()["formatCompatibility"];
     assert_eq!(diagnostic["code"], "platformVersionUnsupported");
-    assert_eq!(diagnostic["actualFormat"], "2.21");
+    assert_eq!(diagnostic["actualFormat"], "2.23");
     assert_eq!(diagnostic["compatibility"], "newer");
     assert_eq!(
         diagnostic["root"],

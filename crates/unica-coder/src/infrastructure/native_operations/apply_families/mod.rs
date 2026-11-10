@@ -73,8 +73,10 @@ fn refuse_targets_outside_writable_profile(
             continue;
         };
         if let Some(finding) =
-            crate::infrastructure::format_guard::classify_staged_platform_xml_root(
-                &relative, &bytes,
+            crate::infrastructure::format_guard::classify_staged_platform_xml_root_in_set(
+                &relative,
+                &bytes,
+                binding.source_profile().serialization_format(),
             )
         {
             return Err(

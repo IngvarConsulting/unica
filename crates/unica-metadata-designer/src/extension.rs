@@ -4147,7 +4147,7 @@ pub fn cfe_patch_validate_form_xml(
             format!(
                 "borrowed Form.xml {} must contain exactly one direct BaseForm version=\"{}\"",
                 path.display(),
-                root_version::writable()
+                root_version::writable_formats()
             ),
         ));
     }

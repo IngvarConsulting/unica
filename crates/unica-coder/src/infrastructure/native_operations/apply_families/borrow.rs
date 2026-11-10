@@ -1274,14 +1274,14 @@ mod tests {
         let parent = std::fs::read_to_string(&descriptor).unwrap();
         std::fs::write(
             &descriptor,
-            parent.replace("version=\"2.20\"", "version=\"2.21\""),
+            parent.replace("version=\"2.20\"", "version=\"2.23\""),
         )
         .unwrap();
         let before = unica_workspace::test_support::tree_snapshot(&fixture.dst);
         let error = fixture
             .run(true, None, None)
             .expect_err("a newer parent descriptor must refuse before emitting borrowed XML");
-        assert!(error.contains("2.21"), "{error}");
+        assert!(error.contains("2.23"), "{error}");
         assert_eq!(
             unica_workspace::test_support::tree_snapshot(&fixture.dst),
             before

@@ -164,9 +164,8 @@ impl SourceProfile {
         format_identity::platform_xml_profile_of_line(line)
     }
 
-    /// Whether this is a Designer export profile with codec dialects; which
-    /// of its files an edit may write is decided by the format gate
-    /// (INV.SOURCE.WRITABLE-PROFILE).
+    /// Whether codecs write sources of this profile: a Designer export in a
+    /// format with dialects and a reference export (INV.SOURCE.WRITABLE-PROFILE).
     pub const fn is_writable_platform_xml(self) -> bool {
         format_identity::is_writable_platform_xml_profile(self)
     }
@@ -314,6 +313,13 @@ mod tests {
             SourceProfile::platform_xml_for_export_format("2.20"),
             Some(active)
         );
+        // Codecs write 2.20, 2.21 and 2.22; other identities are not written.
+        for raw in ["2.20", "2.21", "2.22"] {
+            let profile = SourceProfile::platform_xml_for_export_format(raw).unwrap();
+            assert!(profile.is_writable_platform_xml(), "{raw}");
+        }
+        assert!(!SourceProfile::legacy_workspace_service_compatibility().is_writable_platform_xml());
+        assert!(!SourceProfile::TestPlatform8_3_27Format2_21.is_writable_platform_xml());
         for (line, raw) in [
             ((8, 3, 27), "2.20"),
             ((8, 5, 1), "2.21"),

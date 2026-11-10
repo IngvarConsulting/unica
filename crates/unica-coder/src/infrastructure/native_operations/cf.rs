@@ -657,7 +657,7 @@ pub(crate) mod medium_cf_edit_transaction_tests {
         let config_before = fs::read(&fixture.config_path).unwrap();
         let concurrent_config = String::from_utf8(config_before)
             .unwrap()
-            .replacen(r#"version="2.20""#, r#"version="2.21""#, 1)
+            .replacen(r#"version="2.20""#, r#"version="2.23""#, 1)
             .into_bytes();
         let interface_path = fixture
             .config_path
@@ -707,7 +707,7 @@ pub(crate) mod medium_cf_edit_transaction_tests {
                 .bytes,
         )
         .unwrap()
-        .replacen(r#"version="2.20""#, r#"version="2.21""#, 1);
+        .replacen(r#"version="2.20""#, r#"version="2.23""#, 1);
         fs::write(&home_page_path, &newer_home_page).unwrap();
         let config_before = fs::read(&fixture.config_path).unwrap();
         let home_page_before = fs::read(&home_page_path).unwrap();
@@ -725,8 +725,8 @@ pub(crate) mod medium_cf_edit_transaction_tests {
 
         assert!(!outcome.ok, "{outcome:?}");
         let diagnostics = outcome.errors.join("\n");
-        assert!(diagnostics.contains("2.21"), "{diagnostics}");
-        assert!(diagnostics.contains("1C 8.5"), "{diagnostics}");
+        assert!(diagnostics.contains("2.23"), "{diagnostics}");
+        assert!(diagnostics.contains("2.22"), "{diagnostics}");
         assert!(
             !diagnostics.contains("older than supported"),
             "{diagnostics}"

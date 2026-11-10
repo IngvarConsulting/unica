@@ -310,7 +310,7 @@ fn medium_root_comment_refusals_and_late_batch_failure_do_not_publish_any_file()
             source.replace("<Comment/>", "<Comment><Child/></Comment>"),
             source.replace("<Comment/>", "<Comment xmlns=\"foreign\"/>"),
             source.replace("<Comment/>", "<Comment key=\"x\"/>"),
-            source.replace("version=\"2.20\"", "version=\"2.21\""),
+            source.replace("version=\"2.20\"", "version=\"2.23\""),
             source.replace(&format!("<Name>{name}</Name>"), "<Name>Other</Name>"),
         ] {
             std::fs::write(&path, damaged).unwrap();

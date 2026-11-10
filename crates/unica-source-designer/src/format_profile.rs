@@ -20,6 +20,21 @@ pub const ACTIVE_FORMAT_PROFILE: FormatProfile = FormatProfile {
 /// those with codec dialects and a reference export, oldest first.
 pub const WRITABLE_EXPORT_FORMATS: [&str; 3] = [ACTIVE_SERIALIZATION_FORMAT, "2.21", "2.22"];
 
+/// The newest writable export format and the platform line that writes it.
+pub fn newest_writable_profile() -> FormatProfile {
+    let export_format = WRITABLE_EXPORT_FORMATS[WRITABLE_EXPORT_FORMATS.len() - 1];
+    FormatProfile {
+        platform_line: platform_line_for_export_format(export_format)
+            .expect("a writable export format has a platform line"),
+        export_format,
+    }
+}
+
+/// The writable export formats as a refusal lists them.
+pub fn writable_export_formats_text() -> String {
+    WRITABLE_EXPORT_FORMATS.join(", ")
+}
+
 /// Which platform line writes each version of the Designer export format
 /// (INV.RUNTIME.PLATFORM-LINE). A line writes exactly one version, so the
 /// line follows from the version of the dump. Every row is a measured export
@@ -226,21 +241,28 @@ impl std::error::Error for FormatVersionError {}
 pub fn classify_root_version(raw: Option<&str>) -> Result<FormatCompatibility, FormatVersionError> {
     let raw = raw.unwrap_or("1.0");
     let actual = ExportFormatVersion::parse(raw)?;
-    let target = ExportFormatVersion::parse(ACTIVE_FORMAT_PROFILE.export_format)
-        .expect("active export format is a valid constant");
-    Ok(match actual.cmp(&target) {
-        Ordering::Less => FormatCompatibility::Older { actual },
-        Ordering::Equal if raw == ACTIVE_FORMAT_PROFILE.export_format => {
-            FormatCompatibility::Supported { actual }
-        }
-        Ordering::Equal => return Err(FormatVersionError::new(raw)),
-        Ordering::Greater => FormatCompatibility::Newer { actual },
+    if WRITABLE_EXPORT_FORMATS.contains(&raw) {
+        return Ok(FormatCompatibility::Supported { actual });
+    }
+    let writable = |version: &str| {
+        ExportFormatVersion::parse(version).expect("a writable export format is a valid constant")
+    };
+    let oldest = writable(WRITABLE_EXPORT_FORMATS[0]);
+    let newest = writable(WRITABLE_EXPORT_FORMATS[WRITABLE_EXPORT_FORMATS.len() - 1]);
+    Ok(if actual < oldest {
+        FormatCompatibility::Older { actual }
+    } else if actual > newest {
+        FormatCompatibility::Newer { actual }
+    } else {
+        // A numerically equal spelling of a writable version, or a version
+        // between writable ones: only the literal versions are written.
+        return Err(FormatVersionError::new(raw));
     })
 }
 
 /// Whether a root recording `raw` is in the export format codecs write.
 pub fn is_writable_root_version(raw: Option<&str>) -> bool {
-    raw == Some(ACTIVE_FORMAT_PROFILE.export_format)
+    writable_platform_xml_version(raw).is_some()
 }
 
 /// How a validation report names the version of a root.
@@ -254,12 +276,7 @@ pub enum RootVersionReport {
 /// The validation report line for a root recording `raw` as written.
 pub fn root_version_report(raw: Option<&str>) -> RootVersionReport {
     match classify_root_version(raw) {
-        Ok(FormatCompatibility::Supported { .. }) => RootVersionReport::Ok(format!(
-            "Export format: {}",
-            ACTIVE_FORMAT_PROFILE.export_format
-        )),
-        // A version with a dialect of its own is read as written.
-        Ok(_) if has_own_dialect(raw) => {
+        Ok(FormatCompatibility::Supported { .. }) => {
             RootVersionReport::Ok(format!("Export format: {}", raw.unwrap_or_default()))
         }
         Ok(compatibility) => RootVersionReport::Warn(format_compatibility_warning(&compatibility)),
@@ -267,16 +284,10 @@ pub fn root_version_report(raw: Option<&str>) -> RootVersionReport {
     }
 }
 
-/// Whether a root recording `raw` is read by a dialect of its own version.
-fn has_own_dialect(raw: Option<&str>) -> bool {
-    resolve_platform_xml_read(raw)
-        == unica_source_contract::format_identity::ReadResolution::Dialect
-}
-
 /// The Designer export versions with a dialect of their own: 2.20, and 2.21
 /// and 2.22, whose all_kinds corpora every codec reads (#2730).
 pub fn platform_xml_dialects() -> Vec<FormatKey> {
-    [ACTIVE_FORMAT_PROFILE.export_format, "2.21", "2.22"]
+    WRITABLE_EXPORT_FORMATS
         .into_iter()
         .map(|version| FormatKey::new([version]))
         .collect()
@@ -319,7 +330,6 @@ pub fn known_platform_xml_versions() -> Vec<&'static str> {
 pub fn require_supported_root_version(raw: Option<&str>) -> Result<(), String> {
     match classify_root_version(raw).map_err(|error| error.to_string())? {
         FormatCompatibility::Supported { .. } => Ok(()),
-        _ if has_own_dialect(raw) => Ok(()),
         compatibility => Err(format_compatibility_warning(&compatibility)),
     }
 }
@@ -338,10 +348,9 @@ pub fn writable_profile_refusal(
     relative: impl fmt::Display,
     raw: Option<&str>,
 ) -> Option<WritableProfileRefusal> {
-    let FormatProfile {
-        platform_line,
-        export_format,
-    } = ACTIVE_FORMAT_PROFILE;
+    let oldest = ACTIVE_FORMAT_PROFILE;
+    let newest = newest_writable_profile();
+    let writable = writable_export_formats_text();
     // The version as the owner file records it; a root without one is 1.0.
     let recorded = raw.unwrap_or("1.0");
     let (code, actual, message) = match classify_root_version(raw) {
@@ -350,21 +359,23 @@ pub fn writable_profile_refusal(
             "formatMigrationAvailable",
             recorded.to_string(),
             format!(
-                "{relative}: export format {recorded} is older than the writable profile {export_format} for 1C {platform_line}; re-export the sources with the platform before editing them"
+                "{relative}: export format {recorded} is older than the oldest writable format {} for 1C {}; re-export the sources with the platform before editing them",
+                oldest.export_format, oldest.platform_line
             ),
         ),
         Ok(FormatCompatibility::Newer { .. }) => (
             "platformVersionUnsupported",
             recorded.to_string(),
             format!(
-                "{relative}: export format {recorded} is newer than the writable profile {export_format} for 1C {platform_line}; Unica does not edit this export yet"
+                "{relative}: export format {recorded} is newer than the newest writable format {} for 1C {}; Unica does not edit this export yet",
+                newest.export_format, newest.platform_line
             ),
         ),
         Err(error) => (
             error.code(),
             recorded.to_string(),
             format!(
-                "{relative}: export format version {recorded} is not the exact writable profile {export_format} for 1C {platform_line}; re-export the sources with the platform before editing them"
+                "{relative}: export format version {recorded} is not literally one of the writable formats {writable}; re-export the sources with the platform before editing them"
             ),
         ),
     };
@@ -383,13 +394,12 @@ pub fn format_compatibility_warning(compatibility: &FormatCompatibility) -> Stri
             ACTIVE_FORMAT_PROFILE.platform_line
         ),
         FormatCompatibility::Newer { actual } => format!(
-            "Export format {actual} is newer than supported {}; platform 1C 8.5 support is planned in upcoming releases.",
-            ACTIVE_FORMAT_PROFILE.export_format
+            "Export format {actual} is newer than the newest supported {}; Unica does not support this export yet.",
+            newest_writable_profile().export_format
         ),
-        FormatCompatibility::Supported { .. } => format!(
-            "Export format is supported ({})",
-            ACTIVE_FORMAT_PROFILE.export_format
-        ),
+        FormatCompatibility::Supported { actual } => {
+            format!("Export format is supported ({actual})")
+        }
     }
 }
 
@@ -417,7 +427,7 @@ mod tests {
         assert!(is_writable_root_version(Some(writable)));
         assert!(!is_writable_root_version(None));
         assert!(!is_writable_root_version(Some("2.19")));
-        assert!(!is_writable_root_version(Some("2.21")));
+        assert!(!is_writable_root_version(Some("2.23")));
         assert_eq!(
             root_version_report(Some(writable)),
             RootVersionReport::Ok(format!("Export format: {writable}"))
@@ -435,6 +445,40 @@ mod tests {
         // newer version without one is refused.
         assert!(require_supported_root_version(Some("2.21")).is_ok());
         assert!(require_supported_root_version(Some("2.23")).is_err());
+    }
+
+    /// rule: INV.SOURCE.WRITABLE-PROFILE
+    /// The writable formats are 2.20, 2.21 and 2.22 as written; older and
+    /// newer versions and other spellings are refused with their codes.
+    #[test]
+    fn writable_formats_are_exact_and_bounded_by_2_20_and_2_22() {
+        use super::{is_writable_root_version, writable_profile_refusal};
+        for version in ["2.20", "2.21", "2.22"] {
+            assert!(is_writable_root_version(Some(version)), "{version}");
+            assert!(
+                writable_profile_refusal("x", Some(version)).is_none(),
+                "{version}"
+            );
+        }
+        for (version, code) in [
+            ("2.19", "formatMigrationAvailable"),
+            ("2.23", "platformVersionUnsupported"),
+            ("2.21.0", "formatVersionInvalid"),
+            ("02.22", "formatVersionInvalid"),
+            ("2.20.5", "formatVersionInvalid"),
+        ] {
+            assert!(!is_writable_root_version(Some(version)), "{version}");
+            let refusal = writable_profile_refusal("x", Some(version)).expect(version);
+            assert_eq!(refusal.code, code, "{version}");
+            assert_eq!(refusal.actual, version);
+        }
+        let older = writable_profile_refusal("x", Some("2.19")).unwrap().message;
+        assert!(
+            older.contains("2.20") && older.contains("8.3.27"),
+            "{older}"
+        );
+        let newer = writable_profile_refusal("x", Some("2.23")).unwrap().message;
+        assert!(newer.contains("2.22") && newer.contains("8.5.4"), "{newer}");
     }
 
     #[test]
@@ -537,8 +581,14 @@ mod tests {
             classify_root_version(Some("2.20")).unwrap(),
             FormatCompatibility::Supported { .. }
         ));
+        for writable in ["2.21", "2.22"] {
+            assert!(matches!(
+                classify_root_version(Some(writable)).unwrap(),
+                FormatCompatibility::Supported { .. }
+            ));
+        }
         assert!(matches!(
-            classify_root_version(Some("2.21")).unwrap(),
+            classify_root_version(Some("2.23")).unwrap(),
             FormatCompatibility::Newer { .. }
         ));
     }
