@@ -231,7 +231,10 @@ fn a_replaced_root_is_temporarily_unavailable_while_a_call_holds_the_old_actor()
 /// версии или без неё остаётся в профиле 2.20.
 #[test]
 fn a_source_set_is_admitted_with_the_profile_of_its_root_version() {
-    let root = tempfile::tempdir().unwrap();
+    let temporary = tempfile::tempdir().unwrap();
+    // Admission receives a physical root: the retained read refuses a path
+    // through a link, as macOS's /var -> /private/var temporary directory is.
+    let root = unica_workspace::paths::normalize_path_identity(temporary.path()).unwrap();
     let descriptor = |version: &str| {
         format!(
             "\u{feff}<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"{version}\"><Configuration/></MetaDataObject>"
@@ -244,18 +247,22 @@ fn a_source_set_is_admitted_with_the_profile_of_its_root_version() {
         ("2.23", "platform-xml-8.3.27-format-2.20"),
         ("2.21.0", "platform-xml-8.3.27-format-2.20"),
     ] {
-        fs::write(root.path().join("Configuration.xml"), descriptor(version)).unwrap();
+        fs::write(
+            root.as_path().join("Configuration.xml"),
+            descriptor(version),
+        )
+        .unwrap();
         for kind in [SourceSetKind::Configuration, SourceSetKind::Extension] {
             assert_eq!(
-                platform_xml_source_profile(kind, root.path()).canonical_id(),
+                platform_xml_source_profile(kind, root.as_path()).canonical_id(),
                 expected,
                 "{version} {kind:?}"
             );
         }
     }
-    fs::remove_file(root.path().join("Configuration.xml")).unwrap();
+    fs::remove_file(root.as_path().join("Configuration.xml")).unwrap();
     assert_eq!(
-        platform_xml_source_profile(SourceSetKind::Configuration, root.path()),
+        platform_xml_source_profile(SourceSetKind::Configuration, root.as_path()),
         SourceProfile::platform_xml_8_3_27_format_2_20()
     );
 }
