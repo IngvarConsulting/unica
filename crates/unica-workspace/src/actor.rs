@@ -1618,7 +1618,7 @@ pub struct WorkspaceActor<R = (), C = ()> {
     context: WorkspaceContext,
     source_roots: HashMap<WorkspaceSourceSetIdentity, Arc<RetainedDirectoryCapability>>,
     state_scope: WorkspaceStateScope,
-    mutation_lane: DeadlineLock<FailClosed>,
+    mutation_lane: Arc<DeadlineLock<FailClosed>>,
     saved_apply_plans: Mutex<SavedApplyPlans>,
     /// Open editor buffers read in place of their files by the sessions
     /// that opened them.
@@ -1744,7 +1744,7 @@ impl<R, C> WorkspaceActor<R, C> {
             context,
             source_roots,
             state_scope,
-            mutation_lane: DeadlineLock::fail_closed("workspace actor mutation lane is poisoned"),
+            mutation_lane: Arc::new(new_source_write_lane()),
             saved_apply_plans: Mutex::new(SavedApplyPlans::default()),
             documents: crate::documents::DocumentOverlay::default(),
             source_artifacts: Mutex::new(HashMap::new()),
@@ -1756,6 +1756,13 @@ impl<R, C> WorkspaceActor<R, C> {
 
     pub fn with_policies(mut self, policies: crate::policies::WorkspacePolicies) -> Self {
         self.policies = Some(policies);
+        self
+    }
+
+    /// Shares the lane of source writes with every holder of the same
+    /// workspace root, so runtime writers exclude this actor's publications.
+    fn with_source_write_lane(mut self, lane: SourceWriteLane) -> Self {
+        self.mutation_lane = lane.lane;
         self
     }
 
@@ -2949,6 +2956,75 @@ fn digest_index_component(digest: &mut Sha256, bytes: &[u8]) -> Result<(), Strin
     Ok(())
 }
 
+fn new_source_write_lane() -> DeadlineLock<FailClosed> {
+    DeadlineLock::fail_closed("workspace actor mutation lane is poisoned")
+}
+
+/// The shared lane of source writes of one workspace root.
+#[derive(Clone)]
+pub struct SourceWriteLane {
+    lane: Arc<DeadlineLock<FailClosed>>,
+}
+
+/// Why a runtime writer did not get the lane of source writes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceWriteLaneError {
+    cancelled: bool,
+    message: String,
+}
+
+impl SourceWriteLaneError {
+    /// The wait ended by cancellation rather than by a deadline or poison.
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled
+    }
+}
+
+impl std::fmt::Display for SourceWriteLaneError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.message.fmt(formatter)
+    }
+}
+
+impl std::error::Error for SourceWriteLaneError {}
+
+impl SourceWriteLane {
+    /// Runs `operation` while no actor of this workspace publishes sources.
+    /// Waits for a running publication until `deadline` or cancellation.
+    pub fn hold<T>(
+        &self,
+        deadline: ProviderDeadline,
+        cancellation: &CancellationToken,
+        operation: impl FnOnce() -> T,
+    ) -> Result<T, SourceWriteLaneError> {
+        let held = self
+            .lane
+            .acquire_before(deadline, cancellation, "workspace source write lane wait")
+            .map_err(|error| SourceWriteLaneError {
+                cancelled: error.kind() == DeadlineLockErrorKind::Cancelled,
+                message: error.to_string(),
+            })?;
+        // A panic of the runtime writer must not poison the lane: the actors
+        // of the workspace would refuse every later publication.
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(operation));
+        drop(held);
+        match outcome {
+            Ok(value) => Ok(value),
+            Err(panic) => std::panic::resume_unwind(panic),
+        }
+    }
+
+    /// Whether `other` excludes the same writers as this lane.
+    pub fn same_lane(&self, other: &SourceWriteLane) -> bool {
+        Arc::ptr_eq(&self.lane, &other.lane)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn hold_for_test(&self) -> MutexGuard<'_, ()> {
+        self.lane.hold_for_test()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorkspaceActorRegistryError {
     InvalidIdentity(String),
@@ -2972,6 +3048,9 @@ impl std::error::Error for WorkspaceActorRegistryError {}
 
 pub struct WorkspaceActorRegistry<C = ()> {
     actors: Mutex<HashMap<WorkspaceIdentity, Weak<WorkspaceActor<(), C>>>>,
+    /// One lane of source writes per normalized workspace root: actors of
+    /// that root publish under it and runtime writers hold it for a call.
+    source_write_lanes: Mutex<HashMap<PathBuf, Weak<DeadlineLock<FailClosed>>>>,
     /// Strong ownership between invocations. Promised plans, terminal replay
     /// and shared index work keep their actor alive for the daemon lifetime.
     /// Only unowned actors without such state may be released after idle.
@@ -2999,6 +3078,7 @@ impl<C> Default for WorkspaceActorRegistry<C> {
     fn default() -> Self {
         Self {
             actors: Mutex::new(HashMap::new()),
+            source_write_lanes: Mutex::new(HashMap::new()),
             warm: Mutex::new(VecDeque::new()),
             warm_ttl: WARM_WORKSPACE_ACTOR_TTL,
             policies: None,
@@ -3055,9 +3135,11 @@ impl<C> WorkspaceActorRegistry<C> {
             }
             actors.remove(&identity);
         }
+        let lane = self.lane_for_root(identity.workspace_root.clone())?;
         let actor = Arc::new(
             WorkspaceActor::<(), C>::new(identity.clone(), context.clone())
                 .map(|actor| {
+                    let actor = actor.with_source_write_lane(lane);
                     if let Some(policies) = &self.policies {
                         actor.with_policies(policies.clone())
                     } else {
@@ -3069,6 +3151,34 @@ impl<C> WorkspaceActorRegistry<C> {
         actors.insert(identity, Arc::downgrade(&actor));
         self.touch_warm(&actor, now)?;
         Ok(actor)
+    }
+
+    /// The lane of source writes for the workspace at `workspace_root`.
+    ///
+    /// Runtime operations that write or read a whole source set hold it for
+    /// the call; publications of every actor of the same root wait for it.
+    /// The lane exists without an actor: an actor created later joins it.
+    pub fn source_write_lane(
+        &self,
+        workspace_root: &Path,
+    ) -> Result<SourceWriteLane, WorkspaceActorRegistryError> {
+        let root = normalize_path_identity(workspace_root)
+            .map_err(WorkspaceActorRegistryError::InvalidIdentity)?;
+        self.lane_for_root(root)
+    }
+
+    fn lane_for_root(&self, root: PathBuf) -> Result<SourceWriteLane, WorkspaceActorRegistryError> {
+        let mut lanes = self
+            .source_write_lanes
+            .lock()
+            .map_err(|_| WorkspaceActorRegistryError::Poisoned)?;
+        lanes.retain(|_, lane| lane.strong_count() > 0);
+        if let Some(lane) = lanes.get(&root).and_then(Weak::upgrade) {
+            return Ok(SourceWriteLane { lane });
+        }
+        let lane = Arc::new(new_source_write_lane());
+        lanes.insert(root, Arc::downgrade(&lane));
+        Ok(SourceWriteLane { lane })
     }
 
     /// An idle listener may stop only when no invocation or promise needs an

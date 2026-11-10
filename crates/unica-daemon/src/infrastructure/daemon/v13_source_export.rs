@@ -152,6 +152,15 @@ impl PreparedSourceExport {
         })
     }
 
+    /// The workspace root whose lane of source writes the execution holds.
+    pub(super) fn workspace_root(&self) -> &std::path::Path {
+        &self.context.workspace_root
+    }
+
+    /// A preview neither writes nor loads sources, so it takes no lane.
+    pub(super) fn is_preview(&self) -> bool {
+        self.dry_run
+    }
     pub(super) fn workspace_identity_hash(&self) -> SafeIdentityHash {
         let mut hasher = Sha256::new();
         hasher.update(b"unica-v13-source-export-workspace-v1\0");

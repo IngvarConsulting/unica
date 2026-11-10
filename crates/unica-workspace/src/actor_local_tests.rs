@@ -897,3 +897,152 @@ pub(crate) fn apply_publication_result_exposes_the_effect_receipt_accessor() {
         &'a super::ApplyPublicationResult,
     ) -> &'a ApplyEffectReceipt = super::ApplyPublicationResult::effects;
 }
+
+#[test]
+fn actors_of_one_workspace_root_share_the_lane_a_runtime_writer_takes_before_them() {
+    let root = temp_root("source-write-lane-shared");
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::create_dir_all(root.join("ext")).unwrap();
+    let other = temp_root("source-write-lane-other");
+    std::fs::create_dir_all(other.join("src")).unwrap();
+    let registry = WorkspaceActorRegistry::<()>::default();
+
+    // A runtime writer may take the lane before any actor of the root exists.
+    let writer = registry.source_write_lane(&root).unwrap();
+    let main = registry
+        .get_or_create(
+            &context(&root),
+            [source_input("main", root.join("src"))],
+            "p",
+        )
+        .unwrap();
+    let extension = registry
+        .get_or_create(
+            &context(&root),
+            [source_input("ext", root.join("ext"))],
+            "p",
+        )
+        .unwrap();
+    let foreign = registry
+        .get_or_create(
+            &context(&other),
+            [source_input("main", other.join("src"))],
+            "p",
+        )
+        .unwrap();
+
+    assert!(Arc::ptr_eq(&writer.lane, &main.mutation_lane));
+    assert!(Arc::ptr_eq(&writer.lane, &extension.mutation_lane));
+    assert!(!Arc::ptr_eq(&writer.lane, &foreign.mutation_lane));
+    assert!(writer.same_lane(&registry.source_write_lane(&root).unwrap()));
+    assert!(!writer.same_lane(&registry.source_write_lane(&other).unwrap()));
+
+    drop((main, extension, foreign));
+    let _ = std::fs::remove_dir_all(root);
+    let _ = std::fs::remove_dir_all(other);
+}
+
+#[test]
+fn a_runtime_writer_waits_for_an_actor_publication_and_reports_deadline_or_cancellation() {
+    let root = temp_root("source-write-lane-wait");
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    let registry = WorkspaceActorRegistry::<()>::default();
+    let actor = registry
+        .get_or_create(
+            &context(&root),
+            [source_input("main", root.join("src"))],
+            "p",
+        )
+        .unwrap();
+    let writer = registry.source_write_lane(&root).unwrap();
+
+    let publication = actor.hold_mutation_lane_for_test();
+    let ran = std::cell::Cell::new(false);
+    let deadline = writer
+        .hold(
+            ProviderDeadline::from_budget(Duration::from_millis(40)),
+            &CancellationToken::new(),
+            || ran.set(true),
+        )
+        .unwrap_err();
+    assert!(!deadline.is_cancelled());
+    let cancellation = CancellationToken::new();
+    cancellation.cancel();
+    let cancelled = writer
+        .hold(ProviderDeadline::no_deadline(), &cancellation, || {
+            ran.set(true)
+        })
+        .unwrap_err();
+    assert!(cancelled.is_cancelled());
+    assert!(
+        !ran.get(),
+        "the writer ran while an actor publication held the lane"
+    );
+
+    let (released, waiting) = mpsc::channel();
+    let waiter = {
+        let writer = writer.clone();
+        thread::spawn(move || {
+            writer
+                .hold(
+                    ProviderDeadline::no_deadline(),
+                    &CancellationToken::new(),
+                    || released.send(()).unwrap(),
+                )
+                .unwrap()
+        })
+    };
+    assert!(waiting.recv_timeout(Duration::from_millis(100)).is_err());
+    drop(publication);
+    waiting.recv_timeout(Duration::from_secs(10)).unwrap();
+    waiter.join().unwrap();
+
+    // While the writer holds the lane, an actor publication cannot start.
+    writer
+        .hold(
+            ProviderDeadline::no_deadline(),
+            &CancellationToken::new(),
+            || {
+                assert!(actor.mutation_lane.is_held_for_test());
+            },
+        )
+        .unwrap();
+    drop(actor);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn a_panicking_runtime_writer_releases_the_lane_without_poisoning_the_actor() {
+    let root = temp_root("source-write-lane-panic");
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    let registry = WorkspaceActorRegistry::<()>::default();
+    let actor = registry
+        .get_or_create(
+            &context(&root),
+            [source_input("main", root.join("src"))],
+            "p",
+        )
+        .unwrap();
+    let writer = registry.source_write_lane(&root).unwrap();
+
+    let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        writer.hold(
+            ProviderDeadline::no_deadline(),
+            &CancellationToken::new(),
+            || panic!("runner adapter failed"),
+        )
+    }));
+    assert!(panicked.is_err());
+
+    let _publication = actor
+        .mutation_lane
+        .acquire_before(
+            ProviderDeadline::from_budget(Duration::from_secs(5)),
+            &CancellationToken::new(),
+            "publication after a runtime writer panic",
+        )
+        .expect("the lane stays usable for actor publications");
+    drop(_publication);
+    drop(actor);
+    let _ = std::fs::remove_dir_all(root);
+}
