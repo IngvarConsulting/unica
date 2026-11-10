@@ -42,6 +42,8 @@ class AcceptanceProfileTests(unittest.TestCase):
                     driver.subprocess, "Popen", return_value=backend
                 ), patch.object(
                     driver, "assert_owned_legacy_broker"
+                ), patch.object(
+                    driver, "assert_owned_legacy_endpoint"
                 ), patch.object(driver, "LegacyBrokerProxy", return_value=proxy,
                                side_effect=RuntimeError("proxy setup sentinel") if stage == "construct" else None):
                     with self.assertRaisesRegex(RuntimeError, "proxy setup sentinel"):

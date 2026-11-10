@@ -288,6 +288,23 @@ class LegacyBrokerProxy(ResidentSession):
             self._closed = True
 
 
+def assert_owned_legacy_endpoint(backend, runtime: Path):
+    """The daemon is alive and serves exactly one endpoint.
+
+    The analyzer binds its endpoint at start but builds its state, and takes the
+    writer lease, only for the first attached session: before a client the lease
+    does not exist yet.
+    """
+    if backend.poll() is not None:
+        raise AssertionError("owned legacy backend exited during the upgrade scenario")
+    if os.name != "nt":
+        sockets = [path for path in (runtime / "bsl-mcp").glob("*.sock") if path.is_socket()]
+        if not sockets:
+            raise FileNotFoundError("the owned legacy endpoint is not ready")
+        if len(sockets) != 1:
+            raise AssertionError("the owned legacy endpoint is ambiguous")
+
+
 def assert_owned_legacy_broker(backend, cache: Path, runtime: Path):
     if backend.poll() is not None:
         raise AssertionError("owned legacy backend exited during the upgrade scenario")
@@ -337,18 +354,22 @@ def legacy_broker_for_invalidation(plugin: Path, workspace: Path):
         deadline = time.monotonic() + 30
         while True:
             try:
-                assert_owned_legacy_broker(backend, cache, runtime)
+                assert_owned_legacy_endpoint(backend, runtime)
                 break
-            except (FileNotFoundError, json.JSONDecodeError):
+            except FileNotFoundError:
                 pass
             if time.monotonic() >= deadline:
-                raise TimeoutError("owned legacy backend did not publish its endpoint and lease")
+                stderr.flush()
+                tail = (runtime / "legacy-backend.stderr.log").read_bytes()[-4000:].decode("utf-8", "replace")
+                raise TimeoutError(f"owned legacy backend did not publish its endpoint; stderr:\n{tail}")
             time.sleep(.01)
         proxy = LegacyBrokerProxy(binary, source, cache, runtime, environment)
         resources.callback(proxy.close)
         proxy.request("initialize", {"protocolVersion": "2025-03-26", "capabilities": {},
                                     "clientInfo": {"name": "unica-upgrade-acceptance", "version": "0"}})
         proxy.send({"jsonrpc": "2.0", "method": "notifications/initialized"})
+        # The first attached session made the daemon take the lease.
+        assert_owned_legacy_broker(backend, cache, runtime)
         deadline = time.monotonic() + 30
         while True:
             result = proxy.request("tools/call", {"name": "search", "arguments": {
