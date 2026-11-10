@@ -1,7 +1,7 @@
 include!(concat!(env!("OUT_DIR"), "/v13_read_port_modules.rs"));
-use metadata::identity_metadata_payload_from_evidence;
 pub(crate) use editability::{attach_editability, own_rule, shows_editability};
 pub use editability::{NodeEditability, SupportReason};
+use metadata::identity_metadata_payload_from_evidence;
 pub(crate) use support::object_support_by_uuid;
 use support::{metadata_support_status, object_support_from_state, object_support_rule};
 use unica_execution_contract::view_error::ViewError;

@@ -32,10 +32,12 @@ fn dcs_parameter_and_field_props_use_the_names_their_can_accepts() {
         let data = view(&runtime, &fixture, &at);
         let can = contract(&runtime, &fixture, &at, op);
         assert!(
+            // `support` is the node's editability under vendor support, a
+            // derived fact of every node of an object, not a written name.
             mismatched_names(
                 &data["props"],
                 &can["argsSchema"]["properties"]["values"]["properties"],
-                &[]
+                &["support"]
             )
             .is_empty(),
             "{at}: read properties must use the corresponding Can names"

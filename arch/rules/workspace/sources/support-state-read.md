@@ -1,5 +1,6 @@
 ---
 id: INV.APP.SUPPORT-STATE
+gap: https://github.com/IngvarConsulting/unica/issues/2883
 ---
 
 # Невозможность прочитать поддержку не означает её отсутствие

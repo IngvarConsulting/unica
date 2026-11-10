@@ -307,6 +307,12 @@ fn refuse_targets_on_locked_vendor_objects(
     )
 }
 
+/// Reads one source file relative to the source root: `None` when absent.
+pub(crate) type GateRead<'a, E> = dyn FnMut(&std::path::Path) -> Result<Option<Vec<u8>>, E> + 'a;
+/// Lists the regular files under a relative directory, recursively.
+pub(crate) type GateEnumerate<'a, E> =
+    dyn FnMut(&std::path::Path) -> Result<Vec<std::path::PathBuf>, E> + 'a;
+
 /// What the vendor-support marker says about one target before the project
 /// policy is applied: the lock that stands in the way of an edit (or of a
 /// removal), and the rule of the target's owner.
@@ -317,6 +323,9 @@ pub(crate) struct SupportGateFacts {
     /// The rule of the owner's own record: 0 `locked`, 1 editable with
     /// support, 2 taken off support; `None` without a record.
     pub(crate) owner_rule: Option<u8>,
+    /// The owner's descriptor was read but names no uuid: its rule cannot
+    /// be looked up (the gate then does not lock, see #2883).
+    pub(crate) owner_uuid_missing: bool,
     pub(crate) lock: Option<SupportGateLock>,
 }
 
@@ -342,8 +351,8 @@ pub(crate) fn support_gate_facts<E>(
     at: &unica_address::address::QualifiedAddress,
     source_kind: SourceSetKind,
     removes: bool,
-    read: &mut dyn FnMut(&std::path::Path) -> Result<Option<Vec<u8>>, E>,
-    enumerate: &mut dyn FnMut(&std::path::Path) -> Result<Vec<std::path::PathBuf>, E>,
+    read: &mut GateRead<'_, E>,
+    enumerate: &mut GateEnumerate<'_, E>,
 ) -> Result<SupportGateFacts, E> {
     use unica_metadata_designer::support::{
         parse_support_state_compat_bytes, support_root_uuid_from_bytes,
@@ -352,6 +361,7 @@ pub(crate) fn support_gate_facts<E>(
     let free = |marker, owner_rule| SupportGateFacts {
         marker,
         owner_rule,
+        owner_uuid_missing: false,
         lock: None,
     };
     let source_set = at.source_set();
@@ -370,11 +380,11 @@ pub(crate) fn support_gate_facts<E>(
         return Ok(SupportGateFacts {
             marker,
             owner_rule: None,
+            owner_uuid_missing: false,
             lock: Some(SupportGateLock {
                 kind: SupportLockKind::ConfigurationLocked,
                 owner,
-                reason: "the configuration is on vendor support with changes disabled"
-                    .to_string(),
+                reason: "the configuration is on vendor support with changes disabled".to_string(),
             }),
         });
     }
@@ -384,11 +394,19 @@ pub(crate) fn support_gate_facts<E>(
     let Some(bytes) = read(&owner_relative)? else {
         return Ok(free(marker, None));
     };
-    let support_rule =
-        support_root_uuid_from_bytes(&bytes).and_then(|uuid| state.object_rule(&uuid));
+    let owner_uuid = support_root_uuid_from_bytes(&bytes);
+    let owner_uuid_missing = owner_uuid.is_none();
+    let support_rule = owner_uuid.and_then(|uuid| state.object_rule(&uuid));
+    let free = |marker, owner_rule| SupportGateFacts {
+        marker,
+        owner_rule,
+        owner_uuid_missing,
+        lock: None,
+    };
     let locked = |kind, reason: String| SupportGateFacts {
         marker,
         owner_rule: support_rule,
+        owner_uuid_missing,
         lock: Some(SupportGateLock {
             kind,
             owner: owner.clone(),
@@ -448,8 +466,8 @@ fn locked_vendor_children<E>(
     owner: &str,
     owner_relative: &std::path::Path,
     owner_bytes: &[u8],
-    read: &mut dyn FnMut(&std::path::Path) -> Result<Option<Vec<u8>>, E>,
-    enumerate: &mut dyn FnMut(&std::path::Path) -> Result<Vec<std::path::PathBuf>, E>,
+    read: &mut GateRead<'_, E>,
+    enumerate: &mut GateEnumerate<'_, E>,
 ) -> Result<Vec<String>, E> {
     use unica_metadata_designer::remove::{declared_chain, declared_name};
 
@@ -497,7 +515,7 @@ fn locked_vendor_children<E>(
 
 /// The descriptor that carries the support rule of the addressed node: the
 /// top-level metadata object, or the configuration root for root targets.
-fn support_owner_relative(
+pub(crate) fn support_owner_relative(
     at: &unica_address::address::QualifiedAddress,
     source_kind: SourceSetKind,
 ) -> Option<(String, std::path::PathBuf)> {
