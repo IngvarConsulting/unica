@@ -953,7 +953,7 @@ impl ServerHandler for UnicaServer {
                 return project_surface_outcome(self, &name, outcome, response_budget, received_at)
             }
         };
-        // rule: INV.RUNTIME.RUNNER-BASE-REFUSALS
+        // The refusal offers a choice: ask the person when the client can ask.
         let answer = match human_choice::choice_channel(
             context.client_capabilities().as_ref(),
             modern_peer(&context),
