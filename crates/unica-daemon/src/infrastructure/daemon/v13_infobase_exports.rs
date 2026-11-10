@@ -911,14 +911,16 @@ fn invoke_runner(
         }
     };
     // `mode: create` над базой, которая уже есть: выбрать замену её данных
-    // может только человек.
-    let target_exists = prepared.operation == ExportOperation::Restore
+    // может только человек. Спрашивает только исполнение: превью отдаёт
+    // прежний отказ.
+    let target_exists = !dry_run
+        && prepared.operation == ExportOperation::Restore
         && prepared.arguments.restore_mode == Some(RestoreMode::Create)
         && !output.status_success
         && restore_target_exists(&output.stdout);
     parse_runner_output(prepared.operation, output, dry_run).map_err(|mut rejection| {
         if target_exists {
-            rejection.human_choice = Some(Box::new(restore_exists_choice(prepared, dry_run)));
+            rejection.human_choice = Some(Box::new(restore_exists_choice(prepared)));
         }
         rejection
     })
@@ -994,25 +996,21 @@ fn restore_replace_unconfirmed(relative: &Path, call: &Map<String, Value>) -> Do
     rejection
 }
 
-/// Вопрос о загрузке с `mode: create` в базу, которая уже есть. Вариант — тот
-/// же вызов с `mode: replace`. У исполнения он несёт согласие на замену
-/// данных: второй вопрос тот же вызов не задаёт. Превью остаётся превью.
-fn restore_exists_choice(prepared: &PreparedInfobaseExport, dry_run: bool) -> HumanChoice {
+/// Вопрос исполняемой загрузки с `mode: create` в базу, которая уже есть.
+/// Вариант — тот же вызов с `mode: replace`, и он уже несёт согласие на
+/// замену данных: второй вопрос тот же вызов не задаёт.
+fn restore_exists_choice(prepared: &PreparedInfobaseExport) -> HumanChoice {
     let relative = &prepared.arguments.named_file_relative;
     let mut args = public_arguments(prepared);
     args["mode"] = json!(RestoreMode::Replace.as_str());
     let mut call = Map::new();
     call.insert("op".to_string(), json!(prepared.operation.name()));
     call.insert("args".to_string(), args);
-    call.insert("dryRun".to_string(), Value::Bool(dry_run));
-    let arguments = if dry_run {
-        call
-    } else {
-        restore_replace_confirmation(relative, &call)
-            .options
-            .remove(0)
-            .arguments
-    };
+    call.insert("dryRun".to_string(), Value::Bool(false));
+    let arguments = restore_replace_confirmation(relative, &call)
+        .options
+        .remove(0)
+        .arguments;
     HumanChoice {
         code: RESTORE_EXISTS_CODE.to_string(),
         question: format!("База «{INFOBASE_NAME}» уже существует."),
@@ -3243,10 +3241,10 @@ mod tests {
         }
     }
 
-    /// `mode: create` над базой, которая уже есть, отказывает вопросом человеку
-    /// с согласованными надписями. Вариант — тот же вызов с `mode: replace`; у
-    /// исполнения он уже несёт согласие на замену данных, у превью остаётся
-    /// превью. Другой отказ раннера вопроса не несёт.
+    /// Исполняемый `mode: create` над базой, которая уже есть, отказывает
+    /// вопросом человеку с согласованными надписями. Вариант — тот же вызов с
+    /// `mode: replace`, и он уже несёт согласие на замену данных. Превью и
+    /// другой отказ раннера вопроса не несут.
     /// rule: INV.RUNTIME.INFOBASE-IMPORT-MODE
     /// rule: INV.MCP.HUMAN-CHOICE
     #[test]
@@ -3257,11 +3255,10 @@ mod tests {
             warnings: Vec::new(),
             missing: None,
         };
-        for dry_run in [false, true] {
-            let prepared = prepared_restore(root.path(), dry_run, RestoreMode::Create);
-            let runner = SequenceRunner::new(vec![failed_process(restore_target_exists_envelope(
-                dry_run,
-            ))]);
+        {
+            let prepared = prepared_restore(root.path(), false, RestoreMode::Create);
+            let runner =
+                SequenceRunner::new(vec![failed_process(restore_target_exists_envelope(false))]);
             let result = execute_with_resolved_runner(
                 &prepared,
                 &runner,
@@ -3287,7 +3284,7 @@ mod tests {
             let replace = json!({
                 "op": "infobase.restore",
                 "args": {"input": "transfer/base.dt", "mode": "replace"},
-                "dryRun": dry_run
+                "dryRun": false
             });
             assert_eq!(
                 Value::Object(unica_execution_contract::invocation::without_confirmation(
@@ -3296,20 +3293,28 @@ mod tests {
                 replace
             );
             // Выбор варианта уже согласие на замену: второй вопрос не задаётся.
-            assert_eq!(
-                HumanChoice::is_confirmed(
-                    &restore_replace_question("base.dt"),
-                    "unica.run",
-                    &option.arguments
-                ),
-                !dry_run
-            );
+            assert!(HumanChoice::is_confirmed(
+                &restore_replace_question("base.dt"),
+                "unica.run",
+                &option.arguments
+            ));
             PreparedInfobaseExport::parse(
                 &restore_request(root.path(), Value::Object(option.arguments.clone())),
                 ExportOperation::Restore,
             )
             .expect("the chosen call is admitted without a second question");
         }
+
+        // Превью спрашивать не может: оно отдаёт прежний отказ.
+        let preview = execute_with_resolved_runner(
+            &prepared_restore(root.path(), true, RestoreMode::Create),
+            &SequenceRunner::new(vec![failed_process(restore_target_exists_envelope(true))]),
+            CancellationToken::new(),
+            &tool,
+            "0.15.3",
+        );
+        assert!(!preview.ok);
+        assert!(preview.human_choice.is_none(), "{preview:?}");
 
         let prepared = prepared_restore(root.path(), false, RestoreMode::Create);
         let mut other = restore_target_exists_envelope(false);
