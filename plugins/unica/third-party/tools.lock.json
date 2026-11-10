@@ -37,7 +37,7 @@
       "sourceTag": "v0.4.5",
       "sourceCommit": "ffae37b25c910991ecb8f05abe7a8148cd32b45c",
       "assetRepository": "https://github.com/IngvarConsulting/unica-toolchain",
-      "assetTag": "bsl-analyzer-v0.4.5-build.1",
+      "assetTag": "bsl-analyzer-v0.4.5-build.2",
       "license": "MIT",
       "assetStrategy": "direct-release-asset",
       "binaryName": "bsl-analyzer",
@@ -48,11 +48,11 @@
         },
         "linux-x64": {
           "assetName": "bsl-analyzer-linux-x64",
-          "sha256": "0c635b8739018c41059c1a8da99301cc995b3905245ae4107de36e50f560ec0c"
+          "sha256": "962b56152f214b20c076d9ccfe3bf480e1037169423085604701a13356066a06"
         },
         "win-x64": {
           "assetName": "bsl-analyzer-win-x64.exe",
-          "sha256": "8c34ee6958f870098ba3e721c4d003739364cb969feb0e882ded372a18075bac"
+          "sha256": "a9ab55361a05275e0c998549e9dbe3cef84f300c8d271b36062dab5b1a36d554"
         }
       }
     },
