@@ -1,0 +1,214 @@
+{
+  "id": "S-1561-configuration-information-properties",
+  "name": "configuration-information-properties",
+  "issue": 1561,
+  "area": "Метаданные",
+  "task": "Прочитать семь информационных свойств конфигурации, сохранив false, язык, порядок и пустой перевод без изменения XML",
+  "workspace": "tests/fixtures/acceptance/workspace-configuration-information",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {},
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "xml": {
+          "kind": "sha256",
+          "file": "src/Configuration.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Configuration"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/properties/useManagedFormInOrdinaryApplication",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/properties/useOrdinaryFormInManagedApplication",
+          "eq": true
+        },
+        {
+          "pointer": "/data/props/version",
+          "eq": "1.2.3"
+        },
+        {
+          "pointer": "/data/props/vendor",
+          "eq": "Example"
+        },
+        {
+          "pointer": "/data/props/properties/briefInformation",
+          "eq": [
+            {
+              "language": "ru",
+              "content": "Кратко"
+            },
+            {
+              "language": "en",
+              "content": ""
+            }
+          ]
+        },
+        {
+          "pointer": "/data/props/properties/detailedInformation",
+          "eq": [
+            {
+              "language": "ru",
+              "content": "Подробно"
+            },
+            {
+              "language": "en",
+              "content": ""
+            }
+          ]
+        },
+        {
+          "pointer": "/data/props/properties/copyright",
+          "eq": [
+            {
+              "language": "ru",
+              "content": "Автор 2026"
+            },
+            {
+              "language": "en",
+              "content": ""
+            }
+          ]
+        },
+        {
+          "pointer": "/data/props/properties/vendorInformationAddress",
+          "eq": [
+            {
+              "language": "ru",
+              "content": "https://vendor.example"
+            },
+            {
+              "language": "en",
+              "content": ""
+            }
+          ]
+        },
+        {
+          "pointer": "/data/props/properties/configurationInformationAddress",
+          "eq": [
+            {
+              "language": "ru",
+              "content": "https://product.example"
+            },
+            {
+              "language": "en",
+              "content": ""
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Configuration"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/properties/useManagedFormInOrdinaryApplication",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/properties/useOrdinaryFormInManagedApplication",
+          "eq": true
+        },
+        {
+          "pointer": "/data/props/version",
+          "eq": "1.2.3"
+        },
+        {
+          "pointer": "/data/props/vendor",
+          "eq": "Example"
+        },
+        {
+          "pointer": "/data/props/properties/briefInformation",
+          "eq": [
+            {
+              "language": "ru",
+              "content": "Кратко"
+            },
+            {
+              "language": "en",
+              "content": ""
+            }
+          ]
+        },
+        {
+          "pointer": "/data/props/properties/detailedInformation",
+          "eq": [
+            {
+              "language": "ru",
+              "content": "Подробно"
+            },
+            {
+              "language": "en",
+              "content": ""
+            }
+          ]
+        },
+        {
+          "pointer": "/data/props/properties/copyright",
+          "eq": [
+            {
+              "language": "ru",
+              "content": "Автор 2026"
+            },
+            {
+              "language": "en",
+              "content": ""
+            }
+          ]
+        },
+        {
+          "pointer": "/data/props/properties/vendorInformationAddress",
+          "eq": [
+            {
+              "language": "ru",
+              "content": "https://vendor.example"
+            },
+            {
+              "language": "en",
+              "content": ""
+            }
+          ]
+        },
+        {
+          "pointer": "/data/props/properties/configurationInformationAddress",
+          "eq": [
+            {
+              "language": "ru",
+              "content": "https://product.example"
+            },
+            {
+              "language": "en",
+              "content": ""
+            }
+          ]
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "$capture.xml"
+        }
+      ]
+    }
+  ]
+}
