@@ -76,4 +76,5 @@ pub fn write_projection(
 }
 
 #[cfg(test)]
+#[path = "../tests/platform/runner_project_store.rs"]
 mod runner_project_tests;

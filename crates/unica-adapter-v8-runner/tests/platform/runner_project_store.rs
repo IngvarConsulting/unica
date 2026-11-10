@@ -11,9 +11,9 @@ use unica_workspace::full_dump::test_support::{
     with_test_project_lock_contention, RunnerProjectionCheckpoint,
 };
 use unica_workspace::full_dump::{RunnerProjectLockFailure, RunnerProjectStore};
-use unica_workspace::read::{
-    open_read_directory_nofollow as open_directory_nofollow, FileIdentity, ReadFile,
-};
+#[cfg(windows)]
+use unica_workspace::read::open_read_directory_nofollow as open_directory_nofollow;
+use unica_workspace::read::{FileIdentity, ReadFile};
 
 const EFFECTIVE_CONFIG_NAME: &str = "v8project.yaml";
 const LOCAL_CONFIG_NAME: &str = "v8project.local.yaml";

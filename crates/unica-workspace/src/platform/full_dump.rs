@@ -2493,3 +2493,14 @@ pub fn fixture_verify_private_owner(file: &File) -> std::io::Result<()> {
 pub fn set_before_fixture_config_rename_hook(hook: impl FnOnce() + 'static) {
     crate::platform::filesystem::set_before_identity_bound_no_replace_rename_hook(hook)
 }
+
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support {
+    #[cfg(windows)]
+    pub use super::with_effective_config_create_hook;
+    pub use super::{
+        fixture_file_identity, fixture_verify_private_owner, set_before_fixture_config_rename_hook,
+        with_runner_projection_failpoint, with_runner_projection_hook,
+        with_test_project_lock_contention, RunnerProjectionCheckpoint,
+    };
+}
