@@ -344,9 +344,8 @@ pub(crate) struct SupportGateFacts {
     /// be looked up (the gate then does not lock, see #2883).
     pub(crate) owner_uuid_missing: bool,
     pub(crate) lock: Option<SupportGateLock>,
-    /// Why the support of the target cannot be read: the marker is damaged,
-    /// or the owner's descriptor names no uuid to look its rule up. Not the
-    /// absence of support (INV.APP.SUPPORT-STATE).
+    /// Why the support of the target cannot be read: the marker is damaged.
+    /// Not the absence of support (INV.APP.SUPPORT-STATE).
     pub(crate) unreadable: Option<String>,
 }
 
@@ -432,17 +431,12 @@ pub(crate) fn support_gate_facts<E>(
     let owner_uuid = support_root_uuid_from_bytes(&bytes);
     let owner_uuid_missing = owner_uuid.is_none();
     let support_rule = owner_uuid.and_then(|uuid| state.object_rule(&uuid));
-    // An owner whose descriptor names no uuid has a rule nobody can look
-    // up: its support cannot be read (#2883).
-    let unreadable = owner_uuid_missing.then(|| {
-        format!("the descriptor of `{source_set}:{owner}` names no uuid, so its vendor support rule cannot be read")
-    });
     let free = |marker, owner_rule| SupportGateFacts {
         marker,
         owner_rule,
         owner_uuid_missing,
         lock: None,
-        unreadable: unreadable.clone(),
+        unreadable: None,
     };
     let locked = |kind, reason: String| SupportGateFacts {
         marker,
