@@ -42,6 +42,8 @@ class AcceptanceProfileTests(unittest.TestCase):
                     driver.subprocess, "Popen", return_value=backend
                 ), patch.object(
                     driver, "assert_owned_legacy_broker"
+                ), patch.object(
+                    driver, "assert_owned_legacy_endpoint"
                 ), patch.object(driver, "LegacyBrokerProxy", return_value=proxy,
                                side_effect=RuntimeError("proxy setup sentinel") if stage == "construct" else None):
                     with self.assertRaisesRegex(RuntimeError, "proxy setup sentinel"):
@@ -57,7 +59,9 @@ class AcceptanceProfileTests(unittest.TestCase):
         from tests.ci.acceptance_diagnostics import assert_owned_legacy_broker
         with tempfile.TemporaryDirectory() as raw:
             cache = Path(raw)
-            (cache / "writer.lease").write_text(json.dumps({"pid": 41979}))
+            scope = cache / "workspaces" / "v1" / "scope"
+            scope.mkdir(parents=True)
+            (scope / "writer.lease").write_text(json.dumps({"pid": 41979}))
             backend = Mock(pid=41978)
             backend.poll.return_value = None
             with self.assertRaisesRegex(AssertionError, "another process"):
@@ -67,7 +71,9 @@ class AcceptanceProfileTests(unittest.TestCase):
         from tests.ci.acceptance_diagnostics import assert_owned_legacy_broker
         with tempfile.TemporaryDirectory() as raw:
             cache = Path(raw)
-            (cache / "writer.lease").write_text(json.dumps({"pid": 41978}))
+            scope = cache / "workspaces" / "v1" / "scope"
+            scope.mkdir(parents=True)
+            (scope / "writer.lease").write_text(json.dumps({"pid": 41978}))
             backend = Mock(pid=41978)
             backend.poll.return_value = None
             with patch("tests.ci.acceptance_diagnostics.os.name", "posix"), self.assertRaisesRegex(

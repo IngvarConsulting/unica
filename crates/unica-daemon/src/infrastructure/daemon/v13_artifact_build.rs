@@ -619,39 +619,39 @@ fn execute_with_resolved_runner(
             }
         };
     }
-    let preview = match invoke_runner(
-        &runner_prepared,
-        planned.as_deref(),
-        tool,
-        runner,
-        &cancellation,
-        true,
-    ) {
-        Ok(envelope) => envelope,
-        Err(result) => return result,
-    };
-    let source_set = match validate_envelope(
-        &runner_prepared,
-        planned.as_deref(),
-        &before,
-        &preview,
-        false,
-    ) {
-        Ok(source_set) => source_set,
-        Err(result) => return result,
-    };
-    let after = match capture_inputs(prepared) {
-        Ok(inputs) => inputs,
-        Err(result) => return result,
-    };
-    if before != after {
-        return reject(
-            RefusalCode::ConcurrentChange,
-            "make inputs changed during preview; run dryRun: true again",
-        );
-    }
-
     if prepared.dry_run {
+        let preview = match invoke_runner(
+            &runner_prepared,
+            planned.as_deref(),
+            tool,
+            runner,
+            &cancellation,
+            true,
+        ) {
+            Ok(envelope) => envelope,
+            Err(result) => return result,
+        };
+        let source_set = match validate_envelope(
+            &runner_prepared,
+            planned.as_deref(),
+            &before,
+            &preview,
+            false,
+        ) {
+            Ok(source_set) => source_set,
+            Err(result) => return result,
+        };
+        let after = match capture_inputs(prepared) {
+            Ok(inputs) => inputs,
+            Err(result) => return result,
+        };
+        if before != after {
+            return reject(
+                RefusalCode::ConcurrentChange,
+                "make inputs changed during preview; run dryRun: true again",
+            );
+        }
+
         let mut result = DomainResult::success(format!(
             "make planned building the {} from source set `{source_set}` without publishing anything",
             prepared.arguments.kind.suffix()
@@ -702,7 +702,9 @@ fn execute_with_resolved_runner(
         Ok(envelope) => envelope,
         Err(result) => return result,
     };
-    let built_from = match validate_envelope(
+    // Исполнение не повторяет preview раннера: набор сборки берётся из
+    // ответа исполнения и сверяется с заказанным в `validate_envelope`.
+    let source_set = match validate_envelope(
         &runner_prepared,
         planned.as_deref(),
         &before,
@@ -712,12 +714,6 @@ fn execute_with_resolved_runner(
         Ok(source_set) => source_set,
         Err(result) => return result,
     };
-    if built_from != source_set {
-        return reject(
-            RefusalCode::InvalidResult,
-            "v8-runner built the artifact from a different source set than previewed",
-        );
-    }
     if before.external.is_some() {
         if let Err(result) = publish_external(
             prepared,
@@ -1331,9 +1327,9 @@ mod tests {
                 if replacing { "replaced" } else { "created" }
             );
             let calls = runner.calls.lock().unwrap();
-            assert_eq!(calls.len(), 2);
+            assert_eq!(calls.len(), 1);
             let staging = Path::new(
-                &calls[1].args[calls[1]
+                &calls[0].args[calls[0]
                     .args
                     .iter()
                     .position(|arg| arg == "--output")
@@ -1983,37 +1979,24 @@ mod tests {
 
         let prepared = build_of(root.path(), "dist/main.cf", None, None, false);
         let runner = SequenceRunner::publishing(
-            vec![
-                process(
-                    envelope(
-                        &prepared.arguments.output,
-                        ArtifactKind::Cf,
-                        "main",
-                        None,
-                        false,
-                    ),
+            vec![process(
+                envelope(
+                    &prepared.arguments.output,
+                    ArtifactKind::Cf,
+                    "main",
+                    None,
                     true,
                 ),
-                process(
-                    envelope(
-                        &prepared.arguments.output,
-                        ArtifactKind::Cf,
-                        "main",
-                        None,
-                        true,
-                    ),
-                    true,
-                ),
-            ],
+                true,
+            )],
             b"built cf",
         );
 
         let result = run(root.path(), &prepared, &runner);
 
         assert!(result.ok, "{result:?}");
-        assert_eq!(runner.call_count(), 2);
-        assert!(runner.joined_args(0).ends_with("--dry-run"));
-        assert!(!runner.joined_args(1).contains("--dry-run"));
+        assert_eq!(runner.call_count(), 1);
+        assert!(!runner.joined_args(0).contains("--dry-run"));
         let data = result.data.as_ref().unwrap();
         assert_eq!(data["artifact"]["path"], "dist/main.cf");
         assert_eq!(data["artifact"]["size"], 8);
@@ -2039,28 +2022,16 @@ mod tests {
             let root = workspace();
 
             let prepared = build_of(root.path(), "dist/main.cf", None, None, false);
-            let outputs = vec![
-                process(
-                    envelope(
-                        &prepared.arguments.output,
-                        ArtifactKind::Cf,
-                        "main",
-                        None,
-                        false,
-                    ),
+            let outputs = vec![process(
+                envelope(
+                    &prepared.arguments.output,
+                    ArtifactKind::Cf,
+                    "main",
+                    None,
                     true,
                 ),
-                process(
-                    envelope(
-                        &prepared.arguments.output,
-                        ArtifactKind::Cf,
-                        "main",
-                        None,
-                        true,
-                    ),
-                    true,
-                ),
-            ];
+                true,
+            )];
             let runner = match published {
                 Some(bytes) => SequenceRunner::publishing(outputs, bytes),
                 None => SequenceRunner::new(outputs),

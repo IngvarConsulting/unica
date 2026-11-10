@@ -37,6 +37,10 @@ pub fn bsl_analyzer_command(
         .arg(cache_dir)
         .arg("--mode")
         .arg("stdio")
+        // bsl-analyzer 0.4 serves `references` only when the launch names it;
+        // symbol lookups walk references through this session.
+        .arg("--enable-tool")
+        .arg("references")
         // Workspace profile otherwise promotes stdio to a persistent broker.
         // The helper must own the analyzer it retires after invalidation.
         .env("BSL_MCP_BROKER", "0")

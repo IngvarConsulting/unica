@@ -134,32 +134,6 @@ pub(super) fn execute(
             )
         }
     };
-    let expected_target = if prepared.dry_run {
-        None
-    } else {
-        let mut preview_request = prepared.clone();
-        preview_request.dry_run = true;
-        let preview = execute(&preview_request, runner, cancellation.clone(), tool);
-        if !preview.ok {
-            return preview;
-        }
-        match capture_inputs(prepared) {
-            Ok(current) if current == inputs => {}
-            _ => {
-                return project_changed(
-                    "pull did not publish: the project file, its local supplement or the declared source sets changed during its internal preview",
-                )
-            }
-        }
-        let relative = preview
-            .data
-            .as_ref()
-            .and_then(|data| data["plan"]["target"].as_str());
-        match relative {
-            Some(path) => Some(root.join(path)),
-            None => return invalid("pull preview omitted its guarded target"),
-        }
-    };
     let store = match lock_project(&prepared.context.workspace_root, &cancellation) {
         Ok(value) => value,
         Err(RunnerProjectLockFailure::Cancelled) => {
@@ -181,7 +155,9 @@ pub(super) fn execute(
             config_path: &prepared.context.workspace_root.join(CONFIG_NAME),
             source_set: prepared.arguments.source_set.as_deref(),
             extension: prepared.arguments.extension.as_deref(),
-            expected_target: expected_target.as_deref(),
+            // Исполнение не повторяет preview раннера: цель выбирает сама
+            // подготовка публикации по текущему проекту.
+            expected_target: None,
         },
         store,
         runner,

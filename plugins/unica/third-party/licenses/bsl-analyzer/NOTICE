@@ -1,13 +1,12 @@
 BSL Analyzer — licensing notice / лицензионная заметка
 
-The workspace is dual-licensed per crate. See LICENSING.md for the full
-per-crate matrix and docs/legal/ for the underlying provenance audit.
-
-  * Tier A crates are licensed under MIT OR Apache-2.0.
-  * Tier B crates are licensed under LGPL-3.0-or-later.
-  * The shipped LSP server binary, which statically links a Tier B crate
-    (crates/ide-diagnostics), is therefore distributed under LGPL-3.0-or-later. Source for all
-    crates is published in this repository.
+The code of this project — every crate of the workspace, including
+crates/ide-diagnostics and crates/bsl-analyzer — is licensed under the MIT
+license (SPDX: MIT); the license text is LICENSE-MIT. The shipped LSP
+server binary is distributed under the MIT license as well. Source for all
+crates is published in this repository. See LICENSING.md for the license
+and for third-party material that keeps its own terms. The sections below
+are the provenance history.
 
 Architecture heritage
 ---------------------
@@ -43,7 +42,6 @@ by crate:
   * crates/ide-db — LineIndex cached through Salsa.
 
 Each entry covers what the removed note named and no more of the crate.
-The record behind this list is in docs/legal/tier-a-provenance-audit.md.
 
 Language heritage
 -----------------
@@ -55,6 +53,19 @@ third-party reimplementation.
 Official references:
   * 1C query language: https://its.1c.ru/db/pubqlang
   * 1C code standards: https://its.1c.ru/db/v8std
+
+Platform help
+-------------
+The analyzer binary carries crates/bsl-platform/data/platform_facts.json:
+the interface facts of the 1C:Enterprise platform help — type, method,
+function, constructor and property names, parameter lists, types,
+versions, execution contexts and signature lines — and no descriptive
+text. It contains none of 1C's descriptions, parameter documentation,
+examples or notes; a test fails if any such field appears. The full help
+corpus, whose texts are the copyright of ООО «1С-Софт», never enters this
+repository or the binary: it is read at run time from the user's own
+platform installation or from a help package,
+each carrying its own NOTICE.md. See crates/bsl-platform/data/PROVENANCE.md.
 
 Diagnostic rules
 ----------------
@@ -103,9 +114,9 @@ introduced the diagnostic for unknown preprocessor symbols also recorded
 fixture file later moved that material into an inline test rather than
 retiring it. It has now been replaced with material derived from section
 4.8.1.2 of the 1C Developer's Guide, and a test in the crate fails if the
-retired material reappears. The current re-verification of the list and
-of that replacement against section 4.8.1.2, with the corpus measurement
-behind it, is recorded in docs/legal/bsl-clean-room-slice-b2.md.
+retired material reappears. The list and that replacement have been
+re-verified against section 4.8.1.2, with a corpus measurement behind
+it.
 
 A sweep of every BSL test input in the tree, done on 2026-08-21, found
 that the unknown-preprocessor-symbol fixture was one case of a class.
@@ -132,8 +143,7 @@ current test carriers whose introducing commits name an external source
 for their test material were rewritten from the normative text of this
 repository's own diagnostic documentation and the current rules; a test
 in the crate fails if a retired literal of theirs reappears verbatim.
-The carriers, the sources of the new inputs and the evidence are listed
-in docs/legal/ide-diagnostics-test-material.md. Test material whose
+Test material whose
 introducing commit names no source is not covered by that statement:
 it is neither declared external nor declared cleaned. The record of the
 original import above stands.
@@ -141,8 +151,7 @@ original import above stands.
 Two things are listed file by file, because both are established without
 heuristics: the 21 fixtures added by 4601ffcb, which that commit itself
 enumerates, and crates/parser/tests/fixtures/Module.bsl. Both are in the
-table in LICENSING.md. The evidence in full is in
-docs/legal/bsl-clean-room-slice-b4.md.
+table in LICENSING.md.
 
 These facts are stated here directly, and not left to be discovered in
 the commit history, because the public mirror of this repository does
@@ -158,28 +167,26 @@ in the file header and quotes upstream grammar rules in ANTLR notation in
 many of its function doc-comments. For the BSL layer the record is the
 planning document shipped in the initial commit, which names the upstream
 grammars as the source for both languages; a file header naming
-BSLLexer.g4 was added a few commits later. Details and commit identifiers
-are in docs/legal/sdbl-provenance-2026-07-audit.md.
+BSLLexer.g4 was added a few commits later.
 
 The SDBL layer has since been rewritten in bounded slices from official
 1C documentation under the clean-room process described in
-docs/legal/sdbl-clean-room-slices.md, and now diverges from the upstream
+LICENSING.md, and now diverges from the upstream
 grammar in token inventory, token granularity, rule decomposition and
 operator precedence. That rewrite is finished; its last open item, the
 naming of the SDBL parser rules, was closed by the owner decision O1
 recorded below.
 
-The BSL layer was re-derived or attested the same way, under
-docs/legal/bsl-clean-room-slices.md. All four sub-slices are complete: the
-BSL token inventory (bsl-clean-room-slice-b1.md) and the preprocessor
-symbol list with its test material (b2.md), both re-derived from Chapter
+The BSL layer was re-derived or attested the same way. All four
+sub-slices are complete: the BSL token inventory (B1) and the preprocessor
+symbol list with its test material (B2), both re-derived from Chapter
 4 of the 1C Developer's Guide for 8.3.27; the grammar rules, attested
-rule by rule rather than rewritten (b3.md); and the test material, whose
+rule by rule rather than rewritten (B3); and the test material, whose
 origin was established where the history establishes it and left stated
-as unestablished where it does not (b4.md).
+as unestablished where it does not (B4).
 
-The compatibility question that ran alongside them is recorded as a
-decision in docs/legal/bsl-compatibility-decision.md. Compatibility with
+The compatibility question that ran alongside them was settled by a
+recorded decision. Compatibility with
 bsl-language-server on BSL parsing stays a stated goal of this product;
 what the record establishes is that no parsing rule was adopted on the
 strength of that implementation. Both commits that changed what the
@@ -197,15 +204,15 @@ since: the comparison of sdbl-hir, the test corpus, and the SDBL parser
 rule naming (owner decision O1). The consequence is recorded in the entry
 for crates/parser and crates/lexer below.
 
-The current assessment — what is proven, what has diverged, and what was
-outstanding — is in docs/legal/sdbl-provenance-2026-07-audit.md. The
-Tier B crate that remains, crates/ide-diagnostics, and the final binary
-stay under LGPL-3.0-or-later.
+When parser and lexer moved, the record kept crates/ide-diagnostics and the
+final binary under LGPL-3.0-or-later. That caveat has since been closed:
+the crate and the binary are MIT, see LICENSING.md.
 
 Notice for crates written with a copyleft reference open
 ---------------------------------------------------------
-The notice above covers the grammar layers only. Three crates that are
-currently licensed MIT OR Apache-2.0 were also written with a
+The notice above covers the grammar layers only. Three crates that were
+licensed MIT OR Apache-2.0 when this notice was written, and are MIT now
+(see LICENSING.md), were also written with a
 copyleft-licensed project open as the working reference. The three are
 not equivalent: the first two inherited structure, the third matched
 observable behaviour on purpose and copied nothing. In each case
@@ -226,8 +233,7 @@ today carries no trace of this. It is therefore stated here.
     library's own vocabulary. That identified taxonomy and API slice has
     now been independently re-derived from Chapter 4 of the 1C Developer's
     Guide and control-flow literature, then verified against the previous
-    analysis results. The derivation, removals and verification are recorded
-    in docs/legal/cfg-clean-room-slice.md. This closes that specific slice,
+    analysis results. This closes that specific slice,
     not the workspace's MIT-only programme or its dependency restrictions.
 
   * crates/bsl-metadata — the crate described itself as "a Rust port of
@@ -244,8 +250,7 @@ today carries no trace of this. It is therefore stated here.
     observed artifact or a consumer, the never-populated support-variant
     stub and six public methods with neither source nor caller were
     removed, and the rest kept its form where the derivation reached it.
-    The derivation and registry are recorded in
-    docs/legal/bsl-metadata-clean-room-slice.md. This closes that slice,
+    This closes that slice,
     not the fixtures listed below or the MIT-only programme.
 
   * crates/hir-def — several diagnostic ranges and metrics were written
@@ -263,24 +268,24 @@ Completed clean-room replacement: crates/sdbl-hir
 crates/sdbl-hir was assessed as medium risk in April 2026 and not
 compared line by line; parts of its lowering had been written against
 bsl-language-server (LGPL-3.0-or-later). That is no longer the position.
-The crate has moved to MIT OR Apache-2.0 on the following record:
+The crate moved to MIT OR Apache-2.0, the declaration of that transfer,
+on the following record; its current license is MIT, see LICENSING.md:
 
   * a line-by-line audit of all 8 831 production lines of the crate
     against the upstream lowering, with ten findings (F01-F10), each with
-    a disposition: docs/legal/sdbl-hir-upstream-comparison.md;
+    a disposition;
   * independent replacements of F01-F10, each resting on a named page of
-    the 1C documentation, attested in docs/legal/sdbl-clean-room-slice13.md.
+    the 1C documentation, and attested (Slice 13).
     F07 was accepted by the owner as re-derived, the result being
     byte-for-byte the same as before;
   * an independent test corpus of 96 tests (95 enabled, one ignored), in which all 46 cases of the
-    old material are mapped and the old material is removed:
-    docs/legal/sdbl-corpus-integration.md.
+    old material are mapped and the old material is removed.
 
-Accepted limits are stated there and repeated here. Issue #299 is a
+The accepted limits are these. Issue #299 is a
 recovery limit accepted deliberately; its test stays ignored. Issue #301
 was a regression and was fixed by 8b931a99.
 
-This entry applies the facts recorded in those documents and draws no
+This entry applies the facts recorded above and draws no
 further legal conclusion. Per-crate licenses of other crates are
 unchanged by that entry. At the time it was written parser and lexer
 were still under LGPL-3.0-or-later and a build of sdbl-hir pulled them in
@@ -290,30 +295,30 @@ Completed clean-room programme: crates/parser and crates/lexer
 --------------------------------------------------------------
 The grammar layers of crates/parser and crates/lexer were the origin of
 the derivation notice above: written with the grammar files of
-bsl-parser open. Both crates have moved to MIT OR Apache-2.0 on the
-following record:
+bsl-parser open. Both crates moved to MIT OR Apache-2.0, the declaration
+of the transfer of 2026-10-06, on the following record; their current
+license is MIT, see LICENSING.md:
 
   * the BSL token inventory, rewritten from Chapter 4 of the 1C
-    Developer's Guide: docs/legal/bsl-clean-room-slice-b1.md;
+    Developer's Guide (B1);
   * the preprocessor symbols, re-derived from section 4.8.1.2 and
-    re-verified on 2026-10-03: docs/legal/bsl-clean-room-slice-b2.md;
+    re-verified on 2026-10-03 (B2);
   * the BSL grammar, attested rather than rewritten: 86 functions (65
     rules and 21 predicates), 30 verdicts of re-derivation and 56 of
     attestation, none open, gated by
-    crates/parser/tests/grammar_attestation.rs:
-    docs/legal/bsl-clean-room-slice-b3.md;
+    crates/parser/tests/grammar_attestation.rs (B3);
   * the origin of the test material, established where the history
     establishes it and stated as unestablished where it does not (it
-    was completed on 2026-10-06): docs/legal/bsl-clean-room-slice-b4.md;
+    was completed on 2026-10-06; B4);
   * the SDBL layer: the lexer vocabularies, the recovery layer and the
-    test corpus recorded in docs/legal/sdbl-provenance-2026-07-audit.md,
+    test corpus recorded in the provenance audit of 2026-07,
     and the review of the SDBL parser rule names, closed on 2026-10-05 by
     the owner decision O1 — the names were reviewed and kept, nothing was
-    renamed: docs/legal/sdbl-rule-naming-attestation.md. That review
+    renamed. That review
     states itself that retaining a name does not prove independent
     authorship and does not erase the grammar consultation recorded above.
 
-Accepted limits are stated in those documents and repeated here. One of
+The accepted limits are these. One of
 the eight boundaries of table 4.5.4 is not observable in our tree
 (https://github.com/itrous/bsl-analyzer/issues/51). The B1 limits are the
 names inside the add-handler and remove-handler statements and the
@@ -325,12 +330,13 @@ was never established; it was deleted from the tree by f9053fce, before the
 base of this move, and the owner accepted that no replacement was made
 (issues 52 and 245). This is a historical record of a deleted artifact.
 
-This entry applies the facts recorded in those documents and draws no
-further legal conclusion. Of the Tier B crates only crates/ide-diagnostics
-remains, and the final binary stays under LGPL-3.0-or-later because it
-links it. No crate's dependencies changed: the licence field of the two
+This entry applies the facts recorded above and draws no
+further legal conclusion. When it was written, of the Tier B crates only
+crates/ide-diagnostics remained, and the final binary stayed under
+LGPL-3.0-or-later because it linked it. That caveat has since been
+closed: the crate and the binary are MIT, see LICENSING.md. No crate's dependencies changed: the licence field of the two
 manifests now inherits the workspace licence, and the product code is
-untouched. docs/legal/tier-a-provenance-audit.md records the move.
+untouched.
 
 Compatibility with bsl-language-server
 --------------------------------------
@@ -346,19 +352,25 @@ This is a statement about observable behaviour, not about source code:
 implementing the same interface independently is intended, and copying
 implementation text is not.
 
-Bundled 1C platform data
-------------------------
-The file crates/bsl-platform/data/platform_data.json is a structured
-extract of the 1C:Enterprise context-help archives (shcntx_ru.hbk,
-shlang_ru.hbk). The contents — in particular method descriptions,
-parameter documentation and code examples — are © ООО «1С-Софт» and
-are NOT covered by this workspace's MIT, Apache-2.0 or LGPL-3.0
-licensing. The file is bundled to allow reproducible builds of
-bsl-analyzer without requiring every contributor to install
-1C:Enterprise locally, and on the practical assumption that its use is
+1C platform help data
+---------------------
+bsl-analyzer no longer bundles 1C platform help. Until issue #312 the file
+crates/bsl-platform/data/platform_data.json — a structured extract of the
+1C:Enterprise context-help archives (shcntx_ru.hbk, shlang_ru.hbk) — was
+bundled; it is removed from the tree and from builds, and remains only in
+the history. The help is now read at runtime from the user's installed
+platform or from a separately distributed help package
+(docs/configuration/PROJECT_CONFIGURATION.md, [platform_help]); with no
+platform installed, the default `auto` source serves the built-in
+interface facts; a corpus with descriptions is configured explicitly.
+
+The contents of that corpus and of every help package — in particular
+method descriptions, parameter documentation and code examples — are
+© ООО «1С-Софт» and are NOT covered by the project's MIT license. A help package carries its own NOTICE.md with that
+statement; its use is on the practical assumption that it serves
 interoperability with the 1C platform rather than a standalone
-documentation product. See crates/bsl-platform/data/PROVENANCE.md for
-the full statement.
+documentation product. See crates/bsl-platform/data/PROVENANCE.md for the
+history and the full statement.
 
 Upstream acknowledgements
 -------------------------
@@ -370,13 +382,41 @@ Upstream acknowledgements
     configuration format, the diagnostic catalogue and BSL parsing;
     also the reference used when crates/cfg and parts of crates/hir-def
     were first written — LGPL-3.0-or-later. Where parsing is concerned
-    the decision is recorded in docs/legal/bsl-compatibility-decision.md:
+    the recorded decision is this:
     both rules that changed what the parser accepts come out of Chapter 4
     by section, and that project supplied a corpus-scale cross-check
     rather than the rule.
   * mdclasses — object-model reference used when crates/bsl-metadata
     was first written — LGPL-3.0
   * v8std.ru — public catalogue of 1C coding standards — CC0
+  * v8-context-hbk (https://github.com/alkoleft/v8-context-hbk), by
+    alkoleft — the block layout of the help-archive container followed by
+    crates/bsl-platform/tools/html-parser/src/hbk.rs was taken from its
+    crates/hbk-container at commit
+    832a5bff810e368f34d005c471481c2091395455. The project owner states
+    that its use under the MIT license was permitted; the upstream
+    repository carries no license file at that commit. The permission
+    covers that code only, not 1C's help texts. MIT license text:
+
+      Permission is hereby granted, free of charge, to any person
+      obtaining a copy of this software and associated documentation
+      files (the "Software"), to deal in the Software without
+      restriction, including without limitation the rights to use, copy,
+      modify, merge, publish, distribute, sublicense, and/or sell copies
+      of the Software, and to permit persons to whom the Software is
+      furnished to do so, subject to the following conditions:
+
+      The above copyright notice and this permission notice shall be
+      included in all copies or substantial portions of the Software.
+
+      THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+      EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+      MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+      NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
+      BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+      ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+      CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+      SOFTWARE.
   * crates/parser/tests/fixtures/Module.bsl — © ООО «1С-Софт»,
     CC BY 4.0, redistributed with its own license header intact. The
     copy was taken from the test resources of bsl-parser, which had
@@ -404,9 +444,10 @@ Upstream acknowledgements
     and remains only in history. Likewise
     crates/ide-diagnostics/test_data/set_permissions_for_new_objects/Roles —
     6 XML files identical in content, with no source named by their commit.
-  * crates/bsl-platform/data/platform_data.json — © ООО «1С-Софт»,
-    1C copyright, bundled for interoperability; see
+  * crates/bsl-platform/data/platform_data.json (removed by #312, present
+    in history only) and platform help packages — © ООО «1С-Софт»,
+    1C copyright, for interoperability; see
     crates/bsl-platform/data/PROVENANCE.md
 
-See LICENSING.md for the per-crate license map and the conditions
-under which each crate can be reused.
+See LICENSING.md for the project's MIT license and the terms of the
+third-party material bundled in the tree.

@@ -977,10 +977,8 @@ mod medium_tests {
         assert!(result.ok, "{result:?}");
         super::super::v13_source_import::tests::assert_another_copy_is_named(&result);
 
-        let runner = SequenceRunner::exporting(
-            vec![process(preview, true), process(applied, true)],
-            root.path().join("main"),
-        );
+        let runner =
+            SequenceRunner::exporting(vec![process(applied, true)], root.path().join("main"));
         let result = run(
             root.path(),
             &prepared(root.path(), ExportMode::Full, Some("main"), None, false),
@@ -1331,10 +1329,10 @@ mod medium_tests {
     fn apply_without_prior_preview_counts_the_exported_files_itself() {
         let root = workspace();
         let runner = SequenceRunner::exporting(
-            vec![
-                process(envelope(root.path(), "main", "FULL", None, false), true),
-                process(envelope(root.path(), "main", "FULL", None, true), true),
-            ],
+            vec![process(
+                envelope(root.path(), "main", "FULL", None, true),
+                true,
+            )],
             root.path().join("main"),
         );
 
@@ -1345,9 +1343,8 @@ mod medium_tests {
         );
 
         assert!(result.ok, "{result:?}");
-        assert_eq!(runner.call_count(), 2);
-        assert!(runner.joined_args(0).ends_with("--dry-run"));
-        assert!(!runner.joined_args(1).contains("--dry-run"));
+        assert_eq!(runner.call_count(), 1);
+        assert!(!runner.joined_args(0).contains("--dry-run"));
         let data = result.data.as_ref().unwrap();
         assert_eq!(data["target"], "main");
         assert_eq!(data["files"], 2);
@@ -1381,10 +1378,10 @@ mod medium_tests {
             let original_local = fs::read(root.path().join(LOCAL_CONFIG_NAME)).unwrap();
             let expected_target = target.clone();
             let mut runner = SequenceRunner::exporting(
-                vec![
-                    process(envelope(root.path(), set, "FULL", extension, false), true),
-                    process(envelope(root.path(), set, "FULL", extension, true), true),
-                ],
+                vec![process(
+                    envelope(root.path(), set, "FULL", extension, true),
+                    true,
+                )],
                 target.clone(),
             );
             runner.after_apply = Some(Box::new(move |command, staged| {
@@ -1448,9 +1445,9 @@ mod medium_tests {
                 .unwrap()
                 .contains("local-export-secret"));
             let calls = runner.calls.lock().unwrap();
-            assert_eq!(calls[0].args[1], calls[1].args[1]);
+            assert_eq!(calls.len(), 1);
             assert!(
-                Path::new(&calls[1].args[1]).is_file(),
+                Path::new(&calls[0].args[1]).is_file(),
                 "the stable working-copy owner remains available after finish"
             );
             assert!(calls
@@ -1508,13 +1505,8 @@ mod medium_tests {
                 "provider_dispatched" => applied["data"]["provider_dispatched"] = json!(false),
                 _ => {}
             }
-            let mut runner = SequenceRunner::exporting(
-                vec![
-                    process(envelope(root.path(), "main", "FULL", None, false), true),
-                    process(applied, true),
-                ],
-                target.clone(),
-            );
+            let mut runner =
+                SequenceRunner::exporting(vec![process(applied, true)], target.clone());
             let workspace_root = root.path().to_path_buf();
             let retained_stage = Arc::new(Mutex::new(None));
             let observed_stage = Arc::clone(&retained_stage);
@@ -1767,10 +1759,10 @@ mod medium_tests {
             .unwrap();
             assert!(!platform.with_file_name("1cv8").exists());
             let mut runner = SequenceRunner::exporting(
-                vec![
-                    process(envelope(root.path(), set, "FULL", extension, false), true),
-                    process(envelope(root.path(), set, "FULL", extension, true), true),
-                ],
+                vec![process(
+                    envelope(root.path(), set, "FULL", extension, true),
+                    true,
+                )],
                 target.clone(),
             );
             runner.fault = Some(PublicationFault::SelectedExecutor(json!({
@@ -1794,9 +1786,9 @@ mod medium_tests {
             assert_eq!(data["providerDispatched"], true);
             assert!(target.join("Configuration.xml").is_file());
             assert!(!target.join("local-only.bsl").exists());
-            assert_eq!(runner.call_count(), 2);
+            assert_eq!(runner.call_count(), 1);
             let selections = runner.selections.lock().unwrap();
-            assert_eq!(selections.len(), 2);
+            assert_eq!(selections.len(), 1);
             for selected in selections.iter() {
                 assert_eq!(selected["provider"]["selected"], "ibcmd");
                 assert_eq!(selected["executor"]["executable"], json!(platform));
@@ -1911,60 +1903,6 @@ mod medium_tests {
                 .unwrap()
                 .iter()
                 .any(|reply| reply["decision"] == "published"));
-        }
-    }
-
-    #[test]
-    fn internal_preview_rechecks_both_original_config_layers_before_apply() {
-        for local in [false, true] {
-            let root = workspace();
-            let target = root.path().join("main");
-            write_valid_dump(&target, false);
-            let original = unica_workspace::test_support::tree_snapshot(&target);
-            let mut runner = SequenceRunner::exporting(
-                vec![process(
-                    envelope(root.path(), "main", "FULL", None, false),
-                    true,
-                )],
-                target.clone(),
-            );
-            let config = root.path().join(if local {
-                LOCAL_CONFIG_NAME
-            } else {
-                CONFIG_NAME
-            });
-            runner.after_preview = Some(Box::new(move || {
-                if local {
-                    fs::write(&config, "infobase:\n  password: changed-after-preview\n").unwrap();
-                } else {
-                    let mut source = fs::read_to_string(&config).unwrap();
-                    source.push_str("\n# changed after the internal preview\n");
-                    fs::write(&config, source).unwrap();
-                }
-            }));
-            let result = run(
-                root.path(),
-                &prepared(root.path(), ExportMode::Full, None, None, false),
-                &runner,
-            );
-            assert!(!result.ok, "local={local}: {result:?}");
-            assert_eq!(result.diagnostics[0]["code"], "concurrent_change");
-            assert_eq!(result.data.as_ref().unwrap()["changed"], "project");
-            assert!(
-                result.summary.contains("during its internal preview"),
-                "{result:?}"
-            );
-            assert_eq!(
-                runner.call_count(),
-                1,
-                "apply must not start after changed inputs"
-            );
-            assert!(runner.stage_writes.lock().unwrap().is_empty());
-            assert_eq!(
-                unica_workspace::test_support::tree_snapshot(&target),
-                original
-            );
-            assert!(result.changed.is_empty());
         }
     }
 
@@ -2265,10 +2203,10 @@ mod medium_tests {
                 *effect_observed.lock().unwrap() = Some(outcome);
             });
             let mut runner = SequenceRunner::exporting(
-                vec![
-                    process(envelope(root.path(), "main", "FULL", None, false), true),
-                    process(envelope(root.path(), "main", "FULL", None, true), true),
-                ],
+                vec![process(
+                    envelope(root.path(), "main", "FULL", None, true),
+                    true,
+                )],
                 target.clone(),
             );
             if after_publication {
@@ -2393,8 +2331,8 @@ mod medium_tests {
                     assert!(result.ok, "{phase}: {result:?}");
                     assert_eq!(
                         runner.call_count(),
-                        2,
-                        "{phase}: preview and apply must both run"
+                        1,
+                        "{phase}: execution runs the runner once"
                     );
                     assert_eq!(
                         result.changed,
@@ -2573,15 +2511,8 @@ mod medium_tests {
                 )
             });
             let outputs = runner.outputs.lock().unwrap();
-            assert_eq!(outputs.len(), 2, "{mode}: preview and apply must both run");
-            let preview = outputs[0].as_ref().expect("real preview process output");
-            assert!(
-                preview.status_success && !preview.timed_out,
-                "{mode}: {preview:?}"
-            );
-            assert!(!preview.cancelled && !preview.stopped_by_consumer);
-            assert!(preview.line_error.is_none(), "{mode}: {preview:?}");
-            let apply = outputs[1].as_ref().expect("real apply process output");
+            assert_eq!(outputs.len(), 1, "{mode}: execution runs the runner once");
+            let apply = outputs[0].as_ref().expect("real apply process output");
             assert_eq!(apply.timed_out, mode == "withheld-eof", "{mode}: {apply:?}");
             assert_eq!(
                 apply.status_success,
@@ -2637,12 +2568,8 @@ mod medium_tests {
             // Observe delivery after the production callback, not only the
             // producer's flush: the deadline can expire with a frame still queued.
             let delivered = runner.delivered_frames.lock().unwrap();
-            assert_eq!(
-                delivered.len(),
-                2,
-                "{mode}: preview and apply callback deliveries"
-            );
-            let apply_frames: Vec<Value> = delivered[1]
+            assert_eq!(delivered.len(), 1, "{mode}: apply callback deliveries");
+            let apply_frames: Vec<Value> = delivered[0]
                 .iter()
                 .map(|bytes| serde_json::from_slice(bytes).unwrap())
                 .collect();
@@ -2734,10 +2661,10 @@ mod medium_tests {
             write_valid_dump(&target, false);
             fs::write(target.join("replaced.bsl"), "old source").unwrap();
             let mut runner = SequenceRunner::exporting(
-                vec![
-                    process(envelope(root.path(), "main", "FULL", None, false), true),
-                    process(envelope(root.path(), "main", "FULL", None, true), true),
-                ],
+                vec![process(
+                    envelope(root.path(), "main", "FULL", None, true),
+                    true,
+                )],
                 target.clone(),
             );
             runner.fault = Some(fault);
@@ -2835,10 +2762,10 @@ mod medium_tests {
         write_valid_dump(&target, false);
         fs::write(target.join("replaced.bsl"), "old source").unwrap();
         let mut runner = SequenceRunner::exporting(
-            vec![
-                process(envelope(root.path(), "main", "FULL", None, false), true),
-                process(envelope(root.path(), "main", "FULL", None, true), true),
-            ],
+            vec![process(
+                envelope(root.path(), "main", "FULL", None, true),
+                true,
+            )],
             target.clone(),
         );
         runner.fault = Some(PublicationFault::OversizedTerminal { published: true });
@@ -2898,10 +2825,10 @@ mod medium_tests {
             write_valid_dump(&target, false);
             fs::write(target.join("replaced.bsl"), "old source").unwrap();
             let mut runner = SequenceRunner::exporting(
-                vec![
-                    process(envelope(root.path(), "main", "FULL", None, false), true),
-                    process(envelope(root.path(), "main", "FULL", None, true), true),
-                ],
+                vec![process(
+                    envelope(root.path(), "main", "FULL", None, true),
+                    true,
+                )],
                 target.clone(),
             );
             let mut forged = envelope(root.path(), "main", "FULL", None, true);
@@ -2964,10 +2891,10 @@ mod medium_tests {
         write_valid_dump(&target, false);
         fs::write(target.join("original.bsl"), "recover me").unwrap();
         let runner = SequenceRunner::exporting(
-            vec![
-                process(envelope(root.path(), "main", "FULL", None, false), true),
-                process(envelope(root.path(), "main", "FULL", None, true), true),
-            ],
+            vec![process(
+                envelope(root.path(), "main", "FULL", None, true),
+                true,
+            )],
             target.clone(),
         );
         let occupant = target.clone();
@@ -3201,10 +3128,10 @@ mod medium_tests {
         let target_before = unica_workspace::test_support::tree_snapshot(&target);
         let target_identity = file_identity(&open_directory_nofollow(&target).unwrap()).unwrap();
         let mut runner = SequenceRunner::exporting(
-            vec![
-                process(envelope(root.path(), "main", "FULL", None, false), true),
-                process(envelope(root.path(), "main", "FULL", None, true), true),
-            ],
+            vec![process(
+                envelope(root.path(), "main", "FULL", None, true),
+                true,
+            )],
             target.clone(),
         );
         if invalid_xml {

@@ -45,12 +45,8 @@
 
 - Репозиторий: [itrous/bsl-analyzer](https://github.com/itrous/bsl-analyzer)
 - Автор: [BSL Analyzer Contributors](https://github.com/itrous/bsl-analyzer/graphs/contributors)
-- Закреплённая версия: `0.2.86`, commit `53d8765288adf3b9277b7a4112dba167e51690b7`
-- Лицензия: [LGPL-3.0-or-later](third-party/licenses/bsl-analyzer/LICENSE-LGPL)
-- Полный набор текстов лицензий компонентов: [MIT](third-party/licenses/bsl-analyzer/LICENSE-MIT),
-  [Apache-2.0](third-party/licenses/bsl-analyzer/LICENSE-APACHE),
-  [LGPL-3.0-or-later](third-party/licenses/bsl-analyzer/LICENSE-LGPL) и
-  [GPL-3.0](third-party/licenses/bsl-analyzer/LICENSE-GPL)
+- Закреплённая версия: `0.4.5`, commit `ffae37b25c910991ecb8f05abe7a8148cd32b45c`
+- Лицензия: [MIT](third-party/licenses/bsl-analyzer/LICENSE-MIT)
 - Дополнительные условия и происхождение: [NOTICE](third-party/licenses/bsl-analyzer/NOTICE)
 
 Unica поставляет LSP-бинарник `bsl-analyzer` и локальный снимок описаний
@@ -59,10 +55,9 @@ Unica поставляет LSP-бинарник `bsl-analyzer` и локальн
 и контрольные суммы страниц входят в `diagnostic-rules.json` в исходниках
 поставщика документации. Тексты страниц сохраняются без редактирования.
 Его лицензионная заметка
-объясняет смешанную модель workspace: итоговый бинарник статически связывает
-компоненты уровня LGPL и поэтому распространяется как LGPL-3.0-or-later; там же
-перечислены архитектурные источники, тестовые данные и материалы платформы 1С
-с отдельными условиями.
+объясняет, что весь workspace и поставляемый бинарник распространяются под MIT;
+там же перечислены история происхождения, архитектурные источники, тестовые
+данные и материалы платформы 1С с отдельными условиями.
 
 ### v8-runner
 
