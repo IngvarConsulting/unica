@@ -954,8 +954,8 @@ fn a_person_chosen_support_change_and_the_edit_form_one_plan() {
 }
 
 /// An unreadable or damaged support state is not the absence of support:
-/// under `deny` the edit is refused before any byte is written, under
-/// `warn` it proceeds with `support_locked`, and `off` does not read it.
+/// under `deny` and `off` the edit is refused before any byte is written,
+/// under `warn` it proceeds with `support_locked`.
 /// rule: INV.SAFETY.APPLY-SUPPORT-GATE
 /// rule: INV.APP.SUPPORT-STATE
 #[test]
@@ -984,8 +984,11 @@ fn a_damaged_support_state_refuses_the_edit_under_deny() {
         assert_eq!(warnings[0]["code"], "support_locked");
         assert!(unchanged);
 
-        let (outcome, _, _) = plan_vendor_removal("off", damaged, |_| {});
-        assert!(outcome.expect("off does not read the state").is_empty());
+        // `off` silences locks, not a support state that cannot be read.
+        let (outcome, unchanged, _) = plan_vendor_removal("off", damaged, |_| {});
+        let error = outcome.expect_err("off refuses an unreadable support state too");
+        assert_eq!(error.kind(), ApplyPlanErrorKind::InvalidSource, "{error}");
+        assert!(unchanged);
     }
 }
 

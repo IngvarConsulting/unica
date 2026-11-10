@@ -220,11 +220,10 @@ fn refuse_targets_on_locked_vendor_objects(
 ) -> Result<Option<serde_json::Value>, ApplyPlanError> {
     use unica_source_contract::proposal::SupportPolicyMode;
 
-    let deny = match admission.support_policy_mode() {
-        SupportPolicyMode::Deny => true,
-        SupportPolicyMode::Warn => false,
-        SupportPolicyMode::Off => return Ok(None),
-    };
+    let policy = admission.support_policy_mode();
+    // `off` silences locks but not a support state that cannot be read: the
+    // gate reads the marker under every policy.
+    let deny = policy == SupportPolicyMode::Deny;
     if request
         .ops()
         .iter()
@@ -250,7 +249,8 @@ fn refuse_targets_on_locked_vendor_objects(
     let facts = support_gate_facts(
         request.at(),
         binding.source_kind(),
-        removes,
+        // `off` asks only whether the marker can be read: no child listing.
+        removes && policy != SupportPolicyMode::Off,
         &mut |relative| staged.borrow_mut().read(relative),
         &mut |relative| {
             staged
@@ -261,9 +261,10 @@ fn refuse_targets_on_locked_vendor_objects(
     )
     .map_err(|error| ApplyPlanError::staging(error, at.clone()))?;
     // Support that cannot be read is not the absence of support
-    // (INV.APP.SUPPORT-STATE): `deny` refuses before any byte is written.
+    // (INV.APP.SUPPORT-STATE): `deny` and `off` refuse before any byte is
+    // written, `warn` permits the edit with a warning.
     if let Some(reason) = facts.unreadable {
-        if !deny {
+        if policy == SupportPolicyMode::Warn {
             let owner = support_owner_relative(request.at(), binding.source_kind())
                 .map_or_else(|| "Configuration".to_string(), |(owner, _)| owner);
             return Ok(Some(support_locked(
@@ -276,6 +277,9 @@ fn refuse_targets_on_locked_vendor_objects(
             format!("{reason}; restore it from the vendor delivery or from version control"),
         )
         .at_path(at));
+    }
+    if policy == SupportPolicyMode::Off {
+        return Ok(None);
     }
     let Some(lock) = facts.lock else {
         return Ok(None);
