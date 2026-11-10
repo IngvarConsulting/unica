@@ -41,7 +41,7 @@ fn owner<'a, 'input>(document: &'a Document<'input>) -> Result<Node<'a, 'input>,
     {
         return Err(format!(
             "Enum borrowing requires a {} metadata descriptor",
-            root_version::writable()
+            root_version::writable_formats()
         ));
     }
     let elements = root

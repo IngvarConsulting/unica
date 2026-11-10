@@ -1137,7 +1137,7 @@ pub(crate) mod medium_role_edit_contract_tests {
         let (context, args, rights) = fixture("exact-profile");
         let original = fs::read(&rights).unwrap();
 
-        for version in [Some("2.19"), Some("2.21"), Some("2.2&#48;"), None] {
+        for version in [Some("2.19"), Some("2.23"), Some("2.2&#48;"), None] {
             let incompatible = replace_format_version(&original, version);
             fs::write(&rights, &incompatible).unwrap();
             let rejected = apply_edit_with_data(&args, &context);
@@ -1148,7 +1148,7 @@ pub(crate) mod medium_role_edit_contract_tests {
         fs::write(&rights, &original).unwrap();
         let descriptor = context.workspace_root.join("src/Roles/Demo.xml");
         let original_descriptor = fs::read(&descriptor).unwrap();
-        for version in [Some("2.19"), Some("2.21"), Some("2.2&#48;"), None] {
+        for version in [Some("2.19"), Some("2.23"), Some("2.2&#48;"), None] {
             let incompatible = replace_format_version(&original_descriptor, version);
             fs::write(&descriptor, &incompatible).unwrap();
             let rejected = apply_edit_with_data(&args, &context);

@@ -18,7 +18,7 @@ fn properties<'a, 'input>(
     {
         return Err(format!(
             "DocumentNumerator requires a Platform XML {} descriptor",
-            root_version::writable()
+            root_version::writable_formats()
         ));
     }
     let owners = root.children().filter(Node::is_element).collect::<Vec<_>>();

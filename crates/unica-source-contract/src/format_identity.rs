@@ -240,7 +240,7 @@ pub(crate) fn platform_xml_profile_for_export_format(raw: &str) -> Option<crate:
     PlatformXmlRelease::for_export_format(raw).map(crate::SourceProfile::PlatformXmlRelease)
 }
 
-/// Whether `profile` is a Designer export profile with codec dialects.
+/// Whether codecs write sources of `profile` (INV.SOURCE.WRITABLE-PROFILE).
 pub(crate) const fn is_writable_platform_xml_profile(profile: crate::SourceProfile) -> bool {
     matches!(
         profile,

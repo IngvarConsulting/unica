@@ -40,6 +40,8 @@ use std::time::Duration;
 use unica_execution::runtime_jobs::RuntimeResourceOwner;
 use unica_execution_contract::invocation::{DomainResult, InvocationFailure};
 use unica_work_control::cancellation::CancellationToken;
+use unica_work_control::provider_deadline::ProviderDeadline;
+use unica_workspace::actor::SourceWriteLane;
 
 /// Безымянный неуспех — только для стенда.
 ///
@@ -744,6 +746,7 @@ enum ActorBoundCanonicalInvocationState {
     /// внешнему процессу.
     SourceImport {
         import: Arc<super::v13_source_import::PreparedSourceImport>,
+        source_writes: SourceWriteLane,
         workspace_identity_hash: unica_execution_contract::invocation::SafeIdentityHash,
         delivery: RunEngineDelivery,
     },
@@ -751,6 +754,7 @@ enum ActorBoundCanonicalInvocationState {
     /// по внешнему процессу.
     SourceExport {
         export: Arc<super::v13_source_export::PreparedSourceExport>,
+        source_writes: SourceWriteLane,
         workspace_identity_hash: unica_execution_contract::invocation::SafeIdentityHash,
         delivery: RunEngineDelivery,
     },
@@ -758,6 +762,7 @@ enum ActorBoundCanonicalInvocationState {
     /// по внешнему процессу.
     ArtifactBuild {
         build: Arc<super::v13_artifact_build::PreparedArtifactBuild>,
+        source_writes: SourceWriteLane,
         workspace_identity_hash: unica_execution_contract::invocation::SafeIdentityHash,
         delivery: RunEngineDelivery,
     },
@@ -797,14 +802,17 @@ enum PreparedCanonicalInvocationState {
     },
     SourceImport {
         import: Arc<super::v13_source_import::PreparedSourceImport>,
+        source_writes: SourceWriteLane,
         delivery: RunEngineDelivery,
     },
     SourceExport {
         export: Arc<super::v13_source_export::PreparedSourceExport>,
+        source_writes: SourceWriteLane,
         delivery: RunEngineDelivery,
     },
     ArtifactBuild {
         build: Arc<super::v13_artifact_build::PreparedArtifactBuild>,
+        source_writes: SourceWriteLane,
         delivery: RunEngineDelivery,
     },
     Documentation {
@@ -821,6 +829,23 @@ fn detached_check_snapshots() -> Arc<unica_navigation::result_store::ViewCursorS
 }
 
 impl V5CanonicalInvocationRuntime {
+    /// The lane of source writes of `workspace_root`, shared with the actors
+    /// of that workspace.
+    fn source_write_lane(
+        &self,
+        workspace_root: &std::path::Path,
+    ) -> Result<SourceWriteLane, V5CanonicalPrepareError> {
+        self.workspace_actors
+            .source_write_lane(workspace_root)
+            .map_err(|error| {
+                V5CanonicalPrepareError::Rejected(Box::new(DomainResult::canonical_rejection(
+                    None,
+                    RefusalCode::InvalidState,
+                    format!("workspace source write lane is unavailable: {error}"),
+                )))
+            })
+    }
+
     #[cfg(test)]
     pub(super) fn new(service: Arc<dyn CanonicalInvocationService>, clock: Arc<dyn Clock>) -> Self {
         Self::with_workspace_actors(
@@ -1058,9 +1083,11 @@ impl V5CanonicalInvocationRuntime {
             }
             super::v13_source_import::Preparation::Ready(import) => {
                 let workspace_identity_hash = import.workspace_identity_hash();
+                let source_writes = self.source_write_lane(import.workspace_root())?;
                 return Ok(V5ActorBoundCanonicalInvocation(
                     ActorBoundCanonicalInvocationState::SourceImport {
                         import,
+                        source_writes,
                         workspace_identity_hash,
                         delivery: run_delivery.clone(),
                     },
@@ -1074,9 +1101,11 @@ impl V5CanonicalInvocationRuntime {
             }
             super::v13_source_export::Preparation::Ready(export) => {
                 let workspace_identity_hash = export.workspace_identity_hash();
+                let source_writes = self.source_write_lane(export.workspace_root())?;
                 return Ok(V5ActorBoundCanonicalInvocation(
                     ActorBoundCanonicalInvocationState::SourceExport {
                         export,
+                        source_writes,
                         workspace_identity_hash,
                         delivery: run_delivery.clone(),
                     },
@@ -1090,9 +1119,11 @@ impl V5CanonicalInvocationRuntime {
             }
             super::v13_artifact_build::Preparation::Ready(build) => {
                 let workspace_identity_hash = build.workspace_identity_hash();
+                let source_writes = self.source_write_lane(build.workspace_root())?;
                 return Ok(V5ActorBoundCanonicalInvocation(
                     ActorBoundCanonicalInvocationState::ArtifactBuild {
                         build,
+                        source_writes,
                         workspace_identity_hash,
                         delivery: run_delivery.clone(),
                     },
@@ -1260,19 +1291,40 @@ impl V5ActorBoundCanonicalInvocation {
                 PreparedCanonicalInvocationState::InfobaseCreate { create, delivery },
             )),
             ActorBoundCanonicalInvocationState::SourceImport {
-                import, delivery, ..
+                import,
+                delivery,
+                source_writes,
+                ..
             } => Ok(V5PreparedCanonicalInvocation(
-                PreparedCanonicalInvocationState::SourceImport { import, delivery },
+                PreparedCanonicalInvocationState::SourceImport {
+                    import,
+                    delivery,
+                    source_writes,
+                },
             )),
             ActorBoundCanonicalInvocationState::SourceExport {
-                export, delivery, ..
+                export,
+                delivery,
+                source_writes,
+                ..
             } => Ok(V5PreparedCanonicalInvocation(
-                PreparedCanonicalInvocationState::SourceExport { export, delivery },
+                PreparedCanonicalInvocationState::SourceExport {
+                    export,
+                    delivery,
+                    source_writes,
+                },
             )),
             ActorBoundCanonicalInvocationState::ArtifactBuild {
-                build, delivery, ..
+                build,
+                delivery,
+                source_writes,
+                ..
             } => Ok(V5PreparedCanonicalInvocation(
-                PreparedCanonicalInvocationState::ArtifactBuild { build, delivery },
+                PreparedCanonicalInvocationState::ArtifactBuild {
+                    build,
+                    delivery,
+                    source_writes,
+                },
             )),
             ActorBoundCanonicalInvocationState::Documentation { search, .. } => {
                 Ok(V5PreparedCanonicalInvocation(
@@ -1280,6 +1332,35 @@ impl V5ActorBoundCanonicalInvocation {
                 ))
             }
         }
+    }
+}
+
+/// `pull`, `push` and `make` run the runner over a whole source set: they hold
+/// the workspace's lane of source writes for the call, so Unica edits wait
+/// instead of interleaving with them. A preview takes no lane.
+fn exclude_source_writes(
+    lane: &SourceWriteLane,
+    operation: &'static str,
+    preview: bool,
+    cancellation: CancellationToken,
+    run: impl FnOnce(CancellationToken) -> DomainResult,
+) -> DomainResult {
+    if preview {
+        return run(cancellation);
+    }
+    let held = cancellation.clone();
+    match lane.hold(ProviderDeadline::no_deadline(), &held, || run(cancellation)) {
+        Ok(result) => result,
+        Err(error) if error.is_cancelled() => DomainResult::canonical_rejection(
+            Some(operation.to_string()),
+            RefusalCode::Cancelled,
+            format!("{operation} cancelled while waiting for source edits of the workspace"),
+        ),
+        Err(_) => DomainResult::canonical_rejection(
+            Some(operation.to_string()),
+            RefusalCode::InvalidState,
+            format!("{operation} could not exclude source edits of the workspace"),
+        ),
     }
 }
 
@@ -1355,15 +1436,45 @@ impl V5PreparedCanonicalInvocation {
             PreparedCanonicalInvocationState::InfobaseCreate { create, delivery } => {
                 Ok(delivery.execute(cancellation, |cancellation| create.execute(cancellation)))
             }
-            PreparedCanonicalInvocationState::SourceImport { import, delivery } => {
-                Ok(delivery.execute(cancellation, |cancellation| import.execute(cancellation)))
-            }
-            PreparedCanonicalInvocationState::SourceExport { export, delivery } => {
-                Ok(delivery.execute(cancellation, |cancellation| export.execute(cancellation)))
-            }
-            PreparedCanonicalInvocationState::ArtifactBuild { build, delivery } => {
-                Ok(delivery.execute(cancellation, |cancellation| build.execute(cancellation)))
-            }
+            PreparedCanonicalInvocationState::SourceImport {
+                import,
+                delivery,
+                source_writes,
+            } => Ok(delivery.execute(cancellation, |cancellation| {
+                exclude_source_writes(
+                    &source_writes,
+                    "push",
+                    import.is_preview(),
+                    cancellation,
+                    |cancellation| import.execute(cancellation),
+                )
+            })),
+            PreparedCanonicalInvocationState::SourceExport {
+                export,
+                delivery,
+                source_writes,
+            } => Ok(delivery.execute(cancellation, |cancellation| {
+                exclude_source_writes(
+                    &source_writes,
+                    "pull",
+                    export.is_preview(),
+                    cancellation,
+                    |cancellation| export.execute(cancellation),
+                )
+            })),
+            PreparedCanonicalInvocationState::ArtifactBuild {
+                build,
+                delivery,
+                source_writes,
+            } => Ok(delivery.execute(cancellation, |cancellation| {
+                exclude_source_writes(
+                    &source_writes,
+                    "make",
+                    build.is_preview(),
+                    cancellation,
+                    |cancellation| build.execute(cancellation),
+                )
+            })),
             PreparedCanonicalInvocationState::Documentation { search } => {
                 Ok(search.execute(cancellation))
             }

@@ -108,7 +108,10 @@ mod tests {
 
     #[test]
     fn a_source_set_takes_the_profile_of_its_root_version() {
-        let root = tempfile::tempdir().unwrap();
+        let temporary = tempfile::tempdir().unwrap();
+        // A source root is physical: the retained read refuses a path through
+        // a link, as macOS's /var -> /private/var temporary directory is.
+        let root = crate::paths::normalize_path_identity(temporary.path()).unwrap();
         for (version, expected) in [
             ("2.20", "platform-xml-8.3.27-format-2.20"),
             ("2.21", "platform-xml-8.5.1-format-2.21"),
@@ -117,21 +120,21 @@ mod tests {
             ("2.21.0", "platform-xml-8.3.27-format-2.20"),
         ] {
             std::fs::write(
-                root.path().join("Configuration.xml"),
+                root.as_path().join("Configuration.xml"),
                 format!("\u{feff}<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"{version}\"><Configuration/></MetaDataObject>"),
             )
             .unwrap();
             for kind in [SourceSetKind::Configuration, SourceSetKind::Extension] {
                 assert_eq!(
-                    platform_xml_source_profile(kind, root.path()).canonical_id(),
+                    platform_xml_source_profile(kind, root.as_path()).canonical_id(),
                     expected,
                     "{version} {kind:?}"
                 );
             }
         }
-        std::fs::remove_file(root.path().join("Configuration.xml")).unwrap();
+        std::fs::remove_file(root.as_path().join("Configuration.xml")).unwrap();
         assert_eq!(
-            platform_xml_source_profile(SourceSetKind::Configuration, root.path()),
+            platform_xml_source_profile(SourceSetKind::Configuration, root.as_path()),
             SourceProfile::platform_xml_8_3_27_format_2_20()
         );
     }

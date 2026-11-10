@@ -76,7 +76,7 @@ pub fn validate_role_rights_document(text: &str, values: RoleValueScope<'_>) -> 
     {
         return Err(format!(
             "Rights.xml must use exact roles format {}",
-            crate::dialect::root_version::writable()
+            crate::dialect::root_version::writable_formats()
         ));
     }
     for flag in [

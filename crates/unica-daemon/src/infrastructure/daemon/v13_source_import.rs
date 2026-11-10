@@ -28,7 +28,7 @@ use super::runner_015::Runner015ProcessRunner;
 use super::v13_infobase_exports::{
     digest_optional_workspace_file, digest_required_workspace_file, missing_runner_rejection,
     note_another_copy, resolve_bundled_runner, runner_rejection, runner_start_rejection,
-    RunnerAbsence, CONFIG_NAME, LOCAL_CONFIG_NAME, RUNNER_OUTPUT_LIMIT,
+    BaseDivergence, RunnerAbsence, CONFIG_NAME, LOCAL_CONFIG_NAME, RUNNER_OUTPUT_LIMIT,
 };
 use super::v13_source_set_name::{source_set_name_guidance, valid_source_set_name};
 use crate::infrastructure::workspace::discover_workspace;
@@ -38,7 +38,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use unica_artifact_delivery::engine::BundledTool;
 use unica_execution::invocation_store::ToolIdentity;
-use unica_execution_contract::invocation::{DomainResult, SafeIdentityHash};
+use unica_execution_contract::invocation::{
+    DomainResult, HumanChoice, HumanChoiceOption, SafeIdentityHash,
+};
 use unica_process::runner::{ProcessCommand, ProcessOutput, ProcessRunner};
 use unica_redaction::redactor;
 use unica_refusal::RefusalCode;
@@ -46,6 +48,8 @@ use unica_source_contract::workspace::WorkspaceContext;
 use unica_work_control::cancellation::CancellationToken;
 
 pub(super) const OPERATION: &str = "push";
+/// Имя базы в вопросе человеку: адаптер раннера 0.15 обслуживает только её.
+const INFOBASE_NAME: &str = "origin";
 /// Имя команды раннера и в командной строке, и в конверте: с 0.12 раннер
 /// называет её словом словаря.
 const RUNNER_COMMAND: &str = "push";
@@ -150,6 +154,15 @@ impl PreparedSourceImport {
         })
     }
 
+    /// The workspace root whose lane of source writes the execution holds.
+    pub(super) fn workspace_root(&self) -> &std::path::Path {
+        &self.context.workspace_root
+    }
+
+    /// A preview neither writes nor loads sources, so it takes no lane.
+    pub(super) fn is_preview(&self) -> bool {
+        self.dry_run
+    }
     pub(super) fn workspace_identity_hash(&self) -> SafeIdentityHash {
         let mut hasher = Sha256::new();
         hasher.update(b"unica-v13-source-import-workspace-v1\0");
@@ -1050,21 +1063,30 @@ fn note_unapplied_load(
     }));
 }
 
-/// Отказ обмена с базой: `non_fast_forward` — база ушла вперёд записанного
-/// поколения, `no_memory` — памяти рабочей копии о базе нет.
+/// Отказ обмена с базой: база ушла вперёд записанного поколения или памяти
+/// рабочей копии о базе нет ([`BaseDivergence`]).
 ///
 /// Выбор за тем, кто знает, чья правка верна, поэтому отказ ничего не
 /// перезаписывает сам и называет оба выхода превью: выгрузить базу в набор
 /// (`pull`) или перезаписать базу набором (`push` с `force:true`). Поколения
 /// базы и записи идут в `data` так, как их назвал раннер.
+///
+/// Исполняемый `push` с известным набором несёт ещё и вопрос человеку
+/// ([`HumanChoice`]): дверь, которая умеет спросить в ходе вызова, задаёт его
+/// и исполняет выбранный вызов; наружу вопрос не идёт. Превью не спрашивает:
+/// ответ превью ничего не меняет, а выбор исполнял бы изменение.
 fn exchange_refusal(
     prepared: &PreparedSourceImport,
     rejection: DomainResult,
     error: &Value,
 ) -> DomainResult {
-    let Some(code @ ("non_fast_forward" | "no_memory")) = error["code"].as_str() else {
+    let Some(divergence) = error["code"]
+        .as_str()
+        .and_then(BaseDivergence::from_runner_code)
+    else {
         return rejection;
     };
+    let code = divergence.runner_code();
     debug_assert_eq!(rejection.diagnostics[0]["code"], "invalid_state");
     let source_set = error["next"]["source_set"]
         .as_str()
@@ -1090,7 +1112,7 @@ fn exchange_refusal(
         || "the selected source sets".to_string(),
         |set| format!("source set `{set}`"),
     );
-    let message = if code == "non_fast_forward" {
+    let message = if divergence == BaseDivergence::MovedAhead {
         format!(
             "push loaded nothing: the infobase moved ahead of this working copy's record of the last exchange for {subject} (its configuration generation differs from the recorded one; both are in data), so loading would overwrite changes made in the infobase. Choose: pull the infobase into the source set, or overwrite the infobase with push force:true"
         )
@@ -1122,7 +1144,45 @@ fn exchange_refusal(
         "args": {"op": OPERATION, "args": push_args, "dryRun": true},
         "reason": "if the sources hold the right state: preview push with force:true, which loads every set in full and overwrites the infobase; changes made in the infobase since this working copy's last exchange are lost"
     }));
+    if let (false, Some(source_set)) = (prepared.dry_run, &source_set) {
+        let choice = base_divergence_choice(source_set, push_args, pull_args);
+        rejection.human_choice = Some(Box::new(choice));
+    }
     rejection
+}
+
+/// Вопрос человеку на расхождение базы и набора. Надписи вопроса и вариантов
+/// согласованы и закреплены тестом: путей проекта и команд раннера в них нет.
+/// Выбор исполняется отдельным вызовом: `push` с `force:true` или полный
+/// `pull` того же набора. Адаптер раннера 0.15 обслуживает только базу
+/// `infobases.origin`, поэтому вопрос называет её.
+fn base_divergence_choice(source_set: &str, push_args: Value, pull_args: Value) -> HumanChoice {
+    let call = |op: &str, args: Value| {
+        let mut call = Map::new();
+        call.insert("op".to_string(), json!(op));
+        call.insert("args".to_string(), args);
+        call.insert("dryRun".to_string(), Value::Bool(false));
+        call
+    };
+    HumanChoice {
+        question: format!("База «{INFOBASE_NAME}» и исходники набора «{source_set}» разошлись."),
+        options: vec![
+            HumanChoiceOption {
+                id: "overwrite".to_string(),
+                title: "Перезаписать базу".to_string(),
+                description: "изменения, сделанные в базе, пропадут".to_string(),
+                tool: "unica.run".to_string(),
+                arguments: call(OPERATION, push_args),
+            },
+            HumanChoiceOption {
+                id: "pull".to_string(),
+                title: "Перезаписать исходники".to_string(),
+                description: "несохранённые правки файлов пропадут".to_string(),
+                tool: "unica.run".to_string(),
+                arguments: call("pull", pull_args),
+            },
+        ],
+    }
 }
 
 fn parse_runner_output(output: ProcessOutput) -> Result<Value, (DomainResult, Value)> {
@@ -2256,6 +2316,79 @@ pub(super) mod tests {
             result.next[1]["args"]["args"],
             json!({"force": true, "sourceSet": "main"})
         );
+    }
+
+    /// Исполняемый `push`, которому база и набор разошлись, несёт вопрос
+    /// человеку с согласованными надписями — базу, набор и что теряет каждый
+    /// выбор — и готовые вызовы: `push` с `force:true` и полный `pull` того
+    /// же набора. Превью вопроса не несёт: выбор исполнял бы
+    /// изменение. Сам `force` вопрос не добавляет — только выбранный вызов.
+    /// rule: INV.RUNTIME.RUNNER-BASE-REFUSALS
+    #[test]
+    fn an_executing_push_offers_the_person_a_choice_and_a_preview_does_not() {
+        let root = workspace();
+        let runner = SequenceRunner::new(vec![
+            process(captured("push-full-preview.json"), true),
+            process(captured("push-non-fast-forward-apply.json"), false),
+        ]);
+        let result = run(
+            root.path(),
+            &prepared(root.path(), Some("main"), true, false),
+            &runner,
+        );
+        let choice = result.human_choice.as_deref().expect("a choice");
+        // Надписи согласованы: менять их — только вместе с этим тестом.
+        assert_eq!(
+            choice.question,
+            "База «origin» и исходники набора «main» разошлись."
+        );
+        let labels: Vec<(&str, &str, &str)> = choice
+            .options
+            .iter()
+            .map(|option| {
+                (
+                    option.id.as_str(),
+                    option.title.as_str(),
+                    option.description.as_str(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            labels,
+            [
+                (
+                    "overwrite",
+                    "Перезаписать базу",
+                    "изменения, сделанные в базе, пропадут"
+                ),
+                (
+                    "pull",
+                    "Перезаписать исходники",
+                    "несохранённые правки файлов пропадут"
+                ),
+            ]
+        );
+        assert_eq!(choice.options[0].tool, "unica.run");
+        assert_eq!(
+            Value::Object(choice.options[0].arguments.clone()),
+            json!({"op": "push", "args": {"force": true, "sourceSet": "main", "full": true}, "dryRun": false})
+        );
+        assert_eq!(
+            Value::Object(choice.options[1].arguments.clone()),
+            json!({"op": "pull", "args": {"force": true, "sourceSet": "main"}, "dryRun": false})
+        );
+
+        let runner = SequenceRunner::new(vec![process(
+            captured("push-no-memory-preview.json"),
+            false,
+        )]);
+        let preview = run(
+            root.path(),
+            &prepared(root.path(), None, false, true),
+            &runner,
+        );
+        assert_eq!(preview.diagnostics[0]["code"], "invalid_state");
+        assert!(preview.human_choice.is_none(), "{preview:?}");
     }
 
     /// Живой отказ занятой базы (раннер 0.14.0): другая команда держит базу —

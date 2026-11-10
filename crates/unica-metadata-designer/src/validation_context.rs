@@ -52,7 +52,7 @@ pub fn validate_event_source_registration(
     {
         return Err(format!(
             "EventSubscription source owner must be a Platform XML MetaDataObject version {}",
-            root_version::writable()
+            root_version::writable_formats()
         ));
     }
     let artifacts = root
@@ -131,7 +131,7 @@ pub fn validate_event_source_dependency_descriptor(
     {
         return Err(format!(
             "EventSubscription source descriptor must be a Platform XML MetaDataObject version {}",
-            root_version::writable()
+            root_version::writable_formats()
         ));
     }
     let artifacts = root

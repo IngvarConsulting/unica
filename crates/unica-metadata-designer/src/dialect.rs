@@ -91,7 +91,7 @@ mod tests {
         assert_eq!(writable().version, super::root_version::writable());
         assert_eq!(
             writable().platform_line,
-            super::root_version::writable_platform_line()
+            super::root_version::writable_platform_line_const()
         );
     }
 }

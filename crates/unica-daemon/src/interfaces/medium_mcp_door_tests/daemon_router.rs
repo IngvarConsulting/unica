@@ -381,6 +381,9 @@ fn live_daemon_hands_slow_work_off_to_a_task_that_get_wait_and_cancel_observe() 
         Ok(CanonicalCallOutcome::Direct(result)) => {
             panic!("slow work answered directly: {result:?}")
         }
+        Ok(CanonicalCallOutcome::Choice { choice, .. }) => {
+            panic!("slow work asked a choice: {choice:?}")
+        }
         Err(error) => panic!("slow work refused: {error}"),
     };
     let task_id = handoff.task_id();
@@ -538,6 +541,7 @@ fn task_of(outcome: Result<CanonicalCallOutcome, ErrorData>) -> V5DaemonTaskSnap
     match outcome {
         Ok(CanonicalCallOutcome::Task(snapshot)) => snapshot,
         Ok(CanonicalCallOutcome::Direct(result)) => panic!("unexpected direct: {result:?}"),
+        Ok(CanonicalCallOutcome::Choice { choice, .. }) => panic!("unexpected choice: {choice:?}"),
         Err(error) => panic!("unexpected refusal: {error}"),
     }
 }

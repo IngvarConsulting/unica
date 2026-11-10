@@ -46,7 +46,7 @@ pub fn validate_help_form_owner_8_3_27(path: &Path, text: &str) -> Result<(), St
         return Err(format!(
             "help.add form owner {} must use export format {}",
             path.display(),
-            root_version::writable()
+            root_version::writable_formats()
         ));
     }
 

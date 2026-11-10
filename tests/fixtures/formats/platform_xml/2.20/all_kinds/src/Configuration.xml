@@ -262,12 +262,14 @@
 			<WebService>ОбменДанными</WebService>
 			<HTTPService>ПроверкаСвязи</HTTPService>
 			<WSReference>Probe</WSReference>
+			<WebSocketClient>AllKindsWebSocketClient</WebSocketClient>
 			<EventSubscription>CorpusEventSubscription</EventSubscription>
 			<ScheduledJob>KeyProbe</ScheduledJob>
 			<SettingsStorage>Probe</SettingsStorage>
 			<FunctionalOption>ByConstant</FunctionalOption>
 			<FunctionalOptionsParameter>Probe</FunctionalOptionsParameter>
 			<DefinedType>Inner</DefinedType>
+			<Bot>AllKindsBot</Bot>
 			<CommonCommand>Probe</CommonCommand>
 			<CommandGroup>Probe</CommandGroup>
 			<Constant>Enabled</Constant>
@@ -293,6 +295,7 @@
 			<CalculationRegister>Начисления</CalculationRegister>
 			<BusinessProcess>Approval</BusinessProcess>
 			<Task>Work</Task>
+			<ExternalDataSource>AllKindsExternalSource</ExternalDataSource>
 			<IntegrationService>Probe</IntegrationService>
 		</ChildObjects>
 	</Configuration>

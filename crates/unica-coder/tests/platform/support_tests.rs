@@ -514,20 +514,26 @@ fn support_edit_does_not_fall_back_past_an_xml_descriptor_without_uuid() {
 
 #[test]
 fn support_edit_refuses_a_newer_configuration_owner_without_writing_bin() {
-    let fixture = SupportFixture::new("newer-owner", "2.21");
+    let fixture = SupportFixture::new("newer-owner", "2.23");
     let bin_before = fs::read(&fixture.bin_path).unwrap();
 
     let error = edit_support_result(&fixture.capability_off_args(), &fixture.context).unwrap_err();
 
-    assert!(error.contains("newer than supported 2.20"), "{error}");
-    assert!(error.contains("1C 8.5 support is planned"), "{error}");
+    assert!(
+        error.contains("newer than the newest supported 2.22"),
+        "{error}"
+    );
+    assert!(
+        error.contains("does not support this export yet"),
+        "{error}"
+    );
     assert_eq!(fs::read(&fixture.bin_path).unwrap(), bin_before);
 }
 
 #[test]
 fn support_capability_uses_direct_object_xml_only_as_a_config_locator() {
     let fixture = SupportFixture::new("capability-object-locator", "2.20");
-    let target = fixture.object_target("Items", "2.21", "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
+    let target = fixture.object_target("Items", "2.23", "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
     let descriptor = fixture.root.join("src/Catalogs/Items.xml");
     let args = json!({
         "Path": descriptor.display().to_string(),
@@ -549,14 +555,20 @@ fn support_capability_uses_direct_object_xml_only_as_a_config_locator() {
 #[test]
 fn support_edit_refuses_a_newer_nearest_uuid_descriptor_without_writing_bin() {
     let fixture = SupportFixture::new("newer-uuid-descriptor", "2.20");
-    let target = fixture.object_target("Items", "2.21", "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
+    let target = fixture.object_target("Items", "2.23", "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
     let bin_before = fs::read(&fixture.bin_path).unwrap();
 
     let error =
         edit_support_result(&fixture.set_editable_args(&target), &fixture.context).unwrap_err();
 
-    assert!(error.contains("newer than supported 2.20"), "{error}");
-    assert!(error.contains("1C 8.5 support is planned"), "{error}");
+    assert!(
+        error.contains("newer than the newest supported 2.22"),
+        "{error}"
+    );
+    assert!(
+        error.contains("does not support this export yet"),
+        "{error}"
+    );
     assert_eq!(fs::read(&fixture.bin_path).unwrap(), bin_before);
 }
 
@@ -564,7 +576,7 @@ fn support_edit_refuses_a_newer_nearest_uuid_descriptor_without_writing_bin() {
 fn support_edit_ignores_a_newer_unrelated_neighbor_descriptor() {
     let fixture = SupportFixture::new("unrelated-newer-descriptor", "2.20");
     let target = fixture.object_target("Items", "2.20", "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
-    fixture.object_target("Unrelated", "2.21", "cccccccc-cccc-cccc-cccc-cccccccccccc");
+    fixture.object_target("Unrelated", "2.23", "cccccccc-cccc-cccc-cccc-cccccccccccc");
 
     let outcome =
         edit_support_result(&fixture.set_editable_args(&target), &fixture.context).unwrap();
