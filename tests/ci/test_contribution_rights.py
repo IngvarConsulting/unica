@@ -60,14 +60,10 @@ def commit(email: str, login: str | None = None, message: str = "Правка", 
 
 class ParseTests(unittest.TestCase):
     def test_the_repository_registry_is_well_formed(self) -> None:
-        parsed, problems = rights.parse((ROOT / "CONTRIBUTORS.md").read_text(encoding="utf-8"))
+        # Реестр правят участники своими PR: тест проверяет только, что он разбирается,
+        # а не его состав.
+        _, problems = rights.parse((ROOT / "CONTRIBUTORS.md").read_text(encoding="utf-8"))
         self.assertEqual(problems, [])
-        self.assertEqual([(row.login, row.account_id, row.offer) for row in parsed.participants], [("@zeegin", "729213", "1.0")])
-        self.assertEqual([(row.who, row.allowed) for row in parsed.exempt], [
-            ("Claude", ("@zeegin", "участники")),
-            ("codex", ("@zeegin", "участники")),
-            ("@dependabot[bot]", ("@dependabot[bot]",)),
-        ])
 
     def test_a_good_row_is_read_with_its_emails_in_lower_case(self) -> None:
         parsed, problems = rights.parse(registry("| @Alice | 101 | 1.0 | #7 | Alice@Example.com,alice@work.example |"))
