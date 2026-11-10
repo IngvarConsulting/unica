@@ -1239,9 +1239,10 @@ mod tests {
         };
         let call = json!({"op": "push", "args": {"delete": "Тест"}, "dryRun": false});
 
-        let refused = PreparedExtensions::parse(&request(call.clone()), Operation::Delete)
-            .err()
-            .expect("a delete without a confirmation is not executed");
+        let Err(refused) = PreparedExtensions::parse(&request(call.clone()), Operation::Delete)
+        else {
+            panic!("a delete without a confirmation is not executed");
+        };
         assert_eq!(refused.diagnostics[0]["code"], "cancelled");
         let choice = refused.human_choice.as_deref().expect("a confirmation");
         // Надписи согласованы: менять их — только вместе с этим тестом.
@@ -1269,12 +1270,12 @@ mod tests {
         );
 
         let confirmed = choice.options[0].arguments.clone();
-        let executed = PreparedExtensions::parse(
+        let Ok(executed) = PreparedExtensions::parse(
             &request(Value::Object(confirmed.clone())),
             Operation::Delete,
-        )
-        .ok()
-        .expect("a confirmed delete is executed");
+        ) else {
+            panic!("a confirmed delete is executed");
+        };
         assert!(!executed.dry_run);
 
         // Согласие на одно расширение не удаляет другое.
@@ -1284,12 +1285,12 @@ mod tests {
             PreparedExtensions::parse(&request(Value::Object(other)), Operation::Delete).is_err()
         );
 
-        let preview = PreparedExtensions::parse(
+        let Ok(preview) = PreparedExtensions::parse(
             &request(json!({"op": "push", "args": {"delete": "Тест"}, "dryRun": true})),
             Operation::Delete,
-        )
-        .ok()
-        .expect("a preview is not asked");
+        ) else {
+            panic!("a preview is not asked");
+        };
         assert!(preview.dry_run);
     }
 }
