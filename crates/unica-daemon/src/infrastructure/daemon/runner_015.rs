@@ -7,11 +7,13 @@
 //! The originals are never written.
 //!
 //! The runner records the directory of the config it read as the working copy
-//! that holds a file infobase. The private local layer names the workspace root
-//! as its `working-copy`, so the root holds the infobase whether a command is
-//! projected or not, and a holder record of the projection directory gives way
-//! to it. Each projected command rewrites the copy atomically in one directory
-//! per workspace root; a command that needs no projection removes it.
+//! that holds a file infobase. When the runner could read the workspace files
+//! itself and the copy exists only for the strict platform choice, the private
+//! local layer names the workspace root as its `working-copy`, so the root keeps
+//! the infobase. Otherwise the copy's directory is the holder; it is stable on
+//! purpose, one per workspace root, so the holder stays alive while the working
+//! copy exists. Each projected command rewrites the copy atomically; a command
+//! that needs no projection removes it.
 //!
 //! The 0.15 loader resolves relative paths from the directory of the primary
 //! config, and source-set paths from `basePath`, which it always sets to that
@@ -161,7 +163,8 @@ fn with_projected_config_in_store<T>(
         validate_layer(local, LOCAL_NAME)?;
     }
     let strict = strict_platform_release(&base, local.as_ref());
-    if !strict && !needs_projection(&base, local.as_ref()) {
+    let adapted = needs_projection(&base, local.as_ref());
+    if !strict && !adapted {
         // The workspace itself holds the infobase now: a former projection must
         // not stay alive as another working copy that still declares it.
         store.remove_projection()?;
@@ -170,21 +173,30 @@ fn with_projected_config_in_store<T>(
     let root = normalize_path_identity(root).map_err(refuse)?;
     // Project both layers before creating private files or starting any process.
     let (base, mut local) = project(base, local, &root)?;
-    let layer = local
-        .get_or_insert_with(|| Value::Mapping(Mapping::new()))
-        .as_mapping_mut()
-        .expect("projected local layer is a mapping");
-    // The copy acts as the working copy it was made from: the owner marker of a
-    // file infobase stays with the workspace whether or not a command projects.
-    layer.insert(
-        Value::from("working-copy"),
-        Value::from(root.display().to_string()),
-    );
     if strict {
+        let layer = local
+            .get_or_insert_with(|| Value::Mapping(Mapping::new()))
+            .as_mapping_mut()
+            .expect("projected local layer is a mapping");
         insert_path(
             layer,
             &["tools", "platform", "version"],
             Value::from("sources"),
+        );
+    }
+    if let Some(layer) = local
+        .as_mut()
+        .and_then(Value::as_mapping_mut)
+        .filter(|_| !adapted)
+    {
+        // Only the strict platform choice needs the copy: the runner reads the
+        // workspace files itself, so the copy acts as that working copy and the
+        // owner marker of a file infobase stays with the workspace root. A
+        // workspace the runner cannot read itself keeps the copy as its owner:
+        // the runner would refuse to check a `working-copy` it cannot read.
+        layer.insert(
+            Value::from("working-copy"),
+            Value::from(root.display().to_string()),
         );
     }
     let directory = store.directory().to_path_buf();
@@ -330,17 +342,16 @@ fn needs_projection(base: &Value, local: Option<&Value>) -> bool {
 /// The runner picks the platform by the release that writes the source format
 /// (`tools.platform.version: sources`, runner 0.17) and refuses when that line
 /// is not installed. The mode applies to the DESIGNER format with a main
-/// configuration set; a version the user set in either layer is kept.
+/// configuration set; a version the user set in either layer is kept. The
+/// format and the source sets live only in the project file: the runner
+/// refuses them in the local layer.
 fn strict_platform_release(base: &Value, local: Option<&Value>) -> bool {
-    let effective = |key: &str| {
-        local
-            .and_then(|local| local.get(key))
-            .or_else(|| base.get(key))
-    };
-    let designer = effective("format")
+    let designer = base
+        .get("format")
         .and_then(Value::as_str)
         .is_none_or(|format| format.eq_ignore_ascii_case("designer"));
-    let main_set = effective("source-set")
+    let main_set = base
+        .get("source-set")
         .and_then(Value::as_sequence)
         .is_some_and(|sets| {
             sets.iter().any(|set| {
@@ -865,7 +876,7 @@ mod tests {
         std::fs::remove_file(root.path().join(LOCAL_NAME)).unwrap();
         std::fs::write(
             root.path().join(BASE_NAME),
-            "workPath: build\nsource-set: [{name: main, type: configuration, path: src}]\n",
+            "workPath: build\ntools: {platform: {version: '8.3.27'}}\nsource-set: [{name: main, type: configuration, path: src}]\n",
         )
         .unwrap();
         run_projected(&Probe::new(), &command(root.path())).unwrap_err();
@@ -939,6 +950,9 @@ mod tests {
             text(root.join("agent-base"))
         );
         assert_eq!(local["workPath"], text(root.join("work-local")));
+        // The runner cannot read this workspace itself, so the copy does not
+        // name it as the working copy: the copy holds the infobase.
+        assert!(local.get("working-copy").is_none());
         assert_eq!(local["providers"]["download"], "agent");
         assert!(local["providers"]
             .get("infobase.configuration.export")
@@ -1157,10 +1171,10 @@ mod tests {
                 "format: DESIGNER\nworkPath: build\nsource-set:\n  - {name: ext, type: EXTENSION, path: ext}\n".to_string(),
                 None,
             ),
-            // The local layer decides the format.
+            // A version the user set in the local file stays.
             (
                 format!("format: DESIGNER\nworkPath: build\n{set}"),
-                Some("format: EDT\n"),
+                Some("tools: {platform: {version: '8.3.27'}}\n"),
             ),
             // A version the user set in the project file stays.
             (

@@ -2029,7 +2029,9 @@ mod tests {
             runner_rejection(None, "environment_unavailable", "m"),
             &other,
         );
-        assert_eq!(untouched.summary, "m");
+        let plain = runner_rejection(None, "environment_unavailable", "m");
+        assert_eq!(untouched.summary, plain.summary);
+        assert_eq!(untouched.data, plain.data);
     }
 
     #[test]

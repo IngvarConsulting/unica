@@ -91,12 +91,24 @@ changes that copy's infobase, and the answer warns
 `infobase_of_another_copy`. Give each working copy its own infobase
 (`infobase.create`).
 
-When Unica projects the config into `.build/unica/runner-project/` (or
-`runner-project/<working-copy-root-key>/` under `UNICA_CACHE_DIR`), the private
-copy names the working copy it was made from (`working-copy`), and the runner
-records the working-copy root as the holder whether a command projects the
-config or not. A holder record of the projection directory left by an earlier
-Unica gives way to the working copy without a warning.
+Unica projects the config into `.build/unica/runner-project/` (or
+`runner-project/<working-copy-root-key>/` under `UNICA_CACHE_DIR`). When the
+runner could read the workspace config itself and the copy only switches on
+the platform line of the source format, the copy names the working copy it
+was made from (`working-copy`): the working-copy root stays the holder, and a
+holder record of the projection directory gives way to it without a warning.
+
+Otherwise the stable private directory becomes the holder. Removing it makes
+the holder appear gone; another working copy can then take the infobase
+without a warning. A command that needs no projection removes the old
+projection directory and uses the working-copy root as its holder.
+
+The transition from the working-copy root to a projection the runner could not
+read itself has a limitation: the runner treats the projection as another live
+copy, warns and keeps the old holder. To transfer ownership to the projection,
+confirm that the recorded root is this working copy and manually remove that
+root's entry from the holder marker beside the infobase. The adapter does not
+perform this recovery itself.
 
 ## Runner migration
 
