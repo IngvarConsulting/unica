@@ -1026,6 +1026,7 @@ fn restore_exists_choice(prepared: &PreparedInfobaseExport) -> HumanChoice {
             arguments,
             then: Vec::new(),
         }],
+        cancel_description: None,
         proceeds_unasked: false,
     }
 }
