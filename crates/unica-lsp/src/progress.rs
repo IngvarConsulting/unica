@@ -162,7 +162,10 @@ mod tests {
 
         let flushed = progress.answered(&create[0]["id"], true).unwrap();
         assert_eq!(kinds(&flushed), ["begin", "report"]);
-        assert_eq!(flushed[0]["params"]["value"]["title"], "Анализатор готовит базу");
+        assert_eq!(
+            flushed[0]["params"]["value"]["title"],
+            "Анализатор готовит базу"
+        );
         let end = progress.stage(
             "unica-analysis-work-main",
             V5LspProgressPhase::End,
@@ -184,12 +187,7 @@ mod tests {
     #[test]
     fn a_refused_token_drops_its_progress_and_an_editor_without_the_capability_hears_none() {
         let progress = WorkDoneProgress::new(true);
-        let create = progress.stage(
-            "token",
-            V5LspProgressPhase::Begin,
-            Some("title"),
-            "start",
-        );
+        let create = progress.stage("token", V5LspProgressPhase::Begin, Some("title"), "start");
         assert_eq!(progress.answered(&create[0]["id"], false), Some(Vec::new()));
         assert!(progress
             .stage("token", V5LspProgressPhase::Report, None, "lost")
@@ -205,12 +203,7 @@ mod tests {
     #[test]
     fn an_end_before_the_answer_closes_the_token_with_the_queue() {
         let progress = WorkDoneProgress::new(true);
-        let create = progress.stage(
-            "token",
-            V5LspProgressPhase::Begin,
-            Some("title"),
-            "start",
-        );
+        let create = progress.stage("token", V5LspProgressPhase::Begin, Some("title"), "start");
         progress.stage("token", V5LspProgressPhase::End, None, "done");
         let flushed = progress.answered(&create[0]["id"], true).unwrap();
         assert_eq!(kinds(&flushed), ["begin", "end"]);

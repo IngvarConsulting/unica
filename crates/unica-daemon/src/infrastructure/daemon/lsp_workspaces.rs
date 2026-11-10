@@ -18,9 +18,9 @@ use unica_code_intelligence::completion::{CompletionMethod, PlatformMember};
 use unica_code_intelligence::symbols::SymbolRequestContext;
 use unica_diagnostics::model::DiagnosticProviderRegistry;
 use unica_editor_analysis::{
-    AdmittedWorkspace, LspAnalysis, LspAnalysisProgress, LspDiagnosticGap, LspDiagnostics, LspFinding, LspModuleReads,
-    LspSymbolAnswer, LspSymbolOperation, LspSymbolRequest, LspSymbols, LspWorkspaces,
-    ModuleSourceRead, SourceSetLayout,
+    AdmittedWorkspace, LspAnalysis, LspAnalysisProgress, LspDiagnosticGap, LspDiagnostics,
+    LspFinding, LspModuleReads, LspSymbolAnswer, LspSymbolOperation, LspSymbolRequest, LspSymbols,
+    LspWorkspaces, ModuleSourceRead, SourceSetLayout,
 };
 use unica_editor_analysis::{
     LspCompletion, LspCompletionAnswer, LspCompletionRequest, ModuleDocument,

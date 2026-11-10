@@ -674,8 +674,7 @@ pub fn spawn_poller(
                                 {
                                     write(&output, &message);
                                 }
-                            } else if let Some(message) = server_notification_json(item, refresh)
-                            {
+                            } else if let Some(message) = server_notification_json(item, refresh) {
                                 write(&output, &message);
                             }
                         }

@@ -35,8 +35,8 @@ use unica_code_model::symbols::{
 use unica_lsp_contract::host::{LspCallContext, LspClientChannel, LspHost};
 use unica_lsp_contract::protocol::{
     V5LspCall, V5LspCapabilities, V5LspContentChange, V5LspFailure, V5LspLocation,
-    V5LspMessageLevel, V5LspNotification, V5LspOpening, V5LspOutcome, V5LspPosition, V5LspRange,
-    V5LspProgressPhase, V5LspServerNotification, V5LspSessionId, V5LspTextSync,
+    V5LspMessageLevel, V5LspNotification, V5LspOpening, V5LspOutcome, V5LspPosition,
+    V5LspProgressPhase, V5LspRange, V5LspServerNotification, V5LspSessionId, V5LspTextSync,
     V5LspWorkspaceFolder, V5LspWorkspaceSpace,
 };
 use unica_lsp_contract::protocol::{

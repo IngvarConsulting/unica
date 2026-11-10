@@ -78,12 +78,7 @@ impl LspDiagnostics for ScriptedDiagnostics {
         self.answer.lock().unwrap().clone()
     }
 
-    fn prepare(
-        &self,
-        _: &str,
-        progress: &dyn Fn(LspAnalysisProgress),
-        _: &CancellationToken,
-    ) {
+    fn prepare(&self, _: &str, progress: &dyn Fn(LspAnalysisProgress), _: &CancellationToken) {
         let Some(gate) = self.preparation.lock().unwrap().take() else {
             return;
         };

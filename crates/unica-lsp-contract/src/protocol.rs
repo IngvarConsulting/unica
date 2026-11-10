@@ -619,9 +619,9 @@ impl V5LspServerNotification {
             {
                 Err("v5 lsp analysis progress exceeds its limit".to_string())
             }
-            Self::LogMessage { .. } | Self::DiagnosticsRefresh {} | Self::AnalysisProgress { .. } => {
-                Ok(())
-            }
+            Self::LogMessage { .. }
+            | Self::DiagnosticsRefresh {}
+            | Self::AnalysisProgress { .. } => Ok(()),
         }
     }
 }

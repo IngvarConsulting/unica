@@ -255,7 +255,10 @@ pub(super) fn resident_database(result: &DiagnosticResult) -> ResidentDatabase {
             (Some(readiness), _) => match readiness.state {
                 DiagnosticReadinessState::Ready | DiagnosticReadinessState::Stale => {
                     return ResidentDatabase::Ready {
-                        files: readiness.progress.as_ref().and_then(|progress| progress.files),
+                        files: readiness
+                            .progress
+                            .as_ref()
+                            .and_then(|progress| progress.files),
                     }
                 }
                 DiagnosticReadinessState::NotStarted | DiagnosticReadinessState::Building => {
