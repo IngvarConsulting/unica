@@ -1608,12 +1608,19 @@ mod medium_tests {
         assert_eq!(recursive_storage_snapshot(&workspace), before);
         assert!(absent.iter().all(|path| !path.exists()));
 
-        let planned_result = crate::composition::testing::application()
-            .call_tool(
-                "unica.build.load",
-                json!({"cwd": workspace}).as_object().unwrap(),
-            )
-            .expect("real planned-command public preview");
+        // The planned command names the bundled runner of the real plugin.
+        // It comes from the source checkout: an executable built outside the
+        // repository (CARGO_TARGET_DIR) has no plugin beside it.
+        let planned_result = crate::infrastructure::plugin_runtime::with_plugin_root_for_test(
+            &crate::infrastructure::plugin_runtime::source_checkout_plugin_root(),
+            || {
+                crate::composition::testing::application().call_tool(
+                    "unica.build.load",
+                    json!({"cwd": workspace}).as_object().unwrap(),
+                )
+            },
+        )
+        .expect("real planned-command public preview");
         assert!(
             planned_result.summary.starts_with("dry run:"),
             "{planned_result:?}"
