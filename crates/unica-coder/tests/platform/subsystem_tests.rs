@@ -291,7 +291,7 @@ fn subsystem_edit_rejects_newer_direct_command_interface_without_mutation() {
     let context = temp_context("edit-newer-direct-ci");
     let subsystem = create_edit_fixture(&context, "Editable");
     let subsystem_before = fs::read(&subsystem).unwrap();
-    let command_interface = write_command_interface(&subsystem, "2.21");
+    let command_interface = write_command_interface(&subsystem, "2.23");
     let command_interface_before = fs::read(&command_interface).unwrap();
     let args = edit_definition_args(
         &context,
@@ -312,7 +312,7 @@ fn subsystem_edit_rejects_newer_direct_command_interface_without_mutation() {
         outcome
             .errors
             .join("\n")
-            .contains("newer than supported 2.20"),
+            .contains("newer than the newest supported 2.22"),
         "{outcome:?}"
     );
     assert_eq!(fs::read(&subsystem).unwrap(), subsystem_before);
@@ -337,7 +337,7 @@ fn subsystem_edit_ignores_newer_command_interface_of_unrelated_neighbor() {
         )),
     )
     .unwrap();
-    let neighbor_command_interface = write_command_interface(&neighbor, "2.21");
+    let neighbor_command_interface = write_command_interface(&neighbor, "2.23");
     let neighbor_before = fs::read(&neighbor).unwrap();
     let neighbor_command_interface_before = fs::read(&neighbor_command_interface).unwrap();
     let args = edit_definition_args(

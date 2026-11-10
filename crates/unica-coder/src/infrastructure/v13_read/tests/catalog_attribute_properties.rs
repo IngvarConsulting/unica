@@ -357,7 +357,7 @@ fn catalog_attribute_profile_requires_a_catalog_in_an_ordinary_configuration() {
 fn catalog_attribute_profile_requires_the_literal_supported_xml_version() {
     for declaration in [
         " version=\"2.19\"",
-        " version=\"2.21\"",
+        " version=\"2.23\"",
         "",
         " version=\"2&#x2e;20\"",
         " version=\"2.2&#48;\"",

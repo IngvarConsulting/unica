@@ -341,7 +341,7 @@ fn canonical_style_color_bad_arguments_are_closed_and_saved_input_changes_are_fe
 #[test]
 fn canonical_style_color_contract_does_not_outlive_parent_format_admission() {
     for file in ["Configuration.xml", "StyleItems/Accent.xml"] {
-        for version in ["2.19", "2.21", "2.&#50;0"] {
+        for version in ["2.19", "2.23", "2.&#50;0"] {
             let fixture = color_fixture("#123456");
             let runtime = runtime();
             let path = fixture.source.join(file);
@@ -686,5 +686,96 @@ fn canonical_comment_retains_a_locally_declared_default_namespace() {
     verify_local_comment_namespace(
         "Comment",
         "<Comment xmlns=\"http://v8.1c.ru/8.3/MDClasses\">keep</Comment>",
+    );
+}
+
+/// The writable export formats: the fixture's own first, then the newer ones.
+const WRITABLE: [&str; 3] = unica_source_designer::format_profile::WRITABLE_EXPORT_FORMATS;
+
+fn version_attribute(version: &str) -> String {
+    format!("version=\"{version}\"")
+}
+
+/// Rewrites the version of every root in the fixture's source set.
+fn set_source_version(fixture: &Fixture, version: &str) {
+    fn visit(dir: &std::path::Path, version: &str) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                visit(&path, version);
+            } else if path.extension().is_some_and(|ext| ext == "xml") {
+                let text = std::fs::read_to_string(&path).unwrap();
+                std::fs::write(
+                    &path,
+                    text.replace(&version_attribute(WRITABLE[0]), &version_attribute(version)),
+                )
+                .unwrap();
+            }
+        }
+    }
+    visit(&fixture.source, version);
+}
+
+/// rule: INV.SOURCE.WRITABLE-PROFILE
+/// A set in 2.21 or 2.22 is edited and keeps its export format; a set whose
+/// roots record different writable formats is refused without byte changes.
+#[test]
+fn canonical_style_color_edits_keep_the_export_format_of_the_set() {
+    for version in &WRITABLE[1..] {
+        let fixture = color_fixture("#123456");
+        set_source_version(&fixture, version);
+        let runtime = runtime();
+        let applied = call(
+            &runtime,
+            &fixture,
+            ToolIdentity::Apply,
+            json!({"at":"main:StyleItem.Accent","ops":[{"op":"props.set","args":{"values":{"Comment":"changed"}}}]}),
+        );
+        assert!(applied.ok, "{version}: {applied:?}");
+        let token = applied.data.unwrap()["executionToken"].clone();
+        let executed = call(
+            &runtime,
+            &fixture,
+            ToolIdentity::Apply,
+            json!({"executionToken": token}),
+        );
+        assert!(executed.ok, "{version}: {executed:?}");
+        let written =
+            std::fs::read_to_string(fixture.source.join("StyleItems/Accent.xml")).unwrap();
+        assert!(written.contains("changed"), "{version}: {written}");
+        assert!(
+            written.contains(&version_attribute(version))
+                && !written.contains(&version_attribute(WRITABLE[0])),
+            "{version}: {written}"
+        );
+    }
+
+    let fixture = color_fixture("#123456");
+    let configuration = fixture.source.join("Configuration.xml");
+    let newer = std::fs::read_to_string(&configuration).unwrap().replace(
+        &version_attribute(WRITABLE[0]),
+        &version_attribute(WRITABLE[1]),
+    );
+    std::fs::write(&configuration, newer).unwrap();
+    let runtime = runtime();
+    let before = unica_workspace::test_support::tree_snapshot(&fixture.workspace);
+    let refused = call(
+        &runtime,
+        &fixture,
+        ToolIdentity::Apply,
+        json!({"at":"main:StyleItem.Accent","ops":[{"op":"props.set","args":{"values":{"Comment":"changed"}}}]}),
+    );
+    assert!(!refused.ok, "{refused:?}");
+    assert_eq!(refused.diagnostics[0]["code"], "invalid_source");
+    let message = refused.diagnostics[0]["message"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(
+        message.contains(WRITABLE[0]) && message.contains(WRITABLE[1]),
+        "{message}"
+    );
+    assert_eq!(
+        unica_workspace::test_support::tree_snapshot(&fixture.workspace),
+        before
     );
 }

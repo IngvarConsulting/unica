@@ -304,7 +304,7 @@ fn common_form_targets_reject_ambiguous_or_malformed_evidence() {
         ("CommonForms/MainA/Ext/Form.xml","<ReportFormType>Main</ReportFormType>","<ReportFormType>Main<!--x-->Wrong</ReportFormType>","bad_value"),
         ("CommonForms/MainA/Ext/Form.xml","<MainAttribute>true</MainAttribute>","<MainAttribute>true<!--x-->false</MainAttribute>","invalid_source"),
         ("CommonForms/MainA/Ext/Form.xml","version=\"2.20\"","version=\"2.19\"","invalid_source"),
-        ("CommonForms/MainA/Ext/Form.xml","version=\"2.20\"","version=\"2.21\"","invalid_source"),
+        ("CommonForms/MainA/Ext/Form.xml","version=\"2.20\"","version=\"2.23\"","invalid_source"),
         ("CommonForms/MainA/Ext/Form.xml","version=\"2.20\"","version=\"2.&#50;0\"","invalid_source"),
         ("Reports/Totals.xml","<DefaultForm>Report.Totals.Form.Own</DefaultForm>","<DefaultForm/><DefaultForm/>","invalid_source"),
         ("Reports/Totals.xml","<DefaultForm>Report.Totals.Form.Own</DefaultForm>","<DefaultForm xmlns=\"urn:foreign\"/>","invalid_source"),

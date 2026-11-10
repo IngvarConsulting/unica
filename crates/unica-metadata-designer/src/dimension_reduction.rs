@@ -70,7 +70,7 @@ pub(crate) fn edit(
     ) {
         return Err(bad(&format!(
             "typeReductionMode requires metadata XML format {}",
-            root_version::writable()
+            root_version::writable_formats()
         )));
     }
     let owners: Vec<_> = root.children().filter(Node::is_element).collect();

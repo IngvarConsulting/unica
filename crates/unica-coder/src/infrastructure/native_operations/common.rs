@@ -507,17 +507,20 @@ mod medium_mutation_tests {
     fn newer_format_warning_keeps_8_5_roadmap_copy_without_downgrade_offer() {
         let warning = unica_source_designer::format_profile::format_compatibility_warning(
             &FormatCompatibility::Newer {
-                actual: ExportFormatVersion::parse("2.21").unwrap(),
+                actual: ExportFormatVersion::parse("2.23").unwrap(),
             },
         );
 
-        assert!(warning.contains("1C 8.5 support is planned"), "{warning}");
+        assert!(
+            warning.contains("does not support this export yet"),
+            "{warning}"
+        );
         assert!(!warning.to_ascii_lowercase().contains("downgrade"));
     }
 
     #[test]
     fn active_format_owner_guard_reauthorizes_and_rejects_newer_snapshot() {
-        let (context, target) = format_owner_context("newer", "2.21");
+        let (context, target) = format_owner_context("newer", "2.23");
         let mut transaction = CompileTransaction::new();
         transaction
             .create_utf8_bom_text(&target, "<Template/>")
@@ -526,8 +529,8 @@ mod medium_mutation_tests {
         let error = guard_active_format_owner(&mut transaction, &target, &context)
             .expect_err("handler-side guard must reject a newer owner snapshot");
 
-        assert!(error.contains("2.21"), "{error}");
-        assert!(error.contains("2.20"), "{error}");
+        assert!(error.contains("2.23"), "{error}");
+        assert!(error.contains("2.22"), "{error}");
         assert!(!target.exists());
         fs::remove_dir_all(context.workspace_root).unwrap();
     }
@@ -543,7 +546,7 @@ mod medium_mutation_tests {
         guard_active_format_owner(&mut transaction, &target, &context).unwrap();
         fs::write(
             &owner,
-            "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.21\"><Configuration/></MetaDataObject>",
+            "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.23\"><Configuration/></MetaDataObject>",
         )
         .unwrap();
 

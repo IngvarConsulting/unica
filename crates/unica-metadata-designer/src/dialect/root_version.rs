@@ -15,11 +15,6 @@ pub(crate) const fn writable() -> &'static str {
 }
 
 /// The platform line that writes [`writable`].
-pub(crate) fn writable_platform_line() -> &'static str {
-    writable_platform_line_const()
-}
-
-/// [`writable_platform_line`] in a constant context.
 pub(crate) const fn writable_platform_line_const() -> &'static str {
     ACTIVE_FORMAT_PROFILE.platform_line
 }
@@ -53,6 +48,11 @@ pub(crate) fn require_supported(version: Option<&str>) -> Result<(), String> {
     require_supported_root_version(version)
 }
 
+/// The writable export formats as a refusal lists them.
+pub(crate) fn writable_formats() -> String {
+    unica_source_designer::format_profile::writable_export_formats_text()
+}
+
 #[cfg(test)]
 mod tests {
     use super::{is_writable, report, require_supported, writable, RootVersionReport};
@@ -62,7 +62,8 @@ mod tests {
         assert!(is_writable(Some(writable())));
         assert!(!is_writable(None));
         assert!(!is_writable(Some("2.19")));
-        assert!(!is_writable(Some("2.21")));
+        assert!(is_writable(Some("2.21")) && is_writable(Some("2.22")));
+        assert!(!is_writable(Some("2.23")));
         // Numerically equal spellings are not the writable format.
         assert!(!is_writable(Some("02.20")));
         assert!(!is_writable(Some("2.20.0")));

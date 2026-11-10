@@ -109,7 +109,7 @@ pub fn read_content(xml: &str) -> Result<ContentObservation, String> {
     if !root_version::is_writable(root.attribute("version")) {
         return Err(format!(
             "ExchangePlanContent requires format version {}",
-            root_version::writable()
+            root_version::writable_formats()
         ));
     }
     let mut result = ContentObservation {
