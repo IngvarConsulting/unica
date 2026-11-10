@@ -607,10 +607,27 @@ impl LocalChanges {
 /// Считает по git несохранённые правки в `target`. Отсутствующий каталог —
 /// правок нет. Каталог вне рабочего дерева git или без git на машине —
 /// `NotUnderGit`; ответ git, который не прочитать, — отказ, а не ноль.
-/// `git status` of a whole set: one record per file, tens of thousands of
-/// files with long paths in an untracked set on its first pull.
+// resource-limit: pull.git-status-output-bytes
+// class: retention
+// unit: bytes
+// scope: process
+// value: 134217728
+// resource: Захват stdout `git status` каталога набора в превью полной выгрузки pull.
+// status: unproven
+// origin: #2843 (PR5): одна запись на файл, в неотслеживаемом наборе — десятки тысяч файлов с длинными путями
+// problem: предел вывода раннера (1 МиБ) отказывал превью первого pull большого набора
+// on-reach: вывод сверх предела — отказ invalid_state «git status did not report the changes of the source set»; правки не выдаются за отсутствующие.
 const GIT_STATUS_OUTPUT_LIMIT: usize = 128 * 1024 * 1024;
-/// A git that does not answer must not hold the preview forever.
+// resource-limit: pull.git-timeout
+// class: deadline
+// unit: ms
+// scope: process
+// value: 120000
+// resource: Каждый вызов git (rev-parse, check-ignore, status) при подсчёте правок набора в превью полной выгрузки pull.
+// status: unproven
+// origin: #2843 (PR5)
+// problem: git, который не отвечает (fsmonitor, сетевой диск), держал бы превью без конца
+// on-reach: отказ deadline_exceeded «git <команда> did not answer in time»; превью не выдаёт правки за отсутствующие.
 const GIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
 pub(super) fn local_changes(
