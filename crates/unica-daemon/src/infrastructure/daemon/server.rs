@@ -344,11 +344,12 @@ fn validate_hidden_v13_request(request: &InvocationRequest) -> Result<(), String
         .get("properties")
         .and_then(serde_json::Value::as_object)
         .ok_or_else(|| "canonical tool schema has no properties".to_string())?;
-    if let Some(unknown) = request
-        .arguments()
-        .keys()
-        .find(|name| !properties.contains_key(*name))
-    {
+    // Отметку согласия человека ставит дверь при повторе выбранного варианта;
+    // модельный вызов с ней дверь отвергает, поэтому схема её не называет.
+    if let Some(unknown) = request.arguments().keys().find(|name| {
+        !properties.contains_key(*name)
+            && name.as_str() != unica_execution_contract::invocation::HUMAN_CONFIRMATION_KEY
+    }) {
         return Err(format!(
             "canonical invocation has unknown argument `{unknown}`"
         ));
@@ -367,7 +368,15 @@ fn validate_hidden_v13_request(request: &InvocationRequest) -> Result<(), String
         }
     }
     for (name, value) in request.arguments() {
-        validate_canonical_value(name, value, &properties[name])?;
+        let Some(schema) = properties.get(name) else {
+            if !value.is_string() {
+                return Err(format!(
+                    "canonical invocation argument `{name}` must be text"
+                ));
+            }
+            continue;
+        };
+        validate_canonical_value(name, value, schema)?;
     }
     Ok(())
 }

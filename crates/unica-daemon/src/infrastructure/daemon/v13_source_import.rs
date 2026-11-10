@@ -147,6 +147,22 @@ impl PreparedSourceImport {
         }
         let mut arguments = parse_import_arguments(&public)?;
         arguments.force = force;
+        // Перезапись базы исполняется только с согласия человека. Вопрос
+        // задаётся до допуска: вызов, ушедший в фоновую задачу, спросить уже
+        // не может. Превью ничего не меняет и не спрашивает.
+        if force && !dry_run {
+            let sets = match &arguments.source_set {
+                Some(source_set) => vec![source_set.clone()],
+                None => declared_source_sets(&context.workspace_root.join(CONFIG_NAME))?,
+            };
+            if !HumanChoice::is_confirmed(
+                &push_force_question(&sets),
+                "unica.run",
+                request.arguments(),
+            ) {
+                return Err(push_force_unconfirmed(&sets, request.arguments()));
+            }
+        }
         Ok(Self {
             arguments,
             dry_run,
@@ -173,6 +189,49 @@ impl PreparedSourceImport {
     pub(super) fn execute(&self, cancellation: CancellationToken) -> DomainResult {
         execute_with_runner(self, &Runner015ProcessRunner, cancellation)
     }
+}
+
+/// Код вопроса о перезаписи базы: по нему клиент рисует свой экран.
+const PUSH_FORCE_CODE: &str = "infobase.push_force";
+
+/// Согласованный текст вопроса о перезаписи базы. Набор один — «набора», их
+/// несколько — «наборов» через запятую.
+fn push_force_question(sets: &[String]) -> String {
+    let named: Vec<String> = sets.iter().map(|set| format!("«{set}»")).collect();
+    let noun = if sets.len() == 1 {
+        "набора"
+    } else {
+        "наборов"
+    };
+    format!(
+        "Перезаписать базу «{INFOBASE_NAME}» исходниками {noun} {}?",
+        named.join(", ")
+    )
+}
+
+/// Подтверждение перезаписи базы этим же вызовом: надпись варианта и то, что
+/// пропадёт, согласованы и закреплены тестом.
+fn push_force_confirmation(sets: &[String], call: &Map<String, Value>) -> HumanChoice {
+    HumanChoice::confirmation(
+        PUSH_FORCE_CODE,
+        push_force_question(sets),
+        "Перезаписать базу",
+        "изменения, сделанные в базе после последнего обмена, пропадут",
+        "unica.run",
+        call,
+    )
+    .with_data(json!({"infobase": INFOBASE_NAME, "sourceSets": sets}))
+}
+
+/// Отказ `cancelled` без согласия человека: база не тронута. Клиенту, который
+/// умеет спрашивать, дверь задаёт вопрос; остальным исполняет вызов как прежде.
+fn push_force_unconfirmed(sets: &[String], call: &Map<String, Value>) -> DomainResult {
+    let mut rejection = reject(
+        RefusalCode::Cancelled,
+        "push with force:true overwrites the infobase and runs only with the person's confirmation; it was not given, and the infobase is unchanged",
+    );
+    rejection.human_choice = Some(Box::new(push_force_confirmation(sets, call)));
+    rejection
 }
 
 fn parse_import_arguments(args: &Map<String, Value>) -> Result<ImportArguments, DomainResult> {
@@ -1201,7 +1260,15 @@ fn base_divergence_choice(source_set: &str, push_args: Value, pull_args: Value) 
                 title: "Перезаписать базу".to_string(),
                 description: "изменения, сделанные в базе, пропадут".to_string(),
                 tool: "unica.run".to_string(),
-                arguments: call(OPERATION, push_args),
+                // Выбор «Перезаписать базу» и есть согласие на перезапись:
+                // второй вопрос тот же вызов не задаёт.
+                arguments: push_force_confirmation(
+                    &[source_set.to_string()],
+                    &call(OPERATION, push_args),
+                )
+                .options
+                .remove(0)
+                .arguments,
                 then: Vec::new(),
             },
             HumanChoiceOption {
@@ -1325,6 +1392,7 @@ pub(super) mod tests {
     use super::*;
     use std::fs;
     use std::sync::Mutex;
+    use unica_execution_contract::invocation::without_confirmation;
     use unica_refusal::Outcome;
 
     struct SequenceRunner {
@@ -2333,6 +2401,83 @@ pub(super) mod tests {
         );
     }
 
+    /// Исполняемый `push` с `force:true` идёт только с согласия человека.
+    /// Без него — отказ `cancelled` с вопросом-подтверждением по
+    /// согласованному тексту: база названа, набор один — «набора», несколько —
+    /// «наборов». Подтверждение годится только для того же вызова. Превью не
+    /// спрашивает.
+    /// rule: INV.RUNTIME.DESTRUCTIVE-CONFIRMATION
+    /// rule: INV.MCP.HUMAN-CHOICE
+    #[test]
+    fn an_executing_push_with_force_runs_only_with_the_persons_confirmation() {
+        let root = workspace();
+        let request = |arguments: Value| {
+            InvocationRequest::new(
+                ToolIdentity::Run,
+                arguments,
+                root.path().display().to_string(),
+                7000,
+            )
+            .unwrap()
+        };
+        let call = json!({"op":"push","args":{"force":true,"sourceSet":"main"},"dryRun":false});
+
+        let refused = PreparedSourceImport::parse(&request(call.clone()))
+            .expect_err("force without a confirmation is not executed");
+        assert_eq!(refused.diagnostics[0]["code"], "cancelled");
+        let choice = refused.human_choice.as_deref().expect("a confirmation");
+        // Надписи согласованы: менять их — только вместе с этим тестом.
+        assert_eq!(choice.code, "infobase.push_force");
+        assert_eq!(
+            choice.question,
+            "Перезаписать базу «origin» исходниками набора «main»?"
+        );
+        assert!(choice.proceeds_unasked);
+        assert_eq!(choice.options.len(), 1);
+        assert_eq!(choice.options[0].title, "Перезаписать базу");
+        assert_eq!(
+            choice.options[0].description,
+            "изменения, сделанные в базе после последнего обмена, пропадут"
+        );
+        assert_eq!(
+            choice.data,
+            Some(json!({"infobase": "origin", "sourceSets": ["main"]}))
+        );
+        assert_eq!(
+            Value::Object(without_confirmation(&choice.options[0].arguments)),
+            call
+        );
+
+        let confirmed = choice.options[0].arguments.clone();
+        let executed = PreparedSourceImport::parse(&request(Value::Object(confirmed.clone())))
+            .expect("a confirmed force is executed");
+        assert!(executed.arguments.force && !executed.dry_run);
+
+        // Подтверждение одного набора не перезаписывает базу другим.
+        let mut other = confirmed;
+        other["args"]["sourceSet"] = json!("ext-sales");
+        assert!(PreparedSourceImport::parse(&request(Value::Object(other))).is_err());
+
+        let all = PreparedSourceImport::parse(&request(
+            json!({"op":"push","args":{"force":true},"dryRun":false}),
+        ))
+        .expect_err("all sets need a confirmation too");
+        assert_eq!(
+            all.human_choice.as_deref().unwrap().question,
+            "Перезаписать базу «origin» исходниками наборов «main», «ext-sales»?"
+        );
+
+        let preview = PreparedSourceImport::parse(&request(
+            json!({"op":"push","args":{"force":true,"sourceSet":"main"},"dryRun":true}),
+        ))
+        .expect("a preview is not asked");
+        assert!(preview.arguments.force && preview.dry_run);
+        let unforced = PreparedSourceImport::parse(&request(
+            json!({"op":"push","args":{"sourceSet":"main"},"dryRun":false}),
+        ))
+        .expect("a push without force is not asked");
+        assert!(!unforced.arguments.force);
+    }
     /// Исполняемый `push`, которому база и набор разошлись, несёт вопрос
     /// человеку с согласованными надписями — базу, набор и что теряет каждый
     /// выбор — и готовые вызовы: `push` с `force:true` и полный `pull` того
@@ -2385,9 +2530,16 @@ pub(super) mod tests {
         );
         assert_eq!(choice.options[0].tool, "unica.run");
         assert_eq!(
-            Value::Object(choice.options[0].arguments.clone()),
+            Value::Object(without_confirmation(&choice.options[0].arguments)),
             json!({"op": "push", "args": {"force": true, "sourceSet": "main", "full": true}, "dryRun": false})
         );
+        // Выбор «Перезаписать базу» уже согласие на перезапись: вызов несёт
+        // подтверждение вопроса о перезаписи этого набора.
+        assert!(HumanChoice::is_confirmed(
+            &push_force_question(&["main".to_string()]),
+            "unica.run",
+            &choice.options[0].arguments
+        ));
         assert_eq!(
             Value::Object(choice.options[1].arguments.clone()),
             json!({"op": "pull", "args": {"force": true, "sourceSet": "main"}, "dryRun": false})
