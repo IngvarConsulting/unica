@@ -53,7 +53,7 @@ the infobase map only from the local layer. An `infobases` section (or the
 legacy `infobase` key) in `v8project.yaml` is still accepted: the adapter
 moves it into a private copy of the local layer, where fields of the local
 file override it, and keeps that copy in `.build/unica/runner-project/` of the
-working copy (the runner records this directory as the holder of a file infobase). Only
+working copy. Only
 `origin` is supported; multiple named bases, raw connection argv and `infobase`
 mixed with `infobases` in one file are refused. `unica.run` accepts optional
 top-level `infobase: "origin"`; another target is never silently redirected to
@@ -91,19 +91,12 @@ changes that copy's infobase, and the answer warns
 `infobase_of_another_copy`. Give each working copy its own infobase
 (`infobase.create`).
 
-When Unica projects the config, its stable private directory becomes the holder:
-`.build/unica/runner-project/`, or `runner-project/<working-copy-root-key>/`
-under `UNICA_CACHE_DIR`. Removing this directory makes the holder appear gone;
-another working copy can then take the infobase without a warning. A command
-that needs no projection removes the old projection directory and uses the
-working-copy root as its holder.
-
-The reverse transition has a limitation: if the holder is already the
-working-copy root and a later config needs projection, the runner treats the
-projection as another live copy, warns and keeps the old holder. To transfer
-ownership to the projection, confirm that the recorded root is this working
-copy and manually remove that root's entry from the holder marker beside the
-infobase. The adapter does not perform this recovery itself.
+When Unica projects the config into `.build/unica/runner-project/` (or
+`runner-project/<working-copy-root-key>/` under `UNICA_CACHE_DIR`), the private
+copy names the working copy it was made from (`working-copy`), and the runner
+records the working-copy root as the holder whether a command projects the
+config or not. A holder record of the projection directory left by an earlier
+Unica gives way to the working copy without a warning.
 
 ## Runner migration
 
@@ -161,6 +154,17 @@ but it ignores `version` for that boundary. With no `path`, omitted/false
 `strict` preserves legacy discovery through the normal roots and `PATH`;
 `strict: true` alone creates no boundary. This project config field is not an
 argument of `unica.run`.
+
+When neither layer sets `tools.platform.version`, a `DESIGNER` project with a
+`configuration` source-set runs on the platform line of its source format: the
+newest installation of the line that writes the format of `Configuration.xml`.
+Unica switches this on in its private runner config
+(`tools.platform.version: sources`); the project files are not changed. Without
+an installation of that line the command is refused with
+`platformLineNotInstalled`, which names the line, the source format and the
+versions of the installations found. Install that line, or set
+`tools.platform.version` to choose a platform explicitly. Before the first
+`pull` there is no `Configuration.xml` and no restriction.
 
 ## Source-set format discovery
 
@@ -236,7 +240,7 @@ inputs, without requiring a previous preview. `unica.run` accepts no `ifRev`
 and returns no `rev`. In this workflow, inspect the preview before execution.
 Preview does not freeze the workspace or the database between calls.
 
-Source `push` checks the infobase generation before loading a set and is refused with `non_fast_forward` when the infobase moved ahead of this working copy's record, or with `no_memory` when this working copy has no memory of the infobase; the refusal offers a `pull` preview and a `push` preview with `force:true`. `force:true` overwrites the infobase: every selected set is loaded in full without that check, and changes made in the infobase are lost. A set the runner skips by its memory is neither loaded nor checked. Without `force`, `pull` lets the runner choose a partial or full export by its memory of earlier exchanges; `force:true` exports the whole set. Source
+Source `push` checks the infobase generation before loading a set and is refused with `non_fast_forward` when the infobase moved ahead of this working copy's record, or with `untracked_base` when this working copy has no memory of the infobase; the refusal offers a `pull` preview and a `push` preview with `force:true`. `force:true` overwrites the infobase: every selected set is loaded in full without that check, and changes made in the infobase are lost. A set the runner skips by its memory is neither loaded nor checked. Without `force`, `pull` lets the runner choose a partial or full export by its memory of earlier exchanges; `force:true` exports the whole set. Source
 `push` also applies the database configuration; `noApply:true` is unavailable.
 With `force:true`, `pull` discards uncommitted and untracked files of the
 source set without a copy. Unica keeps no copy of the previous sources: a failed
@@ -258,7 +262,7 @@ the runner can load without applying and apply separately
   deadline nor a partial-load threshold, and Unica refuses a config with either key. Unica exposes no `timeoutMs` argument.
 - `upload`, `apply` and `reset` are unavailable: report loading a CF/CFE as a Unica MCP contract gap ([#1246](https://github.com/IngvarConsulting/unica/issues/1246)) and do not call the runner directly.
 - Designer/EDT conversion is not on the surface: Unica reads platform XML only.
-- Designer `rawKeys` are not on the surface. Source `push` checks the infobase generation unless `force:true` is given; never add `force:true` on your own after a `non_fast_forward` or `no_memory` refusal: choosing between pulling the infobase and overwriting it belongs to the user. `pull` requires explicit `force:true` and does not protect local work.
+- Designer `rawKeys` are not on the surface. Source `push` checks the infobase generation unless `force:true` is given; never add `force:true` on your own after a `non_fast_forward` or `untracked_base` refusal: choosing between pulling the infobase and overwriting it belongs to the user. `pull` requires explicit `force:true` and does not protect local work.
 - When credentials are absent, do not initiate a runtime probe to discover them. Ask the user; classify only authentication evidence already supplied by a verified boundary.
 - If a command reports a 1C license problem, stop and ask the user to fix licensing. Do not edit license services, HASP settings, registry, or license files.
 - If a runtime flag or debug-server step is missing from the `unica.run`

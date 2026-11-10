@@ -386,7 +386,7 @@ fn main() {
             "push",
         ]
         # Runner 0.14 refuses a push into an infobase it has no memory of
-        # (`no_memory`); the baseline load is the explicit overwrite.
+        # (`untracked_base`); the baseline load is the explicit overwrite.
         initial = subprocess.run(
             [*command, "--force"],
             cwd=root,

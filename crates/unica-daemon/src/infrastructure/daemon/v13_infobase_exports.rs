@@ -949,10 +949,9 @@ fn parse_runner_output(
             .as_str()
             .map(redactor)
             .unwrap_or_else(|| "v8-runner failed without a typed message".to_string());
-        return Err(runner_rejection(
-            Some(operation.name().to_string()),
-            code,
-            message,
+        return Err(with_platform_release(
+            runner_rejection(Some(operation.name().to_string()), code, message),
+            &envelope["error"],
         ));
     }
     Ok(envelope)
@@ -961,19 +960,19 @@ fn parse_runner_output(
 /// Расхождение памяти рабочей копии о базе с самой базой: база ушла вперёд
 /// записанного поколения или памяти о ней нет. Выбирать между выгрузкой базы
 /// и её перезаписью должен человек. Имена кодов раннера живут только здесь:
-/// раннер 0.17 переименует `no_memory` в `untracked_base`, и перевод на него —
-/// правка этого словаря.
+/// с конверта 5 (раннер 0.17) отказ без памяти о базе называется
+/// `untracked_base`, как ветка без слежения в git.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum BaseDivergence {
     /// `non_fast_forward`: база ушла вперёд записанного поколения.
     MovedAhead,
-    /// `no_memory`: памяти рабочей копии о базе нет.
+    /// `untracked_base`: памяти рабочей копии о базе нет.
     Untracked,
 }
 
 impl BaseDivergence {
     const MOVED_AHEAD: &'static str = "non_fast_forward";
-    const UNTRACKED: &'static str = "no_memory";
+    const UNTRACKED: &'static str = "untracked_base";
 
     pub(super) fn from_runner_code(code: &str) -> Option<Self> {
         match code {
@@ -1240,6 +1239,64 @@ pub(super) fn runner_rejection(
     }
 }
 
+/// Отказ раннера 0.17 в строгом выборе платформы (#593): выпуска, который
+/// пишет формат исходников, среди установок нет.
+pub(super) const PLATFORM_RELEASE_MISSING: &str = "platform_release_missing";
+
+/// Отказ строгого выбора платформы Unica называет `platformLineNotInstalled`:
+/// линия формата и найденные установки других линий. Из описи раннера наружу
+/// идут только версии: каталоги установок не публикуются. Прочие отказы
+/// проходят как есть.
+pub(super) fn with_platform_release(mut result: DomainResult, error: &Value) -> DomainResult {
+    if error["code"] != PLATFORM_RELEASE_MISSING {
+        return result;
+    }
+    let release = &error["platform_release"];
+    let line = release["source_format"]["release"].as_str();
+    let format = release["source_format"]["version"].as_str();
+    let installations: Vec<String> = release["installations"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|installation| installation["version"].as_str())
+        .map(redactor)
+        .collect();
+    let named_line = match (line, format) {
+        (Some(line), Some(format)) => format!("platform line {line} (source format {format})"),
+        (None, Some(format)) => format!("the platform line of source format {format}"),
+        _ => "the platform line of the sources".to_string(),
+    };
+    let found = if installations.is_empty() {
+        "none".to_string()
+    } else {
+        installations.join(", ")
+    };
+    let message = format!(
+        "platformLineNotInstalled: {named_line} is not installed; installations found: {found}"
+    );
+    result.summary = message.clone();
+    if let Some(diagnostic) = result.diagnostics.first_mut() {
+        diagnostic["message"] = Value::String(message);
+    }
+    let detail = json!({
+        "line": line,
+        "sourceFormat": format,
+        "installations": installations,
+    });
+    match result.data.as_mut().and_then(Value::as_object_mut) {
+        Some(data) => {
+            data.insert("platformLineNotInstalled".into(), detail);
+        }
+        None => {
+            result.data = Some(json!({
+                "runnerCode": PLATFORM_RELEASE_MISSING,
+                "platformLineNotInstalled": detail,
+            }))
+        }
+    }
+    result
+}
+
 /// Код предупреждения Unica о записи в файловую базу другой рабочей копии.
 pub(super) const ANOTHER_COPY_WARNING_CODE: &str = "infobase_of_another_copy";
 
@@ -1302,6 +1359,9 @@ pub(super) fn map_runner_code(code: &str) -> RefusalCode {
         "platform_failure" => RefusalCode::ProviderUnavailable,
         // Бинарник, версия или соединение не готовы.
         "environment_unavailable" => RefusalCode::ProviderUnavailable,
+        // Строгий выбор платформы (раннер 0.17): выпуска, который пишет формат
+        // исходников, среди установок нет.
+        PLATFORM_RELEASE_MISSING => RefusalCode::ProviderUnavailable,
         // У раннера нет адаптера под эту операцию: повторять и править вызов незачем.
         "capability_unavailable" => RefusalCode::UnsupportedOperation,
         // Предмет не тот, цель не та, или раннер пока этого не умеет: правкой
@@ -1711,7 +1771,7 @@ mod tests {
             ("workspace_busy", Outcome::RetryAsIs),
             ("infobase_busy", Outcome::RetryAsIs),
             ("non_fast_forward", Outcome::NeedsHuman),
-            ("no_memory", Outcome::NeedsHuman),
+            ("untracked_base", Outcome::NeedsHuman),
             ("timed_out", Outcome::RetryAsIs),
             ("invalid_argument", Outcome::FixCall),
             ("invalid_output", Outcome::DeadEnd),
@@ -1886,6 +1946,90 @@ mod tests {
         );
         assert!(platform.diagnostics[0].get("detailCode").is_none());
         assert!(platform.data.is_none());
+    }
+
+    /// rule: INV.RUNTIME.PLATFORM-LINE
+    #[test]
+    fn a_missing_platform_release_names_the_line_and_hides_installation_paths() {
+        // Ответ раннера 0.17 на строгий выбор (#593): формат 2.20 пишет 8.3.27,
+        // установлены 8.3.24 и 8.5.1.
+        let error = json!({
+            "code": "platform_release_missing",
+            "kind": "environment",
+            "message": "platform release 8.3.27 required by source format 2.20 \
+                        (C:/work/src/Configuration.xml) is not installed",
+            "platform_release": {
+                "source_format": {
+                    "version": "2.20",
+                    "file": "C:/work/src/Configuration.xml",
+                    "release": "8.3.27"
+                },
+                "installations": [
+                    {"version": "8.5.1.100", "root": "C:/Program Files/1cv8/8.5.1.100",
+                     "components": ["designer", "ibcmd"]},
+                    {"version": "8.3.24.1691", "root": "C:/Program Files/1cv8/8.3.24.1691",
+                     "components": ["designer"]}
+                ]
+            }
+        });
+        let result = with_platform_release(
+            runner_rejection(
+                Some("source.export".to_string()),
+                error["code"].as_str().unwrap(),
+                error["message"].as_str().unwrap(),
+            ),
+            &error,
+        );
+        assert!(!result.ok);
+        assert_eq!(result.diagnostics[0]["code"], "provider_unavailable");
+        assert!(
+            result.summary.starts_with(
+                "platformLineNotInstalled: platform line 8.3.27 (source format 2.20) is not installed"
+            ),
+            "{}",
+            result.summary
+        );
+        assert!(result.summary.contains("8.5.1.100, 8.3.24.1691"));
+        assert_eq!(result.diagnostics[0]["message"], result.summary.as_str());
+        let data = result.data.expect("refusal data");
+        assert_eq!(data["runnerCode"], "platform_release_missing");
+        assert_eq!(
+            data["platformLineNotInstalled"],
+            json!({
+                "line": "8.3.27",
+                "sourceFormat": "2.20",
+                "installations": ["8.5.1.100", "8.3.24.1691"]
+            })
+        );
+        let published = serde_json::to_string(&data).unwrap() + &result.summary;
+        assert!(!published.contains("Program Files"), "{published}");
+        assert!(!published.contains("Configuration.xml"), "{published}");
+
+        // Формат, неизвестный раннеру: линии нет, формат назван.
+        let unknown = json!({
+            "code": "platform_release_missing",
+            "platform_release": {
+                "source_format": {"version": "2.99", "file": "x", "release": null},
+                "installations": []
+            }
+        });
+        let result = with_platform_release(
+            runner_rejection(None, "platform_release_missing", "m"),
+            &unknown,
+        );
+        assert_eq!(
+            result.summary,
+            "platformLineNotInstalled: the platform line of source format 2.99 is not installed; \
+             installations found: none"
+        );
+
+        // Прочие отказы проходят как есть.
+        let other = json!({"code": "environment_unavailable", "message": "m"});
+        let untouched = with_platform_release(
+            runner_rejection(None, "environment_unavailable", "m"),
+            &other,
+        );
+        assert_eq!(untouched.summary, "m");
     }
 
     #[test]

@@ -7,7 +7,8 @@ use super::runner_015::Runner015ProcessRunner;
 use super::v13_infobase_exports::{
     digest_optional_workspace_file, digest_required_workspace_file, missing_runner_rejection,
     resolve_bundled_runner, runner_rejection, runner_start_rejection, valid_1c_identifier,
-    validate_provider_receipt, CONFIG_NAME, LOCAL_CONFIG_NAME, RUNNER_OUTPUT_LIMIT,
+    validate_provider_receipt, with_platform_release, CONFIG_NAME, LOCAL_CONFIG_NAME,
+    RUNNER_OUTPUT_LIMIT,
 };
 use crate::infrastructure::workspace::discover_workspace;
 use serde_json::{json, Map, Value};
@@ -341,13 +342,16 @@ impl PreparedExtensions {
             let code = envelope["error"]["code"]
                 .as_str()
                 .unwrap_or("provider_failed");
-            return Err(runner_rejection(
-                Some(self.operation.name().into()),
-                code,
-                envelope["error"]["message"]
-                    .as_str()
-                    .map(|message| published_runner_error(self.operation, code, message))
-                    .unwrap_or_else(|| "v8-runner failed without a typed message".into()),
+            return Err(with_platform_release(
+                runner_rejection(
+                    Some(self.operation.name().into()),
+                    code,
+                    envelope["error"]["message"]
+                        .as_str()
+                        .map(|message| published_runner_error(self.operation, code, message))
+                        .unwrap_or_else(|| "v8-runner failed without a typed message".into()),
+                ),
+                &envelope["error"],
             ));
         }
         Ok(envelope)

@@ -9,7 +9,7 @@
 //! грузится целиком без сверки памяти и поколения базы, сделанное в базе
 //! теряется. Без `force` раннер 0.14 перед загрузкой набора сверяет поколение
 //! базы с записью о прошлом обмене и отказывает `non_fast_forward`, если база
-//! ушла вперёд, или `no_memory`, если памяти о базе нет. Превью зовёт
+//! ушла вперёд, или `untracked_base`, если памяти о базе нет. Превью зовёт
 //! `push --dry-run`: раннер выбирает для каждого набора режим, не запуская
 //! конфигуратор. Применение повторяет превью и требует тот же состав наборов
 //! и те же режимы: иной режим значит, что исходники изменились между превью и
@@ -28,7 +28,8 @@ use super::runner_015::Runner015ProcessRunner;
 use super::v13_infobase_exports::{
     digest_optional_workspace_file, digest_required_workspace_file, missing_runner_rejection,
     note_another_copy, resolve_bundled_runner, runner_rejection, runner_start_rejection,
-    BaseDivergence, RunnerAbsence, CONFIG_NAME, LOCAL_CONFIG_NAME, RUNNER_OUTPUT_LIMIT,
+    with_platform_release, BaseDivergence, RunnerAbsence, CONFIG_NAME, LOCAL_CONFIG_NAME,
+    RUNNER_OUTPUT_LIMIT,
 };
 use super::v13_source_set_name::{source_set_name_guidance, valid_source_set_name};
 use crate::infrastructure::workspace::discover_workspace;
@@ -1264,7 +1265,10 @@ fn parse_runner_output(output: ProcessOutput) -> Result<Value, (DomainResult, Va
             .map(redactor)
             .unwrap_or_else(|| "v8-runner failed without a typed message".to_string());
         return Err((
-            runner_rejection(Some(OPERATION.to_string()), code, message),
+            with_platform_release(
+                runner_rejection(Some(OPERATION.to_string()), code, message),
+                &envelope["error"],
+            ),
             envelope,
         ));
     }
@@ -2043,6 +2047,25 @@ pub(super) mod tests {
         serde_json::from_slice(&fs::read(path).unwrap()).unwrap()
     }
 
+    /// Конверт раннера 0.17 (`tests/fixtures/v8_runner_017`).
+    fn captured_017(name: &str) -> Value {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/v8_runner_017")
+            .join(name);
+        serde_json::from_slice(&fs::read(path).unwrap()).unwrap()
+    }
+
+    /// Отказ без памяти о базе в чужой рабочей копии, снятый на 0.15.1, под
+    /// кодом раннера 0.17: конверт 5 переименовал `no_memory` в
+    /// `untracked_base`, не меняя ни условий, ни остального конверта.
+    fn untracked_015(name: &str) -> Value {
+        let mut envelope = captured(name);
+        assert_eq!(envelope["error"]["code"], "no_memory", "{name}");
+        envelope["error"]["code"] = json!("untracked_base");
+        envelope["error"]["kind"] = json!("untracked_base");
+        envelope
+    }
+
     /// Конверт раннера 0.14.0 (`tests/fixtures/v8_runner_014`): только отказы
     /// до шагов, форма которых в 0.15 не менялась; на 0.15.1 вживую не сняты.
     fn captured_014(name: &str) -> Value {
@@ -2103,7 +2126,7 @@ pub(super) mod tests {
     /// (`tests/fixtures/v8_runner_014/README.md`). Создание собрало базу
     /// с основной конфигурацией и записало память о наборе: первый `push` без
     /// правок ничего не грузит и честно называет состояние базы непроверенным,
-    /// а `push` после правки грузит набор без отказа `no_memory`. Записи
+    /// а `push` после правки грузит набор без отказа `untracked_base`. Записи
     /// поколения до этой загрузки нет, и ответ не выдаёт её за сверенную.
     /// rule: INV.WIRE.INFOBASE-CREATE-ONLY-CREATES-AN-ABSENT-ONE
     #[test]
@@ -2233,7 +2256,7 @@ pub(super) mod tests {
             ("workspace_busy", "concurrent_change", Outcome::RetryAsIs),
             ("infobase_busy", "concurrent_change", Outcome::RetryAsIs),
             ("non_fast_forward", "invalid_state", Outcome::NeedsHuman),
-            ("no_memory", "invalid_state", Outcome::NeedsHuman),
+            ("untracked_base", "invalid_state", Outcome::NeedsHuman),
             ("invalid_argument", "bad_value", Outcome::FixCall),
         ] {
             let runner = SequenceRunner::new(vec![process(failure(code), false)]);
@@ -2306,7 +2329,7 @@ pub(super) mod tests {
 
         // Превью без памяти о базе отказывает тем же родом и до запуска платформы.
         let runner = SequenceRunner::new(vec![process(
-            captured("push-no-memory-preview.json"),
+            captured_017("push-untracked-base-preview.json"),
             false,
         )]);
         let result = run(
@@ -2317,7 +2340,7 @@ pub(super) mod tests {
         assert_eq!(runner.call_count(), 1);
         assert_eq!(result.diagnostics[0]["code"], "invalid_state", "{result:?}");
         let data = result.data.as_ref().unwrap();
-        assert_eq!(data["runnerCode"], "no_memory");
+        assert_eq!(data["runnerCode"], "untracked_base");
         assert_eq!(data["sourceSet"], "main");
         assert!(data.get("baseGeneration").is_none(), "{data}");
         assert_eq!(result.next[0]["args"]["op"], "pull");
@@ -2389,7 +2412,7 @@ pub(super) mod tests {
         );
 
         let runner = SequenceRunner::new(vec![process(
-            captured("push-no-memory-preview.json"),
+            untracked_015("push-no-memory-preview.json"),
             false,
         )]);
         let preview = run(
@@ -2456,7 +2479,7 @@ pub(super) mod tests {
 
         // Отказ без памяти в чужой копии называет её так же, третьим выходом.
         let runner = SequenceRunner::new(vec![process(
-            captured("push-no-memory-preview.json"),
+            untracked_015("push-no-memory-preview.json"),
             false,
         )]);
         let refused = run(

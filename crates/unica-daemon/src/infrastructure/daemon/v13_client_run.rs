@@ -17,7 +17,7 @@ use super::runner_015::Runner015ProcessRunner;
 use super::v13_infobase_exports::{
     closed_workspace_relative_path, digest_optional_workspace_file, digest_required_workspace_file,
     missing_runner_rejection, resolve_bundled_runner, runner_rejection, runner_start_rejection,
-    RunnerAbsence, CONFIG_NAME, RUNNER_OUTPUT_LIMIT,
+    with_platform_release, RunnerAbsence, CONFIG_NAME, RUNNER_OUTPUT_LIMIT,
 };
 use crate::infrastructure::workspace::discover_workspace;
 use serde_json::{json, Map, Value};
@@ -828,7 +828,10 @@ fn parse_runner_output(
         // Runner errors may contain its command line and private capture paths.
         // The typed code supplies the continuation; raw provider text is private.
         let message = "v8-runner refused the launch".to_string();
-        return Err(runner_rejection(Some(OPERATION.to_string()), code, message));
+        return Err(with_platform_release(
+            runner_rejection(Some(OPERATION.to_string()), code, message),
+            &envelope["error"],
+        ));
     }
     Ok((envelope, RunnerOutcome::Completed))
 }

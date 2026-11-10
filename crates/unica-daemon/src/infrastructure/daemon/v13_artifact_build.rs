@@ -22,8 +22,8 @@ use super::runner_015::Runner015ProcessRunner;
 use super::v13_infobase_exports::{
     closed_workspace_relative_path, configuration_source_set, digest_optional_workspace_file,
     digest_required_workspace_file, missing_runner_rejection, resolve_bundled_runner,
-    runner_rejection, runner_start_rejection, valid_1c_identifier, RunnerAbsence, CONFIG_NAME,
-    LOCAL_CONFIG_NAME, RUNNER_OUTPUT_LIMIT,
+    runner_rejection, runner_start_rejection, valid_1c_identifier, with_platform_release,
+    RunnerAbsence, CONFIG_NAME, LOCAL_CONFIG_NAME, RUNNER_OUTPUT_LIMIT,
 };
 use super::v13_source_set_name::{source_set_name_guidance, valid_source_set_name};
 use crate::infrastructure::platform_xml_owner::resolve_platform_xml_owners;
@@ -968,7 +968,10 @@ fn parse_runner_output(output: ProcessOutput) -> Result<Value, DomainResult> {
             .as_str()
             .map(redactor)
             .unwrap_or_else(|| "v8-runner failed without a typed message".to_string());
-        return Err(runner_rejection(Some(OPERATION.to_string()), code, message));
+        return Err(with_platform_release(
+            runner_rejection(Some(OPERATION.to_string()), code, message),
+            &envelope["error"],
+        ));
     }
     Ok(envelope)
 }

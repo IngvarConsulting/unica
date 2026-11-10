@@ -6,15 +6,12 @@
 //! `<workspace>/.build/unica/runner-project/` and the runner reads that copy.
 //! The originals are never written.
 //!
-//! The directory is stable on purpose: runner 0.15 records the directory of the
-//! config it read as the working copy that holds a file infobase, and checks
-//! later whether that directory still declares the infobase. A copy removed after
-//! each command would leave a gone owner that any other working copy silently
-//! replaces, without the warning a live owner gives a write of another copy.
-//! One directory per workspace root keeps the owner alive while the
-//! working copy exists. Each projected command rewrites the copy atomically; a
-//! command that needs no projection removes it, so the workspace itself becomes
-//! the owner and its former projection is a gone owner of the same copy.
+//! The runner records the directory of the config it read as the working copy
+//! that holds a file infobase. The private local layer names the workspace root
+//! as its `working-copy`, so the root holds the infobase whether a command is
+//! projected or not, and a holder record of the projection directory gives way
+//! to it. Each projected command rewrites the copy atomically in one directory
+//! per workspace root; a command that needs no projection removes it.
 //!
 //! The 0.15 loader resolves relative paths from the directory of the primary
 //! config, and source-set paths from `basePath`, which it always sets to that
@@ -163,7 +160,8 @@ fn with_projected_config_in_store<T>(
     if let Some(local) = &local {
         validate_layer(local, LOCAL_NAME)?;
     }
-    if !needs_projection(&base, local.as_ref()) {
+    let strict = strict_platform_release(&base, local.as_ref());
+    if !strict && !needs_projection(&base, local.as_ref()) {
         // The workspace itself holds the infobase now: a former projection must
         // not stay alive as another working copy that still declares it.
         store.remove_projection()?;
@@ -171,7 +169,24 @@ fn with_projected_config_in_store<T>(
     }
     let root = normalize_path_identity(root).map_err(refuse)?;
     // Project both layers before creating private files or starting any process.
-    let (base, local) = project(base, local, &root)?;
+    let (base, mut local) = project(base, local, &root)?;
+    let layer = local
+        .get_or_insert_with(|| Value::Mapping(Mapping::new()))
+        .as_mapping_mut()
+        .expect("projected local layer is a mapping");
+    // The copy acts as the working copy it was made from: the owner marker of a
+    // file infobase stays with the workspace whether or not a command projects.
+    layer.insert(
+        Value::from("working-copy"),
+        Value::from(root.display().to_string()),
+    );
+    if strict {
+        insert_path(
+            layer,
+            &["tools", "platform", "version"],
+            Value::from("sources"),
+        );
+    }
     let directory = store.directory().to_path_buf();
     let config = directory.join(BASE_NAME);
     unica_coder::infrastructure::daemon_adapters::runtime::write_projection(
@@ -310,6 +325,50 @@ fn needs_projection(base: &Value, local: Option<&Value>) -> bool {
                         })
                     })
         })
+}
+
+/// The runner picks the platform by the release that writes the source format
+/// (`tools.platform.version: sources`, runner 0.17) and refuses when that line
+/// is not installed. The mode applies to the DESIGNER format with a main
+/// configuration set; a version the user set in either layer is kept.
+fn strict_platform_release(base: &Value, local: Option<&Value>) -> bool {
+    let effective = |key: &str| {
+        local
+            .and_then(|local| local.get(key))
+            .or_else(|| base.get(key))
+    };
+    let designer = effective("format")
+        .and_then(Value::as_str)
+        .is_none_or(|format| format.eq_ignore_ascii_case("designer"));
+    let main_set = effective("source-set")
+        .and_then(Value::as_sequence)
+        .is_some_and(|sets| {
+            sets.iter().any(|set| {
+                set["type"]
+                    .as_str()
+                    .is_some_and(|kind| kind.eq_ignore_ascii_case("configuration"))
+            })
+        });
+    let pinned = std::iter::once(base)
+        .chain(local)
+        .any(|layer| layer["tools"]["platform"].get("version").is_some());
+    designer && main_set && !pinned
+}
+
+/// Sets `value` at `parts` in `layer`, creating the mappings on the way.
+fn insert_path(layer: &mut Mapping, parts: &[&str], value: Value) {
+    let (last, parents) = parts.split_last().expect("a path has a key");
+    let mut current = layer;
+    for part in parents {
+        let entry = current
+            .entry(Value::from(*part))
+            .or_insert_with(|| Value::Mapping(Mapping::new()));
+        if !entry.is_mapping() {
+            *entry = Value::Mapping(Mapping::new());
+        }
+        current = entry.as_mapping_mut().expect("just made a mapping");
+    }
+    current.insert(Value::from(*last), value);
 }
 
 /// Projects both layers. The infobase description of either layer, legacy
@@ -1044,9 +1103,11 @@ mod tests {
     /// rule: INV.RUNTIME.RUNNER-011-CONFIG-PROJECTION
     #[test]
     fn a_config_the_runner_reads_itself_is_passed_through_unchanged() {
+        // A version the user set keeps the runner's own platform choice, so
+        // nothing needs the private copy.
         let root = workspace(
             "format: DESIGNER\nworkPath: build\nproviders: {push: designer}\nsource-set:\n  - {name: main, type: CONFIGURATION, path: src}\n",
-            Some("infobases: {origin: {connection: 'File=ib'}}\n"),
+            Some("infobases: {origin: {connection: 'File=ib'}}\ntools: {platform: {version: '8.3.24'}}\n"),
         );
         let probe = Probe::new();
         assert!(run_projected(&probe, &command(root.path())).is_err());
@@ -1054,6 +1115,66 @@ mod tests {
             probe.config.lock().unwrap().as_deref(),
             Some(root.path().join(BASE_NAME).as_path())
         );
+    }
+
+    /// rule: INV.RUNTIME.PLATFORM-LINE
+    /// rule: INV.RUNTIME.RUNNER-011-CONFIG-PROJECTION
+    #[test]
+    fn a_designer_main_set_runs_on_the_platform_line_of_its_format() {
+        // The config the runner would read itself is projected only to switch
+        // the strict platform choice on; the copy acts as the working copy.
+        let (root, base, local) = projected(
+            "format: DESIGNER\nworkPath: build\nsource-set:\n  - {name: main, type: CONFIGURATION, path: src}\n",
+            Some("infobases: {origin: {connection: 'File=ib'}}\ntools: {platform: {path: platform}}\n"),
+        );
+        let local = local.unwrap();
+        assert_eq!(local["tools"]["platform"]["version"], "sources");
+        assert_eq!(
+            local["tools"]["platform"]["path"],
+            text(root.join("platform"))
+        );
+        assert_eq!(local["working-copy"], text(root.clone()));
+        assert!(base.get("working-copy").is_none());
+        assert!(base["tools"].get("platform").is_none());
+
+        // Without a local layer and with the default format the mode holds too.
+        let (_, _, local) = projected(
+            "workPath: build\nsource-set:\n  - {name: main, type: configuration, path: src}\n",
+            None,
+        );
+        assert_eq!(local.unwrap()["tools"]["platform"]["version"], "sources");
+    }
+
+    /// rule: INV.RUNTIME.PLATFORM-LINE
+    #[test]
+    fn the_strict_platform_choice_stays_off_where_the_runner_refuses_it() {
+        let set = "source-set:\n  - {name: main, type: CONFIGURATION, path: src}\n";
+        for (base, local) in [
+            // EDT sources have no format the runner maps to a release.
+            (format!("format: EDT\nworkPath: build\n{set}"), None),
+            // An extension alone has no main set.
+            (
+                "format: DESIGNER\nworkPath: build\nsource-set:\n  - {name: ext, type: EXTENSION, path: ext}\n".to_string(),
+                None,
+            ),
+            // The local layer decides the format.
+            (
+                format!("format: DESIGNER\nworkPath: build\n{set}"),
+                Some("format: EDT\n"),
+            ),
+            // A version the user set in the project file stays.
+            (
+                format!("format: DESIGNER\nworkPath: build\ntools: {{platform: {{version: '8.3'}}}}\n{set}"),
+                None,
+            ),
+        ] {
+            let base_value: Value = serde_yaml::from_str(&base).unwrap();
+            let local_value: Option<Value> = local.map(|local| serde_yaml::from_str(local).unwrap());
+            assert!(
+                !strict_platform_release(&base_value, local_value.as_ref()),
+                "{base} / {local:?}"
+            );
+        }
     }
 
     /// rule: INV.RUNTIME.RUNNER-011-CONFIG-PROJECTION

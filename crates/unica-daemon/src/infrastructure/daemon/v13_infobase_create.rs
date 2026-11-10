@@ -29,7 +29,7 @@ use super::runner_015::{origin_kind, OriginKind, Runner015ProcessRunner};
 use super::v13_infobase_exports::{
     configuration_source_set, digest_optional_workspace_file, digest_required_workspace_file,
     missing_runner_rejection, resolve_bundled_runner, runner_rejection, runner_start_rejection,
-    RunnerAbsence, CONFIG_NAME, LOCAL_CONFIG_NAME, RUNNER_OUTPUT_LIMIT,
+    with_platform_release, RunnerAbsence, CONFIG_NAME, LOCAL_CONFIG_NAME, RUNNER_OUTPUT_LIMIT,
 };
 use crate::infrastructure::workspace::discover_workspace;
 use serde_json::{json, Value};
@@ -614,7 +614,10 @@ fn parse_runner_output(
             .as_str()
             .map(redactor)
             .unwrap_or_else(|| "v8-runner failed without a typed message".to_string());
-        return Err(runner_rejection(Some(OPERATION.to_string()), code, message));
+        return Err(with_platform_release(
+            runner_rejection(Some(OPERATION.to_string()), code, message),
+            &envelope["error"],
+        ));
     }
     Ok(envelope)
 }

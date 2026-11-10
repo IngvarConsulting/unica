@@ -20,7 +20,8 @@ use super::runner_015::Runner015ProcessRunner;
 use super::v13_infobase_exports::{
     digest_optional_workspace_file, digest_required_workspace_file, missing_runner_rejection,
     note_another_copy, resolve_bundled_runner, runner_rejection, runner_start_rejection,
-    valid_1c_identifier, RunnerAbsence, CONFIG_NAME, LOCAL_CONFIG_NAME, RUNNER_OUTPUT_LIMIT,
+    valid_1c_identifier, with_platform_release, RunnerAbsence, CONFIG_NAME, LOCAL_CONFIG_NAME,
+    RUNNER_OUTPUT_LIMIT,
 };
 use super::v13_source_set_name::{source_set_name_guidance, valid_source_set_name};
 use unica_artifact_delivery::engine::BundledTool;
@@ -789,7 +790,10 @@ fn validate_runner_result(envelope: Value, status_success: bool) -> Result<Value
             .as_str()
             .map(redactor)
             .unwrap_or_else(|| "v8-runner failed without a typed message".to_string());
-        return Err(runner_rejection(Some(OPERATION.to_string()), code, message));
+        return Err(with_platform_release(
+            runner_rejection(Some(OPERATION.to_string()), code, message),
+            &envelope["error"],
+        ));
     }
     Ok(envelope)
 }
