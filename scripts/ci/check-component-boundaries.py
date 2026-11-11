@@ -33,13 +33,13 @@ def _declared(component: str, declarations: dict | None = None) -> frozenset[str
     )
 
 
-ABSTRACTIONS = frozenset({"address", "source-contract", "operation-contract", "work-control", "refusal", "execution-contract", "xml-format", "redaction"})
+ABSTRACTIONS = frozenset({"address", "source-contract", "operation-contract", "work-control", "refusal", "execution-contract", "xml-format", "redaction", "code-model"})
 # Named apart from ABSTRACTIONS so that a new shared contract does not widen
 # what the publication owner may import without a review of this list.
 WORKSPACE_DEPENDENCIES = frozenset({"address", "source-contract", "operation-contract", "work-control", "refusal", "execution-contract", "xml-format", "redaction"})
 COORDINATOR_FLOOR = frozenset({
     "operations", "bindings", "navigation", "code-intelligence", "diagnostics", "documentation",
-    "analysis-services", "application", "domain",
+    "analysis-services", "application", "domain", "editor-analysis",
 })
 # A family is ruled by its semantic dependencies, which only this guard grants.
 FAMILIES = FAMILY_FLOOR | (_declared("family") & SEMANTIC_DEPENDENCIES.keys())
@@ -58,9 +58,9 @@ CODEC_DEPENDENCIES = {"xdto": frozenset({"metadata-designer"})}
 # selects the implementation in one module; everyone else calls the trait.
 PORTED_FAMILIES = frozenset({"dcs"})
 CODEC_SELECTION = "crates/unica-coder/src/infrastructure/family_codecs.rs"
-# The product composition: the lower layer, the daemon with its doors over it,
-# and the package of the product binary. Only these depend on one another.
-PRODUCT_COMPOSITION = frozenset({"unica-coder", "unica-coder-daemon", "unica-product"})
+# The product composition: the lower layer, the daemon and the package of the
+# product binary. Only these depend on one another.
+PRODUCT_COMPOSITION = frozenset({"unica-coder", "unica-daemon", "unica-product"})
 # Metadata read code of the composition parses descriptors only through the
 # family port `MetadataReadCodec`. Write code still names the codec, so
 # `metadata` is not in PORTED_FAMILIES.
@@ -77,7 +77,7 @@ COMPONENT_KINDS = {
     "codec": "`unica-<family>-designer` representation codec",
     "adapter": "`unica-adapter-*` implementation of a port",
     "integration-tests": "`unica-*-integration-tests` cross-component checks",
-    "product": "the product composition: unica-coder, unica-coder-daemon and unica-product",
+    "product": "the product composition: unica-coder, unica-daemon and unica-product",
     "service": "any other runtime component; a closed dependency rule is added to edge_errors by name",
 }
 
@@ -123,8 +123,8 @@ def edge_errors(owner: str, dependency: str, kind: str) -> list[str]:
     target = dependency.removeprefix("unica-")
     prefix = f"{owner} {kind} -> {dependency}: "
     reasons: list[str] = []
-    if dependency == "rmcp" and owner != "unica-coder-daemon":
-        reasons.append("the MCP SDK belongs to the product composition")
+    if dependency == "rmcp" and owner != "unica-mcp":
+        reasons.append("the MCP SDK belongs to the MCP door unica-mcp")
     if dependency in {"bsl-parser", "bsl-syntax", "parser", "syntax"} and owner != "unica-bsl-parser":
         reasons.append("upstream parser types belong to the parser boundary")
     if dependency in PRODUCT_COMPOSITION - {"unica-product"} and owner not in PRODUCT_COMPOSITION:
@@ -140,7 +140,10 @@ def edge_errors(owner: str, dependency: str, kind: str) -> list[str]:
     if name == "operations" and dependency.startswith("unica-") and target not in ABSTRACTIONS:
         reasons.append("generic operation orchestration must not import a family or backend")
     if name in PORT_CALLERS and dependency.startswith("unica-"):
-        if target.startswith("adapter-") or target.endswith("-designer"):
+        # `source-designer` is the shared Designer layout, not a family codec:
+        # the LSP service finds the file of a module address through it.
+        layout = name == "editor-analysis" and target == "source-designer"
+        if target.startswith("adapter-") or (target.endswith("-designer") and not layout):
             reasons.append("coordinators invoke ports without importing their concrete implementations")
     if name == "source-designer" and dependency.startswith("unica-") and target not in ABSTRACTIONS:
         reasons.append("source layout uses source contracts without concrete families")
@@ -161,23 +164,41 @@ def edge_errors(owner: str, dependency: str, kind: str) -> list[str]:
         if target not in allowed:
             reasons.append("a representation codec consumes neutral ports and its own family")
     if name == "execution" and dependency.startswith("unica-"):
-        allowed = ABSTRACTIONS | frozenset({"workspace", "process", "runner"})
+        allowed = ABSTRACTIONS | frozenset({"workspace", "process"})
         if target not in allowed:
             reasons.append("execution owns outcomes and invokes typed backend ports")
-    if name == "daemon" and dependency.startswith("unica-"):
+    if name == "daemon-protocol" and dependency.startswith("unica-"):
         # `lsp-contract` is the port the LSP lane calls, not a component: the
         # service behind it stays out of the daemon's reach.
         allowed = ABSTRACTIONS | frozenset({"execution", "workspace", "process", "bootstrap", "artifact-delivery", "lsp-contract"})
         if target not in allowed:
-            reasons.append("daemon owns transport and identity without product dispatch or family backends")
+            reasons.append("the daemon protocol owns transport and identity without product dispatch or family backends")
+    if name == "mcp" and dependency.startswith("unica-"):
+        # The door translates tool calls into the daemon protocol; the
+        # connection to the daemon comes from `unica-product`. `workspace`
+        # names the fake daemon's workspace in its test support.
+        allowed = ABSTRACTIONS | frozenset({
+            "application", "bootstrap", "daemon-protocol", "execution",
+            "code-intelligence", "diagnostics", "workspace",
+        })
+        if kind == "dev-dependencies":
+            allowed |= frozenset({"metadata"})
+        if target not in allowed:
+            reasons.append("the MCP door reaches the daemon only through the daemon protocol")
+    if name == "lsp" and dependency.startswith("unica-"):
+        # The editor's door frames LSP and passes requests over the daemon
+        # protocol; the connection to the daemon comes from `unica-product`.
+        allowed = ABSTRACTIONS | frozenset({"daemon-protocol", "lsp-contract"})
+        if target not in allowed:
+            reasons.append("the LSP door reaches the daemon only through the daemon protocol")
     if name == "lsp-contract" and dependency.startswith("unica-") and target != "work-control":
         # The request's cancellation token is the one the transport cancels
         # and the service's work watches; nothing else is shared.
         reasons.append("the LSP contract is a leaf shared by the transport and the service")
-    if name == "lsp" and dependency.startswith("unica-"):
-        # `code-model` is the answers the service turns into the editor's
-        # terms; the analysis that builds them stays with the product.
-        allowed = ABSTRACTIONS | frozenset({"lsp-contract", "workspace", "bsl", "source-designer", "code-model"})
+    if name == "editor-analysis" and dependency.startswith("unica-"):
+        # The analysis that builds the answers (`code-model`, a shared
+        # abstraction) stays with the product.
+        allowed = ABSTRACTIONS | frozenset({"lsp-contract", "workspace", "bsl", "source-designer"})
         if target not in allowed:
             reasons.append("the LSP service reaches its transport only through the LSP contract")
     if name == "code-model" and dependency.startswith("unica-") and target != "work-control":

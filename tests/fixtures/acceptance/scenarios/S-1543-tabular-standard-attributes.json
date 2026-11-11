@@ -16,6 +16,18 @@
       "captures": {
         "rows": {
           "pointer": "/data/items/0/at"
+        },
+        "unchanged1": {
+          "file": "src/Configuration.xml",
+          "kind": "sha256"
+        },
+        "unchanged2": {
+          "file": "src/Catalogs/Items.xml",
+          "kind": "sha256"
+        },
+        "unchanged3": {
+          "file": "src/Catalogs/BadNames.xml",
+          "kind": "sha256"
         }
       }
     },
@@ -49,12 +61,12 @@
         {
           "path": "src/Configuration.xml",
           "kind": "sha256",
-          "eq": "8903fc521674363ed1cf6b4a9560c501a875f0a42b9044c5f383cde029c8c157"
+          "eq": "$capture.unchanged1"
         },
         {
           "path": "src/Catalogs/Items.xml",
           "kind": "sha256",
-          "eq": "03474779f0bb9cedd76cc9e583734fdb1cdcd2432c3ad60b83e2e82e7ccc89b8"
+          "eq": "$capture.unchanged2"
         },
         {
           "path": "src/Catalogs/Items.xml",
@@ -247,12 +259,12 @@
         {
           "path": "src/Configuration.xml",
           "kind": "sha256",
-          "eq": "8903fc521674363ed1cf6b4a9560c501a875f0a42b9044c5f383cde029c8c157"
+          "eq": "$capture.unchanged1"
         },
         {
           "path": "src/Catalogs/Items.xml",
           "kind": "sha256",
-          "eq": "03474779f0bb9cedd76cc9e583734fdb1cdcd2432c3ad60b83e2e82e7ccc89b8"
+          "eq": "$capture.unchanged2"
         },
         {
           "path": "src/Catalogs/Items.xml",
@@ -466,17 +478,17 @@
         {
           "path": "src/Configuration.xml",
           "kind": "sha256",
-          "eq": "8903fc521674363ed1cf6b4a9560c501a875f0a42b9044c5f383cde029c8c157"
+          "eq": "$capture.unchanged1"
         },
         {
           "path": "src/Catalogs/Items.xml",
           "kind": "sha256",
-          "eq": "03474779f0bb9cedd76cc9e583734fdb1cdcd2432c3ad60b83e2e82e7ccc89b8"
+          "eq": "$capture.unchanged2"
         },
         {
           "path": "src/Catalogs/BadNames.xml",
           "kind": "sha256",
-          "eq": "b60e503e5e9b37ad0cb2c413c9172f3f9a3c037b27b639b10cb2265c91efaebe"
+          "eq": "$capture.unchanged3"
         }
       ]
     }

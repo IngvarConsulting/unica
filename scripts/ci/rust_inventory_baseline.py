@@ -16,6 +16,7 @@ or git failure stops.
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
 import os
@@ -31,6 +32,7 @@ ARTIFACT = "ci-rust-inventory-"
 WORKFLOW = ".github/workflows/release.yml"
 WORKFLOWS = {WORKFLOW, ".github/workflows/nightly.yml", ".github/workflows/unica-plugin-release.yml"}
 ANCESTORS = 200
+DESCRIPTION_WORKERS = 8
 PAGES = 10
 REMOVED = re.compile(r"^[ \t*-]*Removes-test-target:[ \t]*`?([^\s`]+)`?[ \t]*$", re.MULTILINE)
 REMOVED_TEST = re.compile(r"^[ \t*-]*Removes-test:[ \t]*`?([^\s`]+)`?[ \t]*$", re.MULTILINE)
@@ -71,7 +73,12 @@ def candidate_names(profile: str) -> list[list[str]]:
     # target line, tested by the queue on main and by pushes on release lines.
     if profile == "pr":
         return [[ARTIFACT + "queue", ARTIFACT + "main"]]
-    return [[ARTIFACT + name] for name in dict.fromkeys([profile, "queue"])]
+    # A release tag stands on a slice the night checked: the buttons cut it
+    # from an alpha or from a release line that left `main`. `release` and
+    # `large` select one plan on every runner, so the night's inventory is the
+    # release's baseline when no earlier release is nearer.
+    nightly = ["large"] if profile == "release" else []
+    return [[ARTIFACT + name] for name in dict.fromkeys([profile, *nightly, "queue"])]
 
 
 def nearest(artifacts: list[dict], ancestors: list[str], repository_id: int) -> dict | None:
@@ -191,8 +198,12 @@ def explanations(root: Path, repository: str, base: str | None, profile: str, ow
         resetting = merged
     declared: dict[str, list[int]] = {}
     targets, tests, reset = set(), set(), set()
-    for number in sorted(merged | resetting):
-        body = description(repository, number)
+    numbers = sorted(merged | resetting)
+    # Описания читаются параллельно: после нескольких красных ночей база старая,
+    # и последовательные запросы по сотне PR занимали минуты.
+    with ThreadPoolExecutor(max_workers=DESCRIPTION_WORKERS) as pool:
+        bodies = list(pool.map(lambda number: description(repository, number), numbers))
+    for number, body in zip(numbers, bodies, strict=True):
         if body is None:
             continue
         for kind, pattern, items in (("Removes-test-target", REMOVED, targets), ("Removes-test", REMOVED_TEST, tests)):

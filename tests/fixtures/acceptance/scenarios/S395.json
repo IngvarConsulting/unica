@@ -56,14 +56,10 @@
         },
         {
           "pointer": "/diagnostics/0/message",
-          "eq": "canonical invocation has unknown argument `filter`: unica.view answers every node with its operation dictionary can; read one operation's argument contract at `<node>.Can.<op>`, and page collections with limit"
-        },
-        {
-          "pointer": "/next/0/args/at",
-          "eq": "main:CommonModule.GoogleПереводчик.Method.ПеревестиТекст"
+          "eq": "canonical invocation has unknown argument `filter`"
         }
       ],
-      "refusal": "bad_value: canonical invocation has unknown argument `filter`: unica.view answers every node with its operation dictionary can; read one operation's argument contract at `"
+      "refusal": "bad_value: canonical invocation has unknown argument `filter`"
     }
   ]
 }

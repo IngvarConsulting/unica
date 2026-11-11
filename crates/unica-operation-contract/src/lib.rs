@@ -29,6 +29,8 @@ pub struct OperationContract {
 pub struct ContractError {
     pub path: String,
     pub message: String,
+    /// The value failed an enumerated domain in the argument contract.
+    pub enum_value: bool,
 }
 
 /// A borrowed part of an existing argument contract. Decoders visit it in
@@ -231,6 +233,14 @@ fn error(path: &str, message: impl Into<String>) -> ContractError {
     ContractError {
         path: path.into(),
         message: message.into(),
+        enum_value: false,
+    }
+}
+
+fn enum_error(path: &str, values: &[Value]) -> ContractError {
+    ContractError {
+        enum_value: true,
+        ..error(path, enum_refusal(values))
     }
 }
 
@@ -287,17 +297,7 @@ impl Validator<'_> {
         {
             return Err(error(path, "argument selects an excluded alternative"));
         }
-        let valid_type = match schema["type"].as_str() {
-            Some("object") => value.is_object(),
-            Some("array") => value.is_array(),
-            Some("string") => value.is_string(),
-            Some("boolean") => value.is_boolean(),
-            Some("number") => value.is_number(),
-            Some("integer") => value.as_i64().is_some(),
-            Some("null") => value.is_null(),
-            None => true,
-            other => unreachable!("unsupported internal schema type: {other:?}"),
-        };
+        let valid_type = schema_type_matches(schema, value);
         if !valid_type {
             return Err(error(path, format!("expected {}", schema["type"])));
         }
@@ -323,10 +323,7 @@ impl Validator<'_> {
         }
         if let Some(values) = schema["enum"].as_array() {
             if !values.contains(value) {
-                return Err(error(
-                    path,
-                    "value is not one of the supported alternatives",
-                ));
+                return Err(enum_error(path, values));
             }
         }
         // Различитель выбирает вариант по значению ключа (вид элемента формы):
@@ -349,10 +346,21 @@ impl Validator<'_> {
             });
             return match variant {
                 Some(variant) => self.validate(variant, value, path),
-                None => Err(error(
-                    &format!("{path}.{key}"),
-                    "value is not one of the supported alternatives",
-                )),
+                None => {
+                    let mut values = Vec::new();
+                    for variant in alternatives {
+                        for value in variant["properties"][key]["enum"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                        {
+                            if !values.contains(value) {
+                                values.push(value.clone());
+                            }
+                        }
+                    }
+                    Err(enum_error(&format!("{path}.{key}"), &values))
+                }
             };
         }
         if let Some(alternatives) = schema["anyOf"].as_array() {
@@ -360,6 +368,9 @@ impl Validator<'_> {
                 .iter()
                 .any(|choice| self.validate(choice, value, path).is_ok())
             {
+                if let ClosedEnumDomain::Values(values) = closed_enum_domain(schema, value) {
+                    return Err(enum_error(path, &values));
+                }
                 return Err(error(
                     path,
                     "one of the supported argument alternatives must match",
@@ -458,6 +469,168 @@ pub fn apply_defaults(schema: &Value, value: &mut Value) {
     }
 }
 
+/// Keep whole JSON literals: a cut string would invent an accepted value.
+// Only closed scalar domains can explain an anyOf failure without hiding
+// another applicable grammar/format constraint. No diagnostic-text parsing.
+enum ClosedEnumDomain {
+    Inapplicable,
+    Values(Vec<Value>),
+    Unknown,
+}
+
+fn schema_type_matches(schema: &Value, value: &Value) -> bool {
+    match schema["type"].as_str() {
+        Some("object") => value.is_object(),
+        Some("array") => value.is_array(),
+        Some("string") => value.is_string(),
+        Some("boolean") => value.is_boolean(),
+        Some("number") => value.is_number(),
+        Some("integer") => value.as_i64().is_some(),
+        Some("null") => value.is_null(),
+        None => true,
+        other => unreachable!("unsupported internal schema type: {other:?}"),
+    }
+}
+
+fn closed_enum_domain(schema: &Value, value: &Value) -> ClosedEnumDomain {
+    if !schema_type_matches(schema, value) {
+        return ClosedEnumDomain::Inapplicable;
+    }
+    let Some(fields) = schema.as_object() else {
+        return ClosedEnumDomain::Unknown;
+    };
+    if fields.keys().any(|key| {
+        !matches!(
+            key.as_str(),
+            "type"
+                | "enum"
+                | "anyOf"
+                | "not"
+                | "default"
+                | "description"
+                | "title"
+                | "$comment"
+                | "examples"
+        )
+    }) {
+        return ClosedEnumDomain::Unknown;
+    }
+    let excluded = schema.get("not");
+    if let Some(excluded) = excluded {
+        if !excluded
+            .as_object()
+            .is_some_and(|fields| fields.len() == 1 && fields.contains_key("type"))
+        {
+            return ClosedEnumDomain::Unknown;
+        }
+        if schema_type_matches(excluded, value) {
+            return ClosedEnumDomain::Inapplicable;
+        }
+    }
+    if let Some(values) = schema["enum"].as_array() {
+        if schema.get("anyOf").is_some() {
+            return ClosedEnumDomain::Unknown;
+        }
+        return ClosedEnumDomain::Values(
+            values
+                .iter()
+                .filter(|candidate| {
+                    schema_type_matches(schema, candidate)
+                        && !excluded.is_some_and(|schema| schema_type_matches(schema, candidate))
+                })
+                .cloned()
+                .collect(),
+        );
+    }
+    if let Some(choices) = schema["anyOf"].as_array() {
+        let mut values = Vec::new();
+        for choice in choices {
+            match closed_enum_domain(choice, value) {
+                ClosedEnumDomain::Inapplicable => {}
+                ClosedEnumDomain::Values(domain) => {
+                    for value in domain {
+                        if !values.contains(&value) {
+                            values.push(value);
+                        }
+                    }
+                }
+                ClosedEnumDomain::Unknown => return ClosedEnumDomain::Unknown,
+            }
+        }
+        values.retain(|candidate| {
+            schema_type_matches(schema, candidate)
+                && !excluded.is_some_and(|schema| schema_type_matches(schema, candidate))
+        });
+        if !values.is_empty() {
+            return ClosedEnumDomain::Values(values);
+        }
+    }
+    ClosedEnumDomain::Unknown
+}
+
+fn enum_refusal(values: &[Value]) -> String {
+    // resource-limit: operation-contract.enum-preview-values
+    // class: result
+    // unit: count
+    // scope: operation
+    // value: 8
+    // resource: Число целых значений перечисления в сообщении отказа.
+    // status: justified
+    // origin: #2015: ограниченный список в отказе аргумента
+    // problem: Большой домен увеличивает ответ агента; полный список остаётся в контекстном контракте Can.
+    // on-reach: Список помечен как сокращённый, названо общее число альтернатив; next ведёт к полному контракту. Допустимые значения не удаляются из схемы.
+    // issue: #2015
+    // evidence: crates/unica-operation-contract/src/lib.rs::enum_preview_boundaries_keep_whole_escaped_json_literals
+    // evidence: crates/unica-daemon/src/infrastructure/daemon/v13_can_honesty_tests.rs::dcs_and_metadata_member_enum_refusals_open_source_backed_contracts
+    // decision: Для компактного сообщения выбран предел восемь целых JSON-значений и 256 UTF-8 байт списка. При достижении предела полный домен доступен через next; это предел представления, а не допустимого ввода.
+    // decision-date: 2026-10-28
+    // decision-source: https://github.com/IngvarConsulting/unica/issues/2015
+    // review: Проверены границы 8/9 значений, 256/257 байт, UTF-8 и открытие полного контракта через MCP.
+    const MAX_VALUES: usize = 8;
+    // resource-limit: operation-contract.enum-preview-bytes
+    // class: result
+    // unit: bytes
+    // scope: operation
+    // value: 256
+    // resource: Размер JSON-списка допустимых значений в сообщении отказа перечисления.
+    // status: justified
+    // origin: #2015: ограниченный список в отказе аргумента
+    // problem: Большой домен увеличивает ответ агента; полный список остаётся в контекстном контракте Can.
+    // on-reach: Список помечен как сокращённый, названо общее число альтернатив; next ведёт к полному контракту. Допустимые значения не удаляются из схемы.
+    // issue: #2015
+    // evidence: crates/unica-operation-contract/src/lib.rs::enum_preview_boundaries_keep_whole_escaped_json_literals
+    // evidence: crates/unica-daemon/src/infrastructure/daemon/v13_can_honesty_tests.rs::dcs_and_metadata_member_enum_refusals_open_source_backed_contracts
+    // decision: Для компактного сообщения выбран предел восемь целых JSON-значений и 256 UTF-8 байт списка. При достижении предела полный домен доступен через next; это предел представления, а не допустимого ввода.
+    // decision-date: 2026-10-28
+    // decision-source: https://github.com/IngvarConsulting/unica/issues/2015
+    // review: Проверены границы 8/9 значений, 256/257 байт, UTF-8 и открытие полного контракта через MCP.
+    const MAX_PREVIEW_BYTES: usize = 256;
+    if values.is_empty() {
+        return "this argument has no supported alternatives; read the operation contract".into();
+    }
+    let mut preview = String::from("[");
+    let mut displayed = 0;
+    for value in values.iter().take(MAX_VALUES) {
+        let literal = value.to_string();
+        let separator = if displayed == 0 { "" } else { ", " };
+        if preview.len() + separator.len() + literal.len() + 1 > MAX_PREVIEW_BYTES {
+            break;
+        }
+        preview.push_str(separator);
+        preview.push_str(&literal);
+        displayed += 1;
+    }
+    preview.push(']');
+    let mut message = format!("value is not one of the supported alternatives; allowed: {preview}");
+    if displayed != values.len() {
+        message.push_str(&format!(
+            " (list shortened; {} alternatives total; read the operation contract)",
+            values.len()
+        ));
+    }
+    message
+}
+
 fn normalize_aliases(schema: &Value, value: &mut Value) {
     if let Some(object) = value.as_object_mut() {
         if let Some(names) = schema["x-unica-aliases"].as_array() {
@@ -534,6 +707,138 @@ mod tests {
         }
     }
 
+    #[test]
+    fn nested_enum_domains_obey_outer_type_and_negation() {
+        for mut guarded in [json!({"type":"string"}), json!({"not":{"type":"null"}})] {
+            guarded["anyOf"] = json!([{"enum":[null,"a"]}]);
+            let schema = contract(json!({"anyOf":[guarded]}), &[]);
+            assert_eq!(
+                schema
+                    .normalize(&json!("x"), "args.value")
+                    .unwrap_err()
+                    .message,
+                enum_refusal(&[json!("a")])
+            );
+            assert!(schema.normalize(&Value::Null, "args.value").is_err());
+            assert!(schema.normalize(&json!("a"), "args.value").is_ok());
+        }
+    }
+
+    #[test]
+    fn enum_domains_survive_nested_any_of_without_hiding_other_failures() {
+        let schema = json!({"type":"object","properties":{"items":{"type":"array","items":{"type":"object","properties":{
+            "templateType":{"anyOf":[{"type":"string","enum":["HTMLDocument","TextDocument"]},{"not":{"type":"string"}}]}
+        }}}}});
+        let failure = contract(schema, &[])
+            .normalize(&json!({"items":[{"templateType":"Bogus"}]}), "ops[2].args")
+            .unwrap_err();
+        assert_eq!(failure.path, "ops[2].args.items[0].templateType");
+        assert!(
+            failure.message.contains("HTMLDocument") && failure.message.contains("TextDocument")
+        );
+        let union = contract(
+            json!({"anyOf":[{"type":"string","enum":["a","b"]},{"anyOf":[{"type":"string","enum":["b","c"]},{"type":"null"}]}]}),
+            &[],
+        );
+        let failure = union.normalize(&json!("x"), "args.value").unwrap_err();
+        assert_eq!(
+            failure.message,
+            enum_refusal(&[json!("a"), json!("b"), json!("c")])
+        );
+        for value in [json!("a"), json!("b"), json!("c"), Value::Null] {
+            assert!(union.normalize(&value, "args.value").is_ok());
+        }
+        let open = contract(
+            json!({"anyOf":[{"type":"string","enum":["a"]},{"type":"string","pattern":"^valid$"}]}),
+            &[],
+        );
+        assert_eq!(
+            open.normalize(&json!("x"), "args.value")
+                .unwrap_err()
+                .message,
+            "one of the supported argument alternatives must match"
+        );
+        assert_eq!(
+            union
+                .normalize(&json!({}), "args.value")
+                .unwrap_err()
+                .message,
+            "one of the supported argument alternatives must match"
+        );
+    }
+
+    #[test]
+    fn enum_refusals_name_small_domains_at_the_original_nested_path() {
+        let contract = contract(
+            json!({"type":"object","properties":{"items":{
+                "type":"array","items":{"type":"object","properties":{
+                    "mode":{"enum":["Auto","Manual",null,true,7]}
+                }}
+            }}}),
+            &[],
+        );
+        let refused = contract
+            .normalize(&json!({"items":[{"mode":"wrong"}]}), "ops[2].args")
+            .unwrap_err();
+        assert_eq!(refused.path, "ops[2].args.items[0].mode");
+        for value in ["\"Auto\"", "\"Manual\"", "null", "true", "7"] {
+            assert!(refused.message.contains(value), "{refused:?}");
+        }
+        assert!(!refused.message.contains("read the operation contract"));
+    }
+
+    #[test]
+    fn enum_refusal_previews_are_bounded_by_count_and_utf8_bytes() {
+        for values in [
+            (0..40)
+                .map(|i| json!(format!("Value{i}")))
+                .collect::<Vec<_>>(),
+            vec![json!("Я".repeat(1000))],
+        ] {
+            let refused = contract(json!({"enum": values}), &[])
+                .normalize(&json!("wrong"), "args.mode")
+                .unwrap_err();
+            assert!(
+                refused.message.contains("read the operation contract"),
+                "{refused:?}"
+            );
+            assert!(refused.message.len() < 400, "{}", refused.message.len());
+            assert!(!refused.message.contains("Value8"));
+        }
+    }
+
+    #[test]
+    fn enum_preview_boundaries_keep_whole_escaped_json_literals() {
+        for count in [8, 9] {
+            let values: Vec<_> = (0..count).map(|n| json!(n)).collect();
+            assert_eq!(enum_refusal(&values).contains("list shortened"), count == 9);
+        }
+        // [ + quotes + ASCII payload + ] is exactly 256 bytes.
+        assert!(!enum_refusal(&[json!("x".repeat(252))]).contains("list shortened"));
+        assert!(enum_refusal(&[json!("x".repeat(253))]).contains("list shortened"));
+        let escaped = json!("quoted\"\nline");
+        assert!(enum_refusal(std::slice::from_ref(&escaped)).contains(&escaped.to_string()));
+        assert!(enum_refusal(&[]).starts_with("this argument has no supported alternatives"));
+    }
+
+    #[test]
+    fn discriminator_refusal_names_the_union_without_duplicate_aliases() {
+        let contract = contract(
+            json!({"type":"object","x-unica-discriminator":"type","anyOf":[
+                {"properties":{"type":{"enum":["Field","Поле"]}}},
+                {"properties":{"type":{"enum":["Field","Group"]}}}
+            ]}),
+            &[],
+        );
+        let refused = contract
+            .normalize(&json!({"type":"wrong"}), "args.items[0]")
+            .unwrap_err();
+        assert_eq!(refused.path, "args.items[0].type");
+        assert!(refused.message.contains("\"Поле\""), "{refused:?}");
+        assert!(refused.message.contains("\"Group\""), "{refused:?}");
+        assert_eq!(refused.message.matches("\"Field\"").count(), 1);
+    }
+
     fn lower_word(value: &Value) -> Result<(), String> {
         value
             .as_str()
@@ -574,6 +879,7 @@ mod tests {
                 ContractError {
                     path: "ops[2].args.items[0].lower".into(),
                     message: "expected an upper-case word".into(),
+                    enum_value: false,
                 }
             );
         }
@@ -589,6 +895,7 @@ mod tests {
             ContractError {
                 path: "args".into(),
                 message: "argument format has no validator: test-unknown".into(),
+                enum_value: false,
             }
         );
         assert_eq!(
@@ -598,6 +905,7 @@ mod tests {
             ContractError {
                 path: "args".into(),
                 message: "argument format has no validator: test-unknown".into(),
+                enum_value: false,
             }
         );
     }

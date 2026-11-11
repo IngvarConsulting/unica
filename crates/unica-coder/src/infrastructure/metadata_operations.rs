@@ -33,7 +33,7 @@ impl MetadataOperations {
             context,
             cancellation,
         )?;
-        let (local, validation_subject) = read_typed_meta_info(
+        let (mut local, validation_subject) = read_typed_meta_info(
             &resolved,
             &request.source_set,
             &request.metadata_path,
@@ -44,6 +44,30 @@ impl MetadataOperations {
             cancellation,
             support_reader,
         )?;
+        // Values the compatibility mode of the set forbids (kind (б)): the
+        // mode is read from the registering root, the same check `apply`
+        // runs before publishing.
+        if let Some(mode) = unica_source_designer::extension_mode::source_set_compatibility_mode(
+            &resolved.owner_preimage,
+            resolved.handle.source_set_kind(),
+        ) {
+            let rules = unica_source_contract::compatibility::CompatibilityRules::for_mode(mode);
+            local.diagnostics.extend(
+                unica_metadata_designer::mode_checks::descriptor_mode_findings(
+                    &resolved.descriptor_preimage,
+                    rules,
+                )
+                .into_iter()
+                .map(|finding| {
+                    unica_metadata::MetaDiagnostic::error(
+                        unica_metadata::MetaDiagnosticCode::ValidationFailed,
+                        finding.message,
+                    )
+                    .with_field("type")
+                    .with_metadata_path(request.metadata_path.clone())
+                }),
+            );
+        }
         Ok(unica_metadata::validation_subject::MetadataRead {
             local,
             validation_subject,
@@ -228,7 +252,7 @@ pub(crate) mod medium_tests {
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::sync::Arc;
-    use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+    use unica_address::source_target::MetadataAddress;
     use unica_metadata::{
         MetaCollection, MetaEditOperation, MetaElementInput, MetaElementUpdateInput,
         MetaEventSource, MetaPosition, MetaPropertyChanges, MetaPropertyInput, MetaPropertyValue,
@@ -443,9 +467,7 @@ pub(crate) mod medium_tests {
         .unwrap();
         let descriptor = root.join("src/EventSubscriptions/Events.xml");
         let preimage = fs::read(&descriptor).unwrap();
-        let target =
-            MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "EventSubscription.Events")
-                .unwrap();
+        let target = MetadataAddress::parse_logical("EventSubscription.Events").unwrap();
         let prepared = MetadataOperations::prepare_mutation(
             &unica_metadata::request::MetadataRequest::Edit(
                 unica_metadata::request::MetaEditRequest {
@@ -501,8 +523,7 @@ pub(crate) mod medium_tests {
             Self {
                 descriptor: root.join("src/Catalogs/Editable.xml"),
                 owner: root.join("src/Configuration.xml"),
-                target: MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Catalog.Editable")
-                    .unwrap(),
+                target: MetadataAddress::parse_logical("Catalog.Editable").unwrap(),
                 root,
                 context,
             }
@@ -556,11 +577,7 @@ pub(crate) mod medium_tests {
             .unwrap()
             .publish(&cancellation)
             .unwrap();
-            MetadataAddress::parse(
-                PLATFORM_XML_8_3_27_FORMAT_2_20,
-                &format!("{}.{}", kind.as_str(), name),
-            )
-            .unwrap()
+            MetadataAddress::parse_logical(&format!("{}.{}", kind.as_str(), name)).unwrap()
         }
 
         fn owners_request(
@@ -649,8 +666,7 @@ pub(crate) mod medium_tests {
         };
         let request = unica_metadata::request::MetaInfoRequest {
             source_set: "unsafe".into(),
-            metadata_path: MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Catalog.Items")
-                .unwrap(),
+            metadata_path: MetadataAddress::parse_logical("Catalog.Items").unwrap(),
             sections: vec![unica_metadata::request::MetaInfoSection::Roles],
             limit: 20,
         };
@@ -719,11 +735,7 @@ pub(crate) mod medium_tests {
         let (root, context) = empty_workspace("event-source-add");
         add_exported_event_handler(&root, &context);
         let cancellation = CancellationToken::new();
-        let target = MetadataAddress::parse(
-            PLATFORM_XML_8_3_27_FORMAT_2_20,
-            "EventSubscription.AllEvents",
-        )
-        .unwrap();
+        let target = MetadataAddress::parse_logical("EventSubscription.AllEvents").unwrap();
         let add = unica_metadata::request::MetadataRequest::Add(
             unica_metadata::request::MetaAddRequest {
                 source_set: "main".into(),
@@ -884,11 +896,7 @@ pub(crate) mod medium_tests {
         .unwrap()
         .publish(&cancellation)
         .unwrap();
-        MetadataAddress::parse(
-            PLATFORM_XML_8_3_27_FORMAT_2_20,
-            &format!("EventSubscription.{name}"),
-        )
-        .unwrap()
+        MetadataAddress::parse_logical(&format!("EventSubscription.{name}")).unwrap()
     }
 
     #[test]
@@ -962,9 +970,7 @@ pub(crate) mod medium_tests {
     fn borrowed_children_of_a_borrowed_owner_validate_without_payload() {
         let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../tests/fixtures/acceptance/workspace-borrowed");
-        let target =
-            MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "DataProcessor.Обработка")
-                .unwrap();
+        let target = MetadataAddress::parse_logical("DataProcessor.Обработка").unwrap();
         let read = |mutate: &dyn Fn(&Path)| {
             let root = tempfile::tempdir().unwrap();
             copy_fixture_tree(&fixture, root.path());
@@ -1223,11 +1229,8 @@ pub(crate) mod medium_tests {
         .unwrap()
         .publish(&cancellation)
         .unwrap();
-        let subscription = MetadataAddress::parse(
-            PLATFORM_XML_8_3_27_FORMAT_2_20,
-            "EventSubscription.DefinedEvents",
-        )
-        .unwrap();
+        let subscription =
+            MetadataAddress::parse_logical("EventSubscription.DefinedEvents").unwrap();
         let defined_type_descriptor = fixture.root.join("src/DefinedTypes/CatalogObjects.xml");
         let descriptor = fs::read_to_string(&defined_type_descriptor).unwrap();
         let malformed = descriptor.replacen("cfg:CatalogObject.Editable", "cfg:String", 1);
@@ -1374,8 +1377,7 @@ pub(crate) mod medium_tests {
         let missing = source.replacen("cfg:CatalogObject.Editable", "cfg:CatalogObject.Missing", 1);
         assert_ne!(missing, source, "fixture must rewrite the Source QName");
         fs::write(descriptor, missing).unwrap();
-        let missing_target =
-            MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Catalog.Missing").unwrap();
+        let missing_target = MetadataAddress::parse_logical("Catalog.Missing").unwrap();
 
         assert_event_source_info_validation_fails(
             &fixture,
@@ -1461,11 +1463,8 @@ pub(crate) mod medium_tests {
         .unwrap()
         .publish(&cancellation)
         .unwrap();
-        let subscription = MetadataAddress::parse(
-            PLATFORM_XML_8_3_27_FORMAT_2_20,
-            "EventSubscription.CatalogEvents",
-        )
-        .unwrap();
+        let subscription =
+            MetadataAddress::parse_logical("EventSubscription.CatalogEvents").unwrap();
         let sources = vec![
             MetaEventSource::Object {
                 metadata_path: fixture.target.clone(),
@@ -1647,11 +1646,8 @@ pub(crate) mod medium_tests {
         .unwrap()
         .publish(&cancellation)
         .unwrap();
-        let subscription = MetadataAddress::parse(
-            PLATFORM_XML_8_3_27_FORMAT_2_20,
-            "EventSubscription.CatalogEvents",
-        )
-        .unwrap();
+        let subscription =
+            MetadataAddress::parse_logical("EventSubscription.CatalogEvents").unwrap();
         let request = unica_metadata::request::MetadataRequest::Edit(
             unica_metadata::request::MetaEditRequest {
                 source_set: "main".into(),
@@ -1724,9 +1720,7 @@ pub(crate) mod medium_tests {
         .unwrap()
         .publish(&cancellation)
         .unwrap();
-        let subscription =
-            MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "EventSubscription.Events")
-                .unwrap();
+        let subscription = MetadataAddress::parse_logical("EventSubscription.Events").unwrap();
         let request = unica_metadata::request::MetadataRequest::Edit(
             unica_metadata::request::MetaEditRequest {
                 source_set: "main".into(),
@@ -1807,11 +1801,8 @@ pub(crate) mod medium_tests {
             1,
         );
         fs::write(&fixture.descriptor, catalog.as_bytes()).unwrap();
-        let subscription = MetadataAddress::parse(
-            PLATFORM_XML_8_3_27_FORMAT_2_20,
-            "EventSubscription.CatalogEvents",
-        )
-        .unwrap();
+        let subscription =
+            MetadataAddress::parse_logical("EventSubscription.CatalogEvents").unwrap();
         let request = unica_metadata::request::MetadataRequest::Edit(
             unica_metadata::request::MetaEditRequest {
                 source_set: "main".into(),
@@ -1858,11 +1849,8 @@ pub(crate) mod medium_tests {
         .unwrap()
         .publish(&cancellation)
         .unwrap();
-        let subscription = MetadataAddress::parse(
-            PLATFORM_XML_8_3_27_FORMAT_2_20,
-            "EventSubscription.GuardedEvents",
-        )
-        .unwrap();
+        let subscription =
+            MetadataAddress::parse_logical("EventSubscription.GuardedEvents").unwrap();
         let request = unica_metadata::request::MetadataRequest::Edit(
             unica_metadata::request::MetaEditRequest {
                 source_set: "main".into(),
@@ -4459,7 +4447,7 @@ pub(crate) mod medium_tests {
             ),
             (
                 "version",
-                br#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.21"/>"#.as_slice(),
+                br#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.23"/>"#.as_slice(),
             ),
         ] {
             let fixture = Fixture::new(&format!("retained-form-invalid-{label}"));
@@ -4884,13 +4872,7 @@ pub(crate) mod medium_tests {
         );
         assert_eq!(
             diagnostic.metadata_path.as_ref(),
-            Some(
-                &MetadataAddress::parse(
-                    PLATFORM_XML_8_3_27_FORMAT_2_20,
-                    "Catalog.Editable.Form.Main"
-                )
-                .unwrap()
-            )
+            Some(&MetadataAddress::parse_logical("Catalog.Editable.Form.Main").unwrap())
         );
         assert_eq!(
             diagnostic.field.as_deref(),
@@ -5018,8 +5000,7 @@ pub(crate) mod medium_tests {
         .unwrap()
         .publish(&cancellation)
         .unwrap();
-        let parent_address =
-            MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Catalog.Parent").unwrap();
+        let parent_address = MetadataAddress::parse_logical("Catalog.Parent").unwrap();
         let request = unica_metadata::request::MetadataRequest::Edit(
             unica_metadata::request::MetaEditRequest {
                 source_set: "main".into(),
@@ -5291,8 +5272,7 @@ pub(crate) mod medium_tests {
     fn typed_relation_missing_target_fails_prepare_with_the_exact_target_field() {
         let fixture = Fixture::new("relation-target-missing");
         let cancellation = CancellationToken::new();
-        let missing =
-            MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Catalog.Missing").unwrap();
+        let missing = MetadataAddress::parse_logical("Catalog.Missing").unwrap();
         let request = unica_metadata::request::MetadataRequest::Edit(
             unica_metadata::request::MetaEditRequest {
                 source_set: "main".into(),

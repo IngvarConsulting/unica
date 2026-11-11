@@ -27,7 +27,7 @@ use std::path::{Path, PathBuf};
 use unica_address::address::QualifiedAddress;
 use unica_address::source_target::{
     MetadataAddress, ResolvedTarget, SourceTarget, SourceTargetError, SourceTargetErrorCode,
-    TargetKind, PLATFORM_XML_8_3_27_FORMAT_2_20,
+    TargetKind,
 };
 use unica_execution_contract::adapter_outcome::AdapterOutcome;
 use unica_forms::facts::*;
@@ -318,6 +318,35 @@ pub(crate) fn write_utf8_bom(path: &Path, content: &str) -> Result<(), String> {
 }
 
 #[cfg(test)]
+mod owner_format_tests {
+    use super::owners_export_format;
+    use unica_source_designer::owner::{PlatformXmlOwner, PlatformXmlOwnerKind};
+
+    fn owner(version: &str) -> PlatformXmlOwner {
+        PlatformXmlOwner {
+            kind: PlatformXmlOwnerKind::Configuration,
+            path: "Configuration.xml".into(),
+            version: Some(version.to_string()),
+            raw: Vec::new(),
+        }
+    }
+
+    /// New files of a write take the export format of its owners.
+    #[test]
+    fn a_write_follows_the_export_format_of_its_owners() {
+        for version in ["2.20", "2.21", "2.22"] {
+            assert_eq!(
+                owners_export_format(&[owner(version), owner(version)]),
+                Ok(version)
+            );
+        }
+        assert_eq!(owners_export_format(&[]), Ok("2.20"));
+        let mixed = owners_export_format(&[owner("2.21"), owner("2.20")]).unwrap_err();
+        assert!(mixed.contains("2.21") && mixed.contains("2.20"), "{mixed}");
+    }
+}
+
+#[cfg(test)]
 mod medium_mutation_tests {
     use super::{guard_active_format_owner, read_utf8_sig_snapshot, write_utf8_bom};
     use std::fs;
@@ -478,17 +507,20 @@ mod medium_mutation_tests {
     fn newer_format_warning_keeps_8_5_roadmap_copy_without_downgrade_offer() {
         let warning = unica_source_designer::format_profile::format_compatibility_warning(
             &FormatCompatibility::Newer {
-                actual: ExportFormatVersion::parse("2.21").unwrap(),
+                actual: ExportFormatVersion::parse("2.23").unwrap(),
             },
         );
 
-        assert!(warning.contains("1C 8.5 support is planned"), "{warning}");
+        assert!(
+            warning.contains("does not support this export yet"),
+            "{warning}"
+        );
         assert!(!warning.to_ascii_lowercase().contains("downgrade"));
     }
 
     #[test]
     fn active_format_owner_guard_reauthorizes_and_rejects_newer_snapshot() {
-        let (context, target) = format_owner_context("newer", "2.21");
+        let (context, target) = format_owner_context("newer", "2.23");
         let mut transaction = CompileTransaction::new();
         transaction
             .create_utf8_bom_text(&target, "<Template/>")
@@ -497,8 +529,8 @@ mod medium_mutation_tests {
         let error = guard_active_format_owner(&mut transaction, &target, &context)
             .expect_err("handler-side guard must reject a newer owner snapshot");
 
-        assert!(error.contains("2.21"), "{error}");
-        assert!(error.contains("2.20"), "{error}");
+        assert!(error.contains("2.23"), "{error}");
+        assert!(error.contains("2.22"), "{error}");
         assert!(!target.exists());
         fs::remove_dir_all(context.workspace_root).unwrap();
     }
@@ -514,7 +546,7 @@ mod medium_mutation_tests {
         guard_active_format_owner(&mut transaction, &target, &context).unwrap();
         fs::write(
             &owner,
-            "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.21\"><Configuration/></MetaDataObject>",
+            "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.23\"><Configuration/></MetaDataObject>",
         )
         .unwrap();
 
@@ -733,8 +765,25 @@ pub(crate) fn detect_format_version(
         crate::infrastructure::platform_xml_owner::resolve_platform_xml_owners(target, context)
             .map_err(|error| error.message)?;
     require_supported_platform_xml_owners(&owners)?;
-    ExportFormatVersion::parse(ACTIVE_FORMAT_PROFILE.export_format)
-        .map_err(|error| error.to_string())
+    ExportFormatVersion::parse(owners_export_format(&owners)?).map_err(|error| error.to_string())
+}
+
+/// The export format the owners of a write target record: new files of the
+/// write follow it, so an edit keeps the format of its set. Owners recording
+/// different formats are refused; without an owner it is the writable default.
+fn owners_export_format(
+    owners: &[unica_source_designer::owner::PlatformXmlOwner],
+) -> Result<&str, String> {
+    let mut versions = owners.iter().filter_map(|owner| owner.version.as_deref());
+    let Some(first) = versions.next() else {
+        return Ok(ACTIVE_FORMAT_PROFILE.export_format);
+    };
+    match versions.find(|version| *version != first) {
+        Some(other) => Err(format!(
+            "the platform XML owners of this write record different export formats {first} and {other}; a source set keeps one export format"
+        )),
+        None => Ok(first),
+    }
 }
 
 /// Re-authorize the current version-owning XML bytes at handler planning time
@@ -774,7 +823,7 @@ pub(crate) fn code_patch_source_target(
                 "metadataPath must identify one existing module",
             )
         })?;
-    let metadata_path = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, raw_metadata_path)?;
+    let metadata_path = MetadataAddress::parse_logical(raw_metadata_path)?;
     Ok(SourceTarget {
         source_set: source_set.to_string(),
         metadata_path: Some(metadata_path),
@@ -807,7 +856,7 @@ pub(crate) fn metadata_object_source_target(
                 "metadataPath must identify one existing metadata object",
             )
         })?;
-    let metadata_path = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, raw_metadata_path)?;
+    let metadata_path = MetadataAddress::parse_logical(raw_metadata_path)?;
     Ok(SourceTarget {
         source_set: source_set.to_string(),
         metadata_path: Some(metadata_path),

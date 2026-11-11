@@ -143,7 +143,7 @@
           "eq": "$capture.unchanged"
         }
       ],
-      "refusal": "bad_value: canonical invocation has unknown argument `filter`: unica.view answers every node with its operation dictionary can; read one operation's argument contract at `",
+      "refusal": "bad_value: canonical invocation has unknown argument `filter`",
       "assertions": [
         {
           "pointer": "/diagnostics",
@@ -151,17 +151,9 @@
             {
               "code": "bad_value",
               "outcome": "fixCall",
-              "message": "canonical invocation has unknown argument `filter`: unica.view answers every node with its operation dictionary can; read one operation's argument contract at `<node>.Can.<op>`, and page collections with limit"
+              "message": "canonical invocation has unknown argument `filter`"
             }
           ]
-        },
-        {
-          "pointer": "/next/0/args/at",
-          "eq": "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data.Can.query.set"
-        },
-        {
-          "pointer": "/next/1/args/at",
-          "eq": "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data"
         }
       ]
     },

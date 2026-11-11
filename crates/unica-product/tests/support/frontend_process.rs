@@ -101,6 +101,9 @@ pub struct StdioFrontend {
     pub process: OwnedProcess,
     input: ChildStdin,
     responses: Receiver<Value>,
+    /// A native client speaks 2026-07-28: it has no initialize handshake and
+    /// every request carries its protocol version and Tasks capability.
+    native: bool,
 }
 
 impl StdioFrontend {
@@ -142,13 +145,17 @@ impl StdioFrontend {
             process,
             input,
             responses,
+            native,
         };
+        if native {
+            return frontend;
+        }
         let response = frontend.request(
             1,
             "initialize",
             serde_json::json!({
-                "protocolVersion": if native { "2026-07-28" } else { "2025-11-25" },
-                "capabilities": if native { serde_json::json!({"extensions": {"io.modelcontextprotocol/tasks": {}}}) } else { serde_json::json!({}) },
+                "protocolVersion": "2025-11-25",
+                "capabilities": {},
                 "clientInfo": {"name": "daemon-replacement-test", "version": "1"}
             }),
         );
@@ -162,7 +169,15 @@ impl StdioFrontend {
         self.input.flush().unwrap();
     }
 
-    pub fn request(&mut self, id: u64, method: &str, params: Value) -> Value {
+    pub fn request(&mut self, id: u64, method: &str, mut params: Value) -> Value {
+        if self.native && params.get("_meta").is_none() {
+            params["_meta"] = serde_json::json!({
+                "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                "io.modelcontextprotocol/clientCapabilities": {
+                    "extensions": {"io.modelcontextprotocol/tasks": {}}
+                }
+            });
+        }
         self.send(
             serde_json::json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}),
         );
@@ -192,7 +207,7 @@ impl StdioFrontend {
     }
 }
 pub fn endpoint_path(state_root: &Path, identity: &str) -> PathBuf {
-    unica_coder_daemon::interfaces::daemon::endpoint_path_for_protocol_test(state_root, identity)
+    unica_daemon::interfaces::daemon::endpoint_path_for_protocol_test(state_root, identity)
 }
 
 pub fn read_endpoint(state_root: &Path, identity: &str) -> Value {

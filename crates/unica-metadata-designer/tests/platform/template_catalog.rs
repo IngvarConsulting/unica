@@ -1,6 +1,6 @@
 use roxmltree::{Document, Node};
 
-use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+use unica_address::source_target::MetadataAddress;
 use unica_metadata::{
     DateFractions, MetadataKind, MetadataType, MetadataTypeVariant, NumberSign, StringLengthMode,
 };
@@ -252,11 +252,7 @@ fn typed_value_type_groups_platform_tags_before_qualifiers() {
     let value_type = MetadataType {
         variants: vec![
             MetadataTypeVariant::DefinedType {
-                metadata_path: MetadataAddress::parse(
-                    PLATFORM_XML_8_3_27_FORMAT_2_20,
-                    "DefinedType.Money",
-                )
-                .unwrap(),
+                metadata_path: MetadataAddress::parse_logical("DefinedType.Money").unwrap(),
             },
             MetadataTypeVariant::String {
                 length: 100,
@@ -293,8 +289,10 @@ fn typed_auxiliary_xml_matches_platform_fixtures() {
     assert_eq!(exchange.len(), 1);
     assert_eq!(
         exchange[0].2.replace("\r\n", "\n"),
-        include_str!("../../../../tests/fixtures/platform_8_3_27/exchange_plan/Content.xml")
-            .replace("\r\n", "\n")
+        include_str!(
+            "../../../../tests/fixtures/formats/platform_xml/2.20/exchange_plan/Content.xml"
+        )
+        .replace("\r\n", "\n")
     );
 
     let process =

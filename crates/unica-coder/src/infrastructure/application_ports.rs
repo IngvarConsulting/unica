@@ -20,7 +20,6 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use unica_adapter_v8_runner::adapter::{RuntimeAdapter, RuntimeInvocation};
-use unica_adapter_v8_runner::full_dump::{FullDumpInvocation, VerifiedFullDumpAdapter};
 use unica_code_intelligence::model::CodeIntelligenceContext;
 use unica_code_intelligence::model::CodeIntelligenceProvider;
 use unica_code_intelligence::model::CodeIntelligenceReadRequest;
@@ -270,9 +269,7 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
             workspace.cwd = unica_workspace::paths::normalize_path_identity(&workspace.cwd)?;
             let filters = metadata_path
                 .map(|raw| {
-                    let address = unica_address::source_target::MetadataAddress::parse(
-                        unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
-                        raw,
+                    let address = unica_address::source_target::MetadataAddress::parse_logical(raw,
                     )
                     .map_err(|error| error.to_string())?;
                     let target = unica_address::source_target::SourceTarget {
@@ -539,14 +536,6 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                 "{} stopped before adapter execution",
                 spec.name
             ))));
-        }
-        if let Some(invocation) = verified_full_dump_invocation(spec, args, dry_run) {
-            return VerifiedFullDumpAdapter::new(
-                crate::infrastructure::runtime_composition::runtime_environment(),
-                crate::infrastructure::runtime_composition::full_dump_semantics(),
-            )
-            .invoke(spec.name, invocation, args, context, cancellation)
-            .map(HandlerOutcome::plain);
         }
         match spec.handler {
             ToolHandler::Metadata { .. } => Err(format!(
@@ -835,31 +824,6 @@ fn normalize_lexical_path(path: &Path) -> PathBuf {
         }
     }
     normalized
-}
-
-fn is_applied_full_dump(args: &Map<String, Value>, dry_run: bool) -> bool {
-    !dry_run && args.get("mode").and_then(Value::as_str) == Some("full")
-}
-
-fn verified_full_dump_invocation(
-    spec: ToolSpec,
-    args: &Map<String, Value>,
-    dry_run: bool,
-) -> Option<FullDumpInvocation> {
-    if !is_applied_full_dump(args, dry_run) {
-        return None;
-    }
-    match spec.handler {
-        ToolHandler::BuildRuntime { command, .. } if command == ["dump"] => {
-            Some(FullDumpInvocation::BuildDump)
-        }
-        ToolHandler::RuntimeAdapter
-            if args.get("operation").and_then(Value::as_str) == Some("dump") =>
-        {
-            Some(FullDumpInvocation::RuntimeExecute)
-        }
-        _ => None,
-    }
 }
 
 fn native_handler_outcome(
@@ -1467,7 +1431,7 @@ mod medium_tests {
     use super::{
         canonical_v13_docs_search, documentation_context, documentation_registry,
         normalize_code_intelligence_read_request, project_platform_version,
-        select_installation_root, select_platform_version, verified_full_dump_invocation,
+        select_installation_root, select_platform_version,
     };
 
     use crate::application::ports::ApplicationPorts;
@@ -1475,9 +1439,7 @@ mod medium_tests {
         preview_strategy, tools, InvocationMode, PreviewStrategy, RuntimeJobAction, ToolHandler,
         ToolSpec,
     };
-    use unica_address::source_target::{
-        MetadataAddress, ResolvedTarget, TargetKind, PLATFORM_XML_8_3_27_FORMAT_2_20,
-    };
+    use unica_address::source_target::{MetadataAddress, ResolvedTarget, TargetKind};
     use unica_code_intelligence::model::CodeIntelligenceContext;
     use unica_code_intelligence::model::CodeIntelligenceReadRequest;
     use unica_metadata::support_state::{
@@ -1487,8 +1449,6 @@ mod medium_tests {
     use unica_source_contract::workspace::ResolvedSourceRoot;
     use unica_source_contract::workspace::WorkspaceContext;
     use unica_work_control::cancellation::CancellationToken;
-
-    use unica_adapter_v8_runner::full_dump::FullDumpInvocation;
 
     use crate::infrastructure::support_state::SupportStateReaderFactory;
     use serde_json::{json, Map};
@@ -1648,12 +1608,19 @@ mod medium_tests {
         assert_eq!(recursive_storage_snapshot(&workspace), before);
         assert!(absent.iter().all(|path| !path.exists()));
 
-        let planned_result = crate::composition::testing::application()
-            .call_tool(
-                "unica.build.load",
-                json!({"cwd": workspace}).as_object().unwrap(),
-            )
-            .expect("real planned-command public preview");
+        // The planned command names the bundled runner of the real plugin.
+        // It comes from the source checkout: an executable built outside the
+        // repository (CARGO_TARGET_DIR) has no plugin beside it.
+        let planned_result = crate::infrastructure::plugin_runtime::with_plugin_root_for_test(
+            &crate::infrastructure::plugin_runtime::source_checkout_plugin_root(),
+            || {
+                crate::composition::testing::application().call_tool(
+                    "unica.build.load",
+                    json!({"cwd": workspace}).as_object().unwrap(),
+                )
+            },
+        )
+        .expect("real planned-command public preview");
         assert!(
             planned_result.summary.starts_with("dry run:"),
             "{planned_result:?}"
@@ -1984,7 +1951,7 @@ mod medium_tests {
     }
 
     fn metadata_address(raw: &str) -> MetadataAddress {
-        MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, raw).unwrap()
+        MetadataAddress::parse_logical(raw).unwrap()
     }
 
     #[test]
@@ -2011,7 +1978,7 @@ mod medium_tests {
         std::fs::write(
             workspace.join("src/Configuration.xml"),
             include_bytes!(
-                "../../../../tests/fixtures/platform_8_3_27/support-edit-bin-only/src/Configuration.xml"
+                "../../../../tests/fixtures/formats/platform_xml/2.20/support-edit-bin-only/src/Configuration.xml"
             ),
         )
         .unwrap();
@@ -2184,50 +2151,6 @@ mod medium_tests {
                 .unwrap();
             assert_eq!(read.local.support, expected, "state {state:?}");
         }
-    }
-
-    #[test]
-    fn applied_full_dump_routes_only_synchronous_public_entry_points_to_verified_adapter() {
-        let build = spec(
-            "unica.build.dump",
-            ToolHandler::BuildRuntime {
-                command: &["dump"],
-                event: None,
-            },
-        );
-        let runtime = spec("unica.runtime.execute", ToolHandler::RuntimeAdapter);
-        let job = spec(
-            "unica.runtime.job.start",
-            ToolHandler::RuntimeJob {
-                action: RuntimeJobAction::Start,
-            },
-        );
-        let mut build_args = Map::new();
-        build_args.insert("mode".to_string(), json!("full"));
-        let mut runtime_args = build_args.clone();
-        runtime_args.insert("operation".to_string(), json!("dump"));
-
-        assert_eq!(
-            verified_full_dump_invocation(build, &build_args, false),
-            Some(FullDumpInvocation::BuildDump)
-        );
-        assert_eq!(
-            verified_full_dump_invocation(runtime, &runtime_args, false),
-            Some(FullDumpInvocation::RuntimeExecute)
-        );
-        assert_eq!(
-            verified_full_dump_invocation(job, &runtime_args, false),
-            None
-        );
-        assert_eq!(
-            verified_full_dump_invocation(runtime, &runtime_args, true),
-            None
-        );
-        runtime_args.insert("mode".to_string(), json!("partial"));
-        assert_eq!(
-            verified_full_dump_invocation(runtime, &runtime_args, false),
-            None
-        );
     }
 
     fn code_intelligence_context_for_paths() -> (PathBuf, CodeIntelligenceContext) {

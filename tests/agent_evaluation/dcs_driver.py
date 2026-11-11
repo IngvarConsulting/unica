@@ -24,7 +24,7 @@ from tests.ci.acceptance_profiles import REPO, host_target, isolated_environment
 from tests.agent_evaluation import cli_host
 
 FIXTURE = REPO / "tests/fixtures/acceptance/agent-dcs"
-PLATFORM_DCS_SCAFFOLD = REPO / "tests/fixtures/platform_8_3_27/template-new-xml/native-canonical-dcs-content.xml"
+PLATFORM_DCS_SCAFFOLD = REPO / "tests/fixtures/formats/platform_xml/2.20/template-new-xml/native-canonical-dcs-content.xml"
 XML = "src/cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml"
 DCS_TEMPLATE = "cf:Report.F05Report.Template.F05Schema"
 DCS_OWNER = "cf:Report.F05Report"

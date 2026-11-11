@@ -16,7 +16,25 @@
           "pointer": "/data/effectiveSourceSet",
           "eq": "main"
         }
-      ]
+      ],
+      "captures": {
+        "unchanged1": {
+          "file": "src/Configuration.xml",
+          "kind": "sha256"
+        },
+        "unchanged2": {
+          "file": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256"
+        },
+        "unchanged3": {
+          "file": "src/Languages/Русский.xml",
+          "kind": "sha256"
+        },
+        "unchanged4": {
+          "file": "src/Tasks/Approval.xml",
+          "kind": "sha256"
+        }
+      }
     },
     {
       "tool": "unica.view",
@@ -328,22 +346,22 @@
         {
           "path": "src/Configuration.xml",
           "kind": "sha256",
-          "eq": "af6cb6939835080871ea2a8a516979dd0f0fa0708f93c2eb35daff86d1d9edd3"
+          "eq": "$capture.unchanged1"
         },
         {
           "path": "src/Ext/ClientApplicationInterface.xml",
           "kind": "sha256",
-          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+          "eq": "$capture.unchanged2"
         },
         {
           "path": "src/Languages/Русский.xml",
           "kind": "sha256",
-          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+          "eq": "$capture.unchanged3"
         },
         {
           "path": "src/Tasks/Approval.xml",
           "kind": "sha256",
-          "eq": "05c5c3521e51a40961929ad814c33763f71c37e4ed9d0ffc9e070f5182194dc5"
+          "eq": "$capture.unchanged4"
         }
       ]
     }

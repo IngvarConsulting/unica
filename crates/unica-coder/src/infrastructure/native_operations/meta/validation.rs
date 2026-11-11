@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 #[cfg(any(test, feature = "test-support"))]
-use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+use unica_address::source_target::MetadataAddress;
 #[cfg(any(test, feature = "test-support"))]
 use unica_metadata::{MetaDiagnostic, MetaDiagnosticSeverity, MetadataKind};
 use unica_source_contract::workspace::WorkspaceContext;
@@ -30,10 +30,10 @@ pub(crate) fn validate_metadata_owner_shape_8_3_27(
         "Subsystem" => return validate_subsystem_owner_path(object_path, workspace),
         _ => {}
     }
-    unica_metadata_designer::format_contract::validate_metadata_8_3_27_boolean_contract(
+    unica_metadata_designer::format_contract::validate_metadata_boolean_contract(
         &xml_text, operation,
     )?;
-    unica_metadata_designer::format_contract::validate_metadata_8_3_27_enum_contract(
+    unica_metadata_designer::format_contract::validate_metadata_enum_contract(
         &xml_text, operation,
     )?;
 
@@ -83,7 +83,7 @@ mod tests {
     use super::*;
     use roxmltree::Document;
 
-    use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+    use unica_address::source_target::MetadataAddress;
     use unica_metadata::subsystem::SubsystemAddress;
     use unica_metadata::{MetaDiagnosticCode, MetaValidationStatus};
 
@@ -139,16 +139,13 @@ mod tests {
             mixed_catalog, catalog,
             "the catalog must declare a lock mode"
         );
-        unica_metadata_designer::format_contract::validate_metadata_8_3_27_enum_contract(
-            &catalog, "test",
+        unica_metadata_designer::format_contract::validate_metadata_enum_contract(&catalog, "test")
+            .unwrap();
+        let rejected = unica_metadata_designer::format_contract::validate_metadata_enum_contract(
+            &mixed_catalog,
+            "test",
         )
-        .unwrap();
-        let rejected =
-            unica_metadata_designer::format_contract::validate_metadata_8_3_27_enum_contract(
-                &mixed_catalog,
-                "test",
-            )
-            .unwrap_err();
+        .unwrap_err();
         assert!(rejected.contains("DataLockControlMode"), "{rejected}");
 
         let document = Document::parse(&mixed_catalog).unwrap();
@@ -178,7 +175,7 @@ mod tests {
     }
 
     fn address(value: &str) -> MetadataAddress {
-        MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, value).unwrap()
+        MetadataAddress::parse_logical(value).unwrap()
     }
 
     fn image(
@@ -260,10 +257,9 @@ mod tests {
 
     #[test]
     fn child_descriptor_read_admission_preserves_structure_and_strict_publication() {
-        let owner =
-            MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Report.Sales").unwrap();
+        let owner = MetadataAddress::parse_logical("Report.Sales").unwrap();
         let body = "<Template><Properties><Name>Dcs</Name><TemplateType>DataCompositionSchema</TemplateType></Properties></Template>";
-        for version in [Some("2.20"), Some("2.19"), Some("2.21"), None] {
+        for version in [Some("2.20"), Some("2.19"), Some("2.23"), None] {
             let version_attr = version
                 .map(|v| format!(" version=\"{v}\""))
                 .unwrap_or_default();
@@ -517,7 +513,7 @@ mod tests {
             ),
             (
                 "version",
-                br#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.21"/>"#.as_slice(),
+                br#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.23"/>"#.as_slice(),
             ),
             ("malformed", br#"<Form"#.as_slice()),
             (
@@ -1086,7 +1082,7 @@ mod tests {
         for kind in ["Template", "Form"] {
             let template_type = (kind == "Template").then_some("TextDocument");
             let child = typed_child_xml(kind, "Main", template_type);
-            for version in [Some("2.21"), Some("2.19"), None] {
+            for version in [Some("2.23"), Some("2.19"), None] {
                 // Either the existing owner or an adopted child's descriptor can
                 // carry the incompatible profile. Reading is not a write grant.
                 for resource_index in [0, 1] {
@@ -3350,8 +3346,7 @@ mod template_removal_owner_range_tests {
             "\u{feff}\u{feff}{}",
             original.replacen(start, &properties, 1)
         );
-        let owner =
-            MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Report.F05Report").unwrap();
+        let owner = MetadataAddress::parse_logical("Report.F05Report").unwrap();
         let identity =
             validate_template_removal_identity(&source, descriptor, &owner, "F05Schema", false)
                 .unwrap();

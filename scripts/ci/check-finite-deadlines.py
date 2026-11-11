@@ -42,10 +42,10 @@ ALLOWED: dict[str, tuple[int, str]] = {
         1, "PUBLIC_INVOCATION_DEADLINE: legacy v0.12 surface, unreachable from the v0.13 wire"),
     "crates/unica-coder/src/infrastructure/application_ports.rs": (
         1, "NATIVE_TYPED_INVOCATION_DEADLINE: legacy v0.12 surface"),
-    "crates/unica-lsp/src/host.rs": (
+    "crates/unica-editor-analysis/src/host.rs": (
         1, "a symbol call carries the editor request's own cutoff, set by the LSP lane, to the provider; "
            "a_symbol_call_gives_the_provider_the_requests_own_deadline rejects rearming"),
-    "crates/unica-coder-daemon/src/infrastructure/daemon/invocation_service.rs": (
+    "crates/unica-daemon/src/infrastructure/daemon/invocation_service.rs": (
         1, "saved apply adapts the existing caller cutoff; "
            "saved_apply_adapter_preserves_the_existing_cutoff_and_absence rejects rearming"),
     "crates/unica-execution/src/receipt_runtime.rs": (27, "per-step Task store and lifecycle-link I/O bounds"),

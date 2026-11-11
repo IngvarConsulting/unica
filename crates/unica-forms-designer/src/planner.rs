@@ -1,7 +1,7 @@
 //! Form operation parsing and planning over an existing source proposal.
 use serde_json::{Map, Value};
 use unica_address::address::{NodeKind, QualifiedAddress};
-use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+use unica_address::source_target::MetadataAddress;
 use unica_forms::default_forms::FormSlotTarget;
 use unica_forms::facts::FormInfoElement;
 use unica_forms::operations::FormOperation;
@@ -18,6 +18,9 @@ const UTF8_BOM: &[u8] = b"\xef\xbb\xbf";
 #[derive(Debug, Clone)]
 pub enum FormEditStep {
     Definition(Value),
+    RemoveAttribute {
+        name: String,
+    },
     AddColumns {
         attribute: String,
         columns: Vec<crate::column_add::ColumnAddition>,
@@ -190,11 +193,9 @@ pub fn form_target(
     let owner_name = owner
         .name()
         .ok_or_else(|| bad(op_index, "at", "the form owner must be named"))?;
-    let address = MetadataAddress::parse(
-        PLATFORM_XML_8_3_27_FORMAT_2_20,
-        &format!("{}.{owner_name}", owner.kind().as_str()),
-    )
-    .map_err(|error| bad(op_index, "at", error.to_string()))?;
+    let address =
+        MetadataAddress::parse_logical(&format!("{}.{owner_name}", owner.kind().as_str()))
+            .map_err(|error| bad(op_index, "at", error.to_string()))?;
     let named = |segment: &unica_address::address::AddressSegment, what: &str| {
         segment
             .name()
@@ -575,12 +576,20 @@ pub fn parse_form_operation(
             "a data column requires an owner with managed forms",
         ));
     }
+    let attribute = (operation == FormOperation::AttributeRemove)
+        .then(|| target.attribute.clone())
+        .flatten();
     // Узел, на котором исполняется операция, — ровно её `at`: элемент и
     // событие задаются адресом, а операция другого узла отказывает, а не
     // пишет молча в форму, элемент или владельца (#1351, #1355).
-    let placed = (target.attribute.is_none() || operation == FormOperation::ColumnAdd)
+    let placed = (target.attribute.is_none()
+        || matches!(
+            operation,
+            FormOperation::ColumnAdd | FormOperation::AttributeRemove
+        ))
         && (target.column.is_none() || operation == FormOperation::PropsSet)
         && match operation {
+            FormOperation::AttributeRemove => attribute.is_some(),
             FormOperation::ColumnAdd => target.attribute.is_some(),
             FormOperation::Add | FormOperation::Set => target.form.is_none(),
             FormOperation::ItemAdd => target.form.is_some() && target.event.is_none(),
@@ -605,6 +614,7 @@ pub fn parse_form_operation(
             FormOperation::ItemRemove | FormOperation::ItemMove => {
                 "the existing item `Owner.Name.Form.F.Item.A[.Item.B…]`"
             }
+            FormOperation::AttributeRemove => "the existing attribute `Owner.Name.Form.F.Attribute.A`",
             FormOperation::EventBind => "the event `Owner.Name.Form.F[.Item.A…].Event.E`",
             FormOperation::Remove
             | FormOperation::AttributeAdd
@@ -952,6 +962,14 @@ pub fn parse_form_operation(
                 }],
             })
         }
+        FormOperation::AttributeRemove => Ok(FormPlan::FormEdit {
+            owner: target.owner,
+            form: target.form.expect("attribute.remove has a form"),
+            subject: FormEditSubject::Node(Vec::new()),
+            definitions: vec![FormEditStep::RemoveAttribute {
+                name: attribute.expect("attribute.remove has an attribute"),
+            }],
+        }),
         FormOperation::ItemRemove => {
             let form = form_of(&target)?;
             // Элемент назван адресом: список в аргументах называл бы другие
@@ -1306,6 +1324,14 @@ pub fn stage_form_add(
         "the form owner descriptor",
         &at_path,
     )?;
+    if unica_source_designer::extension_mode::descriptor_is_borrowed(&owner_preimage) {
+        unica_source_designer::extension_mode::admit_extension_operation(
+            staged,
+            authority.source_kind(),
+            unica_source_contract::compatibility::ExtensionOperation::AddChildToBorrowed,
+            &at_path,
+        )?;
+    }
     let owner_source = utf8_body(&owner_preimage, "the form owner descriptor", &at_path)?;
     let (object_type, object_name) =
         crate::codec::detect_form_add_object(&owner_source).map_err(|message| {
@@ -1657,6 +1683,13 @@ pub fn stage_form_edit(
     for step in definitions {
         let definition = match step {
             FormEditStep::Definition(definition) => definition,
+            FormEditStep::RemoveAttribute { name } => {
+                xml_text =
+                    crate::codec::attribute_remove::remove(&xml_text, name).map_err(|error| {
+                        ApplyPlanError::new(error.kind, error.message).at_path(at_path.clone())
+                    })?;
+                continue;
+            }
             FormEditStep::ColumnType {
                 attribute,
                 column,
@@ -1739,7 +1772,9 @@ pub fn stage_form_edit(
         || definitions.iter().any(|step| {
             matches!(
                 step,
-                FormEditStep::ColumnType { .. } | FormEditStep::AddColumns { .. }
+                FormEditStep::ColumnType { .. }
+                    | FormEditStep::AddColumns { .. }
+                    | FormEditStep::RemoveAttribute { .. }
             )
         });
     let postimage = if preserves_bytes && !preimage.starts_with(UTF8_BOM) {
@@ -1747,7 +1782,13 @@ pub fn stage_form_edit(
     } else {
         with_bom(&xml_text)
     };
-    if !is_move && postimage == preimage {
+    if !definitions.iter().any(|step| {
+        matches!(
+            step,
+            FormEditStep::Move { .. } | FormEditStep::RemoveAttribute { .. }
+        )
+    }) && postimage == preimage
+    {
         return Ok(());
     }
     let validation = crate::codec::validate_form_image(
@@ -1846,14 +1887,18 @@ const FORM_ADDRESS_SHAPE: &str =
 
 const FORM_OWNER_MD_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
 
-pub fn minimal_typed_form_content(_object_kind: &str, _object_name: &str) -> String {
-    concat!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
-        "<Form xmlns=\"http://v8.1c.ru/8.3/xcf/logform\" version=\"2.20\">\n",
-        "\t<AutoCommandBar name=\"ФормаКоманднаяПанель\" id=\"-1\"/>\n",
-        "</Form>"
+/// The initial `Form.xml` of a new form in the export format `version` of
+/// its owner's set.
+pub fn minimal_typed_form_content(_object_kind: &str, _object_name: &str, version: &str) -> String {
+    format!(
+        concat!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
+            "<Form xmlns=\"http://v8.1c.ru/8.3/xcf/logform\" version=\"{}\">\n",
+            "\t<AutoCommandBar name=\"ФормаКоманднаяПанель\" id=\"-1\"/>\n",
+            "</Form>"
+        ),
+        version
     )
-    .to_string()
 }
 
 #[cfg(test)]
@@ -1873,12 +1918,12 @@ mod form_slot_kind_tests {
             ("ChartOfAccounts", include_str!("../../unica-metadata-designer/tests/platform/dump_parity/ChartsOfAccounts.before.xml")),
             ("ChartOfCalculationTypes", include_str!("../../unica-metadata-designer/tests/platform/dump_parity/ChartsOfCalculationTypes.before.xml")),
             ("ChartOfCharacteristicTypes", include_str!("../../unica-metadata-designer/tests/platform/dump_parity/ChartsOfCharacteristicTypes.before.xml")),
-            ("Constant", include_str!("../../../tests/fixtures/platform_8_3_27/meta_info_surface/constant/Constants/MainCurrency.xml")),
-            ("Enum", include_str!("../../../tests/fixtures/platform_8_3_27/meta_info_surface/enum/Enums/PresentationEnum.xml")),
-            ("InformationRegister", include_str!("../../../tests/fixtures/platform_8_3_27/meta_info_surface/register/InformationRegisters/CommandInterfaceRegister.xml")),
-            ("Report", include_str!("../../../tests/fixtures/platform_8_3_27/template-new-xml/seed/Reports/CorpusReport.xml")),
-            ("ExternalDataProcessor", include_str!("../../../tests/fixtures/platform_8_3_27/external_artifacts/epf/SyntheticProcessor.xml")),
-            ("ExternalReport", include_str!("../../../tests/fixtures/platform_8_3_27/external_artifacts/erf/SyntheticReport.xml")),
+            ("Constant", include_str!("../../../tests/fixtures/formats/platform_xml/2.20/meta_info_surface/constant/Constants/MainCurrency.xml")),
+            ("Enum", include_str!("../../../tests/fixtures/formats/platform_xml/2.20/meta_info_surface/enum/Enums/PresentationEnum.xml")),
+            ("InformationRegister", include_str!("../../../tests/fixtures/formats/platform_xml/2.20/meta_info_surface/register/InformationRegisters/CommandInterfaceRegister.xml")),
+            ("Report", include_str!("../../../tests/fixtures/formats/platform_xml/2.20/template-new-xml/seed/Reports/CorpusReport.xml")),
+            ("ExternalDataProcessor", include_str!("../../../tests/fixtures/formats/platform_xml/2.20/external_artifacts/epf/SyntheticProcessor.xml")),
+            ("ExternalReport", include_str!("../../../tests/fixtures/formats/platform_xml/2.20/external_artifacts/erf/SyntheticReport.xml")),
         ] {
             let document = roxmltree::Document::parse(text.trim_start_matches('\u{feff}')).unwrap();
             let owner = document.root_element().first_element_child().unwrap();

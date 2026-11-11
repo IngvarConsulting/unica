@@ -2,7 +2,7 @@ use roxmltree::Document;
 use serde_json::{Map as JsonMap, Value};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
-use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+use unica_address::source_target::MetadataAddress;
 use unica_metadata::*;
 use unica_xml_format::text::{resolve_observed_line_ending, LineEnding, SourceTextSnapshot};
 
@@ -792,7 +792,7 @@ where
                 .with_operation_index(operation_index),
             )
         })?;
-        validate_metadata_8_3_27_boolean_contract(&working, "meta.edit").map_err(|_| {
+        validate_metadata_boolean_contract(&working, "meta.edit").map_err(|_| {
             unica_metadata::request::MetaFailure::from(
                 typed_diagnostic(
                     MetaDiagnosticCode::ValidationFailed,
@@ -802,7 +802,7 @@ where
                 .with_operation_index(operation_index),
             )
         })?;
-        validate_metadata_8_3_27_enum_contract(&working, "meta.edit").map_err(|_| {
+        validate_metadata_enum_contract(&working, "meta.edit").map_err(|_| {
             unica_metadata::request::MetaFailure::from(
                 typed_diagnostic(
                     MetaDiagnosticCode::ValidationFailed,
@@ -972,17 +972,14 @@ pub fn typed_operation_effect_value(
             None,
         )
     })?;
-    let target = MetadataAddress::parse(
-        PLATFORM_XML_8_3_27_FORMAT_2_20,
-        &format!("{kind_name}.{object_name}"),
-    )
-    .map_err(|_| {
-        typed_diagnostic(
-            MetaDiagnosticCode::ProviderUnavailable,
-            "metadata descriptor address is unavailable for semantic effect",
-            None,
-        )
-    })?;
+    let target =
+        MetadataAddress::parse_logical(&format!("{kind_name}.{object_name}")).map_err(|_| {
+            typed_diagnostic(
+                MetaDiagnosticCode::ProviderUnavailable,
+                "metadata descriptor address is unavailable for semantic effect",
+                None,
+            )
+        })?;
     let document = Document::parse(xml.trim_start_matches('\u{feff}')).map_err(|_| {
         typed_diagnostic(
             MetaDiagnosticCode::ProviderUnavailable,
@@ -1271,17 +1268,14 @@ where
             None,
         )
     })?;
-    let owner = MetadataAddress::parse(
-        PLATFORM_XML_8_3_27_FORMAT_2_20,
-        &format!("{object_kind}.{object_name}"),
-    )
-    .map_err(|_| {
-        typed_diagnostic(
-            MetaDiagnosticCode::ProviderUnavailable,
-            "metadata descriptor identity is not a canonical logical address",
-            None,
-        )
-    })?;
+    let owner =
+        MetadataAddress::parse_logical(&format!("{object_kind}.{object_name}")).map_err(|_| {
+            typed_diagnostic(
+                MetaDiagnosticCode::ProviderUnavailable,
+                "metadata descriptor identity is not a canonical logical address",
+                None,
+            )
+        })?;
     validate_metadata_operation_capabilities(owner_kind, &owner, operation)?;
     match operation {
         // ADR-0072: справка живёт рядом с дескриптором, сам текст дескриптора
@@ -1469,14 +1463,21 @@ pub fn apply_typed_properties(
             None,
         )
     })?;
-    let properties =
+    let changes_key = changes
+        .entries()
+        .iter()
+        .any(|(key, _)| *key == MetaPropertyKey::Key);
+    let properties = if changes_key {
+        super::scheduled_job_key::properties(object)?
+    } else {
         unica_xml_format::read::child_element(object, "Properties").ok_or_else(|| {
             typed_diagnostic(
                 MetaDiagnosticCode::ProviderUnavailable,
                 "metadata descriptor has no Properties",
                 None,
             )
-        })?;
+        })?
+    };
     let kind = MetadataKind::parse(object.tag_name().name()).map_err(|_| {
         typed_diagnostic(
             MetaDiagnosticCode::ProviderUnavailable,
@@ -1556,13 +1557,21 @@ pub fn apply_typed_properties(
             continue;
         }
         let tag = spec.xml_name;
-        let property = unica_xml_format::read::child_element(properties, tag).ok_or_else(|| {
-            typed_diagnostic(
-                MetaDiagnosticCode::InvalidArguments,
-                format!("property `{tag}` is not present on this metadata object"),
-                Some("values"),
-            )
-        })?;
+        let property = if *key == MetaPropertyKey::Key {
+            let (node, previous) = super::scheduled_job_key::leaf(properties)?;
+            if matches!(value, MetaPropertyValue::String(next) if next == &previous) {
+                continue;
+            }
+            node
+        } else {
+            unica_xml_format::read::child_element(properties, tag).ok_or_else(|| {
+                typed_diagnostic(
+                    MetaDiagnosticCode::InvalidArguments,
+                    format!("property `{tag}` is not present on this metadata object"),
+                    Some("values"),
+                )
+            })?
+        };
         if *key == MetaPropertyKey::DataHistory {
             let same_name_count = properties
                 .children()
@@ -1751,6 +1760,15 @@ pub fn apply_typed_properties(
                     lang,
                     value,
                 )
+            }
+            (MetaPropertyKey::Key, MetaPropertyValue::String(value)) => {
+                // XML readers normalize literal CR; references preserve the requested value.
+                let escaped = unica_xml_format::text::escape_xml(value).replace('\r', "&#13;");
+                if value.is_empty() {
+                    format!("{indent}{opening}/>")
+                } else {
+                    format!("{indent}{opening}>{escaped}</{qname}>")
+                }
             }
             (MetaPropertyKey::Comment, MetaPropertyValue::String(value)) if value.is_empty() => {
                 format!("{indent}{opening}/>")
@@ -2866,11 +2884,8 @@ pub fn parse_typed_fill_value_node(
                         Some("fillValue"),
                     ));
                 }
-                let metadata_path = MetadataAddress::parse(
-                    PLATFORM_XML_8_3_27_FORMAT_2_20,
-                    &format!("Enum.{}", parts[1]),
-                )
-                .map_err(|error| {
+                let metadata_path = MetadataAddress::parse_logical(&format!("Enum.{}", parts[1]))
+                    .map_err(|error| {
                     typed_diagnostic(
                         MetaDiagnosticCode::ValidationFailed,
                         error.to_string(),
@@ -2882,9 +2897,7 @@ pub fn parse_typed_fill_value_node(
                     item: format!("EnumValue.{}", parts[3]),
                 }));
             }
-            if let Ok(metadata_path) =
-                MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &value)
-            {
+            if let Ok(metadata_path) = MetadataAddress::parse_logical(&value) {
                 return Ok(Some(MetaFillValue::Reference(
                     unica_metadata::MetadataReference { metadata_path },
                 )));
@@ -2896,14 +2909,13 @@ pub fn parse_typed_fill_value_node(
                     Some("fillValue"),
                 ));
             };
-            let metadata_path = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, prefix)
-                .map_err(|_| {
-                    typed_diagnostic(
-                        MetaDiagnosticCode::ValidationFailed,
-                        "existing reference fill value is not a metadata address",
-                        Some("fillValue"),
-                    )
-                })?;
+            let metadata_path = MetadataAddress::parse_logical(prefix).map_err(|_| {
+                typed_diagnostic(
+                    MetaDiagnosticCode::ValidationFailed,
+                    "existing reference fill value is not a metadata address",
+                    Some("fillValue"),
+                )
+            })?;
             if item.is_empty() {
                 return Err(typed_diagnostic(
                     MetaDiagnosticCode::ValidationFailed,
@@ -3809,14 +3821,17 @@ pub fn typed_child_descriptor_image(
     tag: &str,
     name: &str,
 ) -> Result<Vec<u8>, unica_metadata::request::MetaFailure> {
+    let version = crate::dialect::root_version::of_set(owner_xml);
     typed_child_element_xml(owner_xml, tag, name)
-        .map(|child_xml| wrap_standalone_descriptor(&child_xml))
+        .map(|child_xml| wrap_standalone_descriptor(&child_xml, &version))
 }
 
-pub fn wrap_standalone_descriptor(child_xml: &str) -> Vec<u8> {
+/// A standalone descriptor of one child in the format `version` of its set.
+pub fn wrap_standalone_descriptor(child_xml: &str, version: &str) -> Vec<u8> {
     format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<MetaDataObject {} version=\"2.20\">\n{}\n</MetaDataObject>",
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<MetaDataObject {} version=\"{}\">\n{}\n</MetaDataObject>",
         crate::template_catalog::meta_xmlns_decl(),
+        version,
         child_xml
     )
     .into_bytes()

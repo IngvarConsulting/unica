@@ -534,13 +534,14 @@ fn oversized_error_recovery_is_a_closed_size_refusal_without_poisoning_the_daemo
     body_workspace(root.path(), b"Procedure Small() Export\nEndProcedure\n");
     let mut mcp = McpProcess::start(root.path());
     initialize_body_mcp(&mut mcp);
-    // The retired filter route echoes at in next before address validation.
-    // Canonical JSON fits; duplicating complete recovery does not.
+    // `check` on an operation address names it in the refusal and routes
+    // `next` to `view` of the same address. Canonical JSON fits; the reply
+    // that repeats the address twice does not.
     let mut response = mcp.exchange(call_tool(
         2,
-        "unica.view",
+        "unica.check",
         json!({
-            "at": "x".repeat(4_300_000), "filter": {}
+            "at": format!("main:Catalog.{}.Can.attribute.add", "X".repeat(4_300_000))
         }),
     ));
     for poll in 0..=10 {

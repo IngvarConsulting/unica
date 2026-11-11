@@ -198,6 +198,19 @@ fn run_support_policy_read_chunk_hook(chunk_count: usize) {
 
 pub(crate) use unica_source_contract::proposal::SupportPolicyMode;
 
+/// The project support policy as `apply` admission reads it, with the same
+/// bounds, but not retained: what `view` names next to a node's
+/// editability. A policy that cannot be read is `deny`, as for `apply`.
+pub fn observe_support_policy_mode(
+    workspace_root: &Path,
+    source_root: &Path,
+    deadline: ProviderDeadline,
+    cancellation: &CancellationToken,
+) -> SupportPolicyMode {
+    RetainedSupportPolicyEvidence::capture(workspace_root, source_root, deadline, cancellation)
+        .map_or(SupportPolicyMode::Deny, |evidence| evidence.mode())
+}
+
 pub fn v8_project_candidates_for_directory(start: &Path) -> Vec<PathBuf> {
     let mut current = start.to_path_buf();
     let mut candidates = Vec::new();

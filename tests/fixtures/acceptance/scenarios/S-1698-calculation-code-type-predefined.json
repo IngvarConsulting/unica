@@ -16,6 +16,90 @@
       "captures": {
         "codeOwner": {
           "pointer": "/data/items/0/at"
+        },
+        "unchanged1": {
+          "file": "src/AccountingRegisters/Бухгалтерский/Ext/RecordSetModule.bsl",
+          "kind": "sha256"
+        },
+        "unchanged2": {
+          "file": "src/AccountingRegisters/Бухгалтерский.xml",
+          "kind": "sha256"
+        },
+        "unchanged3": {
+          "file": "src/AccumulationRegisters/Остатки/Ext/RecordSetModule.bsl",
+          "kind": "sha256"
+        },
+        "unchanged4": {
+          "file": "src/AccumulationRegisters/Остатки.xml",
+          "kind": "sha256"
+        },
+        "unchanged5": {
+          "file": "src/CalculationRegisters/Начисления/Ext/RecordSetModule.bsl",
+          "kind": "sha256"
+        },
+        "unchanged6": {
+          "file": "src/CalculationRegisters/Начисления.xml",
+          "kind": "sha256"
+        },
+        "unchanged7": {
+          "file": "src/ChartsOfAccounts/Хозрасчетный/Ext/ObjectModule.bsl",
+          "kind": "sha256"
+        },
+        "unchanged8": {
+          "file": "src/ChartsOfAccounts/Хозрасчетный.xml",
+          "kind": "sha256"
+        },
+        "unchanged9": {
+          "file": "src/ChartsOfCalculationTypes/ВидыРасчета/Ext/ObjectModule.bsl",
+          "kind": "sha256"
+        },
+        "unchanged10": {
+          "file": "src/ChartsOfCalculationTypes/ВидыРасчета/Ext/Predefined.xml",
+          "kind": "sha256"
+        },
+        "unchanged11": {
+          "file": "src/ChartsOfCalculationTypes/ВидыРасчета.xml",
+          "kind": "sha256"
+        },
+        "unchanged12": {
+          "file": "src/ChartsOfCalculationTypes/ПустойПлан/Ext/ObjectModule.bsl",
+          "kind": "sha256"
+        },
+        "unchanged13": {
+          "file": "src/ChartsOfCalculationTypes/ПустойПлан.xml",
+          "kind": "sha256"
+        },
+        "unchanged14": {
+          "file": "src/Configuration.xml",
+          "kind": "sha256"
+        },
+        "unchanged15": {
+          "file": "src/Documents/Приход/Ext/ObjectModule.bsl",
+          "kind": "sha256"
+        },
+        "unchanged16": {
+          "file": "src/Documents/Приход.xml",
+          "kind": "sha256"
+        },
+        "unchanged17": {
+          "file": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256"
+        },
+        "unchanged18": {
+          "file": "src/InformationRegisters/Цены/Ext/RecordSetModule.bsl",
+          "kind": "sha256"
+        },
+        "unchanged19": {
+          "file": "src/InformationRegisters/Цены.xml",
+          "kind": "sha256"
+        },
+        "unchanged20": {
+          "file": "src/Languages/Русский.xml",
+          "kind": "sha256"
+        },
+        "unchanged21": {
+          "file": "v8project.yaml",
+          "kind": "sha256"
         }
       },
       "assertions": [
@@ -73,107 +157,107 @@
         {
           "path": "src/AccountingRegisters/Бухгалтерский/Ext/RecordSetModule.bsl",
           "kind": "sha256",
-          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+          "eq": "$capture.unchanged1"
         },
         {
           "path": "src/AccountingRegisters/Бухгалтерский.xml",
           "kind": "sha256",
-          "eq": "58737b6d687f5e83f34ec54eac808e272f59b695486bd6f1c236e206eff7a117"
+          "eq": "$capture.unchanged2"
         },
         {
           "path": "src/AccumulationRegisters/Остатки/Ext/RecordSetModule.bsl",
           "kind": "sha256",
-          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+          "eq": "$capture.unchanged3"
         },
         {
           "path": "src/AccumulationRegisters/Остатки.xml",
           "kind": "sha256",
-          "eq": "7f58e4de59bcfe7403d0d02a44088f3d0c13b10b36ea61f7c8762107699bbd9f"
+          "eq": "$capture.unchanged4"
         },
         {
           "path": "src/CalculationRegisters/Начисления/Ext/RecordSetModule.bsl",
           "kind": "sha256",
-          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+          "eq": "$capture.unchanged5"
         },
         {
           "path": "src/CalculationRegisters/Начисления.xml",
           "kind": "sha256",
-          "eq": "c8a74db5704b2ce24a7d315af65a068dfe8f0d2c89261c21ac14792bdaf44821"
+          "eq": "$capture.unchanged6"
         },
         {
           "path": "src/ChartsOfAccounts/Хозрасчетный/Ext/ObjectModule.bsl",
           "kind": "sha256",
-          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+          "eq": "$capture.unchanged7"
         },
         {
           "path": "src/ChartsOfAccounts/Хозрасчетный.xml",
           "kind": "sha256",
-          "eq": "c5cb9540bb9a8144ac45b24a47d56b71cff5293788673ea57e814bc25a911ca6"
+          "eq": "$capture.unchanged8"
         },
         {
           "path": "src/ChartsOfCalculationTypes/ВидыРасчета/Ext/ObjectModule.bsl",
           "kind": "sha256",
-          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+          "eq": "$capture.unchanged9"
         },
         {
           "path": "src/ChartsOfCalculationTypes/ВидыРасчета/Ext/Predefined.xml",
           "kind": "sha256",
-          "eq": "45dd994837e98954c9b12444a425bc388cccdb6c692824cbdff2f20cd41eda18"
+          "eq": "$capture.unchanged10"
         },
         {
           "path": "src/ChartsOfCalculationTypes/ВидыРасчета.xml",
           "kind": "sha256",
-          "eq": "cfe7a1ca36a597e5b22cfa7b9a5a3020ea6aed704d03e81f7e423f0d92744686"
+          "eq": "$capture.unchanged11"
         },
         {
           "path": "src/ChartsOfCalculationTypes/ПустойПлан/Ext/ObjectModule.bsl",
           "kind": "sha256",
-          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+          "eq": "$capture.unchanged12"
         },
         {
           "path": "src/ChartsOfCalculationTypes/ПустойПлан.xml",
           "kind": "sha256",
-          "eq": "e1df453ae5a8a377a0af0a10b0a9919c8279e54d1d28fa862ee9b1724c55733a"
+          "eq": "$capture.unchanged13"
         },
         {
           "path": "src/Configuration.xml",
           "kind": "sha256",
-          "eq": "a60e0c5fa3cb9e7fea600f0cc379dea491d975179a885342fda6e58fa011ed9a"
+          "eq": "$capture.unchanged14"
         },
         {
           "path": "src/Documents/Приход/Ext/ObjectModule.bsl",
           "kind": "sha256",
-          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+          "eq": "$capture.unchanged15"
         },
         {
           "path": "src/Documents/Приход.xml",
           "kind": "sha256",
-          "eq": "2fb973851c3830261cade10a095e78be78bb1bdeb834c3fdc44fc462cfb5a4eb"
+          "eq": "$capture.unchanged16"
         },
         {
           "path": "src/Ext/ClientApplicationInterface.xml",
           "kind": "sha256",
-          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+          "eq": "$capture.unchanged17"
         },
         {
           "path": "src/InformationRegisters/Цены/Ext/RecordSetModule.bsl",
           "kind": "sha256",
-          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+          "eq": "$capture.unchanged18"
         },
         {
           "path": "src/InformationRegisters/Цены.xml",
           "kind": "sha256",
-          "eq": "4ce1a29efea258a760998e5736a00c7c7440e921b3e60a66454b8f0f80ca8d7a"
+          "eq": "$capture.unchanged19"
         },
         {
           "path": "src/Languages/Русский.xml",
           "kind": "sha256",
-          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+          "eq": "$capture.unchanged20"
         },
         {
           "path": "v8project.yaml",
           "kind": "sha256",
-          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+          "eq": "$capture.unchanged21"
         },
         {
           "path": "src/ChartsOfCalculationTypes/ПустойПлан/Ext/Predefined.xml",
@@ -233,107 +317,107 @@
         {
           "path": "src/AccountingRegisters/Бухгалтерский/Ext/RecordSetModule.bsl",
           "kind": "sha256",
-          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+          "eq": "$capture.unchanged1"
         },
         {
           "path": "src/AccountingRegisters/Бухгалтерский.xml",
           "kind": "sha256",
-          "eq": "58737b6d687f5e83f34ec54eac808e272f59b695486bd6f1c236e206eff7a117"
+          "eq": "$capture.unchanged2"
         },
         {
           "path": "src/AccumulationRegisters/Остатки/Ext/RecordSetModule.bsl",
           "kind": "sha256",
-          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+          "eq": "$capture.unchanged3"
         },
         {
           "path": "src/AccumulationRegisters/Остатки.xml",
           "kind": "sha256",
-          "eq": "7f58e4de59bcfe7403d0d02a44088f3d0c13b10b36ea61f7c8762107699bbd9f"
+          "eq": "$capture.unchanged4"
         },
         {
           "path": "src/CalculationRegisters/Начисления/Ext/RecordSetModule.bsl",
           "kind": "sha256",
-          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+          "eq": "$capture.unchanged5"
         },
         {
           "path": "src/CalculationRegisters/Начисления.xml",
           "kind": "sha256",
-          "eq": "c8a74db5704b2ce24a7d315af65a068dfe8f0d2c89261c21ac14792bdaf44821"
+          "eq": "$capture.unchanged6"
         },
         {
           "path": "src/ChartsOfAccounts/Хозрасчетный/Ext/ObjectModule.bsl",
           "kind": "sha256",
-          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+          "eq": "$capture.unchanged7"
         },
         {
           "path": "src/ChartsOfAccounts/Хозрасчетный.xml",
           "kind": "sha256",
-          "eq": "c5cb9540bb9a8144ac45b24a47d56b71cff5293788673ea57e814bc25a911ca6"
+          "eq": "$capture.unchanged8"
         },
         {
           "path": "src/ChartsOfCalculationTypes/ВидыРасчета/Ext/ObjectModule.bsl",
           "kind": "sha256",
-          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+          "eq": "$capture.unchanged9"
         },
         {
           "path": "src/ChartsOfCalculationTypes/ВидыРасчета/Ext/Predefined.xml",
           "kind": "sha256",
-          "eq": "45dd994837e98954c9b12444a425bc388cccdb6c692824cbdff2f20cd41eda18"
+          "eq": "$capture.unchanged10"
         },
         {
           "path": "src/ChartsOfCalculationTypes/ВидыРасчета.xml",
           "kind": "sha256",
-          "eq": "cfe7a1ca36a597e5b22cfa7b9a5a3020ea6aed704d03e81f7e423f0d92744686"
+          "eq": "$capture.unchanged11"
         },
         {
           "path": "src/ChartsOfCalculationTypes/ПустойПлан/Ext/ObjectModule.bsl",
           "kind": "sha256",
-          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+          "eq": "$capture.unchanged12"
         },
         {
           "path": "src/ChartsOfCalculationTypes/ПустойПлан.xml",
           "kind": "sha256",
-          "eq": "e1df453ae5a8a377a0af0a10b0a9919c8279e54d1d28fa862ee9b1724c55733a"
+          "eq": "$capture.unchanged13"
         },
         {
           "path": "src/Configuration.xml",
           "kind": "sha256",
-          "eq": "a60e0c5fa3cb9e7fea600f0cc379dea491d975179a885342fda6e58fa011ed9a"
+          "eq": "$capture.unchanged14"
         },
         {
           "path": "src/Documents/Приход/Ext/ObjectModule.bsl",
           "kind": "sha256",
-          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+          "eq": "$capture.unchanged15"
         },
         {
           "path": "src/Documents/Приход.xml",
           "kind": "sha256",
-          "eq": "2fb973851c3830261cade10a095e78be78bb1bdeb834c3fdc44fc462cfb5a4eb"
+          "eq": "$capture.unchanged16"
         },
         {
           "path": "src/Ext/ClientApplicationInterface.xml",
           "kind": "sha256",
-          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+          "eq": "$capture.unchanged17"
         },
         {
           "path": "src/InformationRegisters/Цены/Ext/RecordSetModule.bsl",
           "kind": "sha256",
-          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+          "eq": "$capture.unchanged18"
         },
         {
           "path": "src/InformationRegisters/Цены.xml",
           "kind": "sha256",
-          "eq": "4ce1a29efea258a760998e5736a00c7c7440e921b3e60a66454b8f0f80ca8d7a"
+          "eq": "$capture.unchanged19"
         },
         {
           "path": "src/Languages/Русский.xml",
           "kind": "sha256",
-          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+          "eq": "$capture.unchanged20"
         },
         {
           "path": "v8project.yaml",
           "kind": "sha256",
-          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+          "eq": "$capture.unchanged21"
         },
         {
           "path": "src/ChartsOfCalculationTypes/ПустойПлан/Ext/Predefined.xml",
@@ -360,47 +444,47 @@
         {
           "path": "src/AccountingRegisters/Бухгалтерский/Ext/RecordSetModule.bsl",
           "kind": "sha256",
-          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+          "eq": "$capture.unchanged1"
         },
         {
           "path": "src/AccountingRegisters/Бухгалтерский.xml",
           "kind": "sha256",
-          "eq": "58737b6d687f5e83f34ec54eac808e272f59b695486bd6f1c236e206eff7a117"
+          "eq": "$capture.unchanged2"
         },
         {
           "path": "src/AccumulationRegisters/Остатки/Ext/RecordSetModule.bsl",
           "kind": "sha256",
-          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+          "eq": "$capture.unchanged3"
         },
         {
           "path": "src/AccumulationRegisters/Остатки.xml",
           "kind": "sha256",
-          "eq": "7f58e4de59bcfe7403d0d02a44088f3d0c13b10b36ea61f7c8762107699bbd9f"
+          "eq": "$capture.unchanged4"
         },
         {
           "path": "src/CalculationRegisters/Начисления/Ext/RecordSetModule.bsl",
           "kind": "sha256",
-          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+          "eq": "$capture.unchanged5"
         },
         {
           "path": "src/CalculationRegisters/Начисления.xml",
           "kind": "sha256",
-          "eq": "c8a74db5704b2ce24a7d315af65a068dfe8f0d2c89261c21ac14792bdaf44821"
+          "eq": "$capture.unchanged6"
         },
         {
           "path": "src/ChartsOfAccounts/Хозрасчетный/Ext/ObjectModule.bsl",
           "kind": "sha256",
-          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+          "eq": "$capture.unchanged7"
         },
         {
           "path": "src/ChartsOfAccounts/Хозрасчетный.xml",
           "kind": "sha256",
-          "eq": "c5cb9540bb9a8144ac45b24a47d56b71cff5293788673ea57e814bc25a911ca6"
+          "eq": "$capture.unchanged8"
         },
         {
           "path": "src/ChartsOfCalculationTypes/ВидыРасчета/Ext/ObjectModule.bsl",
           "kind": "sha256",
-          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+          "eq": "$capture.unchanged9"
         },
         {
           "path": "src/ChartsOfCalculationTypes/ВидыРасчета/Ext/Predefined.xml",
@@ -415,59 +499,69 @@
         {
           "path": "src/ChartsOfCalculationTypes/ПустойПлан/Ext/ObjectModule.bsl",
           "kind": "sha256",
-          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+          "eq": "$capture.unchanged12"
         },
         {
           "path": "src/ChartsOfCalculationTypes/ПустойПлан.xml",
           "kind": "sha256",
-          "eq": "e1df453ae5a8a377a0af0a10b0a9919c8279e54d1d28fa862ee9b1724c55733a"
+          "eq": "$capture.unchanged13"
         },
         {
           "path": "src/Configuration.xml",
           "kind": "sha256",
-          "eq": "a60e0c5fa3cb9e7fea600f0cc379dea491d975179a885342fda6e58fa011ed9a"
+          "eq": "$capture.unchanged14"
         },
         {
           "path": "src/Documents/Приход/Ext/ObjectModule.bsl",
           "kind": "sha256",
-          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+          "eq": "$capture.unchanged15"
         },
         {
           "path": "src/Documents/Приход.xml",
           "kind": "sha256",
-          "eq": "2fb973851c3830261cade10a095e78be78bb1bdeb834c3fdc44fc462cfb5a4eb"
+          "eq": "$capture.unchanged16"
         },
         {
           "path": "src/Ext/ClientApplicationInterface.xml",
           "kind": "sha256",
-          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+          "eq": "$capture.unchanged17"
         },
         {
           "path": "src/InformationRegisters/Цены/Ext/RecordSetModule.bsl",
           "kind": "sha256",
-          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+          "eq": "$capture.unchanged18"
         },
         {
           "path": "src/InformationRegisters/Цены.xml",
           "kind": "sha256",
-          "eq": "4ce1a29efea258a760998e5736a00c7c7440e921b3e60a66454b8f0f80ca8d7a"
+          "eq": "$capture.unchanged19"
         },
         {
           "path": "src/Languages/Русский.xml",
           "kind": "sha256",
-          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+          "eq": "$capture.unchanged20"
         },
         {
           "path": "v8project.yaml",
           "kind": "sha256",
-          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+          "eq": "$capture.unchanged21"
         },
         {
           "path": "src/ChartsOfCalculationTypes/ПустойПлан/Ext/Predefined.xml",
           "kind": "exists",
           "eq": false
         }
-      ]
+      ],
+      "captures": {
+        "unchanged22": {
+          "file": "src/ChartsOfCalculationTypes/ВидыРасчета/Ext/Predefined.xml",
+          "kind": "sha256"
+        },
+        "unchanged23": {
+          "file": "src/ChartsOfCalculationTypes/ВидыРасчета.xml",
+          "kind": "sha256"
+        }
+      }
     },
     {
       "tool": "unica.view",
@@ -535,107 +629,107 @@
         {
           "path": "src/AccountingRegisters/Бухгалтерский/Ext/RecordSetModule.bsl",
           "kind": "sha256",
-          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+          "eq": "$capture.unchanged1"
         },
         {
           "path": "src/AccountingRegisters/Бухгалтерский.xml",
           "kind": "sha256",
-          "eq": "58737b6d687f5e83f34ec54eac808e272f59b695486bd6f1c236e206eff7a117"
+          "eq": "$capture.unchanged2"
         },
         {
           "path": "src/AccumulationRegisters/Остатки/Ext/RecordSetModule.bsl",
           "kind": "sha256",
-          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+          "eq": "$capture.unchanged3"
         },
         {
           "path": "src/AccumulationRegisters/Остатки.xml",
           "kind": "sha256",
-          "eq": "7f58e4de59bcfe7403d0d02a44088f3d0c13b10b36ea61f7c8762107699bbd9f"
+          "eq": "$capture.unchanged4"
         },
         {
           "path": "src/CalculationRegisters/Начисления/Ext/RecordSetModule.bsl",
           "kind": "sha256",
-          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+          "eq": "$capture.unchanged5"
         },
         {
           "path": "src/CalculationRegisters/Начисления.xml",
           "kind": "sha256",
-          "eq": "c8a74db5704b2ce24a7d315af65a068dfe8f0d2c89261c21ac14792bdaf44821"
+          "eq": "$capture.unchanged6"
         },
         {
           "path": "src/ChartsOfAccounts/Хозрасчетный/Ext/ObjectModule.bsl",
           "kind": "sha256",
-          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+          "eq": "$capture.unchanged7"
         },
         {
           "path": "src/ChartsOfAccounts/Хозрасчетный.xml",
           "kind": "sha256",
-          "eq": "c5cb9540bb9a8144ac45b24a47d56b71cff5293788673ea57e814bc25a911ca6"
+          "eq": "$capture.unchanged8"
         },
         {
           "path": "src/ChartsOfCalculationTypes/ВидыРасчета/Ext/ObjectModule.bsl",
           "kind": "sha256",
-          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+          "eq": "$capture.unchanged9"
         },
         {
           "path": "src/ChartsOfCalculationTypes/ВидыРасчета/Ext/Predefined.xml",
           "kind": "sha256",
-          "eq": "aacee590d5656c69cd346dc02ae500a5df9fbdf4dd9dd1fa2a08f5fb579f455d"
+          "eq": "$capture.unchanged22"
         },
         {
           "path": "src/ChartsOfCalculationTypes/ВидыРасчета.xml",
           "kind": "sha256",
-          "eq": "d6ee9e982474ef403f584dbcf7686ec7a3313fca49381dd0aa790d6835dc12e1"
+          "eq": "$capture.unchanged23"
         },
         {
           "path": "src/ChartsOfCalculationTypes/ПустойПлан/Ext/ObjectModule.bsl",
           "kind": "sha256",
-          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+          "eq": "$capture.unchanged12"
         },
         {
           "path": "src/ChartsOfCalculationTypes/ПустойПлан.xml",
           "kind": "sha256",
-          "eq": "e1df453ae5a8a377a0af0a10b0a9919c8279e54d1d28fa862ee9b1724c55733a"
+          "eq": "$capture.unchanged13"
         },
         {
           "path": "src/Configuration.xml",
           "kind": "sha256",
-          "eq": "a60e0c5fa3cb9e7fea600f0cc379dea491d975179a885342fda6e58fa011ed9a"
+          "eq": "$capture.unchanged14"
         },
         {
           "path": "src/Documents/Приход/Ext/ObjectModule.bsl",
           "kind": "sha256",
-          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+          "eq": "$capture.unchanged15"
         },
         {
           "path": "src/Documents/Приход.xml",
           "kind": "sha256",
-          "eq": "2fb973851c3830261cade10a095e78be78bb1bdeb834c3fdc44fc462cfb5a4eb"
+          "eq": "$capture.unchanged16"
         },
         {
           "path": "src/Ext/ClientApplicationInterface.xml",
           "kind": "sha256",
-          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+          "eq": "$capture.unchanged17"
         },
         {
           "path": "src/InformationRegisters/Цены/Ext/RecordSetModule.bsl",
           "kind": "sha256",
-          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+          "eq": "$capture.unchanged18"
         },
         {
           "path": "src/InformationRegisters/Цены.xml",
           "kind": "sha256",
-          "eq": "4ce1a29efea258a760998e5736a00c7c7440e921b3e60a66454b8f0f80ca8d7a"
+          "eq": "$capture.unchanged19"
         },
         {
           "path": "src/Languages/Русский.xml",
           "kind": "sha256",
-          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+          "eq": "$capture.unchanged20"
         },
         {
           "path": "v8project.yaml",
           "kind": "sha256",
-          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+          "eq": "$capture.unchanged21"
         },
         {
           "path": "src/ChartsOfCalculationTypes/ПустойПлан/Ext/Predefined.xml",
@@ -662,107 +756,107 @@
         {
           "path": "src/AccountingRegisters/Бухгалтерский/Ext/RecordSetModule.bsl",
           "kind": "sha256",
-          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+          "eq": "$capture.unchanged1"
         },
         {
           "path": "src/AccountingRegisters/Бухгалтерский.xml",
           "kind": "sha256",
-          "eq": "58737b6d687f5e83f34ec54eac808e272f59b695486bd6f1c236e206eff7a117"
+          "eq": "$capture.unchanged2"
         },
         {
           "path": "src/AccumulationRegisters/Остатки/Ext/RecordSetModule.bsl",
           "kind": "sha256",
-          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+          "eq": "$capture.unchanged3"
         },
         {
           "path": "src/AccumulationRegisters/Остатки.xml",
           "kind": "sha256",
-          "eq": "7f58e4de59bcfe7403d0d02a44088f3d0c13b10b36ea61f7c8762107699bbd9f"
+          "eq": "$capture.unchanged4"
         },
         {
           "path": "src/CalculationRegisters/Начисления/Ext/RecordSetModule.bsl",
           "kind": "sha256",
-          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+          "eq": "$capture.unchanged5"
         },
         {
           "path": "src/CalculationRegisters/Начисления.xml",
           "kind": "sha256",
-          "eq": "c8a74db5704b2ce24a7d315af65a068dfe8f0d2c89261c21ac14792bdaf44821"
+          "eq": "$capture.unchanged6"
         },
         {
           "path": "src/ChartsOfAccounts/Хозрасчетный/Ext/ObjectModule.bsl",
           "kind": "sha256",
-          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+          "eq": "$capture.unchanged7"
         },
         {
           "path": "src/ChartsOfAccounts/Хозрасчетный.xml",
           "kind": "sha256",
-          "eq": "c5cb9540bb9a8144ac45b24a47d56b71cff5293788673ea57e814bc25a911ca6"
+          "eq": "$capture.unchanged8"
         },
         {
           "path": "src/ChartsOfCalculationTypes/ВидыРасчета/Ext/ObjectModule.bsl",
           "kind": "sha256",
-          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+          "eq": "$capture.unchanged9"
         },
         {
           "path": "src/ChartsOfCalculationTypes/ВидыРасчета/Ext/Predefined.xml",
           "kind": "sha256",
-          "eq": "45dd994837e98954c9b12444a425bc388cccdb6c692824cbdff2f20cd41eda18"
+          "eq": "$capture.unchanged10"
         },
         {
           "path": "src/ChartsOfCalculationTypes/ВидыРасчета.xml",
           "kind": "sha256",
-          "eq": "cfe7a1ca36a597e5b22cfa7b9a5a3020ea6aed704d03e81f7e423f0d92744686"
+          "eq": "$capture.unchanged11"
         },
         {
           "path": "src/ChartsOfCalculationTypes/ПустойПлан/Ext/ObjectModule.bsl",
           "kind": "sha256",
-          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+          "eq": "$capture.unchanged12"
         },
         {
           "path": "src/ChartsOfCalculationTypes/ПустойПлан.xml",
           "kind": "sha256",
-          "eq": "e1df453ae5a8a377a0af0a10b0a9919c8279e54d1d28fa862ee9b1724c55733a"
+          "eq": "$capture.unchanged13"
         },
         {
           "path": "src/Configuration.xml",
           "kind": "sha256",
-          "eq": "a60e0c5fa3cb9e7fea600f0cc379dea491d975179a885342fda6e58fa011ed9a"
+          "eq": "$capture.unchanged14"
         },
         {
           "path": "src/Documents/Приход/Ext/ObjectModule.bsl",
           "kind": "sha256",
-          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+          "eq": "$capture.unchanged15"
         },
         {
           "path": "src/Documents/Приход.xml",
           "kind": "sha256",
-          "eq": "2fb973851c3830261cade10a095e78be78bb1bdeb834c3fdc44fc462cfb5a4eb"
+          "eq": "$capture.unchanged16"
         },
         {
           "path": "src/Ext/ClientApplicationInterface.xml",
           "kind": "sha256",
-          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+          "eq": "$capture.unchanged17"
         },
         {
           "path": "src/InformationRegisters/Цены/Ext/RecordSetModule.bsl",
           "kind": "sha256",
-          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+          "eq": "$capture.unchanged18"
         },
         {
           "path": "src/InformationRegisters/Цены.xml",
           "kind": "sha256",
-          "eq": "4ce1a29efea258a760998e5736a00c7c7440e921b3e60a66454b8f0f80ca8d7a"
+          "eq": "$capture.unchanged19"
         },
         {
           "path": "src/Languages/Русский.xml",
           "kind": "sha256",
-          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+          "eq": "$capture.unchanged20"
         },
         {
           "path": "v8project.yaml",
           "kind": "sha256",
-          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+          "eq": "$capture.unchanged21"
         },
         {
           "path": "src/ChartsOfCalculationTypes/ПустойПлан/Ext/Predefined.xml",

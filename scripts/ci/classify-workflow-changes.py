@@ -76,6 +76,8 @@ CI_CONTRACT_PATHS = {
     "tests/ci/test_crate_declarations.py",
     "scripts/ci/check-crate-read-boundary.py",
     "tests/ci/test_crate_read_boundary.py",
+    "scripts/ci/check-version-literals.py",
+    "tests/ci/test_version_literals.py",
     "scripts/ci/check-discovered-modules-format.py",
     "tests/ci/test_discovered_modules_format.py",
     "scripts/ci/workflow_routing.py",
@@ -168,7 +170,7 @@ SEARCH_INTEGRATION_PATHS = {
     "crates/unica-coder/src/infrastructure/platform_xml_source_targets.rs",
     "crates/unica-coder/src/infrastructure/source_roots.rs",
     "crates/unica-coder/src/infrastructure/workspace_services.rs",
-    "crates/unica-coder-daemon/src/interfaces/mcp.rs",
+    "crates/unica-mcp/src/lib.rs",
 }
 # The long BSP assessment runs the packaged runtime end to end, so it follows
 # the search contour it exercises. These paths add what that contour does not

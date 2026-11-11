@@ -27,7 +27,7 @@ use unica_analysis_services::{
     WorkspaceServiceBslCall, WorkspaceServiceConfig, WorkspaceServiceIdentity,
     WorkspaceServiceManager, WorkspaceServiceRecord, WorkspaceServices,
 };
-use unica_daemon::identity::CoreIdentity;
+use unica_daemon_protocol::identity::CoreIdentity;
 use unica_process::mcp_session::PersistentMcpSession;
 
 use unica_process::ManagedStartupChild;
@@ -359,6 +359,8 @@ mod medium_tests {
                 expected_cache.into_os_string(),
                 "--mode".into(),
                 "stdio".into(),
+                "--enable-tool".into(),
+                "references".into(),
             ]
         );
         assert_eq!(
@@ -5985,7 +5987,7 @@ fn main() {
     /// rule: INV.APP.HIDDEN-SERVICES
     #[test]
     fn hidden_service_identity_distinguishes_user_core_daemon_from_workspace_helpers() {
-        use unica_daemon::identity::{CoreIdentity, DaemonStateDirectory};
+        use unica_daemon_protocol::identity::{CoreIdentity, DaemonStateDirectory};
 
         let first = test_context("hidden-topology-first");
         let second = test_context("hidden-topology-second");

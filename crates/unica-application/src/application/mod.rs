@@ -8,8 +8,8 @@ use std::time::Duration;
 use unica_code_intelligence::coordinator as code_intelligence;
 use unica_code_intelligence::model::CodeIntelligenceReadRequest;
 use unica_code_intelligence::model::SearchRequest;
+use unica_execution::runner::operation::runtime_event_kind;
 use unica_execution_contract::adapter_outcome::AdapterOutcome;
-use unica_runner::operation::runtime_event_kind;
 use unica_source_contract::events::{DomainEvent, DomainEventKind};
 use unica_source_contract::workspace::WorkspaceContext;
 use unica_work_control::cancellation::CancellationToken;
@@ -23,7 +23,7 @@ pub(crate) mod metadata;
 pub mod operation_descriptors;
 pub(crate) mod operational_config;
 pub mod ports;
-pub(crate) use unica_runner::admission as runtime_admission;
+pub(crate) use unica_execution::runner::admission as runtime_admission;
 #[cfg(test)]
 mod medium_application_tests;
 #[cfg(test)]
@@ -953,7 +953,7 @@ pub fn call_tool_with_runtime_admission(
             if let Some(target) = role_target.as_ref() {
                 format_guard_warning = Some(target.warning(
                     "format_guard_warning",
-                    "the role export is outside the supported platform 8.3.27 / format 2.20 profile",
+                    "the role export is outside the writable export formats",
                 ));
             } else if let Some(target) = xdto_target.as_ref() {
                 format_guard_warning = Some(target.warning(
@@ -1835,8 +1835,9 @@ fn role_guard_failure_reason(code: &str) -> &'static str {
         "support_locked" => "the logical role target is protected by support policy",
         "support_guard_failed" => "the support policy could not be evaluated safely",
         "cache_unavailable" => "the logical cache projection is unavailable",
+        "formatVersionMixed" => "the role source set records different export formats",
         "formatMigrationAvailable" | "platformVersionUnsupported" | "formatVersionInvalid" => {
-            "the role export is outside the supported platform 8.3.27 / format 2.20 profile"
+            "the role export is outside the writable export formats"
         }
         _ => "the role mutation could not pass its preflight checks",
     }

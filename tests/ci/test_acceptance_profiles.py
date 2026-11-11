@@ -42,6 +42,8 @@ class AcceptanceProfileTests(unittest.TestCase):
                     driver.subprocess, "Popen", return_value=backend
                 ), patch.object(
                     driver, "assert_owned_legacy_broker"
+                ), patch.object(
+                    driver, "assert_owned_legacy_endpoint"
                 ), patch.object(driver, "LegacyBrokerProxy", return_value=proxy,
                                side_effect=RuntimeError("proxy setup sentinel") if stage == "construct" else None):
                     with self.assertRaisesRegex(RuntimeError, "proxy setup sentinel"):
@@ -57,7 +59,9 @@ class AcceptanceProfileTests(unittest.TestCase):
         from tests.ci.acceptance_diagnostics import assert_owned_legacy_broker
         with tempfile.TemporaryDirectory() as raw:
             cache = Path(raw)
-            (cache / "writer.lease").write_text(json.dumps({"pid": 41979}))
+            scope = cache / "workspaces" / "v1" / "scope"
+            scope.mkdir(parents=True)
+            (scope / "writer.lease").write_text(json.dumps({"pid": 41979}))
             backend = Mock(pid=41978)
             backend.poll.return_value = None
             with self.assertRaisesRegex(AssertionError, "another process"):
@@ -67,7 +71,9 @@ class AcceptanceProfileTests(unittest.TestCase):
         from tests.ci.acceptance_diagnostics import assert_owned_legacy_broker
         with tempfile.TemporaryDirectory() as raw:
             cache = Path(raw)
-            (cache / "writer.lease").write_text(json.dumps({"pid": 41978}))
+            scope = cache / "workspaces" / "v1" / "scope"
+            scope.mkdir(parents=True)
+            (scope / "writer.lease").write_text(json.dumps({"pid": 41978}))
             backend = Mock(pid=41978)
             backend.poll.return_value = None
             with patch("tests.ci.acceptance_diagnostics.os.name", "posix"), self.assertRaisesRegex(
@@ -461,44 +467,3 @@ class DeliveryTaskTests(unittest.TestCase):
                 server.receive(expected_id=1, timeout=0.1)
         server.close.assert_called_once()
         self.assertEqual(server.lines.qsize(), 1)
-
-class PullValidationProfileTests(unittest.TestCase):
-    def test_runtime_profile_rejects_other_workspaces_cases_and_mutations(self):
-        import copy
-        from tests.ci.acceptance_controls import load_acceptance_corpus
-        corpus = select_profile(load_acceptance_corpus(), "runtime-fault")
-        self.assertEqual(len(corpus["scenarios"]), 5)
-        for field, value in [("workspace", "tests/fixtures/acceptance/workspace"), ("evaluation", "unknown"), ("driver", "other")]:
-            altered = copy.deepcopy(corpus)
-            altered["scenarios"][0][field] = value
-            with self.subTest(field=field), self.assertRaises(ValueError):
-                select_profile(altered, "source")
-        altered = copy.deepcopy(corpus)
-        altered["scenarios"][0]["wire"][1]["args"]["op"] = "push"
-        with self.assertRaises(ValueError):
-            select_profile(altered, "source")
-
-    def test_runtime_profile_requires_explicit_platform_and_owned_fixture(self):
-        from tests.ci.acceptance_pull_validation import platform_executable, prepare_case
-        with patch.dict(os.environ, {}, clear=True), self.assertRaisesRegex(ValueError, "UNICA_ACCEPTANCE_PLATFORM_ROOT"):
-            platform_executable()
-        with self.assertRaisesRegex(ValueError, "closed pull validation fixture"):
-            prepare_case(Mock(), {"driver": "other"})
-
-    def test_runtime_fault_reobserves_only_the_same_task_after_transport_loss(self):
-        from tests.ci import acceptance_pull_validation as driver
-        with tempfile.TemporaryDirectory() as raw:
-            root = Path(raw)
-            (root / "src").mkdir()
-            initial = {"result": {"structuredContent": {"ok": True, "data": {"task": {"taskId": "original-task", "status": "working"}}}}}
-            lost = {"result": {"structuredContent": {"ok": False, "diagnostics": [{"code": "task_transport_failed"}]}}}
-            terminal = {"result": {"structuredContent": {"ok": False, "diagnostics": [{"code": "invalid_result"}]}}}
-            original = Mock(side_effect=[initial, lost, terminal])
-            server = Mock(workspace=root, call=original)
-            with patch.object(driver, "platform_executable", return_value=Path("/genuine-platform/1cv8")):
-                driver.prepare_case(server, {"driver": "pull-validation-fault", "workspace": driver.WORKSPACE, "evaluation": "empty-dump"})
-            args = {"op": "pull", "args": {"sourceSet": "main", "force": True}, "dryRun": False}
-            server.call("unica.run", args)
-            self.assertEqual(server.call("unica.task.result", {"taskId": "original-task", "waitMs": 7000}), terminal)
-            self.assertEqual([c.args[0] for c in original.call_args_list], ["unica.run", "unica.task.result", "unica.task.result"])
-            self.assertEqual(original.call_args_list[1].args[1], original.call_args_list[2].args[1])

@@ -3,7 +3,6 @@
 pub mod format_profile;
 pub mod probe;
 
-pub mod full_dump_validation;
 pub mod layout;
 pub mod owner;
 pub mod roots;
@@ -11,6 +10,8 @@ pub mod roots;
 pub mod inventory;
 
 pub mod language;
+
+pub mod extension_mode;
 
 pub mod project_sources;
 

@@ -6,7 +6,7 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
-use unica_address::source_target::{MetadataAddress, TargetKind, PLATFORM_XML_8_3_27_FORMAT_2_20};
+use unica_address::source_target::{MetadataAddress, TargetKind};
 use unica_source_contract::location::SourceLocation;
 use unica_source_contract::workspace::WorkspaceContext;
 use unica_work_control::cancellation::CancellationToken;
@@ -1252,7 +1252,7 @@ pub fn parse_diagnostic_request(
     let metadata_path = args
         .get("metadataPath")
         .and_then(Value::as_str)
-        .map(|raw| MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, raw))
+        .map(MetadataAddress::parse_logical)
         .transpose()
         .map_err(|_| {
             request_error(
@@ -1401,9 +1401,7 @@ mod tests {
     use std::sync::{mpsc, Arc, Condvar, Mutex};
     use std::thread;
     use std::time::{Duration, Instant};
-    use unica_address::source_target::{
-        MetadataAddress, ResolvedTarget, TargetKind, PLATFORM_XML_8_3_27_FORMAT_2_20,
-    };
+    use unica_address::source_target::{MetadataAddress, ResolvedTarget, TargetKind};
     use unica_source_contract::location::SourceLocation;
     use unica_source_contract::workspace::ResolvedSourceRoot;
     use unica_source_contract::workspace::WorkspaceContext;
@@ -1657,7 +1655,7 @@ mod tests {
     }
 
     fn address(raw: &str) -> MetadataAddress {
-        MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, raw).unwrap()
+        MetadataAddress::parse_logical(raw).unwrap()
     }
 
     fn workspace() -> WorkspaceContext {
@@ -2219,6 +2217,7 @@ mod tests {
             readiness: Some(DiagnosticReadiness {
                 state: DiagnosticReadinessState::Building,
                 retryable: true,
+                progress: None,
             }),
             error: None,
             suppressions: Vec::new(),
@@ -3504,6 +3503,7 @@ mod tests {
             readiness: Some(DiagnosticReadiness {
                 state: DiagnosticReadinessState::Ready,
                 retryable: false,
+                progress: None,
             }),
             ..successful(vec![diagnostic(
                 ANALYZER,

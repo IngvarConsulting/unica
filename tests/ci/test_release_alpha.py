@@ -229,6 +229,23 @@ class TagKeyTests(unittest.TestCase):
         # Push ключом будит `on: push`: alpha собирает ночь, второй прогон по тегу не нужен.
         self.assertEqual(release[True]["push"]["tags"], ["v*", "!v*-alpha.*"])
 
+    def test_every_call_of_the_release_workflow_lets_environment_secrets_through(self) -> None:
+        # Без переданных секретов секрет окружения в вызванном workflow — пустая
+        # строка без ошибки: ночь проходит тесты и падает на теге alpha.
+        import yaml
+
+        workflows = Path(__file__).resolve().parents[2] / ".github/workflows"
+        calls = [(path.name, name, job) for path in sorted(workflows.glob("*.yml"))
+                 for name, job in (yaml.safe_load(path.read_text(encoding="utf-8")).get("jobs") or {}).items()
+                 if str(job.get("uses", "")).endswith("/.github/workflows/release.yml")]
+        self.assertIn(("nightly.yml", "full"), [(file, name) for file, name, _ in calls])
+        release = yaml.safe_load((workflows / "release.yml").read_text(encoding="utf-8"))
+        declared = release[True]["workflow_call"]["secrets"]
+        self.assertTrue(declared["RELEASE_TAG_KEY"]["required"])
+        for file, name, job in calls:
+            with self.subTest(call=f"{file}:{name}"):
+                self.assertEqual(job.get("secrets"), {key: f"${{{{ secrets.{key} }}}}" for key in declared})
+
 
 if __name__ == "__main__":
     unittest.main()

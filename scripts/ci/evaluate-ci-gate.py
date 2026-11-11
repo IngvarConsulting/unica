@@ -20,7 +20,7 @@ LINUX = "ubuntu-latest"
 # and its equality is a test.
 PROFILE_RUNNERS = {
     "pr": [LINUX, "macos-15"], "queue": [LINUX], "main": [LINUX, "macos-15"],
-    "release": [LINUX, "macos-15"], "large": [LINUX, "macos-15", "windows-latest"],
+    "release": [LINUX, "macos-15", "windows-latest"], "large": [LINUX, "macos-15", "windows-latest"],
 }
 
 

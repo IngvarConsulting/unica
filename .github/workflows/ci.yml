@@ -120,10 +120,12 @@ jobs:
     runs-on: ${{ fromJSON(github.event_name == 'merge_group' && vars.UNICA_SELF_HOSTED == 'true' && '["self-hosted","Linux","X64","unica-pve"]' || '["ubuntu-latest"]') }}
     timeout-minutes: 60
     # Проверка удалений тестов читает описание pull request: объявление,
-    # поправленное после push, должно засчитаться при повторе.
+    # поправленное после push, должно засчитаться при повторе. Ночной путь
+    # очереди читает инвентарь прошлой ночи — артефакт прогона.
     permissions:
       contents: read
       pull-requests: read
+      actions: read
     defaults:
       run:
         shell: bash
@@ -185,22 +187,10 @@ jobs:
         with:
           toolchain: stable
           components: rustfmt, clippy
-      # Постоянные раннеры PVE уже держат nextest: установка с выпусков GitHub
-      # там не нужна и зависает на их 5xx. Версия — из `.config/nextest.toml`.
-      # Шаг не падает: Actions гоняет bash с -e -o pipefail, а отсутствующий
-      # nextest — это обычный исход, после которого установка идёт как раньше.
-      - id: nextest-present
-        if: ${{ github.event_name == 'merge_group' && env.KEPT != 'true' }}
-        run: |
-          want=$(grep -o 'recommended = "[^"]*"' .config/nextest.toml | cut -d '"' -f 2) || want=
-          have=$(cargo nextest --version 2>/dev/null | awk 'NR == 1 { print $2 }') || have=
-          echo "nextest: нужен $want, стоит ${have:-нет}"
-          if [ -n "$want" ] && [ "$have" = "$want" ]; then echo "present=true" >> "$GITHUB_OUTPUT"; fi
-      - uses: taiki-e/install-action@68a389c788b2cd04016ce8c80ee23b80d2ab3d68 # v2.88.1
-        if: ${{ github.event_name == 'merge_group' && env.KEPT != 'true' && steps.nextest-present.outputs.present != 'true' }}
+      # Версия — из `.config/nextest.toml`; готовый nextest не ставится заново.
+      - if: ${{ github.event_name == 'merge_group' && env.KEPT != 'true' }}
+        uses: ./.github/actions/install-nextest
         timeout-minutes: 5
-        with:
-          tool: cargo-nextest@0.9.148
       # На GitHub читаем кэш main; при промахе все команды работают с пустым target.
       # На PVE сохраняем локальные артефакты workspace, не заменяя их архивом GitHub.
       - name: Кэш зависимостей Rust # zizmor: ignore[cache-poisoning] restore-only; pull request и очередь читают область main и ничего не пишут
@@ -237,6 +227,17 @@ jobs:
           BASE_SHA: ${{ github.event.merge_group.base_sha }}
           HEAD_SHA: ${{ github.event.merge_group.head_sha }}
         run: python scripts/ci/queue-tests.py --base "$BASE_SHA" --head "$HEAD_SHA"
+      # Правку CI иначе исполняет только ночь. Запись с ней проходит ночной путь
+      # в лёгком виде: план полос, архив маленькой полосы, `nextest list` по нему
+      # и учёт против инвентаря прошлой ночи. Остальные записи выходят сразу.
+      - id: nightly-path
+        name: Ночной путь
+        if: ${{ !cancelled() && github.event_name == 'merge_group' && env.KEPT != 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_SHA: ${{ github.event.merge_group.base_sha }}
+          HEAD_SHA: ${{ github.event.merge_group.head_sha }}
+        run: python scripts/ci/nightly-path-probe.py --base "$BASE_SHA" --head "$HEAD_SHA"
       # Неразрешимый выбор — полный набор и здесь. Иначе Python medium идёт ночью,
       # кроме смоука продукта и снимков контрактов.
       - id: python
@@ -259,6 +260,56 @@ jobs:
       - name: Удалённые тесты объявлены
         if: ${{ !cancelled() && github.event_name == 'pull_request' && env.KEPT != 'true' }}
         run: python scripts/ci/background_step.py wait removed-tests --timeout 600
+
+  # Приёмка `source` замораживает ответы продукта. Когда запись очереди меняет
+  # крейт, из которого собирается `unica`, или саму приёмку, она идёт здесь,
+  # параллельно тестам Rust в `unica-ci` (#2831). Решение — выход `acceptance`
+  # `queue-tests.py`; при полном наборе приёмку исполняют Python medium
+  # `unica-ci`, и это задание пропускается.
+  queue-acceptance:
+    name: Приёмка
+    needs: admission
+    if: ${{ github.event_name == 'merge_group' && needs.admission.outputs.admitted == 'true' && needs.admission.outputs.kept != 'true' }}
+    runs-on: ${{ fromJSON(vars.UNICA_SELF_HOSTED == 'true' && '["self-hosted","Linux","X64","unica-pve"]' || '["ubuntu-latest"]') }}
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -r tests/ci/requirements.txt
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: stable
+      - id: choice
+        name: Нужна ли приёмка
+        env:
+          QUEUE_FULL_TESTS: ${{ vars.QUEUE_FULL_TESTS }}
+          BASE_SHA: ${{ github.event.merge_group.base_sha }}
+          HEAD_SHA: ${{ github.event.merge_group.head_sha }}
+        run: python scripts/ci/queue-tests.py --base "$BASE_SHA" --head "$HEAD_SHA" --dry-run
+      - name: Кэш зависимостей Rust # zizmor: ignore[cache-poisoning] restore-only; очередь читает область main и ничего не пишет
+        if: ${{ steps.choice.outputs.acceptance == 'true' && runner.environment == 'github-hosted' }}
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: ci-rust-ordinary
+          save-if: false
+      - name: Продукт для приёмки
+        if: ${{ steps.choice.outputs.acceptance == 'true' }}
+        run: |
+          python scripts/ci/prepared_binary.py build --destination .build/ci-product --target-dir target
+          echo "UNICA_PREPARED_BINARY_MANIFEST=$PWD/.build/ci-product/manifest.json" >> "$GITHUB_ENV"
+      - name: Приёмка source
+        if: ${{ steps.choice.outputs.acceptance == 'true' }}
+        run: python -m unittest -v tests.ci.test_acceptance_scenarios.AcceptanceCorpusRunTests.test_every_wire_answers_its_frozen_classes
 
   windows-clippy:
     # Пропуск на pull request не мешает сделать проверку обязательной:

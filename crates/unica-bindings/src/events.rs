@@ -87,7 +87,8 @@ pub struct EventImplementationShape {
     pub implementation_at: String,
     pub signature: String,
     pub directive: RequiredEventDirective,
-    pub region: &'static str,
+    /// Область обработчиков по стандарту 455, русское имя.
+    pub region: String,
 }
 
 pub fn project_platform_event_implementation(
@@ -122,6 +123,7 @@ pub fn project_platform_event_implementation(
     shape_from_spec(
         record.projection,
         EventImplementationOwner::Platform,
+        None,
         None,
         module_at,
         EventDirectiveOwner::Platform(capability),
@@ -216,6 +218,7 @@ pub fn project_property_event_implementation(
         record.projection,
         implementation_owner,
         Some(canonical_handler),
+        owning_form_table(owner_chain),
         module_at,
         EventDirectiveOwner::Property(record.owner),
         record.spec,
@@ -250,6 +253,7 @@ fn shape_from_spec(
     projection: EventProjection,
     owner: EventImplementationOwner,
     handler: Option<String>,
+    form_table: Option<&str>,
     module_at: &QualifiedAddress,
     directive_owner: EventDirectiveOwner,
     spec: &PlatformEventSpec,
@@ -276,14 +280,7 @@ fn shape_from_spec(
     let signature = substitute_catalog_handler(&catalog_signature, &spec.handler_ru, &handler)?;
     let directive = required_event_directive(directive_owner, spec)
         .map_err(|error| EventProjectionError::unavailable(error.to_string()))?;
-    let region = match owner {
-        EventImplementationOwner::Platform => "ОбработчикиСобытий",
-        EventImplementationOwner::Form => "ОбработчикиСобытийФормы",
-        EventImplementationOwner::Element
-        | EventImplementationOwner::Table
-        | EventImplementationOwner::Column => "ОбработчикиСобытийЭлементовФормы",
-        EventImplementationOwner::Command => "ОбработчикиКомандФормы",
-    };
+    let region = handler_region(owner, form_table);
     Ok(EventImplementationShape {
         projection,
         owner,
@@ -294,6 +291,35 @@ fn shape_from_spec(
         directive,
         region,
     })
+}
+
+/// Область обработчика по стандарту 455: своя у событий модуля, формы,
+/// элементов шапки, каждой таблицы формы с её колонками и элементами и у
+/// команд формы.
+fn handler_region(owner: EventImplementationOwner, form_table: Option<&str>) -> String {
+    use unica_bsl::event_text::standard_region as region;
+    match owner {
+        EventImplementationOwner::Platform => region::EVENT_HANDLERS.to_string(),
+        EventImplementationOwner::Form => region::FORM_EVENT_HANDLERS.to_string(),
+        EventImplementationOwner::Command => region::FORM_COMMANDS_EVENT_HANDLERS.to_string(),
+        EventImplementationOwner::Element
+        | EventImplementationOwner::Table
+        | EventImplementationOwner::Column => match form_table {
+            Some(table) => format!("{}{table}", region::FORM_TABLE_ITEMS_EVENT_HANDLERS),
+            None => region::FORM_HEADER_ITEMS_EVENT_HANDLERS.to_string(),
+        },
+    }
+}
+
+/// Таблица формы, которой принадлежит владелец события: ближайшая таблица в
+/// цепочке владельцев, включая его самого. Элемент вне таблиц — элемент шапки.
+fn owning_form_table(owner_chain: &[PropertyEventOwner]) -> Option<&str> {
+    owner_chain
+        .iter()
+        .rev()
+        .find(|owner| owner.kind == PropertyEventOwnerKind::Table)
+        .and_then(|owner| owner.at.segments().last())
+        .and_then(unica_address::address::AddressSegment::name)
 }
 
 fn substitute_catalog_handler(

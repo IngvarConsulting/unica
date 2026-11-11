@@ -1,6 +1,6 @@
 #[cfg(any(test, feature = "test-support"))]
 use roxmltree::Document;
-use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+use unica_address::source_target::MetadataAddress;
 #[cfg(any(test, feature = "test-support"))]
 use unica_metadata::META_INFO_PROPERTY_NAMES;
 use unica_metadata::{
@@ -307,20 +307,18 @@ pub fn parse_observed_metadata_type_contents_node(
             if let Some(chart) = local_name.strip_prefix("Characteristic.") {
                 // `cfg:Characteristic.X` is the type set of a chart of
                 // characteristic types: read it, never rewrite it.
-                let metadata_path = MetadataAddress::parse(
-                    PLATFORM_XML_8_3_27_FORMAT_2_20,
-                    &format!("ChartOfCharacteristicTypes.{chart}"),
-                )
-                .map_err(|_| {
-                    invalid_observed_type(
-                        "existing characteristic type set is not a metadata address",
-                    )
-                })?;
+                let metadata_path =
+                    MetadataAddress::parse_logical(&format!("ChartOfCharacteristicTypes.{chart}"))
+                        .map_err(|_| {
+                            invalid_observed_type(
+                                "existing characteristic type set is not a metadata address",
+                            )
+                        })?;
                 variants.push(ObservedMetadataTypeVariant::CharacteristicTypes { metadata_path });
                 continue;
             }
             let metadata_path =
-                MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &local_name).map_err(
+                MetadataAddress::parse_logical(&local_name).map_err(
                     |_| invalid_observed_type(format!(
                         "TypeSet QName {{{namespace}}}{local_name} is not supported by this format profile; complete type composition is unavailable"
                     )),
@@ -437,8 +435,7 @@ fn parse_generated_observed_type(raw: &str) -> Result<ObservedMetadataTypeVarian
         return Err(unsupported());
     };
     let metadata_path =
-        MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &format!("{kind}.{name}"))
-            .map_err(|_| unsupported())?;
+        MetadataAddress::parse_logical(&format!("{kind}.{name}")).map_err(|_| unsupported())?;
     if class != "reference" {
         let kind = MetadataKind::parse(kind).map_err(|_| unsupported())?;
         if !unica_metadata::identifier::is_1c_identifier(name)
@@ -600,8 +597,7 @@ pub fn observed_type_is_strict_but_unmodelled(properties: roxmltree::Node<'_, '_
                 saw_unknown = true;
                 continue;
             }
-            let Ok(address) = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &local)
-            else {
+            let Ok(address) = MetadataAddress::parse_logical(&local) else {
                 return false;
             };
             if address.segments().next() != Some("DefinedType") || address.segments().count() != 2 {
@@ -835,11 +831,8 @@ pub fn project_meta_info_details(
                         );
                         return None;
                     }
-                    let metadata_path = MetadataAddress::parse(
-                        PLATFORM_XML_8_3_27_FORMAT_2_20,
-                        &format!("CommonModule.{module}"),
-                    )
-                    .ok()?;
+                    let metadata_path =
+                        MetadataAddress::parse_logical(&format!("CommonModule.{module}")).ok()?;
                     Some(MetaScheduledMethod {
                         metadata_path,
                         method: method.to_string(),
@@ -870,9 +863,7 @@ pub fn project_meta_info_details(
                     );
                     return None;
                 };
-                let Ok(register_address) = MetadataAddress::parse(
-                    PLATFORM_XML_8_3_27_FORMAT_2_20,
-                    &register,
+                let Ok(register_address) = MetadataAddress::parse_logical(&register,
                 ) else {
                     diagnostic(
                         ProjectionError::malformed(
@@ -1120,9 +1111,7 @@ pub fn meta_info_profile_errors(
     child_objects: Option<roxmltree::Node<'_, '_>>,
 ) -> Vec<ProjectionError> {
     let mut errors = Vec::new();
-    if child_objects.is_some()
-        && !super::format_contract::meta_8_3_27_kind_declares_child_objects(kind)
-    {
+    if child_objects.is_some() && !super::format_contract::kind_declares_child_objects(kind) {
         errors.push(ProjectionError::unsupported(
             "collections",
             format!(
@@ -2967,15 +2956,12 @@ pub fn parse_xdto_packages(
                 expanded_type.local_name.as_str(),
             ) {
                 (READABLE_NAMESPACE, "MDObjectRef") => {
-                    let metadata_path =
-                        MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, raw).map_err(
-                            |_| {
-                                ProjectionError::malformed(
-                                    field.clone(),
-                                    "XDTO package reference is malformed".to_string(),
-                                )
-                            },
-                        )?;
+                    let metadata_path = MetadataAddress::parse_logical(raw).map_err(|_| {
+                        ProjectionError::malformed(
+                            field.clone(),
+                            "XDTO package reference is malformed".to_string(),
+                        )
+                    })?;
                     if metadata_path.segments().next() != Some("XDTOPackage")
                         || metadata_path.segments().count() != 2
                     {
@@ -3061,10 +3047,9 @@ pub fn parse_metadata_object_refs(
             }
             let raw_value = direct_text_content(item);
             let raw = raw_value.trim();
-            let address =
-                MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, raw).map_err(|_| {
-                    ProjectionError::malformed(field.clone(), "metadata reference is malformed")
-                })?;
+            let address = MetadataAddress::parse_logical(raw).map_err(|_| {
+                ProjectionError::malformed(field.clone(), "metadata reference is malformed")
+            })?;
             if address.segments().next() != Some(expected_kind) || address.segments().count() != 2 {
                 return Err(ProjectionError::malformed(
                     field,

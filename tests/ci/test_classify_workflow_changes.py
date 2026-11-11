@@ -379,7 +379,7 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
             "crates/unica-coder/src/infrastructure/platform_xml_source_targets.rs",
             "crates/unica-coder/src/infrastructure/source_roots.rs",
             "crates/unica-coder/src/infrastructure/workspace_services.rs",
-            "crates/unica-coder-daemon/src/interfaces/mcp.rs",
+            "crates/unica-mcp/src/lib.rs",
         ):
             with self.subTest(path=path):
                 platform_changed = (

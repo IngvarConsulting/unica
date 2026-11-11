@@ -1462,7 +1462,7 @@ fn copy_fixture_tree(source: &Path, destination: &Path) -> Result<(), String> {
 
 fn seed_platform_support_fixture(workspace: &Path) -> Result<(), String> {
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tests/fixtures/platform_8_3_27/support-edit-bin-only/src");
+        .join("../../tests/fixtures/formats/platform_xml/2.20/support-edit-bin-only/src");
     let destination = workspace.join("src");
     copy_fixture_tree(&fixture, &destination)?;
     write_designer_project(workspace, &[("main", "CONFIGURATION", "src")])?;
@@ -1742,12 +1742,12 @@ fn dcs_mutation_ops(case_id: &str) -> Vec<Value> {
 
 fn platform_fixture(relative: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tests/fixtures/platform_8_3_27")
+        .join("../../tests/fixtures/formats/platform_xml/2.20")
         .join(relative)
 }
 
 /// Корень набора `main` — выгрузка пустой конфигурации 8.3.27 / 2.20
-/// (`platform_8_3_27/empty_configuration`, имя `CorpusConfiguration`).
+/// (`formats/platform_xml/2.20/empty_configuration`, имя `CorpusConfiguration`).
 fn seed_configuration(workspace: &Path) -> Result<(), String> {
     copy_fixture_tree(
         &platform_fixture("empty_configuration/src"),
@@ -1758,7 +1758,7 @@ fn seed_configuration(workspace: &Path) -> Result<(), String> {
 
 /// Корень набора `extension` — пустое расширение `CorpusExtension` над той же
 /// конфигурацией, записанное по скиллу `cfe-init`
-/// (`platform_8_3_27/empty_extension`). Канонической операции создания
+/// (`formats/platform_xml/2.20/empty_extension`). Канонической операции создания
 /// расширения нет.
 fn seed_extension(workspace: &Path) -> Result<(), String> {
     copy_fixture_tree(
@@ -3705,7 +3705,7 @@ pub(crate) fn configured_output_directory() -> Result<PathBuf, String> {
 /// Зарегистрированные операции `unica.apply`: тот же реестр, по которому
 /// словарь `can` публикует операции узла.
 fn registered_apply_operations() -> BTreeSet<String> {
-    unica_coder_daemon::registered_apply_operation_names()
+    unica_daemon::registered_apply_operation_names()
         .into_iter()
         .map(str::to_string)
         .collect()
@@ -5173,7 +5173,7 @@ fn meta_info_manifest_platform_cases_are_exact_executable_object_create_branches
     }
 
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tests/fixtures/platform_8_3_27/meta_info/manifest.json");
+        .join("../../tests/fixtures/formats/platform_xml/2.20/meta_info/manifest.json");
     let manifest: MetaInfoManifest = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
     assert_eq!(manifest.kinds.len(), 23);
 

@@ -5,12 +5,16 @@ pub mod capacity_observation;
 #[cfg(test)]
 #[path = "../../tests/platform/code_intelligence_integration.rs"]
 pub(crate) mod code_intelligence;
+pub mod daemon_adapters;
 pub mod diagnostics;
 
 pub mod engine_delivery;
 #[allow(dead_code)]
 pub(crate) mod event_views;
 pub mod family_codecs;
+pub mod format_families;
+#[cfg(test)]
+mod format_family_tests;
 pub mod format_guard;
 pub mod internal_adapters;
 // Hidden v0.13 routing remains unreachable from the package-selected v0.12 surface.
@@ -91,10 +95,6 @@ mod workspace_state_integration_tests;
 mod workspace_actor_contract_tests;
 #[cfg(test)]
 mod workspace_metadata_publication_tests;
-
-#[cfg(test)]
-#[path = "../../tests/platform/full_dump_integration.rs"]
-mod full_dump_integration;
 
 #[cfg(test)]
 #[path = "source_discovery_integration_tests.rs"]

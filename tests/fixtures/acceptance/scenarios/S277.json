@@ -1,7 +1,7 @@
 {
   "id": "S277",
   "area": "Макеты",
-  "task": "Добавить макет справочнику в выгрузке 2.21 — отказ по формату",
+  "task": "Добавить макет справочнику в выгрузке 2.23 — отказ по формату",
   "wire": [
     {
       "tool": "unica.apply",
@@ -24,7 +24,7 @@
       "expect": [
         "refused"
       ],
-      "refusal": "invalid_source: Configuration.xml: export format 2.21 is newer than the writable profile 2.20 for 1C 8.3.27; Unica does not edit this export yet"
+      "refusal": "invalid_source: Configuration.xml: export format 2.23 is newer than the newest writable format 2.22 for 1C 8.5.4; Unica does not edit this export yet"
     }
   ],
   "workspace": "tests/fixtures/acceptance/workspace-format"

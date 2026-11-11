@@ -909,8 +909,9 @@ pub(super) fn project_registered_metadata_branch_names(
     )
 }
 
-/// Член коллекции несёт `props.support` только в состоянии, отличном от «не на
-/// поддержке»: замок в дереве виден без чтения каждого объекта (#2158).
+/// Член коллекции несёт `support` только в состоянии, отличном от «не на
+/// поддержке»: замок в дереве виден без чтения каждого объекта (#2158, #2877).
+/// Это состояние по правилу поставщика, без учёта политики проекта.
 fn project_registered_metadata_branch_names_inner<'a>(
     address: &QualifiedAddress,
     kind: NodeKind,
@@ -919,18 +920,17 @@ fn project_registered_metadata_branch_names_inner<'a>(
 ) -> Result<NodeViewData, ViewError> {
     let items = names
         .map(|name| {
-            let props = support
-                .states
-                .remove(name)
-                .map(|state| Map::from_iter([("support".to_string(), state)]))
-                .unwrap_or_default();
-            serde_json::to_value(NodeView::new(
+            let mut item = serde_json::to_value(NodeView::new(
                 member_address(address, name),
                 kind.as_str(),
                 name,
-                props,
+                Map::new(),
             ))
-            .expect("NodeView always serializes")
+            .expect("NodeView always serializes");
+            if let Some(state) = support.states.remove(name) {
+                item["support"] = state;
+            }
+            item
         })
         .collect();
     Ok(NodeViewData::Collection(CollectionView::new(
@@ -1454,7 +1454,7 @@ struct InterfaceCommandLimits {
 }
 
 fn named_interface_command(reference: &str) -> bool {
-    use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+    use unica_address::source_target::MetadataAddress;
     use unica_xml_format::names::xml_ncname_is_valid;
     let parts = reference.split('.').collect::<Vec<_>>();
     let owner = match parts.as_slice() {
@@ -1466,7 +1466,7 @@ fn named_interface_command(reference: &str) -> bool {
         }
         _ => return false,
     };
-    MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &owner).is_ok()
+    MetadataAddress::parse_logical(&owner).is_ok()
 }
 
 fn split_interface_commands(

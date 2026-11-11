@@ -4,8 +4,8 @@ use std::{
     path::{Path, PathBuf},
     sync::Arc,
 };
+use unica_execution::runner::attempt::RuntimeWorkspaceObservation;
 use unica_execution::runtime_jobs::{RuntimeLifecycleObserver, TerminalRuntimeSuccess};
-use unica_runner::attempt::RuntimeWorkspaceObservation;
 use unica_source_contract::{events::DomainEvent, workspace::WorkspaceContext};
 use unica_workspace::{cache::CacheAccess, state::WorkspaceStateRepository};
 type JobResult<T> = Result<T, String>;
@@ -98,17 +98,4 @@ pub fn runtime_environment() -> &'static dyn unica_adapter_v8_runner::adapter::R
     &WORKSPACE_OBSERVATION
 }
 
-use unica_runner::operation::runtime_event_kind;
-
-/// Bind the Designer codec to the existing cross-format inventory classifier.
-pub fn full_dump_semantics(
-) -> std::sync::Arc<dyn unica_source_contract::read::full_dump::DumpSemanticValidator> {
-    std::sync::Arc::new(
-        unica_source_designer::full_dump_validation::DesignerDumpValidator::new(|kind, files| {
-            unica_source_designer::inventory::classify_physical_source_inventory(
-                kind,
-                files.iter().copied(),
-            )
-        }),
-    )
-}
+use unica_execution::runner::operation::runtime_event_kind;

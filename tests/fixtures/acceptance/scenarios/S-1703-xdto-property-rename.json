@@ -136,7 +136,13 @@
           "select": ".//{http://v8.1c.ru/8.1/xdto}property[@name=\"Код\"]",
           "eq": []
         }
-      ]
+      ],
+      "captures": {
+        "unchanged1": {
+          "file": "src/XDTOPackages/Пример/Ext/Package.bin",
+          "kind": "sha256"
+        }
+      }
     },
     {
       "tool": "unica.view",
@@ -233,7 +239,7 @@
         {
           "path": "src/XDTOPackages/Пример/Ext/Package.bin",
           "kind": "sha256",
-          "eq": "e5396170f880c7afccc2979e493f7f7d641e47b47073fed4c632fea5d508c082"
+          "eq": "$capture.unchanged1"
         }
       ]
     },
@@ -270,7 +276,7 @@
         {
           "path": "src/XDTOPackages/Пример/Ext/Package.bin",
           "kind": "sha256",
-          "eq": "e5396170f880c7afccc2979e493f7f7d641e47b47073fed4c632fea5d508c082"
+          "eq": "$capture.unchanged1"
         }
       ]
     },
@@ -297,7 +303,7 @@
         {
           "path": "src/XDTOPackages/Пример/Ext/Package.bin",
           "kind": "sha256",
-          "eq": "e5396170f880c7afccc2979e493f7f7d641e47b47073fed4c632fea5d508c082"
+          "eq": "$capture.unchanged1"
         }
       ]
     },
@@ -324,7 +330,7 @@
         {
           "path": "src/XDTOPackages/Пример/Ext/Package.bin",
           "kind": "sha256",
-          "eq": "e5396170f880c7afccc2979e493f7f7d641e47b47073fed4c632fea5d508c082"
+          "eq": "$capture.unchanged1"
         }
       ]
     }

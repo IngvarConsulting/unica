@@ -7,7 +7,6 @@ use support::*;
 use super::{
     project_known_suffix, project_typed_payload, resolve_platform_xml_target,
     LogicalViewReadAuthority, MetadataAddress, SourceTarget, TargetKindPolicy,
-    PLATFORM_XML_8_3_27_FORMAT_2_20,
 };
 use crate::application::v13::find::FindRequest;
 use crate::infrastructure::logical_tree::route_logical_address;
@@ -235,7 +234,7 @@ mod canonical_module_diagnostics {
         let mapping = authority
             .diagnostic_mapping(&QualifiedAddress::parse(at).unwrap(), workspace)
             .unwrap_or_else(|error| panic!("{at}: {error:?}"));
-        let target = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, expected).unwrap();
+        let target = MetadataAddress::parse_logical(expected).unwrap();
         assert_eq!(mapping.target().metadata_path.as_ref(), Some(&target));
         assert_eq!(mapping.target().target_kind, TargetKind::Module);
         let cancellation = CancellationToken::new();

@@ -28,17 +28,17 @@ class RepositoryTests(unittest.TestCase):
         """rule: INV.RUNTIME.TIMERS-PRESERVE-WORK"""
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            listed = root / "crates/unica-lsp/src/host.rs"
+            listed = root / "crates/unica-editor-analysis/src/host.rs"
             listed.parent.mkdir(parents=True)
             listed.write_text("fn a() { let _ = ProviderDeadline::new(d); }\n", encoding="utf-8")
             found = guard.found_calls(root)
-            self.assertEqual(found, {"crates/unica-lsp/src/host.rs": 1})
+            self.assertEqual(found, {"crates/unica-editor-analysis/src/host.rs": 1})
             missing = {line.split(":")[0] for line in guard.violations(found)}
-            self.assertEqual(missing, set(guard.ALLOWED) - {"crates/unica-lsp/src/host.rs"})
+            self.assertEqual(missing, set(guard.ALLOWED) - {"crates/unica-editor-analysis/src/host.rs"})
 
             listed.write_text("fn a() { let _ = ProviderDeadline::new(d); let _ = ProviderDeadline::new(e); }\n",
                               encoding="utf-8")
-            self.assertIn("crates/unica-lsp/src/host.rs: 2 finite ProviderDeadline constructor call(s), allowed 1",
+            self.assertIn("crates/unica-editor-analysis/src/host.rs: 2 finite ProviderDeadline constructor call(s), allowed 1",
                           guard.violations(guard.found_calls(root)))
 
             unlisted = root / "crates/unica-search/src/walk.rs"

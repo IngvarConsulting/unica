@@ -738,8 +738,9 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         # Джоба другой ОС линтует везде, где идёт.
         os_clippy = step_by_id(other, "clippy")
         self.assertNotIn("if", other)
-        # Матрица — один macOS; Windows только в `large`.
-        for profile, runners in (("main", ["macos-15"]), ("large", ["macos-15", "windows-latest"])):
+        # Матрица — один macOS; Windows в `large` и в выпуске по тегу (профиль пуст).
+        for profile, runners in (("main", ["macos-15"]), ("large", ["macos-15", "windows-latest"]),
+                                 ("", ["macos-15", "windows-latest"])):
             with self.subTest(profile=profile):
                 self.assertEqual(matrix_values(other, profile)["runner"], runners)
         # Ни одна ОС не рекомендательная: красная джоба красит прогон.
@@ -958,7 +959,7 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
             # nextest ставится до восстановления: rust-cache исключает уже
             # лежащие в ~/.cargo/bin файлы из записи и не подменяет их.
             order = steps(found)
-            nextest = next(step for step in steps_using(found, "taiki-e/install-action") if "cargo-nextest@" in step["with"]["tool"])
+            nextest = next(step for step in steps_using(found, "./.github/actions/install-nextest"))
             self.assertLess(order.index(nextest), order.index(cache[0]))
         # CI sets no `CARGO_TARGET_DIR`: the archive goes to `<root>/target`.
         with mock.patch.dict(os.environ):
@@ -980,7 +981,8 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         gate = job(self.release, "unica-ci")
         installed = {tool.split("@", 1)[0] for step in steps_using(gate, "taiki-e/install-action")
                      for tool in step["with"]["tool"].split(",")}
-        self.assertEqual(installed, {"zizmor", "cargo-nextest", "clippy-sarif", "sarif-fmt"})
+        self.assertEqual(installed, {"zizmor", "clippy-sarif", "sarif-fmt"})
+        self.assertEqual(len(steps_using(gate, "./.github/actions/install-nextest")), 1)
 
     def test_release_assessment_uses_affected_mechanism_contour(self) -> None:
         assessment = job(self.release, "release-assessment")
@@ -1257,9 +1259,11 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         for ref in ("refs/heads/main", "refs/heads/release-v1.0"):
             with self.subTest(ref=ref):
                 self.assertEqual(evaluate(full["with"]["alpha"], {"github.ref": ref}), ref == "refs/heads/main")
-        # Права вызова — верхняя граница: их хватает всем заданиям `release.yml`, но
-        # токен маркетплейса вызову не передаётся, а `id-token` нужен только Pages.
-        self.assertNotIn("secrets", full)
+        # Права вызова — верхняя граница: их хватает всем заданиям `release.yml`.
+        # Вызов передаёт по имени только ключ тегов alpha: без этого секрет окружения
+        # в вызванном workflow пуст. Токен маркетплейса вызову не передаётся, а
+        # `id-token` нужен только Pages.
+        self.assertEqual(full["secrets"], {"RELEASE_TAG_KEY": "${{ secrets.RELEASE_TAG_KEY }}"})
         requested = {}
         for found in jobs(self.release).values():
             requested.update(found.get("permissions") or {})

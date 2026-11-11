@@ -40,9 +40,9 @@ use std::sync::{Arc, Mutex};
 use unica_address::address::{AddressSegment, NodeKind, QualifiedAddress};
 use unica_address::module_routes::ModuleRole;
 use unica_address::module_routes::ModuleRouteKind;
+use unica_address::source_target::MetadataAddress;
 #[cfg(any(test, feature = "test-support"))]
 use unica_address::source_target::SourceTarget;
-use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
 use unica_bsl::profile::{ModuleCapability, PlatformProfile};
 use unica_forms::facts::{FormEventEvidence, FormInfoData};
 use unica_refusal::{RefusalCode, RefusalDetail};
@@ -158,6 +158,7 @@ struct OwnerEdgeCacheKey {
 }
 
 mod diagnostic_scope;
+mod editability_view;
 mod form_payload;
 mod module_body_read;
 mod typed_payload_read;
@@ -198,12 +199,11 @@ impl<'a> LogicalViewReadAuthority<'a> {
         profile: PlatformProfile,
         deadline: ProviderDeadline,
     ) -> Self {
-        Self::with_read_authority_and_registration_cache(
+        Self::over_artifacts(
             cancellation,
-            read,
+            read.with_artifacts(Arc::new(RegistrationCache::default())),
             profile,
             deadline,
-            Arc::new(RegistrationCache::default()),
         )
     }
 
@@ -214,9 +214,23 @@ impl<'a> LogicalViewReadAuthority<'a> {
         deadline: ProviderDeadline,
         registration_cache: Arc<RegistrationCache>,
     ) -> Self {
+        let read = read.with_artifacts(registration_cache);
+        // The actor's retained artifacts: the first read of the set starts
+        // proving its top-level descriptors in the background, so a branch
+        // opened next finds them retained.
+        read.start_owner_warmup();
+        Self::over_artifacts(cancellation, read, profile, deadline)
+    }
+
+    fn over_artifacts(
+        cancellation: &'a CancellationToken,
+        read: ProviderReadAuthority,
+        profile: PlatformProfile,
+        deadline: ProviderDeadline,
+    ) -> Self {
         Self {
             cancellation,
-            read: read.with_artifacts(registration_cache),
+            read,
             profile,
             deadline,
             module_projections: Mutex::new(BTreeMap::new()),
@@ -623,15 +637,18 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
                 SourceSetKind::Configuration | SourceSetKind::Extension
             ) && self.read.configuration_xml_requires_streaming()
             {
+                // The branch proves every member: their stamps come from one
+                // pass over the kind directory.
+                self.read.stamp_descriptors_by_directory();
                 let index = self.streamed_configuration_registration_index(admitted)?;
                 let names =
                     index.names_for_kind(branch_kind.as_str(), &|| self.read_checkpoint())?;
                 if branch_kind != NodeKind::WebSocketClient {
                     for name in &names {
-                        let owner = MetadataAddress::parse(
-                            PLATFORM_XML_8_3_27_FORMAT_2_20,
-                            &format!("{}.{name}", branch_kind.as_str()),
-                        )
+                        let owner = MetadataAddress::parse_logical(&format!(
+                            "{}.{name}",
+                            branch_kind.as_str()
+                        ))
                         .map_err(|error| {
                             ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
                         })?;
@@ -650,6 +667,7 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
                     support,
                 )?
             } else {
+                self.read.stamp_descriptors_by_directory();
                 let payload = self.configuration_payload(admitted)?;
                 if branch_kind != NodeKind::WebSocketClient {
                     for item in payload
@@ -667,10 +685,10 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
                                 "registered metadata owner has no name",
                             )
                         })?;
-                        let owner = MetadataAddress::parse(
-                            PLATFORM_XML_8_3_27_FORMAT_2_20,
-                            &format!("{}.{name}", branch_kind.as_str()),
-                        )
+                        let owner = MetadataAddress::parse_logical(&format!(
+                            "{}.{name}",
+                            branch_kind.as_str()
+                        ))
                         .map_err(|error| {
                             ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
                         })?;
@@ -847,11 +865,10 @@ impl LogicalViewReadAuthority<'_> {
         let Some(name) = owner.name() else {
             return Ok(());
         };
-        let target = MetadataAddress::parse(
-            PLATFORM_XML_8_3_27_FORMAT_2_20,
-            &format!("{}.{name}", owner.kind().as_str()),
-        )
-        .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string()))?;
+        let target = MetadataAddress::parse_logical(&format!("{}.{name}", owner.kind().as_str()))
+            .map_err(|error| {
+            ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+        })?;
         self.verify_registered_owner(&target, admitted)
     }
 
@@ -920,9 +937,9 @@ impl LogicalViewReadAuthority<'_> {
             }
             _ => return Ok(projected),
         };
-        let child = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &child_text).map_err(
-            |error| ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string()),
-        )?;
+        let child = MetadataAddress::parse_logical(&child_text).map_err(|error| {
+            ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+        })?;
         let mut projected = projected;
         let profile = self.read.metadata_child_profile(&child);
         let format = match &profile {
@@ -1153,7 +1170,7 @@ fn module_branch_owner(branch: &QualifiedAddress) -> Result<Option<MetadataAddre
         ));
     }
     let logical = render_segments(&segments[..segments.len() - 1]);
-    MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &logical)
+    MetadataAddress::parse_logical(&logical)
         .map(Some)
         .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string()))
 }
@@ -1189,7 +1206,7 @@ fn module_branch_owner_address(
     ) {
         return Ok(None);
     }
-    MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &parent.logical_path())
+    MetadataAddress::parse_logical(&parent.logical_path())
         .map(Some)
         .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string()))
 }
@@ -1200,10 +1217,9 @@ fn module_owner_address(
 ) -> Result<MetadataAddress, ViewError> {
     let segments = module_at.segments();
     if capability.role() == ModuleRole::Common {
-        return MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &module_at.logical_path())
-            .map_err(|error| {
-                ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
-            });
+        return MetadataAddress::parse_logical(&module_at.logical_path()).map_err(|error| {
+            ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+        });
     }
     let terminal = segments.last().ok_or_else(|| {
         ViewError::new(
@@ -1218,7 +1234,7 @@ fn module_owner_address(
         ));
     }
     let logical = render_segments(&segments[..segments.len() - 1]);
-    MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &logical)
+    MetadataAddress::parse_logical(&logical)
         .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string()))
 }
 

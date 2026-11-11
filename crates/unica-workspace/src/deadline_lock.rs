@@ -160,6 +160,11 @@ impl<P: PoisonPolicy> DeadlineLock<P> {
         }
     }
 
+    #[cfg(test)]
+    pub(super) fn is_held_for_test(&self) -> bool {
+        matches!(self.inner.try_lock(), Err(TryLockError::WouldBlock))
+    }
+
     #[cfg(any(test, feature = "test-support"))]
     pub(super) fn hold_for_test(&self) -> MutexGuard<'_, ()> {
         self.inner

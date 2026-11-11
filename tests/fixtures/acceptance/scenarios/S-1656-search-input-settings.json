@@ -58,13 +58,16 @@
           ]
         }
       ],
-      "fileAssertions": [
-        {
-          "path": "src/Catalogs/Codes.xml",
-          "kind": "sha256",
-          "eq": "bdf0fefd89a63aac87e1a27f1d539c7218896369803bf4b61983a93ad65002ed"
+      "captures": {
+        "unchanged1": {
+          "file": "src/Catalogs/Codes.xml",
+          "kind": "sha256"
+        },
+        "unchanged2": {
+          "file": "src/Documents/Приход.xml",
+          "kind": "sha256"
         }
-      ]
+      }
     },
     {
       "tool": "unica.view",
@@ -144,7 +147,7 @@
         {
           "path": "src/Catalogs/Codes.xml",
           "kind": "sha256",
-          "eq": "bdf0fefd89a63aac87e1a27f1d539c7218896369803bf4b61983a93ad65002ed"
+          "eq": "$capture.unchanged1"
         }
       ]
     },
@@ -301,7 +304,7 @@
         {
           "path": "src/Catalogs/Codes.xml",
           "kind": "sha256",
-          "eq": "bdf0fefd89a63aac87e1a27f1d539c7218896369803bf4b61983a93ad65002ed"
+          "eq": "$capture.unchanged1"
         }
       ]
     },
@@ -383,7 +386,7 @@
         {
           "path": "src/Catalogs/Codes.xml",
           "kind": "sha256",
-          "eq": "bdf0fefd89a63aac87e1a27f1d539c7218896369803bf4b61983a93ad65002ed"
+          "eq": "$capture.unchanged1"
         }
       ]
     },
@@ -465,7 +468,7 @@
         {
           "path": "src/Catalogs/Codes.xml",
           "kind": "sha256",
-          "eq": "bdf0fefd89a63aac87e1a27f1d539c7218896369803bf4b61983a93ad65002ed"
+          "eq": "$capture.unchanged1"
         }
       ]
     },
@@ -622,7 +625,7 @@
         {
           "path": "src/Catalogs/Codes.xml",
           "kind": "sha256",
-          "eq": "bdf0fefd89a63aac87e1a27f1d539c7218896369803bf4b61983a93ad65002ed"
+          "eq": "$capture.unchanged1"
         }
       ]
     },
@@ -704,7 +707,7 @@
         {
           "path": "src/Catalogs/Codes.xml",
           "kind": "sha256",
-          "eq": "bdf0fefd89a63aac87e1a27f1d539c7218896369803bf4b61983a93ad65002ed"
+          "eq": "$capture.unchanged1"
         }
       ]
     },
@@ -861,7 +864,7 @@
         {
           "path": "src/Catalogs/Codes.xml",
           "kind": "sha256",
-          "eq": "bdf0fefd89a63aac87e1a27f1d539c7218896369803bf4b61983a93ad65002ed"
+          "eq": "$capture.unchanged1"
         }
       ]
     },
@@ -943,7 +946,7 @@
         {
           "path": "src/Catalogs/Codes.xml",
           "kind": "sha256",
-          "eq": "bdf0fefd89a63aac87e1a27f1d539c7218896369803bf4b61983a93ad65002ed"
+          "eq": "$capture.unchanged1"
         }
       ]
     },
@@ -1025,7 +1028,7 @@
         {
           "path": "src/Catalogs/Codes.xml",
           "kind": "sha256",
-          "eq": "bdf0fefd89a63aac87e1a27f1d539c7218896369803bf4b61983a93ad65002ed"
+          "eq": "$capture.unchanged1"
         }
       ]
     },
@@ -1107,7 +1110,7 @@
         {
           "path": "src/Catalogs/Codes.xml",
           "kind": "sha256",
-          "eq": "bdf0fefd89a63aac87e1a27f1d539c7218896369803bf4b61983a93ad65002ed"
+          "eq": "$capture.unchanged1"
         }
       ]
     },
@@ -1264,7 +1267,7 @@
         {
           "path": "src/Catalogs/Codes.xml",
           "kind": "sha256",
-          "eq": "bdf0fefd89a63aac87e1a27f1d539c7218896369803bf4b61983a93ad65002ed"
+          "eq": "$capture.unchanged1"
         }
       ]
     },
@@ -1346,7 +1349,7 @@
         {
           "path": "src/Catalogs/Codes.xml",
           "kind": "sha256",
-          "eq": "bdf0fefd89a63aac87e1a27f1d539c7218896369803bf4b61983a93ad65002ed"
+          "eq": "$capture.unchanged1"
         }
       ]
     },
@@ -1578,7 +1581,7 @@
         {
           "path": "src/Catalogs/Codes.xml",
           "kind": "sha256",
-          "eq": "bdf0fefd89a63aac87e1a27f1d539c7218896369803bf4b61983a93ad65002ed"
+          "eq": "$capture.unchanged1"
         }
       ]
     },
@@ -1660,7 +1663,7 @@
         {
           "path": "src/Catalogs/Codes.xml",
           "kind": "sha256",
-          "eq": "bdf0fefd89a63aac87e1a27f1d539c7218896369803bf4b61983a93ad65002ed"
+          "eq": "$capture.unchanged1"
         }
       ]
     },
@@ -1742,7 +1745,7 @@
         {
           "path": "src/Catalogs/Codes.xml",
           "kind": "sha256",
-          "eq": "bdf0fefd89a63aac87e1a27f1d539c7218896369803bf4b61983a93ad65002ed"
+          "eq": "$capture.unchanged1"
         }
       ]
     },
@@ -1824,7 +1827,7 @@
         {
           "path": "src/Catalogs/Codes.xml",
           "kind": "sha256",
-          "eq": "bdf0fefd89a63aac87e1a27f1d539c7218896369803bf4b61983a93ad65002ed"
+          "eq": "$capture.unchanged1"
         }
       ]
     },
@@ -1981,7 +1984,7 @@
         {
           "path": "src/Catalogs/Codes.xml",
           "kind": "sha256",
-          "eq": "bdf0fefd89a63aac87e1a27f1d539c7218896369803bf4b61983a93ad65002ed"
+          "eq": "$capture.unchanged1"
         }
       ]
     },
@@ -2063,7 +2066,7 @@
         {
           "path": "src/Catalogs/Codes.xml",
           "kind": "sha256",
-          "eq": "bdf0fefd89a63aac87e1a27f1d539c7218896369803bf4b61983a93ad65002ed"
+          "eq": "$capture.unchanged1"
         }
       ]
     },
@@ -2124,7 +2127,7 @@
         {
           "path": "src/Documents/Приход.xml",
           "kind": "sha256",
-          "eq": "6f082dd45e8e75da92e624a7b55afc05f7ead6e60251cd366e8be351aacff2bc"
+          "eq": "$capture.unchanged2"
         }
       ]
     },
@@ -2206,7 +2209,7 @@
         {
           "path": "src/Documents/Приход.xml",
           "kind": "sha256",
-          "eq": "6f082dd45e8e75da92e624a7b55afc05f7ead6e60251cd366e8be351aacff2bc"
+          "eq": "$capture.unchanged2"
         }
       ]
     },
@@ -2363,7 +2366,7 @@
         {
           "path": "src/Documents/Приход.xml",
           "kind": "sha256",
-          "eq": "6f082dd45e8e75da92e624a7b55afc05f7ead6e60251cd366e8be351aacff2bc"
+          "eq": "$capture.unchanged2"
         }
       ]
     },
@@ -2445,7 +2448,7 @@
         {
           "path": "src/Documents/Приход.xml",
           "kind": "sha256",
-          "eq": "6f082dd45e8e75da92e624a7b55afc05f7ead6e60251cd366e8be351aacff2bc"
+          "eq": "$capture.unchanged2"
         }
       ]
     },
@@ -2527,7 +2530,7 @@
         {
           "path": "src/Documents/Приход.xml",
           "kind": "sha256",
-          "eq": "6f082dd45e8e75da92e624a7b55afc05f7ead6e60251cd366e8be351aacff2bc"
+          "eq": "$capture.unchanged2"
         }
       ]
     },
@@ -2684,7 +2687,7 @@
         {
           "path": "src/Documents/Приход.xml",
           "kind": "sha256",
-          "eq": "6f082dd45e8e75da92e624a7b55afc05f7ead6e60251cd366e8be351aacff2bc"
+          "eq": "$capture.unchanged2"
         }
       ]
     },
@@ -2766,7 +2769,7 @@
         {
           "path": "src/Documents/Приход.xml",
           "kind": "sha256",
-          "eq": "6f082dd45e8e75da92e624a7b55afc05f7ead6e60251cd366e8be351aacff2bc"
+          "eq": "$capture.unchanged2"
         }
       ]
     },
@@ -2923,7 +2926,7 @@
         {
           "path": "src/Documents/Приход.xml",
           "kind": "sha256",
-          "eq": "6f082dd45e8e75da92e624a7b55afc05f7ead6e60251cd366e8be351aacff2bc"
+          "eq": "$capture.unchanged2"
         }
       ]
     },
@@ -3005,7 +3008,7 @@
         {
           "path": "src/Documents/Приход.xml",
           "kind": "sha256",
-          "eq": "6f082dd45e8e75da92e624a7b55afc05f7ead6e60251cd366e8be351aacff2bc"
+          "eq": "$capture.unchanged2"
         }
       ]
     },
@@ -3087,7 +3090,7 @@
         {
           "path": "src/Documents/Приход.xml",
           "kind": "sha256",
-          "eq": "6f082dd45e8e75da92e624a7b55afc05f7ead6e60251cd366e8be351aacff2bc"
+          "eq": "$capture.unchanged2"
         }
       ]
     },
@@ -3169,7 +3172,7 @@
         {
           "path": "src/Documents/Приход.xml",
           "kind": "sha256",
-          "eq": "6f082dd45e8e75da92e624a7b55afc05f7ead6e60251cd366e8be351aacff2bc"
+          "eq": "$capture.unchanged2"
         }
       ]
     },
@@ -3326,7 +3329,7 @@
         {
           "path": "src/Documents/Приход.xml",
           "kind": "sha256",
-          "eq": "6f082dd45e8e75da92e624a7b55afc05f7ead6e60251cd366e8be351aacff2bc"
+          "eq": "$capture.unchanged2"
         }
       ]
     },
@@ -3408,7 +3411,7 @@
         {
           "path": "src/Documents/Приход.xml",
           "kind": "sha256",
-          "eq": "6f082dd45e8e75da92e624a7b55afc05f7ead6e60251cd366e8be351aacff2bc"
+          "eq": "$capture.unchanged2"
         }
       ]
     },
@@ -3640,7 +3643,7 @@
         {
           "path": "src/Documents/Приход.xml",
           "kind": "sha256",
-          "eq": "6f082dd45e8e75da92e624a7b55afc05f7ead6e60251cd366e8be351aacff2bc"
+          "eq": "$capture.unchanged2"
         }
       ]
     },
@@ -3722,7 +3725,7 @@
         {
           "path": "src/Documents/Приход.xml",
           "kind": "sha256",
-          "eq": "6f082dd45e8e75da92e624a7b55afc05f7ead6e60251cd366e8be351aacff2bc"
+          "eq": "$capture.unchanged2"
         }
       ]
     },
@@ -3804,7 +3807,7 @@
         {
           "path": "src/Documents/Приход.xml",
           "kind": "sha256",
-          "eq": "6f082dd45e8e75da92e624a7b55afc05f7ead6e60251cd366e8be351aacff2bc"
+          "eq": "$capture.unchanged2"
         }
       ]
     },
@@ -3886,7 +3889,7 @@
         {
           "path": "src/Documents/Приход.xml",
           "kind": "sha256",
-          "eq": "6f082dd45e8e75da92e624a7b55afc05f7ead6e60251cd366e8be351aacff2bc"
+          "eq": "$capture.unchanged2"
         }
       ]
     },
@@ -4043,7 +4046,7 @@
         {
           "path": "src/Documents/Приход.xml",
           "kind": "sha256",
-          "eq": "6f082dd45e8e75da92e624a7b55afc05f7ead6e60251cd366e8be351aacff2bc"
+          "eq": "$capture.unchanged2"
         }
       ]
     },
@@ -4125,7 +4128,7 @@
         {
           "path": "src/Documents/Приход.xml",
           "kind": "sha256",
-          "eq": "6f082dd45e8e75da92e624a7b55afc05f7ead6e60251cd366e8be351aacff2bc"
+          "eq": "$capture.unchanged2"
         }
       ]
     },

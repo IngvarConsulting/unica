@@ -13,7 +13,7 @@ path = "src/lib.rs"
 default = []
 test-support = [
     "unica-application/test-support",
-    "unica-daemon/test-support",
+    "unica-daemon-protocol/test-support",
     "unica-roles-designer/test-support",
     "unica-templates-designer/test-support",
     "unica-xdto-designer/test-support",
@@ -46,8 +46,8 @@ test-support = [
 [dependencies]
 unica-application = { path = "../unica-application" }
 unica-domain = { path = "../unica-domain" }
-unica-daemon = { path = "../unica-daemon" }
-unica-lsp = { path = "../unica-lsp" }
+unica-daemon-protocol = { path = "../unica-daemon-protocol" }
+unica-editor-analysis = { path = "../unica-editor-analysis" }
 unica-bindings = { path = "../unica-bindings" }
 unica-adapter-lexical = { path = "../unica-adapter-lexical" }
 unica-adapter-bsl-analyzer = { path = "../unica-adapter-bsl-analyzer" }
@@ -58,7 +58,6 @@ unica-templates-designer = { path = "../unica-templates-designer" }
 unica-forms-designer = { path = "../unica-forms-designer" }
 unica-metadata-designer = { path = "../unica-metadata-designer" }
 unica-xdto-designer = { path = "../unica-xdto-designer" }
-unica-runner = { path = "../unica-runner" }
 unica-adapter-v8-runner = { path = "../unica-adapter-v8-runner" }
 unica-workspace = { path = "../unica-workspace" }
 unica-redaction = { path = "../unica-redaction" }
@@ -131,7 +130,7 @@ cap-fs-ext.workspace = true
 
 [dev-dependencies]
 unica-application = { path = "../unica-application", features = ["test-support"] }
-unica-daemon = { path = "../unica-daemon", features = ["test-support"] }
+unica-daemon-protocol = { path = "../unica-daemon-protocol", features = ["test-support"] }
 unica-roles-designer = { path = "../unica-roles-designer", features = ["test-support"] }
 unica-templates-designer = { path = "../unica-templates-designer", features = ["test-support"] }
 unica-xdto-designer = { path = "../unica-xdto-designer", features = ["test-support"] }
@@ -166,8 +165,10 @@ syn.workspace = true
 tar.workspace = true
 
 [package.metadata.unica]
+version-literal-baseline = 48
 component = "product"
 file-io = "owned"
 # `crates`: tests compare the operation tables and codecs of other crates with their sources.
-inputs = ["crates", "plugins/unica/skills", "plugins/unica/third-party/tools.lock.json", "tests/fixtures/acceptance", "tests/fixtures/analyzer", "tests/fixtures/bsl_analyzer", "tests/fixtures/platform_8_3_27", "tests/fixtures/styleitem_values", "tests/fixtures/unica_mcp_script_parity", "tests/fixtures/v013", "tests/fixtures/xdto"]
+# `plugins/unica`: the skills, the tools lock and the plugin root a test runs the bundled runner from.
+inputs = ["crates", "plugins/unica","tests/fixtures/acceptance", "tests/fixtures/analyzer", "tests/fixtures/bsl_analyzer", "tests/fixtures/formats/platform_xml/2.20", "tests/fixtures/styleitem_values", "tests/fixtures/unica_mcp_script_parity", "tests/fixtures/v013", "tests/fixtures/xdto"]
 read-outside-baseline = 1

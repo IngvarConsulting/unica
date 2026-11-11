@@ -43,6 +43,27 @@ until its source-set problem is fixed. In particular, `sourceSet.path: .` is an
 error: explain how to move the export into a strict child such as `src/` and
 update `v8project.yaml` safely.
 
+### Headless pull
+
+For Designer XML export without the Designer agent, set
+`providers: {pull: ibcmd}` in `v8project.local.yaml`; the local platform must
+provide a verifiable `ibcmd` from 1C 8.3.27. The same provider can export the
+main configuration or an installed extension.
+
+Read the `unica.run {}` dictionary first. For an extension source set named
+`Sales` containing the installed extension `Sales`, preview:
+
+```json
+{"op":"pull","args":{"sourceSet":"Sales","extension":"Sales","force":true},"dryRun":true}
+```
+
+The source-set name must match `extension`; its directory may have a different
+name. Check the returned target and replacement plan, then repeat with
+`dryRun:false`. For the main configuration, use its source-set name and omit
+`extension`. `force:true` replaces the entire target, including local and
+untracked files; this interface does not provide incremental `--sync` export.
+A preview does not write sources or read the current extension contents.
+
 ### Work the call must not wait for
 
 A long operation does not need a separate call: any `unica.run` invocation
@@ -131,7 +152,7 @@ source-set path itself has no stronger structural evidence.
 | --- | --- |
 | Create an absent infobase | `infobase.create`, empty args; a file infobase is created with the main configuration of the `CONFIGURATION` source set (`initializesSources: true`), and the first `push` loads that set only if it changed and the other sets in full; a cluster infobase is created empty, and the first `push` loads every set in full |
 | Send sources / delete an extension | `push`, optional `sourceSet`, `full` and `force`; applies the database configuration after the generation check, `force:true` overwrites the infobase. Deletion uses only `delete: "InstalledName"` |
-| Replace one source set from the working configuration | `pull`, `force:true`, optional `sourceSet`, `extension`; no local-work protection |
+| Export one source set from the working configuration | `pull`, optional `sourceSet`, `extension` and `force`; without `force` the runner chooses a partial or full export, `force:true` replaces the whole set; no copy of the previous sources is kept |
 | Export the configuration or an extension as `.cf`/`.cfe` | `download`, `state=working` or `state=database`, `output`, optional `extension` |
 | Load a `.cf`/`.cfe` into the working configuration only | `upload` — unavailable: the v8-runner 0.15 upload still applies the database configuration, and the adapter does not run `apply` or `reset` yet ([#1246](https://github.com/IngvarConsulting/unica/issues/1246)) |
 | Build a `.cf`/`.cfe`/`.epf`/`.erf` from sources | `make`, `output`; for CF/CFE optional `sourceSet` and `extension` (CFE); EPF/ERF require `sourceSet` naming a singleton matching Designer external source set and a declared main configuration |

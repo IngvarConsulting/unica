@@ -385,6 +385,25 @@ pub enum DiagnosticReadinessState {
 pub struct DiagnosticReadiness {
     pub state: DiagnosticReadinessState,
     pub retryable: bool,
+    /// What the provider tells of its build, when it tells anything.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub progress: Option<DiagnosticBuildProgress>,
+}
+
+/// The facts a provider gives about building its database. Each is absent
+/// when the provider does not tell it; none is a percentage it lacks.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiagnosticBuildProgress {
+    /// Modules served once the database is ready.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub files: Option<usize>,
+    /// Failed builds in a row the current one retries.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attempts: Option<u32>,
+    /// Milliseconds since the current build started.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub elapsed_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -715,9 +734,7 @@ mod tests {
     use serde_json::{json, Value};
     use std::sync::Arc;
     use std::time::{Duration, Instant};
-    use unica_address::source_target::{
-        MetadataAddress, TargetKind, PLATFORM_XML_8_3_27_FORMAT_2_20,
-    };
+    use unica_address::source_target::{MetadataAddress, TargetKind};
 
     const BSL_LANGUAGE_SERVER_PROVIDER: DiagnosticProviderId =
         DiagnosticProviderId::new_const("bsl-language-server");
@@ -796,7 +813,7 @@ mod tests {
     }
 
     fn metadata_address(value: &str) -> MetadataAddress {
-        MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, value).unwrap()
+        MetadataAddress::parse_logical(value).unwrap()
     }
 
     #[test]

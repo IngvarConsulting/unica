@@ -115,6 +115,27 @@ operation/provider pair. Do not mechanically replace `builder` with one global
 provider: each operation has its own supported executors. Keep machine-specific
 overrides in `v8project.local.yaml`. Unica does not rewrite existing project files.
 
+## Headless source export
+
+For Designer XML, select `ibcmd` for `pull` in `v8project.local.yaml`:
+
+```yaml
+providers:
+  pull: ibcmd
+```
+
+This selects `ibcmd config export` for the main configuration and for an
+installed extension. It does not start the Designer agent, so no GTK/X display
+or wrapper forcing `GDK_BACKEND` is needed for that export. A local 1C 8.3.27
+installation with `ibcmd` must be available and verifiable; configure
+`tools.platform` as described below when discovery is ambiguous.
+
+Use `unica.run` to preview and execute `pull`; see
+[workspace runtime](../use-cases/workspace-runtime.md#headless-pull).
+The Unica adapter requires `force:true` and replaces the whole source set,
+including untracked files. It does not expose incremental `--sync` export.
+The `pull` provider does not choose the executor of `push`.
+
 ## Strict platform resolution
 
 Use `tools.platform.strict` when one machine must fail closed on an exact 1C
@@ -197,7 +218,7 @@ directory named `main` keeps it.
 | --- | --- |
 | Create an absent infobase | `infobase.create`, empty args; a file infobase is created with the main configuration of the `CONFIGURATION` source set (`initializesSources: true`), and the first `push` loads that set only if it changed and the other sets in full; a cluster infobase is created empty, and the first `push` loads every set in full |
 | Send sources / delete an extension | `push`, optional `sourceSet`, `full` and `force`; applies the database configuration after the generation check, `force:true` overwrites the infobase. Deletion uses only `delete: "InstalledName"` |
-| Replace one source set from the working configuration | `pull`, `force:true`, optional `sourceSet`, `extension`; no local-work protection |
+| Export one source set from the working configuration | `pull`, optional `sourceSet`, `extension` and `force`; without `force` the runner chooses a partial or full export, `force:true` replaces the whole set; no copy of the previous sources is kept |
 | Export the configuration or an extension as `.cf`/`.cfe` | `download`, `state=working` or `state=database`, `output`, optional `extension` |
 | Load a `.cf`/`.cfe` into the working configuration only | `upload` — unavailable: the v8-runner 0.15 upload still applies the database configuration, and the adapter does not run `apply` or `reset` yet ([#1246](https://github.com/IngvarConsulting/unica/issues/1246)) |
 | Build a `.cf`/`.cfe`/`.epf`/`.erf` from sources | `make`, `output`; for CF/CFE optional `sourceSet` and `extension` (CFE); EPF/ERF require `sourceSet` naming a singleton matching Designer external source set and a declared main configuration |
@@ -215,10 +236,12 @@ inputs, without requiring a previous preview. `unica.run` accepts no `ifRev`
 and returns no `rev`. In this workflow, inspect the preview before execution.
 Preview does not freeze the workspace or the database between calls.
 
-Source `push` checks the infobase generation before loading a set and is refused with `non_fast_forward` when the infobase moved ahead of this working copy's record, or with `no_memory` when this working copy has no memory of the infobase; the refusal offers a `pull` preview and a `push` preview with `force:true`. `force:true` overwrites the infobase: every selected set is loaded in full without that check, and changes made in the infobase are lost. A set the runner skips by its memory is neither loaded nor checked. Full pulling requires explicit `force:true` and provides no local-work protection. Source
+Source `push` checks the infobase generation before loading a set and is refused with `non_fast_forward` when the infobase moved ahead of this working copy's record, or with `no_memory` when this working copy has no memory of the infobase; the refusal offers a `pull` preview and a `push` preview with `force:true`. `force:true` overwrites the infobase: every selected set is loaded in full without that check, and changes made in the infobase are lost. A set the runner skips by its memory is neither loaded nor checked. Without `force`, `pull` lets the runner choose a partial or full export by its memory of earlier exchanges; `force:true` exports the whole set. Source
 `push` also applies the database configuration; `noApply:true` is unavailable.
 With `force:true`, `pull` discards uncommitted and untracked files of the
-source set without a copy. `upload`, `apply` and `reset` are unavailable until
+source set without a copy. Unica keeps no copy of the previous sources: a failed
+`pull` may leave a partial export, and the answer offers to repeat it with
+`force:true`. `upload`, `apply` and `reset` are unavailable until
 the runner can load without applying and apply separately
 ([#1246](https://github.com/IngvarConsulting/unica/issues/1246)).
 `unica.apply` edits source files and is unrelated to the runtime `apply`.

@@ -1,0 +1,69 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:app="http://v8.1c.ru/8.2/managed-application/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:cmi="http://v8.1c.ru/8.2/managed-application/cmi" xmlns:ent="http://v8.1c.ru/8.1/data/enterprise" xmlns:lf="http://v8.1c.ru/8.2/managed-application/logform" xmlns:pal="http://v8.1c.ru/8.1/data/ui/colors/palette" xmlns:style="http://v8.1c.ru/8.1/data/ui/style" xmlns:sys="http://v8.1c.ru/8.1/data/ui/fonts/system" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:v8ui="http://v8.1c.ru/8.1/data/ui" xmlns:web="http://v8.1c.ru/8.1/data/ui/colors/web" xmlns:win="http://v8.1c.ru/8.1/data/ui/colors/windows" xmlns:xen="http://v8.1c.ru/8.3/xcf/enums" xmlns:xpr="http://v8.1c.ru/8.3/xcf/predef" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.21">
+	<DocumentJournal uuid="1c26280f-efcf-5e34-9cb2-cde5103e7c7a">
+		<InternalInfo>
+			<xr:GeneratedType name="DocumentJournalSelection.Entries" category="Selection">
+				<xr:TypeId>a4efbbfe-839b-5248-b8db-729341a29444</xr:TypeId>
+				<xr:ValueId>d4455bdd-42c7-5e86-a890-e76bfbc8c80b</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="DocumentJournalList.Entries" category="List">
+				<xr:TypeId>0c16b960-49dd-505e-bf78-ecfb1c5d8c63</xr:TypeId>
+				<xr:ValueId>511d2282-a89e-5221-807a-ff5032e36110</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="DocumentJournalManager.Entries" category="Manager">
+				<xr:TypeId>d15241f8-6b1c-5108-b3dc-7e47805f56c7</xr:TypeId>
+				<xr:ValueId>88966cc9-0299-580d-9aa0-9082b41e003c</xr:ValueId>
+			</xr:GeneratedType>
+		</InternalInfo>
+		<Properties>
+			<Name>Entries</Name>
+			<Synonym/>
+			<Comment/>
+			<DefaultForm/>
+			<AuxiliaryForm/>
+			<UseStandardCommands>true</UseStandardCommands>
+			<RegisteredDocuments>
+				<xr:Item xsi:type="xr:MDObjectRef">Document.Orders</xr:Item>
+			</RegisteredDocuments>
+			<IncludeHelpInContents>false</IncludeHelpInContents>
+			<ListPresentation/>
+			<ExtendedListPresentation/>
+			<Explanation/>
+		</Properties>
+		<ChildObjects>
+			<Column uuid="e690f13d-9092-5425-af51-0357bc533654">
+				<Properties>
+					<Name>Status</Name>
+					<Synonym/>
+					<Comment/>
+					<Indexing>DontIndex</Indexing>
+					<References>
+						<xr:Item xsi:type="xr:MDObjectRef">Document.Orders.Attribute.Status</xr:Item>
+					</References>
+				</Properties>
+			</Column>
+			<Column uuid="7db7e593-87aa-5889-ae2a-abb939d06ceb">
+				<Properties>
+					<Name>Indexed</Name>
+					<Synonym/>
+					<Comment/>
+					<Indexing>Index</Indexing>
+					<References>
+						<xr:Item xsi:type="xr:MDObjectRef">Document.Orders.Attribute.Status</xr:Item>
+					</References>
+				</Properties>
+			</Column>
+			<Column uuid="4449e5e9-7e45-57e2-acc1-3feb804775e8">
+				<Properties>
+					<Name>Ordered</Name>
+					<Synonym/>
+					<Comment/>
+					<Indexing>IndexWithAdditionalOrder</Indexing>
+					<References>
+						<xr:Item xsi:type="xr:MDObjectRef">Document.Orders.Attribute.Status</xr:Item>
+					</References>
+				</Properties>
+			</Column>
+		</ChildObjects>
+	</DocumentJournal>
+</MetaDataObject>

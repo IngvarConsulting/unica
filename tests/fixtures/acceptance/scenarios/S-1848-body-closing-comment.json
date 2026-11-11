@@ -20,13 +20,6 @@
       },
       "expect": [
         "ok"
-      ],
-      "fileAssertions": [
-        {
-          "path": "src/CommonModules/Probe/Ext/Module.bsl",
-          "kind": "sha256",
-          "eq": "06e6740a8b5bf78f00bebb76e0f91956a97d690e5b78aaa088858b0487cee937"
-        }
       ]
     },
     {
@@ -43,7 +36,13 @@
           "kind": "sha256",
           "eq": "3a8bc9aa744bcf23ee36a81eab9df3cc802d6872b927889de4442d25e76ad07b"
         }
-      ]
+      ],
+      "captures": {
+        "unchanged1": {
+          "file": "src/CommonModules/Probe/Ext/Module.bsl",
+          "kind": "sha256"
+        }
+      }
     },
     {
       "tool": "unica.view",
@@ -63,7 +62,7 @@
         {
           "path": "src/CommonModules/Probe/Ext/Module.bsl",
           "kind": "sha256",
-          "eq": "3a8bc9aa744bcf23ee36a81eab9df3cc802d6872b927889de4442d25e76ad07b"
+          "eq": "$capture.unchanged1"
         }
       ]
     },
@@ -87,7 +86,7 @@
         {
           "path": "src/CommonModules/Probe/Ext/Module.bsl",
           "kind": "sha256",
-          "eq": "3a8bc9aa744bcf23ee36a81eab9df3cc802d6872b927889de4442d25e76ad07b"
+          "eq": "$capture.unchanged1"
         }
       ]
     },
@@ -105,7 +104,13 @@
           "kind": "sha256",
           "eq": "e565917451f128921dcab88345fc53a6455658983fb8f8d52f202171c1ff6e7d"
         }
-      ]
+      ],
+      "captures": {
+        "unchanged2": {
+          "file": "src/CommonModules/Probe/Ext/Module.bsl",
+          "kind": "sha256"
+        }
+      }
     },
     {
       "tool": "unica.view",
@@ -125,7 +130,7 @@
         {
           "path": "src/CommonModules/Probe/Ext/Module.bsl",
           "kind": "sha256",
-          "eq": "e565917451f128921dcab88345fc53a6455658983fb8f8d52f202171c1ff6e7d"
+          "eq": "$capture.unchanged2"
         }
       ]
     },
@@ -149,7 +154,7 @@
         {
           "path": "src/CommonModules/Probe/Ext/Module.bsl",
           "kind": "sha256",
-          "eq": "e565917451f128921dcab88345fc53a6455658983fb8f8d52f202171c1ff6e7d"
+          "eq": "$capture.unchanged2"
         }
       ],
       "assertions": [
@@ -171,7 +176,7 @@
         {
           "path": "src/CommonModules/Probe/Ext/Module.bsl",
           "kind": "sha256",
-          "eq": "e565917451f128921dcab88345fc53a6455658983fb8f8d52f202171c1ff6e7d"
+          "eq": "$capture.unchanged2"
         }
       ],
       "assertions": [
@@ -201,7 +206,7 @@
         {
           "path": "src/CommonModules/Probe/Ext/Module.bsl",
           "kind": "sha256",
-          "eq": "e565917451f128921dcab88345fc53a6455658983fb8f8d52f202171c1ff6e7d"
+          "eq": "$capture.unchanged2"
         }
       ]
     },
@@ -219,7 +224,13 @@
           "kind": "sha256",
           "eq": "cea87078a4d5934dbb39e74c47b4eac1d0f14534cf12e2708847707306ef8bfc"
         }
-      ]
+      ],
+      "captures": {
+        "unchanged3": {
+          "file": "src/CommonModules/Probe/Ext/Module.bsl",
+          "kind": "sha256"
+        }
+      }
     },
     {
       "tool": "unica.apply",
@@ -241,7 +252,7 @@
         {
           "path": "src/CommonModules/Probe/Ext/Module.bsl",
           "kind": "sha256",
-          "eq": "cea87078a4d5934dbb39e74c47b4eac1d0f14534cf12e2708847707306ef8bfc"
+          "eq": "$capture.unchanged3"
         }
       ]
     },
@@ -259,7 +270,13 @@
           "kind": "sha256",
           "eq": "94b22e93da48d8de0537538d88c3190bfd30238094343f5d24946cb1a8601d99"
         }
-      ]
+      ],
+      "captures": {
+        "unchanged4": {
+          "file": "src/CommonModules/Probe/Ext/Module.bsl",
+          "kind": "sha256"
+        }
+      }
     },
     {
       "tool": "unica.apply",
@@ -281,7 +298,7 @@
         {
           "path": "src/CommonModules/Probe/Ext/Module.bsl",
           "kind": "sha256",
-          "eq": "94b22e93da48d8de0537538d88c3190bfd30238094343f5d24946cb1a8601d99"
+          "eq": "$capture.unchanged4"
         }
       ],
       "assertions": [
@@ -303,7 +320,7 @@
         {
           "path": "src/CommonModules/Probe/Ext/Module.bsl",
           "kind": "sha256",
-          "eq": "94b22e93da48d8de0537538d88c3190bfd30238094343f5d24946cb1a8601d99"
+          "eq": "$capture.unchanged4"
         }
       ],
       "assertions": [
@@ -325,7 +342,7 @@
         {
           "path": "src/CommonModules/Probe/Ext/Module.bsl",
           "kind": "sha256",
-          "eq": "94b22e93da48d8de0537538d88c3190bfd30238094343f5d24946cb1a8601d99"
+          "eq": "$capture.unchanged4"
         }
       ]
     }

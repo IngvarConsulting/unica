@@ -28,6 +28,10 @@
       "captures": {
         "hit": {
           "pointer": "/data/matches/0/at"
+        },
+        "unchanged1": {
+          "file": "src/CommonModules/Probe/Ext/Module.bsl",
+          "kind": "sha256"
         }
       }
     },
@@ -61,7 +65,7 @@
         {
           "path": "src/CommonModules/Probe/Ext/Module.bsl",
           "kind": "sha256",
-          "eq": "06e6740a8b5bf78f00bebb76e0f91956a97d690e5b78aaa088858b0487cee937"
+          "eq": "$capture.unchanged1"
         }
       ]
     },
@@ -145,7 +149,7 @@
         {
           "path": "src/CommonModules/Probe/Ext/Module.bsl",
           "kind": "sha256",
-          "eq": "06e6740a8b5bf78f00bebb76e0f91956a97d690e5b78aaa088858b0487cee937"
+          "eq": "$capture.unchanged1"
         }
       ]
     },
@@ -184,7 +188,7 @@
         {
           "path": "src/CommonModules/Probe/Ext/Module.bsl",
           "kind": "sha256",
-          "eq": "06e6740a8b5bf78f00bebb76e0f91956a97d690e5b78aaa088858b0487cee937"
+          "eq": "$capture.unchanged1"
         }
       ]
     },
@@ -202,7 +206,13 @@
           "kind": "sha256",
           "eq": "79ce82ca53cea06daac57b6b73a2a574fd60b12015f3951dd19f3afb4b922594"
         }
-      ]
+      ],
+      "captures": {
+        "unchanged2": {
+          "file": "src/CommonModules/Probe/Ext/Module.bsl",
+          "kind": "sha256"
+        }
+      }
     },
     {
       "tool": "unica.search",
@@ -242,7 +252,7 @@
         {
           "path": "src/CommonModules/Probe/Ext/Module.bsl",
           "kind": "sha256",
-          "eq": "79ce82ca53cea06daac57b6b73a2a574fd60b12015f3951dd19f3afb4b922594"
+          "eq": "$capture.unchanged2"
         }
       ]
     },

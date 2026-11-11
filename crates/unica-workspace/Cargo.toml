@@ -43,6 +43,7 @@ unica-work-control = { path = "../unica-work-control", features = ["test-support
 tempfile.workspace = true
 
 [package.metadata.unica]
+version-literal-baseline = 5
 component = "service"
 file-io = "owned"
 inputs = [

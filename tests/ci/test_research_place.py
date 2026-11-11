@@ -35,10 +35,10 @@ HELPER_REASON = "helper process"
 # исследовательское место. Перечень только сокращается — переехавший тест
 # убирается отсюда, новый сюда не добавляется.
 IGNORE_DEBT = frozenset({
-    ("crates/unica-bsl-types/src/tests.rs", "the_catalog_of_an_installation"),
     ("crates/unica-coder/tests/platform/persistent_provider_cwd.rs", "helper_inherited_cwd_subprocess_fixture"),
-    ("crates/unica-coder-daemon/src/infrastructure/daemon/lsp_workspaces/tests.rs",
+    ("crates/unica-daemon/src/infrastructure/daemon/lsp_workspaces/tests.rs",
      "a_large_common_module_comes_whole_in_one_request"),
+    ("crates/unica-documentation-sources/src/platform_help/platform_types.rs", "the_catalog_of_an_installation"),
     ("crates/unica-documentation-sources/src/platform_help/provider.rs", "an_installation_lists_its_global_context"),
     ("crates/unica-documentation-sources/src/platform_help/real_installation.rs",
      "real_installation_answers_navigation_link_question"),

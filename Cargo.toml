@@ -13,8 +13,8 @@ repository = "https://github.com/IngvarConsulting/unica"
 [workspace.dependencies]
 base64 = "0.22.1"
 # Keep these revisions aligned with the bundled analyzer in tools.lock.json.
-bsl-parser = { package = "parser", git = "https://github.com/itrous/bsl-analyzer", rev = "53d8765288adf3b9277b7a4112dba167e51690b7" }
-bsl-syntax = { package = "syntax", git = "https://github.com/itrous/bsl-analyzer", rev = "53d8765288adf3b9277b7a4112dba167e51690b7" }
+bsl-parser = { package = "parser", git = "https://github.com/itrous/bsl-analyzer", rev = "ffae37b25c910991ecb8f05abe7a8148cd32b45c" }
+bsl-syntax = { package = "syntax", git = "https://github.com/itrous/bsl-analyzer", rev = "ffae37b25c910991ecb8f05abe7a8148cd32b45c" }
 diffy = "0.5.0"
 fs2 = "0.4"
 jsonschema = { version = "0.30", default-features = false }
@@ -22,7 +22,7 @@ flate2 = "1"
 libc = "0.2"
 # MCP transport is owned by the official Rust SDK (ADR-0013); macros stay off
 # because tool schemas are data-driven by operation descriptors (ADR-0001).
-rmcp = { version = "3.1.2", default-features = false, features = ["server", "transport-io"] }
+rmcp = { version = "3.9.0", default-features = false, features = ["server", "transport-io", "elicitation"] }
 chrono = { version = "0.4.45", default-features = false, features = ["std"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "io-util"] }
 serde = { version = "1.0", features = ["derive", "rc"] }

@@ -1,0 +1,84 @@
+name: Unica Release from RC
+
+# Финальная версия `vX.Y.Z` из проверенного кандидата `vX.Y.Z-rc.N`. Берётся
+# коммит тега кандидата, поверх него — служебный коммит, где меняется только
+# версия, и тег. Кнопку нажимает администратор репозитория: задание `admit`
+# сверяет роль запустившего, а не имя, до задания с ключом. Ключ развёртывания
+# из окружения `alpha` (только `main`) одним атомарным push ставит тег и создаёт
+# на том же коммите ветку линии `release-vX.Y`. Push тега ключом запускает
+# обычный выпуск по тегу (`release.yml`) — полные тесты, сборку, проверки
+# установки и основной каталог маркетплейса — без остановок на одобрение.
+# Подробности — `scripts/ci/release-final.py` и раздел о выпуске RC в runbook.
+on:
+  workflow_dispatch:
+    inputs:
+      rc:
+        description: "Тег кандидата, из которого ставится финальная версия, например v0.15.0-rc.2"
+        type: string
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+
+# Кнопки кандидата и финальной версии ставят теги одного ядра и идут по одной.
+concurrency:
+  group: unica-release-buttons
+  cancel-in-progress: false
+
+jobs:
+  # Писатель может нажать кнопку, но прогон остановится здесь: задание
+  # с секретом окружения не начнётся. `triggering_actor` — тот, кто запустил
+  # или перезапустил прогон: перезапуск чужого прогона роль не наследует.
+  # Запуск не с `main` отказывается здесь же.
+  admit:
+    name: Кнопку нажал администратор
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: main
+          sparse-checkout: scripts/ci
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          ACTOR: ${{ github.triggering_actor }}
+        run: python scripts/ci/release-rc.py admit --actor "$ACTOR" --ref "$GITHUB_REF"
+
+  final:
+    name: Финальная версия из кандидата
+    needs: admit
+    environment: alpha
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: main
+          # Коммит тега кандидата читается из истории.
+          fetch-depth: 0
+          fetch-tags: true
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      # «Перезапустить упавшие задания» берёт прошедший `admit` из прежней
+      # попытки, поэтому роль перезапустившего сверяется ещё раз до шага с ключом.
+      - id: admit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ACTOR: ${{ github.triggering_actor }}
+        run: python scripts/ci/release-rc.py admit --actor "$ACTOR" --ref "$GITHUB_REF"
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: stable
+      - id: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG_KEY: ${{ secrets.RELEASE_TAG_KEY }}
+          RC_TAG: ${{ inputs.rc }}
+        run: python scripts/ci/release-final.py publish --rc "$RC_TAG"

@@ -1,5 +1,6 @@
 //! Точечное заимствование EnumValue из описания перечисления-владельца.
 
+use crate::dialect::root_version;
 use roxmltree::{Document, Node};
 use std::collections::BTreeMap;
 
@@ -35,8 +36,13 @@ fn guid(value: &str) -> Result<(), String> {
 
 fn owner<'a, 'input>(document: &'a Document<'input>) -> Result<Node<'a, 'input>, String> {
     let root = document.root_element();
-    if !root.has_tag_name((MD, "MetaDataObject")) || root.attribute("version") != Some("2.20") {
-        return Err("Enum borrowing requires a 2.20 metadata descriptor".to_string());
+    if !root.has_tag_name((MD, "MetaDataObject"))
+        || !root_version::is_writable(root.attribute("version"))
+    {
+        return Err(format!(
+            "Enum borrowing requires a {} metadata descriptor",
+            root_version::writable_formats()
+        ));
     }
     let elements = root
         .children()

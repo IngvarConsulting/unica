@@ -27,18 +27,33 @@ MEDIUM = ("ProductContractTests.test_rmcp_transport_is_confined_to_mcp_interface
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-RMCP_OWNER = "crates/unica-coder-daemon/src/interfaces/mcp.rs"
+RMCP_OWNER = "crates/unica-mcp/src/lib.rs"
+RMCP_PACKAGE = "unica-mcp"
 RELATIVE_TOOL_CONTRACT_TIMEOUT_SECONDS = 15
-RMCP_INTERFACE_ROOT = "crates/unica-coder-daemon/src/interfaces/"
+RMCP_INTERFACE_ROOT = "crates/unica-mcp/src/"
 RMCP_CRATES_IO_SOURCE = "registry+https://github.com/rust-lang/crates.io-index"
-RMCP_ALLOWED_FEATURES = ["server", "transport-io"]
+TEST_ONLY_ATTRIBUTES = frozenset({"#[cfg(test)]"})
+# Граница экспорта пропускает и внутренности двери, открытые тестам демона.
+EXPORT_TEST_ONLY_ATTRIBUTES = TEST_ONLY_ATTRIBUTES | {'#[cfg(any(test,feature="test-support"))]'}
+# Единственный параметр `run_stdio`: подключение к демону передаёт `unica-product`.
+RUN_STDIO_PARAMETER = "fn()->Result<V5DaemonClient,String>"
 
 
-def cfg_test_item_ranges(source: bytes, tree) -> list[tuple[int, int]]:
+def cfg_test_item_ranges(
+    source: bytes, tree, attributes: frozenset[str] = TEST_ONLY_ATTRIBUTES
+) -> list[tuple[int, int]]:
     ranges = []
 
     def collect(parent) -> None:
         children = parent.named_children
+        if parent.type == "source_file" and any(
+            child.type == "inner_attribute_item"
+            and re.sub(r"\s+", "", source[child.start_byte : child.end_byte].decode()) == "#![cfg(test)]"
+            for child in children
+        ):
+            # Файл тестового модуля целиком вне производственной сборки.
+            ranges.append((0, len(source)))
+            return
         index = 0
         while index < len(children):
             child = children[index]
@@ -47,7 +62,7 @@ def cfg_test_item_ranges(source: bytes, tree) -> list[tuple[int, int]]:
                 "",
                 source[child.start_byte : child.end_byte].decode(),
             )
-            if child.type == "attribute_item" and compact == "#[cfg(test)]":
+            if child.type == "attribute_item" and compact in attributes:
                 end = index + 1
                 while end < len(children) and children[end].type == "attribute_item":
                     end += 1
@@ -202,7 +217,7 @@ def rmcp_owner_export_boundary_errors(source: bytes, owner: str) -> list[str]:
     tree = parser.parse(source)
     if tree.root_node.has_error:
         return [f"{owner}: Rust parser could not resolve the export boundary"]
-    test_ranges = cfg_test_item_ranges(source, tree)
+    test_ranges = cfg_test_item_ranges(source, tree, EXPORT_TEST_ONLY_ATTRIBUTES)
 
     def is_test_only(node) -> bool:
         return any(
@@ -246,19 +261,11 @@ def rmcp_owner_export_boundary_errors(source: bytes, owner: str) -> list[str]:
         if visibility is not None:
             name = node.child_by_field_name("name")
             public_name = node_text(name) if name is not None else b""
-            legacy_export = (
+            # Наружу дверь даёт только запуск по stdio.
+            root_run_stdio = (
                 node.parent is not None
                 and node.parent.type == "source_file"
                 and node_text(visibility) == b"pub"
-                and (node.type, public_name)
-                in {
-                    ("struct_item", b"UnicaServer"),
-                    ("function_item", b"tool_definitions"),
-                    ("function_item", b"run_stdio"),
-                }
-            )
-            root_run_stdio = (
-                legacy_export
                 and node.type == "function_item"
                 and public_name == b"run_stdio"
             )
@@ -275,18 +282,28 @@ def rmcp_owner_export_boundary_errors(source: bytes, owner: str) -> list[str]:
                     ),
                     None,
                 )
+                parameter_types = (
+                    [
+                        re.sub(rb"\s+", b"", node_text(parameter.child_by_field_name("type"))).decode()
+                        for parameter in parameters.named_children
+                        if parameter.type == "parameter"
+                    ]
+                    if parameters is not None
+                    else []
+                )
                 if (
                     parameters is None
-                    or parameters.named_child_count != 0
+                    or parameters.named_child_count != 1
+                    or parameter_types != [RUN_STDIO_PARAMETER]
                     or return_type is not None
                     or type_parameters is not None
                     or where_clause is not None
                 ):
                     errors.append(
-                        f"{owner}: run_stdio must be non-generic, take no parameters, "
-                        "and return unit"
+                        f"{owner}: run_stdio must be non-generic, take only the daemon "
+                        "connector fn() -> Result<V5DaemonClient, String>, and return unit"
                     )
-            elif not legacy_export:
+            else:
                 nested = (
                     "nested "
                     if node.type == "function_item"
@@ -300,7 +317,7 @@ def rmcp_owner_export_boundary_errors(source: bytes, owner: str) -> list[str]:
         stack.extend(reversed(node.named_children))
     if root_run_stdio_count != 1:
         errors.append(
-            f"{owner}: expected exactly one root pub fn run_stdio(), "
+            f"{owner}: expected exactly one root pub fn run_stdio, "
             f"found {root_run_stdio_count}"
         )
     return errors
@@ -324,43 +341,35 @@ def rmcp_dependency_contract_errors(metadata: dict) -> list[str]:
         key=lambda package: package["name"],
     )
     errors = []
-    coder_dependencies = []
+    owner_dependencies = []
     for package in packages:
         dependencies = [
             dependency
             for dependency in package["dependencies"]
             if dependency["name"] == "rmcp"
         ]
-        if package["name"] == "unica-coder-daemon":
-            coder_dependencies.extend(dependencies)
+        if package["name"] == RMCP_PACKAGE:
+            owner_dependencies.extend(dependencies)
             continue
         for dependency in dependencies:
             alias = dependency.get("rename") or "rmcp"
             errors.append(
-                f"{package['name']}: rmcp dependency is outside unica-coder-daemon "
+                f"{package['name']}: rmcp dependency is outside {RMCP_PACKAGE} "
                 f"(alias {alias})"
             )
 
-    if len(coder_dependencies) != 1:
+    if len(owner_dependencies) != 1:
         errors.append(
-            "unica-coder-daemon: expected exactly one direct rmcp dependency, "
-            f"found {len(coder_dependencies)}"
+            f"{RMCP_PACKAGE}: expected exactly one direct rmcp dependency, "
+            f"found {len(owner_dependencies)}"
         )
         return errors
 
-    dependency = coder_dependencies[0]
+    dependency = owner_dependencies[0]
     if dependency.get("rename") is not None:
-        errors.append("unica-coder-daemon: rmcp dependency must use its canonical name")
+        errors.append(f"{RMCP_PACKAGE}: rmcp dependency must use its canonical name")
     if dependency.get("source") != RMCP_CRATES_IO_SOURCE:
-        errors.append("unica-coder-daemon: rmcp dependency must come from crates.io")
-    if dependency.get("uses_default_features") is not False:
-        errors.append("unica-coder-daemon: rmcp default features must be disabled")
-    features = sorted(dependency.get("features", []))
-    if features != RMCP_ALLOWED_FEATURES:
-        errors.append(
-            f"unica-coder-daemon: rmcp features {features!r} differ from "
-            f"{RMCP_ALLOWED_FEATURES!r}"
-        )
+        errors.append(f"{RMCP_PACKAGE}: rmcp dependency must come from crates.io")
     return errors
 
 
@@ -369,12 +378,6 @@ def workspace_rmcp_dependency_errors(repo_root: Path) -> list[str]:
 
 
 RMCP_HANDLER_ASSERTION = "assert_unica_server_implements_official_rmcp_server_handler"
-RMCP_HANDLER_MODULE_CHAIN = (
-    ("crates/unica-coder-daemon/src/lib.rs", "interfaces"),
-    ("crates/unica-coder-daemon/src/interfaces/mod.rs", "mcp"),
-)
-
-
 def top_level_rust_items(source: bytes) -> tuple[list[tuple[str, str, list[str], bytes]], bool]:
     """Top-level items with their outer attributes, and whether a file-level cfg gates them."""
     code = productive_rust_code(source)
@@ -403,15 +406,8 @@ def top_level_rust_items(source: bytes) -> tuple[list[tuple[str, str, list[str],
 def production_rmcp_handler_assertion_errors(sources: dict[str, bytes]) -> list[str]:
     # Любая не-тестовая сборка библиотеки проверяет эту границу компилятором;
     # здесь — только что граница и путь модулей к ней не закрыты cfg.
+    # Владелец — корень крейта: путь модулей к нему не закрыть cfg.
     errors = []
-    for path, module in RMCP_HANDLER_MODULE_CHAIN:
-        items, gated = top_level_rust_items(sources[path])
-        # Файловое объявление без атрибутов: ни cfg, ни #[path], ни тела.
-        declarations = [
-            (attrs, text) for kind, name, attrs, text in items if (kind, name) == ("mod_item", module)
-        ]
-        if gated or len(declarations) != 1 or declarations[0][0] or not declarations[0][1].endswith(b";"):
-            errors.append(f"{path}: module {module} must be declared once as a plain file module")
     items, gated = top_level_rust_items(sources[RMCP_OWNER])
     bounds = [
         (attrs, text)
@@ -456,15 +452,15 @@ class ProductContractTests(unittest.TestCase):
     def test_rmcp_confinement_scans_other_tracked_workspace_crates(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            owner = root / "crates" / "unica-coder-daemon" / "src" / "interfaces" / "mcp.rs"
+            owner = root / "crates" / "unica-mcp" / "src" / "lib.rs"
             sibling = root / "crates" / "unica-bootstrap" / "src" / "lib.rs"
             owner.parent.mkdir(parents=True)
             sibling.parent.mkdir(parents=True)
             (root / "Cargo.toml").write_text(
-                '[workspace]\nmembers = ["crates/unica-bootstrap", "crates/unica-coder-daemon"]\n',
+                '[workspace]\nmembers = ["crates/unica-bootstrap", "crates/unica-mcp"]\n',
                 encoding="utf-8",
             )
-            for package_name in ("unica-bootstrap", "unica-coder-daemon"):
+            for package_name in ("unica-bootstrap", "unica-mcp"):
                 (root / "crates" / package_name / "Cargo.toml").write_text(
                     f'[package]\nname = "{package_name}"\nversion = "0.1.0"\n'
                     'edition = "2021"\n',
@@ -476,7 +472,6 @@ class ProductContractTests(unittest.TestCase):
                 "impl ServerHandler for UnicaServer {}\n",
                 encoding="utf-8",
             )
-            (owner.parents[1] / "lib.rs").write_text("", encoding="utf-8")
             sibling.write_text("use rmcp::model::ProtocolVersion;\n", encoding="utf-8")
             subprocess.run(["git", "init", "-q"], cwd=root, check=True)
             subprocess.run(["git", "add", "."], cwd=root, check=True)
@@ -575,7 +570,7 @@ class ProductContractTests(unittest.TestCase):
     def test_rmcp_dependency_contract_rejects_alias_in_sibling_package(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            coder = root / "unica-coder-daemon"
+            coder = root / "unica-mcp"
             sibling = root / "sibling"
             vendor = root / "vendor" / "rmcp"
             for package in (coder, sibling, vendor):
@@ -583,7 +578,7 @@ class ProductContractTests(unittest.TestCase):
                 (package / "src" / "lib.rs").write_text("", encoding="utf-8")
             (root / "Cargo.toml").write_text(
                 '[workspace]\nresolver = "2"\n'
-                'members = ["unica-coder-daemon", "sibling"]\n'
+                'members = ["unica-mcp", "sibling"]\n'
                 '[workspace.dependencies]\n'
                 'rmcp = { version = "3.1.2", default-features = false, '
                 'features = ["server", "transport-io"] }\n'
@@ -593,7 +588,7 @@ class ProductContractTests(unittest.TestCase):
                 encoding="utf-8",
             )
             (coder / "Cargo.toml").write_text(
-                '[package]\nname = "unica-coder-daemon"\nversion = "0.1.0"\n'
+                '[package]\nname = "unica-mcp"\nversion = "0.1.0"\n'
                 'edition = "2021"\n[dependencies]\nrmcp.workspace = true\n',
                 encoding="utf-8",
             )
@@ -612,25 +607,25 @@ class ProductContractTests(unittest.TestCase):
 
             self.assertEqual(
                 workspace_rmcp_dependency_errors(root),
-                ["sibling: rmcp dependency is outside unica-coder-daemon (alias sdk_alias)"],
+                ["sibling: rmcp dependency is outside unica-mcp (alias sdk_alias)"],
             )
 
-    def test_rmcp_dependency_contract_rejects_renamed_local_macro_dependency(
+    def test_rmcp_dependency_contract_rejects_renamed_local_dependency(
         self,
     ) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            coder = root / "unica-coder-daemon"
+            coder = root / "unica-mcp"
             vendor = root / "vendor" / "rmcp"
             for package in (coder, vendor):
                 (package / "src").mkdir(parents=True)
                 (package / "src" / "lib.rs").write_text("", encoding="utf-8")
             (root / "Cargo.toml").write_text(
-                '[workspace]\nresolver = "2"\nmembers = ["unica-coder-daemon"]\n',
+                '[workspace]\nresolver = "2"\nmembers = ["unica-mcp"]\n',
                 encoding="utf-8",
             )
             (coder / "Cargo.toml").write_text(
-                '[package]\nname = "unica-coder-daemon"\nversion = "0.1.0"\n'
+                '[package]\nname = "unica-mcp"\nversion = "0.1.0"\n'
                 'edition = "2021"\n[dependencies]\n'
                 'sdk_alias = { package = "rmcp", path = "../vendor/rmcp", '
                 'features = ["server", "transport-io", "macros"] }\n',
@@ -647,19 +642,16 @@ class ProductContractTests(unittest.TestCase):
             self.assertEqual(
                 workspace_rmcp_dependency_errors(root),
                 [
-                    "unica-coder-daemon: rmcp dependency must use its canonical name",
-                    "unica-coder-daemon: rmcp dependency must come from crates.io",
-                    "unica-coder-daemon: rmcp default features must be disabled",
-                    "unica-coder-daemon: rmcp features ['macros', 'server', "
-                    "'transport-io'] differ from ['server', 'transport-io']",
+                    "unica-mcp: rmcp dependency must use its canonical name",
+                    "unica-mcp: rmcp dependency must come from crates.io",
                 ],
             )
 
     def test_rmcp_owner_rejects_public_reexport_and_type_alias(self) -> None:
-        owner = "crates/unica-coder-daemon/src/interfaces/mcp.rs"
+        owner = RMCP_OWNER
         errors = rmcp_owner_export_boundary_errors(
             b"""
-                pub fn run_stdio() {}
+                pub fn run_stdio(connect: fn() -> Result<V5DaemonClient, String>) {}
                 pub use rmcp::model::Tool as ExportedTool;
                 pub type SdkTool = rmcp::model::Tool;
             """,
@@ -675,7 +667,7 @@ class ProductContractTests(unittest.TestCase):
         )
 
     def test_rmcp_owner_rejects_other_public_items_members_and_macros(self) -> None:
-        owner = "crates/unica-coder-daemon/src/interfaces/mcp.rs"
+        owner = RMCP_OWNER
         errors = rmcp_owner_export_boundary_errors(
             b"""
                 pub(crate) const LIMIT: usize = 1;
@@ -683,7 +675,7 @@ class ProductContractTests(unittest.TestCase):
                 pub struct Exported;
                 #[macro_export]
                 macro_rules! exported { () => {}; }
-                mod nested { pub fn run_stdio() {} }
+                mod nested { pub fn run_stdio(connect: fn() -> Result<V5DaemonClient, String>) {} }
                 pub fn run_stdio(_: rmcp::model::Tool) -> rmcp::model::Tool {
                     unreachable!()
                 }
@@ -699,16 +691,16 @@ class ProductContractTests(unittest.TestCase):
                 f"{owner}: public struct_item is outside run_stdio",
                 f"{owner}: macro_export leaves the transport module",
                 f"{owner}: nested public function_item is outside run_stdio",
-                f"{owner}: run_stdio must be non-generic, take no parameters, "
-                "and return unit",
+                f"{owner}: run_stdio must be non-generic, take only the daemon "
+                "connector fn() -> Result<V5DaemonClient, String>, and return unit",
             ],
         )
 
     def test_rmcp_owner_ignores_exports_inside_exact_cfg_test_item(self) -> None:
-        owner = "crates/unica-coder-daemon/src/interfaces/mcp.rs"
+        owner = RMCP_OWNER
         errors = rmcp_owner_export_boundary_errors(
             b"""
-                pub fn run_stdio() {}
+                pub fn run_stdio(connect: fn() -> Result<V5DaemonClient, String>) {}
                 #[cfg(test)]
                 mod tests {
                     pub use rmcp::model::Tool;
@@ -720,8 +712,50 @@ class ProductContractTests(unittest.TestCase):
 
         self.assertEqual(errors, [])
 
+    def test_rmcp_owner_ignores_exports_inside_test_support_item(self) -> None:
+        """rule: INV.WIRE.SDK-MODULE-EXPORTS"""
+        owner = RMCP_OWNER
+        errors = rmcp_owner_export_boundary_errors(
+            b"""
+                pub fn run_stdio(connect: fn() -> Result<V5DaemonClient, String>) {}
+                #[cfg(any(test, feature = "test-support"))]
+                pub mod test_support {
+                    pub use rmcp;
+                }
+                #[cfg(any(test, feature = "test-support"))]
+                impl UnicaServer {
+                    pub fn with_canonical_v13_router(router: Router) -> Self { todo!() }
+                }
+                #[cfg(feature = "test-support")]
+                pub fn only_with_the_feature() {}
+            """,
+            owner,
+        )
+
+        self.assertEqual(
+            errors, [f"{owner}: public function_item is outside run_stdio"]
+        )
+
+    def test_rmcp_owner_requires_the_daemon_connector_parameter(self) -> None:
+        """rule: INV.WIRE.SDK-MODULE-EXPORTS"""
+        owner = RMCP_OWNER
+        expected = [
+            f"{owner}: run_stdio must be non-generic, take only the daemon "
+            "connector fn() -> Result<V5DaemonClient, String>, and return unit"
+        ]
+        for name, source in {
+            "no_parameter": b"pub fn run_stdio() {}",
+            "other_type": b"pub fn run_stdio(connect: fn() -> V5DaemonClient) {}",
+            "two_parameters": (
+                b"pub fn run_stdio(connect: fn() -> Result<V5DaemonClient, String>, "
+                b"extra: u8) {}"
+            ),
+        }.items():
+            with self.subTest(name=name):
+                self.assertEqual(rmcp_owner_export_boundary_errors(source, owner), expected)
+
     def test_rmcp_owner_export_guard_fails_closed_on_invalid_rust(self) -> None:
-        owner = "crates/unica-coder-daemon/src/interfaces/mcp.rs"
+        owner = RMCP_OWNER
 
         self.assertEqual(
             rmcp_owner_export_boundary_errors(b"pub fn run_stdio(", owner),
@@ -729,12 +763,12 @@ class ProductContractTests(unittest.TestCase):
         )
 
     def test_rmcp_owner_rejects_parameterized_macro_export(self) -> None:
-        owner = "crates/unica-coder-daemon/src/interfaces/mcp.rs"
+        owner = RMCP_OWNER
 
         self.assertEqual(
             rmcp_owner_export_boundary_errors(
                 b"""
-                    pub fn run_stdio() {}
+                    pub fn run_stdio(connect: fn() -> Result<V5DaemonClient, String>) {}
                     #[macro_export(local_inner_macros)]
                     macro_rules! exported { () => {}; }
                 """,
@@ -744,12 +778,12 @@ class ProductContractTests(unittest.TestCase):
         )
 
     def test_rmcp_owner_rejects_conditional_macro_export(self) -> None:
-        owner = "crates/unica-coder-daemon/src/interfaces/mcp.rs"
+        owner = RMCP_OWNER
 
         self.assertEqual(
             rmcp_owner_export_boundary_errors(
                 b"""
-                    pub fn run_stdio() {}
+                    pub fn run_stdio(connect: fn() -> Result<V5DaemonClient, String>) {}
                     #[cfg_attr(not(test), macro_export)]
                     macro_rules! exported { () => {}; }
                 """,
@@ -759,21 +793,21 @@ class ProductContractTests(unittest.TestCase):
         )
 
     def test_rmcp_owner_requires_exactly_one_root_run_stdio(self) -> None:
-        owner = "crates/unica-coder-daemon/src/interfaces/mcp.rs"
+        owner = RMCP_OWNER
         fixtures = {
             "missing": (
                 b"struct Internal;",
-                [f"{owner}: expected exactly one root pub fn run_stdio(), found 0"],
+                [f"{owner}: expected exactly one root pub fn run_stdio, found 0"],
             ),
             "duplicate": (
-                b"pub fn run_stdio() {} pub fn run_stdio() {}",
-                [f"{owner}: expected exactly one root pub fn run_stdio(), found 2"],
+                b"pub fn run_stdio(connect: fn() -> Result<V5DaemonClient, String>) {} pub fn run_stdio(connect: fn() -> Result<V5DaemonClient, String>) {}",
+                [f"{owner}: expected exactly one root pub fn run_stdio, found 2"],
             ),
             "nested-only": (
-                b"mod nested { pub fn run_stdio() {} }",
+                b"mod nested { pub fn run_stdio(connect: fn() -> Result<V5DaemonClient, String>) {} }",
                 [
                     f"{owner}: nested public function_item is outside run_stdio",
-                    f"{owner}: expected exactly one root pub fn run_stdio(), found 0",
+                    f"{owner}: expected exactly one root pub fn run_stdio, found 0",
                 ],
             ),
         }
@@ -785,22 +819,20 @@ class ProductContractTests(unittest.TestCase):
                 )
 
     def test_rmcp_owner_rejects_sdk_bound_on_generic_run_stdio(self) -> None:
-        owner = "crates/unica-coder-daemon/src/interfaces/mcp.rs"
+        owner = RMCP_OWNER
 
         self.assertEqual(
             rmcp_owner_export_boundary_errors(
-                b"pub fn run_stdio<T: rmcp::ServerHandler>() {}",
+                b"pub fn run_stdio<T: rmcp::ServerHandler>(connect: fn() -> Result<V5DaemonClient, String>) {}",
                 owner,
             ),
             [
-                f"{owner}: run_stdio must be non-generic, take no parameters, "
-                "and return unit"
+                f"{owner}: run_stdio must be non-generic, take only the daemon "
+                "connector fn() -> Result<V5DaemonClient, String>, and return unit"
             ],
         )
 
-    def test_rmcp_dependency_is_owned_by_unica_coder_without_macro_features(
-        self,
-    ) -> None:
+    def test_rmcp_dependency_is_owned_by_the_mcp_door(self) -> None:
         """rule: INV.WIRE.SDK-TRANSPORT"""
         self.assertEqual(workspace_rmcp_dependency_errors(REPO_ROOT), [])
 
@@ -813,10 +845,6 @@ class ProductContractTests(unittest.TestCase):
             b"fn assert_unica_server_implements_official_rmcp_server_handler()\n"
             b"where\n    UnicaServer: ::rmcp::ServerHandler,\n{\n}\n"
         )
-        chain = {
-            "crates/unica-coder-daemon/src/lib.rs": b"pub mod interfaces;\n",
-            "crates/unica-coder-daemon/src/interfaces/mod.rs": b"pub mod mcp;\n",
-        }
         owner_error = [
             f"{RMCP_OWNER}: production code must assert UnicaServer: rmcp::ServerHandler "
             "once at module level without cfg"
@@ -838,33 +866,11 @@ class ProductContractTests(unittest.TestCase):
                 {RMCP_OWNER: bound.replace(b"::rmcp::ServerHandler", b"Clone")},
                 owner_error,
             ),
-            "gated_interfaces": (
-                {
-                    RMCP_OWNER: bound,
-                    "crates/unica-coder-daemon/src/lib.rs": cfg + b"pub mod interfaces;\n",
-                },
-                ["crates/unica-coder-daemon/src/lib.rs: module interfaces must be declared once as a plain file module"],
-            ),
-            "redirected_mcp_module": (
-                {
-                    RMCP_OWNER: bound,
-                    "crates/unica-coder-daemon/src/interfaces/mod.rs": b'#[path = "other.rs"]\npub mod mcp;\n',
-                },
-                ["crates/unica-coder-daemon/src/interfaces/mod.rs: module mcp must be declared once as a plain file module"],
-            ),
-            "inline_mcp_module": (
-                {RMCP_OWNER: bound, "crates/unica-coder-daemon/src/interfaces/mod.rs": b"pub mod mcp {}\n"},
-                ["crates/unica-coder-daemon/src/interfaces/mod.rs: module mcp must be declared once as a plain file module"],
-            ),
-            "missing_mcp_module": (
-                {RMCP_OWNER: bound, "crates/unica-coder-daemon/src/interfaces/mod.rs": b"pub mod other;\n"},
-                ["crates/unica-coder-daemon/src/interfaces/mod.rs: module mcp must be declared once as a plain file module"],
-            ),
         }
         for name, (sources, expected) in fixtures.items():
             with self.subTest(name=name):
                 self.assertEqual(
-                    production_rmcp_handler_assertion_errors({**chain, **sources}), expected
+                    production_rmcp_handler_assertion_errors(sources), expected
                 )
 
     def test_unica_coder_production_library_satisfies_rmcp_handler_bound(
@@ -876,10 +882,7 @@ class ProductContractTests(unittest.TestCase):
         # тестов), а вне PR и push в main — шаг `product` точным
         # production-набором фич (`cargo build -p unica-product --bin unica`).
         """rule: INV.WIRE.SDK-TRANSPORT"""
-        sources = {
-            path: (REPO_ROOT / path).read_bytes()
-            for path in (RMCP_OWNER, *(path for path, _ in RMCP_HANDLER_MODULE_CHAIN))
-        }
+        sources = {RMCP_OWNER: (REPO_ROOT / RMCP_OWNER).read_bytes()}
         self.assertEqual(production_rmcp_handler_assertion_errors(sources), [])
 
         lanes = load_ci_rust_lanes_module()
@@ -894,22 +897,42 @@ class ProductContractTests(unittest.TestCase):
         )
         self.assertEqual(lanes.prepared_binary.ORDINARY_FEATURES, ["default"])
 
-    def test_rmcp_module_preserves_legacy_public_exports_only(self) -> None:
+    def test_mcp_door_exposes_only_the_stdio_launch(self) -> None:
         """rule: INV.WIRE.SDK-MODULE-EXPORTS"""
         source = tracked_workspace_production_rust_sources(REPO_ROOT)[RMCP_OWNER]
-        for declaration in (
-            b"pub struct UnicaServer",
-            b"pub fn tool_definitions(",
-            b"pub fn run_stdio()",
-        ):
-            with self.subTest(declaration=declaration):
-                self.assertIn(declaration, source)
+        self.assertIn(
+            b"pub fn run_stdio(connect: fn() -> Result<V5DaemonClient, String>)", source
+        )
         self.assertEqual(workspace_rmcp_owner_export_boundary_errors(REPO_ROOT), [])
+
+    def test_rmcp_owner_rejects_the_server_and_the_sdk_catalog_in_production(
+        self,
+    ) -> None:
+        """rule: INV.WIRE.SDK-MODULE-EXPORTS"""
+        owner = RMCP_OWNER
+        errors = rmcp_owner_export_boundary_errors(
+            b"""
+                pub fn run_stdio(connect: fn() -> Result<V5DaemonClient, String>) {}
+                pub struct UnicaServer;
+                pub fn tool_definitions(specs: &[ToolSpec]) -> Vec<rmcp::model::Tool> {
+                    Vec::new()
+                }
+            """,
+            owner,
+        )
+
+        self.assertEqual(
+            errors,
+            [
+                f"{owner}: public struct_item is outside run_stdio",
+                f"{owner}: public function_item is outside run_stdio",
+            ],
+        )
 
     def test_rmcp_confinement_ignores_comments_literals_and_exact_cfg_test(
         self,
     ) -> None:
-        owner = "crates/unica-coder-daemon/src/interfaces/mcp.rs"
+        owner = RMCP_OWNER
         outside = "crates/other/src/lib.rs"
         errors = rmcp_reference_confinement_errors(
             {
@@ -927,12 +950,35 @@ class ProductContractTests(unittest.TestCase):
 
         self.assertEqual(errors, [])
 
+    def test_rmcp_confinement_ignores_a_test_only_file(self) -> None:
+        """rule: INV.WIRE.SDK-TRANSPORT"""
+        owner = RMCP_INTERFACE_ROOT
+        errors = rmcp_reference_confinement_errors(
+            {
+                "crates/unica-daemon/src/interfaces/medium_mcp_door_tests/mcp.rs": (
+                    b"#![cfg(test)]\nuse unica_mcp::test_support::rmcp::model::Tool;\n"
+                ),
+                "crates/unica-daemon/src/interfaces/daemon.rs": (
+                    b'#![cfg(feature = "test-support")]\nuse rmcp::model::Tool;\n'
+                ),
+            },
+            owner,
+        )
+
+        self.assertEqual(
+            errors,
+            [
+                "crates/unica-daemon/src/interfaces/daemon.rs: productive rmcp "
+                "reference outside transport owner"
+            ],
+        )
+
     def test_rmcp_transport_is_confined_to_mcp_interface(self) -> None:
         """rule: INV.WIRE.SDK-TRANSPORT"""
         self.assertEqual(
             workspace_rmcp_reference_confinement_errors(REPO_ROOT),
             [],
-            "productive rmcp references must stay in interfaces/",
+            "productive rmcp references must stay in unica-mcp",
         )
 
     def test_native_validators_do_not_expose_internal_local_owner_only_switch(
@@ -940,7 +986,7 @@ class ProductContractTests(unittest.TestCase):
     ) -> None:
         repo_root = Path(__file__).resolve().parents[2]
         offenders = []
-        roots = [repo_root / "crates" / crate / "src" for crate in ("unica-coder", "unica-coder-daemon")]
+        roots = [repo_root / "crates" / crate / "src" for crate in ("unica-coder", "unica-daemon")]
         for path in sorted(path for root in roots for path in root.rglob("*.rs")):
             text = path.read_text(encoding="utf-8")
             for marker in ("InternalLocalOwnerOnly", "internalLocalOwnerOnly"):
@@ -979,230 +1025,6 @@ class ProductContractTests(unittest.TestCase):
                 )
             ),
         )
-
-    def test_v8_runner_full_pull_windows_verbatim_paths_keep_the_exact_target(self) -> None:
-        module = load_contract_module()
-        normalize = module._ordinary_v8_runner_publication_path
-        for ordinary, reported in [
-            (r"C:\guard\1cv8.exe", r"\\?\C:\guard\1cv8.exe"),
-            (r"\\server\share\sources", r"\\?\UNC\server\share\sources"),
-            (r"C:\guard\stage", "//?/C:/guard/stage"),
-        ]:
-            with self.subTest(reported=reported):
-                self.assertEqual(normalize(reported), ordinary)
-        self.assertEqual(normalize(r"C:\guard\1cv8.exe"), r"C:\guard\1cv8.exe")
-        self.assertNotEqual(normalize(r"\\?\C:\other\1cv8.exe"), r"C:\guard\1cv8.exe")
-
-    def test_v8_runner_full_pull_frames_require_nonce_executor_and_prepared_target(self) -> None:
-        module = load_contract_module()
-        nonce = "11111111-1111-4111-8111-111111111111"
-        with tempfile.TemporaryDirectory() as raw:
-            root = Path(raw).resolve()
-            source, stage, platform = [root / name for name in ("sources", "stage", "1cv8")]
-            selected = {"phase": "selected", "version": 1, "nonce": nonce,
-                        "provider": {"selected": "designer", "origin": {"kind": "override", "file": "v8project.yaml"}},
-                        "executor": {"kind": "local", "executable": str(platform), "endpoint": None}}
-            ready = {"phase": "ready", "version": 1, "nonce": nonce, "command": "pull",
-                     "requested_mode": "FULL", "mode": "FULL", "mode_reason": None,
-                     "extension": None, "provider_dispatched": True, "source_set": "main",
-                     "target_path": str(source), "stage_path": str(stage),
-                     "snapshot": "prepared", "snapshot_warning": None}
-            terminal = {"phase": "terminal", "version": 1, "nonce": nonce,
-                        "publication": "published", "memory": "saved", "result": {
-                            "ok": True, "command": "pull", "duration_ms": 0,
-                            "data": {}, "warnings": [], "steps": []}}
-            for value in [selected, ready, terminal]:
-                self.assertEqual(module.validate_v8_runner_publication_frame(
-                    value, value["phase"], nonce, source, stage, platform), [])
-            defects = [
-                (selected, {"nonce": "not-a-uuid"}),
-                (selected, {"executor": {**selected["executor"], "kind": "attached"}}),
-                (selected, {"executor": {**selected["executor"], "executable": str(root / "other")}}),
-                (selected, {"executor": {**selected["executor"], "endpoint": "foreign:1545"}}),
-                (selected, {"provider": {"selected": "agent"}}),
-                (ready, {"nonce": "22222222-2222-4222-8222-222222222222"}),
-                (ready, {"version": True}),
-                (ready, {"version": 2}),
-                (ready, {"phase": "terminal"}),
-                (ready, {"target_path": str(root / "other")}),
-                (ready, {"stage_path": "relative-stage"}),
-                (ready, {"snapshot": "unavailable"}),
-                (ready, {"provider_dispatched": False}),
-                (ready, {"source_set": "other"}),
-                (ready, {"unexpected": True}),
-                (terminal, {"nonce": "22222222-2222-4222-8222-222222222222"}),
-            ]
-            for value, defect in defects:
-                with self.subTest(phase=value["phase"], fields=sorted(defect)):
-                    self.assertTrue(module.validate_v8_runner_publication_frame(
-                        {**value, **defect}, value["phase"], nonce, source, stage, platform))
-
-    def test_v8_runner_full_pull_selected_requires_closed_configured_provider_receipt(self) -> None:
-        module = load_contract_module()
-        nonce = "11111111-1111-4111-8111-111111111111"
-        with tempfile.TemporaryDirectory() as raw:
-            root = Path(raw).resolve()
-            source, stage, platform = [root / name for name in ("sources", "stage", "1cv8")]
-            origin = {"kind": "override", "file": "v8project.yaml"}
-            provider = {"selected": "designer", "origin": origin}
-            selected = {"phase": "selected", "version": 1, "nonce": nonce,
-                        "provider": provider,
-                        "executor": {"kind": "local", "executable": str(platform), "endpoint": None}}
-            for receipt in [provider, {**provider, "skipped": [], "endpoint": None}]:
-                self.assertEqual(module.validate_v8_runner_publication_frame(
-                    {**selected, "provider": receipt}, "selected", nonce, source, stage, platform), [])
-            invalid_receipts = [
-                {"selected": "designer"},
-                {**provider, "origin": None},
-                {**provider, "origin": {"kind": "override"}},
-                {**provider, "origin": {"kind": "default"}},
-                {**provider, "origin": {**origin, "file": "v8project.local.yaml"}},
-                {**provider, "origin": {**origin, "file": None}},
-                {**provider, "origin": {**origin, "unexpected": True}},
-                {**provider, "unexpected": True},
-                {**provider, "skipped": None},
-                {**provider, "skipped": [{"provider": "agent", "reason": "not this explicit override"}]},
-                {**provider, "endpoint": {"mode": "attached", "address": "other:1545"}},
-            ]
-            for receipt in invalid_receipts:
-                with self.subTest(receipt=receipt):
-                    self.assertTrue(module.validate_v8_runner_publication_frame(
-                        {**selected, "provider": receipt}, "selected", nonce, source, stage, platform))
-            for executor in [
-                {"kind": "local", "executable": str(platform)},
-                {**selected["executor"], "unexpected": True},
-            ]:
-                with self.subTest(executor=executor):
-                    self.assertTrue(module.validate_v8_runner_publication_frame(
-                        {**selected, "executor": executor}, "selected", nonce, source, stage, platform))
-
-    def test_v8_runner_full_pull_terminal_requires_closed_common_envelope(self) -> None:
-        module = load_contract_module()
-        nonce = "11111111-1111-4111-8111-111111111111"
-        with tempfile.TemporaryDirectory() as raw:
-            root = Path(raw).resolve()
-            source, stage, platform = [root / name for name in ("sources", "stage", "1cv8")]
-            result = {"ok": True, "command": "pull", "duration_ms": 0,
-                      "data": {}, "warnings": [], "steps": []}
-            terminal = {"phase": "terminal", "version": 1, "nonce": nonce,
-                        "publication": "published", "memory": "saved", "result": result}
-            failure = {**result, "ok": False, "error": {
-                "code": "runtime_failure", "kind": "runtime", "message": "control input closed"}}
-            for envelope in [result, {**result, "error": None}, {**result, "warnings": ["diagnostic"]}, failure]:
-                self.assertEqual(module.validate_v8_runner_publication_frame(
-                    {**terminal, "result": envelope}, "terminal", nonce, source, stage, platform), [])
-            invalid_results = [
-                {key: value for key, value in result.items() if key != removed}
-                for removed in result
-            ] + [
-                {**result, "unexpected": True},
-                {**result, "ok": 1},
-                {**result, "command": None},
-                {**result, "duration_ms": True},
-                {**result, "duration_ms": -1},
-                {**result, "duration_ms": "0"},
-                {**result, "warnings": {}},
-                {**result, "warnings": [1]},
-                {**result, "steps": {}},
-                {**result, "steps": [{}]},
-                {**result, "error": []},
-                {**result, "ok": False},
-                {**failure, "error": {"code": "runtime_failure", "kind": "runtime"}},
-                {**failure, "error": {**failure["error"], "unexpected": True}},
-                {**failure, "error": {**failure["error"], "code": True}},
-                {**failure, "error": {**failure["error"], "kind": "platform"}},
-                {**failure, "error": {**failure["error"], "message": ""}},
-            ]
-            for envelope in invalid_results:
-                with self.subTest(envelope=envelope):
-                    self.assertTrue(module.validate_v8_runner_publication_frame(
-                        {**terminal, "result": envelope}, "terminal", nonce, source, stage, platform))
-
-    def test_v8_runner_full_pull_preview_cannot_hide_missing_memory_or_a_late_edit(self) -> None:
-        module = load_contract_module()
-        def envelope(mode):
-            return {"ok": True, "command": "push", "data": {
-                "ok": True, "provider_dispatched": False,
-                "steps": [{"source_set": "main", "mode": mode, "ok": True, "applied": False}]}}
-        unchanged = envelope("skipped")
-        changed = envelope({"partial": {"file_count": 1}})
-        full = envelope("full")
-        self.assertEqual(module.validate_v8_runner_post_pull_preview(unchanged, 0, changed=False), [])
-        self.assertEqual(module.validate_v8_runner_post_pull_preview(changed, 0, changed=True), [])
-        self.assertEqual(module.validate_v8_runner_post_pull_preview(full, 0, changed=True), [])
-        cases = [
-            (unchanged, 0, True), (changed, 0, False),
-            (full, 0, False),
-            ({**unchanged, "ok": False, "error": {"code": "no_memory"}}, 2, False),
-            ({**unchanged, "data": {**unchanged["data"], "steps": []}}, 0, False),
-            ({**unchanged, "data": {**unchanged["data"], "provider_dispatched": True}}, 0, False),
-            (envelope(None), 0, True),
-            (envelope({"partial": {"file_count": 0}}), 0, True),
-            (envelope({"partial": {"file_count": True}}), 0, True),
-        ]
-        for index, (value, status, expect_changed) in enumerate(cases):
-            with self.subTest(case=index):
-                self.assertTrue(module.validate_v8_runner_post_pull_preview(value, status, changed=expect_changed))
-
-    def test_v8_runner_full_pull_preserves_every_prepared_file(self) -> None:
-        module = load_contract_module()
-        prepared = {"Configuration.xml": b"configuration", "Module.bsl": b"prepared",
-                    "ConfigDumpInfo.xml": b"dump info"}
-        late_edit = {**prepared, "Module.bsl": b"late edit"}
-        self.assertEqual(module.validate_v8_runner_publication_tree(dict(prepared), prepared), [])
-        self.assertEqual(module.validate_v8_runner_publication_tree(dict(late_edit), late_edit), [])
-        defects = [
-            {name: payload for name, payload in prepared.items() if name != "Configuration.xml"},
-            {**prepared, "Configuration.xml": b"corrupted configuration"},
-            {name: payload for name, payload in prepared.items() if name != "ConfigDumpInfo.xml"},
-            {**prepared, "ConfigDumpInfo.xml": b"corrupted dump info"},
-            {**prepared, "unexpected.bsl": b"extra"},
-            {**prepared, "Module.bsl": b"unexpected edit"},
-        ]
-        for index, tree in enumerate(defects):
-            with self.subTest(case=index):
-                self.assertTrue(module.validate_v8_runner_publication_tree(tree, prepared))
-
-    def test_v8_runner_full_pull_invalid_frame_still_closes_each_owned_process(self) -> None:
-        from io import StringIO
-        from queue import Queue
-        from types import SimpleNamespace
-        module = load_contract_module()
-        sessions = []
-        def start(command, environment, timeout_seconds, *, cwd, deadline):
-            del timeout_seconds, deadline
-            calls = Path(environment["UNICA_FULL_PULL_CALLS"])
-            if not calls.exists():
-                calls.write_bytes(b"probe\n")
-            output = {"ok": True} if "pull" in command else {"ok": True, "command": "push", "data": {
-                "ok": True, "provider_dispatched": False,
-                "steps": [{"source_set": "main", "mode": "skipped", "ok": True, "applied": False}]}}
-            if "--publication-stdio" in command:
-                output = {"phase": "selected"}  # Invalid before any reply or publication.
-            lines = Queue()
-            lines.put(json.dumps(output) + "\n")
-            lines.put("")
-            reader = SimpleNamespace(join=lambda timeout: None, is_alive=lambda: False)
-            session = SimpleNamespace(
-                process=SimpleNamespace(stdin=StringIO(), wait=lambda timeout: 0),
-                lines=lines, reader=reader, error_reader=reader, diagnostics=[])
-            sessions.append(session)
-            return session
-        def close(session, root):
-            del root
-            session.process.stdin.close()
-        with tempfile.TemporaryDirectory() as raw:
-            runner = Path(raw) / "v8-runner"
-            runner.write_bytes(b"test-only supplied binary stand-in")
-            with patch.object(module, "compile_rust_platform_stub", return_value=[]), patch.object(
-                module, "load_shared_mcp_smoke_module", return_value=SimpleNamespace(McpSession=start)
-            ), patch.object(module, "terminate_shared_mcp_session", side_effect=close) as cleanup:
-                errors = module.check_v8_runner_full_pull_publication_contract(runner, "linux-x64")
-        self.assertEqual(len(sessions), 3)
-        self.assertEqual(cleanup.call_count, 3)
-        self.assertTrue(all(session.process.stdin.closed for session in sessions))
-        self.assertEqual(len(errors), 1)
-        self.assertIn("selected frame", errors[0])
 
     def test_v8_runner_platform_stub_compilation_timeout_is_bounded(self) -> None:
         module = load_contract_module()
@@ -1832,7 +1654,6 @@ class ProductContractTests(unittest.TestCase):
             "check_v8_runner_partial_load_contract",
             "check_v8_runner_bounded_external_epf_contract",
             "check_v8_runner_windows_external_publication_contract",
-            "check_v8_runner_full_pull_publication_contract",
         ]
         with tempfile.TemporaryDirectory() as tmp:
             tools_dir = Path(tmp)
@@ -1902,11 +1723,6 @@ class ProductContractTests(unittest.TestCase):
                     "check_v8_runner_windows_external_publication_contract",
                     return_value=["windows publication failure"],
                 ) as publication_check,
-                patch.object(
-                    module,
-                    "check_v8_runner_full_pull_publication_contract",
-                    return_value=[],
-                ),
             ):
                 errors = module.check_tool_contracts(tools_dir, "win-x64")
 
@@ -2243,7 +2059,7 @@ fn test_only() { std::process::Command::new("git"); }
     def write_executable(self, tools_dir: Path, name: str, body: str) -> None:
         commands = {
             "bsl-analyzer": [("analyze", "--help"), ("mcp", "serve", "--help")],
-            "v8-runner": [("--version",), ("push", "--help")],
+            "v8-runner": [("--version",), ("push", "--help"), ("pull", "--help")],
         }[name]
         routed_outputs = {
             tuple(route.split()): output
@@ -2352,12 +2168,31 @@ fn test_only() { std::process::Command::new("git"); }
             self.write_executable(
                 tools_dir,
                 "v8-runner",
-                "#!/usr/bin/env sh\nprintf '%s\\n' 'v8-runner 0.5.1 version Usage: v8-runner push'\n",
+                "#!/usr/bin/env sh\nprintf '%s\\n' 'v8-runner 0.5.1 version Usage: v8-runner push pull --force'\n",
             )
 
             errors = module.check_tool_contracts(tools_dir)
 
         self.assertEqual(errors, [])
+
+    def test_tool_help_contracts_refuse_a_runner_without_full_dump_force(self) -> None:
+        """Полная выгрузка продукта — `dump --force`: раннер без `--force` у `pull` её не выполнит."""
+        module = load_contract_module()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tools_dir = Path(tmp)
+            self.write_executable(tools_dir, "bsl-analyzer", self.BSL_ANALYZER_HELP)
+            self.write_executable(
+                tools_dir,
+                "v8-runner",
+                "#!/usr/bin/env sh\nprintf '%s\\n' 'v8-runner 0.5.1 version Usage: v8-runner push pull --mode'\n",
+            )
+
+            errors = module.check_tool_contracts(tools_dir)
+
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("v8-runner full dump", errors[0])
+        self.assertIn("--force", errors[0])
 
     def test_tool_help_failure_includes_bounded_sanitized_diagnostics(self) -> None:
         module = load_contract_module()
@@ -2403,7 +2238,7 @@ fn test_only() { std::process::Command::new("git"); }
             self.write_executable(
                 tools_dir,
                 "v8-runner",
-                "#!/usr/bin/env sh\nprintf '%s\\n' 'v8-runner 0.5.1 version Usage: v8-runner push'\n",
+                "#!/usr/bin/env sh\nprintf '%s\\n' 'v8-runner 0.5.1 version Usage: v8-runner push pull --force'\n",
             )
 
             yield cwd, tools_dir.relative_to(cwd)
