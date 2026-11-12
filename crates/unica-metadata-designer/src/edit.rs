@@ -4502,22 +4502,6 @@ mod export_format_tests {
         roxmltree::Document::parse(xml.trim_start_matches('\u{feff}')).unwrap()
     }
 
-    fn declarations(xml: &str) -> Vec<(Option<String>, String)> {
-        let document = document(xml);
-        let mut declared: Vec<_> = document
-            .root_element()
-            .namespaces()
-            .map(|namespace| {
-                (
-                    namespace.name().map(str::to_owned),
-                    namespace.uri().to_owned(),
-                )
-            })
-            .collect();
-        declared.sort();
-        declared
-    }
-
     /// The property names of every enumeration value, in document order.
     fn enum_value_properties(xml: &str) -> Vec<Vec<String>> {
         document(xml)
@@ -4614,11 +4598,91 @@ mod export_format_tests {
                 || "00000000-0000-4000-8000-000000000002".to_owned(),
             )
             .unwrap();
-            assert_eq!(declarations(&catalog), declarations(corpus), "{version}");
+            assert_eq!(
+                root_start_tag(&catalog),
+                root_start_tag(corpus),
+                "{version}"
+            );
             let wrapped =
                 String::from_utf8(super::wrap_standalone_descriptor("<Template/>", version))
                     .unwrap();
-            assert_eq!(declarations(&wrapped), declarations(corpus), "{version}");
+            assert_eq!(
+                root_start_tag(&wrapped),
+                root_start_tag(corpus),
+                "{version}"
+            );
+        }
+    }
+
+    /// The start tag of the root as written, declarations in their order.
+    fn root_start_tag(xml: &str) -> &str {
+        let start = xml.find("<MetaDataObject").unwrap();
+        &xml[start..start + xml[start..].find('>').unwrap()]
+    }
+
+    /// rule: INV.SOURCE.WRITABLE-PROFILE
+    #[test]
+    fn a_form_added_to_an_object_has_the_properties_of_its_set_format() {
+        for (corpus, mode) in [
+            (corpus!("2.20", "Catalogs/Валюты.xml"), None),
+            (corpus!("2.21", "Catalogs/Валюты.xml"), Some("Any")),
+            (corpus!("2.22", "Catalogs/Валюты.xml"), Some("Any")),
+        ] {
+            let mut xml = corpus.trim_start_matches('\u{feff}').to_owned();
+            let element = MetaElementDefinition {
+                name: "НоваяФорма".into(),
+                synonym: None,
+                comment: None,
+                r#type: None,
+                required: None,
+                fill_value: None,
+                attributes: vec![],
+                position: None,
+                template_type: None,
+                indexing: None,
+                master: None,
+                main_filter: None,
+                deny_incomplete_values: None,
+            };
+            let mut next_uuid = || "00000000-0000-4000-8000-000000000004".to_owned();
+            super::add_typed_element(
+                &mut xml,
+                "Catalog",
+                "Валюты",
+                MetaCollection::Forms,
+                None,
+                &element,
+                "ru",
+                &mut next_uuid,
+            )
+            .unwrap();
+            let document = document(&xml);
+            let form = document
+                .descendants()
+                .find(|node| {
+                    node.has_tag_name((MD, "Form"))
+                        && node.descendants().any(|name| {
+                            name.has_tag_name((MD, "Name")) && name.text() == Some("НоваяФорма")
+                        })
+                })
+                .unwrap();
+            let properties: Vec<_> = form
+                .descendants()
+                .find(|node| node.has_tag_name((MD, "Properties")))
+                .unwrap()
+                .children()
+                .filter(|node| node.is_element())
+                .collect();
+            let last = properties.last().unwrap();
+            match mode {
+                Some(mode) => {
+                    assert_eq!(last.tag_name().name(), "UseInInterfaceCompatibilityMode");
+                    assert_eq!(last.text(), Some(mode));
+                    let before = properties[properties.len() - 2].tag_name().name();
+                    assert_eq!(before, "UsePurposes");
+                }
+                None => assert_eq!(last.tag_name().name(), "UsePurposes"),
+            }
         }
     }
 }

@@ -123,11 +123,23 @@ mod format_tests {
     /// rule: INV.SOURCE.WRITABLE-PROFILE
     #[test]
     fn a_new_role_declares_the_namespaces_of_its_set_format() {
-        let corpus = include_str!(
-            "../../../tests/fixtures/formats/platform_xml/2.21/all_kinds/src/Roles/SalesReader.xml"
-        );
+        // The writer puts one declaration on a line; the platform, all on one.
         let role = |version| super::role_metadata_xml("Role", "Role", "", version, "uuid", "ru");
-        assert_eq!(declarations(&role("2.21")), declarations(corpus));
-        assert!(!role("2.20").contains("xmlns:pal"));
+        for (version, corpus) in [
+            (
+                "2.20",
+                include_str!("../../../tests/fixtures/formats/platform_xml/2.20/all_kinds/src/Roles/SalesReader.xml"),
+            ),
+            (
+                "2.21",
+                include_str!("../../../tests/fixtures/formats/platform_xml/2.21/all_kinds/src/Roles/SalesReader.xml"),
+            ),
+            (
+                "2.22",
+                include_str!("../../../tests/fixtures/formats/platform_xml/2.22/all_kinds/src/Roles/SalesReader.xml"),
+            ),
+        ] {
+            assert_eq!(declarations(&role(version)), declarations(corpus), "{version}");
+        }
     }
 }

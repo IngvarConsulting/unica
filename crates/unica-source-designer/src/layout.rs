@@ -370,13 +370,22 @@ fn palette_insertion(tag: &str, export_format: &str) -> Option<(usize, String)> 
     let &(last, _) = declarations.last()?;
     match declarations.iter().find(|(_, prefix)| *prefix > "pal") {
         Some(&(at, _)) => {
-            let separator = &tag[tag[..at].trim_end().len()..at];
+            let separator = match &tag[tag[..at].trim_end().len()..at] {
+                "" => " ",
+                separator => separator,
+            };
             Some((at, format!("{PALETTE_DECLARATION}{separator}")))
         }
         None => {
-            let value_start = last + tag[last..].find('"')? + 1;
-            let value_end = value_start + tag[value_start..].find('"')? + 1;
-            Some((value_end, format!(" {PALETTE_DECLARATION}")))
+            let separator = match &tag[tag[..last].trim_end().len()..last] {
+                "" => " ",
+                separator => separator,
+            };
+            let value = &tag[last..];
+            let quote_at = value.find(['"', '\''])?;
+            let quote = &value[quote_at..=quote_at];
+            let value_end = last + quote_at + 1 + value[quote_at + 1..].find(quote)? + 1;
+            Some((value_end, format!("{separator}{PALETTE_DECLARATION}")))
         }
     }
 }
@@ -515,6 +524,17 @@ mod format_namespace_tests {
         assert_eq!(
             last,
             "<Root xmlns:a=\"urn:a\" xmlns:pal=\"http://v8.1c.ru/8.1/data/ui/colors/palette\"/>"
+        );
+        let single =
+            declare_format_namespaces("<Root xmlns:a='urn:a'\n  x=\"1\"/>".to_owned(), "2.21");
+        assert_eq!(
+            single,
+            "<Root xmlns:a='urn:a' xmlns:pal=\"http://v8.1c.ru/8.1/data/ui/colors/palette\"\n  x=\"1\"/>"
+        );
+        let first = super::format_namespace_declarations("xmlns:v8=\"urn:v8\"", "2.21");
+        assert_eq!(
+            first,
+            "xmlns:pal=\"http://v8.1c.ru/8.1/data/ui/colors/palette\" xmlns:v8=\"urn:v8\""
         );
         let bare = "<Root version=\"2.21\"/>".to_owned();
         assert_eq!(declare_format_namespaces(bare.clone(), "2.21"), bare);

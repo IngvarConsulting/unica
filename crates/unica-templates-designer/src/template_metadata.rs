@@ -109,13 +109,29 @@ mod format_tests {
     /// rule: INV.SOURCE.WRITABLE-PROFILE
     #[test]
     fn a_new_template_descriptor_declares_the_namespaces_of_its_set_format() {
-        let corpus = include_str!(
-            "../../../tests/fixtures/formats/platform_xml/2.21/all_kinds/src/DataProcessors/Обработка/Templates/Макет.xml"
-        );
         let template = |version| {
             super::template_metadata_xml("Macet", "Macet", "SpreadsheetDocument", version, "uuid")
         };
-        assert_eq!(declarations(&template("2.21")), declarations(corpus));
-        assert!(!template("2.20").contains("xmlns:pal"));
+        let root = |xml: &str| {
+            let start = xml.find("<MetaDataObject").unwrap();
+            xml[start..start + xml[start..].find('>').unwrap()].to_owned()
+        };
+        for (version, corpus) in [
+            (
+                "2.20",
+                include_str!("../../../tests/fixtures/formats/platform_xml/2.20/all_kinds/src/DataProcessors/Обработка/Templates/Макет.xml"),
+            ),
+            (
+                "2.21",
+                include_str!("../../../tests/fixtures/formats/platform_xml/2.21/all_kinds/src/DataProcessors/Обработка/Templates/Макет.xml"),
+            ),
+            (
+                "2.22",
+                include_str!("../../../tests/fixtures/formats/platform_xml/2.22/all_kinds/src/DataProcessors/Обработка/Templates/Макет.xml"),
+            ),
+        ] {
+            assert_eq!(root(&template(version)), root(corpus), "{version}");
+            assert_eq!(declarations(&template(version)), declarations(corpus), "{version}");
+        }
     }
 }

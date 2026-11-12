@@ -13,10 +13,12 @@ pub(crate) static DIALECT: MetadataDialect = MetadataDialect {
 };
 
 /// The all_kinds corpus of 2.21 closes the properties of every enumeration
-/// value with its color, `auto` by default.
+/// value with its color, `auto` by default, and writes after `UsePurposes`
+/// of every form the interface compatibility mode it is used in, `Any`.
 pub(crate) fn added_child_properties(child_type: &str) -> &'static [&'static str] {
     match child_type {
         "EnumValue" => &["<Color>auto</Color>"],
+        "Form" => &["<UseInInterfaceCompatibilityMode>Any</UseInInterfaceCompatibilityMode>"],
         _ => &[],
     }
 }
