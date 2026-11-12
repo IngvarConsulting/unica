@@ -48,10 +48,9 @@ source-set:
     path: src/external-reports
 ```
 
-Для нового изолированного workspace полный минимальный пример имеет также обязательный runtime-контекст. `v8project.yaml`:
+Для нового изолированного workspace полный минимальный пример. `workPath` не обязателен: без него раннер работает в `.build/v8-runner`. `v8project.yaml`:
 
 ```yaml
-workPath: build/runtime
 format: DESIGNER
 source-set:
   - name: external-reports

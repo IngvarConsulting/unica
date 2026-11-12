@@ -31,7 +31,6 @@ For a new repository with no workspace, call `unica.view {}` first. Оно
 `v8project.yaml`:
 
 ```yaml
-workPath: 'build'
 format: DESIGNER
 source-set:
   - name: main
@@ -55,7 +54,13 @@ passes its refusal on as is. `unica.run` accepts optional top-level
 Do not use legacy top-level `connection` in `v8project.yaml`.
 
 Relative `workPath`, infobase file paths, and source-set paths are resolved
-from the directory containing the primary config.
+from the directory containing the primary config. Without `workPath` the
+runner works in `.build/v8-runner`. A full `pull` stages the export in
+`workPath` and publishes it by a rename, so `workPath` and the source sets must
+be on one volume; otherwise the runner refuses with
+`work_path_on_another_volume`. A runner command that finds the working copy
+held by another one refuses with `workspace_busy`; repeat the call when that
+command ends. Unica passes both refusals with the runner's text.
 
 The runner refuses keys it does not support, such as `basePath`,
 `execution_timeout` and `push.partialLoadThreshold`, and its refusal names the
