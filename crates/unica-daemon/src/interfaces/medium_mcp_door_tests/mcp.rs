@@ -2882,3 +2882,361 @@ async fn a_model_cannot_confirm_a_destructive_call_and_the_doors_confirmation_re
     );
     client.shutdown().await;
 }
+
+/// The pinned runner of a workspace whose infobase this copy does not
+/// remember: a plain `push` is refused `untracked_base`, `push --force`
+/// loads the set. Each call is logged in the workspace.
+const DIVERGED_BASE_RUNNER: &str = r##"
+use std::{env, fs, io::Write};
+fn main() {
+    let args: Vec<String> = env::args().collect();
+    let cwd = env::current_dir().unwrap();
+    let mut log = fs::OpenOptions::new().create(true).append(true).open(cwd.join("probe-calls.log")).unwrap();
+    writeln!(log, "{}", args[1..].join(" ")).unwrap();
+    if !args.iter().any(|arg| arg == "push") {
+        std::process::exit(9);
+    }
+    if args.iter().any(|arg| arg == "--force") {
+        print!("{}", fs::read_to_string(cwd.join("probe-force.json")).unwrap());
+        return;
+    }
+    print!("{}", fs::read_to_string(cwd.join("probe-untracked.json")).unwrap());
+    std::process::exit(3);
+}
+"##;
+
+/// A `push` is a Task: its refusal "the infobase and the sources diverged"
+/// reaches the client in the Task's result. The client reads it with
+/// `unica.task.result` and is asked there; the chosen answer runs as a new
+/// call. The stored result stays the refusal: `unica.task.get` shows the
+/// Task without the question, and reading the result again asks again.
+/// rule: INV.MCP.HUMAN-CHOICE
+/// rule: INV.RUNTIME.RUNNER-BASE-REFUSALS
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_push_task_asks_about_the_diverged_base_when_its_result_is_read() {
+    use crate::infrastructure::daemon::server::actor_capacity_tests::canonical_v13_service;
+
+    let root = tempfile::tempdir().unwrap();
+    let workspace = diverged_base_workspace(root.path());
+    let calls = || runner_calls(&workspace);
+
+    let daemon = LiveDaemon::start(canonical_v13_service());
+    let (mut client, _) = spawn_unica_server(UnicaServer::with_canonical_daemon(
+        daemon.owner(),
+        workspace.to_string_lossy().into_owned(),
+    ));
+    client
+        .send(json!({
+            "jsonrpc": "2.0", "id": 0, "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-11-25",
+                "capabilities": {"elicitation": {"form": {}}},
+                "clientInfo": {"name": "unica-tests", "version": "1"}
+            }
+        }))
+        .await;
+    assert_eq!(client.receive().await["id"], 0);
+    client
+        .send(json!({"jsonrpc": "2.0", "method": "notifications/initialized"}))
+        .await;
+
+    client
+        .send(json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "unica.run", "arguments": {
+                "op": "push", "args": {"sourceSet": "main"}, "dryRun": false
+            }}
+        }))
+        .await;
+    let submitted = client.receive().await;
+    let task_id = submitted["result"]["structuredContent"]["data"]["task"]["taskId"]
+        .as_str()
+        .unwrap_or_else(|| panic!("a push continues as a Task: {submitted}"))
+        .to_owned();
+
+    // Reading the result asks the question the refusal carries.
+    let read_result = |id: u64| {
+        json!({
+            "jsonrpc": "2.0", "id": id, "method": "tools/call",
+            "params": {"name": "unica.task.result", "arguments": {"taskId": task_id, "waitMs": 7000}}
+        })
+    };
+    let mut asked = Value::Null;
+    for attempt in 0..10 {
+        client.send(read_result(10 + attempt)).await;
+        let message = client.receive().await;
+        if message["method"] == "elicitation/create" {
+            asked = message;
+            break;
+        }
+        assert_eq!(
+            message["result"]["structuredContent"]["data"]["task"]["status"], "working",
+            "{message}"
+        );
+    }
+    assert_eq!(
+        asked["method"], "elicitation/create",
+        "the result read asks"
+    );
+    assert_eq!(
+        asked["params"]["_meta"]["unica/question"]["code"], "source.base_divergence",
+        "{asked}"
+    );
+    assert!(
+        asked["params"]["message"]
+            .as_str()
+            .is_some_and(|text| text.contains("разошлись")),
+        "{asked}"
+    );
+    assert_eq!(calls().len(), 1, "only the refused push ran so far");
+    client
+        .send(json!({
+            "jsonrpc": "2.0", "id": asked["id"],
+            "result": {"action": "accept", "content": {"choice": "overwrite"}}
+        }))
+        .await;
+    let answered = client.receive().await;
+    assert_ne!(answered["result"]["isError"], true, "{answered}");
+    // The chosen push is long too: it continues as a new Task.
+    let forced_task = answered["result"]["structuredContent"]["data"]["task"]["taskId"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the chosen push is a new Task: {answered}"))
+        .to_owned();
+    assert_ne!(forced_task, task_id);
+    let mut forced = Value::Null;
+    for attempt in 0..10 {
+        client
+            .send(json!({
+                "jsonrpc": "2.0", "id": 20 + attempt, "method": "tools/call",
+                "params": {"name": "unica.task.result", "arguments": {"taskId": forced_task, "waitMs": 7000}}
+            }))
+            .await;
+        forced = client.receive().await;
+        if forced["result"]["structuredContent"]["data"]["task"]["status"] != "working" {
+            break;
+        }
+    }
+    assert_eq!(
+        forced["result"]["structuredContent"]["ok"], true,
+        "{forced}"
+    );
+    let calls_after = calls();
+    assert_eq!(calls_after.len(), 2, "{calls_after:?}");
+    assert!(
+        calls_after[1].ends_with("push main --force"),
+        "the chosen answer runs as a new call: {calls_after:?}"
+    );
+
+    // The stored result stays the refusal: get shows the Task as it is.
+    client
+        .send(json!({
+            "jsonrpc": "2.0", "id": 30, "method": "tools/call",
+            "params": {"name": "unica.task.get", "arguments": {"taskId": task_id}}
+        }))
+        .await;
+    let got = client.receive().await;
+    assert_eq!(
+        got["result"]["structuredContent"]["data"]["task"]["status"], "completed",
+        "{got}"
+    );
+
+    // Reading the result again asks again; declining gives the refusal.
+    client.send(read_result(31)).await;
+    let again = client.receive().await;
+    assert_eq!(again["method"], "elicitation/create", "{again}");
+    client
+        .send(json!({"jsonrpc": "2.0", "id": again["id"], "result": {"action": "decline"}}))
+        .await;
+    let declined = client.receive().await;
+    assert_eq!(declined["id"], 31, "{declined}");
+    assert_eq!(declined["result"]["isError"], true, "{declined}");
+    assert_eq!(
+        declined["result"]["structuredContent"]["diagnostics"][0]["code"], "invalid_state",
+        "{declined}"
+    );
+    assert_eq!(calls().len(), 2, "declining runs nothing");
+
+    // A restarted door asks again: the Task keeps its question.
+    client.shutdown().await;
+    let (mut restarted, _) = spawn_unica_server(UnicaServer::with_canonical_daemon(
+        daemon.owner(),
+        workspace.to_string_lossy().into_owned(),
+    ));
+    restarted
+        .send(json!({
+            "jsonrpc": "2.0", "id": 0, "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-11-25",
+                "capabilities": {"elicitation": {"form": {}}},
+                "clientInfo": {"name": "unica-tests", "version": "1"}
+            }
+        }))
+        .await;
+    assert_eq!(restarted.receive().await["id"], 0);
+    restarted
+        .send(json!({"jsonrpc": "2.0", "method": "notifications/initialized"}))
+        .await;
+    restarted.send(read_result(40)).await;
+    let after_restart = restarted.receive().await;
+    assert_eq!(
+        after_restart["method"], "elicitation/create",
+        "{after_restart}"
+    );
+    restarted
+        .send(json!({"jsonrpc": "2.0", "id": after_restart["id"], "result": {"action": "cancel"}}))
+        .await;
+    assert_eq!(restarted.receive().await["id"], 40);
+    assert_eq!(calls().len(), 2);
+
+    restarted.shutdown().await;
+    daemon.finish();
+}
+
+/// The workspace of a diverged base: its runner refuses a plain `push` with
+/// `untracked_base` and loads the set on `push --force`.
+fn diverged_base_workspace(root: &std::path::Path) -> std::path::PathBuf {
+    crate::infrastructure::daemon::server::actor_capacity_tests::install_runner_probe(
+        root,
+        DIVERGED_BASE_RUNNER,
+    );
+    let workspace = root.join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    std::fs::write(
+        workspace.join("v8project.yaml"),
+        "format: DESIGNER\ninfobase:\n  connection: 'File=build/ib'\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: main\n",
+    )
+    .unwrap();
+    let fixtures = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    std::fs::copy(
+        fixtures.join("v8_runner_017/push-untracked-base-preview.json"),
+        workspace.join("probe-untracked.json"),
+    )
+    .unwrap();
+    std::fs::copy(
+        fixtures.join("v8_runner_015/push-other-copy-force-apply.json"),
+        workspace.join("probe-force.json"),
+    )
+    .unwrap();
+    std::fs::canonicalize(workspace).unwrap()
+}
+
+fn runner_calls(workspace: &std::path::Path) -> Vec<String> {
+    std::fs::read_to_string(workspace.join("probe-calls.log"))
+        .unwrap_or_default()
+        .lines()
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Polls `tasks/get` of `task_id` until the Task is no longer working.
+async fn settled_task(client: &mut McpClient, task_id: &str, from: u64) -> Value {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut id = from;
+    loop {
+        client
+            .send(json!({
+                "jsonrpc": "2.0", "id": id, "method": "tasks/get",
+                "params": {"taskId": task_id, "_meta": modern_tasks_meta()}
+            }))
+            .await;
+        let task = client.receive().await;
+        if task["result"]["status"] != "working" {
+            return task;
+        }
+        assert!(Instant::now() < deadline, "the Task never settled: {task}");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        id += 1;
+    }
+}
+
+/// A client with Tasks reads the `push` Task with `tasks/get`: the refused
+/// Task shows its question as `input_required`, and the answer comes with
+/// `tasks/update`. The chosen call runs as a new Task, which the same Task
+/// shows after. A restarted door asks again; input to a Task that asks
+/// nothing is not accepted.
+/// rule: INV.MCP.HUMAN-CHOICE
+/// rule: CTR.WIRE.NATIVE-TASK-PROJECTION
+/// rule: INV.RUNTIME.RUNNER-BASE-REFUSALS
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_native_push_task_asks_about_the_diverged_base_as_input_required() {
+    use crate::infrastructure::daemon::server::actor_capacity_tests::canonical_v13_service;
+
+    let root = tempfile::tempdir().unwrap();
+    let workspace = diverged_base_workspace(root.path());
+    let daemon = LiveDaemon::start(canonical_v13_service());
+    let server = || {
+        spawn_unica_server(UnicaServer::with_canonical_daemon(
+            daemon.owner(),
+            workspace.to_string_lossy().into_owned(),
+        ))
+        .0
+    };
+    let mut client = server();
+    client
+        .send(json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {
+                "name": "unica.run",
+                "arguments": {"op": "push", "args": {"sourceSet": "main"}, "dryRun": false},
+                "_meta": modern_tasks_meta()
+            }
+        }))
+        .await;
+    let created = client.receive().await;
+    assert_eq!(created["result"]["resultType"], "task", "{created}");
+    let task_id = created["result"]["taskId"].as_str().unwrap().to_owned();
+
+    let asking = settled_task(&mut client, &task_id, 10).await;
+    assert_eq!(asking["result"]["status"], "input_required", "{asking}");
+    assert_eq!(asking["result"]["taskId"], task_id.as_str());
+    let question = &asking["result"]["inputRequests"]["unica.choice"];
+    assert_eq!(question["method"], "elicitation/create", "{asking}");
+    assert_eq!(
+        question["params"]["_meta"]["unica/question"]["code"], "source.base_divergence",
+        "{asking}"
+    );
+    assert_eq!(runner_calls(&workspace).len(), 1);
+
+    // A restarted door asks the same question again.
+    client.shutdown().await;
+    let mut client = server();
+    let again = settled_task(&mut client, &task_id, 100).await;
+    assert_eq!(again["result"]["status"], "input_required", "{again}");
+
+    let answer = json!({
+        "jsonrpc": "2.0", "id": 200, "method": "tasks/update",
+        "params": {
+            "taskId": task_id,
+            "inputResponses": {"unica.choice": {"action": "accept", "content": {"choice": "overwrite"}}},
+            "_meta": modern_tasks_meta()
+        }
+    });
+    client.send(answer.clone()).await;
+    let updated = client.receive().await;
+    assert!(updated.get("error").is_none(), "{updated}");
+
+    let done = settled_task(&mut client, &task_id, 300).await;
+    assert_eq!(done["result"]["status"], "completed", "{done}");
+    assert_eq!(done["result"]["taskId"], task_id.as_str(), "{done}");
+    assert_eq!(
+        done["result"]["result"]["structuredContent"]["ok"], true,
+        "{done}"
+    );
+    let calls = runner_calls(&workspace);
+    assert_eq!(calls.len(), 2, "{calls:?}");
+    assert!(calls[1].ends_with("push main --force"), "{calls:?}");
+
+    // The Task asks nothing now: other input is refused.
+    let mut again = answer;
+    again["id"] = json!(400);
+    client.send(again).await;
+    let refused = client.receive().await;
+    assert_eq!(
+        refused["error"]["data"]["code"], "task_input_not_supported",
+        "{refused}"
+    );
+    assert_eq!(runner_calls(&workspace).len(), 2);
+
+    client.shutdown().await;
+    daemon.finish();
+}

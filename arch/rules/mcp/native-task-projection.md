@@ -7,8 +7,9 @@ id: CTR.WIRE.NATIVE-TASK-PROJECTION
 Клиент с [Tasks capability](native-task-capability.md) получает
 `CreateTaskResult`, затем читает задание через `tasks/get`. Отмена
 `tasks/cancel` идемпотентна. `tasks/update` сначала проверяет существование
-и срок жизни задания, затем отвечает `task_input_not_supported`:
-дополнительный ввод для выполняющегося задания не поддерживается.
+и срок жизни задания. Ответ на вопрос задачи в состоянии `input_required`
+принимается по [правилу вопроса](human-choice.md); любой другой ввод получает
+`task_input_not_supported`.
 После `CreateTaskResult` frontend не отправляет самопроизвольных сообщений
 прогресса или опроса.
 
