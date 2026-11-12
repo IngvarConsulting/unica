@@ -203,10 +203,11 @@ fn changes_support_state(
 /// support with changes disabled, refuses `invalid_state` before any family
 /// stages a byte when the actor's support policy is `deny`; under `warn` it
 /// proceeds and returns the `support_locked` warning the plan carries; `off`
-/// is silent. Removal follows the same policy: an editable vendor object is
-/// removed while staying on support, and only a `locked` rule on the object
-/// or on one of its own child objects refuses under `deny` or warns under
-/// `warn`. The marker is not changed by the removal.
+/// is silent. Removal follows the same policy: an editable vendor object, or
+/// a node of it with its own record, is removed while staying on support, and
+/// only a `locked` rule on it, above it or on a node under it with its own
+/// record refuses under `deny` or warns under `warn`. The marker is not
+/// changed by the removal.
 /// The owner is the top-level metadata object of the addressed node, or the
 /// configuration root for root-level targets. A node below it with its own
 /// record (a form, an attribute, a nested subsystem) closes itself and
@@ -299,7 +300,7 @@ fn planned_gate_warnings(
 }
 
 /// The support gate for one operation target; `removes` asks about removing
-/// the target's owner.
+/// the target itself (`removes_support_node`).
 fn refuse_target_on_locked_vendor_object(
     target: &unica_address::address::QualifiedAddress,
     removes: bool,
@@ -480,7 +481,7 @@ pub(crate) struct SupportGateLock {
 
 /// The support facts of one target, read through `read` and `enumerate`
 /// relative to the source root: the staged state of `apply` or the retained
-/// root of `view`. `removes` asks about removing the target's owner.
+/// root of `view`. `removes` asks about removing the target itself.
 pub(crate) fn support_gate_facts<E>(
     at: &unica_address::address::QualifiedAddress,
     source_kind: SourceSetKind,

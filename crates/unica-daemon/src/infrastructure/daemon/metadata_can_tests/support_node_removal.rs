@@ -237,3 +237,72 @@ fn removing_a_nested_subsystem_answers_for_its_locked_subsystems() {
         refused.summary
     );
 }
+
+/// A lock above the removed node refuses the removal as an edit of that
+/// node, and a locked attribute of another tabular section whose name only
+/// begins like the removed one does not keep it.
+/// rule: INV.SOURCE.VENDOR-OBJECT-REMOVAL
+/// rule: INV.SAFETY.APPLY-SUPPORT-GATE
+#[test]
+fn a_removal_answers_for_the_nodes_above_and_under_it_only() {
+    const LINES_UUID: &str = "66666666-6666-4666-8666-666666666666";
+    const QUANTITY_UUID: &str = "77777777-7777-4777-8777-777777777777";
+    const LINES_X_UUID: &str = "88888888-8888-4888-8888-888888888888";
+    const PRICE_UUID: &str = "99999999-9999-4999-8999-999999999999";
+    let fixture = Fixture::new("workspace-support-form");
+    declare_vendor_nodes(
+        &fixture,
+        &format!(
+            "<TabularSection uuid=\"{LINES_UUID}\"><Properties><Name>Lines</Name></Properties><ChildObjects><Attribute uuid=\"{QUANTITY_UUID}\"><Properties><Name>Quantity</Name></Properties></Attribute></ChildObjects></TabularSection>\
+             <TabularSection uuid=\"{LINES_X_UUID}\"><Properties><Name>LinesX</Name></Properties><ChildObjects><Attribute uuid=\"{PRICE_UUID}\"><Properties><Name>Price</Name></Properties></Attribute></ChildObjects></TabularSection>"
+        ),
+        &[
+            (LINES_UUID, 0),
+            (QUANTITY_UUID, 1),
+            (LINES_X_UUID, 1),
+            (PRICE_UUID, 0),
+        ],
+    );
+    let runtime = runtime();
+    let quantity = format!("{LINES}.Attribute.Quantity");
+
+    let refused = call(
+        &runtime,
+        &fixture,
+        ToolIdentity::Apply,
+        json!({"at":quantity,"ops":[{"op":"attribute.remove","args":{}}]}),
+    );
+    assert!(!refused.ok, "{refused:?}");
+    assert!(
+        refused.summary.contains(&format!(
+            "`{LINES}` is a vendor object with the support rule `locked`; allow editing"
+        )),
+        "{}",
+        refused.summary
+    );
+    let choice = refused
+        .human_choice
+        .as_deref()
+        .expect("deny asks the person");
+    assert_eq!(choice.code, "support.object_locked");
+    assert_eq!(
+        choice.data.as_ref().unwrap()["object"],
+        "Catalog.Items.TabularSection.Lines"
+    );
+
+    // `LinesX` with its locked `Price` is not under `Lines`: once `Lines`
+    // is editable, it is removed.
+    publish(
+        &runtime,
+        &fixture,
+        json!({"at":LINES,"ops":[{"op":"supportRule.set","args":{"values":{"rule":"editable"}}}]}),
+    );
+    publish(
+        &runtime,
+        &fixture,
+        json!({"at":LINES,"ops":[{"op":"tabularSection.remove","args":{}}]}),
+    );
+    let catalog = std::fs::read_to_string(fixture.source.join("Catalogs/Items.xml")).unwrap();
+    assert!(!catalog.contains("<Name>Lines</Name>"), "{catalog}");
+    assert!(catalog.contains("<Name>LinesX</Name>"), "{catalog}");
+}
