@@ -73,7 +73,7 @@ pub(super) fn reject_unavailable_run_before_admission(
         .get("infobase")
         .is_some_and(|v| v.as_str() != Some("origin"))
     {
-        return Some(reject_run_operation(op, "runner 0.15 adapter supports only the named infobase origin; no fallback to another target"));
+        return Some(reject_run_operation(op, "the pinned runner adapter supports only the named infobase origin; no fallback to another target"));
     }
     if is_test_seam_operation(op) {
         return None;

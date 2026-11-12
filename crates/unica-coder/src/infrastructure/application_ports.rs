@@ -1167,10 +1167,13 @@ fn documentation_registry_stand_in(
 /// Absent, unreadable or malformed config means "no constraint", not an
 /// error: documentation search is a read-only question about the platform,
 /// and the runner is the place that refuses a broken project config loudly.
+/// `sources` is not a version: the runner then picks the line that writes the
+/// source format, so the project pins no installation.
 fn project_platform_version(context: &WorkspaceContext) -> Option<String> {
     let root = &context.workspace_root;
     configured_platform_version(&root.join("v8project.local.yaml"))
         .or_else(|| configured_platform_version(&root.join("v8project.yaml")))
+        .filter(|version| version != "sources")
 }
 
 fn configured_platform_version(path: &Path) -> Option<String> {
@@ -2586,6 +2589,20 @@ mod medium_tests {
             project_platform_version(&context).as_deref(),
             Some("8.3.27.2074"),
             "локальное перекрытие сильнее основной конфигурации"
+        );
+
+        std::fs::write(
+            workspace.join("v8project.local.yaml"),
+            "tools:
+  platform:
+    version: sources
+",
+        )
+        .expect("строгий выбор по линии формата");
+        assert_eq!(
+            project_platform_version(&context),
+            None,
+            "sources — выбор раннера по формату исходников, а не версия"
         );
     }
 
