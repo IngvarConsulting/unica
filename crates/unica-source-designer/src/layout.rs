@@ -552,6 +552,41 @@ mod format_namespace_tests {
         let bare = "<Root version=\"2.21\"/>".to_owned();
         assert_eq!(declare_format_namespaces(bare.clone(), "2.21"), bare);
     }
+
+    #[test]
+    fn an_element_declares_the_palette_only_where_it_declares_prefixes() {
+        let pal = "xmlns:pal=\"http://v8.1c.ru/8.1/data/ui/colors/palette\"";
+        let schema = concat!(
+            "<s xmlns:v8=\"urn:v8\">",
+            "<dcsset:settingsVariant xmlns:style=\"urn:s\"/>",
+            "<dcsset:settings xmlns:style=\"urn:s\" xmlns:win=\"urn:w\">",
+            "<dcsset:settings/><dcsset:settings a=\"1\"/>",
+            "</dcsset:settings>",
+            "<dcsset:settings xmlns:sys=\"urn:y\"/>",
+            "</s>"
+        );
+        let written =
+            super::declare_element_format_namespaces(schema.to_owned(), "dcsset:settings", "2.21");
+        assert_eq!(
+            written,
+            format!(
+                concat!(
+                    "<s xmlns:v8=\"urn:v8\">",
+                    "<dcsset:settingsVariant xmlns:style=\"urn:s\"/>",
+                    "<dcsset:settings {pal} xmlns:style=\"urn:s\" xmlns:win=\"urn:w\">",
+                    "<dcsset:settings/><dcsset:settings a=\"1\"/>",
+                    "</dcsset:settings>",
+                    "<dcsset:settings {pal} xmlns:sys=\"urn:y\"/>",
+                    "</s>"
+                ),
+                pal = pal
+            )
+        );
+        assert_eq!(
+            super::declare_element_format_namespaces(schema.to_owned(), "dcsset:settings", "2.20"),
+            schema
+        );
+    }
 }
 
 #[cfg(test)]

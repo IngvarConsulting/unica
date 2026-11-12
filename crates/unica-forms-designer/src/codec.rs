@@ -10505,11 +10505,7 @@ mod export_format_content_tests {
             let borrowed = super::borrowed_form_content_xml(version);
             assert_eq!(root(&borrowed), root(corpus), "{version}");
             let (compiled, _) = super::form_compile_xml(&serde_json::json!({}), version).unwrap();
-            assert!(
-                compiled.contains("xmlns:pal=") == (version != "2.20"),
-                "{version}: {}",
-                root(&compiled)
-            );
+            assert_eq!(root(&compiled), root(corpus), "{version}");
         }
     }
 }

@@ -198,6 +198,7 @@ CommonForms регистрируются в `Configuration.xml`:
 | `style` | `http://v8.1c.ru/8.1/data/ui/style` | Стили оформления (FormBackColor и т.д.) |
 | `web` | `http://v8.1c.ru/8.1/data/ui/colors/web` | Web-цвета |
 | `win` | `http://v8.1c.ru/8.1/data/ui/colors/windows` | Windows-цвета |
+| `pal` | `http://v8.1c.ru/8.1/data/ui/colors/palette` | Палитра цветов; объявлено с формата 2.21 |
 | `sys` | `http://v8.1c.ru/8.1/data/ui/fonts/system` | Системные шрифты |
 | `xs` | `http://www.w3.org/2001/XMLSchema` | XML Schema |
 | `xsi` | `http://www.w3.org/2001/XMLSchema-instance` | XML Schema Instance |
@@ -631,7 +632,7 @@ ChildItems
   <HorizontalLines>true | false</HorizontalLines>
   <VerticalLines>true | false</VerticalLines>
   <UseAlternationRowColor>true | false</UseAlternationRowColor>
-  <!-- в форматах 2.21 и 2.22: UseAlternationRowColorBWA -->
+  <!-- в форматах 2.21 и 2.22 вместо него UseAlternationRowColorBWA -->
 
   <!-- Редактирование -->
   <SelectionMode>SingleRow | MultiRow</SelectionMode>
