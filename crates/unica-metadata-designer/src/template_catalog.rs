@@ -641,7 +641,7 @@ pub fn minimal_auxiliary_files(
         MetadataKind::BusinessProcess => vec![(
             "Flowchart.xml",
             unica_metadata::validation_subject::MetadataAuxiliaryXmlKind::BusinessProcessFlowchart,
-            format!(
+            unica_source_designer::layout::declare_format_namespaces(format!(
                 "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n\
 <GraphicalSchema xmlns=\"http://v8.1c.ru/8.3/xcf/scheme\" xmlns:sch=\"http://v8.1c.ru/8.2/data/graphscheme\" xmlns:style=\"http://v8.1c.ru/8.1/data/ui/style\" xmlns:v8=\"http://v8.1c.ru/8.1/data/core\" xmlns:v8ui=\"http://v8.1c.ru/8.1/data/ui\" xmlns:web=\"http://v8.1c.ru/8.1/data/ui/colors/web\" xmlns:win=\"http://v8.1c.ru/8.1/data/ui/colors/windows\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" version=\"{format_version}\">\r\n\
 \t<BackColor>style:FieldBackColor</BackColor>\r\n\
@@ -659,7 +659,7 @@ pub fn minimal_auxiliary_files(
 \t</PrintParameters>\r\n\
 \t<Items/>\r\n\
 </GraphicalSchema>\r\n"
-            ),
+            ), format_version),
         )],
         _ => Vec::new(),
     }

@@ -184,7 +184,7 @@ CommonForms регистрируются в `Configuration.xml`:
 </Form>
 ```
 
-Все 17 namespace-деклараций **идентичны** во всех формах конфигурации. В активном профиле атрибут `version` равен `"2.20"`.
+Все 17 namespace-деклараций **идентичны** во всех формах конфигурации формата 2.20. Атрибут `version` равен формату набора. В форматах 2.21 (8.5.1) и 2.22 (8.5.4) объявлений 18: между `lf` и `style` добавлено `xmlns:pal="http://v8.1c.ru/8.1/data/ui/colors/palette"`.
 
 ### Назначение namespace-префиксов
 
@@ -631,6 +631,7 @@ ChildItems
   <HorizontalLines>true | false</HorizontalLines>
   <VerticalLines>true | false</VerticalLines>
   <UseAlternationRowColor>true | false</UseAlternationRowColor>
+  <!-- в форматах 2.21 и 2.22: UseAlternationRowColorBWA -->
 
   <!-- Редактирование -->
   <SelectionMode>SingleRow | MultiRow</SelectionMode>

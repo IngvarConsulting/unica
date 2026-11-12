@@ -2305,10 +2305,17 @@ fn stage_template_add(
             .at_path(name_path));
         }
         let content = match kind {
-            MetaTemplateKind::SpreadsheetDocument => {
-                (template_seed.0)()
+            MetaTemplateKind::SpreadsheetDocument => unica_source_designer::layout::declare_format_namespaces(
+                (template_seed.0)(),
+                authority.expected_format(),
+            ),
+            MetaTemplateKind::DataCompositionSchema => {
+                unica_source_designer::layout::declare_element_format_namespaces(
+                    empty_data_composition_schema_xml(),
+                    "dcsset:settings",
+                    authority.expected_format(),
+                )
             }
-            MetaTemplateKind::DataCompositionSchema => empty_data_composition_schema_xml(),
             MetaTemplateKind::TextDocument | MetaTemplateKind::HtmlDocument | MetaTemplateKind::BinaryData => {
                 return Err(ApplyPlanError::new(
                     ApplyPlanErrorKind::BadValue,

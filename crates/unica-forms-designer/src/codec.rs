@@ -3145,6 +3145,14 @@ pub fn form_add_metadata_xml(
     unica_source_designer::layout::declare_format_namespaces(descriptor, format_version)
 }
 
+/// Namespace declarations of a `Form.xml` root in `format_version`.
+fn form_root_namespaces(format_version: &str) -> String {
+    unica_source_designer::layout::format_namespace_declarations(
+        FORM_ROOT_NAMESPACES,
+        format_version,
+    )
+}
+
 /// Namespace declarations of a `Form.xml` root as 8.3.27 exports them.
 const FORM_ROOT_NAMESPACES: &str = concat!(
     "xmlns=\"http://v8.1c.ru/8.3/xcf/logform\"",
@@ -3173,9 +3181,10 @@ const FORM_ROOT_NAMESPACES: &str = concat!(
 /// into `callType="Before"` interceptors of the extension.
 pub fn borrowed_form_content_xml(format_version: &str) -> String {
     let version = unica_xml_format::text::escape_xml(format_version);
+    let namespaces = form_root_namespaces(format_version);
     [
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>".to_string(),
-        format!("<Form {FORM_ROOT_NAMESPACES} version=\"{version}\">"),
+        format!("<Form {namespaces} version=\"{version}\">"),
         "\t<AutoCommandBar name=\"\" id=\"-1\"/>".to_string(),
         "\t<Attributes/>".to_string(),
         format!("\t<BaseForm version=\"{version}\">"),
@@ -3209,7 +3218,7 @@ pub fn form_add_content_xml_with_variant(
     format_version: &str,
     script_variant: ScriptVariant,
 ) -> Result<String, String> {
-    let ns = FORM_ROOT_NAMESPACES;
+    let ns = form_root_namespaces(format_version);
     let names = FormEmissionContext::with_script_variant(script_variant);
     let command_bar = names.select("ФормаКоманднаяПанель", "FormCommandBar");
     if matches!(purpose, "List" | "Choice") {
@@ -6699,7 +6708,10 @@ pub fn form_compile_xml(
 
     lines.push("</Form>".to_string());
     Ok((
-        format!("{}\n", lines.join("\n")),
+        unica_source_designer::layout::declare_format_namespaces(
+            format!("{}\n", lines.join("\n")),
+            format_version,
+        ),
         FormCompileStats {
             element_ids: ids.next,
             attributes,
@@ -10459,6 +10471,45 @@ mod export_format_descriptor_tests {
                 "ru",
             );
             assert_eq!(shape(&written), shape(corpus), "{version}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod export_format_content_tests {
+    /// The start tag of the `Form` root, as written.
+    fn root(xml: &str) -> &str {
+        let start = xml.find("<Form ").unwrap();
+        &xml[start..start + xml[start..].find('>').unwrap()]
+    }
+
+    /// rule: INV.SOURCE.WRITABLE-PROFILE
+    #[test]
+    fn a_new_form_content_declares_the_namespaces_of_its_set_format() {
+        for (version, corpus) in [
+            (
+                "2.20",
+                include_str!("../../../tests/fixtures/formats/platform_xml/2.20/all_kinds/src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml"),
+            ),
+            (
+                "2.21",
+                include_str!("../../../tests/fixtures/formats/platform_xml/2.21/all_kinds/src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml"),
+            ),
+            (
+                "2.22",
+                include_str!("../../../tests/fixtures/formats/platform_xml/2.22/all_kinds/src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml"),
+            ),
+        ] {
+            let added = super::form_add_content_xml("Catalog", "Валюты", "Item", version).unwrap();
+            assert_eq!(root(&added), root(corpus), "{version}");
+            let borrowed = super::borrowed_form_content_xml(version);
+            assert_eq!(root(&borrowed), root(corpus), "{version}");
+            let (compiled, _) = super::form_compile_xml(&serde_json::json!({}), version).unwrap();
+            assert!(
+                compiled.contains("xmlns:pal=") == (version != "2.20"),
+                "{version}: {}",
+                root(&compiled)
+            );
         }
     }
 }
