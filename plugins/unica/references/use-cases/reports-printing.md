@@ -195,7 +195,7 @@ Do not supply a whole-schema JSON definition or write XML manually to
 bypass a missing operation.
 
 This is a fragment to merge into an existing valid `v8project.yaml`; it does
-not replace required `workPath`, `builder`, or `infobase.connection`. Preserve
+not replace `workPath`, `providers` or the infobase description. Preserve
 the existing connection and local overrides, and never initialize an existing
 project database merely to create a scaffold:
 

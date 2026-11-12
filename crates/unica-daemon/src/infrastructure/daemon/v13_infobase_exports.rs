@@ -1138,12 +1138,12 @@ impl BaseDivergence {
 
 /// Полный словарь кодов, которые раннер кладёт в `error.code`.
 ///
-/// Он закрытый: шестнадцать значений `ErrorCode` конверта раннера 0.14, одни и те же
-/// у CLI и у его MCP-поверхности. Набор существует только для стража ниже: в
+/// Он закрытый: двадцать пять значений `ErrorCode` конверта раннера 0.17, одни и те
+/// же у CLI и у его MCP-поверхности. Набор существует только для стража ниже: в
 /// продуктовом пути отображение обязано иметь запасную ветку на случай кода, которого
 /// мы ещё не знаем, поэтому сам список ему не нужен.
 #[cfg(test)]
-const RUNNER_WIRE_CODES: [&str; 16] = [
+const RUNNER_WIRE_CODES: [&str; 25] = [
     "capability_unavailable",
     "subject",
     "target",
@@ -1158,6 +1158,15 @@ const RUNNER_WIRE_CODES: [&str; 16] = [
     "timed_out",
     "workspace_busy",
     "infobase_busy",
+    "infobase_sessions",
+    "infobase_designer_busy",
+    "agent_command_abandoned",
+    "agent_limit",
+    "live_agent_off",
+    "live_agent_job",
+    "source_set_ignored_by_git",
+    "work_path_on_another_volume",
+    PLATFORM_RELEASE_MISSING,
     BaseDivergence::MOVED_AHEAD,
     BaseDivergence::UNTRACKED,
 ];
@@ -1384,12 +1393,17 @@ pub(super) fn runner_rejection(
 }
 
 /// Уточнение отказа по коду раннера, где код сам называет причину: нужной
-/// установки платформы нет. Исход — за человеком, повтор не поможет.
+/// установки платформы или живого агента нет. Исход — за человеком, повтор не
+/// поможет.
 pub(super) fn runner_code_detail(code: &str) -> Option<RefusalDetail> {
     match code {
         // Строгий выбор платформы (раннер 0.17): выпуска, который пишет формат
         // исходников, среди установок нет.
         PLATFORM_RELEASE_MISSING => Some(RefusalDetail::ProviderAbsent),
+        // Удержание живого агента (`agent hold`) Unica не вызывает; его отказы
+        // называют настройку или среду, которые правит человек: агент выключен,
+        // в этом задании невозможен или их предел исчерпан.
+        "agent_limit" | "live_agent_off" | "live_agent_job" => Some(RefusalDetail::ProviderAbsent),
         _ => None,
     }
 }
@@ -1559,9 +1573,18 @@ pub(super) fn map_runner_code(code: &str) -> RefusalCode {
         "subject" | "target" | "soon" => RefusalCode::UnsupportedOperation,
         // Значение названо верно по форме, но раннер его не принимает.
         "unsupported_value" => RefusalCode::BadValue,
-        // Рабочий каталог или файловую базу держит другая команда: занятость
-        // проходит, тот же вызов можно повторить, когда та закончит.
-        "workspace_busy" | "infobase_busy" => RefusalCode::ConcurrentChange,
+        // Рабочий каталог или файловую базу держит другая команда, чужие
+        // сеансы или чужой Конфигуратор, или ещё идёт брошенная команда агента:
+        // занятость проходит, тот же вызов можно повторить, когда та закончит.
+        "workspace_busy"
+        | "infobase_busy"
+        | "infobase_sessions"
+        | "infobase_designer_busy"
+        | "agent_command_abandoned" => RefusalCode::ConcurrentChange,
+        // Рабочее пространство так не годится: набор скрыт правилом git или
+        // `workPath` лежит на другом томе, чем набор. Правит человек, текст
+        // отказа раннера называет, что именно.
+        "source_set_ignored_by_git" | "work_path_on_another_volume" => RefusalCode::InvalidState,
         "invalid_argument" => RefusalCode::BadValue,
         // Раннер отдал негодный результат: аргументы вызывающего тут не виноваты.
         "invalid_output" => RefusalCode::InvalidResult,
@@ -1960,6 +1983,9 @@ mod tests {
             ("capability_unavailable", Outcome::GoElsewhere),
             ("workspace_busy", Outcome::RetryAsIs),
             ("infobase_busy", Outcome::RetryAsIs),
+            ("infobase_sessions", Outcome::RetryAsIs),
+            ("work_path_on_another_volume", Outcome::NeedsHuman),
+            ("source_set_ignored_by_git", Outcome::NeedsHuman),
             ("non_fast_forward", Outcome::NeedsHuman),
             ("untracked_base", Outcome::NeedsHuman),
             ("timed_out", Outcome::RetryAsIs),
@@ -1968,6 +1994,23 @@ mod tests {
             ("cancelled", Outcome::DeadEnd),
         ] {
             assert_eq!(map_runner_code(code).outcome(), expected, "{code}");
+        }
+        // Нужной установки платформы или живого агента нет: отказ уточнён.
+        for code in [
+            "platform_release_missing",
+            "agent_limit",
+            "live_agent_off",
+            "live_agent_job",
+        ] {
+            let refused = runner_rejection(None, code, "m");
+            assert_eq!(
+                refused.diagnostics[0]["code"], "provider_unavailable",
+                "{code}"
+            );
+            assert_eq!(
+                refused.diagnostics[0]["detailCode"], "provider_absent",
+                "{code}"
+            );
         }
     }
 
