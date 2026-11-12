@@ -53,7 +53,7 @@ use rmcp::service::{NotificationContext, RequestContext, ServerInitializeError};
 use rmcp::transport::Transport;
 use rmcp::{RoleServer, ServerHandler, ServiceExt};
 use serde_json::{Map, Value};
-use server::UnicaServer;
+use server::{AnsweredTask, UnicaServer};
 use std::collections::HashSet;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
@@ -98,24 +98,6 @@ enum ChosenOutcome {
         refusal: CallToolResult,
         choice: Box<unica_execution_contract::invocation::HumanChoice>,
     },
-}
-
-/// What a person's answer to the question of a Task made of it.
-#[derive(Clone)]
-pub(crate) enum AnsweredTask {
-    /// The answer runs into a further question about the same call; it is
-    /// the `asked`-th of the call.
-    Asks {
-        choice: Box<unica_execution_contract::invocation::HumanChoice>,
-        refusal: Box<CallToolResult>,
-        asked: usize,
-    },
-    /// The chosen calls ended with this result.
-    Completed(Box<CallToolResult>),
-    /// The chosen call continues as this Task.
-    Follows(String),
-    /// Nobody chose: the stored result stands.
-    Declined,
 }
 
 enum SurfaceToolOutcome {
@@ -1212,9 +1194,7 @@ impl ServerHandler for UnicaServer {
                 None => detailed,
             },
             Some(AnsweredTask::Declined) => detailed,
-            Some(AnsweredTask::Asks { choice, .. }) => {
-                human_choice::task_asking(detailed, &choice)
-            }
+            Some(AnsweredTask::Asks { choice, .. }) => human_choice::task_asking(detailed, &choice),
             Some(AnsweredTask::Completed(result)) => {
                 human_choice::task_completed(detailed, &result)
                     .map_err(crate::task_projection::projection_error)?
@@ -1262,7 +1242,9 @@ impl ServerHandler for UnicaServer {
                 Some(choice) => {
                     let budget = client_response_budget(&context, &context.meta.0 .0);
                     let refusal = crate::task_projection::call_tool_result(
-                        snapshot.completed_result().expect("a question comes with a result"),
+                        snapshot
+                            .completed_result()
+                            .expect("a question comes with a result"),
                         budget,
                     )
                     .map_err(crate::task_projection::projection_error)?;
@@ -1309,9 +1291,7 @@ impl ServerHandler for UnicaServer {
                 refusal: Box::new(next),
                 asked: asked + 1,
             },
-            ChosenOutcome::Asks { refusal: next, .. } => {
-                AnsweredTask::Completed(Box::new(next))
-            }
+            ChosenOutcome::Asks { refusal: next, .. } => AnsweredTask::Completed(Box::new(next)),
         };
         self.remember_answer(&request.task_id, answered);
         Ok(())
