@@ -35,6 +35,11 @@ CORPUS_ROOT = REPO_ROOT / "tests" / "fixtures" / "formats" / "platform_xml"
 SEED = CORPUS_ROOT / "2.20" / "empty_configuration" / "src"
 # Which platform line writes each format, as the format family's table says.
 LINES = {"2.20": "8.3.27", "2.21": "8.5.1", "2.22": "8.5.4"}
+# Other installed builds of a line whose export was compared with the one
+# taken: the format of the line is the same, the XDTO differs as written.
+OTHER_BUILDS = {
+    "2.22": "8.5.4.1878: the same export format; its XDTO lacks the add-in architectures arm64 and e2k (managed-application/core, virtual-resource-system) and the package goskey/core",
+}
 COMMAND_TIMEOUT_SECONDS = 600
 MODULE_NAME = "XdtoExport"
 
@@ -221,6 +226,7 @@ def publish(export_format: str, build: str, schemas: List[Tuple[str, str, bytes]
         "packages": len(packages),
         "schemas": len(schemas),
         "sha256": digest.hexdigest(),
+        "otherBuilds": OTHER_BUILDS.get(export_format),
         "files": dict(sorted(packages.items())),
     }
     (target / "manifest.json").write_text(

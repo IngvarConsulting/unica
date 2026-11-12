@@ -5,6 +5,7 @@
   "packages": 58,
   "schemas": 58,
   "sha256": "445013bc348f1d9b24d3a25e296984c52fa2b4caae3ff1373b3f3f6033172512",
+  "otherBuilds": "8.5.4.1878: the same export format; its XDTO lacks the add-in architectures arm64 and e2k (managed-application/core, virtual-resource-system) and the package goskey/core",
   "files": {
     "http://v8.1c.ru/8.1/data-composition-system/appearance-template": [
       "v8.1c.ru_8.1_data-composition-system_appearance-template.xsd"

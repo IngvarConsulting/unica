@@ -5,6 +5,7 @@
   "packages": 56,
   "schemas": 56,
   "sha256": "06a2fbb5580fa245f39ad973936e769149ccf9624a732aeb745caff7463fd402",
+  "otherBuilds": null,
   "files": {
     "http://v8.1c.ru/8.1/data-composition-system/appearance-template": [
       "v8.1c.ru_8.1_data-composition-system_appearance-template.xsd"
