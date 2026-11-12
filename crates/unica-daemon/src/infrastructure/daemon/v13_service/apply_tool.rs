@@ -280,7 +280,9 @@ impl CanonicalV13ReadService {
                     (None, None) if error.support_state_unreadable() => Some(
                         support_choice::remove_support_choice(&source_set, invocation.arguments()),
                     ),
-                    (None, None) => None,
+                    (None, None) => error.format_reexport().map(|reexport| {
+                        support_choice::format_choice(reexport, invocation.arguments())
+                    }),
                 };
                 if let Some(choice) = choice {
                     refusal.human_choice = Some(Box::new(choice));

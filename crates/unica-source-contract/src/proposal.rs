@@ -91,6 +91,23 @@ pub struct ReadOnlyMode {
     pub property: String,
 }
 
+/// A source set whose export format keeps it from an edit: the person may
+/// re-export it in a writable format (INV.SOURCE.WRITABLE-PROFILE).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FormatReexport {
+    pub source_set: String,
+    pub kind: FormatReexportKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FormatReexportKind {
+    /// The set is exported in `actual`, older than every writable format.
+    Old { actual: String },
+    /// The roots of the set record two writable formats: the set's own and
+    /// `other`.
+    Mixed { set_format: String, other: String },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApplyPlanError {
     kind: ApplyPlanErrorKind,
@@ -108,6 +125,8 @@ pub struct ApplyPlanError {
     /// The vendor-support marker cannot be read: the person may take the
     /// configuration off support entirely.
     support_state_unreadable: bool,
+    /// The export format that keeps the set from an edit.
+    format_reexport: Option<Box<FormatReexport>>,
 }
 
 impl ApplyPlanError {
@@ -121,6 +140,7 @@ impl ApplyPlanError {
             support_lock: None,
             read_only_mode: None,
             support_state_unreadable: false,
+            format_reexport: None,
         }
     }
 
@@ -131,6 +151,15 @@ impl ApplyPlanError {
 
     pub fn support_state_unreadable(&self) -> bool {
         self.support_state_unreadable
+    }
+
+    pub fn with_format_reexport(mut self, reexport: FormatReexport) -> Self {
+        self.format_reexport = Some(Box::new(reexport));
+        self
+    }
+
+    pub fn format_reexport(&self) -> Option<&FormatReexport> {
+        self.format_reexport.as_deref()
     }
 
     pub fn with_read_only_mode(mut self, mode: ReadOnlyMode) -> Self {

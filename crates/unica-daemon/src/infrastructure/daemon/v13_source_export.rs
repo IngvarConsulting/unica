@@ -19,7 +19,7 @@ use super::protocol::InvocationRequest;
 use super::v13_infobase_exports::{
     digest_optional_workspace_file, digest_required_workspace_file, missing_runner_rejection,
     note_runner_warnings, resolve_bundled_runner, runner_envelope_refusal, runner_rejection,
-    runner_start_rejection, valid_1c_identifier, RunnerAbsence, CONFIG_NAME, LOCAL_CONFIG_NAME,
+    runner_start_rejection, valid_1c_identifier, CONFIG_NAME, LOCAL_CONFIG_NAME,
     RUNNER_OUTPUT_LIMIT,
 };
 use super::v13_source_set_name::{source_set_name_guidance, valid_source_set_name};
@@ -35,13 +35,18 @@ use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use unica_execution_contract::invocation::{DomainResult, HumanChoice, SafeIdentityHash};
+use unica_execution_contract::invocation::{
+    DomainResult, HumanChoice, SafeIdentityHash, HUMAN_REEXPORT_KEY,
+};
 use unica_redaction::redactor;
 use unica_refusal::RefusalCode;
 use unica_work_control::cancellation::CancellationToken;
 use unica_workspace::paths::normalize_path_identity;
 
 pub(super) const OPERATION: &str = "pull";
+/// Перевыгрузка набора в записываемом формате через временную файловую базу
+/// (INV.SOURCE.WRITABLE-PROFILE).
+pub(super) const REEXPORT: &str = "source.reexport";
 /// Имя команды раннера и в командной строке, и в конверте: с 0.12 раннер
 /// называет её словом словаря.
 const RUNNER_COMMAND: &str = "pull";
@@ -89,6 +94,8 @@ pub(super) struct PreparedSourceExport {
     arguments: ExportArguments,
     dry_run: bool,
     context: WorkspaceContext,
+    /// The writable export format of a re-export; `None` for `pull`.
+    reexport: Option<&'static str>,
 }
 
 pub(super) enum Preparation {
@@ -98,15 +105,111 @@ pub(super) enum Preparation {
 }
 
 pub(super) fn prepare(request: &InvocationRequest) -> Preparation {
-    if request.tool() != ToolIdentity::Run
-        || request.arguments().get("op").and_then(Value::as_str) != Some(OPERATION)
-    {
+    if request.tool() != ToolIdentity::Run {
         return Preparation::NotApplicable;
     }
-    match PreparedSourceExport::parse(request) {
+    let parsed = match request.arguments().get("op").and_then(Value::as_str) {
+        Some(OPERATION) => PreparedSourceExport::parse(request),
+        Some(REEXPORT) => PreparedSourceExport::parse_reexport(request),
+        _ => return Preparation::NotApplicable,
+    };
+    match parsed {
         Ok(prepared) => Preparation::Ready(Arc::new(prepared)),
         Err(result) => Preparation::Rejected(Box::new(result)),
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The runner a re-export of this thread runs on, for tests of the calls
+    /// that contain one: no bundled runner is resolved.
+    static REEXPORT_TEST_RUNNER: std::cell::RefCell<
+        Option<(Arc<dyn ProcessRunner + Send + Sync>, BundledTool)>,
+    > = const { std::cell::RefCell::new(None) };
+}
+
+/// Runs `run` with re-exports of this thread on `runner` started as `tool`.
+#[cfg(test)]
+pub(super) fn with_reexport_test_runner<T>(
+    runner: Arc<dyn ProcessRunner + Send + Sync>,
+    tool: BundledTool,
+    run: impl FnOnce() -> T,
+) -> T {
+    REEXPORT_TEST_RUNNER.with(|slot| *slot.borrow_mut() = Some((runner, tool)));
+    let result = run();
+    REEXPORT_TEST_RUNNER.with(|slot| *slot.borrow_mut() = None);
+    result
+}
+
+pub(super) enum ReexportBeforeApply {
+    NotApplicable,
+    Rejected(Box<DomainResult>),
+    /// The re-export and the same `unica.apply` without the mark.
+    Ready(Arc<PreparedSourceExport>, InvocationRequest),
+}
+
+/// `unica.apply` that carries a person's choice to re-export a set before the
+/// edit ([`HUMAN_REEXPORT_KEY`]): the set is re-exported first, and then the
+/// same edit runs, both in this one call (INV.SOURCE.WRITABLE-PROFILE). Only
+/// the door sets the mark, from the answer to the question about the set's
+/// format; that answer is the person's consent to replace the files of the
+/// set, so the re-export asks nothing more.
+pub(super) fn prepare_reexport_before_apply(request: &InvocationRequest) -> ReexportBeforeApply {
+    if request.tool() != ToolIdentity::Apply {
+        return ReexportBeforeApply::NotApplicable;
+    }
+    let Some(mark) = request.arguments().get(HUMAN_REEXPORT_KEY) else {
+        return ReexportBeforeApply::NotApplicable;
+    };
+    let reexport = match mark.as_object() {
+        Some(mark)
+            if mark.len() == 2
+                && mark.get("sourceSet").is_some_and(Value::is_string)
+                && mark.get("format").is_some_and(Value::is_string) =>
+        {
+            mark.clone()
+        }
+        _ => {
+            return ReexportBeforeApply::Rejected(Box::new(DomainResult::canonical_rejection(
+                None,
+                RefusalCode::BadValue,
+                format!("{HUMAN_REEXPORT_KEY} names the source set and the format of a re-export"),
+            )))
+        }
+    };
+    let run = request.with_call(
+        ToolIdentity::Run,
+        json!({"op": REEXPORT, "args": reexport, "dryRun": false})
+            .as_object()
+            .cloned()
+            .expect("an object"),
+    );
+    match PreparedSourceExport::parse_reexport_with(&run, false) {
+        Ok(prepared) => {
+            let mut apply = request.arguments().clone();
+            apply.remove(HUMAN_REEXPORT_KEY);
+            ReexportBeforeApply::Ready(
+                Arc::new(prepared),
+                request.with_call(ToolIdentity::Apply, apply),
+            )
+        }
+        Err(result) => ReexportBeforeApply::Rejected(Box::new(result)),
+    }
+}
+
+/// The `unica.apply` call a format question offers: the same edit with the
+/// person's choice to re-export `source_set` in `format` first.
+pub(super) fn reexport_before_apply_call(
+    call: &Map<String, Value>,
+    source_set: &str,
+    format: &str,
+) -> Map<String, Value> {
+    let mut call = unica_execution_contract::invocation::without_confirmation(call);
+    call.insert(
+        HUMAN_REEXPORT_KEY.into(),
+        json!({"sourceSet": source_set, "format": format}),
+    );
+    call
 }
 
 impl PreparedSourceExport {
@@ -125,13 +228,7 @@ impl PreparedSourceExport {
                     "pull requires dryRun: true to preview or dryRun: false to execute",
                 )
             })?;
-        let context =
-            discover_workspace(Some(PathBuf::from(request.workspace_hint()))).map_err(|error| {
-                reject(
-                    RefusalCode::ProviderUnavailable,
-                    format!("workspace discovery failed: {error}"),
-                )
-            })?;
+        let context = discover_context(request)?;
         if let Some(unknown) = args
             .keys()
             .find(|k| !["sourceSet", "extension", "force"].contains(&k.as_str()))
@@ -161,27 +258,102 @@ impl PreparedSourceExport {
         // не может. Превью и чистый набор не спрашивают. Набор, который по
         // проекту не определить, разбирает исполнение своим отказом.
         if force && !dry_run {
-            if let Some((source_set, directory)) =
-                selected_source_set(&context.workspace_root, &arguments)
-            {
-                let local =
-                    local_changes(&SystemProcessRunner, &directory, &CancellationToken::new())
-                        .map_err(|(code, error)| reject(code, error))?;
-                if let Some(question) = pull_unsaved_question(&source_set, local) {
-                    if !HumanChoice::is_confirmed(&question, "unica.run", request.arguments()) {
-                        return Err(pull_unsaved_unconfirmed(
-                            &source_set,
-                            local,
-                            request.arguments(),
-                        ));
-                    }
-                }
-            }
+            require_replacement_consent(&context.workspace_root, &arguments, request)?;
         }
         Ok(Self {
             arguments,
             dry_run,
             context,
+            reexport: None,
+        })
+    }
+
+    /// `source.reexport {sourceSet, format}`: the declared set and one of the
+    /// writable export formats. The set is replaced in full, so an execution
+    /// asks the person like a full `pull` does.
+    fn parse_reexport(request: &InvocationRequest) -> Result<Self, DomainResult> {
+        Self::parse_reexport_with(request, true)
+    }
+
+    /// As [`Self::parse_reexport`]; `ask` is false when the person already
+    /// chose to replace the set, in the answer about its format.
+    fn parse_reexport_with(request: &InvocationRequest, ask: bool) -> Result<Self, DomainResult> {
+        let reject = |code, message: String| reject_reexport(code, message);
+        let arguments = request.arguments();
+        let args = arguments
+            .get("args")
+            .and_then(Value::as_object)
+            .ok_or_else(|| reject(RefusalCode::BadValue, "run args must be an object".into()))?;
+        let dry_run = arguments
+            .get("dryRun")
+            .and_then(Value::as_bool)
+            .ok_or_else(|| {
+                reject(
+                    RefusalCode::BadValue,
+                    format!(
+                        "{REEXPORT} requires dryRun: true to preview or dryRun: false to execute"
+                    ),
+                )
+            })?;
+        if let Some(unknown) = args
+            .keys()
+            .find(|key| !["sourceSet", "format"].contains(&key.as_str()))
+        {
+            return Err(reject(
+                RefusalCode::BadValue,
+                format!("{REEXPORT} does not accept `{unknown}`; the closed args are sourceSet and format"),
+            ));
+        }
+        let source_set = match args.get("sourceSet") {
+            Some(Value::String(value)) if valid_source_set_name(value) => value.clone(),
+            _ => {
+                return Err(reject(
+                    RefusalCode::BadValue,
+                    source_set_name_guidance(REEXPORT),
+                ))
+            }
+        };
+        let format = args
+            .get("format")
+            .and_then(Value::as_str)
+            .and_then(|format| {
+                unica_source_designer::format_profile::WRITABLE_EXPORT_FORMATS
+                    .into_iter()
+                    .find(|writable| *writable == format)
+            })
+            .ok_or_else(|| {
+                reject(
+                    RefusalCode::BadValue,
+                    format!(
+                        "{REEXPORT} format must be one of the writable export formats: {}",
+                        unica_source_designer::format_profile::writable_export_formats_text()
+                    ),
+                )
+            })?;
+        let context = discover_context(request).map_err(|mut refusal| {
+            refusal.at = Some(REEXPORT.to_string());
+            refusal
+        })?;
+        // The runner exports an extension only by its name, which is its set's.
+        let extension = is_extension_set(&context.workspace_root.join(CONFIG_NAME), &source_set)
+            .map_err(|mut refusal| {
+                refusal.at = Some(REEXPORT.to_string());
+                refusal
+            })?
+            .then(|| source_set.clone());
+        let arguments = ExportArguments {
+            mode: ExportMode::Full,
+            source_set: Some(source_set),
+            extension,
+        };
+        if !dry_run && ask {
+            require_replacement_consent(&context.workspace_root, &arguments, request)?;
+        }
+        Ok(Self {
+            arguments,
+            dry_run,
+            context,
+            reexport: Some(format),
         })
     }
 
@@ -202,6 +374,21 @@ impl PreparedSourceExport {
     }
 
     pub(super) fn execute(&self, cancellation: CancellationToken) -> DomainResult {
+        // A re-export runs on a config of its own: the working copy is not
+        // prepared, its files stay as they are.
+        if self.reexport.is_some() {
+            #[cfg(test)]
+            if let Some((runner, tool)) = REEXPORT_TEST_RUNNER.with(|slot| slot.borrow().clone()) {
+                return execute_with_resolved_runner(
+                    self,
+                    runner.as_ref(),
+                    cancellation,
+                    &tool,
+                    "test",
+                );
+            }
+            return execute_with_runner(self, &PinnedRunner, cancellation);
+        }
         super::runner::with_bundled_runner(
             &self.context.workspace_root,
             &self.context.cwd,
@@ -210,6 +397,16 @@ impl PreparedSourceExport {
             |runner, cancellation| execute_with_runner(self, runner, cancellation),
         )
     }
+}
+
+/// The workspace of a `pull` or a re-export, as the call names it.
+fn discover_context(request: &InvocationRequest) -> Result<WorkspaceContext, DomainResult> {
+    discover_workspace(Some(PathBuf::from(request.workspace_hint()))).map_err(|error| {
+        reject(
+            RefusalCode::ProviderUnavailable,
+            format!("workspace discovery failed: {error}"),
+        )
+    })
 }
 
 fn parse_export_arguments(args: &Map<String, Value>) -> Result<ExportArguments, DomainResult> {
@@ -383,7 +580,14 @@ fn execute_with_runner(
 ) -> DomainResult {
     let runner_tool = match resolve_bundled_runner(&prepared.context.cwd) {
         Ok(resolved) => resolved,
-        Err(message) => return reject_absent_runner(message),
+        Err(absence) => {
+            let at = if prepared.reexport.is_some() {
+                REEXPORT
+            } else {
+                OPERATION
+            };
+            return missing_runner_rejection(Some(at.to_string()), absence);
+        }
     };
     let tool = runner_tool.tool;
     let runner_version = runner_tool.version;
@@ -442,6 +646,9 @@ fn execute_with_resolved_runner(
 ) -> DomainResult {
     if cancellation.is_cancelled() {
         return reject(RefusalCode::Cancelled, "pull cancelled before preparation");
+    }
+    if let Some(format) = prepared.reexport {
+        return execute_reexport(prepared, format, runner, &cancellation, tool);
     }
     let inputs = match capture_inputs(prepared) {
         Ok(value) => value,
@@ -621,6 +828,309 @@ fn selected_source_set(root: &Path, arguments: &ExportArguments) -> Option<(Stri
     let name = entry.get("name").and_then(serde_yaml::Value::as_str)?;
     let path = entry.get("path").and_then(serde_yaml::Value::as_str)?;
     Some((name.to_string(), root.join(path)))
+}
+
+/// Согласие человека на замену набора целиком — полным `pull` или
+/// перевыгрузкой: с несохранёнными правками или без git вызов идёт только с
+/// ним (INV.RUNTIME.DESTRUCTIVE-CONFIRMATION).
+fn require_replacement_consent(
+    root: &Path,
+    arguments: &ExportArguments,
+    request: &InvocationRequest,
+) -> Result<(), DomainResult> {
+    let Some((source_set, directory)) = selected_source_set(root, arguments) else {
+        return Ok(());
+    };
+    let local = local_changes(&SystemProcessRunner, &directory, &CancellationToken::new())
+        .map_err(|(code, error)| reject(code, error))?;
+    match pull_unsaved_question(&source_set, local) {
+        Some(question)
+            if !HumanChoice::is_confirmed(&question, "unica.run", request.arguments()) =>
+        {
+            Err(pull_unsaved_unconfirmed(
+                &source_set,
+                local,
+                request.arguments(),
+            ))
+        }
+        _ => Ok(()),
+    }
+}
+
+/// Перевыгрузка набора: приватная конфигурация раннера с временной файловой
+/// базой и линией платформы целевого формата, затем `infobase create`, для
+/// расширения — его загрузка, и полная выгрузка в каталог набора. Временный
+/// каталог удаляется и при успехе, и при отказе; база и файлы проекта не
+/// меняются.
+fn execute_reexport(
+    prepared: &PreparedSourceExport,
+    format: &'static str,
+    runner: &dyn ProcessRunner,
+    cancellation: &CancellationToken,
+    tool: &BundledTool,
+) -> DomainResult {
+    if let Err(mut refusal) = capture_inputs(prepared) {
+        refusal.at = Some(REEXPORT.to_string());
+        return refusal;
+    }
+    let Ok(root) = normalize_path_identity(&prepared.context.workspace_root) else {
+        return reject_reexport(
+            RefusalCode::InvalidState,
+            format!("{REEXPORT} could not resolve the workspace root"),
+        );
+    };
+    let source_set = prepared
+        .arguments
+        .source_set
+        .clone()
+        .expect("a re-export names its set");
+    let Some((_, directory)) = selected_source_set(&root, &prepared.arguments) else {
+        return reject_reexport(
+            RefusalCode::InvalidState,
+            format!("{CONFIG_NAME} declares no directory of the source set `{source_set}`"),
+        );
+    };
+    let platform_line =
+        unica_source_designer::format_profile::platform_line_for_export_format(format)
+            .expect("a writable export format has a platform line");
+    let target = path_text(
+        unica_workspace::paths::host_path_relative_to(&directory, &root)
+            .as_deref()
+            .unwrap_or(&directory),
+    );
+    if prepared.dry_run {
+        let local = match local_changes(&SystemProcessRunner, &directory, cancellation) {
+            Ok(local) => local,
+            Err((code, error)) => return reject_reexport(code, error),
+        };
+        let mut result = DomainResult::success(format!(
+            "{REEXPORT} plans to replace the source set `{source_set}` with its export in format {format} through a temporary file infobase"
+        ));
+        result.data = Some(json!({
+            "op": REEXPORT,
+            "dryRun": true,
+            "plan": {
+                "sourceSet": source_set,
+                "format": format,
+                "platformLine": platform_line,
+                "target": target,
+                "replacesLocalSources": true,
+                "localChanges": local.public(),
+                "temporaryInfobase": true,
+                "requiresPlatform": true,
+            },
+        }));
+        result.next.push(json!({
+            "tool": "unica.run",
+            "args": {"op": REEXPORT, "args": {"sourceSet": source_set, "format": format}, "dryRun": false},
+            "reason": "execute the re-export with the current arguments",
+        }));
+        return result;
+    }
+    let work = root
+        .join(".build")
+        .join("unica")
+        .join("reexport")
+        .join(uuid::Uuid::new_v4().simple().to_string());
+    // The runner holds its own lock on the private config; the set itself
+    // belongs to the working copy, so its runner lock is held throughout.
+    let _lock = match super::runner::lock_working_copy(&root, cancellation) {
+        Ok(lock) => lock,
+        Err(unica_workspace::runner_lock::RunnerLockFailure::Cancelled) => {
+            return reject_reexport(
+                RefusalCode::Cancelled,
+                format!("{REEXPORT} cancelled while waiting for the working copy runner lock"),
+            )
+        }
+        Err(unica_workspace::runner_lock::RunnerLockFailure::InvalidState(message)) => {
+            return reject_reexport(RefusalCode::InvalidState, message)
+        }
+    };
+    let outcome = run_reexport(
+        prepared,
+        &root,
+        &work,
+        platform_line,
+        runner,
+        cancellation,
+        tool,
+    );
+    // The temporary infobase and config are the re-export's own: nothing of
+    // them stays. A platform process may still hold its files for a moment
+    // after the runner answered, so the removal is repeated before it gives up.
+    let kept = remove_reexport_directory(&work).err();
+    let mut result = match outcome {
+        Ok(()) => {
+            let mut result = DomainResult::success(format!(
+                "{REEXPORT} replaced the source set `{source_set}` with its export in format {format}; the project infobase and files are unchanged"
+            ));
+            result.data = Some(json!({
+                "op": REEXPORT,
+                "dryRun": false,
+                "sourceSet": source_set,
+                "format": format,
+                "platformLine": platform_line,
+                "target": target,
+                "performedMode": ExportMode::Full.public_name(),
+            }));
+            result
+                .changed
+                .push(json!({"path": target, "kind": "replaced"}));
+            result
+        }
+        Err(refusal) => refusal,
+    };
+    if let Some(error) = kept {
+        let location = path_text(
+            unica_workspace::paths::host_path_relative_to(&work, &root)
+                .as_deref()
+                .unwrap_or(&work),
+        );
+        result.warnings.push(json!({
+            "code": REEXPORT_TEMPORARY_KEPT,
+            "message": format!(
+                "{REEXPORT} could not remove its temporary infobase {location} ({error}); the project infobase and files are unchanged; delete the directory when no 1C process holds it"
+            ),
+            "path": location,
+        }));
+    }
+    result
+}
+
+/// Code of the warning that the temporary directory of a re-export stays.
+const REEXPORT_TEMPORARY_KEPT: &str = "reexport_temporary_kept";
+
+/// Removes the re-export's own directory. A platform process may hold its
+/// files for a moment after the runner answered, so the removal is repeated
+/// for a few seconds; an absent directory is already removed.
+fn remove_reexport_directory(work: &Path) -> std::io::Result<()> {
+    let mut attempt = 0;
+    loop {
+        match std::fs::remove_dir_all(work) {
+            Ok(()) => return Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) if attempt >= 9 => return Err(error),
+            Err(_) => {
+                attempt += 1;
+                std::thread::sleep(std::time::Duration::from_millis(500));
+            }
+        }
+    }
+}
+
+fn run_reexport(
+    prepared: &PreparedSourceExport,
+    root: &Path,
+    work: &Path,
+    platform_line: &str,
+    runner: &dyn ProcessRunner,
+    cancellation: &CancellationToken,
+    tool: &BundledTool,
+) -> Result<(), DomainResult> {
+    let source_set = prepared
+        .arguments
+        .source_set
+        .clone()
+        .expect("a re-export names its set");
+    let config = super::runner::write_reexport_config(root, work, platform_line)
+        .map_err(|error| reject_reexport(RefusalCode::InvalidState, redactor(&error)))?;
+    let step = |command: &str, arguments: Vec<String>| -> Result<Value, DomainResult> {
+        if cancellation.is_cancelled() {
+            return Err(reject_reexport(
+                RefusalCode::Cancelled,
+                format!("{REEXPORT} cancelled before `{command}`"),
+            ));
+        }
+        let mut args = vec![
+            "--config".to_string(),
+            config.display().to_string(),
+            "--json-message".to_string(),
+        ];
+        args.extend(arguments);
+        let output = runner
+            .run_staged(&ProcessCommand {
+                program: tool.program.clone(),
+                args,
+                cwd: root.to_path_buf(),
+                env: Vec::new(),
+                env_remove: Vec::new(),
+                capture_limits: Some((RUNNER_OUTPUT_LIMIT, RUNNER_OUTPUT_LIMIT)),
+                timeout: None,
+                cancellation: cancellation.clone(),
+            })
+            .map_err(|error| {
+                runner_start_rejection(Some(REEXPORT.to_string()), &error, &tool.program)
+            })?;
+        reexport_step_result(command, output)
+    };
+    step("infobase create", vec!["infobase".into(), "create".into()])?;
+    if let Some(extension) = &prepared.arguments.extension {
+        step(
+            "push",
+            vec!["push".into(), extension.clone(), "--force".into()],
+        )?;
+    }
+    let mut pull = vec![
+        "pull".to_string(),
+        source_set.clone(),
+        "--force".to_string(),
+    ];
+    if let Some(extension) = &prepared.arguments.extension {
+        pull.extend(["--extension".to_string(), extension.clone()]);
+    }
+    step("pull", pull).map_err(|mut refusal| {
+        // The export may have started writing the set before it failed.
+        refusal.next.push(json!({
+            "tool": "unica.run",
+            "args": {"op": REEXPORT, "args": {"sourceSet": source_set, "format": prepared.reexport}, "dryRun": false},
+            "reason": "the source set may hold a partial export: repeat the re-export",
+        }));
+        refusal
+    })?;
+    Ok(())
+}
+
+/// One runner step of a re-export: its own command, an `ok` answer.
+fn reexport_step_result(command: &str, output: ProcessOutput) -> Result<Value, DomainResult> {
+    if output.cancelled {
+        return Err(reject_reexport(
+            RefusalCode::Cancelled,
+            "v8-runner was cancelled".into(),
+        ));
+    }
+    if output.stdout_truncated || output.stdout_had_invalid_utf8 {
+        return Err(reject_reexport(
+            RefusalCode::InvalidResult,
+            "v8-runner returned an unreadable or oversized JSON result".into(),
+        ));
+    }
+    let envelope: Value = serde_json::from_str(&output.stdout).map_err(|_| {
+        reject_reexport(
+            RefusalCode::InvalidResult,
+            "v8-runner returned an invalid JSON result".into(),
+        )
+    })?;
+    if envelope["command"] != command {
+        return Err(reject_reexport(
+            RefusalCode::InvalidResult,
+            format!("v8-runner returned a result for another command than `{command}`"),
+        ));
+    }
+    if !output.status_success || envelope["ok"] != true {
+        let code = envelope["error"]["code"]
+            .as_str()
+            .unwrap_or("provider_failed");
+        let message = envelope["error"]["message"]
+            .as_str()
+            .map(redactor)
+            .unwrap_or_else(|| "v8-runner failed without a typed message".to_string());
+        return Err(runner_rejection(Some(REEXPORT.to_string()), code, message));
+    }
+    Ok(envelope)
+}
+
+fn reject_reexport(code: RefusalCode, message: String) -> DomainResult {
+    DomainResult::canonical_rejection(Some(REEXPORT.to_string()), code, message)
 }
 
 /// Код вопроса о полной выгрузке поверх несохранённых правок.
@@ -1114,10 +1624,6 @@ fn reject(code: RefusalCode, message: impl Into<String>) -> DomainResult {
 
 /// Поставляемого раннера нет: маршрут один на все операции `run`, уточнение
 /// `provider_absent` назначает общий помощник.
-fn reject_absent_runner(absence: RunnerAbsence) -> DomainResult {
-    missing_runner_rejection(Some(OPERATION.to_string()), absence)
-}
-
 #[cfg(test)]
 mod medium_tests {
     use super::super::v13_infobase_exports::map_runner_code;
@@ -1207,6 +1713,7 @@ mod medium_tests {
                 cache_root: root.join(".build/unica"),
                 workspace_epoch: 1,
             },
+            reexport: None,
         }
     }
 
@@ -2326,5 +2833,194 @@ mod medium_tests {
             choice.data,
             Some(json!({"sourceSet": "main", "underGit": false}))
         );
+    }
+
+    fn reexport_request(root: &Path, args: Value, dry_run: bool) -> InvocationRequest {
+        pull_request(
+            root,
+            json!({"op": REEXPORT, "args": args, "dryRun": dry_run}),
+        )
+    }
+
+    fn ok(command: &str) -> ProcessOutput {
+        process(json!({"command": command, "ok": true, "data": {}}), true)
+    }
+
+    fn reexport_work_dirs(root: &Path) -> usize {
+        fs::read_dir(root.join(".build/unica/reexport"))
+            .map(|entries| entries.count())
+            .unwrap_or(0)
+    }
+
+    /// `source.reexport` takes a declared set and one of the writable export
+    /// formats; an extension set is exported by its own name.
+    /// rule: INV.SOURCE.WRITABLE-PROFILE
+    #[test]
+    fn a_reexport_takes_a_set_and_a_writable_format() {
+        let root = workspace();
+        for (args, refused) in [
+            (
+                json!({"sourceSet": "main", "format": "2.19"}),
+                "writable export formats",
+            ),
+            (
+                json!({"sourceSet": "main", "format": "2.20", "force": true}),
+                "does not accept `force`",
+            ),
+            (json!({"format": "2.20"}), "sourceSet"),
+        ] {
+            let refusal =
+                PreparedSourceExport::parse_reexport(&reexport_request(root.path(), args, true))
+                    .expect_err("refused");
+            assert_eq!(refusal.diagnostics[0]["code"], "bad_value", "{refusal:?}");
+            assert!(
+                refusal.summary.contains(refused)
+                    || serde_json::to_string(&refusal).unwrap().contains(refused),
+                "{refusal:?}"
+            );
+        }
+        let extension = PreparedSourceExport::parse_reexport(&reexport_request(
+            root.path(),
+            json!({"sourceSet": "Sales", "format": "2.21"}),
+            true,
+        ))
+        .unwrap();
+        assert_eq!(extension.reexport, Some("2.21"));
+        assert_eq!(extension.arguments.extension.as_deref(), Some("Sales"));
+        assert_eq!(extension.arguments.mode, ExportMode::Full);
+    }
+
+    /// The preview names the set, the format, its platform line and that the
+    /// files of the set are replaced; it starts no runner.
+    /// rule: INV.SOURCE.WRITABLE-PROFILE
+    #[test]
+    fn a_reexport_preview_plans_without_the_runner() {
+        let root = workspace();
+        let prepared = PreparedSourceExport::parse_reexport(&reexport_request(
+            root.path(),
+            json!({"sourceSet": "main", "format": "2.22"}),
+            true,
+        ))
+        .unwrap();
+        let runner = SequenceRunner::new(Vec::new());
+        let result = run(root.path(), &prepared, &runner);
+        assert!(result.ok, "{result:?}");
+        assert_eq!(runner.call_count(), 0);
+        let plan = &result.data.as_ref().unwrap()["plan"];
+        assert_eq!(plan["sourceSet"], "main");
+        assert_eq!(plan["format"], "2.22");
+        assert_eq!(plan["platformLine"], "8.5.4");
+        assert_eq!(plan["target"], "main");
+        assert_eq!(plan["replacesLocalSources"], true);
+        assert_eq!(result.next[0]["args"]["dryRun"], false);
+    }
+
+    /// The execution loads the set into a temporary file infobase of its own
+    /// config and exports it back in full; an extension is loaded into it
+    /// first. The temporary directory goes away, and the project files the
+    /// runner was given are the private ones.
+    /// rule: INV.SOURCE.WRITABLE-PROFILE
+    #[test]
+    fn a_reexport_runs_through_a_temporary_infobase_and_leaves_nothing_behind() {
+        let root = committed_workspace();
+        let configuration = PreparedSourceExport::parse_reexport(&reexport_request(
+            root.path(),
+            json!({"sourceSet": "main", "format": "2.20"}),
+            false,
+        ))
+        .expect("a clean set is not asked");
+        let runner = SequenceRunner::new(vec![ok("infobase create"), ok("pull")]);
+        let result = run(root.path(), &configuration, &runner);
+        assert!(result.ok, "{result:?}");
+        assert_eq!(runner.call_count(), 2);
+        let create = runner.joined_args(0);
+        assert!(
+            create.contains("reexport") && create.ends_with("infobase create"),
+            "{create}"
+        );
+        assert!(
+            !create.contains(&format!(
+                "{}{}",
+                root.path().display(),
+                std::path::MAIN_SEPARATOR_STR.to_string() + "v8project.yaml"
+            )),
+            "{create}"
+        );
+        assert!(
+            runner.joined_args(1).ends_with("pull main --force"),
+            "{}",
+            runner.joined_args(1)
+        );
+        assert_eq!(reexport_work_dirs(root.path()), 0);
+        assert_eq!(result.data.as_ref().unwrap()["format"], "2.20");
+
+        let extension = PreparedSourceExport::parse_reexport(&reexport_request(
+            root.path(),
+            json!({"sourceSet": "Sales", "format": "2.20"}),
+            false,
+        ))
+        .unwrap();
+        let runner = SequenceRunner::new(vec![ok("infobase create"), ok("push"), ok("pull")]);
+        assert!(run(root.path(), &extension, &runner).ok);
+        assert!(runner.joined_args(1).ends_with("push Sales --force"));
+        assert!(runner
+            .joined_args(2)
+            .ends_with("pull Sales --force --extension Sales"));
+
+        // A failed export may have written part of the set: the refusal offers
+        // the re-export again, and the temporary directory still goes away.
+        let runner = SequenceRunner::new(vec![
+            ok("infobase create"),
+            process(
+                json!({"command": "pull", "ok": false, "error": {"code": "platform_failure", "message": "dump failed"}}),
+                false,
+            ),
+        ]);
+        let refused = run(root.path(), &configuration, &runner);
+        assert!(!refused.ok);
+        assert_eq!(refused.next[0]["args"]["op"], REEXPORT);
+        assert_eq!(reexport_work_dirs(root.path()), 0);
+    }
+
+    /// Like a full `pull`, an executing re-export over unsaved changes asks the
+    /// person first.
+    /// rule: INV.RUNTIME.DESTRUCTIVE-CONFIRMATION
+    #[test]
+    fn a_reexport_over_unsaved_changes_asks_the_person() {
+        let root = committed_workspace();
+        fs::write(root.path().join("main/CommonModules/A.bsl"), "edited").unwrap();
+        let refused = PreparedSourceExport::parse_reexport(&reexport_request(
+            root.path(),
+            json!({"sourceSet": "main", "format": "2.20"}),
+            false,
+        ))
+        .expect_err("unsaved changes need a confirmation");
+        let choice = refused.human_choice.as_deref().expect("a confirmation");
+        assert_eq!(choice.code, "source.pull_unsaved");
+        let confirmed = choice.options[0].arguments.clone();
+        PreparedSourceExport::parse_reexport(&pull_request(root.path(), Value::Object(confirmed)))
+            .expect("the confirmed re-export is executed");
+
+        // The re-export a format question offers before the edit carries
+        // that consent already.
+        let apply = InvocationRequest::new(
+            ToolIdentity::Apply,
+            json!({
+                "at": "main:Catalog.Products",
+                "ops": [],
+                HUMAN_REEXPORT_KEY: {"sourceSet": "main", "format": "2.20"},
+            }),
+            root.path().display().to_string(),
+            7_000,
+        )
+        .unwrap();
+        let ReexportBeforeApply::Ready(reexport, edit) = prepare_reexport_before_apply(&apply)
+        else {
+            panic!("the offered re-export asks nothing more");
+        };
+        assert!(!reexport.is_preview());
+        assert_eq!(edit.tool(), ToolIdentity::Apply);
+        assert!(!edit.arguments().contains_key(HUMAN_REEXPORT_KEY));
+        assert_eq!(edit.arguments()["at"], "main:Catalog.Products");
     }
 }

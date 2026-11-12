@@ -280,6 +280,17 @@ pub struct HumanChoiceCall {
 /// it from the model is refused before it reaches the daemon.
 pub const HUMAN_CONFIRMATION_KEY: &str = "humanConfirmation";
 
+/// Argument of `unica.apply` that carries a person's choice to re-export a
+/// source set before the same edit: `{"sourceSet": <set>, "format": <format>}`.
+/// Like [`HUMAN_CONFIRMATION_KEY`], only the door sets it, copying the option
+/// it offered; a call that arrives with it from the model is refused before it
+/// reaches the daemon.
+pub const HUMAN_REEXPORT_KEY: &str = "humanReexport";
+
+/// The arguments only a person's answer sets: a model call carrying any of
+/// them is refused at the door.
+pub const HUMAN_ANSWER_KEYS: [&str; 2] = [HUMAN_CONFIRMATION_KEY, HUMAN_REEXPORT_KEY];
+
 impl HumanChoice {
     /// The question confirming `arguments` of `tool` before it runs: its one
     /// option is the same call carrying the confirmation of this very
