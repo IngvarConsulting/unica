@@ -120,6 +120,28 @@ pub(super) fn prepare(request: &InvocationRequest) -> Preparation {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// The runner a re-export of this thread runs on, for tests of the calls
+    /// that contain one: no bundled runner is resolved.
+    static REEXPORT_TEST_RUNNER: std::cell::RefCell<
+        Option<(Arc<dyn ProcessRunner + Send + Sync>, BundledTool)>,
+    > = const { std::cell::RefCell::new(None) };
+}
+
+/// Runs `run` with re-exports of this thread on `runner` started as `tool`.
+#[cfg(test)]
+pub(super) fn with_reexport_test_runner<T>(
+    runner: Arc<dyn ProcessRunner + Send + Sync>,
+    tool: BundledTool,
+    run: impl FnOnce() -> T,
+) -> T {
+    REEXPORT_TEST_RUNNER.with(|slot| *slot.borrow_mut() = Some((runner, tool)));
+    let result = run();
+    REEXPORT_TEST_RUNNER.with(|slot| *slot.borrow_mut() = None);
+    result
+}
+
 pub(super) enum ReexportBeforeApply {
     NotApplicable,
     Rejected(Box<DomainResult>),
@@ -365,6 +387,16 @@ impl PreparedSourceExport {
         // A re-export runs on a config of its own: the working copy is not
         // prepared, its files stay as they are.
         if self.reexport.is_some() {
+            #[cfg(test)]
+            if let Some((runner, tool)) = REEXPORT_TEST_RUNNER.with(|slot| slot.borrow().clone()) {
+                return execute_with_resolved_runner(
+                    self,
+                    runner.as_ref(),
+                    cancellation,
+                    &tool,
+                    "test",
+                );
+            }
             return execute_with_runner(self, &PinnedRunner, cancellation);
         }
         super::runner::with_bundled_runner(

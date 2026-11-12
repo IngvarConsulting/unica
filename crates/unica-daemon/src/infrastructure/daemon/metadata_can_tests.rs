@@ -1176,6 +1176,140 @@ fn canonical_apply_refuses_inexact_export_format_and_offers_platform_reexport() 
     }
 }
 
+/// The answer to the format question is one call that re-exports the set and
+/// makes the same edit: the re-export runs, through the runner, before the
+/// edit is admitted, the edit plans on the files the re-export wrote, and the
+/// answer names both. The temporary directory of the re-export goes away.
+/// rule: INV.SOURCE.WRITABLE-PROFILE
+/// rule: INV.MCP.HUMAN-CHOICE
+#[test]
+fn a_format_answer_reexports_the_set_and_makes_the_same_edit_in_one_task() {
+    use unica_process::runner::{ProcessCommand, ProcessOutput, ProcessRunner};
+
+    /// The runner of a re-export: `pull` writes the set in the writable
+    /// format, as the platform of that line does.
+    struct ReexportingRunner {
+        descriptor: PathBuf,
+        commands: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl ProcessRunner for ReexportingRunner {
+        fn run(&self, command: &ProcessCommand) -> Result<ProcessOutput, String> {
+            let args = command.args.join(" ");
+            self.commands.lock().unwrap().push(args.clone());
+            let name = if args.ends_with("infobase create") {
+                "infobase create"
+            } else if args.contains(" pull main --force") {
+                rewrite(&self.descriptor, r#"version="2.19""#, r#"version="2.20""#);
+                "pull"
+            } else {
+                return Err(format!("unexpected runner call: {args}"));
+            };
+            Ok(ProcessOutput {
+                status_success: true,
+                status: "exit status: 0".to_string(),
+                stdout: json!({"command": name, "ok": true, "data": {}}).to_string(),
+                stderr: String::new(),
+                timed_out: false,
+                cancelled: false,
+                stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
+            })
+        }
+    }
+
+    let args = json!({"at":"main:Catalog.Products","ops":[{"op":"attribute.add","args":{"items":[{"name":"Extra"}]}}]});
+    let runtime = runtime();
+    let fixture = Fixture::blank();
+    publish(
+        &runtime,
+        &fixture,
+        json!({"at":"main:Configuration","ops":[{"op":"object.create","args":{"values":{"kind":"Catalog","name":"Products"}}}]}),
+    );
+    let descriptor = fixture.source.join("Catalogs/Products.xml");
+    rewrite(&descriptor, r#"version="2.20""#, r#"version="2.19""#);
+
+    let refused = call(&runtime, &fixture, ToolIdentity::Apply, args.clone());
+    let choice = refused.human_choice.as_deref().expect("a question");
+    assert_eq!(choice.code, "source.format_old");
+    let answer = Value::Object(choice.options[0].arguments.clone());
+
+    let runner = Arc::new(ReexportingRunner {
+        descriptor: descriptor.clone(),
+        commands: std::sync::Mutex::new(Vec::new()),
+    });
+    let tool = unica_artifact_delivery::engine::BundledTool {
+        program: fixture.workspace.join("v8-runner"),
+        warnings: Vec::new(),
+        missing: None,
+    };
+    let answered = super::super::v13_source_export::with_reexport_test_runner(
+        Arc::clone(&runner) as Arc<dyn ProcessRunner + Send + Sync>,
+        tool,
+        || {
+            let request = InvocationRequest::new(
+                ToolIdentity::Apply,
+                answer,
+                fixture.workspace.to_string_lossy(),
+                7_000,
+            )
+            .unwrap();
+            let Ok(bound) = runtime.bind(request) else {
+                panic!("the answer is admitted");
+            };
+            let prepared = bound.prepare().expect("the answer is prepared");
+            assert!(matches!(
+                prepared.execution_class(),
+                ExecutionClass::KnownLong(_)
+            ));
+            prepared
+                .execute(CancellationToken::new())
+                .expect("the Task ends with a result")
+        },
+    );
+
+    assert!(answered.ok, "{answered:?}");
+    let commands = runner.commands.lock().unwrap().clone();
+    assert_eq!(commands.len(), 2, "{commands:?}");
+    assert!(commands[0].ends_with("infobase create"), "{commands:?}");
+    assert!(commands[1].ends_with("pull main --force"), "{commands:?}");
+    assert!(
+        std::fs::read_to_string(&descriptor)
+            .unwrap()
+            .contains(r#"version="2.20""#),
+        "the set is re-exported in the writable format"
+    );
+    assert!(
+        answered
+            .data
+            .as_ref()
+            .is_some_and(|data| data.get("executionToken").is_some()),
+        "the same edit is planned on the re-exported set: {answered:?}"
+    );
+    assert!(
+        answered
+            .summary
+            .starts_with("source.reexport replaced the source set `main`"),
+        "{}",
+        answered.summary
+    );
+    assert!(
+        answered
+            .changed
+            .iter()
+            .any(|change| change["kind"] == "replaced"),
+        "{answered:?}"
+    );
+    assert!(
+        std::fs::read_dir(fixture.workspace.join(".build/unica/reexport"))
+            .map(|entries| entries.count() == 0)
+            .unwrap_or(true),
+        "nothing of the re-export stays"
+    );
+}
+
 // --- Канонические `check` и `view` сообщают диагностики читателя
 // метаданных — немоделируемый тип, битый квалификатор и голый `FillValue`.
 // Прежде их доказывал только путь v0.12.
