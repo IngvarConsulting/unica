@@ -9,4 +9,14 @@ pub(crate) static DIALECT: MetadataDialect = MetadataDialect {
     kind_declares_child_objects: super::v2_20::kind_declares_child_objects,
     boolean_properties: super::v2_20::boolean_properties,
     line_compatibility_modes: &["Version8_5_1"],
+    added_child_properties,
 };
+
+/// The all_kinds corpus of 2.21 closes the properties of every enumeration
+/// value with its color, `auto` by default.
+pub(crate) fn added_child_properties(child_type: &str) -> &'static [&'static str] {
+    match child_type {
+        "EnumValue" => &["<Color>auto</Color>"],
+        _ => &[],
+    }
+}

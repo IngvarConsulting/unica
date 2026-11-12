@@ -22,3 +22,6 @@ roxmltree.workspace = true
 [package.metadata.unica]
 component = "codec"
 file-io = "none"
+inputs = [
+    "tests/fixtures/formats/platform_xml/2.21/all_kinds",
+]

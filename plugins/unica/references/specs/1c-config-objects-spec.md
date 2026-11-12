@@ -1906,7 +1906,52 @@ XML-элемент: `<WebService>`. Трёхуровневая вложенно�
 </TabularSection>
 ```
 
-### 26.2. Стабильные элементы
+### 26.2. Версия 2.20 → 2.21 → 2.22
+
+Платформа 8.5.1 пишет формат 2.21, платформа 8.5.4 — формат 2.22. Набор
+остаётся в своём формате: новые файлы правки получают формат набора и всё,
+что этот формат добавляет.
+
+**Изменения в версии 2.21 (платформа 8.5.1):**
+
+1. **Пространство имён палитры** объявлено в корне каждого `<MetaDataObject>`,
+   по алфавиту префиксов — между `lf` и `style`:
+
+```xml
+<MetaDataObject ... xmlns:lf="http://v8.1c.ru/8.2/managed-application/logform" xmlns:pal="http://v8.1c.ru/8.1/data/ui/colors/palette" xmlns:style="http://v8.1c.ru/8.1/data/ui/style" ... version="2.21">
+```
+
+2. **Color** — последнее свойство значения перечисления:
+
+```xml
+<EnumValue uuid="...">
+    <Properties>
+        <Name>Значение</Name>
+        <Synonym/>
+        <Comment/>
+        <Color>auto</Color>
+    </Properties>
+</EnumValue>
+```
+
+3. **UseInInterfaceCompatibilityMode** — в описании формы сразу после
+   `UsePurposes`, по умолчанию `Any`.
+
+4. **Свойства конфигурации** (`Configuration.xml`): формы
+   `AuxiliaryReportForm`, `AuxiliaryReportVariantForm`,
+   `AuxiliaryReportSettingsForm`, `AuxiliaryDynamicListSettingsForm`,
+   `AuxiliaryDataHistoryChangeHistoryForm`, `AuxiliaryDataHistoryVersionDataForm`,
+   `AuxiliaryDataHistoryVersionDifferencesForm`,
+   `AuxiliaryCollaborationSystemUsersChoiceForm`;
+   `MainClientApplicationWindowInterfaceVariant`, `ClientApplicationTheme`,
+   `ClientApplicationWindowsOpenVariant`, `Caption`, `ShortCaption`,
+   `Version85InterfaceMigrationMode`. Режим совместимости расширений —
+   `Version8_5_1`.
+
+**Изменения в версии 2.22 (платформа 8.5.4):** свойство конфигурации
+`MainAnalyticsSystemSchema`; режим совместимости расширений `Version8_5_4`.
+
+### 26.3. Стабильные элементы
 
 Между версиями 8.3.20 → 8.3.24 → 8.3.27:
 - Структура каталогов **без изменений**

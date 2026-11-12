@@ -95,5 +95,39 @@ pub fn role_metadata_xml(
     lines.push("        </Properties>".to_string());
     lines.push("    </Role>".to_string());
     lines.push("</MetaDataObject>".to_string());
-    format!("{}\n", lines.join("\n"))
+    unica_source_designer::layout::declare_format_namespaces(
+        format!("{}\n", lines.join("\n")),
+        format_version,
+    )
+}
+
+#[cfg(test)]
+mod format_tests {
+    /// The namespaces a root declares, as roxmltree reads them.
+    fn declarations(xml: &str) -> Vec<(Option<String>, String)> {
+        let document = roxmltree::Document::parse(xml.trim_start_matches('\u{feff}')).unwrap();
+        let mut declared: Vec<_> = document
+            .root_element()
+            .namespaces()
+            .map(|namespace| {
+                (
+                    namespace.name().map(str::to_owned),
+                    namespace.uri().to_owned(),
+                )
+            })
+            .collect();
+        declared.sort();
+        declared
+    }
+
+    /// rule: INV.SOURCE.WRITABLE-PROFILE
+    #[test]
+    fn a_new_role_declares_the_namespaces_of_its_set_format() {
+        let corpus = include_str!(
+            "../../../tests/fixtures/formats/platform_xml/2.21/all_kinds/src/Roles/SalesReader.xml"
+        );
+        let role = |version| super::role_metadata_xml("Role", "Role", "", version, "uuid", "ru");
+        assert_eq!(declarations(&role("2.21")), declarations(corpus));
+        assert!(!role("2.20").contains("xmlns:pal"));
+    }
 }

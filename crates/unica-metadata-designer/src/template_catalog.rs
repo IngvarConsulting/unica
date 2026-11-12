@@ -690,7 +690,7 @@ pub fn emit_meta_catalog_xml(
     lines.push("<?xml version=\"1.0\" encoding=\"UTF-8\"?>".to_string());
     lines.push(format!(
         "<MetaDataObject {} version=\"{}\">",
-        meta_xmlns_decl(),
+        meta_xmlns_decl(format_version),
         unica_xml_format::text::escape_xml(format_version)
     ));
     lines.push(format!("\t<Catalog uuid=\"{obj_uuid}\">"));
@@ -735,7 +735,7 @@ pub fn minimal_metadata_xml<G>(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>".to_string(),
         format!(
             "<MetaDataObject {} version=\"{}\">",
-            meta_xmlns_decl(),
+            meta_xmlns_decl(format_version),
             unica_xml_format::text::escape_xml(format_version)
         ),
         format!("\t<{object_type} uuid=\"{obj_uuid}\">"),
@@ -858,8 +858,9 @@ pub fn minimal_metadata_xml_for_tests(
     )
 }
 
-pub fn meta_xmlns_decl() -> &'static str {
-    "xmlns=\"http://v8.1c.ru/8.3/MDClasses\" xmlns:app=\"http://v8.1c.ru/8.2/managed-application/core\" xmlns:cfg=\"http://v8.1c.ru/8.1/data/enterprise/current-config\" xmlns:cmi=\"http://v8.1c.ru/8.2/managed-application/cmi\" xmlns:ent=\"http://v8.1c.ru/8.1/data/enterprise\" xmlns:lf=\"http://v8.1c.ru/8.2/managed-application/logform\" xmlns:style=\"http://v8.1c.ru/8.1/data/ui/style\" xmlns:sys=\"http://v8.1c.ru/8.1/data/ui/fonts/system\" xmlns:v8=\"http://v8.1c.ru/8.1/data/core\" xmlns:v8ui=\"http://v8.1c.ru/8.1/data/ui\" xmlns:web=\"http://v8.1c.ru/8.1/data/ui/colors/web\" xmlns:win=\"http://v8.1c.ru/8.1/data/ui/colors/windows\" xmlns:xen=\"http://v8.1c.ru/8.3/xcf/enums\" xmlns:xpr=\"http://v8.1c.ru/8.3/xcf/predef\" xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\""
+/// The namespace declarations of an MDClasses root in `format_version`.
+pub fn meta_xmlns_decl(format_version: &str) -> String {
+    unica_source_designer::layout::full_md_namespace_declarations(format_version)
 }
 
 pub fn metadata_generated_types_8_3_27(

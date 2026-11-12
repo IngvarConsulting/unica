@@ -1802,6 +1802,21 @@ pub fn apply_typed_properties(
     xml_text.replace_range(range.start + prefix_len..range.end + prefix_len, &text);
     Ok(())
 }
+/// Closes the `Properties` of a new `tag` child with the properties the
+/// export format of its object adds (INV.SOURCE.WRITABLE-PROFILE).
+fn append_format_child_properties(object_xml: &str, tag: &str, lines: &mut Vec<String>) {
+    let version = crate::dialect::root_version::of_set(object_xml);
+    let added = (crate::dialect::for_version(Some(&version)).added_child_properties)(tag);
+    let Some(close) = lines.iter().position(|line| line.trim() == "</Properties>") else {
+        return;
+    };
+    let line = &lines[close];
+    let indent = format!("{}\t", &line[..line.len() - line.trim_start().len()]);
+    for (offset, property) in added.iter().enumerate() {
+        lines.insert(close + offset, format!("{indent}{property}"));
+    }
+}
+
 pub fn collection_tag(collection: MetaCollection) -> &'static str {
     match collection {
         MetaCollection::Attributes => "Attribute",
@@ -1857,6 +1872,7 @@ where
     ) {
         inherit_register_field_settings(xml_text, tag, &mut lines);
     }
+    append_format_child_properties(xml_text, tag, &mut lines);
     let lines = lines;
     let result = match scope {
         Some(section) => meta_edit_insert_tabular_child_object_with_position(
@@ -3830,7 +3846,7 @@ pub fn typed_child_descriptor_image(
 pub fn wrap_standalone_descriptor(child_xml: &str, version: &str) -> Vec<u8> {
     format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<MetaDataObject {} version=\"{}\">\n{}\n</MetaDataObject>",
-        crate::template_catalog::meta_xmlns_decl(),
+        crate::template_catalog::meta_xmlns_decl(version),
         version,
         child_xml
     )
@@ -4462,5 +4478,147 @@ mod prefixed_property_writer_tests {
             missing.is_empty(),
             "no owner template exercises {missing:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod export_format_tests {
+    use unica_metadata::{MetaCollection, MetaElementDefinition, MetadataKind};
+
+    const MD: &str = "http://v8.1c.ru/8.3/MDClasses";
+
+    macro_rules! corpus {
+        ($version:literal, $path:literal) => {
+            include_str!(concat!(
+                "../../../tests/fixtures/formats/platform_xml/",
+                $version,
+                "/all_kinds/src/",
+                $path
+            ))
+        };
+    }
+
+    fn document(xml: &str) -> roxmltree::Document<'_> {
+        roxmltree::Document::parse(xml.trim_start_matches('\u{feff}')).unwrap()
+    }
+
+    fn declarations(xml: &str) -> Vec<(Option<String>, String)> {
+        let document = document(xml);
+        let mut declared: Vec<_> = document
+            .root_element()
+            .namespaces()
+            .map(|namespace| {
+                (
+                    namespace.name().map(str::to_owned),
+                    namespace.uri().to_owned(),
+                )
+            })
+            .collect();
+        declared.sort();
+        declared
+    }
+
+    /// The property names of every enumeration value, in document order.
+    fn enum_value_properties(xml: &str) -> Vec<Vec<String>> {
+        document(xml)
+            .descendants()
+            .filter(|node| node.has_tag_name((MD, "EnumValue")))
+            .map(|value| {
+                let properties = value
+                    .children()
+                    .find(|node| node.has_tag_name((MD, "Properties")))
+                    .unwrap();
+                properties
+                    .children()
+                    .filter(|node| node.is_element())
+                    .map(|node| node.tag_name().name().to_owned())
+                    .collect()
+            })
+            .collect()
+    }
+
+    fn add_enum_value(enum_xml: &str) -> String {
+        let mut xml = enum_xml.trim_start_matches('\u{feff}').to_owned();
+        let element = MetaElementDefinition {
+            name: "Новое".into(),
+            synonym: None,
+            comment: None,
+            r#type: None,
+            required: None,
+            fill_value: None,
+            attributes: vec![],
+            position: None,
+            template_type: None,
+            indexing: None,
+            master: None,
+            main_filter: None,
+            deny_incomplete_values: None,
+        };
+        let mut next_uuid = || "00000000-0000-4000-8000-000000000001".to_owned();
+        super::add_typed_element(
+            &mut xml,
+            "Enum",
+            "СпособыУстановкиКурсаВалюты",
+            MetaCollection::EnumValues,
+            None,
+            &element,
+            "ru",
+            &mut next_uuid,
+        )
+        .unwrap();
+        xml
+    }
+
+    /// rule: INV.SOURCE.WRITABLE-PROFILE
+    #[test]
+    fn a_new_enumeration_value_has_the_properties_of_its_set_format() {
+        for corpus in [
+            corpus!("2.20", "Enums/СпособыУстановкиКурсаВалюты.xml"),
+            corpus!("2.21", "Enums/СпособыУстановкиКурсаВалюты.xml"),
+            corpus!("2.22", "Enums/СпособыУстановкиКурсаВалюты.xml"),
+        ] {
+            let values = enum_value_properties(&add_enum_value(corpus));
+            let (new, existing) = values.split_last().unwrap();
+            assert_eq!(new, &existing[0], "{values:?}");
+        }
+        let written = add_enum_value(corpus!("2.21", "Enums/СпособыУстановкиКурсаВалюты.xml"));
+        assert!(written.contains(
+            "\t\t\t\t\t<Comment/>\r\n\t\t\t\t\t<Color>auto</Color>\r\n\t\t\t\t</Properties>"
+        ));
+    }
+
+    /// rule: INV.SOURCE.WRITABLE-PROFILE
+    #[test]
+    fn a_new_object_declares_the_namespaces_of_its_set_format() {
+        for (version, corpus) in [
+            ("2.20", corpus!("2.20", "Catalogs/Валюты.xml")),
+            ("2.21", corpus!("2.21", "Catalogs/Валюты.xml")),
+            ("2.22", corpus!("2.22", "Catalogs/Валюты.xml")),
+        ] {
+            let context = crate::template_catalog::MinimalTemplateContext::<()> {
+                chart_of_accounts: None,
+                chart_of_calculation_types: None,
+                task: None,
+                registered_documents: Vec::new(),
+                method_name: None,
+                event_source: None,
+                event_handler: None,
+                dependencies: Vec::new(),
+                language: "ru".to_owned(),
+            };
+            let (catalog, _) = crate::template_catalog::minimal_metadata_xml(
+                MetadataKind::Catalog,
+                "New",
+                version,
+                &context,
+                || "00000000-0000-4000-8000-000000000002".to_owned(),
+            )
+            .unwrap();
+            assert_eq!(declarations(&catalog), declarations(corpus), "{version}");
+            let wrapped =
+                String::from_utf8(super::wrap_standalone_descriptor("<Template/>", version))
+                    .unwrap();
+            assert_eq!(declarations(&wrapped), declarations(corpus), "{version}");
+        }
     }
 }

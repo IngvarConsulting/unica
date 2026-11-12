@@ -383,7 +383,7 @@ pub fn cfe_borrow_object_xml(
     lines.push("<?xml version=\"1.0\" encoding=\"UTF-8\"?>".to_string());
     lines.push(format!(
         "<MetaDataObject {} version=\"{}\">",
-        cfe_borrow_xmlns_decl(),
+        cfe_borrow_xmlns_decl(format_version),
         unica_xml_format::text::escape_xml(format_version)
     ));
     lines.push(format!(
@@ -1291,7 +1291,7 @@ pub fn cfe_borrow_form_metadata_xml(
 ) -> String {
     format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<MetaDataObject {} version=\"{}\">\n\t<Form uuid=\"{}\">\n\t\t<InternalInfo>\n\t\t\t<xr:PropertyState>\n\t\t\t\t<xr:Property>Form</xr:Property>\n\t\t\t\t<xr:State>Extended</xr:State>\n\t\t\t</xr:PropertyState>\n\t\t</InternalInfo>\n\t\t<Properties>\n\t\t\t<ObjectBelonging>Adopted</ObjectBelonging>\n\t\t\t<Name>{}</Name>\n\t\t\t<Comment/>\n\t\t\t<ExtendedConfigurationObject>{}</ExtendedConfigurationObject>\n\t\t\t<FormType>Managed</FormType>\n\t\t</Properties>\n\t</Form>\n</MetaDataObject>",
-        cfe_borrow_xmlns_decl(),
+        cfe_borrow_xmlns_decl(format_version),
         unica_xml_format::text::escape_xml(format_version),
         unica_xml_format::text::escape_xml(wrapper_uuid),
         unica_xml_format::text::escape_xml(form_name),
@@ -2280,8 +2280,9 @@ pub fn cfe_borrow_register_form(
     Ok(())
 }
 
-pub fn cfe_borrow_xmlns_decl() -> &'static str {
-    "xmlns=\"http://v8.1c.ru/8.3/MDClasses\" xmlns:app=\"http://v8.1c.ru/8.2/managed-application/core\" xmlns:cfg=\"http://v8.1c.ru/8.1/data/enterprise/current-config\" xmlns:cmi=\"http://v8.1c.ru/8.2/managed-application/cmi\" xmlns:ent=\"http://v8.1c.ru/8.1/data/enterprise\" xmlns:lf=\"http://v8.1c.ru/8.2/managed-application/logform\" xmlns:style=\"http://v8.1c.ru/8.1/data/ui/style\" xmlns:sys=\"http://v8.1c.ru/8.1/data/ui/fonts/system\" xmlns:v8=\"http://v8.1c.ru/8.1/data/core\" xmlns:v8ui=\"http://v8.1c.ru/8.1/data/ui\" xmlns:web=\"http://v8.1c.ru/8.1/data/ui/colors/web\" xmlns:win=\"http://v8.1c.ru/8.1/data/ui/colors/windows\" xmlns:xen=\"http://v8.1c.ru/8.3/xcf/enums\" xmlns:xpr=\"http://v8.1c.ru/8.3/xcf/predef\" xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\""
+/// The namespace declarations of a borrowed object's root in `format_version`.
+pub fn cfe_borrow_xmlns_decl(format_version: &str) -> String {
+    unica_source_designer::layout::full_md_namespace_declarations(format_version)
 }
 
 pub fn cfe_borrow_existing_metadata_uuid(

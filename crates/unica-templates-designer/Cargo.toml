@@ -28,6 +28,7 @@ version-literal-baseline = 1
 component = "codec"
 file-io = "none"
 inputs = [
+    "tests/fixtures/formats/platform_xml/2.21/all_kinds",
     "tests/fixtures/acceptance/workspace-mxl/src/cf/Reports/F06Report/Templates",
     "tests/fixtures/formats/platform_xml/2.20/mxl",
     "tests/fixtures/unica_mcp_script_parity/bsp/mxl",

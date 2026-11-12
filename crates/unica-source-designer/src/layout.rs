@@ -319,8 +319,81 @@ pub fn external_attached_resource_relative(
         .join(resource))
 }
 
-pub fn full_md_namespace_declarations() -> &'static str {
-    "xmlns=\"http://v8.1c.ru/8.3/MDClasses\" xmlns:app=\"http://v8.1c.ru/8.2/managed-application/core\" xmlns:cfg=\"http://v8.1c.ru/8.1/data/enterprise/current-config\" xmlns:cmi=\"http://v8.1c.ru/8.2/managed-application/cmi\" xmlns:ent=\"http://v8.1c.ru/8.1/data/enterprise\" xmlns:lf=\"http://v8.1c.ru/8.2/managed-application/logform\" xmlns:style=\"http://v8.1c.ru/8.1/data/ui/style\" xmlns:sys=\"http://v8.1c.ru/8.1/data/ui/fonts/system\" xmlns:v8=\"http://v8.1c.ru/8.1/data/core\" xmlns:v8ui=\"http://v8.1c.ru/8.1/data/ui\" xmlns:web=\"http://v8.1c.ru/8.1/data/ui/colors/web\" xmlns:win=\"http://v8.1c.ru/8.1/data/ui/colors/windows\" xmlns:xen=\"http://v8.1c.ru/8.3/xcf/enums\" xmlns:xpr=\"http://v8.1c.ru/8.3/xcf/predef\" xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\""
+/// The namespace declarations of an MDClasses root in `export_format`.
+pub fn full_md_namespace_declarations(export_format: &str) -> String {
+    format_namespace_declarations(FULL_MD_NAMESPACE_DECLARATIONS, export_format)
+}
+
+const FULL_MD_NAMESPACE_DECLARATIONS: &str =
+    "xmlns=\"http://v8.1c.ru/8.3/MDClasses\" xmlns:app=\"http://v8.1c.ru/8.2/managed-application/core\" xmlns:cfg=\"http://v8.1c.ru/8.1/data/enterprise/current-config\" xmlns:cmi=\"http://v8.1c.ru/8.2/managed-application/cmi\" xmlns:ent=\"http://v8.1c.ru/8.1/data/enterprise\" xmlns:lf=\"http://v8.1c.ru/8.2/managed-application/logform\" xmlns:style=\"http://v8.1c.ru/8.1/data/ui/style\" xmlns:sys=\"http://v8.1c.ru/8.1/data/ui/fonts/system\" xmlns:v8=\"http://v8.1c.ru/8.1/data/core\" xmlns:v8ui=\"http://v8.1c.ru/8.1/data/ui\" xmlns:web=\"http://v8.1c.ru/8.1/data/ui/colors/web\" xmlns:win=\"http://v8.1c.ru/8.1/data/ui/colors/windows\" xmlns:xen=\"http://v8.1c.ru/8.3/xcf/enums\" xmlns:xpr=\"http://v8.1c.ru/8.3/xcf/predef\" xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\"";
+
+const PALETTE_DECLARATION: &str = "xmlns:pal=\"http://v8.1c.ru/8.1/data/ui/colors/palette\"";
+
+/// `document` whose root declares the namespaces its export format declares
+/// (see [`format_namespace_declarations`]).
+pub fn declare_format_namespaces(mut document: String, export_format: &str) -> String {
+    let Some((start, end)) = root_start_tag(&document) else {
+        return document;
+    };
+    if let Some((at, text)) = palette_insertion(&document[start..end], export_format) {
+        document.insert_str(start + at, &text);
+    }
+    document
+}
+
+/// Root namespace `declarations` as `export_format` writes them. From 2.21
+/// the palette namespace `pal` joins the prefixed declarations in prefix
+/// order, as the platform writes them, with the separator of the declaration
+/// it precedes. Declarations that have it already, that have no prefixed
+/// declaration, and those of an older format are returned as they are.
+pub fn format_namespace_declarations(declarations: &str, export_format: &str) -> String {
+    let mut text = declarations.to_owned();
+    if let Some((at, insertion)) = palette_insertion(declarations, export_format) {
+        text.insert_str(at, &insertion);
+    }
+    text
+}
+
+fn palette_insertion(tag: &str, export_format: &str) -> Option<(usize, String)> {
+    if !crate::format_profile::declares_palette_namespace(export_format)
+        || tag.contains("xmlns:pal=")
+    {
+        return None;
+    }
+    let declarations: Vec<(usize, &str)> = tag
+        .match_indices("xmlns:")
+        .map(|(at, _)| {
+            let prefix = &tag[at + "xmlns:".len()..];
+            (at, &prefix[..prefix.find('=').unwrap_or(prefix.len())])
+        })
+        .collect();
+    let &(last, _) = declarations.last()?;
+    match declarations.iter().find(|(_, prefix)| *prefix > "pal") {
+        Some(&(at, _)) => {
+            let separator = &tag[tag[..at].trim_end().len()..at];
+            Some((at, format!("{PALETTE_DECLARATION}{separator}")))
+        }
+        None => {
+            let value_start = last + tag[last..].find('"')? + 1;
+            let value_end = value_start + tag[value_start..].find('"')? + 1;
+            Some((value_end, format!(" {PALETTE_DECLARATION}")))
+        }
+    }
+}
+
+/// The byte range of the root element's start tag, without `<` and `>`.
+fn root_start_tag(document: &str) -> Option<(usize, usize)> {
+    let mut from = 0;
+    loop {
+        let open = from + document[from..].find('<')?;
+        let next = document[open + 1..].chars().next()?;
+        if next == '?' || next == '!' {
+            from = open + 1 + document[open + 1..].find('>')? + 1;
+            continue;
+        }
+        let close = open + document[open..].find('>')?;
+        return Some((open + 1, close));
+    }
 }
 
 pub fn template_add_object_type_folders() -> &'static [&'static str] {
@@ -369,6 +442,82 @@ pub fn role_read_layout(rights_path: &Path) -> RoleReadLayout {
         role_dir_name,
         metadata_path,
         configuration_path,
+    }
+}
+
+#[cfg(test)]
+mod format_namespace_tests {
+    use super::declare_format_namespaces;
+
+    macro_rules! corpus {
+        ($version:literal, $path:literal) => {
+            include_str!(concat!(
+                "../../../tests/fixtures/formats/platform_xml/",
+                $version,
+                "/all_kinds/src/",
+                $path
+            ))
+        };
+    }
+
+    fn root_start_tag(document: &str) -> &str {
+        let (start, end) = super::root_start_tag(document).expect("a root");
+        &document[start..end]
+    }
+
+    /// rule: INV.SOURCE.WRITABLE-PROFILE
+    #[test]
+    fn a_root_declares_the_namespaces_of_its_export_format_as_the_corpus_does() {
+        // One root of each kind the 2.21 corpus extends: MDClasses, form,
+        // spreadsheet and graphical schema. The 2.20 root with the 2.21
+        // version is what a writer of 2.21 starts from.
+        for (older, newer) in [
+            (
+                corpus!("2.20", "Catalogs/Валюты.xml"),
+                corpus!("2.21", "Catalogs/Валюты.xml"),
+            ),
+            (
+                corpus!("2.20", "Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml"),
+                corpus!("2.21", "Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml"),
+            ),
+            (
+                corpus!(
+                    "2.20",
+                    "DataProcessors/Обработка/Templates/Макет/Ext/Template.xml"
+                ),
+                corpus!(
+                    "2.21",
+                    "DataProcessors/Обработка/Templates/Макет/Ext/Template.xml"
+                ),
+            ),
+            (
+                corpus!("2.20", "BusinessProcesses/Approval/Ext/Flowchart.xml"),
+                corpus!("2.21", "BusinessProcesses/Approval/Ext/Flowchart.xml"),
+            ),
+        ] {
+            let seed = older.replace("version=\"2.20\"", "version=\"2.21\"");
+            let written = declare_format_namespaces(seed.clone(), "2.21");
+            assert_eq!(root_start_tag(&written), root_start_tag(newer));
+            assert_eq!(declare_format_namespaces(written.clone(), "2.22"), written);
+            assert_eq!(declare_format_namespaces(seed.clone(), "2.20"), seed);
+        }
+    }
+
+    #[test]
+    fn the_palette_declaration_keeps_the_separator_of_its_neighbour() {
+        let lines = "<?xml version=\"1.0\"?>\n<Root xmlns=\"urn:d\"\n    xmlns:lf=\"urn:lf\"\n    xmlns:style=\"urn:s\"\n    version=\"2.22\">";
+        let written = declare_format_namespaces(lines.to_owned(), "2.22");
+        assert!(
+            written.contains("xmlns:lf=\"urn:lf\"\n    xmlns:pal=\"http://v8.1c.ru/8.1/data/ui/colors/palette\"\n    xmlns:style="),
+            "{written}"
+        );
+        let last = declare_format_namespaces("<Root xmlns:a=\"urn:a\"/>".to_owned(), "2.21");
+        assert_eq!(
+            last,
+            "<Root xmlns:a=\"urn:a\" xmlns:pal=\"http://v8.1c.ru/8.1/data/ui/colors/palette\"/>"
+        );
+        let bare = "<Root version=\"2.21\"/>".to_owned();
+        assert_eq!(declare_format_namespaces(bare.clone(), "2.21"), bare);
     }
 }
 
