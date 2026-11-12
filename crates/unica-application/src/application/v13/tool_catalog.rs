@@ -214,7 +214,7 @@ impl RunOperation {
                 "required": ["output"]
             })),
             RunIntent::SourceReexport => Some(
-                json!({"type":"object","additionalProperties":false,"required":["sourceSet","format"],"properties":{"sourceSet":{"type":"string","description":"Declared source set to re-export."},"format":{"type":"string","enum":["2.20","2.21","2.22"],"description":"Writable export format: 2.20 is written by 1C 8.3.27, 2.21 by 8.5.1, 2.22 by 8.5.4; that platform line must be installed."}}}),
+                json!({"type":"object","additionalProperties":false,"required":["sourceSet","format"],"properties":{"sourceSet":{"type":"string","description":"Declared source set to re-export."},"format":{"type":"string","description":"Writable export format: 2.20 is written by 1C 8.3.27, 2.21 by 8.5.1, 2.22 by 8.5.4; that platform line must be installed. Another value is refused with the list of writable formats."}}}),
             ),
             RunIntent::SourceExport => Some(
                 json!({"type":"object","additionalProperties":false,"properties":{"sourceSet":{"type":"string","description":"Declared source set to export from the infobase; omit for the main configuration."},"extension":{"type":"string","description":"1C extension name; required for an extension source set and must match it."},"force":{"type":"boolean","description":"true exports the whole set and replaces it, including uncommitted and untracked files. Omit to let the runner choose a partial or full export by its memory of earlier exchanges."}}}),

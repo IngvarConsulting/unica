@@ -229,13 +229,7 @@ impl PreparedSourceExport {
                     "pull requires dryRun: true to preview or dryRun: false to execute",
                 )
             })?;
-        let context =
-            discover_workspace(Some(PathBuf::from(request.workspace_hint()))).map_err(|error| {
-                reject(
-                    RefusalCode::ProviderUnavailable,
-                    format!("workspace discovery failed: {error}"),
-                )
-            })?;
+        let context = discover_context(request)?;
         if let Some(unknown) = args
             .keys()
             .find(|k| !["sourceSet", "extension", "force"].contains(&k.as_str()))
@@ -337,13 +331,10 @@ impl PreparedSourceExport {
                     ),
                 )
             })?;
-        let context =
-            discover_workspace(Some(PathBuf::from(request.workspace_hint()))).map_err(|error| {
-                reject(
-                    RefusalCode::ProviderUnavailable,
-                    format!("workspace discovery failed: {error}"),
-                )
-            })?;
+        let context = discover_context(request).map_err(|mut refusal| {
+            refusal.at = Some(REEXPORT.to_string());
+            refusal
+        })?;
         // The runner exports an extension only by its name, which is its set's.
         let extension = is_extension_set(&context.workspace_root.join(CONFIG_NAME), &source_set)
             .map_err(|mut refusal| {
@@ -407,6 +398,16 @@ impl PreparedSourceExport {
             |cancellation| execute_with_runner(self, &PinnedRunner, cancellation),
         )
     }
+}
+
+/// The workspace of a `pull` or a re-export, as the call names it.
+fn discover_context(request: &InvocationRequest) -> Result<WorkspaceContext, DomainResult> {
+    discover_workspace(Some(PathBuf::from(request.workspace_hint()))).map_err(|error| {
+        reject(
+            RefusalCode::ProviderUnavailable,
+            format!("workspace discovery failed: {error}"),
+        )
+    })
 }
 
 fn parse_export_arguments(args: &Map<String, Value>) -> Result<ExportArguments, DomainResult> {
