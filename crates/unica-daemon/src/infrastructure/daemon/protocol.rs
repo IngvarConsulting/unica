@@ -113,6 +113,18 @@ impl InvocationRequest {
         self.workspace_origin.as_ref()
     }
 
+    /// The same request of `tool` with other `arguments`: the same workspace,
+    /// its origin and the response budget.
+    pub(crate) fn with_call(&self, tool: ToolIdentity, arguments: Map<String, Value>) -> Self {
+        Self {
+            tool,
+            arguments,
+            workspace_hint: self.workspace_hint.clone(),
+            workspace_origin: self.workspace_origin.clone(),
+            response_budget_ms: self.response_budget_ms,
+        }
+    }
+
     pub(crate) fn workspace_hint(&self) -> &str {
         &self.workspace_hint
     }

@@ -17,9 +17,7 @@ use rmcp::model::{
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use std::time::Duration;
-use unica_execution_contract::invocation::{
-    without_confirmation, HumanChoice, HumanChoiceOption, HUMAN_CONFIRMATION_KEY,
-};
+use unica_execution_contract::invocation::{without_confirmation, HumanChoice, HumanChoiceOption};
 
 /// Key of the question in `inputRequests` and `inputResponses`.
 pub(crate) const CHOICE_INPUT_KEY: &str = "unica.choice";
@@ -374,9 +372,13 @@ pub(crate) fn calls(option: &HumanChoiceOption) -> Vec<(&str, &Map<String, Value
         .collect()
 }
 
-/// Whether a call names the confirmation only the door may set.
-pub(crate) fn carries_confirmation(arguments: Option<&Map<String, Value>>) -> bool {
-    arguments.is_some_and(|arguments| arguments.contains_key(HUMAN_CONFIRMATION_KEY))
+/// The argument only the door may set from a person's answer — the
+/// confirmation or the re-export before an edit — that a call names.
+pub(crate) fn carried_answer_key(arguments: Option<&Map<String, Value>>) -> Option<&'static str> {
+    let arguments = arguments?;
+    unica_execution_contract::invocation::HUMAN_ANSWER_KEYS
+        .into_iter()
+        .find(|key| arguments.contains_key(*key))
 }
 
 /// How one call of a chosen answer ended.
