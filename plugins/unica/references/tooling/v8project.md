@@ -93,7 +93,20 @@ provider defaults. If the project requires a particular executor, declare it in
 Names are lowercase (`designer`, `agent`, `ibcmd`); the runner validates each
 operation/provider pair. Do not mechanically replace `builder` with one global
 provider: each operation has its own supported executors. Keep machine-specific
-overrides in `v8project.local.yaml`. Unica does not rewrite existing project files.
+overrides in `v8project.local.yaml`. Unica does not rewrite existing project files;
+the only key it adds is `tools.platform.version` (see
+[strict platform resolution](#strict-platform-resolution)).
+
+The pinned runner names keys as follows: the infobase is `infobases.origin` in
+`v8project.local.yaml`; the load settings are `push:`; executors are flat
+`providers` keys (`push`, `pull`, `apply`, `reset`, `upload`, `download`,
+`diff`, `make`, `convert`, `extensions`, `infobase.create`, `infobase.dump`,
+`infobase.restore`); source-set types are `CONFIGURATION`, `EXTENSION`,
+`EXTERNAL_DATA_PROCESSORS` and `EXTERNAL_REPORTS`. The former spellings
+(`infobase:`, `build:`, `providers.init`/`build`/`load`/`dump`/
+`infobase.configuration.export`) are accepted for one release cycle; where the
+runner warns about a former key, Unica passes its warning on as is. Rename the
+keys.
 
 ## Headless source export
 
@@ -141,6 +154,29 @@ but it ignores `version` for that boundary. With no `path`, omitted/false
 `strict` preserves legacy discovery through the normal roots and `PATH`;
 `strict: true` alone creates no boundary. This project config field is not an
 argument of `unica.run`.
+
+When neither layer sets `tools.platform.version`, a `DESIGNER` project with a
+`CONFIGURATION` source-set runs on the platform line of its source format: the
+newest installation of the line that writes the format of `Configuration.xml`.
+Before each runner operation, previews included, Unica writes
+`tools.platform.version: sources` into `v8project.local.yaml`, creating the
+file when it is absent and keeping the rest of it and its permissions; the
+answer of that call says so with the warning `platform_line_written`. A local
+file that is a link is written through the link. When the key cannot be
+placed into the text, the file is written anew with the same keys and values
+but without comments, and the warning says so. A read-only file is not
+written: the warning `platform_line_not_written` says that the runner chooses
+the platform without the line of the source format until the key is set. It
+also removes `.build/unica/runner-project/` (with `UNICA_CACHE_DIR`,
+`runner-project/<key>` there), the private config copy of Unica versions
+before runner 0.17: the runner recorded it as the holder of a file
+infobase, and once it is gone the next writing command records the
+working-copy root instead. A failed removal is a warning of the answer. A version set in either file is left as it is. Without
+an installation of that line the command is refused with
+`platformLineNotInstalled`, which names the line, the source format and the
+versions of the installations found. Install that line, or set
+`tools.platform.version` to choose a platform explicitly. Before the first
+`pull` there is no `Configuration.xml` and no restriction.
 
 ## Source-set format discovery
 
@@ -200,7 +236,7 @@ directory named `main` keeps it.
 | Send sources / delete an extension | `push`, optional `sourceSet`, `full` and `force`; applies the database configuration after the generation check, `force:true` overwrites the infobase. Deletion uses only `delete: "InstalledName"` |
 | Export one source set from the working configuration | `pull`, optional `sourceSet`, `extension` and `force`; without `force` the runner chooses a partial or full export, `force:true` replaces the whole set; no copy of the previous sources is kept |
 | Export the configuration or an extension as `.cf`/`.cfe` | `download`, `state=working` or `state=database`, `output`, optional `extension` |
-| Load a `.cf`/`.cfe` into the working configuration only | `upload` — unavailable: the v8-runner 0.15 upload still applies the database configuration, and the adapter does not run `apply` or `reset` yet ([#1246](https://github.com/IngvarConsulting/unica/issues/1246)) |
+| Load a `.cf`/`.cfe` into the working configuration only | `upload` — unavailable: the pinned v8-runner upload still applies the database configuration, and the adapter does not run `apply` or `reset` yet ([#1246](https://github.com/IngvarConsulting/unica/issues/1246)) |
 | Build a `.cf`/`.cfe`/`.epf`/`.erf` from sources | `make`, `output`; for CF/CFE optional `sourceSet` and `extension` (CFE); EPF/ERF require `sourceSet` naming a singleton matching Designer external source set and a declared main configuration |
 | Export the whole infobase as `.dt` | `infobase.dump`, `output` |
 | Load a `.dt` | `infobase.restore`, `input`, `mode=create` or `mode=replace` |
@@ -216,7 +252,7 @@ inputs, without requiring a previous preview. `unica.run` accepts no `ifRev`
 and returns no `rev`. In this workflow, inspect the preview before execution.
 Preview does not freeze the workspace or the database between calls.
 
-Source `push` checks the infobase generation before loading a set and is refused with `non_fast_forward` when the infobase moved ahead of this working copy's record, or with `no_memory` when this working copy has no memory of the infobase; the refusal offers a `pull` preview and a `push` preview with `force:true`. `force:true` overwrites the infobase: every selected set is loaded in full without that check, and changes made in the infobase are lost. A set the runner skips by its memory is neither loaded nor checked. Without `force`, `pull` lets the runner choose a partial or full export by its memory of earlier exchanges; `force:true` exports the whole set. Source
+Source `push` checks the infobase generation before loading a set and is refused with `non_fast_forward` when the infobase moved ahead of this working copy's record, or with `untracked_base` when this working copy has no memory of the infobase. The runner does not carry over its memory across an upgrade, so the first `push` of every working copy after one gets `untracked_base`; the next step is one full `pull` of the set, then `push` as usual. The refusal offers a `pull` preview and a `push` preview with `force:true`; overwrite the infobase only if the sources, not the infobase, hold the right state. `force:true` overwrites the infobase: every selected set is loaded in full without that check, and changes made in the infobase are lost. A set the runner skips by its memory is neither loaded nor checked. Without `force`, `pull` lets the runner choose a partial or full export by its memory of earlier exchanges; `force:true` exports the whole set. Source
 `push` also applies the database configuration; `noApply:true` is unavailable.
 With `force:true`, `pull` discards uncommitted and untracked files of the
 source set without a copy. Unica keeps no copy of the previous sources: a failed
@@ -238,7 +274,7 @@ the runner can load without applying and apply separately
   deadline nor a partial-load threshold and refuses a config with either key. Unica exposes no `timeoutMs` argument.
 - `upload`, `apply` and `reset` are unavailable: report loading a CF/CFE as a Unica MCP contract gap ([#1246](https://github.com/IngvarConsulting/unica/issues/1246)) and do not call the runner directly.
 - Designer/EDT conversion is not on the surface: Unica reads platform XML only.
-- Designer `rawKeys` are not on the surface. Source `push` checks the infobase generation unless `force:true` is given; never add `force:true` on your own after a `non_fast_forward` or `no_memory` refusal: choosing between pulling the infobase and overwriting it belongs to the user. `pull` requires explicit `force:true` and does not protect local work.
+- Designer `rawKeys` are not on the surface. Source `push` checks the infobase generation unless `force:true` is given; never add `force:true` on your own after a `non_fast_forward` or `untracked_base` refusal: choosing between pulling the infobase and overwriting it belongs to the user. `pull` requires explicit `force:true` and does not protect local work.
 - When credentials are absent, do not initiate a runtime probe to discover them. Ask the user; classify only authentication evidence already supplied by a verified boundary.
 - If a command reports a 1C license problem, stop and ask the user to fix licensing. Do not edit license services, HASP settings, registry, or license files.
 - If a runtime flag or debug-server step is missing from the `unica.run`

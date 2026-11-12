@@ -3,22 +3,26 @@
 //! read.
 //!
 //! The runner reads `v8project.yaml` and `v8project.local.yaml` of the working
-//! copy in place, from the `--config` argument; Unica neither copies nor
-//! rewrites them. The runner records the directory of that config as the
-//! working copy that holds a file infobase, so Unica and a person running the
-//! runner by hand in the same working copy are one holder.
+//! copy in place, from the `--config` argument; Unica does not copy them. The
+//! only key Unica writes is the strict platform choice in the local file, once
+//! per operation and before the operation reads its inputs
+//! ([`prepare_working_copy`]). The runner records the directory of that config
+//! as the working copy that holds a file infobase, so Unica and a person
+//! running the runner by hand in the same working copy are one holder.
 use super::v13_workspace_bootstrap::read_yaml_config;
-use serde_yaml::Value;
+use serde_yaml::{Mapping, Value};
 use std::path::{Path, PathBuf};
+use unica_execution_contract::invocation::DomainResult;
 use unica_process::runner::{
     ProcessCommand, ProcessOutput, ProcessRunner, ProcessStreamFailure, SystemProcessRunner,
 };
 use unica_process::PendingProcessHandoff;
+use unica_refusal::RefusalCode;
 use unica_work_control::cancellation::{CancellationToken, CANCELLED_PREFIX};
 use unica_workspace::paths::normalize_path_identity;
 use unica_workspace::runner_lock::{RunnerLock, RunnerLockFailure};
 
-pub(super) const VERSION: &str = "0.15.3";
+pub(super) const VERSION: &str = "0.17.1";
 pub(super) fn check_version(version: &str) -> Result<(), String> {
     if version == VERSION {
         Ok(())
@@ -86,6 +90,192 @@ fn lock_for(command: &ProcessCommand) -> Result<RunnerLock, String> {
     })
 }
 
+/// Runs a runner operation of an adapter. With the bundled runner resolvable
+/// from `cwd`, the working copy is prepared first
+/// ([`with_prepared_working_copy`]). Without it `run` refuses with the absent
+/// runner, and a refused operation leaves the working copy as it was: no lock
+/// file, no written key.
+pub(super) fn with_bundled_runner(
+    root: &Path,
+    cwd: &Path,
+    at: &str,
+    cancellation: CancellationToken,
+    run: impl FnOnce(CancellationToken) -> DomainResult,
+) -> DomainResult {
+    if super::v13_infobase_exports::resolve_bundled_runner(cwd).is_err() {
+        return run(cancellation);
+    }
+    with_prepared_working_copy(root, at, cancellation, run)
+}
+
+/// Runs a runner operation on a prepared working copy: [`prepare_working_copy`]
+/// first, then `run`, whose answer also carries the warnings of the
+/// preparation.
+pub(super) fn with_prepared_working_copy(
+    root: &Path,
+    at: &str,
+    cancellation: CancellationToken,
+    run: impl FnOnce(CancellationToken) -> DomainResult,
+) -> DomainResult {
+    let warnings = match prepare_working_copy(root, at, &cancellation) {
+        Ok(warnings) => warnings,
+        Err(result) => return result,
+    };
+    let mut result = run(cancellation);
+    for warning in warnings {
+        if !result.warnings.contains(&warning) {
+            result.warnings.push(warning);
+        }
+    }
+    result
+}
+
+/// Prepares the working copy for a runner operation, before the operation
+/// reads its inputs and under the working-copy lock: switches the strict
+/// platform choice on ([`ensure_platform_line`]) and removes the private config
+/// copy that Unica kept before runner 0.17 ([`remove_former_projection`]).
+/// Returns the warnings of the preparation.
+#[allow(clippy::result_large_err)]
+fn prepare_working_copy(
+    root: &Path,
+    at: &str,
+    cancellation: &CancellationToken,
+) -> Result<Vec<serde_json::Value>, DomainResult> {
+    let reject = |code, message: String| {
+        DomainResult::canonical_rejection(Some(at.to_string()), code, message)
+    };
+    let _lock = lock_working_copy(root, cancellation).map_err(|error| match error {
+        RunnerLockFailure::Cancelled => reject(
+            RefusalCode::Cancelled,
+            format!("{at} cancelled while waiting for the working copy runner lock"),
+        ),
+        RunnerLockFailure::InvalidState(message) => reject(RefusalCode::InvalidState, message),
+    })?;
+    let mut warnings: Vec<serde_json::Value> = remove_former_projection(root).into_iter().collect();
+    // A file of the person changes: the answer says which and how. A file
+    // Unica cannot write stays as it is and the operation goes on; the answer
+    // says that the strict choice is off.
+    match ensure_platform_line(root) {
+        Ok(PlatformLine::Untouched) => {}
+        Ok(written) => warnings.push(serde_json::json!({
+            "code": PLATFORM_LINE_WRITTEN_CODE,
+            "message": if written == PlatformLine::Rewritten {
+                format!("{PLATFORM_LINE_WRITTEN}; the key could not be placed into the text of the file, so the file was written anew with the same keys and values, without its comments and layout")
+            } else {
+                PLATFORM_LINE_WRITTEN.to_string()
+            },
+        })),
+        Err(error) => warnings.push(serde_json::json!({
+            "code": PLATFORM_LINE_NOT_WRITTEN_CODE,
+            "message": format!("Unica could not add tools.platform.version: sources to v8project.local.yaml ({error}); the runner chooses the platform without the line of the source format; add the key there, or set tools.platform.version to choose a platform yourself"),
+        })),
+    }
+    Ok(warnings)
+}
+
+/// Code of the note that Unica wrote the strict platform choice.
+const PLATFORM_LINE_WRITTEN_CODE: &str = "platform_line_written";
+
+const PLATFORM_LINE_WRITTEN: &str = "Unica added tools.platform.version: sources to v8project.local.yaml: the runner now runs on the platform line that writes the format of the sources; set tools.platform.version there to choose a platform yourself";
+
+/// Code of the warning that the strict platform choice could not be written.
+const PLATFORM_LINE_NOT_WRITTEN_CODE: &str = "platform_line_not_written";
+
+/// Code of the warning that the former private config copy stays.
+const FORMER_PROJECTION_WARNING_CODE: &str = "former_runner_config_copy_kept";
+
+/// Before runner 0.17 Unica gave the runner a private copy of both config
+/// layers, secrets included, in `.build/unica/runner-project/` (keyed by the
+/// working copy under `UNICA_CACHE_DIR`). The runner recorded that directory as
+/// the holder of a file infobase; while it stays, the working copy itself is
+/// another, live holder. Removing it makes that record a gone holder (its
+/// directory is gone), which the next writing command of the working copy
+/// takes over. Only that directory and what the former store kept beside it
+/// are removed: its lock directory and, in the cache of the working copy, the
+/// leftovers of an interrupted removal. A link or reparse point in their place
+/// is removed itself, never followed. Removal is idempotent, and a failure
+/// does not stop the operation: it becomes a warning of the answer.
+fn remove_former_projection(root: &Path) -> Option<serde_json::Value> {
+    let root = normalize_path_identity(root).ok()?;
+    let cache = std::env::var_os("UNICA_CACHE_DIR").map(PathBuf::from);
+    let shown = if cache.is_some() {
+        "UNICA_CACHE_DIR/runner-project"
+    } else {
+        ".build/unica/runner-project"
+    };
+    let directory = former_projection_directory_in(&root, cache.clone());
+    let mut leftovers = Vec::new();
+    if let (Some(parent), Some(name)) = (directory.parent(), directory.file_name()) {
+        use sha2::{Digest, Sha256};
+        leftovers.push(parent.join(format!(
+            ".runner-project-lock-{:x}",
+            Sha256::digest(name.as_encoded_bytes())
+        )));
+        // A shared cache holds the leftovers of every working copy; only the
+        // cache of this working copy is cleared of them.
+        if cache.is_none() {
+            leftovers.extend(
+                std::fs::read_dir(parent)
+                    .into_iter()
+                    .flatten()
+                    .flatten()
+                    .filter(|entry| {
+                        entry
+                            .file_name()
+                            .to_string_lossy()
+                            .starts_with(".runner-project-cleanup-")
+                    })
+                    .map(|entry| entry.path()),
+            );
+        }
+    }
+    let failed = remove_without_following(&directory).err();
+    for leftover in leftovers {
+        let _ = remove_without_following(&leftover);
+    }
+    failed.map(|error| {
+        serde_json::json!({
+            "code": FORMER_PROJECTION_WARNING_CODE,
+            "message": format!(
+                "the private copy of v8project.yaml and v8project.local.yaml that earlier Unica versions kept for the runner in {shown} could not be removed ({}); it may hold infobase credentials, and while it stays the runner may treat it as another working copy holding a file infobase; remove the directory",
+                error.kind()
+            ),
+        })
+    })
+}
+
+/// Removes a path; a symbolic link or junction is removed itself, its target
+/// stays. An absent path is already removed.
+fn remove_without_following(path: &Path) -> std::io::Result<()> {
+    let removed = match std::fs::symlink_metadata(path) {
+        Err(error) => Err(error),
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            std::fs::remove_file(path).or_else(|_| std::fs::remove_dir(path))
+        }
+        // `remove_dir_all` removes links inside without following them.
+        Ok(metadata) if metadata.is_dir() => std::fs::remove_dir_all(path),
+        Ok(_) => std::fs::remove_file(path),
+    };
+    match removed {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        other => other,
+    }
+}
+
+fn former_projection_directory_in(root: &Path, cache_override: Option<PathBuf>) -> PathBuf {
+    let lock = lock_directory_in(root, cache_override);
+    match lock.file_name().filter(|name| *name != "runner-lock") {
+        // `<cache>/runner-lock/<key>` -> `<cache>/runner-project/<key>`.
+        Some(key) => lock
+            .parent()
+            .and_then(Path::parent)
+            .expect("a keyed lock directory has a cache")
+            .join("runner-project")
+            .join(key),
+        None => lock.with_file_name("runner-project"),
+    }
+}
+
 pub(super) fn lock_working_copy(
     root: &Path,
     cancellation: &CancellationToken,
@@ -120,6 +310,242 @@ fn lock_directory_in(root: &Path, cache_override: Option<PathBuf>) -> PathBuf {
             cache.join("runner-lock").join(key)
         }
     }
+}
+
+/// The runner picks the platform by the line that writes the source format
+/// (`tools.platform.version: sources`) and refuses when that line is not
+/// installed. Unica switches the mode on for a DESIGNER project with a
+/// CONFIGURATION source set; a version set in either layer is kept, and an
+/// empty one is not set, as for the runner. The format and the source sets
+/// live only in the project file, written as the runner reads them (upper
+/// case): the runner refuses them in the local layer.
+fn needs_platform_line(base: &Value, local: Option<&Value>) -> bool {
+    let designer = base
+        .get("format")
+        .and_then(Value::as_str)
+        .is_none_or(|format| format == "DESIGNER");
+    let main_set = base
+        .get("source-set")
+        .and_then(Value::as_sequence)
+        .is_some_and(|sets| {
+            sets.iter().any(|set| {
+                set["type"]
+                    .as_str()
+                    .is_some_and(|kind| kind == "CONFIGURATION")
+            })
+        });
+    let pinned = std::iter::once(base).chain(local).any(|layer| {
+        layer["tools"]["platform"]
+            .get("version")
+            .is_some_and(|version| !version.is_null())
+    });
+    designer && main_set && !pinned
+}
+
+/// What [`ensure_platform_line`] did with `v8project.local.yaml`.
+#[derive(Debug, PartialEq, Eq)]
+enum PlatformLine {
+    Untouched,
+    /// The key went into the text; the rest of it is as written.
+    Inserted,
+    /// The document was written anew with the same keys and values.
+    Rewritten,
+}
+
+/// Writes `tools.platform.version: sources` into `v8project.local.yaml` when
+/// [`needs_platform_line`] holds, creating the file when it is absent, and
+/// says what it did. The rest of the file is kept as written; only when the
+/// key cannot be placed into the text is the document written anew with the
+/// same content. Once written, the key is set and the next call writes
+/// nothing. A local file that is a link is written through it, so the file it
+/// points to keeps being the one shared; a read-only file is not written.
+///
+/// A config the runner cannot read is left as it is: the runner refuses it
+/// with its own answer.
+fn ensure_platform_line(root: &Path) -> Result<PlatformLine, String> {
+    let Ok(Some(base)) = read_yaml_config(root, BASE_NAME) else {
+        return Ok(PlatformLine::Untouched);
+    };
+    let Ok(local) = read_yaml_config(root, LOCAL_NAME) else {
+        return Ok(PlatformLine::Untouched);
+    };
+    if !needs_platform_line(&base, local.as_ref()) {
+        return Ok(PlatformLine::Untouched);
+    }
+    let mut path = root.join(LOCAL_NAME);
+    let mut permissions = None;
+    match std::fs::symlink_metadata(&path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.to_string()),
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() {
+                path = std::fs::canonicalize(&path).map_err(|error| error.to_string())?;
+            }
+            let metadata = std::fs::metadata(&path).map_err(|error| error.to_string())?;
+            if metadata.permissions().readonly() {
+                return Err("the file is read-only".to_string());
+            }
+            permissions = Some(metadata.permissions());
+        }
+    }
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) => return Err(error.to_string()),
+    };
+    let Ok((updated, rewritten)) = with_platform_line(&text, local.as_ref()) else {
+        return Ok(PlatformLine::Untouched);
+    };
+    let directory = path.parent().ok_or("the file has no directory")?;
+    let staged = directory.join(format!(".{LOCAL_NAME}.{}.tmp", std::process::id()));
+    write_staged(&staged, updated.as_bytes(), permissions)
+        .and_then(|()| std::fs::rename(&staged, &path))
+        .map_err(|error| {
+            let _ = std::fs::remove_file(&staged);
+            error.to_string()
+        })?;
+    Ok(if rewritten {
+        PlatformLine::Rewritten
+    } else {
+        PlatformLine::Inserted
+    })
+}
+
+/// Writes the staged copy of the local file. It may hold infobase
+/// credentials: it is created with the permissions of the file it replaces,
+/// never readable more widely, even for a moment.
+fn write_staged(
+    staged: &Path,
+    bytes: &[u8],
+    permissions: Option<std::fs::Permissions>,
+) -> std::io::Result<()> {
+    use std::io::Write;
+    let _ = std::fs::remove_file(staged);
+    let mut file = unica_workspace::host_platform::create_new_like(staged, permissions.as_ref())?;
+    file.write_all(bytes)?;
+    file.sync_all()?;
+    drop(file);
+    match permissions {
+        Some(permissions) => std::fs::set_permissions(staged, permissions),
+        None => Ok(()),
+    }
+}
+
+/// The local file with the key, and whether it had to be written anew.
+fn with_platform_line(text: &str, local: Option<&Value>) -> Result<(String, bool), String> {
+    let mut expected = match local {
+        Some(Value::Mapping(map)) => map.clone(),
+        None | Some(Value::Null) => Mapping::new(),
+        Some(_) => return Err(format!("{LOCAL_NAME} is not a mapping")),
+    };
+    insert_platform_version(&mut expected)?;
+    let expected = Value::Mapping(expected);
+    if let Some(candidate) = insert_into_text(text) {
+        if serde_yaml::from_str::<Value>(&candidate).ok().as_ref() == Some(&expected) {
+            return Ok((candidate, false));
+        }
+    }
+    serde_yaml::to_string(&expected)
+        .map(|written| (written, true))
+        .map_err(|error| error.to_string())
+}
+
+fn insert_platform_version(layer: &mut Mapping) -> Result<(), String> {
+    let mut current = layer;
+    for part in ["tools", "platform"] {
+        let entry = current
+            .entry(Value::from(part))
+            .or_insert_with(|| Value::Mapping(Mapping::new()));
+        if entry.is_null() {
+            *entry = Value::Mapping(Mapping::new());
+        }
+        current = entry
+            .as_mapping_mut()
+            .ok_or_else(|| format!("{part} in {LOCAL_NAME} must be a mapping"))?;
+    }
+    current.insert(Value::from("version"), Value::from("sources"));
+    Ok(())
+}
+
+/// Places the key into block-style YAML text without touching other lines.
+/// The caller checks the result by parsing it.
+fn insert_into_text(text: &str) -> Option<String> {
+    let newline = if text.contains("\r\n") { "\r\n" } else { "\n" };
+    let (bom, text) = match text.strip_prefix('\u{feff}') {
+        Some(rest) => ("\u{feff}", rest),
+        None => ("", text),
+    };
+    let mut lines: Vec<String> = text.lines().map(str::to_owned).collect();
+    // `tools:` with an empty value is a section yet to be filled.
+    for line in &mut lines {
+        let value = line
+            .strip_prefix("tools:")
+            .map(|rest| rest.split(" #").next().unwrap_or_default().trim());
+        if matches!(value, Some("null" | "~" | "Null" | "NULL")) {
+            *line = "tools:".to_string();
+        }
+    }
+    let indent = |line: &str| line.len() - line.trim_start().len();
+    let is_key = |line: &str, key: &str| {
+        line.trim_start()
+            .strip_prefix(key)
+            .and_then(|rest| rest.strip_prefix(':'))
+            .is_some_and(|rest| rest.trim().is_empty() || rest.trim_start().starts_with('#'))
+    };
+    let content = |line: &str| !line.trim().is_empty() && !line.trim_start().starts_with('#');
+    match lines
+        .iter()
+        .position(|line| indent(line) == 0 && is_key(line, "tools"))
+    {
+        None => {
+            if lines
+                .iter()
+                .any(|line| indent(line) == 0 && line.starts_with("tools"))
+            {
+                return None;
+            }
+            lines.extend(["tools:", "  platform:", "    version: sources"].map(str::to_owned));
+        }
+        Some(tools) => {
+            let block_end = lines[tools + 1..]
+                .iter()
+                .position(|line| content(line) && indent(line) == 0)
+                .map_or(lines.len(), |offset| tools + 1 + offset);
+            let children = &lines[tools + 1..block_end];
+            let child = children
+                .iter()
+                .find(|line| content(line))
+                .map_or(2, |line| indent(line));
+            match children
+                .iter()
+                .position(|line| indent(line) == child && is_key(line, "platform"))
+            {
+                Some(offset) => {
+                    let platform = tools + 1 + offset;
+                    let grandchild = lines[platform + 1..block_end]
+                        .iter()
+                        .find(|line| content(line))
+                        .map(|line| indent(line))
+                        .filter(|width| *width > child)
+                        .unwrap_or(child + 2);
+                    lines.insert(
+                        platform + 1,
+                        format!("{}version: sources", " ".repeat(grandchild)),
+                    );
+                }
+                None => {
+                    lines.insert(tools + 1, format!("{}platform:", " ".repeat(child)));
+                    lines.insert(
+                        tools + 2,
+                        format!("{}version: sources", " ".repeat(child + 2)),
+                    );
+                }
+            }
+        }
+    }
+    let mut out = format!("{bom}{}", lines.join(newline));
+    out.push_str(newline);
+    Some(out)
 }
 
 /// Removes the infobase description from a layer and returns its `origin`.
@@ -241,6 +667,332 @@ mod tests {
         root
     }
 
+    fn local_after(base: &str, local: Option<&str>) -> Option<String> {
+        let root = workspace(base, local);
+        ensure_platform_line(root.path()).unwrap();
+        std::fs::read_to_string(root.path().join(LOCAL_NAME)).ok()
+    }
+
+    const DESIGNER_MAIN: &str = "format: DESIGNER
+source-set:
+  - {name: main, type: CONFIGURATION, path: src}
+";
+
+    /// Проект конфигуратора с основным набором запускается на линии формата:
+    /// Unica дописывает `tools.platform.version: sources` в местный файл,
+    /// создаёт его при отсутствии и оставляет остальное как написано.
+    /// rule: INV.RUNTIME.PLATFORM-LINE
+    #[test]
+    fn a_designer_main_set_runs_on_the_platform_line_of_its_format() {
+        assert_eq!(
+            local_after(DESIGNER_MAIN, None).as_deref(),
+            Some(
+                "tools:
+  platform:
+    version: sources
+"
+            )
+        );
+        // Без формата действует формат конфигуратора.
+        assert!(local_after(
+            "source-set:
+  - {name: main, type: CONFIGURATION, path: src}
+",
+            None
+        )
+        .is_some());
+
+        let local = "# machine-local
+infobases:
+  origin:
+    connection: 'File=ib' # base
+tools:
+    platform:
+        path: platform
+    edt_cli:
+        path: 1cedtcli
+";
+        assert_eq!(
+            local_after(DESIGNER_MAIN, Some(local)).unwrap(),
+            "# machine-local
+infobases:
+  origin:
+    connection: 'File=ib' # base
+tools:
+    platform:
+        version: sources
+        path: platform
+    edt_cli:
+        path: 1cedtcli
+"
+        );
+        let local = "infobases: {origin: {connection: 'File=ib'}}
+tools:
+  edt_cli:
+    path: x
+";
+        assert_eq!(
+            local_after(DESIGNER_MAIN, Some(local)).unwrap(),
+            "infobases: {origin: {connection: 'File=ib'}}
+tools:
+  platform:
+    version: sources
+  edt_cli:
+    path: x
+"
+        );
+        // Секцию в строчной записи текстом не дописать: файл пишется заново
+        // с тем же содержимым.
+        let written = local_after(
+            DESIGNER_MAIN,
+            Some(
+                "tools: {platform: {path: platform}}
+",
+            ),
+        )
+        .unwrap();
+        let written: Value = serde_yaml::from_str(&written).unwrap();
+        assert_eq!(written["tools"]["platform"]["path"], "platform");
+        assert_eq!(written["tools"]["platform"]["version"], "sources");
+
+        // Метка порядка байтов и пустая секция `tools` текст не ломают.
+        assert_eq!(
+            local_after(
+                DESIGNER_MAIN,
+                Some("\u{feff}tools:\n  edt_cli:\n    path: x\n")
+            )
+            .unwrap(),
+            "\u{feff}tools:\n  platform:\n    version: sources\n  edt_cli:\n    path: x\n"
+        );
+        assert_eq!(
+            local_after(DESIGNER_MAIN, Some("# local\ntools: ~ # later\n")).unwrap(),
+            "# local\ntools:\n  platform:\n    version: sources\n"
+        );
+        // Пустая версия не задана, как и для раннера.
+        let written =
+            local_after(DESIGNER_MAIN, Some("tools:\n  platform:\n    version: ~\n")).unwrap();
+        let written: Value = serde_yaml::from_str(&written).unwrap();
+        assert_eq!(written["tools"]["platform"]["version"], "sources");
+    }
+
+    /// Заданная человеком версия и проекты, где раннер строгий выбор не
+    /// принимает, файл не меняют.
+    /// rule: INV.RUNTIME.PLATFORM-LINE
+    #[test]
+    fn the_platform_line_stays_off_where_a_version_is_set_or_the_runner_refuses_it() {
+        let pinned = "tools:
+  platform:
+    version: '8.3.24'
+";
+        assert_eq!(
+            local_after(DESIGNER_MAIN, Some(pinned)).as_deref(),
+            Some(pinned)
+        );
+        let pinned_base = format!(
+            "{DESIGNER_MAIN}tools: {{platform: {{version: '8.3.27'}}}}
+"
+        );
+        assert_eq!(local_after(&pinned_base, None), None);
+        for base in [
+            "format: EDT
+source-set:
+  - {name: main, type: CONFIGURATION, path: src}
+",
+            "format: DESIGNER
+source-set:
+  - {name: ext, type: EXTENSION, path: ext}
+",
+            "format: DESIGNER
+",
+            // Раннер читает формат и вид набора только прописными.
+            "format: designer
+source-set:
+  - {name: main, type: CONFIGURATION, path: src}
+",
+            "format: DESIGNER
+source-set:
+  - {name: main, type: configuration, path: src}
+",
+        ] {
+            assert_eq!(local_after(base, None), None, "{base}");
+        }
+        // Конфигурацию, которую раннер не прочтёт, Unica не трогает.
+        let broken = "tools: [platform]
+";
+        assert_eq!(
+            local_after(DESIGNER_MAIN, Some(broken)).as_deref(),
+            Some(broken)
+        );
+    }
+
+    /// Подготовка операции под замком: строгий выбор платформы записан до
+    /// того, как операция снимет свои входы, а приватная копия конфигурации
+    /// прежних версий Unica с секретами убрана.
+    /// rule: INV.RUNTIME.PLATFORM-LINE
+    #[test]
+    fn an_operation_prepares_the_working_copy_before_reading_its_inputs() {
+        let root = workspace(
+            DESIGNER_MAIN,
+            Some("infobases: {origin: {connection: 'File=ib', password: secret}}\n"),
+        );
+        let former = root.path().join(".build/unica/runner-project");
+        std::fs::create_dir_all(&former).unwrap();
+        std::fs::write(former.join(LOCAL_NAME), "password: secret\n").unwrap();
+        // Ответ называет дописанный файл и ключ; повтор ничего не пишет и
+        // ничего не сообщает.
+        let warnings =
+            prepare_working_copy(root.path(), "push", &CancellationToken::new()).unwrap();
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert_eq!(warnings[0]["code"], "platform_line_written");
+        let message = warnings[0]["message"].as_str().unwrap();
+        assert!(
+            message.contains("v8project.local.yaml")
+                && message.contains("tools.platform.version: sources"),
+            "{message}"
+        );
+        assert!(!former.exists());
+        let local: Value =
+            serde_yaml::from_str(&std::fs::read_to_string(root.path().join(LOCAL_NAME)).unwrap())
+                .unwrap();
+        assert_eq!(local["tools"]["platform"]["version"], "sources");
+        assert_eq!(local["infobases"]["origin"]["password"], "secret");
+
+        // Повтор ничего не меняет: входы следующей операции те же.
+        let before = std::fs::read(root.path().join(LOCAL_NAME)).unwrap();
+        assert!(
+            prepare_working_copy(root.path(), "push", &CancellationToken::new())
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(std::fs::read(root.path().join(LOCAL_NAME)).unwrap(), before);
+
+        let cancelled = CancellationToken::new();
+        cancelled.cancel();
+        let refused = prepare_working_copy(root.path(), "push", &cancelled).unwrap_err();
+        assert_eq!(refused.diagnostics[0]["code"], "cancelled", "{refused:?}");
+    }
+
+    /// Файл только для чтения Unica не переписывает и операцию не держит:
+    /// ответ говорит, что строгий выбор не включён, временного файла с
+    /// секретами не остаётся.
+    /// rule: INV.RUNTIME.PLATFORM-LINE
+    #[test]
+    fn a_read_only_local_file_stays_and_the_answer_says_so() {
+        let local = "infobases: {origin: {connection: 'File=ib', password: secret}}\n";
+        let root = workspace(DESIGNER_MAIN, Some(local));
+        let path = root.path().join(LOCAL_NAME);
+        let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+        permissions.set_readonly(true);
+        std::fs::set_permissions(&path, permissions.clone()).unwrap();
+        let warnings =
+            prepare_working_copy(root.path(), "push", &CancellationToken::new()).unwrap();
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert_eq!(warnings[0]["code"], "platform_line_not_written");
+        assert!(warnings[0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("read-only"));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), local);
+        let names: Vec<_> = std::fs::read_dir(root.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert!(
+            !names
+                .iter()
+                .any(|name| name.to_string_lossy().ends_with(".tmp")),
+            "{names:?}"
+        );
+        #[allow(clippy::permissions_set_readonly_false)]
+        permissions.set_readonly(false);
+        std::fs::set_permissions(&path, permissions).unwrap();
+    }
+
+    /// Файл, переписанный заново, ответ так и называет: комментариев в нём
+    /// больше нет.
+    #[test]
+    fn a_rewritten_local_file_is_named_so_in_the_answer() {
+        let root = workspace(DESIGNER_MAIN, Some("tools: {platform: {path: p}} # mine\n"));
+        let warnings =
+            prepare_working_copy(root.path(), "push", &CancellationToken::new()).unwrap();
+        assert_eq!(warnings[0]["code"], "platform_line_written");
+        assert!(warnings[0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("written anew"));
+    }
+
+    /// Местный файл-ссылка остаётся ссылкой: ключ пишется в общий файл.
+    #[test]
+    fn a_linked_local_file_is_written_through_the_link() {
+        use unica_workspace::test_support::{
+            create_file_link_fixture_for_test, FileLinkFixtureOutcome,
+        };
+        let root = workspace(DESIGNER_MAIN, None);
+        let shared = tempfile::tempdir().unwrap();
+        let target = shared.path().join("shared.yaml");
+        std::fs::write(&target, "tools:\n  edt_cli:\n    path: x\n").unwrap();
+        if create_file_link_fixture_for_test(&target, root.path().join(LOCAL_NAME)).unwrap()
+            != FileLinkFixtureOutcome::Created
+        {
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::Symlink,
+                "Создание ссылки требует полномочий ОС",
+            );
+            return;
+        }
+        assert_eq!(
+            ensure_platform_line(root.path()).unwrap(),
+            PlatformLine::Inserted
+        );
+        let link = std::fs::symlink_metadata(root.path().join(LOCAL_NAME)).unwrap();
+        assert!(link.file_type().is_symlink());
+        assert!(std::fs::read_to_string(&target)
+            .unwrap()
+            .contains("version: sources"));
+    }
+
+    /// Вместе с прежней копией уходит и то, что прежнее хранилище держало
+    /// рядом: каталог его замка и остатки прерванного удаления.
+    #[test]
+    fn the_former_store_leaves_nothing_beside_the_copy() {
+        use sha2::{Digest, Sha256};
+        let root = workspace(DESIGNER_MAIN, Some("tools: {platform: {version: '8.3'}}\n"));
+        let unica = root.path().join(".build/unica");
+        std::fs::create_dir_all(unica.join("runner-project")).unwrap();
+        let lock = unica.join(format!(
+            ".runner-project-lock-{:x}",
+            Sha256::digest(b"runner-project")
+        ));
+        std::fs::create_dir_all(&lock).unwrap();
+        std::fs::write(lock.join(".runner-project.lock"), "").unwrap();
+        let cleanup = unica.join(".runner-project-cleanup-1");
+        std::fs::create_dir_all(&cleanup).unwrap();
+        std::fs::write(cleanup.join(LOCAL_NAME), "password: secret\n").unwrap();
+        assert!(
+            prepare_working_copy(root.path(), "push", &CancellationToken::new())
+                .unwrap()
+                .is_empty()
+        );
+        assert!(!unica.join("runner-project").exists());
+        assert!(!lock.exists());
+        assert!(!cleanup.exists());
+    }
+
+    #[test]
+    fn the_former_projection_lies_beside_the_lock() {
+        let root = Path::new("/work/a");
+        assert_eq!(
+            former_projection_directory_in(root, None),
+            Path::new("/work/a/.build/unica/runner-project")
+        );
+        let cache = std::env::temp_dir().join("cache");
+        let lock = lock_directory_in(root, Some(cache.clone()));
+        let former = former_projection_directory_in(root, Some(cache.clone()));
+        assert_eq!(former.parent().unwrap(), cache.join("runner-project"));
+        assert_eq!(former.file_name(), lock.file_name());
+    }
+
     /// Свой замок у каждой рабочей копии: по умолчанию в её кеше, а в общем
     /// кеше `UNICA_CACHE_DIR` — под ключом корня копии.
     #[test]
@@ -309,7 +1061,7 @@ mod tests {
     #[test]
     fn unknown_runner_versions_are_not_probed_by_executing_an_operation() {
         assert!(check_version(VERSION).is_ok());
-        assert!(check_version("0.15.3").is_ok());
+        assert!(check_version("0.17.1").is_ok());
         for version in [
             "0.9.0",
             "0.11.3",
@@ -320,7 +1072,11 @@ mod tests {
             "0.15.0",
             "0.15.1",
             "0.15.2",
-            "0.15.3-rc.1",
+            "0.15.3",
+            "0.16.0",
+            "0.17.0",
+            "0.17.1-rc.1",
+            "0.17.2",
             "1.0.0",
             "1.0.0-rc.1",
             "",

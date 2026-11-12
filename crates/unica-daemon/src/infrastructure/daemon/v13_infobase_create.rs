@@ -28,8 +28,9 @@ use super::protocol::InvocationRequest;
 use super::runner::{origin_kind, OriginKind, PinnedRunner};
 use super::v13_infobase_exports::{
     configuration_source_set, digest_optional_workspace_file, digest_required_workspace_file,
-    missing_runner_rejection, resolve_bundled_runner, runner_rejection, runner_start_rejection,
-    RunnerAbsence, CONFIG_NAME, LOCAL_CONFIG_NAME, RUNNER_OUTPUT_LIMIT,
+    missing_runner_rejection, note_config_warnings, resolve_bundled_runner,
+    runner_envelope_refusal, runner_rejection, runner_start_rejection, RunnerAbsence, CONFIG_NAME,
+    LOCAL_CONFIG_NAME, RUNNER_OUTPUT_LIMIT,
 };
 use crate::infrastructure::workspace::discover_workspace;
 use serde_json::{json, Value};
@@ -119,7 +120,13 @@ impl PreparedInfobaseCreate {
     }
 
     pub(super) fn execute(&self, cancellation: CancellationToken) -> DomainResult {
-        execute_with_runner(self, &PinnedRunner, cancellation)
+        super::runner::with_bundled_runner(
+            &self.context.workspace_root,
+            &self.context.cwd,
+            OPERATION,
+            cancellation,
+            |cancellation| execute_with_runner(self, &PinnedRunner, cancellation),
+        )
     }
 }
 
@@ -287,6 +294,7 @@ fn execute_with_resolved_runner(
             },
             "reason": "create using the current workspace inputs"
         }));
+        note_config_warnings(&mut result, &preview);
         return result;
     }
     if cancellation.is_cancelled() {
@@ -348,6 +356,7 @@ fn execute_with_resolved_runner(
             "receipt": "provider step only; a cluster infobase is not observable by a repeated preview",
         }));
         result.warnings.push(cluster_database_warning(false));
+        note_config_warnings(&mut result, &applied);
         result
             .changed
             .push(json!({"infobase": true, "kind": "created"}));
@@ -409,6 +418,7 @@ fn execute_with_resolved_runner(
         "infobase": true,
         "kind": "created",
     }));
+    note_config_warnings(&mut result, &applied);
 
     result
 }
@@ -614,7 +624,10 @@ fn parse_runner_output(
             .as_str()
             .map(redactor)
             .unwrap_or_else(|| "v8-runner failed without a typed message".to_string());
-        return Err(runner_rejection(Some(OPERATION.to_string()), code, message));
+        return Err(runner_envelope_refusal(
+            runner_rejection(Some(OPERATION.to_string()), code, message),
+            &envelope,
+        ));
     }
     Ok(envelope)
 }
