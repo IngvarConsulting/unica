@@ -219,7 +219,7 @@ fn refuse_targets_on_locked_vendor_objects(
     binding: &ProviderRootBinding,
     admission: &ApplyAdmission,
     staged: &mut ApplyStagedState,
-) -> Result<Option<serde_json::Value>, ApplyPlanError> {
+) -> Result<Vec<GateWarning>, ApplyPlanError> {
     let policy = admission.support_policy_mode();
     // Every operation answers for its own target: an `args.at` below the
     // request's node may sit under a node with its own `locked` record.
@@ -235,14 +235,46 @@ fn refuse_targets_on_locked_vendor_objects(
             None => targets.push((operation.at(), removes)),
         }
     }
+    let mut warnings = Vec::new();
     for (target, removes) in targets {
-        if let Some(warning) =
-            refuse_target_on_locked_vendor_object(target, removes, policy, binding, staged)?
-        {
-            return Ok(Some(warning));
+        warnings.extend(refuse_target_on_locked_vendor_object(
+            target, removes, policy, binding, staged,
+        )?);
+    }
+    Ok(warnings)
+}
+
+/// A `support_locked` warning of the gate under `warn`, with the source
+/// paths it speaks for.
+struct GateWarning {
+    warning: serde_json::Value,
+    /// The paths of a locked node below its owner: the warning stands only
+    /// when the plan changes one of them. `None`: any change of the plan.
+    scope: Option<Vec<std::path::PathBuf>>,
+}
+
+/// The gate's warnings that the plan's changes bear out, one per node: a
+/// locked node whose files the plan leaves as they were edited nothing
+/// protected.
+fn planned_gate_warnings(
+    warnings: Vec<GateWarning>,
+    changed: &[unica_source_contract::proposal::StagedApplyChange],
+) -> Vec<serde_json::Value> {
+    let mut kept: Vec<serde_json::Value> = Vec::new();
+    for GateWarning { warning, scope } in warnings {
+        let touched = match &scope {
+            None => !changed.is_empty(),
+            Some(scope) => changed.iter().any(|change| {
+                scope
+                    .iter()
+                    .any(|path| change.relative_path.starts_with(path))
+            }),
+        };
+        if touched && !kept.iter().any(|seen| seen["at"] == warning["at"]) {
+            kept.push(warning);
         }
     }
-    Ok(None)
+    kept
 }
 
 /// The support gate for one operation target; `removes` asks about removing
@@ -253,7 +285,7 @@ fn refuse_target_on_locked_vendor_object(
     policy: unica_source_contract::proposal::SupportPolicyMode,
     binding: &ProviderRootBinding,
     staged: &mut ApplyStagedState,
-) -> Result<Option<serde_json::Value>, ApplyPlanError> {
+) -> Result<Option<GateWarning>, ApplyPlanError> {
     use unica_source_contract::proposal::SupportPolicyMode;
 
     // `off` silences locks but not a support state that cannot be read: the
@@ -292,10 +324,13 @@ fn refuse_target_on_locked_vendor_object(
         if policy == SupportPolicyMode::Warn {
             let owner = support_owner_relative(target, binding.source_kind())
                 .map_or_else(|| "Configuration".to_string(), |(owner, _)| owner);
-            return Ok(Some(support_locked(
-                &owner,
-                format!("{reason}; the project support policy `warn` permits this edit"),
-            )));
+            return Ok(Some(GateWarning {
+                warning: support_locked(
+                    &owner,
+                    format!("{reason}; the project support policy `warn` permits this edit"),
+                ),
+                scope: None,
+            }));
         }
         if !unreadable.marker {
             return Err(ApplyPlanError::new(
@@ -354,7 +389,10 @@ fn refuse_target_on_locked_vendor_object(
         ),
     };
     if !deny {
-        return Ok(Some(support_locked(&lock.owner, message)));
+        return Ok(Some(GateWarning {
+            warning: support_locked(&lock.owner, message),
+            scope: lock.scope,
+        }));
     }
     Err(
         ApplyPlanError::new(ApplyPlanErrorKind::InvalidState, message)
@@ -413,6 +451,10 @@ pub(crate) struct SupportGateLock {
     /// The owner path as the lock names it (`Catalog.Items`, `Configuration`).
     pub(crate) owner: String,
     pub(crate) reason: String,
+    /// The source paths of a locked node below the owner: its own descriptor
+    /// and directory, or the descriptor that declares it. `None` for a lock of
+    /// the owner or of the configuration.
+    pub(crate) scope: Option<Vec<std::path::PathBuf>>,
 }
 
 /// The support facts of one target, read through `read` and `enumerate`
@@ -482,6 +524,7 @@ pub(crate) fn support_gate_facts<E>(
                 kind: SupportLockKind::ConfigurationLocked,
                 owner,
                 reason: "the configuration is on vendor support with changes disabled".to_string(),
+                scope: None,
             }),
             unreadable: None,
         });
@@ -527,6 +570,7 @@ pub(crate) fn support_gate_facts<E>(
             kind,
             owner: owner.clone(),
             reason,
+            scope: None,
         }),
         unreadable: None,
     };
@@ -575,7 +619,7 @@ pub(crate) fn support_gate_facts<E>(
         facts.node_rule = path.node_rule;
         return Ok(facts);
     }
-    if let Some(node) = path.locked {
+    if let Some((node, scope)) = path.locked {
         return Ok(SupportGateFacts {
             marker,
             owner_rule: support_rule,
@@ -587,6 +631,7 @@ pub(crate) fn support_gate_facts<E>(
                     "`{source_set}:{node}` is a vendor object with the support rule `locked`"
                 ),
                 owner: node,
+                scope: Some(scope),
             }),
             unreadable: None,
         });
@@ -598,8 +643,9 @@ pub(crate) fn support_gate_facts<E>(
 
 /// The own support records on the path from the owner to `at`.
 struct PathRecords {
-    /// The first node (owner excluded) whose own record is `locked`.
-    locked: Option<String>,
+    /// The first node (owner excluded) whose own record is `locked`, with
+    /// the source paths that hold it.
+    locked: Option<(String, Vec<std::path::PathBuf>)>,
     /// The rule of `at`'s own record when `at` is below the owner.
     node_rule: Option<u8>,
 }
@@ -636,6 +682,7 @@ fn support_records_on_path<E>(
     }
     let mut node = owner.to_string();
     let mut descriptor = owner_bytes.to_vec();
+    let mut descriptor_relative = owner_relative.to_path_buf();
     let mut chain = String::new();
     // A nested subsystem lives in `Subsystems/<A>/Subsystems/<B>.xml`.
     let mut directory = owner_relative.with_extension("");
@@ -650,9 +697,9 @@ fn support_records_on_path<E>(
         let kind = segment.kind().as_str();
         node.push_str(&format!(".{kind}.{name}"));
         let declared = format!("{chain}.{kind}.{name}");
-        let uuid = if let Some(uuid) = declared_uuid(&descriptor, &declared) {
+        let (uuid, scope) = if let Some(uuid) = declared_uuid(&descriptor, &declared) {
             chain = declared;
-            Some(uuid)
+            (Some(uuid), vec![descriptor_relative.clone()])
         } else if matches!(kind, "Form" | "Template" | "Command" | "Subsystem") && chain.is_empty()
         {
             let folder = match kind {
@@ -668,13 +715,14 @@ fn support_records_on_path<E>(
             directory = directory.join(folder).join(name);
             let uuid = support_root_uuid_from_bytes(&bytes);
             descriptor = bytes;
-            uuid
+            descriptor_relative = relative.clone();
+            (uuid, vec![relative, directory.clone()])
         } else {
             break;
         };
         let rule = uuid.and_then(|uuid| state.object_rule(&uuid));
         if rule == Some(0) && records.locked.is_none() {
-            records.locked = Some(node.clone());
+            records.locked = Some((node.clone(), scope));
         }
         if index == last {
             records.node_rule = rule;
@@ -1689,7 +1737,7 @@ fn plan_apply(
     let gate = match gate {
         // The person takes the configuration off support: its unreadable
         // marker no longer stands in the way.
-        Err(error) if remove_support && error.support_state_unreadable() => Ok(None),
+        Err(error) if remove_support && error.support_state_unreadable() => Ok(Vec::new()),
         Err(error) => Err(error),
         Ok(_) if remove_support => {
             return Err(ApplyPlanError::new(
@@ -1723,7 +1771,7 @@ fn plan_apply(
     let mut support_warning = match (&chosen_support, gate) {
         (None, gate) => gate?,
         // The person lifts exactly the lock they were asked about.
-        (Some(chosen), Err(error)) if error.support_lock() == Some(chosen.lock) => None,
+        (Some(chosen), Err(error)) if error.support_lock() == Some(chosen.lock) => Vec::new(),
         (Some(_), Err(error)) => return Err(error),
         (Some(_), Ok(_)) => {
             return Err(ApplyPlanError::new(
@@ -1781,11 +1829,7 @@ fn plan_apply(
             admission,
             &mut staged,
         ) {
-            Ok(warning) => {
-                if support_warning.is_none() {
-                    support_warning = warning;
-                }
-            }
+            Ok(warnings) => support_warning.extend(warnings),
             Err(error)
                 if error.support_lock().is_some_and(|lock| {
                     lock.kind == SupportLockKind::ConfigurationLocked
@@ -2033,12 +2077,14 @@ fn plan_apply(
     )?;
     let legacy_inline = collapse_legacy_inline_registrations(&mut staged, binding)?;
     let mut effects = reconcile_effects(staged.planned_changes(), provisional);
+    // A plan whose operations cancel out edits nothing protected. The gate's
+    // warnings go first: a module whose own owner is the locked node then
+    // reports it once.
+    for warning in planned_gate_warnings(support_warning, &staged.planned_changes()) {
+        effects.push_warning(warning);
+    }
     for warning in code_support_warnings {
         warning.append_if_changed(&staged.planned_changes(), &mut effects);
-    }
-    // A plan whose operations cancel out edits nothing protected.
-    if let Some(warning) = support_warning.filter(|_| !staged.planned_changes().is_empty()) {
-        effects.push_warning(warning);
     }
     for warning in legacy_inline {
         effects.push_warning(warning);
