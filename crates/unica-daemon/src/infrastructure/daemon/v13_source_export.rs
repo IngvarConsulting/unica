@@ -1945,6 +1945,30 @@ mod medium_tests {
             assert_eq!(result.diagnostics[0]["code"], expected, "{code}");
             assert_eq!(map_runner_code(code).outcome(), outcome, "{code}");
         }
+
+        // Отказы раннера 0.17 о рабочем пространстве и занятости доходят
+        // с его текстом: своего перевода у Unica нет.
+        for (code, expected, message) in [
+            (
+                "work_path_on_another_volume",
+                "invalid_state",
+                "source-set 'main' at 'D:/src' and workPath 'C:/work/.build/v8-runner' are on different volumes: the dump stage lies in workPath and is published by a rename; move the source set or workPath onto one volume",
+            ),
+            (
+                "workspace_busy",
+                "concurrent_change",
+                "workspace 'C:/work' is busy: another command holds it",
+            ),
+        ] {
+            let runner = SequenceRunner::new(vec![process(failure(code, message), false)]);
+            let result = run(
+                root.path(),
+                &prepared(root.path(), ExportMode::Full, Some("main"), None, true),
+                &runner,
+            );
+            assert_eq!(result.diagnostics[0]["code"], expected, "{code}");
+            assert_eq!(result.summary, message, "{code}");
+        }
     }
 
     fn git(dir: &Path, args: &[&str]) {
