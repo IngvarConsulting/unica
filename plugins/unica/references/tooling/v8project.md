@@ -166,8 +166,7 @@ newest installation of the line that writes the format of `Configuration.xml`.
 Before each runner operation, previews included, Unica writes
 `tools.platform.version: sources` into `v8project.local.yaml`, creating the
 file when it is absent and keeping the rest of it and its permissions; the
-answer of that call says so with the warning `platform_line_written`. A local
-file that is a link is written through the link. When the key cannot be
+answer of that call says so with the warning `platform_line_written`. When the key cannot be
 placed into the text, the file is written anew with the same keys and values
 but without comments, and the warning says so. A read-only file is not
 written: the warning `platform_line_not_written` says that the runner chooses

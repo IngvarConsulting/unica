@@ -19,7 +19,7 @@ description: "Поддержка поставки и обновлений 1С. �
 - Use `unica.view` on the role node, `unica.view` on the schema node, or form/meta tools when release risk is localized to rights, reports, forms, or metadata objects.
 - Do not call internal package, metadata, analyzer, standards, or runtime adapters directly. They are hidden behind MCP `unica`.
 
-Support-state checks come from `unica.view` on the configuration root (`support`) and on the object node, which read `Ext/ParentConfigurations.bin` through Unica. Treat `Поддержка: на замке` or read-only as a release decision: prefer CFE or an explicit support-state change plan before direct mutation.
+Support-state checks come from `props.support {editable, reason, policy, rule}` of `unica.view` on any node of an object, which read `Ext/ParentConfigurations.bin` through Unica. A node is closed when its object or any node on the path to it with its own vendor record is `locked`: a form, template, command, attribute, tabular section and its attribute, dimension, resource or nested subsystem can carry its own rule. Treat `reason: locked` or `configurationReadOnly` as a release decision: prefer CFE or an explicit support-state change plan before direct mutation. `supportRule.set` changes the rule of exactly the addressed node with its own record (`<Kind>.<Name>[.Form.F|.Template.T|.Command.C|.Attribute.A|.TabularSection.T[.Attribute.A]|.Dimension.D|.Resource.R]`, `Subsystem.A[.Subsystem.B…]`); other nodes keep their rules. A node the vendor did not put on support has no record, and setting its rule changes nothing.
 
 ## References
 

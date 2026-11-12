@@ -75,7 +75,9 @@ pub enum MetadataResourcePlan {
     ClientInterface(ClientInterfaceEdit),
     SupportCapability(SupportCapability),
     SupportRule {
-        target: MetadataAddress,
+        /// The logical path of the node with its own support record:
+        /// `Kind.Name[.Kind.Name…]`.
+        target: String,
         rule: SupportObjectRule,
     },
 
@@ -831,33 +833,26 @@ pub fn parse_support_operation(
                     ))
                 }
             };
-            let raw = match target.segments() {
-                [owner] if owner.name().is_some() => {
-                    format!("{}.{}", owner.kind().as_str(), owner.name().unwrap())
-                }
-                [owner, form]
-                    if owner.name().is_some()
-                        && form.kind() == NodeKind::Form
-                        && form.name().is_some() =>
-                {
+            if !unica_metadata::applicability::support_record_path(target.segments()) {
+                return Err(bad(
+                    op_index,
+                    "at",
+                    "supportRule.set targets a node with its own support record: a top-level metadata object, its form, template, command, attribute, tabular section and its attribute, dimension or resource, or a nested subsystem",
+                ));
+            }
+            let raw = target
+                .segments()
+                .iter()
+                .map(|segment| {
                     format!(
-                        "{}.{}.Form.{}",
-                        owner.kind().as_str(),
-                        owner.name().unwrap(),
-                        form.name().unwrap()
+                        "{}.{}",
+                        segment.kind().as_str(),
+                        segment.name().unwrap_or_default()
                     )
-                }
-                _ => {
-                    return Err(bad(
-                        op_index,
-                        "at",
-                        "supportRule.set targets a top-level metadata object or its form",
-                    ))
-                }
-            };
-            let target = MetadataAddress::parse_logical(&raw)
-                .map_err(|error| bad(op_index, "at", error.to_string()))?;
-            Ok(MetadataResourcePlan::SupportRule { target, rule })
+                })
+                .collect::<Vec<_>>()
+                .join(".");
+            Ok(MetadataResourcePlan::SupportRule { target: raw, rule })
         }
     }
 }
@@ -879,6 +874,106 @@ fn subsystem_stub_xml(name: &str, format_version: &str, uuid: &str) -> String {
         children: Vec::new(),
     };
     crate::subsystem::emit_subsystem_edit_model(&model)
+}
+
+/// The uuid of the support record of `target`: the root uuid of the
+/// descriptor of an object, form, template, command or nested subsystem, or
+/// the uuid of an attribute, tabular section, dimension or resource declared
+/// in its owner's descriptor. A form proves its registration first, as
+/// before; a declared node is found by its declared chain.
+fn support_record_uuid(
+    staged: &mut ApplyProposal<'_>,
+    target: &str,
+    authority: &dyn ApplySourceAuthority,
+    at_path: &str,
+) -> Result<String, ApplyPlanError> {
+    let not_found = |message: String| {
+        ApplyPlanError::new(ApplyPlanErrorKind::NotFound, message).at_path(at_path.to_string())
+    };
+    let parts: Vec<&str> = target.split('.').collect();
+    let [owner_kind, owner_name, rest @ ..] = parts.as_slice() else {
+        return Err(not_found("support target has no owner".to_string()));
+    };
+    let owner = MetadataAddress::parse_logical(&format!("{owner_kind}.{owner_name}"))
+        .map_err(|error| not_found(error.to_string()))?;
+    let mut relative = unica_source_designer::layout::metadata_descriptor_relative(
+        &owner,
+        authority.source_kind(),
+    )
+    .map_err(|message| {
+        ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message).at_path(at_path.to_string())
+    })?;
+    let read = |staged: &mut ApplyProposal<'_>, relative: &std::path::Path| {
+        staged
+            .read(relative)
+            .map_err(|error| ApplyPlanError::staging(error, at_path.to_string()))
+    };
+    let mut descriptor = read(staged, &relative)?
+        .ok_or_else(|| not_found("metadata descriptor was not found".to_string()))?;
+    let mut chain = String::new();
+    let mut declared_uuid = None;
+    for pair in rest.chunks(2) {
+        let [kind, name] = pair else {
+            return Err(not_found(
+                "support target has an incomplete segment".to_string(),
+            ));
+        };
+        let own_file =
+            chain.is_empty() && matches!(*kind, "Form" | "Template" | "Command" | "Subsystem");
+        let link = format!("{chain}.{kind}.{name}");
+        if let Some(uuid) = declared_node_uuid(&descriptor, &link) {
+            chain = link;
+            declared_uuid = Some(uuid);
+            continue;
+        }
+        if !own_file {
+            return Err(not_found(format!(
+                "`{target}` is not declared in its owner's descriptor"
+            )));
+        }
+        let folder = match *kind {
+            "Form" => "Forms",
+            "Template" => "Templates",
+            "Command" => "Commands",
+            _ => "Subsystems",
+        };
+        let directory = relative.with_extension("");
+        relative = directory.join(folder).join(format!("{name}.xml"));
+        descriptor = read(staged, &relative)?
+            .ok_or_else(|| not_found("metadata descriptor was not found".to_string()))?;
+        declared_uuid = None;
+    }
+    if let Some(uuid) = declared_uuid {
+        return Ok(uuid);
+    }
+    if rest.len() == 2 && rest[0] == "Form" {
+        let form =
+            MetadataAddress::parse_logical(target).map_err(|error| not_found(error.to_string()))?;
+        prove_support_form_owner(staged, &form, &relative, &descriptor, authority, at_path)?;
+    }
+    crate::support::support_root_uuid_from_bytes(&descriptor).ok_or_else(|| {
+        ApplyPlanError::new(
+            ApplyPlanErrorKind::InvalidSource,
+            "the metadata descriptor carries no object uuid",
+        )
+        .at_path(at_path.to_string())
+    })
+}
+
+/// The uuid of the node declared in `descriptor` under the chain
+/// `.Kind.Name…` below the described object.
+fn declared_node_uuid(descriptor: &[u8], chain: &str) -> Option<String> {
+    use crate::remove::{declared_chain, declared_name};
+
+    let text = std::str::from_utf8(descriptor).ok()?;
+    let document = roxmltree::Document::parse(text.trim_start_matches('\u{feff}')).ok()?;
+    document
+        .descendants()
+        .filter(|node| node.is_element() && node.has_attribute("uuid"))
+        .filter(|node| declared_name(*node).is_some())
+        .find(|node| declared_chain(*node).concat() == chain)
+        .and_then(|node| node.attribute("uuid"))
+        .map(str::to_ascii_lowercase)
 }
 
 // Вложенный адрес сначала доказывает регистрацию и идентичность описания,
@@ -1621,39 +1716,7 @@ pub fn stage_metadata_resource_plan(
             let at_path = format!("ops[{op_index}].args.at");
             let relative = PathBuf::from("Ext/ParentConfigurations.bin");
             let (preimage, text) = read_support_state(staged, &relative, &at_path)?;
-            let descriptor_relative = unica_source_designer::layout::metadata_descriptor_relative(
-                target,
-                authority.source_kind(),
-            )
-            .map_err(|message| {
-                ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message).at_path(at_path.clone())
-            })?;
-            let descriptor = staged
-                .read(&descriptor_relative)
-                .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?
-                .ok_or_else(|| {
-                    ApplyPlanError::new(
-                        ApplyPlanErrorKind::NotFound,
-                        "metadata descriptor was not found",
-                    )
-                    .at_path(at_path.clone())
-                })?;
-            prove_support_form_owner(
-                staged,
-                target,
-                &descriptor_relative,
-                &descriptor,
-                authority,
-                &at_path,
-            )?;
-            let uuid =
-                crate::support::support_root_uuid_from_bytes(&descriptor).ok_or_else(|| {
-                    ApplyPlanError::new(
-                        ApplyPlanErrorKind::InvalidSource,
-                        "the metadata descriptor carries no object uuid",
-                    )
-                    .at_path(at_path.clone())
-                })?;
+            let uuid = support_record_uuid(staged, target, authority, &at_path)?;
             let root = authority.source_root();
             let (updated, _) = crate::support_codec::plan_object_rule_data(
                 &root.join(&relative),

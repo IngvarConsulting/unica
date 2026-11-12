@@ -359,8 +359,9 @@ enum PlatformLine {
 /// says what it did. The rest of the file is kept as written; only when the
 /// key cannot be placed into the text is the document written anew with the
 /// same content. Once written, the key is set and the next call writes
-/// nothing. A local file that is a link is written through it, so the file it
-/// points to keeps being the one shared; a read-only file is not written.
+/// nothing. A read-only file is not written. A local file that is a link is
+/// not a file of the working copy: it is neither read nor written, and the
+/// operation refuses it when it reads its inputs.
 ///
 /// A config the runner cannot read is left as it is: the runner refuses it
 /// with its own answer.
@@ -374,16 +375,16 @@ fn ensure_platform_line(root: &Path) -> Result<PlatformLine, String> {
     if !needs_platform_line(&base, local.as_ref()) {
         return Ok(PlatformLine::Untouched);
     }
-    let mut path = root.join(LOCAL_NAME);
+    let path = root.join(LOCAL_NAME);
     let mut permissions = None;
     match std::fs::symlink_metadata(&path) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(error.to_string()),
+        // A link is not a file of the working copy: Unica neither reads nor
+        // writes through it, and the operation refuses it when it reads its
+        // inputs.
+        Ok(metadata) if !metadata.file_type().is_file() => return Ok(PlatformLine::Untouched),
         Ok(metadata) => {
-            if metadata.file_type().is_symlink() {
-                path = std::fs::canonicalize(&path).map_err(|error| error.to_string())?;
-            }
-            let metadata = std::fs::metadata(&path).map_err(|error| error.to_string())?;
             if metadata.permissions().readonly() {
                 return Err("the file is read-only".to_string());
             }
@@ -1057,9 +1058,10 @@ source-set:
             .contains("written anew"));
     }
 
-    /// Местный файл-ссылка остаётся ссылкой: ключ пишется в общий файл.
+    /// Местный файл-ссылкой Unica не читает и не пишет: ссылка остаётся
+    /// ссылкой, а файл, на который она указывает, — прежним.
     #[test]
-    fn a_linked_local_file_is_written_through_the_link() {
+    fn a_linked_local_file_is_left_as_it_is() {
         use unica_workspace::test_support::{
             create_file_link_fixture_for_test, FileLinkFixtureOutcome,
         };
@@ -1078,13 +1080,17 @@ source-set:
         }
         assert_eq!(
             ensure_platform_line(root.path()).unwrap(),
-            PlatformLine::Inserted
+            PlatformLine::Untouched
         );
         let link = std::fs::symlink_metadata(root.path().join(LOCAL_NAME)).unwrap();
         assert!(link.file_type().is_symlink());
-        assert!(std::fs::read_to_string(&target)
-            .unwrap()
-            .contains("version: sources"));
+        assert_eq!(
+            std::fs::read_to_string(&target).unwrap(),
+            "tools:
+  edt_cli:
+    path: x
+"
+        );
     }
 
     /// Вместе с прежней копией уходит и то, что прежнее хранилище держало

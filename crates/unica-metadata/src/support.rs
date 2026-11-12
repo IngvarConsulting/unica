@@ -65,8 +65,8 @@ impl SupportOperation {
             ),
             Self::RuleSet => (
                 object(&[("rule",json!({"type":"string","enum":["locked","editable","off-support","NotEditable","EditableWithSupport","NotSupported"]}))], &["rule"]),
-                "One existing top-level metadata object or its named form: <source-set>:<Kind>.<Name>[.Form.<FormName>].",
-                "Set the vendor support rule for the addressed object's registered UUID. Other object rules stay unchanged.",
+                "One existing node with its own vendor support record: a top-level metadata object <source-set>:<Kind>.<Name>, or below it .Form.<F>, .Template.<T>, .Command.<C>, .Attribute.<A>, .TabularSection.<T>[.Attribute.<A>], .Dimension.<D>, .Resource.<R>; a nested subsystem <source-set>:Subsystem.<A>.Subsystem.<B>….",
+                "Set the vendor support rule for the addressed node's registered UUID. The rules of other nodes, its object and its own children included, stay unchanged.",
                 "locked/NotEditable prohibit edits; editable/EditableWithSupport allow edits while keeping vendor support; off-support/NotSupported remove the object from vendor support. This Support-only apply must be separate from ordinary edits; source profile, registration and support state are still checked.",
                 json!({"values":{"rule":"editable"}}),
             ),
