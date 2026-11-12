@@ -831,7 +831,26 @@ pub fn minimal_metadata_xml<G>(
     }
     lines.push(format!("\t</{object_type}>"));
     lines.push("</MetaDataObject>".to_string());
+    insert_format_object_properties(&mut lines, object_type, format_version);
     Ok((lines.join("\r\n"), obj_uuid))
+}
+
+/// Writes after their 2.20 neighbours the properties the export format of
+/// a new object adds (INV.SOURCE.WRITABLE-PROFILE).
+fn insert_format_object_properties(lines: &mut Vec<String>, kind: &str, format_version: &str) {
+    let dialect = crate::dialect::for_version(Some(format_version));
+    for (after, property) in (dialect.added_object_properties)(kind) {
+        let open = format!("<{after}>");
+        let empty = format!("<{after}/>");
+        let Some(at) = lines.iter().position(|line| {
+            let line = line.trim_start();
+            line.starts_with(&open) || line == empty
+        }) else {
+            continue;
+        };
+        let indent = lines[at][..lines[at].len() - lines[at].trim_start().len()].to_owned();
+        lines.insert(at + 1, format!("{indent}{property}"));
+    }
 }
 
 #[cfg(any(test, feature = "test-support"))]

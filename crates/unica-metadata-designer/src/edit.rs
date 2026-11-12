@@ -4614,6 +4614,45 @@ mod export_format_tests {
         }
     }
 
+    /// rule: INV.SOURCE.WRITABLE-PROFILE
+    #[test]
+    fn a_new_report_has_the_properties_of_its_set_format() {
+        // all_kinds 2.22 (Reports/АнализВерсийОбъектов.xml) writes the
+        // analytics schema right after the data composition schema.
+        for (version, analytics) in [("2.20", false), ("2.21", false), ("2.22", true)] {
+            let context = crate::template_catalog::MinimalTemplateContext::<()> {
+                chart_of_accounts: None,
+                chart_of_calculation_types: None,
+                task: None,
+                registered_documents: Vec::new(),
+                method_name: None,
+                event_source: None,
+                event_handler: None,
+                dependencies: Vec::new(),
+                language: "ru".to_owned(),
+            };
+            let (report, _) = crate::template_catalog::minimal_metadata_xml(
+                MetadataKind::Report,
+                "New",
+                version,
+                &context,
+                || "00000000-0000-4000-8000-000000000005".to_owned(),
+            )
+            .unwrap();
+            assert_eq!(
+                report.contains(
+                    "<MainDataCompositionSchema/>\r\n\t\t\t<MainAnalyticsSystemSchema/>\r\n"
+                ),
+                analytics,
+                "{version}: {report}"
+            );
+            assert_eq!(
+                report.matches("MainAnalyticsSystemSchema").count(),
+                usize::from(analytics)
+            );
+        }
+    }
+
     /// The start tag of the root as written, declarations in their order.
     fn root_start_tag(xml: &str) -> &str {
         let start = xml.find("<MetaDataObject").unwrap();
