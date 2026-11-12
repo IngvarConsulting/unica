@@ -33,7 +33,7 @@ use super::v13_infobase_exports::{
     LOCAL_CONFIG_NAME, RUNNER_OUTPUT_LIMIT,
 };
 use crate::infrastructure::workspace::discover_workspace;
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -58,6 +58,8 @@ const EDT_STEP: &str = "edt_workspace";
 pub(super) struct PreparedInfobaseCreate {
     dry_run: bool,
     context: WorkspaceContext,
+    /// The call as made: a question about the busy infobase repeats it.
+    call: Map<String, Value>,
 }
 
 pub(super) enum Preparation {
@@ -109,7 +111,11 @@ impl PreparedInfobaseCreate {
                     format!("workspace discovery failed: {error}"),
                 )
             })?;
-        Ok(Self { dry_run, context })
+        Ok(Self {
+            dry_run,
+            context,
+            call: request.arguments().clone(),
+        })
     }
 
     pub(super) fn workspace_identity_hash(&self) -> SafeIdentityHash {
@@ -120,13 +126,14 @@ impl PreparedInfobaseCreate {
     }
 
     pub(super) fn execute(&self, cancellation: CancellationToken) -> DomainResult {
-        super::runner::with_bundled_runner(
+        let result = super::runner::with_bundled_runner(
             &self.context.workspace_root,
             &self.context.cwd,
             OPERATION,
             cancellation,
             |cancellation| execute_with_runner(self, &PinnedRunner, cancellation),
-        )
+        );
+        super::v13_infobase_sessions::bind_to_call(result, &self.call)
     }
 }
 
@@ -711,6 +718,7 @@ mod tests {
 
     fn prepared(root: &Path, dry_run: bool) -> PreparedInfobaseCreate {
         PreparedInfobaseCreate {
+            call: Map::new(),
             dry_run,
             context: WorkspaceContext {
                 cwd: root.to_path_buf(),

@@ -129,7 +129,12 @@ pub(crate) fn question_meta(choice: &HumanChoice) -> Value {
 pub(crate) fn question_text(choice: &HumanChoice) -> String {
     let mut text = choice.question.clone();
     text.push('\n');
-    for option in &choice.options {
+    // An answer that loses nothing has no line.
+    for option in choice
+        .options
+        .iter()
+        .filter(|option| !option.description.is_empty())
+    {
         text.push_str(&format!("\n{}: {}.", option.title, option.description));
     }
     if let Some(description) = &choice.cancel_description {

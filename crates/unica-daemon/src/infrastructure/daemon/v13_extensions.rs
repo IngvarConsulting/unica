@@ -79,6 +79,8 @@ pub(super) struct PreparedExtensions {
     args: Map<String, Value>,
     dry_run: bool,
     context: WorkspaceContext,
+    /// The call as made: a question about the busy infobase repeats it.
+    call: Map<String, Value>,
 }
 pub(super) enum Preparation {
     NotApplicable,
@@ -153,6 +155,7 @@ impl PreparedExtensions {
             args: args.clone(),
             dry_run,
             context,
+            call: request.arguments().clone(),
         })
     }
     pub(super) fn workspace_identity_hash(&self) -> SafeIdentityHash {
@@ -162,7 +165,7 @@ impl PreparedExtensions {
         SafeIdentityHash::from_sha256(hasher.finalize().into())
     }
     pub(super) fn execute(&self, cancellation: CancellationToken) -> DomainResult {
-        super::runner::with_bundled_runner(
+        let result = super::runner::with_bundled_runner(
             &self.context.workspace_root,
             &self.context.cwd,
             self.operation.name(),
@@ -178,7 +181,8 @@ impl PreparedExtensions {
                     missing_runner_rejection(Some(self.operation.name().into()), message)
                 }
             },
-        )
+        );
+        super::v13_infobase_sessions::bind_to_call(result, &self.call)
     }
 
     fn fail(&self, code: RefusalCode, message: impl Into<String>) -> DomainResult {

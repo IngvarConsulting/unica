@@ -155,6 +155,8 @@ pub(super) struct PreparedInfobaseExport {
     arguments: ExportArguments,
     dry_run: bool,
     context: WorkspaceContext,
+    /// The call as made: a question about the busy infobase repeats it.
+    call: Map<String, Value>,
 }
 
 pub(super) enum Preparation {
@@ -242,6 +244,7 @@ impl PreparedInfobaseExport {
             arguments,
             dry_run,
             context,
+            call: request.arguments().clone(),
         })
     }
 
@@ -253,13 +256,14 @@ impl PreparedInfobaseExport {
     }
 
     pub(super) fn execute(&self, cancellation: CancellationToken) -> DomainResult {
-        super::runner::with_bundled_runner(
+        let result = super::runner::with_bundled_runner(
             &self.context.workspace_root,
             &self.context.cwd,
             self.operation.name(),
             cancellation,
             |cancellation| execute_with_runner(self, &PinnedRunner, cancellation),
-        )
+        );
+        super::v13_infobase_sessions::bind_to_call(result, &self.call)
     }
 }
 
@@ -1421,6 +1425,11 @@ pub(super) const PLATFORM_RELEASE_MISSING: &str = "platform_release_missing";
 pub(super) fn runner_envelope_refusal(result: DomainResult, envelope: &Value) -> DomainResult {
     let mut result = with_platform_release(result, &envelope["error"]);
     note_config_warnings(&mut result, envelope);
+    // Занятую базу освобождает человек: вопрос о ней привязывается к вызову
+    // при исполнении (INV.RUNTIME.INFOBASE-SESSIONS-QUESTION).
+    if let Some(choice) = super::v13_infobase_sessions::choice_for(envelope) {
+        result.human_choice = Some(Box::new(choice));
+    }
     result
 }
 
@@ -2409,6 +2418,7 @@ mod tests {
             workspace_epoch: 1,
         };
         PreparedInfobaseExport {
+            call: Map::new(),
             operation: ExportOperation::Configuration,
             arguments: ExportArguments {
                 state: Some("working".to_string()),
@@ -2430,6 +2440,7 @@ mod tests {
             workspace_epoch: 1,
         };
         PreparedInfobaseExport {
+            call: Map::new(),
             operation: ExportOperation::Restore,
             arguments: ExportArguments {
                 state: None,
@@ -3294,6 +3305,7 @@ mod tests {
             ("output".to_string(), json!("dist/sales.cfe")),
         ]);
         let cfe = PreparedInfobaseExport {
+            call: Map::new(),
             operation: ExportOperation::Configuration,
             arguments: parse_export_arguments(ExportOperation::Configuration, &cfe_args, &context)
                 .unwrap(),
@@ -3329,6 +3341,7 @@ mod tests {
 
         let dt_args = Map::from_iter([("output".to_string(), json!("dist/base.dt"))]);
         let dt = PreparedInfobaseExport {
+            call: Map::new(),
             operation: ExportOperation::Infobase,
             arguments: parse_export_arguments(ExportOperation::Infobase, &dt_args, &context)
                 .unwrap(),

@@ -80,6 +80,10 @@ pub(super) struct PreparedSourceImport {
     arguments: ImportArguments,
     dry_run: bool,
     context: WorkspaceContext,
+    /// The call as made: a question about the busy infobase repeats it, and
+    /// the person's consent to end sessions or restart the server is read
+    /// from it.
+    call: Map<String, Value>,
 }
 
 pub(super) enum Preparation {
@@ -168,6 +172,7 @@ impl PreparedSourceImport {
             arguments,
             dry_run,
             context,
+            call: request.arguments().clone(),
         })
     }
 
@@ -188,13 +193,14 @@ impl PreparedSourceImport {
     }
 
     pub(super) fn execute(&self, cancellation: CancellationToken) -> DomainResult {
-        super::runner::with_bundled_runner(
+        let result = super::runner::with_bundled_runner(
             &self.context.workspace_root,
             &self.context.cwd,
             OPERATION,
             cancellation,
             |cancellation| execute_with_runner(self, &PinnedRunner, cancellation),
-        )
+        );
+        super::v13_infobase_sessions::bind_to_call(result, &self.call)
     }
 }
 
@@ -731,6 +737,7 @@ fn apply(
     if !anything_changed {
         let mut result = nothing_loaded(prepared, &performed, &applied, dispatched);
         note_runner_warnings(&mut result, &applied);
+        super::v13_infobase_sessions::note_terminated(&mut result, &applied);
         return result;
     }
     // **Улику о состоянии базы Unica не подделывает.** База живёт за
@@ -804,6 +811,7 @@ fn apply(
         .warnings
         .extend(overwrite_warning(prepared, &performed));
     note_runner_warnings(&mut result, &applied);
+    super::v13_infobase_sessions::note_terminated(&mut result, &applied);
 
     result
 }
@@ -1058,6 +1066,18 @@ fn invoke_runner(
     }
     if dry_run {
         args.push("--dry-run".to_string());
+    } else if super::v13_infobase_sessions::terminates_sessions(&prepared.call) {
+        // Только по согласию человека (INV.RUNTIME.INFOBASE-SESSIONS-QUESTION).
+        args.extend(["--sessions".to_string(), "force".to_string()]);
+    }
+    if !dry_run && super::v13_infobase_sessions::restarts_server(&prepared.call) {
+        super::v13_infobase_sessions::restart_server(
+            &prepared.context.workspace_root.join(CONFIG_NAME),
+            &prepared.context.workspace_root,
+            tool,
+            runner,
+            cancellation,
+        )?;
     }
     let output = runner
         .run_staged(&ProcessCommand {
@@ -1491,6 +1511,7 @@ pub(super) mod tests {
         dry_run: bool,
     ) -> PreparedSourceImport {
         PreparedSourceImport {
+            call: Map::new(),
             arguments: ImportArguments {
                 source_set: source_set.map(str::to_string),
                 full_rebuild,
