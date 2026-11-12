@@ -19,6 +19,10 @@ pub struct UnicaServer {
     /// О чём рассказать вызывающему при рукопожатии. Обычная сессия платит за
     /// это ноль байтов поверхности: рассказывать нечего.
     pub(crate) startup_notice: Option<String>,
+    /// What a person's answer to the question of a Task made of it, by the
+    /// Task's identifier: `tasks/get` shows it instead of the question until
+    /// this door restarts (INV.MCP.HUMAN-CHOICE).
+    pub(crate) answered_tasks: Arc<std::sync::Mutex<std::collections::HashMap<String, crate::AnsweredTask>>>,
     /// Тестовый каталог вместо канонического: постраничный обход `tools/list`
     /// проверяется на каталоге больше одной страницы.
     #[cfg(any(test, feature = "test-support"))]

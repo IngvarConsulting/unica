@@ -100,6 +100,24 @@ enum ChosenOutcome {
     },
 }
 
+/// What a person's answer to the question of a Task made of it.
+#[derive(Clone)]
+pub(crate) enum AnsweredTask {
+    /// The answer runs into a further question about the same call; it is
+    /// the `asked`-th of the call.
+    Asks {
+        choice: Box<unica_execution_contract::invocation::HumanChoice>,
+        refusal: Box<CallToolResult>,
+        asked: usize,
+    },
+    /// The chosen calls ended with this result.
+    Completed(Box<CallToolResult>),
+    /// The chosen call continues as this Task.
+    Follows(String),
+    /// Nobody chose: the stored result stands.
+    Declined,
+}
+
 enum SurfaceToolOutcome {
     Legacy(Box<OperationResult>),
     /// A compatibility Task tool answered with a canonical result to project.
@@ -208,6 +226,7 @@ impl UnicaServer {
         Self {
             router: SurfaceToolRouter::LegacyV12(handler),
             in_flight: Arc::new(InFlightRegistry::default()),
+            answered_tasks: Arc::default(),
             manual_calls: Arc::new(ManualCalls::default()),
             structured_tools: crate::application::tools()
                 .into_iter()
@@ -282,6 +301,7 @@ impl UnicaServer {
                 cancel,
             }),
             in_flight: Arc::new(InFlightRegistry::default()),
+            answered_tasks: Arc::default(),
             manual_calls: Arc::new(ManualCalls::default()),
             structured_tools: HashSet::new(),
             startup_notice: None,
@@ -298,6 +318,7 @@ impl UnicaServer {
         Self {
             router: SurfaceToolRouter::CanonicalV13(router),
             in_flight: Arc::new(InFlightRegistry::default()),
+            answered_tasks: Arc::default(),
             manual_calls: Arc::new(ManualCalls::default()),
             structured_tools: HashSet::new(),
             startup_notice,
@@ -372,6 +393,36 @@ impl UnicaServer {
     fn in_flight(&self) -> Arc<InFlightRegistry> {
         Arc::clone(&self.in_flight)
     }
+
+    async fn task_snapshot(
+        &self,
+        task_id: unica_execution_contract::invocation::TaskId,
+        received_at: Instant,
+    ) -> Result<V5DaemonTaskSnapshot, ErrorData> {
+        let handler = canonical_task_router(&self.router)?.get;
+        let deadline = FrontendInvocationDeadline::new(received_at, None);
+        let snapshot = tokio::task::spawn_blocking(move || handler(task_id, deadline))
+            .await
+            .map_err(|_| task_internal_error("task_worker_failed"))?
+            .map_err(|error| project_task_exchange_error(error, received_at))?;
+        ensure_task_identity(task_id, &snapshot)?;
+        Ok(snapshot)
+    }
+
+    fn answered_task(&self, task_id: &str) -> Option<AnsweredTask> {
+        self.answered_tasks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(task_id)
+            .cloned()
+    }
+
+    fn remember_answer(&self, task_id: &str, answered: AnsweredTask) {
+        self.answered_tasks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(task_id.to_string(), answered);
+    }
 }
 
 /// Сборка сервера двери для тестов демона: маршрутизатор к живому демону
@@ -382,6 +433,7 @@ impl UnicaServer {
         Self {
             router: SurfaceToolRouter::CanonicalV13(router),
             in_flight: Arc::new(InFlightRegistry::default()),
+            answered_tasks: Arc::default(),
             manual_calls: Arc::new(ManualCalls::default()),
             structured_tools: HashSet::new(),
             startup_notice: None,
@@ -1028,6 +1080,27 @@ impl ServerHandler for UnicaServer {
         .await;
         let (mut refusal, mut choice) = match outcome {
             Ok(SurfaceToolOutcome::Choice { refusal, choice }) => (refusal, choice),
+            // A Task that ended in a refusal with a question asks it when the
+            // client reads the result (INV.MCP.HUMAN-CHOICE). The stored result
+            // stays as it is: the refusal is the answer without a choice.
+            Ok(SurfaceToolOutcome::CompatibilityTask {
+                result: CompatibilityTaskResult::Snapshot(result),
+                timing,
+            }) if !result.ok && result.human_choice.is_some() => {
+                let mut choice = result.human_choice.clone().expect("checked above");
+                // Only a person answers a question of a Task: a client that
+                // cannot ask gets the stored refusal, nothing runs unasked.
+                choice.proceeds_unasked = false;
+                let refusal = compatibility_result_before(
+                    &CompatibilityTaskResult::Snapshot(result),
+                    response_budget,
+                    received_at,
+                    timing,
+                    Instant::now,
+                )
+                .map_err(crate::task_projection::projection_error)?;
+                (refusal, choice)
+            }
             outcome => {
                 return project_surface_outcome(self, &name, outcome, response_budget, received_at)
             }
@@ -1125,19 +1198,37 @@ impl ServerHandler for UnicaServer {
         let received_at = Instant::now();
         ensure_native_task_protocol(&context)?;
         let task_id = parse_task_id(&request.task_id)?;
-        let handler = canonical_task_router(&self.router)?.get;
-        let deadline = FrontendInvocationDeadline::new(received_at, None);
-        let snapshot = tokio::task::spawn_blocking(move || handler(task_id, deadline))
-            .await
-            .map_err(|_| task_internal_error("task_worker_failed"))?
-            .map_err(|error| project_task_exchange_error(error, received_at))?;
-        ensure_task_identity(task_id, &snapshot)?;
-        crate::task_projection::detailed_task_v5(
-            &snapshot,
-            client_response_budget(&context, &context.meta.0 .0),
-        )
-        .map(GetTaskResult::new)
-        .map_err(crate::task_projection::projection_error)
+        let snapshot = self.task_snapshot(task_id, received_at).await?;
+        let budget = client_response_budget(&context, &context.meta.0 .0);
+        let detailed = crate::task_projection::detailed_task_v5(&snapshot, budget)
+            .map_err(crate::task_projection::projection_error)?;
+        let answered = self.answered_task(&request.task_id);
+        // A Task that ended in a refusal with a question shows the question
+        // until the person answers it (INV.MCP.HUMAN-CHOICE); what the answer
+        // made of the Task is shown after.
+        let detailed = match answered {
+            None => match task_question(&snapshot) {
+                Some(choice) => human_choice::task_asking(detailed, &choice),
+                None => detailed,
+            },
+            Some(AnsweredTask::Declined) => detailed,
+            Some(AnsweredTask::Asks { choice, .. }) => {
+                human_choice::task_asking(detailed, &choice)
+            }
+            Some(AnsweredTask::Completed(result)) => {
+                human_choice::task_completed(detailed, &result)
+                    .map_err(crate::task_projection::projection_error)?
+            }
+            Some(AnsweredTask::Follows(follower)) => {
+                let follower_id = parse_task_id(&follower)?;
+                let followed = self.task_snapshot(follower_id, received_at).await?;
+                let mut projected = crate::task_projection::detailed_task_v5(&followed, budget)
+                    .map_err(crate::task_projection::projection_error)?;
+                projected.task.task_id = request.task_id.clone();
+                projected
+            }
+        };
+        Ok(GetTaskResult::new(detailed))
     }
 
     async fn update_task(
@@ -1149,20 +1240,81 @@ impl ServerHandler for UnicaServer {
         ensure_native_task_protocol(&context)?;
         let task_id = parse_task_id(&request.task_id)?;
         let handler = canonical_task_router(&self.router)?.get;
-        // A Task never enters input_required: a person is asked only within
-        // a synchronous tools/call (`human_choice`). Still prove the task is a current
-        // daemon-owned identity before returning the stable unsupported-input
-        // classification; unknown and expired identities retain their codes.
+        // A Task takes no input but the answer to its question. Prove the
+        // task is a current daemon-owned identity first: unknown and expired
+        // identities retain their codes.
         let deadline = FrontendInvocationDeadline::new(received_at, None);
         let snapshot = tokio::task::spawn_blocking(move || handler(task_id, deadline))
             .await
             .map_err(|_| task_internal_error("task_worker_failed"))?
             .map_err(|error| project_task_exchange_error(error, received_at))?;
         ensure_task_identity(task_id, &snapshot)?;
-        Err(ErrorData::invalid_params(
-            "task_input_not_supported",
-            Some(serde_json::json!({"code": "task_input_not_supported"})),
-        ))
+        // The only input a Task takes is the answer to its question
+        // (CTR.WIRE.NATIVE-TASK-PROJECTION).
+        let (choice, refusal, asked) = match self.answered_task(&request.task_id) {
+            Some(AnsweredTask::Asks {
+                choice,
+                refusal,
+                asked,
+            }) => (choice, *refusal, asked),
+            Some(_) => return Err(task_input_not_supported()),
+            None => match task_question(&snapshot) {
+                Some(choice) => {
+                    let budget = client_response_budget(&context, &context.meta.0 .0);
+                    let refusal = crate::task_projection::call_tool_result(
+                        snapshot.completed_result().expect("a question comes with a result"),
+                        budget,
+                    )
+                    .map_err(crate::task_projection::projection_error)?;
+                    (choice, refusal, 1)
+                }
+                None => return Err(task_input_not_supported()),
+            },
+        };
+        let Some(answer) = human_choice::task_answer(&request.input_responses) else {
+            return Err(task_input_not_supported());
+        };
+        let Some(option) = human_choice::chosen(&choice, &answer).cloned() else {
+            self.remember_answer(&request.task_id, AnsweredTask::Declined);
+            return Ok(());
+        };
+        let mut metadata = context.meta.0 .0.clone();
+        if let Some(request_meta) = request.meta.as_ref() {
+            metadata.extend(request_meta.0 .0.clone());
+        }
+        let response_budget = client_response_budget(&context, &metadata);
+        let host = unica_bootstrap::HostRequest {
+            metadata,
+            roots: unica_bootstrap::ClientRoots::NotDeclared,
+            response_budget,
+        };
+        let answered = match self
+            .run_chosen(&option, &host, None, &context, response_budget)
+            .await?
+        {
+            ChosenOutcome::Ran(CallToolResponse::Complete(result), steps) => {
+                AnsweredTask::Completed(Box::new(human_choice::name_the_choice(
+                    result, &choice, &option, &steps,
+                )))
+            }
+            ChosenOutcome::Ran(CallToolResponse::Task(created), _) => {
+                AnsweredTask::Follows(created.task.task_id)
+            }
+            ChosenOutcome::Ran(_, _) => AnsweredTask::Completed(Box::new(refusal)),
+            ChosenOutcome::Asks {
+                refusal: next,
+                choice: next_choice,
+            } if asked < human_choice::MAX_QUESTIONS_PER_CALL => AnsweredTask::Asks {
+                choice: next_choice,
+                refusal: Box::new(next),
+                asked: asked + 1,
+            },
+            ChosenOutcome::Asks { refusal: next, .. } => {
+                AnsweredTask::Completed(Box::new(next))
+            }
+        };
+        self.remember_answer(&request.task_id, answered);
+        Ok(())
     }
 
     async fn cancel_task(
@@ -1512,6 +1664,27 @@ fn project_surface_outcome(
                 .map_err(crate::task_projection::projection_error)
         }
     }
+}
+
+/// The question a Task that ended in a refusal carries for a person. Only a
+/// person answers it: nothing runs for a client that cannot ask.
+fn task_question(
+    snapshot: &V5DaemonTaskSnapshot,
+) -> Option<Box<unica_execution_contract::invocation::HumanChoice>> {
+    let result = snapshot.completed_result()?;
+    if result.ok {
+        return None;
+    }
+    let mut choice = result.human_choice.clone()?;
+    choice.proceeds_unasked = false;
+    Some(choice)
+}
+
+fn task_input_not_supported() -> ErrorData {
+    ErrorData::invalid_params(
+        "task_input_not_supported",
+        Some(serde_json::json!({"code": "task_input_not_supported"})),
+    )
 }
 
 /// Ask the person by an `elicitation/create` request (sessions before

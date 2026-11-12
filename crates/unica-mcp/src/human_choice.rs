@@ -155,6 +155,43 @@ pub(crate) fn input_required(choice: &HumanChoice) -> InputRequiredResult {
     InputRequiredResult::new(Some(requests), Some(choice_state(choice)))
 }
 
+/// The `input_required` Task asking the question: the Task keeps its identity
+/// and times, and its one input request is the question's form.
+pub(crate) fn task_asking(
+    detailed: rmcp::model::DetailedTask,
+    choice: &HumanChoice,
+) -> rmcp::model::DetailedTask {
+    let requests = input_required(choice)
+        .input_requests
+        .expect("the question has its form");
+    rmcp::model::DetailedTask::new(
+        detailed.task,
+        rmcp::model::TaskPayload::InputRequired {
+            input_requests: requests,
+        },
+    )
+}
+
+/// The completed Task whose result is what the person's answer ran.
+pub(crate) fn task_completed(
+    detailed: rmcp::model::DetailedTask,
+    result: &CallToolResult,
+) -> Result<rmcp::model::DetailedTask, crate::task_projection::TaskProjectionError> {
+    let result = serde_json::to_value(result)
+        .ok()
+        .and_then(|value| value.as_object().cloned())
+        .ok_or(crate::task_projection::TaskProjectionError::Serialization)?;
+    Ok(rmcp::model::DetailedTask::new(
+        detailed.task,
+        rmcp::model::TaskPayload::Completed { result },
+    ))
+}
+
+/// The answer a `tasks/update` carries for the question of a Task.
+pub(crate) fn task_answer(responses: &InputResponses) -> Option<ElicitResult> {
+    Some(answer_of(responses.get(CHOICE_INPUT_KEY)?.clone()))
+}
+
 /// Digest of the question and its calls. It is not trusted: it only says
 /// which question the echoed answer belongs to.
 pub(crate) fn choice_state(choice: &HumanChoice) -> String {
