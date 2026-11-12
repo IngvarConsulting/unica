@@ -1,0 +1,61 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:ns1="http://v8.1c.ru/8.1/data/core" xmlns:ns2="http://v8.1c.ru/8.1/data-composition-system/core" xmlns:ns3="http://v8.1c.ru/8.1/data-composition-system/settings" xmlns:tns="http://v8.1c.ru/8.2/managed-application/dynamic-list-data" xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="http://v8.1c.ru/8.2/managed-application/dynamic-list-data" attributeFormDefault="unqualified" elementFormDefault="qualified">
+	<xs:import namespace="http://v8.1c.ru/8.1/data/core"/>
+	<xs:import namespace="http://v8.1c.ru/8.1/data-composition-system/core"/>
+	<xs:import namespace="http://v8.1c.ru/8.1/data-composition-system/settings"/>
+	<xs:simpleType name="DynamicListKeyType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="FieldValue"/>
+			<xs:enumeration value="RowKey"/>
+			<xs:enumeration value="RowNumber"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:complexType name="CellAppearance">
+		<xs:complexContent>
+			<xs:extension base="ns2:ParameterValues"/>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="DataPart">
+		<xs:sequence>
+			<xs:element name="rowDescription" type="tns:DataPartRowDescription"/>
+			<xs:element name="rows" type="tns:DataPartRowsCollection"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="DataPartCellDescription">
+		<xs:sequence>
+			<xs:element name="nestedRowDescription" type="tns:DataPartRowDescription" minOccurs="0"/>
+			<xs:element name="type" type="ns1:Type" minOccurs="0"/>
+			<xs:element name="name" type="xs:string"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="DataPartRow">
+		<xs:choice>
+			<xs:element name="value" nillable="true" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="nullValue" type="ns1:Null" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="appearance" type="xs:int" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:choice>
+	</xs:complexType>
+	<xs:complexType name="DataPartRowDescription">
+		<xs:sequence>
+			<xs:element name="cellDescription" type="tns:DataPartCellDescription" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="DataPartRowsCollection">
+		<xs:sequence>
+			<xs:element name="row" type="tns:DataPartRow" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="appearance" type="tns:CellAppearance" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="KeyFieldValue">
+		<xs:sequence>
+			<xs:element name="field" type="xs:string"/>
+			<xs:element name="value"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="RowKey">
+		<xs:sequence>
+			<xs:element name="keyValue" type="tns:KeyFieldValue" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+</xs:schema>

@@ -1,0 +1,44 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:ns1="http://v8.1c.ru/8.1/data/core" xmlns:tns="http://v8.1c.ru/8.3/TestAndRepairExchangePlanIntegrityReport" xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="http://v8.1c.ru/8.3/TestAndRepairExchangePlanIntegrityReport" attributeFormDefault="unqualified" elementFormDefault="qualified">
+	<xs:import namespace="http://v8.1c.ru/8.1/data/core"/>
+	<xs:simpleType name="ExchangePlanIntegrityErrorType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="NoErrors"/>
+			<xs:enumeration value="WrongReferenceField"/>
+			<xs:enumeration value="WrongThisNodeField"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ExchangePlanIntegrityRepairOperationType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="TestedOnly"/>
+			<xs:enumeration value="ThisNodeFieldRepaired"/>
+			<xs:enumeration value="WrongThisNodeRecordMarkedToDelete"/>
+			<xs:enumeration value="NewThisNodeRecordCreated"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:complexType name="TestAndRepairExchangePlanIntegrity">
+		<xs:sequence>
+			<xs:element name="Name" type="xs:string"/>
+			<xs:element name="ExchangePlanIntegrityNodes" type="tns:TestAndRepairExchangePlanIntegrityNodes" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="TestAndRepairExchangePlanIntegrityNodeInfo">
+		<xs:sequence>
+			<xs:element name="Ref" type="ns1:UUID"/>
+			<xs:element name="Code" type="xs:string" minOccurs="0"/>
+			<xs:element name="Description" type="xs:string" minOccurs="0"/>
+			<xs:element name="ErrorType" type="tns:ExchangePlanIntegrityErrorType"/>
+			<xs:element name="RepairType" type="tns:ExchangePlanIntegrityRepairOperationType" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="TestAndRepairExchangePlanIntegrityNodes">
+		<xs:sequence>
+			<xs:element name="ExchangePlanIntegrityNode" type="tns:TestAndRepairExchangePlanIntegrityNodeInfo" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="TestAndRepairExchangePlanIntegrityReport">
+		<xs:sequence>
+			<xs:element name="IntegrityData" type="tns:TestAndRepairExchangePlanIntegrity" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+</xs:schema>

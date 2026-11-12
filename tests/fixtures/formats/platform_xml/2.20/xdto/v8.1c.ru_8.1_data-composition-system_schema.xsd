@@ -1,0 +1,222 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:ns1="http://v8.1c.ru/8.1/data-composition-system/settings" xmlns:ns2="http://v8.1c.ru/8.1/data-composition-system/common" xmlns:ns3="http://v8.1c.ru/8.1/data-composition-system/core" xmlns:ns4="http://v8.1c.ru/8.1/data/core" xmlns:ns5="http://v8.1c.ru/8.1/data-composition-system/area-template" xmlns:tns="http://v8.1c.ru/8.1/data-composition-system/schema" xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="http://v8.1c.ru/8.1/data-composition-system/schema" attributeFormDefault="unqualified" elementFormDefault="qualified">
+	<xs:import namespace="http://v8.1c.ru/8.1/data-composition-system/settings"/>
+	<xs:import namespace="http://v8.1c.ru/8.1/data-composition-system/common"/>
+	<xs:import namespace="http://v8.1c.ru/8.1/data-composition-system/core"/>
+	<xs:import namespace="http://v8.1c.ru/8.1/data/core"/>
+	<xs:import namespace="http://v8.1c.ru/8.1/data-composition-system/area-template"/>
+	<xs:element name="dataCompositionSchema" type="tns:DataCompositionSchema"/>
+	<xs:complexType name="AvailableValue">
+		<xs:sequence>
+			<xs:element name="value" nillable="true" minOccurs="0"/>
+			<xs:element name="presentation" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="CalculatedField">
+		<xs:sequence>
+			<xs:element name="dataPath" type="xs:string"/>
+			<xs:element name="expression" type="xs:string"/>
+			<xs:element name="title" minOccurs="0"/>
+			<xs:element name="useRestriction" type="tns:FieldUseRestriction" minOccurs="0"/>
+			<xs:element name="presentationExpression" type="xs:string" minOccurs="0"/>
+			<xs:element name="orderExpression" type="ns2:OrderExpression" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="appearance" type="ns3:Appearance" minOccurs="0"/>
+			<xs:element name="availableValue" type="tns:AvailableValue" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="valueType" type="ns4:TypeDescription" minOccurs="0"/>
+			<xs:element name="inputParameters" type="ns3:InputParameters" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="DataCompositionSchema">
+		<xs:sequence>
+			<xs:element name="dataSource" type="tns:DataSource" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="dataSet" type="tns:DataSet" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="dataSetLink" type="tns:DataSetLink" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="calculatedField" type="tns:CalculatedField" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="totalField" type="tns:TotalField" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="parameter" type="tns:Parameter" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="nestedSchema" type="tns:NestedDataCompositionSchema" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="template" type="tns:TemplateDefinition" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="fieldTemplate" type="tns:FieldTemplate" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="groupTemplate" type="tns:GroupTemplate" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="groupHeaderTemplate" type="tns:GroupTemplate" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="totalFieldsTemplate" type="tns:TotalFieldsTemplate" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="defaultSettings" type="ns1:Settings" minOccurs="0"/>
+			<xs:element name="settingsVariant" type="ns1:SettingsVariant" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="DataSet" abstract="true">
+		<xs:sequence>
+			<xs:element name="name" type="xs:string"/>
+			<xs:element name="field" type="tns:DataSetField" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="DataSetField" abstract="true"/>
+	<xs:complexType name="DataSetFieldField">
+		<xs:complexContent>
+			<xs:extension base="tns:DataSetField">
+				<xs:sequence>
+					<xs:element name="dataPath" type="xs:string"/>
+					<xs:element name="field" type="xs:string"/>
+					<xs:element name="title" minOccurs="0"/>
+					<xs:element name="useRestriction" type="tns:FieldUseRestriction" minOccurs="0"/>
+					<xs:element name="attributeUseRestriction" type="tns:FieldUseRestriction" minOccurs="0"/>
+					<xs:element name="role" type="ns2:DataSetFieldRole" minOccurs="0"/>
+					<xs:element name="presentationExpression" type="xs:string" minOccurs="0"/>
+					<xs:element name="orderExpression" type="ns2:OrderExpression" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="inHierarchyDataSet" type="xs:string" minOccurs="0"/>
+					<xs:element name="inHierarchyDataSetParameter" type="xs:string" minOccurs="0"/>
+					<xs:element name="valueType" type="ns4:TypeDescription" minOccurs="0"/>
+					<xs:element name="appearance" type="ns3:Appearance" minOccurs="0"/>
+					<xs:element name="availableValue" type="tns:AvailableValue" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="inputParameters" type="ns3:InputParameters" minOccurs="0"/>
+				</xs:sequence>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="DataSetFieldFolder">
+		<xs:complexContent>
+			<xs:extension base="tns:DataSetField">
+				<xs:sequence>
+					<xs:element name="dataPath" type="xs:string"/>
+					<xs:element name="title" minOccurs="0"/>
+					<xs:element name="useRestriction" type="tns:FieldUseRestriction" minOccurs="0"/>
+				</xs:sequence>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="DataSetFieldNestedDataSet">
+		<xs:complexContent>
+			<xs:extension base="tns:DataSetField">
+				<xs:sequence>
+					<xs:element name="dataPath" type="xs:string"/>
+					<xs:element name="field" type="xs:string"/>
+					<xs:element name="title" minOccurs="0"/>
+				</xs:sequence>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="DataSetLink">
+		<xs:sequence>
+			<xs:element name="sourceDataSet" type="xs:string"/>
+			<xs:element name="destinationDataSet" type="xs:string"/>
+			<xs:element name="sourceExpression" type="xs:string"/>
+			<xs:element name="destinationExpression" type="xs:string"/>
+			<xs:element name="parameter" type="xs:string" minOccurs="0"/>
+			<xs:element name="parameterListAllowed" type="xs:boolean" minOccurs="0"/>
+			<xs:element name="linkConditionExpression" type="xs:string" minOccurs="0"/>
+			<xs:element name="startExpression" type="xs:string" minOccurs="0"/>
+			<xs:element name="required" type="xs:boolean" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="DataSetObject">
+		<xs:complexContent>
+			<xs:extension base="tns:DataSet">
+				<xs:sequence>
+					<xs:element name="dataSource" type="xs:string"/>
+					<xs:element name="objectName" type="xs:string"/>
+				</xs:sequence>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="DataSetQuery">
+		<xs:complexContent>
+			<xs:extension base="tns:DataSet">
+				<xs:sequence>
+					<xs:element name="dataSource" type="xs:string"/>
+					<xs:element name="query" type="xs:string"/>
+					<xs:element name="autoFillFields" type="xs:boolean" minOccurs="0"/>
+					<xs:element name="useQueryGroupIfPossible" type="xs:boolean" minOccurs="0"/>
+				</xs:sequence>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="DataSetUnion">
+		<xs:complexContent>
+			<xs:extension base="tns:DataSet">
+				<xs:sequence>
+					<xs:element name="item" type="tns:DataSet" minOccurs="0" maxOccurs="unbounded"/>
+				</xs:sequence>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="DataSource">
+		<xs:sequence>
+			<xs:element name="name" type="xs:string"/>
+			<xs:element name="dataSourceType" type="xs:string"/>
+			<xs:element name="connectionString" type="xs:string" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="FieldTemplate">
+		<xs:sequence>
+			<xs:element name="field" type="ns3:Field"/>
+			<xs:element name="template" type="xs:string"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="FieldUseRestriction">
+		<xs:sequence>
+			<xs:element name="field" type="xs:boolean" minOccurs="0"/>
+			<xs:element name="condition" type="xs:boolean" minOccurs="0"/>
+			<xs:element name="group" type="xs:boolean" minOccurs="0"/>
+			<xs:element name="order" type="xs:boolean" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="GroupTemplate">
+		<xs:choice>
+			<xs:element name="groupField" type="ns3:Field" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="groupName" type="xs:string" minOccurs="0"/>
+			<xs:element name="templateType" type="ns2:DataCompositionAreaTemplateType" default="Header" minOccurs="0"/>
+			<xs:element name="template" type="xs:string"/>
+		</xs:choice>
+	</xs:complexType>
+	<xs:complexType name="NestedDataCompositionSchema">
+		<xs:sequence>
+			<xs:element name="name" type="xs:string"/>
+			<xs:element name="title" minOccurs="0"/>
+			<xs:element name="URL" type="xs:string"/>
+			<xs:element name="schema" type="tns:DataCompositionSchema"/>
+			<xs:element name="settings" type="ns1:Settings" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="Parameter">
+		<xs:sequence>
+			<xs:element name="name" type="xs:string"/>
+			<xs:element name="title" minOccurs="0"/>
+			<xs:element name="valueType" type="ns4:TypeDescription" minOccurs="0"/>
+			<xs:element name="value" nillable="true" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="useRestriction" type="xs:boolean" minOccurs="0"/>
+			<xs:element name="expression" type="xs:string" minOccurs="0"/>
+			<xs:element name="availableValue" type="tns:AvailableValue" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="valueListAllowed" type="xs:boolean" minOccurs="0"/>
+			<xs:element name="availableAsField" type="xs:boolean" minOccurs="0"/>
+			<xs:element name="functionalOptionsParameter" type="xs:string" minOccurs="0"/>
+			<xs:element name="inputParameters" type="ns3:InputParameters" minOccurs="0"/>
+			<xs:element name="denyIncompleteValues" type="xs:boolean" minOccurs="0"/>
+			<xs:element name="use" type="ns3:DataCompositionParameterUse" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="TemplateDefinition">
+		<xs:sequence>
+			<xs:element name="name" type="xs:string"/>
+			<xs:element name="template" nillable="true"/>
+			<xs:element name="parameter" type="ns5:AreaTemplateParameter" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="TotalField">
+		<xs:sequence>
+			<xs:element name="dataPath" type="xs:string"/>
+			<xs:element name="expression" type="xs:string"/>
+			<xs:element name="group" type="xs:string" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="TotalFieldsTemplate">
+		<xs:sequence>
+			<xs:element name="groupField1" type="ns3:Field" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="groupName1" type="xs:string" minOccurs="0"/>
+			<xs:element name="templateType1" type="ns2:DataCompositionAreaTemplateType" default="Header" minOccurs="0"/>
+			<xs:element name="groupField2" type="ns3:Field" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="groupName2" type="xs:string" minOccurs="0"/>
+			<xs:element name="templateType2" type="ns2:DataCompositionAreaTemplateType" default="Header" minOccurs="0"/>
+			<xs:element name="template" type="xs:string"/>
+		</xs:sequence>
+	</xs:complexType>
+</xs:schema>

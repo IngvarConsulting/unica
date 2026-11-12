@@ -1,0 +1,23 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:ns1="http://v8.1c.ru/8.1/data-composition-system/core" xmlns:tns="http://v8.1c.ru/8.2/managed-application/dynamic-list-server" xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="http://v8.1c.ru/8.2/managed-application/dynamic-list-server" attributeFormDefault="unqualified" elementFormDefault="qualified">
+	<xs:import namespace="http://v8.1c.ru/8.1/data-composition-system/core"/>
+	<xs:complexType name="FieldAppearance">
+		<xs:complexContent>
+			<xs:extension base="ns1:ParameterValues"/>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="ULLegacyDCSCATFieldWithName">
+		<xs:sequence>
+			<xs:element name="value"/>
+			<xs:element name="appearance" type="tns:FieldAppearance" minOccurs="0"/>
+			<xs:element name="fieldName" type="xs:string"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="ULSortTuple">
+		<xs:sequence>
+			<xs:element name="value" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+		<xs:attribute name="isMin" type="xs:boolean"/>
+		<xs:attribute name="isMax" type="xs:boolean"/>
+	</xs:complexType>
+</xs:schema>

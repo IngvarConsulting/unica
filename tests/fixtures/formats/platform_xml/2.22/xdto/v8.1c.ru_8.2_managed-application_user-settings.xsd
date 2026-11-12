@@ -1,0 +1,51 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:ns1="http://v8.1c.ru/8.1/data/core" xmlns:ns2="http://v8.1c.ru/8.1/data/ui" xmlns:tns="http://v8.1c.ru/8.2/managed-application/user-settings" xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="http://v8.1c.ru/8.2/managed-application/user-settings" attributeFormDefault="unqualified" elementFormDefault="qualified">
+	<xs:import namespace="http://v8.1c.ru/8.1/data/core"/>
+	<xs:import namespace="http://v8.1c.ru/8.1/data/ui"/>
+	<xs:complexType name="AddInSettings">
+		<xs:sequence>
+			<xs:element name="item" type="tns:AddInSettingsItem" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="AddInSettingsItem">
+		<xs:sequence>
+			<xs:element name="key" type="xs:string" minOccurs="0"/>
+			<xs:element name="val"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="ClientSettings">
+		<xs:sequence>
+			<xs:element name="flags" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="debugServerHTTP" type="xs:string" minOccurs="0"/>
+			<xs:element name="mainStyle" type="xs:string" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="ComparisonSettings">
+		<xs:sequence>
+			<xs:element name="tdcb" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="tdcd" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="tdcc" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="tdci" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="mdc" type="ns1:ValueListType" minOccurs="0"/>
+			<xs:element name="mdcs" type="ns1:ValueListType" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="HelpSettings">
+		<xs:sequence>
+			<xs:element name="ih" type="ns1:ValueListType" minOccurs="0"/>
+			<xs:element name="sh" type="ns1:ValueListType" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="PrintSettings">
+		<xs:sequence>
+			<xs:element name="pageSize" type="xs:string" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="WindowSettings">
+		<xs:sequence>
+			<xs:element name="formId" type="xs:string" minOccurs="0"/>
+			<xs:element name="viewKey" type="xs:string" minOccurs="0"/>
+			<xs:element name="viewElement" type="xs:string" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+</xs:schema>

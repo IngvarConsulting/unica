@@ -1,0 +1,192 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:ns1="http://v8.1c.ru/8.1/data/core" xmlns:ns2="http://v8.1c.ru/8.1/data/ui" xmlns:ns3="http://v8.1c.ru/8.2/data/chart" xmlns:tns="http://v8.1c.ru/8.3/data/planner" xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="http://v8.1c.ru/8.3/data/planner" attributeFormDefault="unqualified" elementFormDefault="qualified">
+	<xs:import namespace="http://v8.1c.ru/8.1/data/core"/>
+	<xs:import namespace="http://v8.1c.ru/8.1/data/ui"/>
+	<xs:import namespace="http://v8.1c.ru/8.2/data/chart"/>
+	<xs:simpleType name="BWAValue">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="true"/>
+			<xs:enumeration value="false"/>
+			<xs:enumeration value="auto"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="NewPlannerItemsTextType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="String"/>
+			<xs:enumeration value="FormattedString"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="PlannerItemActionLocation">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="EndOfText"/>
+			<xs:enumeration value="EndOfItem"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="PlannerItemEnableEditMode">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="DisableEdit"/>
+			<xs:enumeration value="DisableDragAndStretch"/>
+			<xs:enumeration value="DisableStretch"/>
+			<xs:enumeration value="EnableEdit"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="PlannerItemScheduleMonths">
+		<xs:list itemType="xs:decimal"/>
+	</xs:simpleType>
+	<xs:simpleType name="PlannerItemScheduleWeekDays">
+		<xs:list itemType="xs:decimal"/>
+	</xs:simpleType>
+	<xs:simpleType name="PlannerItemsBehaviorWhenSpaceInsufficient">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="CollapseItems"/>
+			<xs:enumeration value="ShowAllItems"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="PlannerItemsTimeRepresentation">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="DontDisplay"/>
+			<xs:enumeration value="BeginTime"/>
+			<xs:enumeration value="BeginAndEndTime"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:complexType name="Planner">
+		<xs:sequence>
+			<xs:element name="item" type="tns:PlannerItem" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="dimension" type="tns:PlannerDimension" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="period" type="tns:PlannerRepresentationPeriod" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="backInterval" type="tns:PlannerBackgroundInterval" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="border" type="ns2:Border"/>
+			<xs:element name="borderColor" type="ns2:Color"/>
+			<xs:element name="textColor" type="ns2:Color"/>
+			<xs:element name="backColor" type="ns2:Color"/>
+			<xs:element name="lineColor" type="ns2:Color"/>
+			<xs:element name="font" type="ns2:Font"/>
+			<xs:element name="beginOfRepresentationPeriod" type="xs:dateTime"/>
+			<xs:element name="endOfRepresentationPeriod" type="xs:dateTime"/>
+			<xs:element name="alignElementsOfTimeScale" type="xs:boolean" default="false" minOccurs="0"/>
+			<xs:element name="displayTimeScaleWrapHeaders" type="xs:boolean" default="true" minOccurs="0"/>
+			<xs:element name="displayWrapHeaders" type="xs:boolean" default="true" minOccurs="0"/>
+			<xs:element name="displayCurrentDate" type="xs:boolean" default="true" minOccurs="0"/>
+			<xs:element name="timeScaleWrapHeadersFormat" type="ns1:LocalStringType"/>
+			<xs:element name="periodicVariantRepetition" type="xs:decimal"/>
+			<xs:element name="timeScaleWrapBeginIndent" type="xs:decimal"/>
+			<xs:element name="timeScaleWrapEndIndent" type="xs:decimal"/>
+			<xs:element name="timeScale" type="ns3:TimeScale"/>
+			<xs:element name="periodicVariantUnit" type="ns3:TimeScaleUnitType"/>
+			<xs:element name="itemsTimeRepresentation" type="tns:PlannerItemsTimeRepresentation"/>
+			<xs:element name="itemsBehaviorWhenSpaceInsufficient" type="tns:PlannerItemsBehaviorWhenSpaceInsufficient"/>
+			<xs:element name="newItemsTextType" type="tns:NewPlannerItemsTextType"/>
+			<xs:element name="autoMinColumnWidth" type="xs:boolean" default="true" minOccurs="0"/>
+			<xs:element name="autoMinRowHeight" type="xs:boolean" default="true" minOccurs="0"/>
+			<xs:element name="minColumnWidth" type="xs:decimal" default="0" minOccurs="0"/>
+			<xs:element name="minRowHeight" type="xs:decimal" default="0" minOccurs="0"/>
+			<xs:element name="fixDimensionsHeader" type="tns:BWAValue" minOccurs="0"/>
+			<xs:element name="fixTimeScaleHeader" type="tns:BWAValue" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="PlannerBackgroundInterval">
+		<xs:sequence>
+			<xs:element name="begin" type="xs:dateTime"/>
+			<xs:element name="end" type="xs:dateTime"/>
+			<xs:element name="color" type="ns2:Color"/>
+			<xs:element name="dimensionValues" type="ns1:FixedMap" nillable="true" minOccurs="0"/>
+			<xs:element name="label" type="tns:PlannerBackgroundIntervalLabel" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="borderColor" type="ns2:Color"/>
+			<xs:element name="border" type="ns2:Border"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="PlannerBackgroundIntervalLabel">
+		<xs:sequence>
+			<xs:element name="value" nillable="true" minOccurs="0"/>
+			<xs:element name="text" type="xs:string"/>
+			<xs:element name="vAlign" type="ns2:VerticalAlign"/>
+			<xs:element name="hAlign" type="ns2:HorizontalAlign"/>
+			<xs:element name="textColor" type="ns2:Color"/>
+			<xs:element name="font" type="ns2:Font"/>
+			<xs:element name="textFormatted" type="xs:boolean" default="false" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="PlannerDimension">
+		<xs:sequence>
+			<xs:element name="item" type="tns:PlannerDimensionItem" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="value" nillable="true"/>
+			<xs:element name="text" type="xs:string"/>
+			<xs:element name="borderColor" type="ns2:Color"/>
+			<xs:element name="textColor" type="ns2:Color"/>
+			<xs:element name="backColor" type="ns2:Color"/>
+			<xs:element name="font" type="ns2:Font"/>
+			<xs:element name="textFormatted" type="xs:boolean" default="false" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="PlannerDimensionItem">
+		<xs:sequence>
+			<xs:element name="value" nillable="true" minOccurs="0"/>
+			<xs:element name="text" type="xs:string"/>
+			<xs:element name="borderColor" type="ns2:Color"/>
+			<xs:element name="textColor" type="ns2:Color"/>
+			<xs:element name="backColor" type="ns2:Color"/>
+			<xs:element name="font" type="ns2:Font"/>
+			<xs:element name="item" type="tns:PlannerDimensionItem" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="showOnlySubordinatesAreas" type="xs:boolean" default="false" minOccurs="0"/>
+			<xs:element name="textFormatted" type="xs:boolean" default="false" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="PlannerItem">
+		<xs:sequence>
+			<xs:element name="value" nillable="true" minOccurs="0"/>
+			<xs:element name="picture" type="ns2:Picture"/>
+			<xs:element name="begin" type="xs:dateTime"/>
+			<xs:element name="end" type="xs:dateTime"/>
+			<xs:element name="text" type="xs:string"/>
+			<xs:element name="tooltip" type="xs:string"/>
+			<xs:element name="borderColor" type="ns2:Color"/>
+			<xs:element name="textColor" type="ns2:Color"/>
+			<xs:element name="backColor" type="ns2:Color"/>
+			<xs:element name="font" type="ns2:Font"/>
+			<xs:element name="schedule" type="tns:PlannerItemSchedule" minOccurs="0"/>
+			<xs:element name="dimensionValues" type="ns1:FixedMap"/>
+			<xs:element name="replacementItem" type="tns:PlannerItem" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="replacementDate" type="xs:dateTime" nillable="true"/>
+			<xs:element name="deleted" type="xs:boolean" nillable="true"/>
+			<xs:element name="id" type="ns1:UUID"/>
+			<xs:element name="textFormatted" type="xs:boolean" default="false" minOccurs="0"/>
+			<xs:element name="border" type="ns2:Border"/>
+			<xs:element name="action" type="tns:PlannerItemAction" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="editMode" type="tns:PlannerItemEnableEditMode"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="PlannerItemAction">
+		<xs:sequence>
+			<xs:element name="value" nillable="true" minOccurs="0"/>
+			<xs:element name="enabled" type="xs:boolean" default="true" minOccurs="0"/>
+			<xs:element name="visible" type="xs:boolean" default="true" minOccurs="0"/>
+			<xs:element name="picture" type="ns2:Picture"/>
+			<xs:element name="text" type="xs:string"/>
+			<xs:element name="textFormatted" type="xs:boolean" default="false" minOccurs="0"/>
+			<xs:element name="tooltip" type="xs:string"/>
+			<xs:element name="textColor" type="ns2:Color"/>
+			<xs:element name="font" type="ns2:Font"/>
+			<xs:element name="location" type="tns:PlannerItemActionLocation"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="PlannerItemSchedule">
+		<xs:sequence>
+			<xs:element name="endDate" type="xs:dateTime"/>
+			<xs:element name="dayInMonth" type="xs:decimal" default="0" minOccurs="0"/>
+			<xs:element name="weekDayInMonth" type="xs:decimal" default="0" minOccurs="0"/>
+			<xs:element name="daysRepeat" type="xs:decimal" default="1" minOccurs="0"/>
+			<xs:element name="weeksRepeat" type="xs:decimal" default="0" minOccurs="0"/>
+			<xs:element name="monthsRepeat" type="xs:decimal" default="0" minOccurs="0"/>
+			<xs:element name="yearsRepeat" type="xs:decimal" default="0" minOccurs="0"/>
+			<xs:element name="repeatCount" type="xs:decimal" default="0" minOccurs="0"/>
+			<xs:element name="weekDays" type="tns:PlannerItemScheduleWeekDays"/>
+			<xs:element name="months" type="tns:PlannerItemScheduleMonths"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="PlannerRepresentationPeriod">
+		<xs:sequence>
+			<xs:element name="begin" type="xs:dateTime"/>
+			<xs:element name="end" type="xs:dateTime"/>
+		</xs:sequence>
+	</xs:complexType>
+</xs:schema>

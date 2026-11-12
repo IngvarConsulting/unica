@@ -1,0 +1,144 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:ns1="http://v8.1c.ru/8.1/data-composition-system/core" xmlns:ns2="http://v8.1c.ru/8.1/data-composition-system/settings" xmlns:ns3="http://v8.1c.ru/8.1/data-composition-system/details" xmlns:ns4="http://v8.1c.ru/8.1/data/ui" xmlns:ns5="http://v8.1c.ru/8.1/data/core" xmlns:ns6="http://v8.1c.ru/8.2/data/spreadsheet" xmlns:tns="http://v8.1c.ru/8.1/data-composition-system/area-template" xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="http://v8.1c.ru/8.1/data-composition-system/area-template" attributeFormDefault="unqualified" elementFormDefault="qualified">
+	<xs:import namespace="http://v8.1c.ru/8.1/data-composition-system/core"/>
+	<xs:import namespace="http://v8.1c.ru/8.1/data-composition-system/settings"/>
+	<xs:import namespace="http://v8.1c.ru/8.1/data-composition-system/details"/>
+	<xs:import namespace="http://v8.1c.ru/8.1/data/ui"/>
+	<xs:import namespace="http://v8.1c.ru/8.1/data/core"/>
+	<xs:import namespace="http://v8.1c.ru/8.2/data/spreadsheet"/>
+	<xs:complexType name="AreaTemplate">
+		<xs:sequence>
+			<xs:element name="item" type="tns:AreaTemplateItem" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="AreaTemplateItem" abstract="true"/>
+	<xs:complexType name="AreaTemplateParameter" abstract="true">
+		<xs:sequence>
+			<xs:element name="name" type="xs:string"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="ChartAppearance">
+		<xs:complexContent>
+			<xs:extension base="ns1:ParameterValues"/>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="ChartGroupAppearance">
+		<xs:complexContent>
+			<xs:extension base="ns1:ParameterValues"/>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="ChartGroupTemplate">
+		<xs:sequence>
+			<xs:element name="value" nillable="true"/>
+			<xs:element name="presentation" nillable="true"/>
+			<xs:element name="appearance" type="tns:ChartGroupAppearance"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="ChartResourceAppearance">
+		<xs:complexContent>
+			<xs:extension base="ns1:ParameterValues"/>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="ChartResourceTemplate">
+		<xs:sequence>
+			<xs:element name="resourceValue" nillable="true" maxOccurs="unbounded"/>
+			<xs:element name="appearance" type="tns:ChartResourceAppearance"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="ChartTemplate">
+		<xs:sequence>
+			<xs:element name="appearance" type="tns:ChartAppearance"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="DetailsAreaTemplateParameter">
+		<xs:complexContent>
+			<xs:extension base="tns:AreaTemplateParameter">
+				<xs:sequence>
+					<xs:element name="fieldExpression" type="tns:DetailsAreaTemplateParameterFieldExpression" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="mainAction" type="ns3:DataCompositionDetailsProcessingAction" minOccurs="0"/>
+				</xs:sequence>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="DetailsAreaTemplateParameterFieldExpression">
+		<xs:sequence>
+			<xs:element name="field" type="xs:string"/>
+			<xs:element name="expression" type="xs:string" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="DocumentAreaTemplate">
+		<xs:sequence>
+			<xs:element name="savedPicturesDensity" type="ns6:SpreadsheetDocumentSavedPicturesDensity" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="ExpressionAreaTemplateParameter">
+		<xs:complexContent>
+			<xs:extension base="tns:AreaTemplateParameter">
+				<xs:sequence>
+					<xs:element name="expression" type="xs:string"/>
+				</xs:sequence>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="Field">
+		<xs:complexContent>
+			<xs:extension base="tns:TemplateItem">
+				<xs:sequence>
+					<xs:element name="value" nillable="true" minOccurs="0"/>
+					<xs:element name="appearance" type="tns:FieldAppearance" minOccurs="0"/>
+				</xs:sequence>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="FieldAppearance">
+		<xs:complexContent>
+			<xs:extension base="ns1:ParameterValues"/>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="TableCell">
+		<xs:sequence>
+			<xs:element name="item" type="tns:TemplateItem" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="appearance" type="tns:TableCellAppearance" minOccurs="0"/>
+			<xs:element name="appIndex" type="xs:decimal" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="TableCellAppearance">
+		<xs:complexContent>
+			<xs:extension base="ns1:ParameterValues"/>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="TableRow">
+		<xs:complexContent>
+			<xs:extension base="tns:AreaTemplateItem">
+				<xs:sequence>
+					<xs:element name="tableCell" type="tns:TableCell" maxOccurs="unbounded"/>
+					<xs:element name="tableID" type="xs:string" minOccurs="0"/>
+				</xs:sequence>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="TemplateItem" abstract="true"/>
+	<xs:complexType name="ValueCollectionCell">
+		<xs:sequence>
+			<xs:element name="value" nillable="true" minOccurs="0"/>
+			<xs:element name="column" type="xs:string" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="ValueCollectionHeaderCell">
+		<xs:sequence>
+			<xs:element name="name" minOccurs="0"/>
+			<xs:element name="title" minOccurs="0"/>
+			<xs:element name="valueType" type="ns5:TypeDescription" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="ValueCollectionHeaderTemplate">
+		<xs:sequence>
+			<xs:element name="cell" type="tns:ValueCollectionHeaderCell" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="ValueCollectionTemplate">
+		<xs:sequence>
+			<xs:element name="cell" type="tns:ValueCollectionCell" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+</xs:schema>

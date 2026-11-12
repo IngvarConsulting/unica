@@ -1,0 +1,398 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:tns="http://v8.1c.ru/8.1/data/core" xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="http://v8.1c.ru/8.1/data/core" attributeFormDefault="unqualified" elementFormDefault="qualified">
+	<xs:simpleType name="AllowedLength">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Fixed"/>
+			<xs:enumeration value="Variable"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="AllowedSign">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Any"/>
+			<xs:enumeration value="Nonnegative"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="CompositeID">
+		<xs:restriction base="xs:string">
+			<xs:pattern value="-?[0-9]+(:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})?"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="DateFractions">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Date"/>
+			<xs:enumeration value="Time"/>
+			<xs:enumeration value="DateTime"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ErrorCategory">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="AccessViolation"/>
+			<xs:enumeration value="LocalFileAccessError"/>
+			<xs:enumeration value="NetworkError"/>
+			<xs:enumeration value="PrinterError"/>
+			<xs:enumeration value="ScriptCompileError"/>
+			<xs:enumeration value="ScriptRuntimeError"/>
+			<xs:enumeration value="ScriptUseError"/>
+			<xs:enumeration value="ExceptionRaisedFromScript"/>
+			<xs:enumeration value="CollaborationSystemError"/>
+			<xs:enumeration value="DataCompositionSettingsError"/>
+			<xs:enumeration value="SessionError"/>
+			<xs:enumeration value="StoredDataError"/>
+			<xs:enumeration value="FullTextSearchError"/>
+			<xs:enumeration value="ExternalDataSourceError"/>
+			<xs:enumeration value="GotoURLError"/>
+			<xs:enumeration value="DatabaseCopyError"/>
+			<xs:enumeration value="NoPermissionToUseFunctionality"/>
+			<xs:enumeration value="MultimediaToolsError"/>
+			<xs:enumeration value="DocumentConversionError"/>
+			<xs:enumeration value="InvalidPassword"/>
+			<xs:enumeration value="SignatureVerificationError"/>
+			<xs:enumeration value="ConfigurationError"/>
+			<xs:enumeration value="DatabaseTablespaceError"/>
+			<xs:enumeration value="SpeechProcessingError"/>
+			<xs:enumeration value="ForcedShutdown"/>
+			<xs:enumeration value="UnsupportedFormat"/>
+			<xs:enumeration value="OtherError"/>
+			<xs:enumeration value="AllErrors"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="FileDragMode">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="AsFile"/>
+			<xs:enumeration value="AsFileRef"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="FillCheckErrorStatus">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Error"/>
+			<xs:enumeration value="Warning"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="FillChecking">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="DontCheck"/>
+			<xs:enumeration value="ShowError"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="MainClientApplicationWindowMode">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Normal"/>
+			<xs:enumeration value="Workplace"/>
+			<xs:enumeration value="FullscreenWorkplace"/>
+			<xs:enumeration value="Kiosk"/>
+			<xs:enumeration value="EmbeddedWorkplace"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="Null">
+		<xs:restriction base="xs:string">
+			<xs:length value="0"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ObjectVersion">
+		<xs:restriction base="xs:string">
+			<xs:pattern value="[0-9a-fA-F]{40}"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="StandardBeginningDateVariant">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Custom"/>
+			<xs:enumeration value="BeginningOfThisDay"/>
+			<xs:enumeration value="BeginningOfThisWeek"/>
+			<xs:enumeration value="BeginningOfThisTenDays"/>
+			<xs:enumeration value="BeginningOfThisMonth"/>
+			<xs:enumeration value="BeginningOfThisQuarter"/>
+			<xs:enumeration value="BeginningOfThisHalfYear"/>
+			<xs:enumeration value="BeginningOfThisYear"/>
+			<xs:enumeration value="BeginningOfLastDay"/>
+			<xs:enumeration value="BeginningOfLastWeek"/>
+			<xs:enumeration value="BeginningOfLastTenDays"/>
+			<xs:enumeration value="BeginningOfLastMonth"/>
+			<xs:enumeration value="BeginningOfLastQuarter"/>
+			<xs:enumeration value="BeginningOfLastHalfYear"/>
+			<xs:enumeration value="BeginningOfLastYear"/>
+			<xs:enumeration value="BeginningOfNextDay"/>
+			<xs:enumeration value="BeginningOfNextWeek"/>
+			<xs:enumeration value="BeginningOfNextTenDays"/>
+			<xs:enumeration value="BeginningOfNextMonth"/>
+			<xs:enumeration value="BeginningOfNextQuarter"/>
+			<xs:enumeration value="BeginningOfNextHalfYear"/>
+			<xs:enumeration value="BeginningOfNextYear"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="StandardPeriodVariant">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Custom"/>
+			<xs:enumeration value="Today"/>
+			<xs:enumeration value="ThisWeek"/>
+			<xs:enumeration value="ThisTenDays"/>
+			<xs:enumeration value="ThisMonth"/>
+			<xs:enumeration value="ThisQuarter"/>
+			<xs:enumeration value="ThisHalfYear"/>
+			<xs:enumeration value="ThisYear"/>
+			<xs:enumeration value="FromBeginningOfThisWeek"/>
+			<xs:enumeration value="FromBeginningOfThisTenDays"/>
+			<xs:enumeration value="FromBeginningOfThisMonth"/>
+			<xs:enumeration value="FromBeginningOfThisQuarter"/>
+			<xs:enumeration value="FromBeginningOfThisHalfYear"/>
+			<xs:enumeration value="FromBeginningOfThisYear"/>
+			<xs:enumeration value="Yesterday"/>
+			<xs:enumeration value="LastWeek"/>
+			<xs:enumeration value="LastTenDays"/>
+			<xs:enumeration value="LastMonth"/>
+			<xs:enumeration value="LastQuarter"/>
+			<xs:enumeration value="LastHalfYear"/>
+			<xs:enumeration value="LastYear"/>
+			<xs:enumeration value="LastWeekTillSameWeekDay"/>
+			<xs:enumeration value="LastTenDaysTillSameDayNumber"/>
+			<xs:enumeration value="LastMonthTillSameDate"/>
+			<xs:enumeration value="LastQuarterTillSameDate"/>
+			<xs:enumeration value="LastHalfYearTillSameDate"/>
+			<xs:enumeration value="LastYearTillSameDate"/>
+			<xs:enumeration value="Tomorrow"/>
+			<xs:enumeration value="NextWeek"/>
+			<xs:enumeration value="NextTenDays"/>
+			<xs:enumeration value="NextMonth"/>
+			<xs:enumeration value="NextQuarter"/>
+			<xs:enumeration value="NextHalfYear"/>
+			<xs:enumeration value="NextYear"/>
+			<xs:enumeration value="NextWeekTillSameWeekDay"/>
+			<xs:enumeration value="NextTenDaysTillSameDayNumber"/>
+			<xs:enumeration value="NextMonthTillSameDate"/>
+			<xs:enumeration value="NextQuarterTillSameDate"/>
+			<xs:enumeration value="NextHalfYearTillSameDate"/>
+			<xs:enumeration value="NextYearTillSameDate"/>
+			<xs:enumeration value="TillEndOfThisWeek"/>
+			<xs:enumeration value="TillEndOfThisTenDays"/>
+			<xs:enumeration value="TillEndOfThisMonth"/>
+			<xs:enumeration value="TillEndOfThisQuarter"/>
+			<xs:enumeration value="TillEndOfThisHalfYear"/>
+			<xs:enumeration value="TillEndOfThisYear"/>
+			<xs:enumeration value="Last7Days"/>
+			<xs:enumeration value="Next7Days"/>
+			<xs:enumeration value="Month"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="Type">
+		<xs:restriction base="xs:QName"/>
+	</xs:simpleType>
+	<xs:simpleType name="UUID">
+		<xs:restriction base="xs:string">
+			<xs:pattern value="[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ValueStorage">
+		<xs:restriction base="xs:base64Binary"/>
+	</xs:simpleType>
+	<xs:complexType name="Array">
+		<xs:sequence>
+			<xs:element name="Value" nillable="true" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="BinaryDataQualifiers">
+		<xs:sequence>
+			<xs:element name="Length" type="xs:decimal"/>
+			<xs:element name="AllowedLength" type="tns:AllowedLength"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="DataFillError">
+		<xs:sequence>
+			<xs:element name="Data" type="xs:string"/>
+			<xs:element name="DataDescr" type="xs:string"/>
+			<xs:element name="Text" type="xs:string"/>
+			<xs:element name="Status" type="tns:FillCheckErrorStatus"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="DataFillErrors">
+		<xs:sequence>
+			<xs:element name="item" type="tns:DataFillError" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="DateQualifiers">
+		<xs:sequence>
+			<xs:element name="DateFractions" type="tns:DateFractions"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="Exception">
+		<xs:complexContent>
+			<xs:extension base="tns:GenericException">
+				<xs:sequence>
+					<xs:element name="data" type="xs:base64Binary" minOccurs="0"/>
+				</xs:sequence>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="FixedArray">
+		<xs:sequence>
+			<xs:element name="Value" nillable="true" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="FixedMap">
+		<xs:sequence>
+			<xs:element name="pair" type="tns:KeyAndValue" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="FixedStructure">
+		<xs:sequence>
+			<xs:element name="Property" minOccurs="0" maxOccurs="unbounded">
+				<xs:complexType>
+					<xs:sequence>
+						<xs:element name="Value" nillable="true"/>
+					</xs:sequence>
+					<xs:attribute name="name" type="xs:NMTOKEN" use="required"/>
+				</xs:complexType>
+			</xs:element>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="GenericException" abstract="true">
+		<xs:sequence>
+			<xs:element name="descr" type="xs:string"/>
+			<xs:element name="inner" type="tns:GenericException" minOccurs="0"/>
+			<xs:element name="category" type="xs:string" minOccurs="0"/>
+			<xs:element name="uiHelperUUID" type="tns:UUID" minOccurs="0"/>
+			<xs:element name="creationStack" type="xs:string" minOccurs="0"/>
+		</xs:sequence>
+		<xs:attribute name="clsid" type="tns:UUID" use="required"/>
+		<xs:attribute name="encoded" type="xs:boolean" default="false"/>
+	</xs:complexType>
+	<xs:complexType name="KeyAndValue">
+		<xs:sequence>
+			<xs:element name="Key"/>
+			<xs:element name="Value" nillable="true"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="LocalStringItemType">
+		<xs:sequence>
+			<xs:element name="lang" type="xs:NMTOKEN"/>
+			<xs:element name="content" type="xs:string"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="LocalStringType">
+		<xs:sequence>
+			<xs:element name="item" type="tns:LocalStringItemType" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="Map">
+		<xs:sequence>
+			<xs:element name="pair" type="tns:KeyAndValue" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="NumberQualifiers">
+		<xs:sequence>
+			<xs:element name="Digits" type="xs:decimal"/>
+			<xs:element name="FractionDigits" type="xs:decimal"/>
+			<xs:element name="AllowedSign" type="tns:AllowedSign"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="StandardBeginningDate">
+		<xs:sequence>
+			<xs:element name="variant"/>
+			<xs:element name="date" type="xs:dateTime" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="StandardPeriod">
+		<xs:sequence>
+			<xs:element name="variant"/>
+			<xs:element name="startDate" type="xs:dateTime" minOccurs="0"/>
+			<xs:element name="endDate" type="xs:dateTime" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="StringQualifiers">
+		<xs:sequence>
+			<xs:element name="Length" type="xs:decimal"/>
+			<xs:element name="AllowedLength" type="tns:AllowedLength"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="Structure">
+		<xs:sequence>
+			<xs:element name="Property" minOccurs="0" maxOccurs="unbounded">
+				<xs:complexType>
+					<xs:sequence>
+						<xs:element name="Value" nillable="true"/>
+					</xs:sequence>
+					<xs:attribute name="name" type="xs:NMTOKEN" use="required"/>
+				</xs:complexType>
+			</xs:element>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="TypeDescription">
+		<xs:sequence>
+			<xs:element name="Type" type="xs:QName" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="TypeSet" type="xs:QName" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="TypeId" type="tns:UUID" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="NumberQualifiers" type="tns:NumberQualifiers" minOccurs="0"/>
+			<xs:element name="StringQualifiers" type="tns:StringQualifiers" minOccurs="0"/>
+			<xs:element name="DateQualifiers" type="tns:DateQualifiers" minOccurs="0"/>
+			<xs:element name="BinaryDataQualifiers" type="tns:BinaryDataQualifiers" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="ValueListItemType">
+		<xs:sequence>
+			<xs:element name="value" nillable="true"/>
+			<xs:element name="presentation" type="xs:string" minOccurs="0"/>
+			<xs:element name="checkState" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="picture" minOccurs="0"/>
+			<xs:element name="id" type="xs:long" minOccurs="0"/>
+			<xs:element name="formatPresentationSpecified" type="xs:boolean" minOccurs="0"/>
+			<xs:element name="formatPresentation" type="xs:string" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="ValueListType">
+		<xs:choice>
+			<xs:element name="valueType" type="tns:TypeDescription"/>
+			<xs:element name="availableValues" type="tns:ValueListType" minOccurs="0"/>
+			<xs:element name="lastId" type="xs:long" minOccurs="0"/>
+			<xs:element name="item" type="tns:ValueListItemType" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:choice>
+	</xs:complexType>
+	<xs:complexType name="ValueTable">
+		<xs:sequence>
+			<xs:element name="column" type="tns:ValueTableColumn" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="index" type="tns:ValueTableIndex" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="row" type="tns:ValueTableRow" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="ValueTableColumn">
+		<xs:sequence>
+			<xs:element name="Name" type="xs:NMTOKEN" minOccurs="0"/>
+			<xs:element name="ValueType" type="tns:TypeDescription" minOccurs="0"/>
+			<xs:element name="Title" type="xs:string" minOccurs="0"/>
+			<xs:element name="Width" type="xs:nonNegativeInteger" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="ValueTableIndex">
+		<xs:sequence>
+			<xs:element name="column" type="xs:NMTOKEN" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="ValueTableRow">
+		<xs:sequence>
+			<xs:element name="Value" nillable="true" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="ValueTree">
+		<xs:sequence>
+			<xs:element name="column" type="tns:ValueTreeColumn" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="row" type="tns:ValueTreeRow" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="ValueTreeColumn">
+		<xs:sequence>
+			<xs:element name="Name" type="xs:NMTOKEN" minOccurs="0"/>
+			<xs:element name="ValueType" type="tns:TypeDescription" minOccurs="0"/>
+			<xs:element name="Title" type="xs:string" minOccurs="0"/>
+			<xs:element name="Width" type="xs:nonNegativeInteger" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="ValueTreeRow">
+		<xs:sequence>
+			<xs:element name="row" type="tns:ValueTreeRow" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="Value" nillable="true" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="LocalFormattedStringType">
+		<xs:sequence>
+			<xs:element name="lws" type="tns:LocalStringType" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="formatted" type="xs:boolean" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+</xs:schema>

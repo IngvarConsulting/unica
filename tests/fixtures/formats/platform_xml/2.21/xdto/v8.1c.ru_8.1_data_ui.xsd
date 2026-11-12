@@ -1,0 +1,436 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:ns1="http://v8.1c.ru/8.1/data/core" xmlns:tns="http://v8.1c.ru/8.1/data/ui" xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="http://v8.1c.ru/8.1/data/ui" attributeFormDefault="unqualified" elementFormDefault="qualified">
+	<xs:import namespace="http://v8.1c.ru/8.1/data/core"/>
+	<xs:simpleType name="AbsoluteColor">
+		<xs:restriction base="xs:string">
+			<xs:pattern value="#[0-9a-fA-F]{6}"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="CustomColor">
+		<xs:restriction base="xs:string">
+			<xs:pattern value="#@-?[0-9]+:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="SurrogatePalId">
+		<xs:restriction base="xs:string">
+			<xs:pattern value="#@[0-9]+"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="AbstractRef">
+		<xs:union memberTypes="ns1:CompositeID xs:QName"/>
+	</xs:simpleType>
+	<xs:simpleType name="AutoColor">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="auto"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="AutoSeriesSeparation">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="None"/>
+			<xs:enumeration value="All"/>
+			<xs:enumeration value="Maximum"/>
+			<xs:enumeration value="Minimum"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="BorderType">
+		<xs:restriction base="xs:string"/>
+	</xs:simpleType>
+	<xs:simpleType name="ChartColorPalette">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Palette8"/>
+			<xs:enumeration value="Palette32"/>
+			<xs:enumeration value="Pastel"/>
+			<xs:enumeration value="Bright"/>
+			<xs:enumeration value="Soft"/>
+			<xs:enumeration value="Warm"/>
+			<xs:enumeration value="Cold"/>
+			<xs:enumeration value="Blue"/>
+			<xs:enumeration value="Orange"/>
+			<xs:enumeration value="Green"/>
+			<xs:enumeration value="Yellow"/>
+			<xs:enumeration value="Gray"/>
+			<xs:enumeration value="Custom"/>
+			<xs:enumeration value="Gradient"/>
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="SoftAdaptive"/>
+			<xs:enumeration value="Rich"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ChartLabelType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="None"/>
+			<xs:enumeration value="Series"/>
+			<xs:enumeration value="Value"/>
+			<xs:enumeration value="Percent"/>
+			<xs:enumeration value="SeriesPercent"/>
+			<xs:enumeration value="SeriesValue"/>
+			<xs:enumeration value="SeriesValuePercent"/>
+			<xs:enumeration value="ValuePercent"/>
+			<xs:enumeration value="Point"/>
+			<xs:enumeration value="PointPercent"/>
+			<xs:enumeration value="PointValue"/>
+			<xs:enumeration value="PointValuePercent"/>
+			<xs:enumeration value="SeriesPoint"/>
+			<xs:enumeration value="SeriesPointPercent"/>
+			<xs:enumeration value="SeriesPointValue"/>
+			<xs:enumeration value="SeriesPointValuePercent"/>
+			<xs:enumeration value="ValueSize"/>
+			<xs:enumeration value="SeriesSize"/>
+			<xs:enumeration value="SeriesValueSize"/>
+			<xs:enumeration value="SeriesPointSize"/>
+			<xs:enumeration value="SeriesPointValueSize"/>
+			<xs:enumeration value="PointSize"/>
+			<xs:enumeration value="PointValueSize"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ChartLabelsOrientation">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Horizontal"/>
+			<xs:enumeration value="Vertical"/>
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="CustomAngle"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ChartLineType">
+		<xs:restriction base="tns:LineType">
+			<xs:enumeration value="None"/>
+			<xs:enumeration value="Solid"/>
+			<xs:enumeration value="Dotted"/>
+			<xs:enumeration value="Dashed"/>
+			<xs:enumeration value="DashDotted"/>
+			<xs:enumeration value="DashDottedDotted"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ChartType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Line"/>
+			<xs:enumeration value="Step"/>
+			<xs:enumeration value="StackedLine"/>
+			<xs:enumeration value="Area"/>
+			<xs:enumeration value="StackedArea"/>
+			<xs:enumeration value="NormalizedArea"/>
+			<xs:enumeration value="Column"/>
+			<xs:enumeration value="StackedColumn"/>
+			<xs:enumeration value="NormalizedColumn"/>
+			<xs:enumeration value="Column3D"/>
+			<xs:enumeration value="StackedColumn3D"/>
+			<xs:enumeration value="NormalizedColumn3D"/>
+			<xs:enumeration value="Bar"/>
+			<xs:enumeration value="StackedBar"/>
+			<xs:enumeration value="NormalizedBar"/>
+			<xs:enumeration value="Bar3D"/>
+			<xs:enumeration value="StackedBar3D"/>
+			<xs:enumeration value="NormalizedBar3D"/>
+			<xs:enumeration value="Pie"/>
+			<xs:enumeration value="Pie3D"/>
+			<xs:enumeration value="Stock"/>
+			<xs:enumeration value="OpenHighLowClose"/>
+			<xs:enumeration value="BarGraph"/>
+			<xs:enumeration value="CeilGraph"/>
+			<xs:enumeration value="TapeGraph"/>
+			<xs:enumeration value="PyramidGraph"/>
+			<xs:enumeration value="Waterfall"/>
+			<xs:enumeration value="WireframeSurface"/>
+			<xs:enumeration value="Honeycomb"/>
+			<xs:enumeration value="Surface"/>
+			<xs:enumeration value="ConvexSurface"/>
+			<xs:enumeration value="ConcaveSurface"/>
+			<xs:enumeration value="ShadedSurface"/>
+			<xs:enumeration value="RadarLine"/>
+			<xs:enumeration value="RadarArea"/>
+			<xs:enumeration value="RadarStackedLine"/>
+			<xs:enumeration value="RadarStackedArea"/>
+			<xs:enumeration value="RadarNormalizedArea"/>
+			<xs:enumeration value="Gauge"/>
+			<xs:enumeration value="Funnel"/>
+			<xs:enumeration value="Funnel3D"/>
+			<xs:enumeration value="NormalizedFunnel"/>
+			<xs:enumeration value="NormalizedFunnel3D"/>
+			<xs:enumeration value="Scatter"/>
+			<xs:enumeration value="Bubble"/>
+			<xs:enumeration value="Donut"/>
+			<xs:enumeration value="Donut3D"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="Color">
+		<xs:union memberTypes="tns:AbsoluteColor tns:AutoColor tns:CustomColor tns:SurrogatePalId ns1:CompositeID xs:QName"/>
+	</xs:simpleType>
+	<xs:simpleType name="ControlBorderType">
+		<xs:restriction base="tns:BorderType">
+			<xs:enumeration value="WithoutBorder"/>
+			<xs:enumeration value="Single"/>
+			<xs:enumeration value="Double"/>
+			<xs:enumeration value="Embossed"/>
+			<xs:enumeration value="Indented"/>
+			<xs:enumeration value="Underline"/>
+			<xs:enumeration value="DoubleUnderline"/>
+			<xs:enumeration value="Rounded"/>
+			<xs:enumeration value="Overline"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="FontType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Absolute"/>
+			<xs:enumeration value="WindowsFont"/>
+			<xs:enumeration value="StyleItem"/>
+			<xs:enumeration value="AutoFont"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="FormattedString">
+		<xs:restriction base="xs:string"/>
+	</xs:simpleType>
+	<xs:simpleType name="GeographicalSchemeLineType">
+		<xs:restriction base="tns:LineType">
+			<xs:enumeration value="None"/>
+			<xs:enumeration value="Solid"/>
+			<xs:enumeration value="Dotted"/>
+			<xs:enumeration value="Dashed"/>
+			<xs:enumeration value="DashDotted"/>
+			<xs:enumeration value="DashDottedDotted"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="HorizontalAlign">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Left"/>
+			<xs:enumeration value="Center"/>
+			<xs:enumeration value="Right"/>
+			<xs:enumeration value="Justify"/>
+			<xs:enumeration value="Auto"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="Key">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="None"/>
+			<xs:enumeration value="BackSpace"/>
+			<xs:enumeration value="Space"/>
+			<xs:enumeration value="PageUp"/>
+			<xs:enumeration value="PageDown"/>
+			<xs:enumeration value="Home"/>
+			<xs:enumeration value="End"/>
+			<xs:enumeration value="Left"/>
+			<xs:enumeration value="Up"/>
+			<xs:enumeration value="Right"/>
+			<xs:enumeration value="Down"/>
+			<xs:enumeration value="Ins"/>
+			<xs:enumeration value="Del"/>
+			<xs:enumeration value="Tab"/>
+			<xs:enumeration value="Enter"/>
+			<xs:enumeration value="Esc"/>
+			<xs:enumeration value="_0"/>
+			<xs:enumeration value="_1"/>
+			<xs:enumeration value="_2"/>
+			<xs:enumeration value="_3"/>
+			<xs:enumeration value="_4"/>
+			<xs:enumeration value="_5"/>
+			<xs:enumeration value="_6"/>
+			<xs:enumeration value="_7"/>
+			<xs:enumeration value="_8"/>
+			<xs:enumeration value="_9"/>
+			<xs:enumeration value="A"/>
+			<xs:enumeration value="B"/>
+			<xs:enumeration value="C"/>
+			<xs:enumeration value="D"/>
+			<xs:enumeration value="E"/>
+			<xs:enumeration value="F"/>
+			<xs:enumeration value="G"/>
+			<xs:enumeration value="H"/>
+			<xs:enumeration value="I"/>
+			<xs:enumeration value="J"/>
+			<xs:enumeration value="K"/>
+			<xs:enumeration value="L"/>
+			<xs:enumeration value="M"/>
+			<xs:enumeration value="N"/>
+			<xs:enumeration value="O"/>
+			<xs:enumeration value="P"/>
+			<xs:enumeration value="Q"/>
+			<xs:enumeration value="R"/>
+			<xs:enumeration value="S"/>
+			<xs:enumeration value="T"/>
+			<xs:enumeration value="U"/>
+			<xs:enumeration value="V"/>
+			<xs:enumeration value="W"/>
+			<xs:enumeration value="X"/>
+			<xs:enumeration value="Y"/>
+			<xs:enumeration value="Z"/>
+			<xs:enumeration value="Num0"/>
+			<xs:enumeration value="Num1"/>
+			<xs:enumeration value="Num2"/>
+			<xs:enumeration value="Num3"/>
+			<xs:enumeration value="Num4"/>
+			<xs:enumeration value="Num5"/>
+			<xs:enumeration value="Num6"/>
+			<xs:enumeration value="Num7"/>
+			<xs:enumeration value="Num8"/>
+			<xs:enumeration value="Num9"/>
+			<xs:enumeration value="NumMultiply"/>
+			<xs:enumeration value="NumAdd"/>
+			<xs:enumeration value="NumSubtract"/>
+			<xs:enumeration value="NumDecimal"/>
+			<xs:enumeration value="NumDivide"/>
+			<xs:enumeration value="F1"/>
+			<xs:enumeration value="F2"/>
+			<xs:enumeration value="F3"/>
+			<xs:enumeration value="F4"/>
+			<xs:enumeration value="F5"/>
+			<xs:enumeration value="F6"/>
+			<xs:enumeration value="F7"/>
+			<xs:enumeration value="F8"/>
+			<xs:enumeration value="F9"/>
+			<xs:enumeration value="F10"/>
+			<xs:enumeration value="F11"/>
+			<xs:enumeration value="F12"/>
+			<xs:enumeration value="Break"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="LineType">
+		<xs:restriction base="xs:string"/>
+	</xs:simpleType>
+	<xs:simpleType name="PictureFormat">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="BMP"/>
+			<xs:enumeration value="EMF"/>
+			<xs:enumeration value="GIF"/>
+			<xs:enumeration value="Icon"/>
+			<xs:enumeration value="JPEG"/>
+			<xs:enumeration value="PNG"/>
+			<xs:enumeration value="TIFF"/>
+			<xs:enumeration value="WMF"/>
+			<xs:enumeration value="UnknownFormat"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="PictureRef">
+		<xs:union memberTypes="ns1:CompositeID xs:QName"/>
+	</xs:simpleType>
+	<xs:simpleType name="PivotChartType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Column"/>
+			<xs:enumeration value="Column3D"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="SizeChangeMode">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Normal"/>
+			<xs:enumeration value="QuickChange"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="SpreadsheetDocumentCellLineType">
+		<xs:restriction base="tns:LineType">
+			<xs:enumeration value="None"/>
+			<xs:enumeration value="Solid"/>
+			<xs:enumeration value="Dotted"/>
+			<xs:enumeration value="Double"/>
+			<xs:enumeration value="ThinDashed"/>
+			<xs:enumeration value="ThickDashed"/>
+			<xs:enumeration value="LargeDashed"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="SpreadsheetDocumentDrawingLineType">
+		<xs:restriction base="tns:LineType">
+			<xs:enumeration value="None"/>
+			<xs:enumeration value="Solid"/>
+			<xs:enumeration value="Dashed"/>
+			<xs:enumeration value="Dotted"/>
+			<xs:enumeration value="DashDotted"/>
+			<xs:enumeration value="DashDottedDotted"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="StyleRef">
+		<xs:union memberTypes="ns1:CompositeID xs:QName"/>
+	</xs:simpleType>
+	<xs:simpleType name="TextDirection">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="LeftToRight"/>
+			<xs:enumeration value="RightToLeft"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="TextEncoding">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="UTF16"/>
+			<xs:enumeration value="UTF8"/>
+			<xs:enumeration value="ANSI"/>
+			<xs:enumeration value="OEM"/>
+			<xs:enumeration value="System"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="UseOutput">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="Enable"/>
+			<xs:enumeration value="Disable"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="VerticalAlign">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Top"/>
+			<xs:enumeration value="Center"/>
+			<xs:enumeration value="Bottom"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:complexType name="Border">
+		<xs:sequence>
+			<xs:element name="style" type="tns:BorderType" minOccurs="0"/>
+		</xs:sequence>
+		<xs:attribute name="ref" type="tns:StyleRef"/>
+		<xs:attribute name="width" type="xs:unsignedInt"/>
+	</xs:complexType>
+	<xs:complexType name="Font">
+		<xs:attribute name="ref" type="tns:StyleRef"/>
+		<xs:attribute name="faceName" type="xs:string"/>
+		<xs:attribute name="height" type="xs:decimal"/>
+		<xs:attribute name="bold" type="xs:boolean" default="false"/>
+		<xs:attribute name="italic" type="xs:boolean" default="false"/>
+		<xs:attribute name="underline" type="xs:boolean" default="false"/>
+		<xs:attribute name="strikeout" type="xs:boolean" default="false"/>
+		<xs:attribute name="kind" type="tns:FontType"/>
+		<xs:attribute name="scale" type="xs:decimal"/>
+		<xs:attribute name="lineHeight" type="xs:decimal"/>
+	</xs:complexType>
+	<xs:complexType name="GaugeChartQualityBand">
+		<xs:sequence>
+			<xs:element name="begin" type="xs:decimal"/>
+			<xs:element name="end" type="xs:decimal"/>
+			<xs:element name="backColor" type="tns:Color"/>
+			<xs:element name="text" type="ns1:LocalStringType" minOccurs="0"/>
+			<xs:element name="tooltip" type="ns1:LocalStringType" minOccurs="0"/>
+			<xs:element name="textStr" type="xs:string" minOccurs="0"/>
+			<xs:element name="tooltipStr" type="xs:string" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="GaugeChartQualityBands">
+		<xs:sequence>
+			<xs:element name="item" type="tns:GaugeChartQualityBand" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+		<xs:attribute name="useTextStr" type="xs:boolean"/>
+		<xs:attribute name="useTooltipStr" type="xs:boolean"/>
+	</xs:complexType>
+	<xs:complexType name="Line">
+		<xs:sequence>
+			<xs:element name="style" type="tns:LineType" minOccurs="0"/>
+		</xs:sequence>
+		<xs:attribute name="width" type="xs:unsignedInt"/>
+		<xs:attribute name="gap" type="xs:boolean"/>
+	</xs:complexType>
+	<xs:complexType name="Picture">
+		<xs:simpleContent>
+			<xs:extension base="xs:base64Binary">
+				<xs:attribute name="url" type="xs:string"/>
+				<xs:attribute name="ref" type="tns:PictureRef"/>
+				<xs:attribute name="t" type="xs:boolean"/>
+				<xs:attribute name="tx" type="xs:decimal"/>
+				<xs:attribute name="ty" type="xs:decimal"/>
+				<xs:attribute name="gx" type="xs:decimal"/>
+				<xs:attribute name="gy" type="xs:decimal"/>
+				<xs:attribute name="gw" type="xs:decimal"/>
+				<xs:attribute name="gh" type="xs:decimal"/>
+			</xs:extension>
+		</xs:simpleContent>
+	</xs:complexType>
+	<xs:complexType name="ShortCutType">
+		<xs:sequence>
+			<xs:element name="Key" type="tns:Key"/>
+		</xs:sequence>
+		<xs:attribute name="Alt" type="xs:boolean"/>
+		<xs:attribute name="Ctrl" type="xs:boolean"/>
+		<xs:attribute name="Shift" type="xs:boolean"/>
+	</xs:complexType>
+</xs:schema>

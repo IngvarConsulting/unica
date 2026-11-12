@@ -1,0 +1,271 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:ns1="http://v8.1c.ru/8.1/data/core" xmlns:ns2="http://v8.1c.ru/8.1/data/enterprise" xmlns:ns3="http://v8.1c.ru/8.2/managed-application/core" xmlns:ns4="http://v8.1c.ru/8.3/xcf/enums" xmlns:ns5="http://v8.1c.ru/8.2/managed-application/logform" xmlns:tns="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="http://v8.1c.ru/8.3/xcf/readable" attributeFormDefault="unqualified" elementFormDefault="qualified">
+	<xs:import namespace="http://v8.1c.ru/8.1/data/core"/>
+	<xs:import namespace="http://v8.1c.ru/8.1/data/enterprise"/>
+	<xs:import namespace="http://v8.1c.ru/8.2/managed-application/core"/>
+	<xs:import namespace="http://v8.1c.ru/8.3/xcf/enums"/>
+	<xs:import namespace="http://v8.1c.ru/8.2/managed-application/logform"/>
+	<xs:simpleType name="AliasedStringType">
+		<xs:restriction base="xs:string"/>
+	</xs:simpleType>
+	<xs:simpleType name="DataPath">
+		<xs:restriction base="tns:ReferenceType"/>
+	</xs:simpleType>
+	<xs:simpleType name="DesignTimeRef">
+		<xs:restriction base="tns:ReferenceType"/>
+	</xs:simpleType>
+	<xs:simpleType name="EventName">
+		<xs:restriction base="xs:string"/>
+	</xs:simpleType>
+	<xs:simpleType name="ExternalProperty">
+		<xs:restriction base="xs:string"/>
+	</xs:simpleType>
+	<xs:simpleType name="FiedlRef">
+		<xs:restriction base="tns:ReferenceType"/>
+	</xs:simpleType>
+	<xs:simpleType name="IncludeInCommandCategoriesType">
+		<xs:restriction base="tns:ReferenceType"/>
+	</xs:simpleType>
+	<xs:simpleType name="MDMethodRef">
+		<xs:restriction base="tns:ReferenceType"/>
+	</xs:simpleType>
+	<xs:simpleType name="MDObjectRef">
+		<xs:restriction base="tns:ReferenceType"/>
+	</xs:simpleType>
+	<xs:simpleType name="ReferenceType">
+		<xs:restriction base="xs:string">
+			<xs:pattern value="([A-Za-z0-9_])*"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ShortCutType">
+		<xs:restriction base="xs:string"/>
+	</xs:simpleType>
+	<xs:complexType name="AdjustableBoolean">
+		<xs:sequence>
+			<xs:element name="Common" type="xs:boolean"/>
+			<xs:element name="Value" type="tns:AdjustableBooleanItemType" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="AdjustableBooleanItemType">
+		<xs:simpleContent>
+			<xs:extension base="xs:boolean">
+				<xs:attribute name="name" type="tns:MDObjectRef"/>
+			</xs:extension>
+		</xs:simpleContent>
+	</xs:complexType>
+	<xs:complexType name="CharacteristicTypes">
+		<xs:sequence>
+			<xs:element name="KeyField" type="tns:FiedlRef"/>
+			<xs:element name="TypesFilterField" type="tns:FiedlRef"/>
+			<xs:element name="TypesFilterValue"/>
+			<xs:element name="DataPathField" type="tns:FiedlRef"/>
+			<xs:element name="MultipleValuesUseField" type="tns:FiedlRef"/>
+		</xs:sequence>
+		<xs:attribute name="from" type="tns:MDObjectRef"/>
+	</xs:complexType>
+	<xs:complexType name="CharacteristicValues">
+		<xs:sequence>
+			<xs:element name="ObjectField" type="tns:FiedlRef"/>
+			<xs:element name="TypeField" type="tns:FiedlRef"/>
+			<xs:element name="ValueField" type="tns:FiedlRef"/>
+			<xs:element name="MultipleValuesKeyField" type="tns:FiedlRef"/>
+			<xs:element name="MultipleValuesOrderField" type="tns:FiedlRef"/>
+		</xs:sequence>
+		<xs:attribute name="from" type="tns:MDObjectRef"/>
+	</xs:complexType>
+	<xs:complexType name="CharacteristicsDescription">
+		<xs:sequence>
+			<xs:element name="CharacteristicTypes" type="tns:CharacteristicTypes"/>
+			<xs:element name="CharacteristicValues" type="tns:CharacteristicValues"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="CharacteristicsDescriptions">
+		<xs:sequence>
+			<xs:element name="Characteristic" type="tns:CharacteristicsDescription" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="ChoiceParameterLink">
+		<xs:sequence>
+			<xs:element name="Name" type="xs:string" maxOccurs="unbounded"/>
+			<xs:element name="DataPath" type="tns:DataPath" maxOccurs="unbounded"/>
+			<xs:element name="ValueChange" type="ns2:LinkedValueChangeMode" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="ChoiceParameterLinks">
+		<xs:sequence>
+			<xs:element name="Link" type="tns:ChoiceParameterLink" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="CommonAttributeContent">
+		<xs:sequence>
+			<xs:element name="Item" type="tns:CommonAttributeContentItem" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="CommonAttributeContentItem">
+		<xs:sequence>
+			<xs:element name="Metadata" type="tns:MDObjectRef"/>
+			<xs:element name="Use" type="ns4:CommonAttributeUse"/>
+			<xs:element name="ConditionalSeparation" type="tns:MDObjectRef"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="ContainedObject">
+		<xs:sequence>
+			<xs:element name="ClassId" type="ns1:UUID"/>
+			<xs:element name="ObjectId" type="ns1:UUID"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="EntityWithVersion">
+		<xs:attribute name="version" type="ns4:FormatVersion"/>
+	</xs:complexType>
+	<xs:complexType name="ExtendedProperty">
+		<xs:sequence>
+			<xs:element name="CheckValue" nillable="true" minOccurs="0"/>
+			<xs:element name="ExtendValue" nillable="true" minOccurs="0"/>
+			<xs:element name="NotifyValue" nillable="true" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="FieldList">
+		<xs:sequence>
+			<xs:element name="Field" type="tns:FiedlRef" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="FlagType">
+		<xs:simpleContent>
+			<xs:extension base="xs:boolean">
+				<xs:attribute name="ref" type="tns:MDObjectRef"/>
+			</xs:extension>
+		</xs:simpleContent>
+	</xs:complexType>
+	<xs:complexType name="FormattedStringType">
+		<xs:complexContent>
+			<xs:extension base="ns1:LocalStringType">
+				<xs:attribute name="formatted" type="xs:boolean"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="FuncOptionContentType">
+		<xs:sequence>
+			<xs:element name="Object" type="tns:MDObjectRef" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="GeneratedType">
+		<xs:sequence>
+			<xs:element name="TypeId" type="ns1:UUID"/>
+			<xs:element name="ValueId" type="ns1:UUID"/>
+		</xs:sequence>
+		<xs:attribute name="category" type="ns4:TypeCategories"/>
+		<xs:attribute name="name" type="xs:string"/>
+	</xs:complexType>
+	<xs:complexType name="InternalInfo">
+		<xs:sequence>
+			<xs:element name="ThisNode" type="ns1:UUID" minOccurs="0"/>
+			<xs:element name="GeneratedType" type="tns:GeneratedType" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="ContainedObject" type="tns:ContainedObject" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="PropertyState" type="tns:PropertyState" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="MDListType">
+		<xs:choice>
+			<xs:element name="Item" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:choice>
+	</xs:complexType>
+	<xs:complexType name="Picture">
+		<xs:choice>
+			<xs:element name="Ref" type="xs:string" minOccurs="0"/>
+			<xs:element name="Url" type="xs:string" minOccurs="0"/>
+			<xs:element name="Abs" type="xs:string" minOccurs="0"/>
+			<xs:element name="LoadTransparent" type="xs:boolean"/>
+			<xs:element name="TransparentPixel" type="tns:Point" minOccurs="0"/>
+			<xs:element name="GlyphPoint" type="tns:Point" minOccurs="0"/>
+			<xs:element name="ZipEntryParams" type="xs:string" minOccurs="0"/>
+		</xs:choice>
+	</xs:complexType>
+	<xs:complexType name="Point">
+		<xs:attribute name="x" type="xs:decimal"/>
+		<xs:attribute name="y" type="xs:decimal"/>
+	</xs:complexType>
+	<xs:complexType name="PropertyState">
+		<xs:sequence>
+			<xs:element name="Property" type="xs:string"/>
+			<xs:element name="State" type="ns4:PropertyState"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="Rect">
+		<xs:attribute name="top" type="xs:decimal"/>
+		<xs:attribute name="left" type="xs:decimal"/>
+		<xs:attribute name="bottom" type="xs:decimal"/>
+		<xs:attribute name="right" type="xs:decimal"/>
+	</xs:complexType>
+	<xs:complexType name="Size">
+		<xs:attribute name="cx" type="xs:decimal"/>
+		<xs:attribute name="cy" type="xs:decimal"/>
+	</xs:complexType>
+	<xs:complexType name="StandardAttributeDescription">
+		<xs:choice>
+			<xs:element name="Synonym" type="ns1:LocalStringType" minOccurs="0"/>
+			<xs:element name="Comment" type="xs:string" minOccurs="0"/>
+			<xs:element name="ToolTip" type="ns1:LocalStringType" minOccurs="0"/>
+			<xs:element name="QuickChoice" type="ns4:UseQuickChoice" minOccurs="0"/>
+			<xs:element name="FillChecking" type="ns1:FillChecking" minOccurs="0"/>
+			<xs:element name="FillValue" minOccurs="0"/>
+			<xs:element name="FillFromFillingValue" type="xs:boolean" minOccurs="0"/>
+			<xs:element name="ChoiceParameterLinks" type="tns:ChoiceParameterLinks" minOccurs="0"/>
+			<xs:element name="ChoiceParameters" type="ns3:ChoiceParameters" minOccurs="0"/>
+			<xs:element name="LinkByType" type="tns:TypeLink" minOccurs="0"/>
+			<xs:element name="FullTextSearch" type="ns4:FullTextSearchUsing" minOccurs="0"/>
+			<xs:element name="PasswordMode" type="xs:boolean" minOccurs="0"/>
+			<xs:element name="Format" type="ns1:LocalStringType" minOccurs="0"/>
+			<xs:element name="EditFormat" type="ns1:LocalStringType" minOccurs="0"/>
+			<xs:element name="Mask" type="xs:string" minOccurs="0"/>
+			<xs:element name="MultiLine" type="xs:boolean" minOccurs="0"/>
+			<xs:element name="ExtendedEdit" type="xs:boolean" minOccurs="0"/>
+			<xs:element name="MinValue" minOccurs="0"/>
+			<xs:element name="MaxValue" minOccurs="0"/>
+			<xs:element name="MarkNegatives" type="xs:boolean" minOccurs="0"/>
+			<xs:element name="ChoiceForm" type="tns:MDObjectRef" minOccurs="0"/>
+			<xs:element name="CreateOnInput" type="ns4:CreateOnInput" minOccurs="0"/>
+			<xs:element name="ChoiceHistoryOnInput" type="ns5:ChoiceHistoryOnInput" minOccurs="0"/>
+			<xs:element name="DataHistory" type="ns4:DataHistoryUse" minOccurs="0"/>
+			<xs:element name="TypeReductionMode" type="ns4:TypeReductionMode" minOccurs="0"/>
+		</xs:choice>
+		<xs:attribute name="name" type="xs:string" use="required"/>
+	</xs:complexType>
+	<xs:complexType name="StandardAttributeDescriptions">
+		<xs:sequence>
+			<xs:element name="StandardAttribute" type="tns:StandardAttributeDescription" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="StandardTabularSectionDescription">
+		<xs:sequence>
+			<xs:element name="Synonym" type="ns1:LocalStringType" minOccurs="0"/>
+			<xs:element name="Comment" type="xs:string" minOccurs="0"/>
+			<xs:element name="ToolTip" type="ns1:LocalStringType" minOccurs="0"/>
+			<xs:element name="FillChecking" type="ns1:FillChecking" minOccurs="0"/>
+			<xs:element name="StandardAttributes" type="tns:StandardAttributeDescriptions"/>
+		</xs:sequence>
+		<xs:attribute name="name" type="xs:string" use="required"/>
+	</xs:complexType>
+	<xs:complexType name="StandardTabularSectionDescriptions">
+		<xs:sequence>
+			<xs:element name="StandardTabularSection" type="tns:StandardTabularSectionDescription" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="TypeLink">
+		<xs:sequence>
+			<xs:element name="DataPath" type="tns:DataPath" maxOccurs="unbounded"/>
+			<xs:element name="LinkItem" type="xs:decimal" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="ValueList">
+		<xs:sequence>
+			<xs:element name="Item" type="tns:ValueListItem"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="ValueListItem">
+		<xs:sequence>
+			<xs:element name="Presentation" type="xs:string"/>
+			<xs:element name="CheckState" type="xs:decimal"/>
+			<xs:element name="Value"/>
+		</xs:sequence>
+	</xs:complexType>
+</xs:schema>

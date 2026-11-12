@@ -1,0 +1,76 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:ns1="http://v8.1c.ru/8.1/data/core" xmlns:tns="http://v8.1c.ru/8.3/data/pdf" xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="http://v8.1c.ru/8.3/data/pdf" attributeFormDefault="unqualified" elementFormDefault="qualified">
+	<xs:import namespace="http://v8.1c.ru/8.1/data/core"/>
+	<xs:simpleType name="PDFAttachmentRelationshipType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Unspecified"/>
+			<xs:enumeration value="Source"/>
+			<xs:enumeration value="Data"/>
+			<xs:enumeration value="Alternative"/>
+			<xs:enumeration value="Supplement"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="PDFDocumentFileType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="PDF"/>
+			<xs:enumeration value="PDF_A_1"/>
+			<xs:enumeration value="PDF_A_2"/>
+			<xs:enumeration value="PDF_A_3"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="PDFModificationAccessPermissions">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="None"/>
+			<xs:enumeration value="FillingSigning"/>
+			<xs:enumeration value="FillingSigningAnnotation"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="PDFSignatureType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Approving"/>
+			<xs:enumeration value="Certifying"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:complexType name="Changes">
+		<xs:sequence>
+			<xs:element name="distributedKey" type="xs:string" minOccurs="0"/>
+			<xs:element name="pswd" type="xs:string" minOccurs="0"/>
+			<xs:element name="attachments" type="tns:PDFAttachmentCollection" minOccurs="0"/>
+			<xs:element name="contentLength" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="content" type="xs:base64Binary" minOccurs="0"/>
+			<xs:element name="pageContent" type="tns:PDFDocumentPage" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="PDFAttachment">
+		<xs:sequence>
+			<xs:element name="fileName" type="xs:string"/>
+			<xs:element name="content"/>
+			<xs:element name="mimeType" type="xs:string" minOccurs="0"/>
+			<xs:element name="relationship" type="tns:PDFAttachmentRelationshipType" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="PDFAttachmentCollection">
+		<xs:sequence>
+			<xs:element name="item" type="tns:PDFAttachment" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="PDFDocument">
+		<xs:sequence>
+			<xs:element name="distributedKey" type="xs:string" minOccurs="0"/>
+			<xs:element name="pswd" type="xs:string" minOccurs="0"/>
+			<xs:element name="attachments" type="tns:PDFAttachmentCollection" minOccurs="0"/>
+			<xs:element name="contentLength" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="content" type="xs:base64Binary" minOccurs="0"/>
+			<xs:element name="pageContent" type="tns:PDFDocumentPage" minOccurs="0"/>
+			<xs:element name="sourceURL" type="xs:string" minOccurs="0"/>
+			<xs:element name="version" type="xs:decimal" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="PDFDocumentPage">
+		<xs:sequence>
+			<xs:element name="pageNum" type="xs:decimal"/>
+			<xs:element name="length" type="xs:decimal"/>
+			<xs:element name="content" type="xs:base64Binary"/>
+		</xs:sequence>
+	</xs:complexType>
+</xs:schema>

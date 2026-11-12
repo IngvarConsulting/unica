@@ -1,0 +1,593 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:tns="http://v8.1c.ru/8.3/xcf/enums" xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="http://v8.1c.ru/8.3/xcf/enums" attributeFormDefault="unqualified" elementFormDefault="qualified">
+	<xs:simpleType name="AccountMainPresentation">
+		<xs:restriction base="tns:BaseEnumType">
+			<xs:enumeration value="AsCode"/>
+			<xs:enumeration value="AsDescription"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="AccumulationRegisterType">
+		<xs:restriction base="tns:BaseEnumType">
+			<xs:enumeration value="Balance"/>
+			<xs:enumeration value="Turnovers"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="AttributeUse">
+		<xs:restriction base="tns:BaseEnumType">
+			<xs:enumeration value="ForItem"/>
+			<xs:enumeration value="ForFolder"/>
+			<xs:enumeration value="ForFolderAndItem"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="BaseEnumType">
+		<xs:restriction base="xs:string"/>
+	</xs:simpleType>
+	<xs:simpleType name="BinaryDataBlockStorageUseMode">
+		<xs:restriction base="tns:BaseEnumType">
+			<xs:enumeration value="Use"/>
+			<xs:enumeration value="DontUse"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="BinaryDataStorageLocationUse">
+		<xs:restriction base="tns:BaseEnumType">
+			<xs:enumeration value="Use"/>
+			<xs:enumeration value="DontUse"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="BinaryDataStorageMode">
+		<xs:restriction base="tns:BaseEnumType">
+			<xs:enumeration value="DontUse"/>
+			<xs:enumeration value="Use"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="BusinessProcessNumberPeriodicity">
+		<xs:restriction base="tns:BaseEnumType">
+			<xs:enumeration value="Nonperiodical"/>
+			<xs:enumeration value="Year"/>
+			<xs:enumeration value="Quarter"/>
+			<xs:enumeration value="Month"/>
+			<xs:enumeration value="Day"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="BusinessProcessNumberType">
+		<xs:restriction base="tns:BaseEnumType">
+			<xs:enumeration value="Number"/>
+			<xs:enumeration value="String"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="CalculationRegisterPeriodicity">
+		<xs:restriction base="tns:BaseEnumType">
+			<xs:enumeration value="Year"/>
+			<xs:enumeration value="Quarter"/>
+			<xs:enumeration value="Month"/>
+			<xs:enumeration value="Day"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="CalculationTypeMainPresentation">
+		<xs:restriction base="tns:BaseEnumType">
+			<xs:enumeration value="AsCode"/>
+			<xs:enumeration value="AsDescription"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="CatalogCodeType">
+		<xs:restriction base="tns:BaseEnumType">
+			<xs:enumeration value="Number"/>
+			<xs:enumeration value="String"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="CatalogCodesSeries">
+		<xs:restriction base="tns:BaseEnumType">
+			<xs:enumeration value="WholeCatalog"/>
+			<xs:enumeration value="WithinSubordination"/>
+			<xs:enumeration value="WithinOwnerSubordination"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="CatalogMainPresentation">
+		<xs:restriction base="tns:BaseEnumType">
+			<xs:enumeration value="AsCode"/>
+			<xs:enumeration value="AsDescription"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="CharOfAccountCodeSeries">
+		<xs:restriction base="tns:BaseEnumType">
+			<xs:enumeration value="WholeChartOfAccounts"/>
+			<xs:enumeration value="WithinSubordination"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="CharacteristicKindCodesSeries">
+		<xs:restriction base="tns:BaseEnumType">
+			<xs:enumeration value="WholeCharacteristicKind"/>
+			<xs:enumeration value="WithinSubordination"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="CharacteristicTypeMainPresentation">
+		<xs:restriction base="tns:BaseEnumType">
+			<xs:enumeration value="AsCode"/>
+			<xs:enumeration value="AsDescription"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ChartOfCalculationTypesBaseUse">
+		<xs:restriction base="tns:BaseEnumType">
+			<xs:enumeration value="DontUse"/>
+			<xs:enumeration value="OnActionPeriod"/>
+			<xs:enumeration value="OnRegistrationPeriod"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ChartOfCalculationTypesCodeType">
+		<xs:restriction base="tns:BaseEnumType">
+			<xs:enumeration value="Number"/>
+			<xs:enumeration value="String"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ChoiceDataGetModeOnInputByString">
+		<xs:restriction base="tns:BaseEnumType">
+			<xs:enumeration value="Directly"/>
+			<xs:enumeration value="Background"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ChoiceMode">
+		<xs:restriction base="tns:BaseEnumType">
+			<xs:enumeration value="FromForm"/>
+			<xs:enumeration value="QuickChoice"/>
+			<xs:enumeration value="BothWays"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="CommonAttributeAuthenticationSeparation">
+		<xs:restriction base="tns:BaseEnumType">
+			<xs:enumeration value="Separate"/>
+			<xs:enumeration value="DontUse"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="CommonAttributeAutoUse">
+		<xs:restriction base="tns:BaseEnumType">
+			<xs:enumeration value="Use"/>
+			<xs:enumeration value="DontUse"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="CommonAttributeConfigurationExtensionsSeparation">
+		<xs:restriction base="tns:BaseEnumType">
+			<xs:enumeration value="Separate"/>
+			<xs:enumeration value="DontUse"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="CommonAttributeDataSeparation">
+		<xs:restriction base="tns:BaseEnumType">
+			<xs:enumeration value="Separate"/>
+			<xs:enumeration value="DontUse"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="CommonAttributeSeparatedDataUse">
+		<xs:restriction base="tns:BaseEnumType">
+			<xs:enumeration value="Independently"/>
+			<xs:enumeration value="IndependentlyAndSimultaneously"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="CommonAttributeUse">
+		<xs:restriction base="tns:BaseEnumType">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="Use"/>
+			<xs:enumeration value="DontUse"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="CommonAttributeUsersSeparation">
+		<xs:restriction base="tns:BaseEnumType">
+			<xs:enumeration value="Separate"/>
+			<xs:enumeration value="DontUse"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="CompatibilityMode">
+		<xs:restriction base="tns:BaseEnumType">
+			<xs:enumeration value="DontUse"/>
+			<xs:enumeration value="Version8_3_12"/>
+			<xs:enumeration value="Version8_3_11"/>
+			<xs:enumeration value="Version8_3_10"/>
+			<xs:enumeration value="Version8_3_9"/>
+			<xs:enumeration value="Version8_3_8"/>
+			<xs:enumeration value="Version8_3_7"/>
+			<xs:enumeration value="Version8_3_6"/>
+			<xs:enumeration value="Version8_3_5"/>
+			<xs:enumeration value="Version8_3_4"/>
+			<xs:enumeration value="Version8_3_3"/>
+			<xs:enumeration value="Version8_3_2"/>
+			<xs:enumeration value="Version8_3_1"/>
+			<xs:enumeration value="Version8_2_16"/>
+			<xs:enumeration value="Version8_2_13"/>
+			<xs:enumeration value="Version8_1"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ConfigurationExtensionPurpose">
+		<xs:restriction base="tns:BaseEnumType">
+			<xs:enumeration value="Patch"/>
+			<xs:enumeration value="Customization"/>
+			<xs:enumeration value="AddOn"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="CreateOnInput">
+		<xs:restriction base="tns:BaseEnumType">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="DontUse"/>
+			<xs:enumeration value="Use"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="DataExchangeMainPresentation">
+		<xs:restriction base="tns:BaseEnumType">
+			<xs:enumeration value="AsCode"/>
+			<xs:enumeration value="AsDescription"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="DataHistoryUse">
+		<xs:restriction base="tns:BaseEnumType">
+			<xs:enumeration value="DontUse"/>
+			<xs:enumeration value="Use"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="DatabaseTablespacesUseMode">
+		<xs:restriction base="tns:BaseEnumType">
+			<xs:enumeration value="Use"/>
+			<xs:enumeration value="DontUse"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="DefaultDataLockControlMode">
+		<xs:restriction base="tns:BaseEnumType">
+			<xs:enumeration value="Automatic"/>
+			<xs:enumeration value="Managed"/>
+			<xs:enumeration value="AutomaticAndManaged"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="DocumentNumberPeriodicity">
+		<xs:restriction base="tns:BaseEnumType">
+			<xs:enumeration value="Nonperiodical"/>
+			<xs:enumeration value="Year"/>
+			<xs:enumeration value="Quarter"/>
+			<xs:enumeration value="Month"/>
+			<xs:enumeration value="Day"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="DocumentNumberType">
+		<xs:restriction base="tns:BaseEnumType">
+			<xs:enumeration value="Number"/>
+			<xs:enumeration value="String"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="EditType">
+		<xs:restriction base="tns:BaseEnumType">
+			<xs:enumeration value="InList"/>
+			<xs:enumeration value="InDialog"/>
+			<xs:enumeration value="BothWays"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ExternalDataSourceTableDataType">
+		<xs:restriction base="tns:BaseEnumType">
+			<xs:enumeration value="ObjectData"/>
+			<xs:enumeration value="NonobjectData"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ExternalDataSourceTableType">
+		<xs:restriction base="tns:BaseEnumType">
+			<xs:enumeration value="Table"/>
+			<xs:enumeration value="Expression"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="FormType">
+		<xs:restriction base="tns:BaseEnumType">
+			<xs:enumeration value="Ordinary"/>
+			<xs:enumeration value="Managed"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="FormatVersion">
+		<xs:restriction base="tns:BaseEnumType">
+			<xs:enumeration value="1.0"/>
+			<xs:enumeration value="2.0"/>
+			<xs:enumeration value="2.1"/>
+			<xs:enumeration value="2.2"/>
+			<xs:enumeration value="2.3"/>
+			<xs:enumeration value="2.4"/>
+			<xs:enumeration value="2.5"/>
+			<xs:enumeration value="2.6"/>
+			<xs:enumeration value="2.7"/>
+			<xs:enumeration value="2.8"/>
+			<xs:enumeration value="2.9"/>
+			<xs:enumeration value="2.9.1"/>
+			<xs:enumeration value="2.10"/>
+			<xs:enumeration value="2.11"/>
+			<xs:enumeration value="2.12"/>
+			<xs:enumeration value="2.13"/>
+			<xs:enumeration value="2.14"/>
+			<xs:enumeration value="2.15"/>
+			<xs:enumeration value="2.16"/>
+			<xs:enumeration value="2.17"/>
+			<xs:enumeration value="2.18"/>
+			<xs:enumeration value="2.19"/>
+			<xs:enumeration value="2.20"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="FullTextSearchOnInputByString">
+		<xs:restriction base="tns:BaseEnumType">
+			<xs:enumeration value="Use"/>
+			<xs:enumeration value="DontUse"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="FullTextSearchUsing">
+		<xs:restriction base="tns:BaseEnumType">
+			<xs:enumeration value="DontUse"/>
+			<xs:enumeration value="Use"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="HTTPMethod">
+		<xs:restriction base="tns:BaseEnumType">
+			<xs:enumeration value="GET"/>
+			<xs:enumeration value="HEAD"/>
+			<xs:enumeration value="PUT"/>
+			<xs:enumeration value="POST"/>
+			<xs:enumeration value="DELETE"/>
+			<xs:enumeration value="PATCH"/>
+			<xs:enumeration value="MERGE"/>
+			<xs:enumeration value="OPTIONS"/>
+			<xs:enumeration value="TRACE"/>
+			<xs:enumeration value="CONNECT"/>
+			<xs:enumeration value="PROPFIND"/>
+			<xs:enumeration value="PROPPATCH"/>
+			<xs:enumeration value="MOVE"/>
+			<xs:enumeration value="COPY"/>
+			<xs:enumeration value="LOCK"/>
+			<xs:enumeration value="UNLOCK"/>
+			<xs:enumeration value="MKCOL"/>
+			<xs:enumeration value="Any"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="HierarchyType">
+		<xs:restriction base="tns:BaseEnumType">
+			<xs:enumeration value="HierarchyFoldersAndItems"/>
+			<xs:enumeration value="HierarchyOfItems"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="Indexing">
+		<xs:restriction base="tns:BaseEnumType">
+			<xs:enumeration value="DontIndex"/>
+			<xs:enumeration value="Index"/>
+			<xs:enumeration value="IndexWithAdditionalOrder"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="InformationRegisterPeriodicity">
+		<xs:restriction base="tns:BaseEnumType">
+			<xs:enumeration value="Nonperiodical"/>
+			<xs:enumeration value="RecorderPosition"/>
+			<xs:enumeration value="Second"/>
+			<xs:enumeration value="Day"/>
+			<xs:enumeration value="Month"/>
+			<xs:enumeration value="Quarter"/>
+			<xs:enumeration value="Year"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="IntegrationServiceChannelMessageDirection">
+		<xs:restriction base="tns:BaseEnumType">
+			<xs:enumeration value="Send"/>
+			<xs:enumeration value="Receive"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="InterfaceCompatibilityMode">
+		<xs:restriction base="tns:BaseEnumType">
+			<xs:enumeration value="Taxi"/>
+			<xs:enumeration value="TaxiEnableVersion8_2"/>
+			<xs:enumeration value="Version8_2EnableTaxi"/>
+			<xs:enumeration value="Version8_2"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ModalityUseMode">
+		<xs:restriction base="tns:BaseEnumType">
+			<xs:enumeration value="Use"/>
+			<xs:enumeration value="UseWithWarnings"/>
+			<xs:enumeration value="DontUse"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="MoveBoundaryOnPosting">
+		<xs:restriction base="tns:BaseEnumType">
+			<xs:enumeration value="Move"/>
+			<xs:enumeration value="DontMove"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ObjectAutonumerationMode">
+		<xs:restriction base="tns:BaseEnumType">
+			<xs:enumeration value="AutoFree"/>
+			<xs:enumeration value="NotAutoFree"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ObjectBelonging">
+		<xs:restriction base="tns:BaseEnumType">
+			<xs:enumeration value="Native"/>
+			<xs:enumeration value="Adopted"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="Posting">
+		<xs:restriction base="tns:BaseEnumType">
+			<xs:enumeration value="Allow"/>
+			<xs:enumeration value="Deny"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="PredefinedDataUpdate">
+		<xs:restriction base="tns:BaseEnumType">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="AutoUpdate"/>
+			<xs:enumeration value="DontAutoUpdate"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="PropertyState">
+		<xs:restriction base="tns:BaseEnumType">
+			<xs:enumeration value="NotSet"/>
+			<xs:enumeration value="Checked"/>
+			<xs:enumeration value="Extended"/>
+			<xs:enumeration value="Notify"/>
+			<xs:enumeration value="MultiState"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="RealTimePosting">
+		<xs:restriction base="tns:BaseEnumType">
+			<xs:enumeration value="Allow"/>
+			<xs:enumeration value="Deny"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="RegisterRecordsDeletion">
+		<xs:restriction base="tns:BaseEnumType">
+			<xs:enumeration value="AutoDeleteOnUnpost"/>
+			<xs:enumeration value="AutoDelete"/>
+			<xs:enumeration value="AutoDeleteOff"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="RegisterRecordsWritingOnPost">
+		<xs:restriction base="tns:BaseEnumType">
+			<xs:enumeration value="WriteSelected"/>
+			<xs:enumeration value="WriteModified"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="RegisterWriteMode">
+		<xs:restriction base="tns:BaseEnumType">
+			<xs:enumeration value="Independent"/>
+			<xs:enumeration value="RecorderSubordinate"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ReturnValuesReuse">
+		<xs:restriction base="tns:BaseEnumType">
+			<xs:enumeration value="DontUse"/>
+			<xs:enumeration value="DuringRequest"/>
+			<xs:enumeration value="DuringSession"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ScriptVariant">
+		<xs:restriction base="tns:BaseEnumType">
+			<xs:enumeration value="English"/>
+			<xs:enumeration value="Russian"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="SearchStringModeOnInputByString">
+		<xs:restriction base="tns:BaseEnumType">
+			<xs:enumeration value="Begin"/>
+			<xs:enumeration value="AnyPart"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="SequenceFilling">
+		<xs:restriction base="tns:BaseEnumType">
+			<xs:enumeration value="AutoFill"/>
+			<xs:enumeration value="AutoFillOff"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="SessionReuseMode">
+		<xs:restriction base="tns:BaseEnumType">
+			<xs:enumeration value="DontUse"/>
+			<xs:enumeration value="Use"/>
+			<xs:enumeration value="AutoUse"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="StyleElementType">
+		<xs:restriction base="tns:BaseEnumType">
+			<xs:enumeration value="Color"/>
+			<xs:enumeration value="Font"/>
+			<xs:enumeration value="Border"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="SubordinationUse">
+		<xs:restriction base="tns:BaseEnumType">
+			<xs:enumeration value="ToItems"/>
+			<xs:enumeration value="ToFolders"/>
+			<xs:enumeration value="ToFoldersAndItems"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="SynchronousPlatformExtensionAndAddInCallUseMode">
+		<xs:restriction base="tns:BaseEnumType">
+			<xs:enumeration value="Use"/>
+			<xs:enumeration value="UseWithWarnings"/>
+			<xs:enumeration value="DontUse"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="TaskMainPresentation">
+		<xs:restriction base="tns:BaseEnumType">
+			<xs:enumeration value="AsNumber"/>
+			<xs:enumeration value="AsDescription"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="TaskNumberAutoPrefix">
+		<xs:restriction base="tns:BaseEnumType">
+			<xs:enumeration value="BusinessProcessNumber"/>
+			<xs:enumeration value="DontUse"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="TaskNumberType">
+		<xs:restriction base="tns:BaseEnumType">
+			<xs:enumeration value="Number"/>
+			<xs:enumeration value="String"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="TemplateType">
+		<xs:restriction base="tns:BaseEnumType">
+			<xs:enumeration value="SpreadsheetDocument"/>
+			<xs:enumeration value="BinaryData"/>
+			<xs:enumeration value="ActiveDocument"/>
+			<xs:enumeration value="HTMLDocument"/>
+			<xs:enumeration value="TextDocument"/>
+			<xs:enumeration value="GeographicalSchema"/>
+			<xs:enumeration value="GraphicalSchema"/>
+			<xs:enumeration value="DataCompositionSchema"/>
+			<xs:enumeration value="DataCompositionAppearanceTemplate"/>
+			<xs:enumeration value="AddIn"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="TransferDirection">
+		<xs:restriction base="tns:BaseEnumType">
+			<xs:enumeration value="In"/>
+			<xs:enumeration value="Out"/>
+			<xs:enumeration value="InOut"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="TypeCategories">
+		<xs:restriction base="tns:BaseEnumType">
+			<xs:enumeration value="TabularSectionRow"/>
+			<xs:enumeration value="Object"/>
+			<xs:enumeration value="Ref"/>
+			<xs:enumeration value="Selection"/>
+			<xs:enumeration value="List"/>
+			<xs:enumeration value="Manager"/>
+			<xs:enumeration value="ValueManager"/>
+			<xs:enumeration value="RecordManager"/>
+			<xs:enumeration value="RecordSet"/>
+			<xs:enumeration value="RecordKey"/>
+			<xs:enumeration value="Characteristic"/>
+			<xs:enumeration value="ExtDimensions"/>
+			<xs:enumeration value="ExtDimensionTypesRow"/>
+			<xs:enumeration value="DisplacingCalculationTypes"/>
+			<xs:enumeration value="DisplacingCalculationTypesRow"/>
+			<xs:enumeration value="BaseCalculationTypes"/>
+			<xs:enumeration value="BaseCalculationTypesRow"/>
+			<xs:enumeration value="LeadingCalculationTypes"/>
+			<xs:enumeration value="LeadingCalculationTypesRow"/>
+			<xs:enumeration value="Recalcs"/>
+			<xs:enumeration value="RoutePointRef"/>
+			<xs:enumeration value="TablesManager"/>
+			<xs:enumeration value="Record"/>
+			<xs:enumeration value="TabularSection"/>
+			<xs:enumeration value="ExtDimensionTypes"/>
+			<xs:enumeration value="CubesManager"/>
+			<xs:enumeration value="DimensionTables"/>
+			<xs:enumeration value="DefinedType"/>
+			<xs:enumeration value="ValueKey"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="TypeReductionMode">
+		<xs:restriction base="tns:BaseEnumType">
+			<xs:enumeration value="TransformValues"/>
+			<xs:enumeration value="DeleteData"/>
+			<xs:enumeration value="Deny"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="UseQuickChoice">
+		<xs:restriction base="tns:BaseEnumType">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="Use"/>
+			<xs:enumeration value="DontUse"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="XCFFormat">
+		<xs:restriction base="tns:BaseEnumType">
+			<xs:enumeration value="Hierarchical"/>
+			<xs:enumeration value="Plain"/>
+		</xs:restriction>
+	</xs:simpleType>
+</xs:schema>

@@ -1,0 +1,96 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:ns1="http://v8.1c.ru/8.1/data/core" xmlns:ns2="http://v8.1c.ru/8.1/data/ui" xmlns:tns="http://v8.1c.ru/8.2/data/formatted-document" xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="http://v8.1c.ru/8.2/data/formatted-document" attributeFormDefault="unqualified" elementFormDefault="qualified">
+	<xs:import namespace="http://v8.1c.ru/8.1/data/core"/>
+	<xs:import namespace="http://v8.1c.ru/8.1/data/ui"/>
+	<xs:simpleType name="FormattedDocumentFileType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="TXT"/>
+			<xs:enumeration value="ANSITXT"/>
+			<xs:enumeration value="HTML"/>
+			<xs:enumeration value="PDF"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="FormattedDocumentItemType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Text"/>
+			<xs:enumeration value="Picture"/>
+			<xs:enumeration value="Linefeed"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="HorizontalAlignment">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Left"/>
+			<xs:enumeration value="Center"/>
+			<xs:enumeration value="Right"/>
+			<xs:enumeration value="Justify"/>
+			<xs:enumeration value="Auto"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ParagraphType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Usual"/>
+			<xs:enumeration value="Bulleted"/>
+			<xs:enumeration value="Numbered"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:complexType name="Content">
+		<xs:sequence>
+			<xs:element name="p" type="tns:Paragraph" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+		<xs:attribute name="fid" type="xs:decimal"/>
+		<xs:attribute name="fpid" type="xs:decimal"/>
+	</xs:complexType>
+	<xs:complexType name="FormattedDocument">
+		<xs:sequence>
+			<xs:element name="id" type="ns1:UUID"/>
+			<xs:element name="content" type="tns:Content"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="FormattedDocumentBookmark">
+		<xs:attribute name="part" type="xs:decimal"/>
+		<xs:attribute name="prgrph" type="xs:decimal"/>
+		<xs:attribute name="pos" type="xs:decimal"/>
+	</xs:complexType>
+	<xs:complexType name="FormattedDocumentRange">
+		<xs:sequence>
+			<xs:element name="beginbmk" type="tns:FormattedDocumentBookmark"/>
+			<xs:element name="endbmk" type="tns:FormattedDocumentBookmark"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="Paragraph">
+		<xs:choice>
+			<xs:element name="text" type="tns:TextElement" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="pic" type="tns:PictureElement" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="sbr" type="tns:SoftBreakElement" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:choice>
+		<xs:attribute name="id" type="xs:decimal"/>
+		<xs:attribute name="type" type="tns:ParagraphType"/>
+		<xs:attribute name="hAlign" type="tns:HorizontalAlignment"/>
+		<xs:attribute name="indent" type="xs:decimal"/>
+		<xs:attribute name="lineSpacing" type="xs:decimal"/>
+	</xs:complexType>
+	<xs:complexType name="PictureElement">
+		<xs:sequence>
+			<xs:element name="pic" type="ns2:Picture" minOccurs="0"/>
+			<xs:element name="link" type="xs:string" minOccurs="0"/>
+		</xs:sequence>
+		<xs:attribute name="id" type="xs:decimal"/>
+		<xs:attribute name="width" type="xs:decimal"/>
+		<xs:attribute name="height" type="xs:decimal"/>
+	</xs:complexType>
+	<xs:complexType name="SoftBreakElement"/>
+	<xs:complexType name="TextAppearance">
+		<xs:sequence>
+			<xs:element name="fnt" type="ns2:Font" minOccurs="0"/>
+			<xs:element name="bkClr" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="txtClr" type="ns2:Color" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="TextElement">
+		<xs:sequence>
+			<xs:element name="text" type="xs:string" minOccurs="0"/>
+			<xs:element name="link" type="xs:string" minOccurs="0"/>
+			<xs:element name="apprnc" type="tns:TextAppearance" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+</xs:schema>

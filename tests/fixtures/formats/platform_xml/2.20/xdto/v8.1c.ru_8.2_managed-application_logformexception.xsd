@@ -1,0 +1,36 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:ns1="http://v8.1c.ru/8.1/data/core" xmlns:tns="http://v8.1c.ru/8.2/managed-application/logformexception" xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="http://v8.1c.ru/8.2/managed-application/logformexception" attributeFormDefault="unqualified" elementFormDefault="qualified">
+	<xs:import namespace="http://v8.1c.ru/8.1/data/core"/>
+	<xs:complexType name="BSLExceptionValue">
+		<xs:sequence>
+			<xs:element name="exception" type="ns1:GenericException" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="FindByStringException">
+		<xs:complexContent>
+			<xs:extension base="ns1:GenericException">
+				<xs:attribute name="reason" type="xs:decimal"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="LogFormException">
+		<xs:complexContent>
+			<xs:extension base="ns1:GenericException">
+				<xs:sequence>
+					<xs:element name="string0" type="xs:string"/>
+					<xs:element name="string1" type="xs:string"/>
+					<xs:element name="string2" type="xs:string"/>
+					<xs:element name="string3" type="xs:string"/>
+				</xs:sequence>
+				<xs:attribute name="reason" type="xs:decimal"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="UniversalListException">
+		<xs:complexContent>
+			<xs:extension base="ns1:GenericException">
+				<xs:attribute name="reason" type="xs:decimal"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+</xs:schema>

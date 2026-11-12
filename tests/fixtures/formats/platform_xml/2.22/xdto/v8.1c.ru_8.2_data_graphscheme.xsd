@@ -1,0 +1,173 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:ns1="http://v8.1c.ru/8.1/data/core" xmlns:ns2="http://v8.1c.ru/8.1/data/ui" xmlns:tns="http://v8.1c.ru/8.2/data/graphscheme" xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="http://v8.1c.ru/8.2/data/graphscheme" attributeFormDefault="unqualified" elementFormDefault="qualified">
+	<xs:import namespace="http://v8.1c.ru/8.1/data/core"/>
+	<xs:import namespace="http://v8.1c.ru/8.1/data/ui"/>
+	<xs:simpleType name="ArrowStyle">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="None"/>
+			<xs:enumeration value="Filled"/>
+			<xs:enumeration value="Blank"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ConnectorLineType">
+		<xs:restriction base="ns2:LineType">
+			<xs:enumeration value="Solid"/>
+			<xs:enumeration value="Dashed"/>
+			<xs:enumeration value="Dotted"/>
+			<xs:enumeration value="DashDotted"/>
+			<xs:enumeration value="DashDottedDotted"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ConnectorTextLocation">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="FirstSegment"/>
+			<xs:enumeration value="Middle"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="FitPageMode">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="PageWidth"/>
+			<xs:enumeration value="Proportionally"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="GraphicalSchemaGridDrawMode">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="None"/>
+			<xs:enumeration value="Dots"/>
+			<xs:enumeration value="Chess"/>
+			<xs:enumeration value="Lines"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="GraphicalSchemaItemPictureLocation">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Left"/>
+			<xs:enumeration value="Top"/>
+			<xs:enumeration value="Right"/>
+			<xs:enumeration value="Bottom"/>
+			<xs:enumeration value="Center"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="GraphicalSchemaShapes">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="None"/>
+			<xs:enumeration value="File"/>
+			<xs:enumeration value="Folder"/>
+			<xs:enumeration value="RightArrow"/>
+			<xs:enumeration value="LeftRightArrow"/>
+			<xs:enumeration value="VerticalBrackets"/>
+			<xs:enumeration value="Document"/>
+			<xs:enumeration value="Block"/>
+			<xs:enumeration value="Ellipse"/>
+			<xs:enumeration value="LeftArrow"/>
+			<xs:enumeration value="UpArrow"/>
+			<xs:enumeration value="DownArrow"/>
+			<xs:enumeration value="UpDownArrow"/>
+			<xs:enumeration value="HorizontalBrackets"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:complexType name="EventHandler">
+		<xs:sequence>
+			<xs:element name="id" type="xs:decimal"/>
+			<xs:element name="name" type="xs:string"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="FlowchartContextType">
+		<xs:sequence>
+			<xs:element name="backColor" type="ns2:Color"/>
+			<xs:element name="enableGrid" type="xs:boolean"/>
+			<xs:element name="drawGridMode" type="tns:GraphicalSchemaGridDrawMode"/>
+			<xs:element name="gridHorizontalStep" type="xs:decimal"/>
+			<xs:element name="gridVerticalStep" type="xs:decimal"/>
+			<xs:element name="printPropItem" type="tns:PrintPropItem" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="item" type="tns:GraphSchemeItem" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="bpUUID" type="ns1:UUID"/>
+			<xs:element name="useOutput" type="ns2:UseOutput"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="GraphSchemeItem">
+		<xs:sequence>
+			<xs:element name="itemType" type="xs:decimal"/>
+			<xs:element name="itemId" type="xs:decimal"/>
+			<xs:element name="itemTitle" type="ns1:LocalStringType"/>
+			<xs:element name="itemCode" type="xs:string"/>
+			<xs:element name="itemTabOrder" type="xs:decimal"/>
+			<xs:element name="rectLeft" type="xs:decimal"/>
+			<xs:element name="rectRight" type="xs:decimal"/>
+			<xs:element name="rectTop" type="xs:decimal"/>
+			<xs:element name="rectBottom" type="xs:decimal"/>
+			<xs:element name="point" type="tns:Point" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="backColor" type="ns2:Color"/>
+			<xs:element name="textColor" type="ns2:Color"/>
+			<xs:element name="lineColor" type="ns2:Color"/>
+			<xs:element name="textFont" type="ns2:Font"/>
+			<xs:element name="alignHor" type="ns2:HorizontalAlign"/>
+			<xs:element name="alignVer" type="ns2:VerticalAlign"/>
+			<xs:element name="tipText" type="ns1:LocalStringType"/>
+			<xs:element name="picturePlacement" type="tns:GraphicalSchemaItemPictureLocation"/>
+			<xs:element name="zOrder" type="xs:decimal"/>
+			<xs:element name="hyperlink" type="xs:boolean"/>
+			<xs:element name="groupNum" type="xs:decimal"/>
+			<xs:element name="transparent" type="xs:boolean"/>
+			<xs:element name="pictureStyle" type="xs:decimal"/>
+			<xs:element name="picture" type="ns2:Picture"/>
+			<xs:element name="border" type="ns2:Line"/>
+			<xs:element name="pointUUID" type="ns1:UUID"/>
+			<xs:element name="passageState" type="xs:decimal"/>
+			<xs:element name="shape" type="tns:GraphicalSchemaShapes"/>
+			<xs:element name="flipMode" type="xs:decimal"/>
+			<xs:element name="angle" type="xs:double"/>
+			<xs:element name="connectFromItemId" type="xs:decimal"/>
+			<xs:element name="connectFromPortIndex" type="xs:decimal"/>
+			<xs:element name="connectToItemId" type="xs:decimal"/>
+			<xs:element name="decorativeLine" type="xs:boolean"/>
+			<xs:element name="portIndexFrom" type="xs:decimal"/>
+			<xs:element name="portIndexTo" type="xs:decimal"/>
+			<xs:element name="textPos" type="tns:ConnectorTextLocation"/>
+			<xs:element name="beginArrowStyle" type="tns:ArrowStyle"/>
+			<xs:element name="endArrowStyle" type="tns:ArrowStyle"/>
+			<xs:element name="userSegment" type="tns:UserSegment" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="transition" type="tns:Transition" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="eventHandler" type="tns:EventHandler" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="subprocessUUID" type="ns1:UUID"/>
+			<xs:element name="taskDescription" type="xs:string"/>
+			<xs:element name="truePortIndex" type="xs:decimal"/>
+			<xs:element name="falsePortIndex" type="xs:decimal"/>
+			<xs:element name="isAddrZoneDivideValid" type="xs:boolean"/>
+			<xs:element name="addrZoneDivideYPos" type="xs:decimal"/>
+			<xs:element name="explanation" type="xs:string"/>
+			<xs:element name="groupAddressing" type="xs:boolean"/>
+			<xs:element name="tableCode" type="xs:decimal"/>
+			<xs:element name="bpPointValue" minOccurs="0"/>
+			<xs:element name="currentLanguage" type="xs:string"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="Point">
+		<xs:sequence>
+			<xs:element name="x" type="xs:decimal"/>
+			<xs:element name="y" type="xs:decimal"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="PrintPropItem">
+		<xs:sequence>
+			<xs:element name="key" type="xs:decimal"/>
+			<xs:element name="val" type="xs:decimal"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="Transition">
+		<xs:sequence>
+			<xs:element name="name" type="xs:string"/>
+			<xs:element name="description" type="ns1:LocalStringType"/>
+			<xs:element name="backColor" type="ns2:Color"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="UserSegment">
+		<xs:sequence>
+			<xs:element name="startX" type="xs:decimal"/>
+			<xs:element name="startY" type="xs:decimal"/>
+			<xs:element name="endX" type="xs:decimal"/>
+			<xs:element name="endY" type="xs:decimal"/>
+			<xs:element name="startIndex" type="xs:decimal"/>
+		</xs:sequence>
+	</xs:complexType>
+</xs:schema>

@@ -1,0 +1,148 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:tns="http://v8.1c.ru/8.2/data/data-analysis" xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="http://v8.1c.ru/8.2/data/data-analysis" attributeFormDefault="unqualified" elementFormDefault="qualified">
+	<xs:simpleType name="AnalysisDataType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Contiguous"/>
+			<xs:enumeration value="Discrete"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="AssociationRulesDataSourceType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Event"/>
+			<xs:enumeration value="Object"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="AssociationRulesPruneType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Redundant"/>
+			<xs:enumeration value="Covered"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ClusterizationMethod">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="KMeans"/>
+			<xs:enumeration value="NearestNeighbor"/>
+			<xs:enumeration value="FurthestNeighbor"/>
+			<xs:enumeration value="Centroid"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="DataAnalysisAssociationRulesOrderType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="BySupport"/>
+			<xs:enumeration value="ByConfidence"/>
+			<xs:enumeration value="ByImportance"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="DataAnalysisColumnType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="NotUsed"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="DataAnalysisColumnTypeAssociationRules">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="NotUsed"/>
+			<xs:enumeration value="Object"/>
+			<xs:enumeration value="Item"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="DataAnalysisColumnTypeClusterization">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="NotUsed"/>
+			<xs:enumeration value="Input"/>
+			<xs:enumeration value="Predictable"/>
+			<xs:enumeration value="InputAndPredictable"/>
+			<xs:enumeration value="Key"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="DataAnalysisColumnTypeDecisionTree">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="NotUsed"/>
+			<xs:enumeration value="Input"/>
+			<xs:enumeration value="Predictable"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="DataAnalysisColumnTypeSequentialPatterns">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="NotUsed"/>
+			<xs:enumeration value="Item"/>
+			<xs:enumeration value="Sequence"/>
+			<xs:enumeration value="Time"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="DataAnalysisColumnTypeSummaryStatistics">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="NotUsed"/>
+			<xs:enumeration value="Input"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="DataAnalysisDistanceMetricType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="SquaredEuclidean"/>
+			<xs:enumeration value="Euclidean"/>
+			<xs:enumeration value="CityBlock"/>
+			<xs:enumeration value="Maximum"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="DataAnalysisNumericValueUseType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="AsNumeric"/>
+			<xs:enumeration value="AsBoolean"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="DataAnalysisResultTableFillType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="DontFill"/>
+			<xs:enumeration value="KeyFields"/>
+			<xs:enumeration value="UsedFields"/>
+			<xs:enumeration value="AllFields"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="DataAnalysisSequentialPatternsOrderType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="BySupport"/>
+			<xs:enumeration value="ByLength"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="DataAnalysisStandardizationType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="DontStandardize"/>
+			<xs:enumeration value="Standardize"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="DataAnalysisTimeIntervalUnitType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Second"/>
+			<xs:enumeration value="CurrentMinute"/>
+			<xs:enumeration value="Minute"/>
+			<xs:enumeration value="CurrentHour"/>
+			<xs:enumeration value="Hour"/>
+			<xs:enumeration value="CurrentDay"/>
+			<xs:enumeration value="Day"/>
+			<xs:enumeration value="CurrentWeek"/>
+			<xs:enumeration value="Week"/>
+			<xs:enumeration value="CurrentMonth"/>
+			<xs:enumeration value="Month"/>
+			<xs:enumeration value="CurrentQuarter"/>
+			<xs:enumeration value="Quarter"/>
+			<xs:enumeration value="CurrentYear"/>
+			<xs:enumeration value="Year"/>
+			<xs:enumeration value="CurrentTenDays"/>
+			<xs:enumeration value="TenDays"/>
+			<xs:enumeration value="CurrentHalfYear"/>
+			<xs:enumeration value="HalfYear"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="DecisionTreeSimplificationType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="DontSimplify"/>
+			<xs:enumeration value="Simplify"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="PredictionModelColumnType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Input"/>
+			<xs:enumeration value="Predictable"/>
+			<xs:enumeration value="DataSourceColumn"/>
+		</xs:restriction>
+	</xs:simpleType>
+</xs:schema>

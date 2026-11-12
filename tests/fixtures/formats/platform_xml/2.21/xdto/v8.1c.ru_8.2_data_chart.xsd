@@ -1,0 +1,1252 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:ns1="http://v8.1c.ru/8.1/data/core" xmlns:ns2="http://v8.1c.ru/8.1/data/ui" xmlns:tns="http://v8.1c.ru/8.2/data/chart" xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="http://v8.1c.ru/8.2/data/chart" attributeFormDefault="unqualified" elementFormDefault="qualified">
+	<xs:import namespace="http://v8.1c.ru/8.1/data/core"/>
+	<xs:import namespace="http://v8.1c.ru/8.1/data/ui"/>
+	<xs:simpleType name="BarChartPointsOrder">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="TopToBottom"/>
+			<xs:enumeration value="BottomToTop"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="BubbleChartNegativeValuesShowMode">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="DontShow"/>
+			<xs:enumeration value="Abs"/>
+			<xs:enumeration value="Transparent"/>
+			<xs:enumeration value="InvertedBackColor"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ChartAnimation">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="Use"/>
+			<xs:enumeration value="DontUse"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ChartBoundaryDetectionMethod">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="AutoDetect"/>
+			<xs:enumeration value="UseValue"/>
+			<xs:enumeration value="UseValueWithLimitations"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ChartBubbleSizeValueSource">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="None"/>
+			<xs:enumeration value="CommonSeries"/>
+			<xs:enumeration value="NextSeries"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ChartBubbleSizing">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="IncreaseDiameter"/>
+			<xs:enumeration value="IncreaseArea"/>
+			<xs:enumeration value="DecreaseDiameter"/>
+			<xs:enumeration value="DecreaseArea"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ChartGridLinesShowMode">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="DontShow"/>
+			<xs:enumeration value="Show"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ChartLabelLocation">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Edge"/>
+			<xs:enumeration value="Center"/>
+			<xs:enumeration value="EdgeInside"/>
+			<xs:enumeration value="EdgeAuto"/>
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="LeftBottom"/>
+			<xs:enumeration value="RightBottom"/>
+			<xs:enumeration value="LeftTop"/>
+			<xs:enumeration value="RightTop"/>
+			<xs:enumeration value="LeftAndTopSpecified"/>
+			<xs:enumeration value="EmptySpace"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ChartLegendPlacement">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="Top"/>
+			<xs:enumeration value="Left"/>
+			<xs:enumeration value="Bottom"/>
+			<xs:enumeration value="Right"/>
+			<xs:enumeration value="UseCoordinates"/>
+			<xs:enumeration value="None"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ChartMarkerType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="None"/>
+			<xs:enumeration value="Rect"/>
+			<xs:enumeration value="Circle"/>
+			<xs:enumeration value="Rhomb"/>
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="Alternation"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ChartOrientation">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="SouthWest"/>
+			<xs:enumeration value="SouthEast"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ChartPlotAreaPlacement">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="UseCoordinates"/>
+			<xs:enumeration value="EmptySpace"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ChartPointsAxisValuesSource">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="Series"/>
+			<xs:enumeration value="Points"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ChartPointsConnectionType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="Connect"/>
+			<xs:enumeration value="DontConnect"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ChartReferenceBandBorderPosition">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="OnValue"/>
+			<xs:enumeration value="BetweenValues"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ChartReferenceLinePosition">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="OnValue"/>
+			<xs:enumeration value="BetweenValues"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ChartScaleLabelLocation">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="None"/>
+			<xs:enumeration value="Inside"/>
+			<xs:enumeration value="Outside"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ChartScaleLocation">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="BaseValue"/>
+			<xs:enumeration value="Edge"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ChartScaleMarkLocation">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="Outside"/>
+			<xs:enumeration value="Inside"/>
+			<xs:enumeration value="Center"/>
+			<xs:enumeration value="None"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ChartScaleTitlePlacement">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="WithAxis"/>
+			<xs:enumeration value="PlotArea"/>
+			<xs:enumeration value="SpecialArea"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ChartScaleTitleTextSource">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="UseText"/>
+			<xs:enumeration value="AutoText"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ChartSelectionMode">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="ValuesSelection"/>
+			<xs:enumeration value="PointsSelection"/>
+			<xs:enumeration value="None"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ChartSemitransparencyMode">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="DontUse"/>
+			<xs:enumeration value="Use"/>
+			<xs:enumeration value="Auto"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ChartSeriesGraphicalRepresentationType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="Line"/>
+			<xs:enumeration value="Step"/>
+			<xs:enumeration value="Area"/>
+			<xs:enumeration value="Column"/>
+			<xs:enumeration value="Column3D"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ChartSeriesOrderInLegend">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="Direct"/>
+			<xs:enumeration value="Reverse"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ChartSeriesStackType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="Unstacked"/>
+			<xs:enumeration value="Stacked"/>
+			<xs:enumeration value="StackedNormalized"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ChartSpaceMode">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="None"/>
+			<xs:enumeration value="Half"/>
+			<xs:enumeration value="Full"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ChartSplineMode">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="None"/>
+			<xs:enumeration value="SmoothCurve"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ChartTitleAreaPlacement">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="LeftBottom"/>
+			<xs:enumeration value="LeftTop"/>
+			<xs:enumeration value="RightBottom"/>
+			<xs:enumeration value="RightTop"/>
+			<xs:enumeration value="Bottom"/>
+			<xs:enumeration value="UseCoordinates"/>
+			<xs:enumeration value="None"/>
+			<xs:enumeration value="Top"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ChartTrendlineApproximationType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Linear"/>
+			<xs:enumeration value="Exponential"/>
+			<xs:enumeration value="Logarithmic"/>
+			<xs:enumeration value="Power"/>
+			<xs:enumeration value="Polynomial"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ChartTrendlineFactor">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="PointNumber"/>
+			<xs:enumeration value="PointValue"/>
+			<xs:enumeration value="Auto"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ChartValueEditState">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="InProgress"/>
+			<xs:enumeration value="Completed"/>
+			<xs:enumeration value="Canceled"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ChartValuesBySeriesConnectionType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="None"/>
+			<xs:enumeration value="EdgesConnection"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ChartValuesEditMode">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="Use"/>
+			<xs:enumeration value="DontUse"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ChartValuesToolTipFillType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="SingleValue"/>
+			<xs:enumeration value="AllPointValues"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ChartValuesToolTipShowMode">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="ShowForNearestValue"/>
+			<xs:enumeration value="ShowOnHover"/>
+			<xs:enumeration value="DontShow"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="DendrogramOrientation">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Top"/>
+			<xs:enumeration value="Bottom"/>
+			<xs:enumeration value="Right"/>
+			<xs:enumeration value="Left"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="DendrogramScaleKeeping">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="AllItems"/>
+			<xs:enumeration value="ItemCount"/>
+			<xs:enumeration value="MinimumWidth"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="GanttChartIntervalRepresentation">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Flat"/>
+			<xs:enumeration value="ThreeDimensional"/>
+			<xs:enumeration value="Rhomb"/>
+			<xs:enumeration value="Gradient"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="GanttChartIntervalTextRepresentation">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="Show"/>
+			<xs:enumeration value="DontShow"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="GanttChartLinkType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="BeginEnd"/>
+			<xs:enumeration value="BeginBegin"/>
+			<xs:enumeration value="EndBegin"/>
+			<xs:enumeration value="EndEnd"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="GanttChartScaleKeeping">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Fixed"/>
+			<xs:enumeration value="Period"/>
+			<xs:enumeration value="AllData"/>
+			<xs:enumeration value="Auto"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="GanttChartTextPlacementType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="Cut"/>
+			<xs:enumeration value="Wrap"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="GanttChartValueTextRepresentation">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="None"/>
+			<xs:enumeration value="Right"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="GanttChartVerticalStretch">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="None"/>
+			<xs:enumeration value="StretchRows"/>
+			<xs:enumeration value="StretchRowsAndData"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="GaugeChartValueRepresentation">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Needle"/>
+			<xs:enumeration value="Sector"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="GaugeChartValuesScaleLabelsLocation">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="AtScale"/>
+			<xs:enumeration value="InsideScale"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="MaxSeries">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="NotDefined"/>
+			<xs:enumeration value="Limited"/>
+			<xs:enumeration value="Percent"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="NonnumericChartValueUse">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="AsZero"/>
+			<xs:enumeration value="Skip"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="PivotChartLabelsOrientation">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="TopLevelsVertical"/>
+			<xs:enumeration value="AllLevelsVertical"/>
+			<xs:enumeration value="AllLevelsHorizontal"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="PivotChartScaleKeeping">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="AllValues"/>
+			<xs:enumeration value="ValuesCount"/>
+			<xs:enumeration value="MinimumWidth"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="PivotChartType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Column"/>
+			<xs:enumeration value="Column3D"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="PivotChartValuesShowMode">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="AllValues"/>
+			<xs:enumeration value="LastLevelValues"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="PointsConnectionAcrossSkippedChartValuesType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="None"/>
+			<xs:enumeration value="ConnectUnskippedValues"/>
+			<xs:enumeration value="ConnectWithBaseValue"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="RadarChartScaleType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Circle"/>
+			<xs:enumeration value="Polygon"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ShowChartPopupReferenceLine">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="Show"/>
+			<xs:enumeration value="DontShow"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ShowChartScaleTitle">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="DontShow"/>
+			<xs:enumeration value="Show"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ShowInChart">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="Show"/>
+			<xs:enumeration value="DontShow"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ShowInChartLegend">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="Show"/>
+			<xs:enumeration value="DontShow"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ShowInGanttChart">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="Show"/>
+			<xs:enumeration value="DontShow"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="StockChartUsedPointValue">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Open"/>
+			<xs:enumeration value="High"/>
+			<xs:enumeration value="Low"/>
+			<xs:enumeration value="Close"/>
+			<xs:enumeration value="OpenCloseAverage"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="TimeScaleDayFormat">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="MonthDay"/>
+			<xs:enumeration value="WeekDay"/>
+			<xs:enumeration value="MonthDayWeekDay"/>
+			<xs:enumeration value="WeekDayMonthDay"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="TimeScalePosition">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Top"/>
+			<xs:enumeration value="Bottom"/>
+			<xs:enumeration value="Left"/>
+			<xs:enumeration value="Right"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="TimeScaleUnitType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Second"/>
+			<xs:enumeration value="Minute"/>
+			<xs:enumeration value="Hour"/>
+			<xs:enumeration value="Day"/>
+			<xs:enumeration value="Week"/>
+			<xs:enumeration value="Month"/>
+			<xs:enumeration value="Quarter"/>
+			<xs:enumeration value="Year"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="UsedChartValuesAxis">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="Main"/>
+			<xs:enumeration value="Additional"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:complexType name="AddedItem">
+		<xs:sequence>
+			<xs:element name="itemId" type="xs:decimal"/>
+			<xs:element name="prevItemId" type="xs:decimal"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="Chart">
+		<xs:sequence>
+			<xs:element name="seriesCurId" type="xs:decimal"/>
+			<xs:element name="pointsCurId" type="xs:decimal"/>
+			<xs:element name="isSeriesDesign" type="xs:boolean"/>
+			<xs:element name="realSeriesCount" type="xs:decimal"/>
+			<xs:element name="realSeriesData" type="tns:SeriesData" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="realExSeriesData" type="tns:SeriesData" minOccurs="0"/>
+			<xs:element name="isPointsDesign" type="xs:boolean"/>
+			<xs:element name="realPointCount" type="xs:decimal"/>
+			<xs:element name="realPointData" type="tns:PointData" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="curSeries" type="xs:decimal"/>
+			<xs:element name="curPoint" type="xs:decimal"/>
+			<xs:element name="chartType" type="ns2:ChartType"/>
+			<xs:element name="circleLabelType" type="ns2:ChartLabelType"/>
+			<xs:element name="labelsDelimiter" type="xs:string"/>
+			<xs:element name="labelsLocation" type="tns:ChartLabelLocation"/>
+			<xs:element name="lbFormat" type="ns1:LocalStringType"/>
+			<xs:element name="lbpFormat" type="ns1:LocalStringType"/>
+			<xs:element name="labelsColor" type="ns2:Color"/>
+			<xs:element name="labelsFont" type="ns2:Font"/>
+			<xs:element name="transparentLabelsBkg" type="xs:boolean"/>
+			<xs:element name="labelsBkgColor" type="ns2:Color"/>
+			<xs:element name="labelsBorder" type="ns2:Border"/>
+			<xs:element name="labelsBorderColor" type="ns2:Color"/>
+			<xs:element name="circleExpandMode" type="ns2:AutoSeriesSeparation"/>
+			<xs:element name="chart3Dcrd" type="tns:ChartOrientation"/>
+			<xs:element name="title" type="ns1:LocalStringType"/>
+			<xs:element name="isShowTitle" type="xs:boolean"/>
+			<xs:element name="isShowLegend" type="xs:boolean"/>
+			<xs:element name="ttlBorder" type="ns2:Border"/>
+			<xs:element name="ttlBorderColor" type="ns2:Color"/>
+			<xs:element name="lgBorder" type="ns2:Border"/>
+			<xs:element name="lgBorderColor" type="ns2:Color"/>
+			<xs:element name="chBorder" type="ns2:Border"/>
+			<xs:element name="chBorderColor" type="ns2:Color"/>
+			<xs:element name="transparent" type="xs:boolean"/>
+			<xs:element name="bkgColor" type="ns2:Color"/>
+			<xs:element name="isTrnspTtl" type="xs:boolean"/>
+			<xs:element name="ttlColor" type="ns2:Color"/>
+			<xs:element name="isTrnspLeg" type="xs:boolean"/>
+			<xs:element name="legColor" type="ns2:Color"/>
+			<xs:element name="isTrnspCh" type="xs:boolean"/>
+			<xs:element name="chColor" type="ns2:Color"/>
+			<xs:element name="ttlTxtColor" type="ns2:Color"/>
+			<xs:element name="legTxtColor" type="ns2:Color"/>
+			<xs:element name="chTxtColor" type="ns2:Color"/>
+			<xs:element name="ttlFont" type="ns2:Font"/>
+			<xs:element name="legFont" type="ns2:Font"/>
+			<xs:element name="chFont" type="ns2:Font"/>
+			<xs:element name="isShowScale" type="xs:boolean"/>
+			<xs:element name="isShowScaleVL" type="xs:boolean"/>
+			<xs:element name="isShowSeriesScale" type="xs:boolean"/>
+			<xs:element name="isShowPointsScale" type="xs:boolean"/>
+			<xs:element name="isShowValuesScale" type="xs:boolean"/>
+			<xs:element name="vsFormat" type="ns1:LocalStringType"/>
+			<xs:element name="xLabelsOrientation" type="ns2:ChartLabelsOrientation"/>
+			<xs:element name="scaleLine" type="ns2:Line"/>
+			<xs:element name="scaleColor" type="ns2:Color"/>
+			<xs:element name="isAutoSeriesName" type="xs:boolean"/>
+			<xs:element name="isAutoPointName" type="xs:boolean"/>
+			<xs:element name="maxMode" type="tns:MaxSeries"/>
+			<xs:element name="maxSeries" type="xs:decimal"/>
+			<xs:element name="maxSeriesPrc" type="xs:decimal"/>
+			<xs:element name="spaceMode" type="tns:ChartSpaceMode"/>
+			<xs:element name="baseVal" type="xs:decimal"/>
+			<xs:element name="isOutline" type="xs:boolean"/>
+			<xs:element name="realPiePoint" type="xs:decimal"/>
+			<xs:element name="realStockSeries" type="xs:decimal"/>
+			<xs:element name="isLight" type="xs:boolean"/>
+			<xs:element name="isGradient" type="xs:boolean"/>
+			<xs:element name="isTransposition" type="xs:boolean"/>
+			<xs:element name="hideBaseVal" type="xs:boolean"/>
+			<xs:element name="dataTable" type="xs:boolean"/>
+			<xs:element name="dtVerLines" type="xs:boolean"/>
+			<xs:element name="dtHorLines" type="xs:boolean"/>
+			<xs:element name="dtHAlign" type="ns2:HorizontalAlign"/>
+			<xs:element name="dtFormat" type="ns1:LocalStringType"/>
+			<xs:element name="dtKeys" type="xs:boolean"/>
+			<xs:element name="paletteKind" type="ns2:ChartColorPalette"/>
+			<xs:element name="isTransposed" type="xs:boolean"/>
+			<xs:element name="autoTransposition" type="xs:boolean"/>
+			<xs:element name="legendScrollEnable" type="xs:boolean"/>
+			<xs:element name="surfaceColor" type="ns2:Color"/>
+			<xs:element name="radarScaleType" type="tns:RadarChartScaleType"/>
+			<xs:element name="gaugeValuesPresentation" type="tns:GaugeChartValueRepresentation"/>
+			<xs:element name="gaugeQualityBands" type="ns2:GaugeChartQualityBands" minOccurs="0"/>
+			<xs:element name="beginGaugeAngle" type="xs:decimal"/>
+			<xs:element name="endGaugeAngle" type="xs:decimal"/>
+			<xs:element name="gaugeThickness" type="xs:decimal"/>
+			<xs:element name="gaugeLabelsLocation" type="tns:GaugeChartValuesScaleLabelsLocation"/>
+			<xs:element name="gaugeLabelsArcDirection" type="xs:boolean"/>
+			<xs:element name="gaugeBushThickness" type="xs:decimal"/>
+			<xs:element name="gaugeBushColor" type="ns2:Color"/>
+			<xs:element name="autoMaxValue" type="xs:boolean"/>
+			<xs:element name="userMaxValue" type="xs:decimal"/>
+			<xs:element name="autoMinValue" type="xs:boolean"/>
+			<xs:element name="userMinValue" type="xs:decimal"/>
+			<xs:element name="elementsIsInit" type="xs:boolean"/>
+			<xs:element name="titleIsInit" type="xs:boolean"/>
+			<xs:element name="legendIsInit" type="xs:boolean"/>
+			<xs:element name="chartIsInit" type="xs:boolean"/>
+			<xs:element name="elementsChart" type="tns:DoubleRect"/>
+			<xs:element name="elementsLegend" type="tns:DoubleRect"/>
+			<xs:element name="elementsTitle" type="tns:DoubleRect"/>
+			<xs:element name="borderColor" type="ns2:Color"/>
+			<xs:element name="border" type="ns2:Border"/>
+			<xs:element name="dataSourceDescription" type="xs:string"/>
+			<xs:element name="isDataSourceMode" type="xs:boolean"/>
+			<xs:element name="isRandomizedNewValues" type="xs:boolean" minOccurs="0"/>
+			<xs:element name="realDataItems" type="tns:RealDataItems" minOccurs="0"/>
+			<xs:element name="splineMode" type="tns:ChartSplineMode" minOccurs="0"/>
+			<xs:element name="splineStrain" type="xs:decimal"/>
+			<xs:element name="translucenceMode" type="tns:ChartSemitransparencyMode" minOccurs="0"/>
+			<xs:element name="translucencePercent" type="xs:decimal"/>
+			<xs:element name="funnelNeckHeightPercent" type="xs:decimal"/>
+			<xs:element name="funnelNeckWidthPercent" type="xs:decimal"/>
+			<xs:element name="funnelGapSumPercent" type="xs:decimal"/>
+			<xs:element name="multiStageLinkMode" type="tns:ChartValuesBySeriesConnectionType" minOccurs="0"/>
+			<xs:element name="multiStageLinkLine" type="ns2:Line"/>
+			<xs:element name="multiStageLinkColor" type="ns2:Color"/>
+			<xs:element name="animation" type="tns:ChartAnimation" minOccurs="0"/>
+			<xs:element name="rebuildTime" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="id" type="ns1:UUID" minOccurs="0"/>
+			<xs:element name="seriesOrderInLegend" type="tns:ChartSeriesOrderInLegend" minOccurs="0"/>
+			<xs:element name="valuesAxis" type="tns:ChartAxis" minOccurs="0"/>
+			<xs:element name="pointsAxis" type="tns:ChartAxis" minOccurs="0"/>
+			<xs:element name="pointsAxisValuesSource" type="tns:ChartPointsAxisValuesSource" minOccurs="0"/>
+			<xs:element name="pointsAxisSeries" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="bubbleSizeValueSource" type="tns:ChartBubbleSizeValueSource" minOccurs="0"/>
+			<xs:element name="bubbleSizeCommonSeries" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="bubbleSizing" type="tns:ChartBubbleSizing" minOccurs="0"/>
+			<xs:element name="bubbleChartNegativeValuesShowMode" type="tns:BubbleChartNegativeValuesShowMode" minOccurs="0"/>
+			<xs:element name="defaultBubbleSize" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="minBubbleSize" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="maxBubbleSize" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="pointsConnection" type="tns:ChartPointsConnectionType" minOccurs="0"/>
+			<xs:element name="pointsScale" type="tns:ChartScale" minOccurs="0"/>
+			<xs:element name="valuesScale" type="tns:ChartScale" minOccurs="0"/>
+			<xs:element name="seriesScale" type="tns:ChartScale" minOccurs="0"/>
+			<xs:element name="barChartPointsOrder" type="tns:BarChartPointsOrder" minOccurs="0"/>
+			<xs:element name="gradientPaletteMaxColors" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="gradientPaletteStartColor" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="gradientPaletteEndColor" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="customPalette" type="ns1:Array" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="legendPlacement" type="tns:ChartLegendPlacement" minOccurs="0"/>
+			<xs:element name="plotAreaPlacement" type="tns:ChartPlotAreaPlacement" minOccurs="0"/>
+			<xs:element name="titleAreaPlacement" type="tns:ChartTitleAreaPlacement" minOccurs="0"/>
+			<xs:element name="colorPaletteDescription" type="tns:ChartColorPaletteDescription" minOccurs="0"/>
+			<xs:element name="referenceBandsColorPaletteDescription" type="tns:ChartColorPaletteDescription" minOccurs="0"/>
+			<xs:element name="valuesReferenceLines" type="tns:ChartReferenceLines" minOccurs="0"/>
+			<xs:element name="pointsReferenceLines" type="tns:ChartReferenceLines" minOccurs="0"/>
+			<xs:element name="valuesReferenceBands" type="tns:ChartReferenceBands" minOccurs="0"/>
+			<xs:element name="pointsReferenceBands" type="tns:ChartReferenceBands" minOccurs="0"/>
+			<xs:element name="nonnumericValuesUse" type="tns:NonnumericChartValueUse" minOccurs="0"/>
+			<xs:element name="pointConnectionAcrossSkippedValues" type="tns:PointsConnectionAcrossSkippedChartValuesType" minOccurs="0"/>
+			<xs:element name="valuesToolTipShowMode" type="tns:ChartValuesToolTipShowMode" minOccurs="0"/>
+			<xs:element name="valuesToolTipFillType" type="tns:ChartValuesToolTipFillType" minOccurs="0"/>
+			<xs:element name="selectionMode" type="tns:ChartSelectionMode" minOccurs="0"/>
+			<xs:element name="pointsDropLinesShowMode" type="tns:ShowChartPopupReferenceLine" minOccurs="0"/>
+			<xs:element name="valuesDropLinesShowMode" type="tns:ShowChartPopupReferenceLine" minOccurs="0"/>
+			<xs:element name="selectedObjects" type="tns:ChartSelectedObjects" minOccurs="0"/>
+			<xs:element name="distributedKey" type="xs:string" minOccurs="0"/>
+			<xs:element name="listStreamData" type="xs:string" minOccurs="0"/>
+			<xs:element name="innerRadiusDonutChart" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="startAnglePieChart" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="finishAnglePieChart" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="isometricDepth" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="additionalValuesScale" type="tns:ChartScale" minOccurs="0"/>
+			<xs:element name="additionalValuesAxis" type="tns:ChartAxis" minOccurs="0"/>
+			<xs:element name="valuesEditMode" type="tns:ChartValuesEditMode" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="ChartAxis">
+		<xs:sequence>
+			<xs:element name="baseValue" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="minValue" minOccurs="0"/>
+			<xs:element name="maxValue" minOccurs="0"/>
+			<xs:element name="minValueDetectionMethod" type="tns:ChartBoundaryDetectionMethod" minOccurs="0"/>
+			<xs:element name="maxValueDetectionMethod" type="tns:ChartBoundaryDetectionMethod" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="ChartChanges">
+		<xs:sequence>
+			<xs:element name="chartPart" type="tns:Chart" minOccurs="0"/>
+			<xs:element name="pointsCollectionChanges" type="tns:CollectionChange" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="seriesCollectionChanges" type="tns:CollectionChange" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="pointPropChange" type="tns:PointData" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="seriesPropChange" type="tns:SeriesData" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="dataItem" type="tns:DataChanges" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="pointsCurId" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="seriesCurId" type="xs:decimal" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="ChartColorPaletteDescription">
+		<xs:sequence>
+			<xs:element name="colorPalette" type="ns2:ChartColorPalette" minOccurs="0"/>
+			<xs:element name="gradientPaletteStartColor" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="gradientPaletteEndColor" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="gradientPaletteMaxColors" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="customPalette" type="ns1:Array" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="ChartInterval">
+		<xs:sequence>
+			<xs:element name="itemKey" type="xs:decimal"/>
+			<xs:element name="key" type="xs:decimal"/>
+			<xs:element name="begin" type="xs:dateTime"/>
+			<xs:element name="end" type="xs:dateTime"/>
+			<xs:element name="text" type="ns1:LocalStringType"/>
+			<xs:element name="details" minOccurs="0"/>
+			<xs:element name="color" type="ns2:Color"/>
+			<xs:element name="intervalKey" type="xs:decimal"/>
+			<xs:element name="textColor" type="ns2:Color"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="ChartLabelArea">
+		<xs:sequence>
+			<xs:element name="location" type="tns:ChartLabelLocation" minOccurs="0"/>
+			<xs:element name="left" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="top" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="font" type="ns2:Font" minOccurs="0"/>
+			<xs:element name="textColor" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="backColor" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="transparent" type="xs:boolean" minOccurs="0"/>
+			<xs:element name="border" type="ns2:Border" minOccurs="0"/>
+			<xs:element name="borderColor" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="marker" type="tns:ChartMarkerType" minOccurs="0"/>
+			<xs:element name="orientation" type="ns2:ChartLabelsOrientation" minOccurs="0"/>
+			<xs:element name="angle" type="xs:decimal" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="ChartPoints">
+		<xs:sequence>
+			<xs:element name="testMode" type="xs:boolean"/>
+			<xs:element name="value" type="tns:PointDimensionValue" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="contentCacheItem" type="tns:GanttChartPointValueContent" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="autoText" type="xs:boolean"/>
+			<xs:element name="useValuesReverseBehavior" type="xs:boolean"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="ChartReferenceBand">
+		<xs:sequence>
+			<xs:element name="begin" minOccurs="0"/>
+			<xs:element name="beginIsPointNumber" type="xs:boolean" minOccurs="0"/>
+			<xs:element name="end" minOccurs="0"/>
+			<xs:element name="endIsPointNumber" type="xs:boolean" minOccurs="0"/>
+			<xs:element name="labelText" type="ns1:LocalStringType" minOccurs="0"/>
+			<xs:element name="toolTip" type="ns1:LocalStringType" minOccurs="0"/>
+			<xs:element name="labelArea" type="tns:ChartLabelArea" minOccurs="0"/>
+			<xs:element name="color" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="semitransparencyPercent" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="border" type="ns2:Line" minOccurs="0"/>
+			<xs:element name="borderColor" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="borderSemitransparencyPercent" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="details" minOccurs="0"/>
+			<xs:element name="position" type="tns:ChartReferenceBandBorderPosition" minOccurs="0"/>
+			<xs:element name="displayAreaBegin" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="displayAreaEnd" type="xs:decimal" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="ChartReferenceBands">
+		<xs:sequence>
+			<xs:element name="referenceBand" type="tns:ChartReferenceBand" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="ChartReferenceLine">
+		<xs:sequence>
+			<xs:element name="value" minOccurs="0"/>
+			<xs:element name="valueIsPointNumber" type="xs:boolean" minOccurs="0"/>
+			<xs:element name="labelText" type="ns1:LocalStringType" minOccurs="0"/>
+			<xs:element name="toolTip" type="ns1:LocalStringType" minOccurs="0"/>
+			<xs:element name="labelArea" type="tns:ChartLabelArea" minOccurs="0"/>
+			<xs:element name="line" type="ns2:Line" minOccurs="0"/>
+			<xs:element name="color" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="semitransparencyPercent" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="details" minOccurs="0"/>
+			<xs:element name="position" type="tns:ChartReferenceLinePosition" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="ChartReferenceLines">
+		<xs:sequence>
+			<xs:element name="referenceLine" type="tns:ChartReferenceLine" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="ChartScale">
+		<xs:sequence>
+			<xs:element name="showTitle" type="tns:ShowChartScaleTitle" minOccurs="0"/>
+			<xs:element name="titleTextSource" type="tns:ChartScaleTitleTextSource" minOccurs="0"/>
+			<xs:element name="titleText" type="ns1:LocalStringType" minOccurs="0"/>
+			<xs:element name="titleArea" type="tns:ChartLabelArea" minOccurs="0"/>
+			<xs:element name="titlePlacement" type="tns:ChartScaleTitlePlacement" minOccurs="0"/>
+			<xs:element name="gridLinesShowMode" type="tns:ChartGridLinesShowMode" minOccurs="0"/>
+			<xs:element name="scaleLabelLocation" type="tns:ChartScaleLabelLocation" minOccurs="0"/>
+			<xs:element name="gridLine" type="ns2:Line" minOccurs="0"/>
+			<xs:element name="gridLineColor" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="labelFont" type="ns2:Font" minOccurs="0"/>
+			<xs:element name="labelColor" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="labelOrientation" type="ns2:ChartLabelsOrientation" minOccurs="0"/>
+			<xs:element name="labelFormat" type="ns1:LocalStringType" minOccurs="0"/>
+			<xs:element name="scaleLine" type="ns2:Line" minOccurs="0"/>
+			<xs:element name="scaleLineColor" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="maxLabelRows" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="labelAngle" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="scaleLocation" type="tns:ChartScaleLocation" minOccurs="0"/>
+			<xs:element name="scaleStep" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="scaleMarkLocation" type="tns:ChartScaleMarkLocation" minOccurs="0"/>
+			<xs:element name="showInChart" type="tns:ShowInChart" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="ChartSelectedObjects">
+		<xs:sequence>
+			<xs:element name="point" type="xs:decimal" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="series" type="xs:decimal" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="value" type="xs:decimal" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="ChartSeries">
+		<xs:sequence>
+			<xs:element name="testMode" type="xs:boolean"/>
+			<xs:element name="value" type="tns:SeriesDimensionValue" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="contentCacheItem" type="tns:GanttChartSeriesValueContent" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="autoText" type="xs:boolean"/>
+			<xs:element name="useValuesReverseBehavior" type="xs:boolean"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="ChartTrendline">
+		<xs:sequence>
+			<xs:element name="approximationType" type="tns:ChartTrendlineApproximationType" minOccurs="0"/>
+			<xs:element name="approximationDegree" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="line" type="ns2:Line" minOccurs="0"/>
+			<xs:element name="factor" type="tns:ChartTrendlineFactor" minOccurs="0"/>
+			<xs:element name="color" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="text" type="ns1:LocalStringType" minOccurs="0"/>
+			<xs:element name="showInLegend" type="xs:boolean" minOccurs="0"/>
+			<xs:element name="showEquation" type="xs:boolean" minOccurs="0"/>
+			<xs:element name="showDeterminationFactor" type="xs:boolean" minOccurs="0"/>
+			<xs:element name="marker" type="tns:ChartMarkerType" minOccurs="0"/>
+			<xs:element name="stockChartUsedPointValue" type="tns:StockChartUsedPointValue" minOccurs="0"/>
+			<xs:element name="equationArea" type="tns:ChartLabelArea" minOccurs="0"/>
+			<xs:element name="details" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="ChartTrendlines">
+		<xs:sequence>
+			<xs:element name="trendLine" type="tns:ChartTrendline" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="ChartValue">
+		<xs:sequence>
+			<xs:element name="itemKey" type="xs:decimal"/>
+			<xs:element name="key" type="xs:decimal"/>
+			<xs:element name="text" type="ns1:LocalStringType"/>
+			<xs:element name="details" minOccurs="0"/>
+			<xs:element name="editFlag" type="xs:boolean"/>
+			<xs:element name="backColor" type="ns2:Color"/>
+			<xs:element name="textColor" type="ns2:Color"/>
+			<xs:element name="mainColor" type="ns2:Color"/>
+			<xs:element name="secondColor" type="ns2:Color"/>
+			<xs:element name="dtValueData" type="tns:GanttChartDTValueData" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="selectedState" type="xs:boolean" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="ChartsViewSettings">
+		<xs:sequence>
+			<xs:element name="animation" type="tns:ChartAnimation"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="Collect">
+		<xs:sequence>
+			<xs:element name="item" type="tns:CollectItem" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="ticks" type="xs:decimal"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="CollectItem">
+		<xs:sequence>
+			<xs:element name="key" type="xs:dateTime"/>
+			<xs:element name="secondaryDate" type="xs:dateTime"/>
+			<xs:element name="cacheKey" type="xs:decimal"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="CollectionChange">
+		<xs:sequence>
+			<xs:element name="added" type="tns:AddedItem" minOccurs="0"/>
+			<xs:element name="moved" type="tns:MovedItem" minOccurs="0"/>
+			<xs:element name="deletedId" type="xs:decimal" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="DataChanges">
+		<xs:sequence>
+			<xs:element name="seriesId" type="xs:decimal"/>
+			<xs:element name="pointId" type="xs:decimal"/>
+			<xs:element name="item" type="tns:RealDataItem"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="Dendrogram">
+		<xs:sequence>
+			<xs:element name="chart" type="tns:Chart"/>
+			<xs:element name="elements" type="tns:DendrogramElements"/>
+			<xs:element name="links" type="tns:DendrogramLinks"/>
+			<xs:element name="orientation" type="tns:DendrogramOrientation"/>
+			<xs:element name="scaleType" type="tns:DendrogramScaleKeeping"/>
+			<xs:element name="countElements" type="xs:decimal"/>
+			<xs:element name="fixedMinWidthElement" type="xs:decimal"/>
+			<xs:element name="lineColor" type="ns2:Color"/>
+			<xs:element name="line" type="ns2:Line"/>
+			<xs:element name="verticalLabels" type="xs:boolean"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="DendrogramContent">
+		<xs:sequence>
+			<xs:element name="mainColor" type="ns2:Color"/>
+			<xs:element name="secondColor" type="ns2:Color"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="DendrogramDimensionValue">
+		<xs:sequence>
+			<xs:element name="itemKey" type="xs:decimal"/>
+			<xs:element name="key" type="xs:decimal"/>
+			<xs:element name="parentKey" type="xs:decimal"/>
+			<xs:element name="leftKey" type="xs:decimal"/>
+			<xs:element name="rightKey" type="xs:decimal"/>
+			<xs:element name="extKey" type="xs:decimal"/>
+			<xs:element name="valueKey" minOccurs="0"/>
+			<xs:element name="title" type="ns1:LocalStringType"/>
+			<xs:element name="details" minOccurs="0"/>
+			<xs:element name="cacheKey" type="xs:decimal"/>
+			<xs:element name="baseData" type="xs:decimal"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="DendrogramElements">
+		<xs:sequence>
+			<xs:element name="testMode" type="xs:boolean"/>
+			<xs:element name="value" type="tns:DendrogramDimensionValue" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="contentCacheItem" type="tns:DendrogramContent" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="autoText" type="xs:boolean"/>
+			<xs:element name="useValuesReverseBehavior" type="xs:boolean"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="DendrogramLinkValue">
+		<xs:sequence>
+			<xs:element name="itemKey" type="xs:decimal"/>
+			<xs:element name="key" type="xs:decimal"/>
+			<xs:element name="parentKey" type="xs:decimal"/>
+			<xs:element name="leftKey" type="xs:decimal"/>
+			<xs:element name="rightKey" type="xs:decimal"/>
+			<xs:element name="extKey" type="xs:decimal"/>
+			<xs:element name="valueKey" minOccurs="0"/>
+			<xs:element name="title" type="ns1:LocalStringType"/>
+			<xs:element name="details" minOccurs="0"/>
+			<xs:element name="cacheKey" type="xs:decimal"/>
+			<xs:element name="baseData" type="xs:decimal"/>
+			<xs:element name="firstElementKey" type="xs:decimal"/>
+			<xs:element name="secondElementKey" type="xs:decimal"/>
+			<xs:element name="distance" type="xs:decimal"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="DendrogramLinks">
+		<xs:sequence>
+			<xs:element name="testMode" type="xs:boolean"/>
+			<xs:element name="value" type="tns:DendrogramLinkValue" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="contentCacheItem" type="tns:DendrogramContent" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="autoText" type="xs:boolean"/>
+			<xs:element name="useValuesReverseBehavior" type="xs:boolean"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="DoubleRect">
+		<xs:sequence>
+			<xs:element name="left" type="xs:decimal"/>
+			<xs:element name="right" type="xs:decimal"/>
+			<xs:element name="top" type="xs:decimal"/>
+			<xs:element name="bottom" type="xs:decimal"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="GanttChart">
+		<xs:sequence>
+			<xs:element name="chart" type="tns:Chart"/>
+			<xs:element name="dtDataColumn" type="tns:GanttChartDTDataColumn" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="points" type="tns:ChartPoints"/>
+			<xs:element name="series" type="tns:ChartSeries"/>
+			<xs:element name="interval" type="tns:ChartInterval" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="value" type="tns:ChartValue" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="drawEmpty" type="xs:boolean"/>
+			<xs:element name="timeScale" type="tns:TimeScale"/>
+			<xs:element name="keepScaleVariant" type="tns:GanttChartScaleKeeping"/>
+			<xs:element name="fixedVariantMeasure" type="tns:TimeScaleUnitType"/>
+			<xs:element name="fixedVariantInterval" type="xs:decimal"/>
+			<xs:element name="autoFullInterval" type="xs:boolean"/>
+			<xs:element name="fullIntervalBegin" type="xs:dateTime"/>
+			<xs:element name="fullIntervalEnd" type="xs:dateTime"/>
+			<xs:element name="visualBegin" type="xs:dateTime"/>
+			<xs:element name="intervalDrawType" type="tns:GanttChartIntervalRepresentation"/>
+			<xs:element name="noneVariantChars" type="xs:decimal"/>
+			<xs:element name="noneVariantMeasure" type="tns:TimeScaleUnitType"/>
+			<xs:element name="verticalStretch" type="tns:GanttChartVerticalStretch"/>
+			<xs:element name="verticalScrollEnable" type="xs:boolean"/>
+			<xs:element name="showValueText" type="tns:GanttChartValueTextRepresentation"/>
+			<xs:element name="extTitle" type="ns1:LocalStringType"/>
+			<xs:element name="outboundColor" type="ns2:Color"/>
+			<xs:element name="backIntervals" type="tns:GanttChartBackgroundIntervals"/>
+			<xs:element name="link" type="tns:GanttChartLink" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="linksColor" type="ns2:Color"/>
+			<xs:element name="linksLine" type="ns2:Line"/>
+			<xs:element name="showPointsText" type="tns:ShowInGanttChart"/>
+			<xs:element name="showData" type="tns:ShowInGanttChart"/>
+			<xs:element name="textPlacement" type="tns:GanttChartTextPlacementType"/>
+			<xs:element name="intervalTextRepresentation" type="tns:GanttChartIntervalTextRepresentation"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="GanttChartBackgroundIntervals">
+		<xs:sequence>
+			<xs:element name="collection" type="tns:Collect"/>
+			<xs:element name="contentCacheItem" type="ns2:Color" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="ticks" type="xs:decimal"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="GanttChartDTDataColumn">
+		<xs:sequence>
+			<xs:element name="id" type="xs:decimal"/>
+			<xs:element name="nameInternational" type="xs:string"/>
+			<xs:element name="nameRussian" type="xs:string"/>
+			<xs:element name="title" type="ns1:LocalStringType"/>
+			<xs:element name="valueType" type="ns1:TypeDescription"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="GanttChartDTValueData">
+		<xs:sequence>
+			<xs:element name="id" type="xs:decimal"/>
+			<xs:element name="value"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="GanttChartIntervalID">
+		<xs:sequence>
+			<xs:element name="intervalKey" type="xs:decimal"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="GanttChartIntervalsSelectionParams">
+		<xs:sequence>
+			<xs:element name="selectedIntervalKey" type="xs:decimal" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="lastSelectedIntervalKey" type="xs:decimal" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="GanttChartLink">
+		<xs:sequence>
+			<xs:element name="curBeginKey" type="xs:decimal"/>
+			<xs:element name="curEndKey" type="xs:decimal"/>
+			<xs:element name="beginKey" type="xs:decimal"/>
+			<xs:element name="endKey" type="xs:decimal"/>
+			<xs:element name="linkType" type="tns:GanttChartLinkType"/>
+			<xs:element name="color" type="ns2:Color"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="GanttChartPointValueContent">
+		<xs:sequence>
+			<xs:element name="mainColor" type="ns2:Color"/>
+			<xs:element name="secondColor" type="ns2:Color"/>
+			<xs:element name="backColor" type="ns2:Color"/>
+			<xs:element name="textColor" type="ns2:Color"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="GanttChartSeriesValueContent">
+		<xs:sequence>
+			<xs:element name="mainColor" type="ns2:Color"/>
+			<xs:element name="secondColor" type="ns2:Color"/>
+			<xs:element name="hatchBetweenIntervalsColor" type="ns2:Color"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="GanttChartValueID">
+		<xs:sequence>
+			<xs:element name="valueKey" type="xs:decimal"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="GanttChartValuesSelectionParams">
+		<xs:sequence>
+			<xs:element name="selectedValueKey" type="xs:decimal" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="lastSelectedValueKey" type="xs:decimal" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="MovedItem">
+		<xs:sequence>
+			<xs:element name="itemId" type="xs:decimal"/>
+			<xs:element name="oldPrevItemId" type="xs:decimal"/>
+			<xs:element name="newPrevItemId" type="xs:decimal"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="PivotChart">
+		<xs:choice>
+			<xs:element name="chart" type="tns:Chart"/>
+			<xs:element name="horizontalScaleKeeping" type="tns:PivotChartScaleKeeping"/>
+			<xs:element name="horizontalScaleValueCount" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="horizontalScaleValueMinWidth" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="pivotChartType" type="tns:PivotChartType"/>
+			<xs:element name="pointsValuesShowMode" type="tns:PivotChartValuesShowMode"/>
+			<xs:element name="seriesValuesShowMode" type="tns:PivotChartValuesShowMode"/>
+			<xs:element name="horizontalScaleLabelsOrientation" type="tns:PivotChartLabelsOrientation"/>
+			<xs:element name="horizontalScaleTopLevelCount" type="xs:decimal"/>
+			<xs:element name="fieldAreasTransparent" type="xs:boolean"/>
+			<xs:element name="fieldAreasBackColor" type="ns2:Color"/>
+			<xs:element name="fieldAreasTextColor" type="ns2:Color"/>
+			<xs:element name="showFields" type="xs:boolean"/>
+		</xs:choice>
+	</xs:complexType>
+	<xs:complexType name="PointData">
+		<xs:sequence>
+			<xs:element name="id" type="xs:decimal"/>
+			<xs:element name="color" type="ns2:Color"/>
+			<xs:element name="line" type="ns2:Line"/>
+			<xs:element name="marker" type="tns:ChartMarkerType"/>
+			<xs:element name="text" type="ns1:LocalStringType"/>
+			<xs:element name="strIsChanged" type="xs:boolean"/>
+			<xs:element name="isExpand" type="xs:boolean"/>
+			<xs:element name="isIndicator" type="xs:boolean"/>
+			<xs:element name="colorPriority" type="xs:boolean"/>
+			<xs:element name="key" minOccurs="0"/>
+			<xs:element name="valInfo" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="PointDimensionValue">
+		<xs:sequence>
+			<xs:element name="itemKey" type="xs:decimal"/>
+			<xs:element name="key" type="xs:decimal"/>
+			<xs:element name="parentKey" type="xs:decimal"/>
+			<xs:element name="leftKey" type="xs:decimal"/>
+			<xs:element name="rightKey" type="xs:decimal"/>
+			<xs:element name="extKey" type="xs:decimal"/>
+			<xs:element name="valueKey" minOccurs="0"/>
+			<xs:element name="title" type="ns1:LocalStringType"/>
+			<xs:element name="details" minOccurs="0"/>
+			<xs:element name="cacheKey" type="xs:decimal"/>
+			<xs:element name="baseData" type="xs:decimal"/>
+			<xs:element name="font" type="ns2:Font"/>
+			<xs:element name="picture" type="ns2:Picture"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="RealDataItem">
+		<xs:sequence>
+			<xs:element name="valData" nillable="true"/>
+			<xs:element name="valInfo" nillable="true"/>
+			<xs:element name="toolTip" type="xs:string"/>
+			<xs:element name="isToolTipFormatted" type="xs:boolean" minOccurs="0"/>
+			<xs:element name="editMode" type="tns:ChartValuesEditMode" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="RealDataItems">
+		<xs:sequence>
+			<xs:element name="item" type="tns:RealDataItem" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="SeriesData">
+		<xs:sequence>
+			<xs:element name="id" type="xs:decimal"/>
+			<xs:element name="color" type="ns2:Color"/>
+			<xs:element name="line" type="ns2:Line"/>
+			<xs:element name="marker" type="tns:ChartMarkerType"/>
+			<xs:element name="text" type="ns1:LocalStringType"/>
+			<xs:element name="strIsChanged" type="xs:boolean"/>
+			<xs:element name="isExpand" type="xs:boolean"/>
+			<xs:element name="isIndicator" type="xs:boolean"/>
+			<xs:element name="colorPriority" type="xs:boolean"/>
+			<xs:element name="key" minOccurs="0"/>
+			<xs:element name="valInfo" minOccurs="0"/>
+			<xs:element name="trendline" type="tns:ChartTrendline" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="showGraphicalDataRepresentationInChartLegend" type="tns:ShowInChartLegend" minOccurs="0"/>
+			<xs:element name="showGraphicalDataRepresentationInChart" type="tns:ShowInChart" minOccurs="0"/>
+			<xs:element name="visualType" type="tns:ChartSeriesGraphicalRepresentationType" minOccurs="0"/>
+			<xs:element name="addType" type="tns:ChartSeriesStackType" minOccurs="0"/>
+			<xs:element name="valuesAxisUsage" type="tns:UsedChartValuesAxis" minOccurs="0"/>
+			<xs:element name="stackGroup" type="xs:string" minOccurs="0"/>
+			<xs:element name="valueLabelFormat" type="ns1:LocalStringType" minOccurs="0"/>
+			<xs:element name="percentLabelFormat" type="ns1:LocalStringType" minOccurs="0"/>
+			<xs:element name="dataTableLabelFormat" type="ns1:LocalStringType" minOccurs="0"/>
+			<xs:element name="valuesEditMode" type="tns:ChartValuesEditMode" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="SeriesDimensionValue">
+		<xs:sequence>
+			<xs:element name="itemKey" type="xs:decimal"/>
+			<xs:element name="key" type="xs:decimal"/>
+			<xs:element name="parentKey" type="xs:decimal"/>
+			<xs:element name="leftKey" type="xs:decimal"/>
+			<xs:element name="rightKey" type="xs:decimal"/>
+			<xs:element name="extKey" type="xs:decimal"/>
+			<xs:element name="valueKey" minOccurs="0"/>
+			<xs:element name="title" type="ns1:LocalStringType"/>
+			<xs:element name="details" minOccurs="0"/>
+			<xs:element name="cacheKey" type="xs:decimal"/>
+			<xs:element name="baseData" type="xs:decimal"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="TimeScale">
+		<xs:sequence>
+			<xs:element name="placement" type="tns:TimeScalePosition"/>
+			<xs:element name="level" type="tns:TimeScaleLevel" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="transparent" type="xs:boolean"/>
+			<xs:element name="backColor" type="ns2:Color"/>
+			<xs:element name="textColor" type="ns2:Color"/>
+			<xs:element name="currentLevel" type="xs:decimal"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="TimeScaleLabel">
+		<xs:sequence>
+			<xs:element name="key" type="xs:dateTime"/>
+			<xs:element name="text" type="ns1:LocalStringType"/>
+			<xs:element name="details" minOccurs="0"/>
+			<xs:element name="lineColor" type="ns2:Color"/>
+			<xs:element name="textColor" type="ns2:Color"/>
+			<xs:element name="textFormatted" type="xs:boolean"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="TimeScaleLabels">
+		<xs:sequence>
+			<xs:element name="label" type="tns:TimeScaleLabel" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="ticks" type="xs:decimal"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="TimeScaleLevel">
+		<xs:sequence>
+			<xs:element name="measure" type="tns:TimeScaleUnitType"/>
+			<xs:element name="interval" type="xs:decimal"/>
+			<xs:element name="show" type="xs:boolean"/>
+			<xs:element name="line" type="ns2:Line"/>
+			<xs:element name="scaleColor" type="ns2:Color"/>
+			<xs:element name="dayFormatRule" type="tns:TimeScaleDayFormat"/>
+			<xs:element name="format" type="ns1:LocalStringType"/>
+			<xs:element name="labels" type="tns:TimeScaleLabels"/>
+			<xs:element name="backColor" type="ns2:Color"/>
+			<xs:element name="textColor" type="ns2:Color"/>
+			<xs:element name="showPereodicalLabels" type="xs:boolean"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="ValueAppearance">
+		<xs:sequence>
+			<xs:element name="item" type="tns:ValueAppearanceDataItem" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="ValueAppearanceDataItem">
+		<xs:sequence>
+			<xs:element name="id" type="ns1:UUID" minOccurs="0"/>
+			<xs:element name="item" type="tns:ValueAppearanceValue2ValueMapItem" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="ValueAppearanceValue2ValueMapItem">
+		<xs:sequence>
+			<xs:element name="key"/>
+			<xs:element name="value"/>
+		</xs:sequence>
+	</xs:complexType>
+</xs:schema>
