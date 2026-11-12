@@ -136,15 +136,19 @@ fn canonical_apply_preserves_external_cache_authority_from_preview_to_execution(
         );
         assert!(cache.join("keep-empty").is_dir());
     }
-    // The existing runner projection store must still select this cache after
-    // apply created it; this opens the real retained store without a provider.
-    let projection =
-        super::super::runner_015::lock_project(&root, &CancellationToken::new()).unwrap();
+    // The runner lock of the working copy must still select this cache after
+    // apply created it; this takes the real lock without a provider.
+    let lock = super::super::runner::lock_working_copy(&root, &CancellationToken::new()).unwrap();
     let cache_identity = unica_workspace::paths::normalize_path_identity(&cache).unwrap();
-    assert!(projection
-        .directory()
-        .starts_with(cache_identity.join("runner-project")));
-    drop(projection);
+    let directory = super::super::runner::lock_directory(
+        &unica_workspace::paths::normalize_path_identity(&root).unwrap(),
+    );
+    let directory = unica_workspace::paths::normalize_path_identity(&directory).unwrap();
+    assert!(
+        directory.starts_with(cache_identity.join("runner-lock")),
+        "{directory:?}"
+    );
+    drop(lock);
     let after = unica_workspace::test_support::tree_snapshot(&root);
     let replayed = call(serde_json::json!({"executionToken":token}));
     assert!(replayed.ok, "{replayed:?}");

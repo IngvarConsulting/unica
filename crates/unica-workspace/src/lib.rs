@@ -119,6 +119,11 @@ pub mod test_support {
     };
 }
 
-pub mod full_dump;
+pub mod runner_lock;
+
+/// The host branch classes used by v8 filename and installation policy.
+pub mod host_platform {
+    pub use crate::platform::host::{current_host_platform, HostPlatform};
+}
 
 pub mod discovery;

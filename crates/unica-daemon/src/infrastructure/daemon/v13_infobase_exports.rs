@@ -3,7 +3,7 @@
 // that value intact avoids a second error model at this adapter boundary.
 
 use super::protocol::InvocationRequest;
-use super::runner_015::Runner015ProcessRunner;
+use super::runner::PinnedRunner;
 use super::v13_source_import::INFOBASE_NAME;
 use crate::domain::engine::MissingEngineRefusal;
 use crate::infrastructure::bundled_tools::{bundled_tool_version, resolve_bundled_tool};
@@ -253,7 +253,7 @@ impl PreparedInfobaseExport {
     }
 
     pub(super) fn execute(&self, cancellation: CancellationToken) -> DomainResult {
-        execute_with_runner(self, &Runner015ProcessRunner, cancellation)
+        execute_with_runner(self, &PinnedRunner, cancellation)
     }
 }
 
@@ -1288,7 +1288,7 @@ pub(super) fn resolve_bundled_runner(cwd: &Path) -> Result<BundledRunner, Runner
         })?;
     let version =
         bundled_tool_version(&plugin_root, RUNNER_TOOL).map_err(|error| redactor(&error))?;
-    super::runner_015::check_version(&version)?;
+    super::runner::check_version(&version)?;
     Ok(BundledRunner { tool, version })
 }
 
@@ -1330,9 +1330,6 @@ pub(super) fn runner_start_rejection(
             RefusalCode::Cancelled,
             "cancelled before provider launch",
         );
-    }
-    if let Some(reason) = super::runner_015::config_refusal(error) {
-        return DomainResult::canonical_rejection(at, RefusalCode::InvalidSource, redactor(reason));
     }
     let cause = runner_failure_cause(error, program);
     match failure {
@@ -2841,38 +2838,6 @@ mod tests {
                 "--dry-run".to_string(),
             ]
         );
-    }
-
-    /// Проектный файл, который адаптер не передаёт раннеру, — отказ источника с
-    /// причиной, а не «поставщика нет».
-    /// rule: INV.RUNTIME.RUNNER-011-CONFIG-PROJECTION
-    #[test]
-    fn a_refused_project_config_is_not_reported_as_an_absent_runner() {
-        let root = tempfile::tempdir().unwrap();
-        fs::write(
-            root.path().join(CONFIG_NAME),
-            "format: DESIGNER\nworkPath: build\nexecution_timeout: 300000\n",
-        )
-        .unwrap();
-        let prepared = prepared(root.path(), true);
-        let tool = BundledTool {
-            program: root.path().join("v8-runner-that-must-not-start"),
-            warnings: Vec::new(),
-            missing: None,
-        };
-        let error = invoke_runner(
-            &prepared,
-            &tool,
-            &Runner015ProcessRunner,
-            &CancellationToken::new(),
-            true,
-        )
-        .unwrap_err();
-        let diagnostic = &error.diagnostics[0];
-        assert_eq!(diagnostic["code"], "invalid_source", "{error:?}");
-        assert!(diagnostic.get("detailCode").is_none(), "{error:?}");
-        assert!(error.summary.contains("execution_timeout"), "{error:?}");
-        assert!(!error.summary.contains("failed to start"), "{error:?}");
     }
 
     /// «нет движка» — только когда процесс раннера не возник.

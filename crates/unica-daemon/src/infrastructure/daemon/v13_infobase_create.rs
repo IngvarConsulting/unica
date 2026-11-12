@@ -25,7 +25,7 @@
 //! Записи поколения после создания нет: первый `push` поколение не сверяет.
 
 use super::protocol::InvocationRequest;
-use super::runner_015::{origin_kind, OriginKind, Runner015ProcessRunner};
+use super::runner::{origin_kind, OriginKind, PinnedRunner};
 use super::v13_infobase_exports::{
     configuration_source_set, digest_optional_workspace_file, digest_required_workspace_file,
     missing_runner_rejection, resolve_bundled_runner, runner_rejection, runner_start_rejection,
@@ -119,7 +119,7 @@ impl PreparedInfobaseCreate {
     }
 
     pub(super) fn execute(&self, cancellation: CancellationToken) -> DomainResult {
-        execute_with_runner(self, &Runner015ProcessRunner, cancellation)
+        execute_with_runner(self, &PinnedRunner, cancellation)
     }
 }
 
