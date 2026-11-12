@@ -159,7 +159,7 @@ fn an_attribute_answers_for_its_own_support_record() {
 
 /// Declares vendor nodes in the catalog of the fixture (`child_objects`)
 /// and registers their own records `(uuid, rule)` in the marker.
-fn declare_vendor_nodes(fixture: &Fixture, child_objects: &str, records: &[(&str, u8)]) {
+pub(super) fn declare_vendor_nodes(fixture: &Fixture, child_objects: &str, records: &[(&str, u8)]) {
     let descriptor = fixture.source.join("Catalogs/Items.xml");
     let text = std::fs::read_to_string(&descriptor).unwrap();
     std::fs::write(
