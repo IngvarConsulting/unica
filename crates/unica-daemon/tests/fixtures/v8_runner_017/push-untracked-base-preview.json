@@ -1,0 +1,29 @@
+{
+  "ok": false,
+  "command": "push",
+  "duration_ms": 0,
+  "data": {
+    "provider": {
+      "selected": "ibcmd",
+      "origin": {
+        "kind": "override",
+        "file": "v8project.yaml"
+      }
+    },
+    "ok": false,
+    "provider_dispatched": false,
+    "steps": [],
+    "duration_ms": 0
+  },
+  "warnings": [],
+  "steps": [],
+  "error": {
+    "code": "untracked_base",
+    "kind": "untracked_base",
+    "message": "cannot push: this working copy has no memory of file infobase '/workspace/F/ib' with no configured infobase user for source-set 'main', so nothing proves that the sources derive from its state; an empty infobase is not told apart, because its generation depends on the platform version. If the infobase holds the right state, see what is there with `v8-runner --config /workspace/F/v8project.yaml pull main`; if the source directory does, run `v8-runner --config /workspace/F/v8project.yaml push --force`, which loads the whole directory and replaces the configuration in the infobase, losing what was changed there.",
+    "next": {
+      "command": "pull",
+      "source_set": "main"
+    }
+  }
+}

@@ -16,8 +16,9 @@ use super::protocol::InvocationRequest;
 use super::runner::PinnedRunner;
 use super::v13_infobase_exports::{
     closed_workspace_relative_path, digest_optional_workspace_file, digest_required_workspace_file,
-    missing_runner_rejection, resolve_bundled_runner, runner_rejection, runner_start_rejection,
-    RunnerAbsence, CONFIG_NAME, RUNNER_OUTPUT_LIMIT,
+    missing_runner_rejection, note_config_warnings, resolve_bundled_runner,
+    runner_envelope_refusal, runner_rejection, runner_start_rejection, RunnerAbsence, CONFIG_NAME,
+    RUNNER_OUTPUT_LIMIT,
 };
 use crate::infrastructure::workspace::discover_workspace;
 use serde_json::{json, Map, Value};
@@ -165,7 +166,13 @@ impl PreparedClientRun {
     }
 
     pub(super) fn execute(&self, cancellation: CancellationToken) -> DomainResult {
-        execute_with_runner(self, &PinnedRunner, cancellation)
+        super::runner::with_bundled_runner(
+            &self.context.workspace_root,
+            &self.context.cwd,
+            OPERATION,
+            cancellation,
+            |cancellation| execute_with_runner(self, &PinnedRunner, cancellation),
+        )
     }
 }
 
@@ -432,6 +439,7 @@ fn execute_with_resolved_runner(
                 "reason": "launch exactly this previewed client session"
             }));
         }
+        note_config_warnings(&mut result, &envelope);
         return result;
     }
     let ValidatedLaunchReceipt {
@@ -498,6 +506,7 @@ fn execute_with_resolved_runner(
             };
         }
     }
+    note_config_warnings(&mut result, &envelope);
     result
 }
 
@@ -825,7 +834,10 @@ fn parse_runner_output(
         // Runner errors may contain its command line and private capture paths.
         // The typed code supplies the continuation; raw provider text is private.
         let message = "v8-runner refused the launch".to_string();
-        return Err(runner_rejection(Some(OPERATION.to_string()), code, message));
+        return Err(runner_envelope_refusal(
+            runner_rejection(Some(OPERATION.to_string()), code, message),
+            &envelope,
+        ));
     }
     Ok((envelope, RunnerOutcome::Completed))
 }

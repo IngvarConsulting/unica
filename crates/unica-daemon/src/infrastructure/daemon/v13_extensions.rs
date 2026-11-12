@@ -6,8 +6,9 @@ use super::protocol::InvocationRequest;
 use super::runner::PinnedRunner;
 use super::v13_infobase_exports::{
     digest_optional_workspace_file, digest_required_workspace_file, missing_runner_rejection,
-    resolve_bundled_runner, runner_rejection, runner_start_rejection, valid_1c_identifier,
-    validate_provider_receipt, CONFIG_NAME, LOCAL_CONFIG_NAME, RUNNER_OUTPUT_LIMIT,
+    resolve_bundled_runner, runner_envelope_refusal, runner_rejection, runner_start_rejection,
+    valid_1c_identifier, validate_provider_receipt, CONFIG_NAME, LOCAL_CONFIG_NAME,
+    RUNNER_OUTPUT_LIMIT,
 };
 use super::v13_source_import::INFOBASE_NAME;
 use crate::infrastructure::workspace::discover_workspace;
@@ -161,15 +162,23 @@ impl PreparedExtensions {
         SafeIdentityHash::from_sha256(hasher.finalize().into())
     }
     pub(super) fn execute(&self, cancellation: CancellationToken) -> DomainResult {
-        match resolve_bundled_runner(&self.context.cwd) {
-            Ok(resolved) => self.execute_with(
-                &PinnedRunner,
-                &resolved.tool,
-                &resolved.version,
-                cancellation,
-            ),
-            Err(message) => missing_runner_rejection(Some(self.operation.name().into()), message),
-        }
+        super::runner::with_bundled_runner(
+            &self.context.workspace_root,
+            &self.context.cwd,
+            self.operation.name(),
+            cancellation,
+            |cancellation| match resolve_bundled_runner(&self.context.cwd) {
+                Ok(resolved) => self.execute_with(
+                    &PinnedRunner,
+                    &resolved.tool,
+                    &resolved.version,
+                    cancellation,
+                ),
+                Err(message) => {
+                    missing_runner_rejection(Some(self.operation.name().into()), message)
+                }
+            },
+        )
     }
 
     fn fail(&self, code: RefusalCode, message: impl Into<String>) -> DomainResult {
@@ -355,13 +364,16 @@ impl PreparedExtensions {
             let code = envelope["error"]["code"]
                 .as_str()
                 .unwrap_or("provider_failed");
-            return Err(runner_rejection(
-                Some(self.operation.name().into()),
-                code,
-                envelope["error"]["message"]
-                    .as_str()
-                    .map(|message| published_runner_error(self.operation, code, message))
-                    .unwrap_or_else(|| "v8-runner failed without a typed message".into()),
+            return Err(runner_envelope_refusal(
+                runner_rejection(
+                    Some(self.operation.name().into()),
+                    code,
+                    envelope["error"]["message"]
+                        .as_str()
+                        .map(|message| published_runner_error(self.operation, code, message))
+                        .unwrap_or_else(|| "v8-runner failed without a typed message".into()),
+                ),
+                &envelope,
             ));
         }
         Ok(envelope)
@@ -476,7 +488,7 @@ impl PreparedExtensions {
             result.data = Some(json!({"op":self.operation.name(),"dryRun":true,"plan":plan}));
 
             result.next.push(json!({"tool":"unica.run","args":{"op":self.operation.name(),"args":self.args,"dryRun":false},"reason":"execute with the current arguments; preview does not inspect infobase state"}));
-            super::v13_infobase_exports::note_another_copy(&mut result, &preview);
+            super::v13_infobase_exports::note_runner_warnings(&mut result, &preview);
             return Ok(result);
         }
         let applied = self.invoke(runner, tool, &cancellation, false)?;
@@ -508,7 +520,7 @@ impl PreparedExtensions {
             );
         }
         result.data = Some(data);
-        super::v13_infobase_exports::note_another_copy(&mut result, &applied);
+        super::v13_infobase_exports::note_runner_warnings(&mut result, &applied);
 
         Ok(result)
     }
@@ -540,6 +552,11 @@ fn validate_arguments(op: Operation, args: &Map<String, Value>) -> Result<(), &'
     Ok(())
 }
 fn valid_inventory_record(item: &Value) -> bool {
+    // Пакетный Конфигуратор называет только имя расширения (раннер 0.17,
+    // `ExtensionInventoryEntry::NameOnly`).
+    if name_only_record(item) {
+        return true;
+    }
     [
         "active",
         "safe_mode",
@@ -571,9 +588,19 @@ fn valid_inventory_record(item: &Value) -> bool {
             prefix.is_null() || prefix.as_str().is_some_and(|value| value.len() <= 4096)
         })
 }
+/// A record of batch Designer: the name and nothing else.
+fn name_only_record(item: &Value) -> bool {
+    item.as_object()
+        .is_some_and(|record| record.len() == 1 && record.contains_key("name"))
+}
+
 /// The runner's text fields pass through the secret redactor: a record is
-/// provider prose like any other (#2124).
+/// provider prose like any other (#2124). A record of batch Designer passes as
+/// the name alone: the other facts are not known.
 fn public_record(item: &Value) -> Value {
+    if name_only_record(item) {
+        return json!({"name": item["name"]});
+    }
     let text = |key: &str| match item[key].as_str() {
         Some(value) => Value::String(redactor(value)),
         None => item[key].clone(),
@@ -914,6 +941,28 @@ mod tests {
             assert_eq!(data["namePrefixAvailable"], false);
             assert_eq!(data["extensions"].as_array().unwrap().len(), prefixes.len());
         }
+        // Пакетный Конфигуратор (раннер 0.17) называет только имя: запись
+        // принимается и передаётся одним именем.
+        let root = tempfile::tempdir().unwrap();
+        let mut prepared = fixture(root.path(), Operation::List);
+        let preview = envelope(&prepared, true);
+        let mut applied = envelope(&prepared, false);
+        applied["data"]["extensions"] = json!([{"name": "Sales"}, {"name": "Audit"}]);
+        let tool = tool(root.path());
+        prepared.dry_run = false;
+        let result = prepared.execute_with(
+            &SequenceRunner::new(vec![preview, applied]),
+            &tool,
+            super::super::runner::VERSION,
+            CancellationToken::new(),
+        );
+        assert!(result.ok, "{result:?}");
+        let data = result.data.unwrap();
+        assert_eq!(
+            data["extensions"],
+            json!([{"name": "Sales"}, {"name": "Audit"}])
+        );
+        assert_eq!(data["namePrefixAvailable"], false);
     }
     /// rule: INV.RUNTIME.EXTENSION-OPERATIONS
     #[test]
