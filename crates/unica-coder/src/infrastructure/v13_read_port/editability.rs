@@ -504,7 +504,13 @@ mod tests {
             policy: SupportPolicyMode::Deny,
             marker_unreadable: false,
         };
-        attach_editability(&mut data, &catalog(), &editability, None, Some(SupportReason::Unknown));
+        attach_editability(
+            &mut data,
+            &catalog(),
+            &editability,
+            None,
+            Some(SupportReason::Unknown),
+        );
         assert_eq!(
             data["props"],
             json!({"support": {"editable": false, "reason": "unknown", "policy": "deny"}})

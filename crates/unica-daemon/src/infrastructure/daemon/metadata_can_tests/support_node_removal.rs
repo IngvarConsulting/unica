@@ -100,9 +100,7 @@ fn removing_a_tabular_section_answers_for_its_locked_attribute() {
         json!({"at":LINES,"ops":[{"op":"supportRule.set","args":{"values":{"rule":"off-support"}}}]}),
     );
     let section = view(&runtime, &fixture, LINES);
-    assert!(marks(&section)
-        .iter()
-        .all(|(_, blocked)| blocked.is_none()));
+    assert!(marks(&section).iter().all(|(_, blocked)| blocked.is_none()));
     publish(
         &runtime,
         &fixture,
@@ -126,9 +124,7 @@ fn a_warn_policy_removes_a_tabular_section_with_a_locked_attribute() {
     let runtime = runtime();
 
     let section = view(&runtime, &fixture, LINES);
-    assert!(marks(&section)
-        .iter()
-        .all(|(_, blocked)| blocked.is_none()));
+    assert!(marks(&section).iter().all(|(_, blocked)| blocked.is_none()));
     let published = publish(
         &runtime,
         &fixture,
