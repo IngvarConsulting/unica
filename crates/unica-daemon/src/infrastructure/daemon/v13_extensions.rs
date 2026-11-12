@@ -6,8 +6,9 @@ use super::protocol::InvocationRequest;
 use super::runner::PinnedRunner;
 use super::v13_infobase_exports::{
     digest_optional_workspace_file, digest_required_workspace_file, missing_runner_rejection,
-    resolve_bundled_runner, runner_rejection, runner_start_rejection, valid_1c_identifier,
-    validate_provider_receipt, CONFIG_NAME, LOCAL_CONFIG_NAME, RUNNER_OUTPUT_LIMIT,
+    resolve_bundled_runner, runner_envelope_refusal, runner_rejection, runner_start_rejection,
+    valid_1c_identifier, validate_provider_receipt, CONFIG_NAME, LOCAL_CONFIG_NAME,
+    RUNNER_OUTPUT_LIMIT,
 };
 use super::v13_source_import::INFOBASE_NAME;
 use crate::infrastructure::workspace::discover_workspace;
@@ -161,15 +162,23 @@ impl PreparedExtensions {
         SafeIdentityHash::from_sha256(hasher.finalize().into())
     }
     pub(super) fn execute(&self, cancellation: CancellationToken) -> DomainResult {
-        match resolve_bundled_runner(&self.context.cwd) {
-            Ok(resolved) => self.execute_with(
-                &PinnedRunner,
-                &resolved.tool,
-                &resolved.version,
-                cancellation,
-            ),
-            Err(message) => missing_runner_rejection(Some(self.operation.name().into()), message),
-        }
+        super::runner::with_bundled_runner(
+            &self.context.workspace_root,
+            &self.context.cwd,
+            self.operation.name(),
+            cancellation,
+            |cancellation| match resolve_bundled_runner(&self.context.cwd) {
+                Ok(resolved) => self.execute_with(
+                    &PinnedRunner,
+                    &resolved.tool,
+                    &resolved.version,
+                    cancellation,
+                ),
+                Err(message) => {
+                    missing_runner_rejection(Some(self.operation.name().into()), message)
+                }
+            },
+        )
     }
 
     fn fail(&self, code: RefusalCode, message: impl Into<String>) -> DomainResult {
@@ -355,13 +364,16 @@ impl PreparedExtensions {
             let code = envelope["error"]["code"]
                 .as_str()
                 .unwrap_or("provider_failed");
-            return Err(runner_rejection(
-                Some(self.operation.name().into()),
-                code,
-                envelope["error"]["message"]
-                    .as_str()
-                    .map(|message| published_runner_error(self.operation, code, message))
-                    .unwrap_or_else(|| "v8-runner failed without a typed message".into()),
+            return Err(runner_envelope_refusal(
+                runner_rejection(
+                    Some(self.operation.name().into()),
+                    code,
+                    envelope["error"]["message"]
+                        .as_str()
+                        .map(|message| published_runner_error(self.operation, code, message))
+                        .unwrap_or_else(|| "v8-runner failed without a typed message".into()),
+                ),
+                &envelope,
             ));
         }
         Ok(envelope)
@@ -476,7 +488,7 @@ impl PreparedExtensions {
             result.data = Some(json!({"op":self.operation.name(),"dryRun":true,"plan":plan}));
 
             result.next.push(json!({"tool":"unica.run","args":{"op":self.operation.name(),"args":self.args,"dryRun":false},"reason":"execute with the current arguments; preview does not inspect infobase state"}));
-            super::v13_infobase_exports::note_another_copy(&mut result, &preview);
+            super::v13_infobase_exports::note_runner_warnings(&mut result, &preview);
             return Ok(result);
         }
         let applied = self.invoke(runner, tool, &cancellation, false)?;
@@ -508,7 +520,7 @@ impl PreparedExtensions {
             );
         }
         result.data = Some(data);
-        super::v13_infobase_exports::note_another_copy(&mut result, &applied);
+        super::v13_infobase_exports::note_runner_warnings(&mut result, &applied);
 
         Ok(result)
     }

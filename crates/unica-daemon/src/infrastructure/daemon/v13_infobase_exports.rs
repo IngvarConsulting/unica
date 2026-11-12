@@ -253,7 +253,13 @@ impl PreparedInfobaseExport {
     }
 
     pub(super) fn execute(&self, cancellation: CancellationToken) -> DomainResult {
-        execute_with_runner(self, &PinnedRunner, cancellation)
+        super::runner::with_bundled_runner(
+            &self.context.workspace_root,
+            &self.context.cwd,
+            self.operation.name(),
+            cancellation,
+            |cancellation| execute_with_runner(self, &PinnedRunner, cancellation),
+        )
     }
 }
 
@@ -672,7 +678,7 @@ fn execute_with_resolved_runner(
             },
             "reason": "execute with the current arguments plan"
         }));
-        note_another_copy(&mut result, &preview);
+        note_runner_warnings(&mut result, &preview);
         return result;
     }
     if cancellation.is_cancelled() {
@@ -767,7 +773,7 @@ fn execute_with_resolved_runner(
             "infobase": true,
             "kind": applied["data"]["target_state"],
         }));
-        note_another_copy(&mut result, &applied);
+        note_runner_warnings(&mut result, &applied);
 
         return result;
     }
@@ -841,7 +847,7 @@ fn invoke_runner(
                     return Err(reject(
                         prepared.operation,
                         RefusalCode::UnsupportedOperation,
-                        format!("download of the main configuration is unavailable with v8-runner 0.14 in a project that declares extension source sets but no configuration source set: the runner writes the main configuration into one file only by the name of its configuration source set; declare one in {CONFIG_NAME}"),
+                        format!("download of the main configuration is unavailable with the pinned v8-runner in a project that declares extension source sets but no configuration source set: the runner writes the main configuration into one file only by the name of its configuration source set; declare one in {CONFIG_NAME}"),
                     ));
                 }
                 args.extend(source_set);
@@ -1089,10 +1095,9 @@ fn parse_runner_output(
             .as_str()
             .map(redactor)
             .unwrap_or_else(|| "v8-runner failed without a typed message".to_string());
-        return Err(runner_rejection(
-            Some(operation.name().to_string()),
-            code,
-            message,
+        return Err(runner_envelope_refusal(
+            runner_rejection(Some(operation.name().to_string()), code, message),
+            &envelope,
         ));
     }
     Ok(envelope)
@@ -1101,19 +1106,19 @@ fn parse_runner_output(
 /// Расхождение памяти рабочей копии о базе с самой базой: база ушла вперёд
 /// записанного поколения или памяти о ней нет. Выбирать между выгрузкой базы
 /// и её перезаписью должен человек. Имена кодов раннера живут только здесь:
-/// раннер 0.17 переименует `no_memory` в `untracked_base`, и перевод на него —
-/// правка этого словаря.
+/// с конверта 5 (раннер 0.17) отказ без памяти о базе называется
+/// `untracked_base`, как ветка без слежения в git.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum BaseDivergence {
     /// `non_fast_forward`: база ушла вперёд записанного поколения.
     MovedAhead,
-    /// `no_memory`: памяти рабочей копии о базе нет.
+    /// `untracked_base`: памяти рабочей копии о базе нет.
     Untracked,
 }
 
 impl BaseDivergence {
     const MOVED_AHEAD: &'static str = "non_fast_forward";
-    const UNTRACKED: &'static str = "no_memory";
+    const UNTRACKED: &'static str = "untracked_base";
 
     pub(super) fn from_runner_code(code: &str) -> Option<Self> {
         match code {
@@ -1307,12 +1312,10 @@ pub(super) fn missing_runner_rejection(at: Option<String>, absence: RunnerAbsenc
     }
 }
 
-/// Отказ, когда раннер не дал ответа: отмена, отказ проектного файла, раннер
-/// не стартовал или сбой после старта.
+/// Отказ, когда раннер не дал ответа: отмена, раннер не стартовал или сбой
+/// после старта.
 ///
-/// Маршрут один на все операции `run`: проектный файл, который адаптер 0.14 не может
-/// передать раннеру, правится человеком или агентом в рабочем пространстве, и отказ
-/// говорит об этом, а не о пропавшем поставщике. Отказом «нет движка» становится
+/// Маршрут один на все операции `run`. Отказом «нет движка» становится
 /// только то, что тип называет запуском: процесс раннера не возник. Раннер к
 /// этому месту уже прошёл полную проверку поставки, поэтому это шаг `start`.
 /// Сбой после старта движок не теряет и отвечает своим кодом.
@@ -1373,14 +1376,94 @@ pub(super) fn runner_rejection(
             result.data = Some(json!({"layer": layer.as_str(), "runnerCode": code}));
             result
         }
-        None => DomainResult::canonical_rejection(at, map_runner_code(code), message),
+        None => match runner_code_detail(code) {
+            Some(detail) => DomainResult::canonical_rejection_detailed(at, detail, message),
+            None => DomainResult::canonical_rejection(at, map_runner_code(code), message),
+        },
     }
+}
+
+/// Уточнение отказа по коду раннера, где код сам называет причину: нужной
+/// установки платформы нет. Исход — за человеком, повтор не поможет.
+pub(super) fn runner_code_detail(code: &str) -> Option<RefusalDetail> {
+    match code {
+        // Строгий выбор платформы (раннер 0.17): выпуска, который пишет формат
+        // исходников, среди установок нет.
+        PLATFORM_RELEASE_MISSING => Some(RefusalDetail::ProviderAbsent),
+        _ => None,
+    }
+}
+
+/// Отказ раннера 0.17 в строгом выборе платформы (#593): выпуска, который
+/// пишет формат исходников, среди установок нет.
+pub(super) const PLATFORM_RELEASE_MISSING: &str = "platform_release_missing";
+
+/// Отказ строгого выбора платформы Unica называет `platformLineNotInstalled`:
+/// линия формата и найденные установки других линий. Из описи раннера наружу
+/// идут только версии: каталоги установок не публикуются. Прочие отказы
+/// проходят как есть.
+/// Отказ раннера по его конверту: строка платформы названа, а предупреждения
+/// о прежних ключах конфигурации идут с отказом, как и с успехом.
+pub(super) fn runner_envelope_refusal(result: DomainResult, envelope: &Value) -> DomainResult {
+    let mut result = with_platform_release(result, &envelope["error"]);
+    note_config_warnings(&mut result, envelope);
+    result
+}
+
+pub(super) fn with_platform_release(mut result: DomainResult, error: &Value) -> DomainResult {
+    if error["code"] != PLATFORM_RELEASE_MISSING {
+        return result;
+    }
+    let release = &error["platform_release"];
+    let line = release["source_format"]["release"].as_str();
+    let format = release["source_format"]["version"].as_str();
+    let installations: Vec<String> = release["installations"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|installation| installation["version"].as_str())
+        .map(redactor)
+        .collect();
+    let named_line = match (line, format) {
+        (Some(line), Some(format)) => format!("platform line {line} (source format {format})"),
+        (None, Some(format)) => format!("the platform line of source format {format}"),
+        _ => "the platform line of the sources".to_string(),
+    };
+    let found = if installations.is_empty() {
+        "none".to_string()
+    } else {
+        installations.join(", ")
+    };
+    let message = format!(
+        "platformLineNotInstalled: {named_line} is not installed; installations found: {found}"
+    );
+    result.summary = message.clone();
+    if let Some(diagnostic) = result.diagnostics.first_mut() {
+        diagnostic["message"] = Value::String(message);
+    }
+    let detail = json!({
+        "line": line,
+        "sourceFormat": format,
+        "installations": installations,
+    });
+    match result.data.as_mut().and_then(Value::as_object_mut) {
+        Some(data) => {
+            data.insert("platformLineNotInstalled".into(), detail);
+        }
+        None => {
+            result.data = Some(json!({
+                "runnerCode": PLATFORM_RELEASE_MISSING,
+                "platformLineNotInstalled": detail,
+            }))
+        }
+    }
+    result
 }
 
 /// Код предупреждения Unica о записи в файловую базу другой рабочей копии.
 pub(super) const ANOTHER_COPY_WARNING_CODE: &str = "infobase_of_another_copy";
 
-/// Устойчивая часть предупреждения раннера 0.14 о базе другой рабочей копии
+/// Устойчивая часть предупреждения раннера о базе другой рабочей копии
 /// (`use_cases::infobase_owner`: «<команда> writes the infobase '<путь>' of
 /// another working copy: it is held by …»). Машинного кода у предупреждения
 /// нет: опознание по этой части — решение владельца, оно закреплено тестами на
@@ -1389,8 +1472,8 @@ pub(super) const ANOTHER_COPY_WARNING_CODE: &str = "infobase_of_another_copy";
 const ANOTHER_COPY_RUNNER_FRAGMENT: &str = " of another working copy: it is held by ";
 
 /// Своё предупреждение Unica вместо прозы раннера: без путей чужой копии, без
-/// метки владельца и без команд раннера. Прочие предупреждения раннера наружу
-/// не идут.
+/// метки владельца и без команд раннера. Наружу идут ещё только предупреждения
+/// о прежних ключах конфигурации ([`note_config_warnings`]).
 pub(super) fn another_copy_warning(envelope: &Value) -> Option<Value> {
     envelope["warnings"]
         .as_array()?
@@ -1405,9 +1488,36 @@ pub(super) fn another_copy_warning(envelope: &Value) -> Option<Value> {
         })
 }
 
-/// Добавляет к ответу предупреждение о базе другой копии и выход к своей базе —
-/// превью `infobase.create`, — если раннер о ней предупредил.
-pub(super) fn note_another_copy(result: &mut DomainResult, envelope: &Value) {
+/// Код предупреждения раннера о прежнем написании ключа конфигурации.
+pub(super) const CONFIG_SYNONYM_WARNING_CODE: &str = "runner_config_synonym";
+
+/// Устойчивая часть предупреждения раннера 0.17 о прежнем ключе, который он
+/// принимает ещё один цикл выпуска (`config::loader`: «`build:` in
+/// v8project.yaml is a one-cycle synonym for `push:`; rename the key»).
+const CONFIG_SYNONYM_RUNNER_FRAGMENT: &str = " is a one-cycle synonym for ";
+
+/// Передаёт предупреждения раннера о прежних ключах конфигурации как есть:
+/// они называют файл и ключ, без путей, и своего текста у Unica для них нет.
+pub(super) fn note_config_warnings(result: &mut DomainResult, envelope: &Value) {
+    for text in envelope["warnings"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .filter(|text| text.contains(CONFIG_SYNONYM_RUNNER_FRAGMENT))
+    {
+        let warning = json!({"code": CONFIG_SYNONYM_WARNING_CODE, "message": text});
+        if !result.warnings.contains(&warning) {
+            result.warnings.push(warning);
+        }
+    }
+}
+
+/// Добавляет к ответу предупреждения раннера о прежних ключах конфигурации и
+/// предупреждение о базе другой копии с выходом к своей базе — превью
+/// `infobase.create`, — если раннер о ней предупредил.
+pub(super) fn note_runner_warnings(result: &mut DomainResult, envelope: &Value) {
+    note_config_warnings(result, envelope);
     let Some(warning) = another_copy_warning(envelope) else {
         return;
     };
@@ -1433,6 +1543,9 @@ pub(super) fn map_runner_code(code: &str) -> RefusalCode {
     // знает, чья правка верна.
     if BaseDivergence::from_runner_code(code).is_some() {
         return RefusalCode::InvalidState;
+    }
+    if let Some(detail) = runner_code_detail(code) {
+        return detail.code();
     }
     match code {
         // Платформа сказала нет: авторизация, права, лицензия, занятая база.
@@ -1848,7 +1961,7 @@ mod tests {
             ("workspace_busy", Outcome::RetryAsIs),
             ("infobase_busy", Outcome::RetryAsIs),
             ("non_fast_forward", Outcome::NeedsHuman),
-            ("no_memory", Outcome::NeedsHuman),
+            ("untracked_base", Outcome::NeedsHuman),
             ("timed_out", Outcome::RetryAsIs),
             ("invalid_argument", Outcome::FixCall),
             ("invalid_output", Outcome::DeadEnd),
@@ -1881,7 +1994,7 @@ mod tests {
             plugin.join("third-party/tools.lock.json"),
             r#"{"schemaVersion":1,
   "targets":{"darwin-arm64":{"exe":""},"linux-x64":{"exe":""},"win-x64":{"exe":".exe"}},
-  "tools":[{"name":"v8-runner","version":"0.15.3","binaryName":"v8-runner"}]}"#,
+  "tools":[{"name":"v8-runner","version":"0.17.1","binaryName":"v8-runner"}]}"#,
         )
         .unwrap();
 
@@ -1897,7 +2010,7 @@ mod tests {
         assert_eq!(diagnostic["outcome"], "needsHuman");
         let data = rejection.data.as_ref().expect("поля движка в data");
         assert_eq!(data["tool"], "v8-runner");
-        assert_eq!(data["pinnedVersion"], "0.15.3");
+        assert_eq!(data["pinnedVersion"], "0.17.1");
         assert_eq!(data["stage"], "manifest");
         assert_eq!(data["retryable"], false);
         assert_eq!(
@@ -2023,6 +2136,125 @@ mod tests {
         );
         assert!(platform.diagnostics[0].get("detailCode").is_none());
         assert!(platform.data.is_none());
+    }
+
+    /// rule: INV.RUNTIME.PLATFORM-LINE
+    #[test]
+    fn a_missing_platform_release_names_the_line_and_hides_installation_paths() {
+        // Ответ раннера 0.17 на строгий выбор (#593): формат 2.20 пишет 8.3.27,
+        // установлены 8.3.24 и 8.5.1.
+        let error = json!({
+            "code": "platform_release_missing",
+            "kind": "environment",
+            "message": "platform release 8.3.27 required by source format 2.20 \
+                        (C:/work/src/Configuration.xml) is not installed",
+            "platform_release": {
+                "source_format": {
+                    "version": "2.20",
+                    "file": "C:/work/src/Configuration.xml",
+                    "release": "8.3.27"
+                },
+                "installations": [
+                    {"version": "8.5.1.100", "root": "C:/Program Files/1cv8/8.5.1.100",
+                     "components": ["designer", "ibcmd"]},
+                    {"version": "8.3.24.1691", "root": "C:/Program Files/1cv8/8.3.24.1691",
+                     "components": ["designer"]}
+                ]
+            }
+        });
+        let result = with_platform_release(
+            runner_rejection(
+                Some("source.export".to_string()),
+                error["code"].as_str().unwrap(),
+                error["message"].as_str().unwrap(),
+            ),
+            &error,
+        );
+        assert!(!result.ok);
+        assert_eq!(result.diagnostics[0]["code"], "provider_unavailable");
+        assert_eq!(result.diagnostics[0]["detailCode"], "provider_absent");
+        assert!(
+            result.summary.starts_with(
+                "platformLineNotInstalled: platform line 8.3.27 (source format 2.20) is not installed"
+            ),
+            "{}",
+            result.summary
+        );
+        assert!(result.summary.contains("8.5.1.100, 8.3.24.1691"));
+        assert_eq!(result.diagnostics[0]["message"], result.summary.as_str());
+        let data = result.data.expect("refusal data");
+        assert_eq!(data["runnerCode"], "platform_release_missing");
+        assert_eq!(
+            data["platformLineNotInstalled"],
+            json!({
+                "line": "8.3.27",
+                "sourceFormat": "2.20",
+                "installations": ["8.5.1.100", "8.3.24.1691"]
+            })
+        );
+        let published = serde_json::to_string(&data).unwrap() + &result.summary;
+        assert!(!published.contains("Program Files"), "{published}");
+        assert!(!published.contains("Configuration.xml"), "{published}");
+
+        // Формат, неизвестный раннеру: линии нет, формат назван.
+        let unknown = json!({
+            "code": "platform_release_missing",
+            "platform_release": {
+                "source_format": {"version": "2.99", "file": "x", "release": null},
+                "installations": []
+            }
+        });
+        let result = with_platform_release(
+            runner_rejection(None, "platform_release_missing", "m"),
+            &unknown,
+        );
+        assert_eq!(
+            result.summary,
+            "platformLineNotInstalled: the platform line of source format 2.99 is not installed; \
+             installations found: none"
+        );
+
+        // Прочие отказы проходят как есть.
+        let other = json!({"code": "environment_unavailable", "message": "m"});
+        let untouched = with_platform_release(
+            runner_rejection(None, "environment_unavailable", "m"),
+            &other,
+        );
+        let plain = runner_rejection(None, "environment_unavailable", "m");
+        assert_eq!(untouched.summary, plain.summary);
+        assert_eq!(untouched.data, plain.data);
+    }
+
+    /// Предупреждение раннера о прежнем ключе конфигурации доходит как есть и
+    /// один раз; прочая проза раннера наружу не идёт.
+    #[test]
+    fn a_former_config_key_warning_of_the_runner_passes_as_is() {
+        let synonym =
+            "`build:` in v8project.yaml is a one-cycle synonym for `push:`; rename the key";
+        let envelope = json!({"warnings": [
+            synonym,
+            "provider designer wrote C:/work/private/log.txt",
+            synonym,
+        ]});
+        let mut result = DomainResult::success("done");
+        note_runner_warnings(&mut result, &envelope);
+        assert_eq!(
+            result.warnings,
+            vec![json!({"code": "runner_config_synonym", "message": synonym})]
+        );
+        assert!(result.next.is_empty());
+
+        // Отказ раннера несёт то же предупреждение.
+        let mut refused = envelope.clone();
+        refused["error"] = json!({"code": "invalid_config", "message": "m"});
+        let refusal = runner_envelope_refusal(
+            runner_rejection(None, "invalid_config", "m".to_string()),
+            &refused,
+        );
+        assert_eq!(
+            refusal.warnings,
+            vec![json!({"code": "runner_config_synonym", "message": synonym})]
+        );
     }
 
     #[test]
@@ -3230,7 +3462,7 @@ mod tests {
                 &runner,
                 CancellationToken::new(),
                 &tool,
-                "0.15.3",
+                "0.17.1",
             );
             assert!(!result.ok, "{result:?}");
             let choice = result.human_choice.as_deref().expect("a question");
@@ -3277,7 +3509,7 @@ mod tests {
             &SequenceRunner::new(vec![failed_process(restore_target_exists_envelope(true))]),
             CancellationToken::new(),
             &tool,
-            "0.15.3",
+            "0.17.1",
         );
         assert!(!preview.ok);
         assert!(preview.human_choice.is_none(), "{preview:?}");
@@ -3292,7 +3524,7 @@ mod tests {
             &runner,
             CancellationToken::new(),
             &tool,
-            "0.15.3",
+            "0.17.1",
         );
         assert!(!result.ok);
         assert!(result.human_choice.is_none(), "{result:?}");

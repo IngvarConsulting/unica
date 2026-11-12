@@ -9,7 +9,7 @@
 //! грузится целиком без сверки памяти и поколения базы, сделанное в базе
 //! теряется. Без `force` раннер 0.14 перед загрузкой набора сверяет поколение
 //! базы с записью о прошлом обмене и отказывает `non_fast_forward`, если база
-//! ушла вперёд, или `no_memory`, если памяти о базе нет. Превью зовёт
+//! ушла вперёд, или `untracked_base`, если памяти о базе нет. Превью зовёт
 //! `push --dry-run`: раннер выбирает для каждого набора режим, не запуская
 //! конфигуратор. Применение повторяет превью и требует тот же состав наборов
 //! и те же режимы: иной режим значит, что исходники изменились между превью и
@@ -27,8 +27,9 @@ use super::protocol::InvocationRequest;
 use super::runner::PinnedRunner;
 use super::v13_infobase_exports::{
     digest_optional_workspace_file, digest_required_workspace_file, missing_runner_rejection,
-    note_another_copy, resolve_bundled_runner, runner_rejection, runner_start_rejection,
-    BaseDivergence, RunnerAbsence, CONFIG_NAME, LOCAL_CONFIG_NAME, RUNNER_OUTPUT_LIMIT,
+    note_runner_warnings, resolve_bundled_runner, runner_envelope_refusal, runner_rejection,
+    runner_start_rejection, BaseDivergence, RunnerAbsence, CONFIG_NAME, LOCAL_CONFIG_NAME,
+    RUNNER_OUTPUT_LIMIT,
 };
 use super::v13_source_set_name::{source_set_name_guidance, valid_source_set_name};
 use crate::infrastructure::workspace::discover_workspace;
@@ -187,7 +188,13 @@ impl PreparedSourceImport {
     }
 
     pub(super) fn execute(&self, cancellation: CancellationToken) -> DomainResult {
-        execute_with_runner(self, &PinnedRunner, cancellation)
+        super::runner::with_bundled_runner(
+            &self.context.workspace_root,
+            &self.context.cwd,
+            OPERATION,
+            cancellation,
+            |cancellation| execute_with_runner(self, &PinnedRunner, cancellation),
+        )
     }
 }
 
@@ -602,7 +609,7 @@ fn execute_with_resolved_runner(
     }
     // Выход к своей базе идёт после исполнения: первый `next` превью —
     // всегда исполнение этого же плана.
-    note_another_copy(&mut result, &preview);
+    note_runner_warnings(&mut result, &preview);
     result
 }
 
@@ -650,7 +657,7 @@ fn apply(
         result
             .changed
             .extend(loaded_unapplied.into_iter().map(changed_entry));
-        note_another_copy(&mut result, &applied);
+        note_runner_warnings(&mut result, &applied);
         return result;
     }
     // Раннер запускает платформу, если какому-то набору есть что грузить или,
@@ -701,12 +708,12 @@ fn apply(
         result
             .changed
             .extend(changed.into_iter().map(changed_entry));
-        note_another_copy(&mut result, &applied);
+        note_runner_warnings(&mut result, &applied);
         return result;
     }
     if !anything_changed {
         let mut result = nothing_loaded(prepared, &performed, &applied, dispatched);
-        note_another_copy(&mut result, &applied);
+        note_runner_warnings(&mut result, &applied);
         return result;
     }
     // **Улику о состоянии базы Unica не подделывает.** База живёт за
@@ -779,7 +786,7 @@ fn apply(
     result
         .warnings
         .extend(overwrite_warning(prepared, &performed));
-    note_another_copy(&mut result, &applied);
+    note_runner_warnings(&mut result, &applied);
 
     result
 }
@@ -1056,7 +1063,7 @@ fn invoke_runner(
     parse_runner_output(output).map_err(|(rejection, envelope)| {
         let mut result = exchange_refusal(prepared, rejection, &envelope["error"]);
         note_unapplied_load(prepared, &mut result, &envelope);
-        note_another_copy(&mut result, &envelope);
+        note_runner_warnings(&mut result, &envelope);
         result
     })
 }
@@ -1204,7 +1211,7 @@ fn exchange_refusal(
         )
     } else {
         format!(
-            "push loaded nothing: this working copy has no memory of the infobase for {subject}, so nothing proves that the sources derive from its state. Choose: pull the infobase into the source set, or overwrite the infobase with push force:true"
+            "push loaded nothing: this working copy has no memory of the infobase for {subject} — the runner does not carry over what it remembered before an upgrade, or this copy has never exchanged with this infobase — so nothing proves that the sources derive from its state. Next: pull the infobase into the source set in full once (preview it first; uncommitted work in the set is asked about), then push as usual. Only if the sources, not the infobase, hold the right state: overwrite the infobase with push force:true"
         )
     };
     let mut rejection =
@@ -1337,7 +1344,10 @@ fn parse_runner_output(output: ProcessOutput) -> Result<Value, (DomainResult, Va
             .map(redactor)
             .unwrap_or_else(|| "v8-runner failed without a typed message".to_string());
         return Err((
-            runner_rejection(Some(OPERATION.to_string()), code, message),
+            runner_envelope_refusal(
+                runner_rejection(Some(OPERATION.to_string()), code, message),
+                &envelope,
+            ),
             envelope,
         ));
     }
@@ -1531,6 +1541,51 @@ pub(super) mod tests {
             &tool(root),
             "0.9.0",
         )
+    }
+
+    /// Перед вызовом раннера рабочая копия подготовлена: приватной копии
+    /// конфигурации прежних версий Unica нет, а раннер читает конфигурацию
+    /// проекта на месте по `--config`.
+    /// rule: INV.RUNTIME.PLATFORM-LINE
+    #[test]
+    fn the_runner_reads_the_project_config_once_the_former_copy_is_gone() {
+        let root = workspace();
+        let former = root.path().join(".build/unica/runner-project");
+        fs::create_dir_all(&former).unwrap();
+        fs::write(former.join(LOCAL_CONFIG_NAME), "password: secret\n").unwrap();
+        let runner = SequenceRunner::new(vec![process(json!({}), false)]);
+        let prepared = prepared(root.path(), None, false, true);
+        let result = super::super::runner::with_prepared_working_copy(
+            root.path(),
+            OPERATION,
+            CancellationToken::new(),
+            |cancellation| {
+                execute_with_resolved_runner(
+                    &prepared,
+                    &runner,
+                    cancellation,
+                    &tool(root.path()),
+                    "0.9.0",
+                )
+            },
+        );
+        assert!(
+            result
+                .warnings
+                .iter()
+                .any(|warning| warning["code"] == "platform_line_written"),
+            "{result:?}"
+        );
+        assert!(!former.exists());
+        let args = runner.calls.lock().unwrap()[0].args.clone();
+        let config = args.iter().position(|arg| arg == "--config").unwrap() + 1;
+        assert_eq!(
+            unica_workspace::paths::normalize_path_identity(Path::new(&args[config])).unwrap(),
+            unica_workspace::paths::normalize_path_identity(&root.path().join(CONFIG_NAME))
+                .unwrap()
+        );
+        let local = fs::read_to_string(root.path().join(LOCAL_CONFIG_NAME)).unwrap();
+        assert!(local.contains("version: sources"), "{local}");
     }
 
     /// Без `force` push идёт под защитой раннера: память и поколение базы
@@ -2117,6 +2172,25 @@ pub(super) mod tests {
         serde_json::from_slice(&fs::read(path).unwrap()).unwrap()
     }
 
+    /// Конверт раннера 0.17 (`tests/fixtures/v8_runner_017`).
+    fn captured_017(name: &str) -> Value {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/v8_runner_017")
+            .join(name);
+        serde_json::from_slice(&fs::read(path).unwrap()).unwrap()
+    }
+
+    /// Отказ без памяти о базе в чужой рабочей копии, снятый на 0.15.1, под
+    /// кодом раннера 0.17: конверт 5 переименовал `no_memory` в
+    /// `untracked_base`, не меняя ни условий, ни остального конверта.
+    fn untracked_015(name: &str) -> Value {
+        let mut envelope = captured(name);
+        assert_eq!(envelope["error"]["code"], "no_memory", "{name}");
+        envelope["error"]["code"] = json!("untracked_base");
+        envelope["error"]["kind"] = json!("untracked_base");
+        envelope
+    }
+
     /// Конверт раннера 0.14.0 (`tests/fixtures/v8_runner_014`): только отказы
     /// до шагов, форма которых в 0.15 не менялась; на 0.15.1 вживую не сняты.
     fn captured_014(name: &str) -> Value {
@@ -2177,7 +2251,7 @@ pub(super) mod tests {
     /// (`tests/fixtures/v8_runner_014/README.md`). Создание собрало базу
     /// с основной конфигурацией и записало память о наборе: первый `push` без
     /// правок ничего не грузит и честно называет состояние базы непроверенным,
-    /// а `push` после правки грузит набор без отказа `no_memory`. Записи
+    /// а `push` после правки грузит набор без отказа `untracked_base`. Записи
     /// поколения до этой загрузки нет, и ответ не выдаёт её за сверенную.
     /// rule: INV.WIRE.INFOBASE-CREATE-ONLY-CREATES-AN-ABSENT-ONE
     #[test]
@@ -2307,7 +2381,7 @@ pub(super) mod tests {
             ("workspace_busy", "concurrent_change", Outcome::RetryAsIs),
             ("infobase_busy", "concurrent_change", Outcome::RetryAsIs),
             ("non_fast_forward", "invalid_state", Outcome::NeedsHuman),
-            ("no_memory", "invalid_state", Outcome::NeedsHuman),
+            ("untracked_base", "invalid_state", Outcome::NeedsHuman),
             ("invalid_argument", "bad_value", Outcome::FixCall),
         ] {
             let runner = SequenceRunner::new(vec![process(failure(code), false)]);
@@ -2380,7 +2454,7 @@ pub(super) mod tests {
 
         // Превью без памяти о базе отказывает тем же родом и до запуска платформы.
         let runner = SequenceRunner::new(vec![process(
-            captured("push-no-memory-preview.json"),
+            captured_017("push-untracked-base-preview.json"),
             false,
         )]);
         let result = run(
@@ -2391,7 +2465,7 @@ pub(super) mod tests {
         assert_eq!(runner.call_count(), 1);
         assert_eq!(result.diagnostics[0]["code"], "invalid_state", "{result:?}");
         let data = result.data.as_ref().unwrap();
-        assert_eq!(data["runnerCode"], "no_memory");
+        assert_eq!(data["runnerCode"], "untracked_base");
         assert_eq!(data["sourceSet"], "main");
         assert!(data.get("baseGeneration").is_none(), "{data}");
         assert_eq!(result.next[0]["args"]["op"], "pull");
@@ -2553,7 +2627,7 @@ pub(super) mod tests {
             .contains_key(unica_execution_contract::invocation::HUMAN_CONFIRMATION_KEY));
 
         let runner = SequenceRunner::new(vec![process(
-            captured("push-no-memory-preview.json"),
+            untracked_015("push-no-memory-preview.json"),
             false,
         )]);
         let preview = run(
@@ -2620,7 +2694,7 @@ pub(super) mod tests {
 
         // Отказ без памяти в чужой копии называет её так же, третьим выходом.
         let runner = SequenceRunner::new(vec![process(
-            captured("push-no-memory-preview.json"),
+            untracked_015("push-no-memory-preview.json"),
             false,
         )]);
         let refused = run(

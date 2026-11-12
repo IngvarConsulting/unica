@@ -19,8 +19,9 @@ use super::protocol::InvocationRequest;
 use super::runner::PinnedRunner;
 use super::v13_infobase_exports::{
     digest_optional_workspace_file, digest_required_workspace_file, missing_runner_rejection,
-    note_another_copy, resolve_bundled_runner, runner_rejection, runner_start_rejection,
-    valid_1c_identifier, RunnerAbsence, CONFIG_NAME, LOCAL_CONFIG_NAME, RUNNER_OUTPUT_LIMIT,
+    note_runner_warnings, resolve_bundled_runner, runner_envelope_refusal, runner_rejection,
+    runner_start_rejection, valid_1c_identifier, RunnerAbsence, CONFIG_NAME, LOCAL_CONFIG_NAME,
+    RUNNER_OUTPUT_LIMIT,
 };
 use super::v13_source_set_name::{source_set_name_guidance, valid_source_set_name};
 use unica_artifact_delivery::engine::BundledTool;
@@ -202,7 +203,13 @@ impl PreparedSourceExport {
     }
 
     pub(super) fn execute(&self, cancellation: CancellationToken) -> DomainResult {
-        execute_with_runner(self, &PinnedRunner, cancellation)
+        super::runner::with_bundled_runner(
+            &self.context.workspace_root,
+            &self.context.cwd,
+            OPERATION,
+            cancellation,
+            |cancellation| execute_with_runner(self, &PinnedRunner, cancellation),
+        )
     }
 }
 
@@ -544,7 +551,7 @@ fn invoke_runner(
         if envelope["data"]["provider_dispatched"] != false {
             note_partial_export(prepared, &mut result);
         }
-        note_another_copy(&mut result, &envelope);
+        note_runner_warnings(&mut result, &envelope);
         result
     })
 }
@@ -915,7 +922,7 @@ fn applied_result(
     if !up_to_date {
         result.changed.push(json!({"path": target, "kind": state}));
     }
-    note_another_copy(&mut result, envelope);
+    note_runner_warnings(&mut result, envelope);
     result
 }
 
@@ -953,7 +960,7 @@ fn preview_result(
         "args": {"op": OPERATION, "args": public_arguments(prepared), "dryRun": false},
         "reason": "execute with the current arguments",
     }));
-    note_another_copy(&mut result, envelope);
+    note_runner_warnings(&mut result, envelope);
     result
 }
 
@@ -1074,7 +1081,10 @@ fn validate_runner_result(envelope: Value, status_success: bool) -> Result<Value
             .as_str()
             .map(redactor)
             .unwrap_or_else(|| "v8-runner failed without a typed message".to_string());
-        return Err(runner_rejection(Some(OPERATION.to_string()), code, message));
+        return Err(runner_envelope_refusal(
+            runner_rejection(Some(OPERATION.to_string()), code, message),
+            &envelope,
+        ));
     }
     Ok(envelope)
 }

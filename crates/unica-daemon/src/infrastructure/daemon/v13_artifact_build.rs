@@ -21,9 +21,9 @@ use super::protocol::InvocationRequest;
 use super::runner::PinnedRunner;
 use super::v13_infobase_exports::{
     closed_workspace_relative_path, configuration_source_set, digest_optional_workspace_file,
-    digest_required_workspace_file, missing_runner_rejection, resolve_bundled_runner,
-    runner_rejection, runner_start_rejection, valid_1c_identifier, RunnerAbsence, CONFIG_NAME,
-    LOCAL_CONFIG_NAME, RUNNER_OUTPUT_LIMIT,
+    digest_required_workspace_file, missing_runner_rejection, note_config_warnings,
+    resolve_bundled_runner, runner_envelope_refusal, runner_rejection, runner_start_rejection,
+    valid_1c_identifier, RunnerAbsence, CONFIG_NAME, LOCAL_CONFIG_NAME, RUNNER_OUTPUT_LIMIT,
 };
 use super::v13_source_set_name::{source_set_name_guidance, valid_source_set_name};
 use crate::infrastructure::platform_xml_owner::resolve_platform_xml_owners;
@@ -167,7 +167,13 @@ impl PreparedArtifactBuild {
     }
 
     pub(super) fn execute(&self, cancellation: CancellationToken) -> DomainResult {
-        execute_with_runner(self, &PinnedRunner, cancellation)
+        super::runner::with_bundled_runner(
+            &self.context.workspace_root,
+            &self.context.cwd,
+            OPERATION,
+            cancellation,
+            |cancellation| execute_with_runner(self, &PinnedRunner, cancellation),
+        )
     }
 }
 
@@ -683,6 +689,7 @@ fn execute_with_resolved_runner(
             },
             "reason": "execute with the current arguments"
         }));
+        note_config_warnings(&mut result, &preview);
         return result;
     }
     if cancellation.is_cancelled() {
@@ -772,6 +779,7 @@ fn execute_with_resolved_runner(
         "kind": state,
     }));
     result.artifacts.push(artifact);
+    note_config_warnings(&mut result, &applied);
 
     result
 }
@@ -968,7 +976,10 @@ fn parse_runner_output(output: ProcessOutput) -> Result<Value, DomainResult> {
             .as_str()
             .map(redactor)
             .unwrap_or_else(|| "v8-runner failed without a typed message".to_string());
-        return Err(runner_rejection(Some(OPERATION.to_string()), code, message));
+        return Err(runner_envelope_refusal(
+            runner_rejection(Some(OPERATION.to_string()), code, message),
+            &envelope,
+        ));
     }
     Ok(envelope)
 }
@@ -1302,7 +1313,7 @@ mod tests {
                 &runner,
                 CancellationToken::new(),
                 &tool(root.path()),
-                "0.15.3",
+                "0.17.1",
             );
             assert!(result.ok, "{result:?}");
             assert_eq!(
@@ -1361,7 +1372,7 @@ mod tests {
             &runner,
             CancellationToken::new(),
             &tool(root.path()),
-            "0.15.3",
+            "0.17.1",
         );
         assert!(result.ok, "{result:?}");
         let data = result.data.unwrap();
@@ -1409,7 +1420,7 @@ mod tests {
                 &runner,
                 CancellationToken::new(),
                 &tool(root.path()),
-                "0.15.3",
+                "0.17.1",
             );
             assert!(!result.ok, "{behavior}: {result:?}");
             let expected_code = match behavior {
@@ -1459,7 +1470,7 @@ mod tests {
                 &runner,
                 CancellationToken::new(),
                 &tool(root.path()),
-                "0.15.3",
+                "0.17.1",
             )
         });
         assert!(!result.ok, "{result:?}");
@@ -1527,7 +1538,7 @@ mod tests {
                                 &runner,
                                 worker_cancellation,
                                 &runner_tool,
-                                "0.15.3",
+                                "0.17.1",
                             )
                         },
                     )
