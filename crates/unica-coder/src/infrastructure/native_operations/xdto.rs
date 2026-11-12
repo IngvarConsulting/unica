@@ -106,6 +106,7 @@ fn plan_unindexed_xdto_batch(
         &authority,
         &validation_ledger,
         indexed.iter(),
+        unica_metadata_designer::support::parse_support_state_compat_bytes,
     )?;
     let effects =
         unica_source_contract::proposal::reconcile_effects(staged.planned_changes(), provisional);
@@ -830,6 +831,7 @@ pub(crate) fn plan_xdto_batch_owned_for_test(
         authority,
         operations,
         validation_ledger,
+        unica_metadata_designer::support::parse_support_state_compat_bytes,
     )?;
     Ok((staged, effects))
 }
@@ -3167,6 +3169,7 @@ pub(crate) mod medium_tests {
             &authority,
             &ledger,
             operations.iter(),
+            unica_metadata_designer::support::parse_support_state_compat_bytes,
         )
         .expect_err("a subsequent run must not adopt an introduced finding as its baseline");
         assert_eq!(error.kind(), ApplyPlanErrorKind::InvalidState);

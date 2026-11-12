@@ -3364,7 +3364,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "unica-address",
- "unica-metadata-designer",
+ "unica-metadata",
  "unica-source-contract",
  "unica-source-designer",
  "unica-xdto",
