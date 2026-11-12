@@ -1003,11 +1003,10 @@ impl ServerHandler for UnicaServer {
         let name = request.name.to_string();
         // Only the door confirms a call, from a person's answer; a call that
         // brings a confirmation of its own would skip the question.
-        if human_choice::carries_confirmation(request.arguments.as_ref()) {
+        if let Some(key) = human_choice::carried_answer_key(request.arguments.as_ref()) {
             return Err(ErrorData::invalid_params(
                 format!(
-                    "`{}` is set only from a person's answer to a question; a call does not carry it",
-                    unica_execution_contract::invocation::HUMAN_CONFIRMATION_KEY
+                    "`{key}` is set only from a person's answer to a question; a call does not carry it"
                 ),
                 None,
             ));

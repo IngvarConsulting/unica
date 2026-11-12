@@ -344,11 +344,15 @@ fn validate_hidden_v13_request(request: &InvocationRequest) -> Result<(), String
         .get("properties")
         .and_then(serde_json::Value::as_object)
         .ok_or_else(|| "canonical tool schema has no properties".to_string())?;
-    // Отметку согласия человека ставит дверь при повторе выбранного варианта;
-    // модельный вызов с ней дверь отвергает, поэтому схема её не называет.
+    // Отметки ответа человека — согласие и перевыгрузку перед правкой —
+    // ставит дверь при повторе выбранного варианта; модельный вызов с ними
+    // дверь отвергает, поэтому схема их не называет. Перевыгрузка бывает
+    // только перед `unica.apply`.
     if let Some(unknown) = request.arguments().keys().find(|name| {
         !properties.contains_key(*name)
             && name.as_str() != unica_execution_contract::invocation::HUMAN_CONFIRMATION_KEY
+            && !(name.as_str() == unica_execution_contract::invocation::HUMAN_REEXPORT_KEY
+                && request.tool() == unica_execution::invocation_store::ToolIdentity::Apply)
     }) {
         return Err(format!(
             "canonical invocation has unknown argument `{unknown}`"
@@ -369,6 +373,16 @@ fn validate_hidden_v13_request(request: &InvocationRequest) -> Result<(), String
     }
     for (name, value) in request.arguments() {
         let Some(schema) = properties.get(name) else {
+            // The choice to re-export names a set and a format; its fields are
+            // checked where the re-export is prepared.
+            if name == unica_execution_contract::invocation::HUMAN_REEXPORT_KEY {
+                if !value.is_object() {
+                    return Err(format!(
+                        "canonical invocation argument `{name}` must be an object"
+                    ));
+                }
+                continue;
+            }
             if !value.is_string() {
                 return Err(format!(
                     "canonical invocation argument `{name}` must be text"
@@ -780,6 +794,16 @@ enum ActorBoundCanonicalInvocationState {
         workspace_identity_hash: unica_execution_contract::invocation::SafeIdentityHash,
         response_deadline: InvocationResponseDeadline,
     },
+    /// `unica.apply` after the person chose to re-export its set first: the
+    /// re-export, known long by its external process, then the edit, in one
+    /// call and one Task (INV.SOURCE.WRITABLE-PROFILE).
+    ReexportThenApply {
+        export: Arc<super::v13_source_export::PreparedSourceExport>,
+        source_writes: SourceWriteLane,
+        workspace_identity_hash: unica_execution_contract::invocation::SafeIdentityHash,
+        delivery: RunEngineDelivery,
+        apply: Box<DeferredWorkspaceInvocation>,
+    },
 }
 
 pub(crate) struct V5PreparedCanonicalInvocation(PreparedCanonicalInvocationState);
@@ -827,6 +851,12 @@ enum PreparedCanonicalInvocationState {
     Documentation {
         search: Arc<super::v13_documentation::PreparedDocumentationSearch>,
     },
+    ReexportThenApply {
+        export: Arc<super::v13_source_export::PreparedSourceExport>,
+        source_writes: SourceWriteLane,
+        delivery: RunEngineDelivery,
+        apply: Box<DeferredWorkspaceInvocation>,
+    },
 }
 
 /// Only a test stand-in service keeps no check snapshots; the workspace
@@ -837,7 +867,87 @@ fn detached_check_snapshots() -> Arc<unica_navigation::result_store::ViewCursorS
     Arc::new(super::v13_service::product_view_cursors())
 }
 
+/// A workspace invocation bound only when it runs: the edit after a re-export
+/// is admitted to its workspace after the re-export released the set, and it
+/// reads the sources the re-export wrote.
+pub(super) struct DeferredWorkspaceInvocation {
+    request: InvocationRequest,
+    service: Arc<dyn CanonicalInvocationService>,
+    clock: Arc<dyn Clock>,
+    workspace_actors: Arc<WorkspaceActorRegistry>,
+    deliveries: Arc<unica_artifact_delivery::desk::DeliveryDesk>,
+    provider_hosts: Arc<ProviderHostOwner>,
+    runtime_resources: Arc<RuntimeResourceOwner>,
+    #[cfg(test)]
+    runtime_service: Option<Arc<RuntimeJobService>>,
+}
+
+impl DeferredWorkspaceInvocation {
+    /// Binds, prepares and executes the invocation in the Task it is part of.
+    /// The answer of the Task is due later, so the deadline only bounds the
+    /// admission of this one step.
+    fn execute(self, cancellation: CancellationToken) -> Result<DomainResult, InvocationFailure> {
+        #[cfg(test)]
+        let runtime_service = self.runtime_service.clone();
+        #[cfg(not(test))]
+        let runtime_service = None;
+        let invocation = match bind_workspace_invocation_cancellable(
+            &self.request,
+            &self.workspace_actors,
+            ActorInvocationResources::new(
+                self.deliveries,
+                self.provider_hosts,
+                self.runtime_resources,
+                runtime_service,
+            ),
+            InvocationResponseDeadline::capture(self.clock),
+            &cancellation,
+        ) {
+            Ok(invocation) => invocation,
+            Err(error) => {
+                return match reject_workspace_admission(&self.request, error) {
+                    V5CanonicalPrepareError::Direct(result)
+                    | V5CanonicalPrepareError::Rejected(result) => Ok(*result),
+                    V5CanonicalPrepareError::WorkspaceRegistryFailed => {
+                        Err(InvocationFailure::new(
+                            "workspace_registry_failed",
+                            "the workspace actor registry failed after the re-export",
+                        ))
+                    }
+                }
+            }
+        };
+        if let Err(result) = self.service.prepare(&invocation) {
+            return Ok(*result);
+        }
+        let execution = invocation
+            .begin_execution(&cancellation)
+            .map_err(boundary_failure)?;
+        let outcome = self.service.execute(&execution, cancellation.clone());
+        execution
+            .publish(outcome, &cancellation)
+            .map_err(boundary_failure)?
+    }
+}
+
 impl V5CanonicalInvocationRuntime {
+    fn deferred_workspace_invocation(
+        &self,
+        request: InvocationRequest,
+    ) -> DeferredWorkspaceInvocation {
+        DeferredWorkspaceInvocation {
+            request,
+            service: Arc::clone(&self.service),
+            clock: Arc::clone(&self.clock),
+            workspace_actors: Arc::clone(&self.workspace_actors),
+            deliveries: Arc::clone(&self.deliveries),
+            provider_hosts: Arc::clone(&self.provider_hosts),
+            runtime_resources: Arc::clone(&self.runtime_resources),
+            #[cfg(test)]
+            runtime_service: self.runtime_service.clone(),
+        }
+    }
+
     /// The lane of source writes of `workspace_root`, shared with the actors
     /// of that workspace.
     fn source_write_lane(
@@ -1085,6 +1195,25 @@ impl V5CanonicalInvocationRuntime {
                 ));
             }
         }
+        match super::v13_source_export::prepare_reexport_before_apply(&request) {
+            super::v13_source_export::ReexportBeforeApply::NotApplicable => {}
+            super::v13_source_export::ReexportBeforeApply::Rejected(result) => {
+                return Err(V5CanonicalPrepareError::Rejected(result))
+            }
+            super::v13_source_export::ReexportBeforeApply::Ready(export, apply) => {
+                let workspace_identity_hash = export.workspace_identity_hash();
+                let source_writes = self.source_write_lane(export.workspace_root())?;
+                return Ok(V5ActorBoundCanonicalInvocation(
+                    ActorBoundCanonicalInvocationState::ReexportThenApply {
+                        export,
+                        source_writes,
+                        workspace_identity_hash,
+                        delivery: run_delivery.clone(),
+                        apply: Box::new(self.deferred_workspace_invocation(apply)),
+                    },
+                ));
+            }
+        }
         match super::v13_source_import::prepare(&request) {
             super::v13_source_import::Preparation::NotApplicable => {}
             super::v13_source_import::Preparation::Rejected(result) => {
@@ -1199,7 +1328,8 @@ impl V5ActorBoundCanonicalInvocation {
             | ActorBoundCanonicalInvocationState::InfobaseCreate { .. }
             | ActorBoundCanonicalInvocationState::SourceImport { .. }
             | ActorBoundCanonicalInvocationState::SourceExport { .. }
-            | ActorBoundCanonicalInvocationState::ArtifactBuild { .. } => None,
+            | ActorBoundCanonicalInvocationState::ArtifactBuild { .. }
+            | ActorBoundCanonicalInvocationState::ReexportThenApply { .. } => None,
             // Справка не известна длинной: локальное попадание отвечает
             // сразу, сетевое доходит до седьмой секунды. Значит у неё тот же
             // cutoff, что у чтений, — захваченный при bind.
@@ -1244,6 +1374,10 @@ impl V5ActorBoundCanonicalInvocation {
                 ..
             }
             | ActorBoundCanonicalInvocationState::ArtifactBuild {
+                workspace_identity_hash,
+                ..
+            }
+            | ActorBoundCanonicalInvocationState::ReexportThenApply {
                 workspace_identity_hash,
                 ..
             }
@@ -1335,6 +1469,20 @@ impl V5ActorBoundCanonicalInvocation {
                     source_writes,
                 },
             )),
+            ActorBoundCanonicalInvocationState::ReexportThenApply {
+                export,
+                source_writes,
+                delivery,
+                apply,
+                ..
+            } => Ok(V5PreparedCanonicalInvocation(
+                PreparedCanonicalInvocationState::ReexportThenApply {
+                    export,
+                    source_writes,
+                    delivery,
+                    apply,
+                },
+            )),
             ActorBoundCanonicalInvocationState::Documentation { search, .. } => {
                 Ok(V5PreparedCanonicalInvocation(
                     PreparedCanonicalInvocationState::Documentation { search },
@@ -1401,7 +1549,8 @@ impl V5PreparedCanonicalInvocation {
             | PreparedCanonicalInvocationState::InfobaseCreate { .. }
             | PreparedCanonicalInvocationState::SourceImport { .. }
             | PreparedCanonicalInvocationState::SourceExport { .. }
-            | PreparedCanonicalInvocationState::ArtifactBuild { .. } => &INFOBASE_EXPORT_CLASS,
+            | PreparedCanonicalInvocationState::ArtifactBuild { .. }
+            | PreparedCanonicalInvocationState::ReexportThenApply { .. } => &INFOBASE_EXPORT_CLASS,
             PreparedCanonicalInvocationState::WorkspaceInspection { .. }
             | PreparedCanonicalInvocationState::Documentation { .. } => {
                 &ExecutionClass::InlineCandidate
@@ -1486,6 +1635,35 @@ impl V5PreparedCanonicalInvocation {
             })),
             PreparedCanonicalInvocationState::Documentation { search } => {
                 Ok(search.execute(cancellation))
+            }
+            PreparedCanonicalInvocationState::ReexportThenApply {
+                export,
+                source_writes,
+                delivery,
+                apply,
+            } => {
+                let exported = delivery.execute(cancellation.clone(), |cancellation| {
+                    exclude_source_writes(
+                        &source_writes,
+                        super::v13_source_export::REEXPORT,
+                        false,
+                        cancellation,
+                        |cancellation| export.execute(cancellation),
+                    )
+                });
+                // A refused re-export is the answer: the edit does not run.
+                if !exported.ok {
+                    return Ok(exported);
+                }
+                let mut applied = apply.execute(cancellation)?;
+                applied.summary = format!("{} {}", exported.summary, applied.summary);
+                applied.changed.splice(0..0, exported.changed);
+                for warning in exported.warnings {
+                    if !applied.warnings.contains(&warning) {
+                        applied.warnings.push(warning);
+                    }
+                }
+                Ok(applied)
             }
         }
     }
@@ -1815,3 +1993,53 @@ mod medium_stored_secret_tests;
 pub(crate) use medium_actor_capacity_tests as actor_capacity_tests;
 #[cfg(test)]
 pub(crate) mod medium_actor_capacity_tests;
+
+#[cfg(test)]
+mod reexport_mark_tests {
+    use super::*;
+    use unica_execution::invocation_store::ToolIdentity;
+    use unica_execution_contract::invocation::HUMAN_REEXPORT_KEY;
+
+    fn request(tool: ToolIdentity, arguments: serde_json::Value) -> InvocationRequest {
+        InvocationRequest::new(tool, arguments, "/workspace", 7_000).unwrap()
+    }
+
+    /// The choice to re-export a set first comes only with an edit: another
+    /// tool that carries it is refused as an unknown argument, and a mark that
+    /// does not name a set and a format is refused before any work.
+    /// rule: INV.SOURCE.WRITABLE-PROFILE
+    #[test]
+    fn only_an_edit_carries_the_choice_to_reexport_first() {
+        let mark = serde_json::json!({"sourceSet": "main", "format": "2.20"});
+        let ops =
+            serde_json::json!([{"op": "attribute.add", "args": {"items": [{"name": "Extra"}]}}]);
+        let edit = request(
+            ToolIdentity::Apply,
+            serde_json::json!({"at": "main:Catalog.Products", "ops": ops, HUMAN_REEXPORT_KEY: mark}),
+        );
+        assert_eq!(validate_hidden_v13_request(&edit), Ok(()));
+
+        let run = request(
+            ToolIdentity::Run,
+            serde_json::json!({"op": "pull", "args": {}, "dryRun": true, HUMAN_REEXPORT_KEY: mark}),
+        );
+        let refused = validate_hidden_v13_request(&run).unwrap_err();
+        assert!(refused.contains(HUMAN_REEXPORT_KEY), "{refused}");
+
+        let malformed = request(
+            ToolIdentity::Apply,
+            serde_json::json!({"at": "main:Catalog.Products", "ops": ops, HUMAN_REEXPORT_KEY: "2.20"}),
+        );
+        assert!(validate_hidden_v13_request(&malformed).is_err());
+        let malformed = request(
+            ToolIdentity::Apply,
+            serde_json::json!({"at": "main:Catalog.Products", "ops": ops, HUMAN_REEXPORT_KEY: {"format": "2.20"}}),
+        );
+        match super::super::v13_source_export::prepare_reexport_before_apply(&malformed) {
+            super::super::v13_source_export::ReexportBeforeApply::Rejected(result) => {
+                assert_eq!(result.diagnostics[0]["code"], "bad_value", "{result:?}");
+            }
+            _ => panic!("a mark without a set and a format is refused"),
+        }
+    }
+}

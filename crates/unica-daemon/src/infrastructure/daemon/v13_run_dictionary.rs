@@ -127,6 +127,7 @@ pub(super) fn run_dictionary_result() -> DomainResult {
                 RunIntent::InfobaseCreate
                     | RunIntent::SourceImport
                     | RunIntent::SourceExport
+                    | RunIntent::SourceReexport
                     | RunIntent::ArtifactBuild
                     | RunIntent::CfExport
                     | RunIntent::CfImport
