@@ -200,7 +200,11 @@ impl ProviderReadAuthority {
                 policy,
                 marker_unreadable: facts.unreadable.is_some(),
             },
-            OwnerRecord { rule, records },
+            OwnerRecord {
+                rule,
+                records,
+                node_rule: facts.node_rule,
+            },
         ))
     }
 
@@ -329,6 +333,9 @@ pub(crate) struct OwnerRecord {
     /// The marker holds per-object records: the configuration is on support
     /// and was not taken off as a whole.
     pub(crate) records: bool,
+    /// The rule of the addressed node's own record below the owner, as the
+    /// gate found it on the node's path.
+    pub(crate) node_rule: Option<u8>,
 }
 
 /// The vendor rule of a node's own record, as `view` names it.
@@ -414,6 +421,11 @@ pub(crate) fn own_rule(
     at: &QualifiedAddress,
     owner: OwnerRecord,
 ) -> Option<&'static str> {
+    if owner.records {
+        if let Some(rule) = owner.node_rule {
+            return rule_name(rule);
+        }
+    }
     if let Some(rule) = data
         .get("props")
         .and_then(|props| props.get("supportRule"))

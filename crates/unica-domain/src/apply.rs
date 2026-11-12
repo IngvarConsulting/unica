@@ -794,13 +794,17 @@ mod tests {
 
     #[test]
     fn support_rule_addresses_a_form_without_addressing_its_contents() {
-        for at in ["main:Catalog.Items", "main:Catalog.Items.Form.Card"] {
+        for at in [
+            "main:Catalog.Items",
+            "main:Catalog.Items.Form.Card",
+            "main:Catalog.Items.Attribute.Code",
+            "main:Catalog.Items.TabularSection.Lines.Attribute.Quantity",
+        ] {
             assert!(applies("supportRule.set", at), "{at}");
         }
         for at in [
             "main:Catalog.Items.Form.Card.Item.Field",
             "main:Catalog.Items.Form.Card.Module.Form",
-            "main:Catalog.Items.Attribute.Code",
         ] {
             assert!(!applies("supportRule.set", at), "{at}");
         }
