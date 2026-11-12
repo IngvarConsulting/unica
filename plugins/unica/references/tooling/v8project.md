@@ -90,6 +90,38 @@ The holder is the working copy of the config the runner read. Unica starts the
 runner with `--config` on the workspace `v8project.yaml`, so Unica and a person
 running the runner by hand in the same working copy are one holder.
 
+## Live Designer agent
+
+The runner keeps the Designer agent of a working copy alive between its
+commands, so a command does not start the Designer anew or take another license
+session. The answer of a runner operation whose command used that agent carries
+`data.agent`:
+
+- `reused`: the command took an agent already running;
+- `kept`: the agent stays after the command;
+- `reason`: why it did not stay, in the runner's word (`limit`,
+  `live_agent_off`, `job` and others);
+- `holders`: how many processes hold it;
+- `heldByUnica`: Unica holds it.
+
+Unica holds the agent after a command it stayed after. Unica lets it go after
+10 minutes without runner commands and without editor sessions of the working
+copy, when the last editor session of the working copy closes, or to make room
+for a third working copy: Unica holds the agents of two working copies at most,
+the runner's default `tools.designer_agent.live-max`. An editor session does not
+start an agent. When the limit left a command without an agent, the answer warns
+`live_agent_not_held`. An agent switched off (`tools.designer_agent.live:
+false`) or impossible in the Windows Job Unica was started in is named once in
+`data.agent.note`.
+
+A live agent stays connected to its infobase between commands, as the runner
+keeps it, and so locks a file infobase for configuring: while Unica holds the
+agent, a batch update or restore of the infobase in the Designer is refused with
+a lock error. To free the infobase, run `v8-runner agent release` in the working
+copy: it disconnects the agent, and the next runner command connects it again.
+Otherwise Unica lets the agent go after 10 minutes without runner commands and
+without editor sessions of the working copy.
+
 ## Runner migration
 
 The top-level `builder` key is rejected. Remove it to use the runner's per-operation

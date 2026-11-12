@@ -42,6 +42,9 @@ pub(super) struct ProductLspWorkspaces {
     platform: Arc<PlatformContexts>,
     /// The platform installation whose global context a workspace sees.
     installation: Arc<Installation>,
+    /// The working copy of each admitted folder: its editor sessions keep
+    /// the held live Designer agent of the working copy.
+    roots: std::sync::Mutex<std::collections::HashMap<std::path::PathBuf, std::path::PathBuf>>,
 }
 
 impl ProductLspWorkspaces {
@@ -56,7 +59,16 @@ impl ProductLspWorkspaces {
             installation: Arc::new(
                 crate::infrastructure::application_ports::platform_installation_root,
             ),
+            roots: Default::default(),
         }
+    }
+
+    fn root_of(&self, folder: &Path) -> Option<std::path::PathBuf> {
+        self.roots
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .get(folder)
+            .cloned()
     }
 
     /// A fixed installation, whose global context the test has loaded.
@@ -81,9 +93,39 @@ impl ProductLspWorkspaces {
 }
 
 impl LspWorkspaces for ProductLspWorkspaces {
+    /// An editor session does not start the live Designer agent; while the
+    /// working copy has one, Unica does not let go of its held agent for
+    /// idleness.
+    fn session_opened(&self, folder: &Path) {
+        if let Some(root) = self.root_of(folder) {
+            super::live_agent::live_agents().editor_session_opened(&root);
+        }
+    }
+
+    /// With the last editor session of the working copy, Unica lets go of its
+    /// held live Designer agent, apart from the editor's close.
+    fn session_closed(&self, folder: &Path) {
+        let Some(root) = self
+            .root_of(folder)
+            .and_then(|root| super::live_agent::live_agents().editor_session_closed(&root))
+        else {
+            return;
+        };
+        let _ = std::thread::Builder::new()
+            .name("unica-live-agent-release".to_string())
+            .spawn(move || {
+                super::live_agent::live_agents()
+                    .release(&super::runner::PinnedRunner::default(), &root);
+            });
+    }
+
     fn admit(&self, folder: &Path, deadline: Instant) -> Option<AdmittedWorkspace> {
         let admitted = admit_editor_folder(folder, &self.actors, deadline)?;
         let (actor, bindings, identity) = (admitted.actor, admitted.bindings, admitted.identity);
+        self.roots
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .insert(folder.to_path_buf(), actor.context().workspace_root.clone());
         let source_sets = bindings
             .iter()
             .map(|binding| {

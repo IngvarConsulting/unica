@@ -14,7 +14,7 @@ use serde_yaml::{Mapping, Value};
 use std::path::{Path, PathBuf};
 use unica_execution_contract::invocation::DomainResult;
 use unica_process::runner::{
-    ProcessCommand, ProcessOutput, ProcessRunner, ProcessStreamFailure, SystemProcessRunner,
+    BreakawayProcessRunner, ProcessCommand, ProcessOutput, ProcessRunner, ProcessStreamFailure,
 };
 use unica_process::PendingProcessHandoff;
 use unica_refusal::RefusalCode;
@@ -38,12 +38,36 @@ const LOCAL_NAME: &str = "v8project.local.yaml";
 const ORIGIN: &str = "origin";
 
 /// Runs the pinned runner on the working-copy config, one invocation per
-/// working copy at a time.
-pub(super) struct PinnedRunner;
+/// working copy at a time. Its group lets the runner's live Designer agent
+/// leave it ([`BreakawayProcessRunner`]). It keeps what the last runner
+/// command said about that agent ([`agent_receipt`]).
+#[derive(Default)]
+pub(super) struct PinnedRunner {
+    agent: std::sync::Mutex<Option<serde_json::Value>>,
+}
+
+impl PinnedRunner {
+    fn note(&self, output: &ProcessOutput) {
+        if let Some(agent) = agent_receipt(&output.stdout) {
+            *self.agent.lock().unwrap_or_else(|error| error.into_inner()) = Some(agent);
+        }
+    }
+
+    /// `data.agent` of the last runner command that named its live agent.
+    fn agent(&self) -> Option<serde_json::Value> {
+        self.agent
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone()
+    }
+}
+
 impl ProcessRunner for PinnedRunner {
     fn run(&self, command: &ProcessCommand) -> Result<ProcessOutput, String> {
         let _lock = lock_for(command)?;
-        SystemProcessRunner.run(command)
+        let output = BreakawayProcessRunner.run(command)?;
+        self.note(&output);
+        Ok(output)
     }
 
     /// Waiting for the lock happens before any process exists, but it is not
@@ -51,7 +75,9 @@ impl ProcessRunner for PinnedRunner {
     /// never as an unstartable engine.
     fn run_staged(&self, command: &ProcessCommand) -> Result<ProcessOutput, ProcessStreamFailure> {
         let _lock = lock_for(command).map_err(ProcessStreamFailure::Run)?;
-        SystemProcessRunner.run_staged(command)
+        let output = BreakawayProcessRunner.run_staged(command)?;
+        self.note(&output);
+        Ok(output)
     }
 
     fn run_pending_handoff(
@@ -59,7 +85,9 @@ impl ProcessRunner for PinnedRunner {
         command: &ProcessCommand,
     ) -> Result<(ProcessOutput, PendingProcessHandoff), String> {
         let _lock = lock_for(command)?;
-        SystemProcessRunner.run_pending_handoff(command)
+        let (output, handoff) = BreakawayProcessRunner.run_pending_handoff(command)?;
+        self.note(&output);
+        Ok((output, handoff))
     }
 
     /// As [`Self::run_staged`]: waiting for the lock is not a failed launch.
@@ -68,8 +96,35 @@ impl ProcessRunner for PinnedRunner {
         command: &ProcessCommand,
     ) -> Result<(ProcessOutput, PendingProcessHandoff), ProcessStreamFailure> {
         let _lock = lock_for(command).map_err(ProcessStreamFailure::Run)?;
-        SystemProcessRunner.run_pending_handoff_staged(command)
+        let (output, handoff) = BreakawayProcessRunner.run_pending_handoff_staged(command)?;
+        self.note(&output);
+        Ok((output, handoff))
     }
+}
+
+/// `data.agent` from the runner's answer: whether the command took a live
+/// Designer agent (`reused`), whether the agent stays (`kept`) and why not
+/// (`reason`, the runner's word), how many holders it has and whether this
+/// Unica process is one of them. The runner names it in
+/// `provider.endpoint.live` of a managed agent session; other holders' pids
+/// stay private.
+fn agent_receipt(stdout: &str) -> Option<serde_json::Value> {
+    let envelope: serde_json::Value = serde_json::from_str(stdout.trim()).ok()?;
+    let live = envelope["data"]["provider"]["endpoint"]["live"].as_object()?;
+    let reused = live.get("reused")?.as_bool()?;
+    let kept = live.get("kept")?.as_bool()?;
+    let holders = live.get("holders")?.as_array()?;
+    let own = u64::from(std::process::id());
+    let mut agent = serde_json::json!({
+        "reused": reused,
+        "kept": kept,
+        "holders": holders.len(),
+        "heldByUnica": holders.iter().any(|holder| holder["pid"].as_u64() == Some(own)),
+    });
+    if let Some(reason) = live.get("reason").and_then(serde_json::Value::as_str) {
+        agent["reason"] = serde_json::Value::from(reason);
+    }
+    Some(agent)
 }
 
 fn lock_for(command: &ProcessCommand) -> Result<RunnerLock, String> {
@@ -95,17 +150,57 @@ fn lock_for(command: &ProcessCommand) -> Result<RunnerLock, String> {
 /// ([`with_prepared_working_copy`]). Without it `run` refuses with the absent
 /// runner, and a refused operation leaves the working copy as it was: no lock
 /// file, no written key.
+///
+/// The answer carries `data.agent` when a runner command of the operation
+/// named its live Designer agent ([`agent_receipt`]).
 pub(super) fn with_bundled_runner(
     root: &Path,
     cwd: &Path,
     at: &str,
     cancellation: CancellationToken,
-    run: impl FnOnce(CancellationToken) -> DomainResult,
+    run: impl FnOnce(&PinnedRunner, CancellationToken) -> DomainResult,
 ) -> DomainResult {
-    if super::v13_infobase_exports::resolve_bundled_runner(cwd).is_err() {
-        return run(cancellation);
+    let runner = PinnedRunner::default();
+    let Ok(resolved) = super::v13_infobase_exports::resolve_bundled_runner(cwd) else {
+        return run(&runner, cancellation);
+    };
+    let agents = super::live_agent::live_agents();
+    agents.touch(root, std::time::Instant::now());
+    let mut result = with_prepared_working_copy(root, at, cancellation, |cancellation| {
+        run(&runner, cancellation)
+    });
+    let Some(mut agent) = runner.agent() else {
+        return result;
+    };
+    let after = agents.after_command(
+        root,
+        &resolved.tool.program,
+        &agent,
+        std::time::Instant::now(),
+    );
+    // Holding and letting go take the runner lock of a working copy: they run
+    // apart from the answer, which another command of that copy could hold up.
+    if !after.marks.is_empty() {
+        let marks = after.marks;
+        let _ = std::thread::Builder::new()
+            .name("unica-live-agent-mark".to_string())
+            .spawn(move || {
+                if agents.perform(&PinnedRunner::default(), &marks) {
+                    agents.keep_sweeping();
+                }
+            });
     }
-    with_prepared_working_copy(root, at, cancellation, run)
+    match after.reply {
+        Some(super::live_agent::AgentReply::Warning(warning)) => result.warnings.push(warning),
+        Some(super::live_agent::AgentReply::Note(note)) => {
+            agent["note"] = serde_json::Value::from(note);
+        }
+        None => {}
+    }
+    if let Some(serde_json::Value::Object(data)) = result.data.as_mut() {
+        data.insert("agent".to_string(), agent);
+    }
+    result
 }
 
 /// Runs a runner operation on a prepared working copy: [`prepare_working_copy`]
@@ -983,6 +1078,47 @@ source-set:
         assert!(!unica.join("runner-project").exists());
         assert!(!lock.exists());
         assert!(!cleanup.exists());
+    }
+
+    /// Ответ называет живого агента команды из `provider.endpoint.live`
+    /// раннера: взят ли он, остаётся ли и почему нет, сколько у него
+    /// держателей и держит ли его Unica. Номера чужих держателей наружу не идут.
+    #[test]
+    fn the_answer_names_the_live_agent_of_the_command() {
+        let envelope = |live: serde_json::Value| {
+            serde_json::json!({"ok": true, "data": {"provider": {
+                "selected": "designer",
+                "endpoint": {"mode": "managed", "address": "127.0.0.1:1543", "live": live}
+            }}})
+            .to_string()
+        };
+        let own = std::process::id();
+        let held = agent_receipt(&envelope(serde_json::json!({
+            "reused": true, "kept": true,
+            "holders": [{"pid": own, "started_at": "2026-11-13T08:00:00Z"}, {"pid": 4242}]
+        })))
+        .unwrap();
+        assert_eq!(
+            held,
+            serde_json::json!({"reused": true, "kept": true, "holders": 2, "heldByUnica": true})
+        );
+        assert!(!held.to_string().contains("4242"));
+        let one_off = agent_receipt(&envelope(serde_json::json!({
+            "reused": false, "kept": false, "holders": [], "reason": "job"
+        })))
+        .unwrap();
+        assert_eq!(
+            one_off,
+            serde_json::json!({
+                "reused": false, "kept": false, "holders": 0, "heldByUnica": false, "reason": "job"
+            })
+        );
+        // Без сессии управляемого агента ответ агента не называет.
+        assert_eq!(
+            agent_receipt(r#"{"ok": true, "data": {"provider": {"selected": "ibcmd"}}}"#),
+            None
+        );
+        assert_eq!(agent_receipt("not json"), None);
     }
 
     #[test]
