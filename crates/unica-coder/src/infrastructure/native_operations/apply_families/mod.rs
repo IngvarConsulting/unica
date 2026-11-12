@@ -208,8 +208,10 @@ fn changes_support_state(
 /// or on one of its own child objects refuses under `deny` or warns under
 /// `warn`. The marker is not changed by the removal.
 /// The owner is the top-level metadata object of the addressed node, or the
-/// configuration root for root-level targets; nested forms, templates and
-/// attributes inherit the rule of their owner, as they do in the platform.
+/// configuration root for root-level targets. A node below it with its own
+/// record (a form, an attribute, a nested subsystem) closes itself and
+/// everything under it when its rule is `locked`, as in the configurator.
+/// Every operation target is checked, not only the request's node.
 /// What locks a target is decided by [`support_gate_facts`], which `view`
 /// also asks, so the editability a node shows is this gate's answer.
 fn refuse_targets_on_locked_vendor_objects(
@@ -218,36 +220,58 @@ fn refuse_targets_on_locked_vendor_objects(
     admission: &ApplyAdmission,
     staged: &mut ApplyStagedState,
 ) -> Result<Option<serde_json::Value>, ApplyPlanError> {
+    let policy = admission.support_policy_mode();
+    // Every operation answers for its own target: an `args.at` below the
+    // request's node may sit under a node with its own `locked` record.
+    let mut targets: Vec<(&unica_address::address::QualifiedAddress, bool)> = Vec::new();
+    for operation in request.ops() {
+        if changes_support_state(operation.name(), Some(operation.at()), binding) {
+            continue;
+        }
+        let removes = unica_metadata::apply_operations::MetadataOperation::named(operation.name())
+            == Some(unica_metadata::apply_operations::MetadataOperation::ObjectRemove);
+        match targets.iter_mut().find(|(at, _)| *at == operation.at()) {
+            Some((_, target_removes)) => *target_removes |= removes,
+            None => targets.push((operation.at(), removes)),
+        }
+    }
+    for (target, removes) in targets {
+        if let Some(warning) =
+            refuse_target_on_locked_vendor_object(target, removes, policy, binding, staged)?
+        {
+            return Ok(Some(warning));
+        }
+    }
+    Ok(None)
+}
+
+/// The support gate for one operation target; `removes` asks about removing
+/// the target's owner.
+fn refuse_target_on_locked_vendor_object(
+    target: &unica_address::address::QualifiedAddress,
+    removes: bool,
+    policy: unica_source_contract::proposal::SupportPolicyMode,
+    binding: &ProviderRootBinding,
+    staged: &mut ApplyStagedState,
+) -> Result<Option<serde_json::Value>, ApplyPlanError> {
     use unica_source_contract::proposal::SupportPolicyMode;
 
-    let policy = admission.support_policy_mode();
     // `off` silences locks but not a support state that cannot be read: the
     // gate reads the marker under every policy.
     let deny = policy == SupportPolicyMode::Deny;
-    if request
-        .ops()
-        .iter()
-        .all(|operation| changes_support_state(operation.name(), Some(operation.at()), binding))
-    {
-        return Ok(None);
-    }
     let support_locked = |owner: &str, message: String| {
         serde_json::json!({
             "code": "support_locked",
             "severity": "warning",
-            "at": format!("{}:{owner}", request.at().source_set()),
+            "at": format!("{}:{owner}", target.source_set()),
             "message": message,
         })
     };
-    let at = request.at().to_string();
-    let source_set = request.at().source_set();
-    let removes = request.ops().iter().any(|operation| {
-        unica_metadata::apply_operations::MetadataOperation::named(operation.name())
-            == Some(unica_metadata::apply_operations::MetadataOperation::ObjectRemove)
-    });
+    let at = target.to_string();
+    let source_set = target.source_set();
     let staged = std::cell::RefCell::new(staged);
     let facts = support_gate_facts(
-        request.at(),
+        target,
         binding.source_kind(),
         // `off` asks only whether the marker can be read: no child listing.
         removes && policy != SupportPolicyMode::Off,
@@ -266,7 +290,7 @@ fn refuse_targets_on_locked_vendor_objects(
     if let Some(unreadable) = facts.unreadable {
         let reason = unreadable.reason;
         if policy == SupportPolicyMode::Warn {
-            let owner = support_owner_relative(request.at(), binding.source_kind())
+            let owner = support_owner_relative(target, binding.source_kind())
                 .map_or_else(|| "Configuration".to_string(), |(owner, _)| owner);
             return Ok(Some(support_locked(
                 &owner,
@@ -358,6 +382,9 @@ pub(crate) struct SupportGateFacts {
     /// The owner's descriptor was read but names no uuid: its rule cannot
     /// be looked up, and its support is unreadable.
     pub(crate) owner_uuid_missing: bool,
+    /// The rule of the addressed node's own record when the node is not the
+    /// owner itself and has one (a form, an attribute, a nested subsystem).
+    pub(crate) node_rule: Option<u8>,
     pub(crate) lock: Option<SupportGateLock>,
     /// Why the support of the target cannot be read. Not the absence of
     /// support (INV.APP.SUPPORT-STATE).
@@ -406,6 +433,7 @@ pub(crate) fn support_gate_facts<E>(
         marker,
         owner_rule,
         owner_uuid_missing: false,
+        node_rule: None,
         lock: None,
         unreadable: None,
     };
@@ -419,6 +447,7 @@ pub(crate) fn support_gate_facts<E>(
                 marker: None,
                 owner_rule: None,
                 owner_uuid_missing: false,
+                node_rule: None,
                 lock: None,
                 unreadable: Some(SupportUnreadable {
                     reason: format!("the vendor support state `Ext/ParentConfigurations.bin` cannot be read ({error}); Unica does not take an unreadable support state for no support"),
@@ -434,11 +463,21 @@ pub(crate) fn support_gate_facts<E>(
     let marker = Some(SupportGateMarker::Supported { editing_enabled });
     let owner = support_owner_relative(at, source_kind);
     if !editing_enabled {
+        // The node still names its own rule, as `view` shows it.
+        let mut node_rule = None;
+        if let Some((owner, owner_relative)) = &owner {
+            if let Some(bytes) = read(owner_relative)? {
+                node_rule =
+                    support_records_on_path(at, owner, owner_relative, &bytes, &state, read)?
+                        .node_rule;
+            }
+        }
         let owner = owner.map_or_else(|| "Configuration".to_string(), |(owner, _)| owner);
         return Ok(SupportGateFacts {
             marker,
             owner_rule: None,
             owner_uuid_missing: false,
+            node_rule,
             lock: Some(SupportGateLock {
                 kind: SupportLockKind::ConfigurationLocked,
                 owner,
@@ -462,6 +501,7 @@ pub(crate) fn support_gate_facts<E>(
             marker,
             owner_rule: None,
             owner_uuid_missing,
+            node_rule: None,
             lock: None,
             unreadable: Some(SupportUnreadable {
                 reason: format!("the descriptor of `{source_set}:{owner}` names no uuid, so its vendor support rule cannot be read"),
@@ -474,6 +514,7 @@ pub(crate) fn support_gate_facts<E>(
         marker,
         owner_rule,
         owner_uuid_missing,
+        node_rule: None,
         lock: None,
         unreadable: None,
     };
@@ -481,6 +522,7 @@ pub(crate) fn support_gate_facts<E>(
         marker,
         owner_rule: support_rule,
         owner_uuid_missing,
+        node_rule: None,
         lock: Some(SupportGateLock {
             kind,
             owner: owner.clone(),
@@ -522,13 +564,139 @@ pub(crate) fn support_gate_facts<E>(
             ),
         ));
     }
+    // A node under the owner with its own record answers for itself too:
+    // the first `locked` record on the path closes the target.
+    let path = support_records_on_path(at, &owner, &owner_relative, &bytes, &state, read)?;
     if support_rule == Some(0) {
-        return Ok(locked(
+        let mut facts = locked(
             SupportLockKind::ObjectLocked,
             format!("`{source_set}:{owner}` is a vendor object with the support rule `locked`"),
-        ));
+        );
+        facts.node_rule = path.node_rule;
+        return Ok(facts);
     }
-    Ok(free(marker, support_rule))
+    if let Some(node) = path.locked {
+        return Ok(SupportGateFacts {
+            marker,
+            owner_rule: support_rule,
+            owner_uuid_missing,
+            node_rule: path.node_rule,
+            lock: Some(SupportGateLock {
+                kind: SupportLockKind::ObjectLocked,
+                reason: format!(
+                    "`{source_set}:{node}` is a vendor object with the support rule `locked`"
+                ),
+                owner: node,
+            }),
+            unreadable: None,
+        });
+    }
+    let mut facts = free(marker, support_rule);
+    facts.node_rule = path.node_rule;
+    Ok(facts)
+}
+
+/// The own support records on the path from the owner to `at`.
+struct PathRecords {
+    /// The first node (owner excluded) whose own record is `locked`.
+    locked: Option<String>,
+    /// The rule of `at`'s own record when `at` is below the owner.
+    node_rule: Option<u8>,
+}
+
+/// Walks `at` below its owner over the nodes that `supportRule.set` can
+/// address (`support_record_path`), so a lock found here can be lifted. A
+/// segment is a node declared in the current descriptor (an attribute, a
+/// tabular section and its attribute, a dimension, a resource) or a node with
+/// a descriptor of its own (a form, a template, a command, a nested
+/// subsystem); each may carry its own record by uuid. Any other segment (a
+/// module, a form item, an enum value) has no record of its own and ends the
+/// walk: it follows the nearest node above it.
+fn support_records_on_path<E>(
+    at: &unica_address::address::QualifiedAddress,
+    owner: &str,
+    owner_relative: &std::path::Path,
+    owner_bytes: &[u8],
+    state: &unica_metadata_designer::support::SupportState,
+    read: &mut GateRead<'_, E>,
+) -> Result<PathRecords, E> {
+    use unica_address::address::NodeKind;
+    use unica_metadata_designer::support::support_root_uuid_from_bytes;
+
+    let mut records = PathRecords {
+        locked: None,
+        node_rule: None,
+    };
+    let segments = at.segments();
+    let Some(first) = segments.first() else {
+        return Ok(records);
+    };
+    if first.kind() == NodeKind::Configuration || !first.kind().is_metadata_kind() {
+        return Ok(records);
+    }
+    let mut node = owner.to_string();
+    let mut descriptor = owner_bytes.to_vec();
+    let mut chain = String::new();
+    // A nested subsystem lives in `Subsystems/<A>/Subsystems/<B>.xml`.
+    let mut directory = owner_relative.with_extension("");
+    let last = segments.len().saturating_sub(1);
+    for (index, segment) in segments.iter().enumerate().skip(1) {
+        if !unica_metadata::applicability::support_record_path(&segments[..=index]) {
+            break;
+        }
+        let Some(name) = segment.name() else {
+            break;
+        };
+        let kind = segment.kind().as_str();
+        node.push_str(&format!(".{kind}.{name}"));
+        let declared = format!("{chain}.{kind}.{name}");
+        let uuid = if let Some(uuid) = declared_uuid(&descriptor, &declared) {
+            chain = declared;
+            Some(uuid)
+        } else if matches!(kind, "Form" | "Template" | "Command" | "Subsystem") && chain.is_empty()
+        {
+            let folder = match kind {
+                "Form" => "Forms",
+                "Template" => "Templates",
+                "Command" => "Commands",
+                _ => "Subsystems",
+            };
+            let relative = directory.join(folder).join(format!("{name}.xml"));
+            let Some(bytes) = read(&relative)? else {
+                break;
+            };
+            directory = directory.join(folder).join(name);
+            let uuid = support_root_uuid_from_bytes(&bytes);
+            descriptor = bytes;
+            uuid
+        } else {
+            break;
+        };
+        let rule = uuid.and_then(|uuid| state.object_rule(&uuid));
+        if rule == Some(0) && records.locked.is_none() {
+            records.locked = Some(node.clone());
+        }
+        if index == last {
+            records.node_rule = rule;
+        }
+    }
+    Ok(records)
+}
+
+/// The uuid of the node declared in `descriptor` under the chain
+/// `.Kind.Name…` below the described object, as `declared_chain` spells it.
+fn declared_uuid(descriptor: &[u8], chain: &str) -> Option<String> {
+    use unica_metadata_designer::remove::{declared_chain, declared_name};
+
+    let text = std::str::from_utf8(descriptor).ok()?;
+    let document = roxmltree::Document::parse(text.trim_start_matches('\u{feff}')).ok()?;
+    document
+        .descendants()
+        .filter(|node| node.is_element() && node.has_attribute("uuid"))
+        .filter(|node| declared_name(*node).is_some())
+        .find(|node| declared_chain(*node).concat() == chain)
+        .and_then(|node| node.attribute("uuid"))
+        .map(str::to_ascii_lowercase)
 }
 
 /// The child objects of a removed vendor object that carry their own

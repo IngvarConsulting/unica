@@ -21,11 +21,11 @@
         },
         {
           "pointer": "/data/props/support/reason",
-          "eq": "editableWithSupport"
+          "eq": "locked"
         },
         {
           "pointer": "/data/props/support/editable",
-          "eq": true
+          "eq": false
         },
         {
           "pointer": "/data/props/support/policy",
@@ -121,11 +121,11 @@
         },
         {
           "pointer": "/data/props/support/reason",
-          "eq": "editableWithSupport"
+          "eq": "locked"
         },
         {
           "pointer": "/data/props/support/editable",
-          "eq": true
+          "eq": false
         },
         {
           "pointer": "/data/props/support/policy",
@@ -305,11 +305,11 @@
         },
         {
           "pointer": "/data/props/support/reason",
-          "eq": "editableWithSupport"
+          "eq": "locked"
         },
         {
           "pointer": "/data/props/support/editable",
-          "eq": true
+          "eq": false
         },
         {
           "pointer": "/data/props/support/policy",
