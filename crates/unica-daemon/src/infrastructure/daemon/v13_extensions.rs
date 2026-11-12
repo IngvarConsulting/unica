@@ -552,6 +552,11 @@ fn validate_arguments(op: Operation, args: &Map<String, Value>) -> Result<(), &'
     Ok(())
 }
 fn valid_inventory_record(item: &Value) -> bool {
+    // Пакетный Конфигуратор называет только имя расширения (раннер 0.17,
+    // `ExtensionInventoryEntry::NameOnly`).
+    if name_only_record(item) {
+        return true;
+    }
     [
         "active",
         "safe_mode",
@@ -583,9 +588,19 @@ fn valid_inventory_record(item: &Value) -> bool {
             prefix.is_null() || prefix.as_str().is_some_and(|value| value.len() <= 4096)
         })
 }
+/// A record of batch Designer: the name and nothing else.
+fn name_only_record(item: &Value) -> bool {
+    item.as_object()
+        .is_some_and(|record| record.len() == 1 && record.contains_key("name"))
+}
+
 /// The runner's text fields pass through the secret redactor: a record is
-/// provider prose like any other (#2124).
+/// provider prose like any other (#2124). A record of batch Designer passes as
+/// the name alone: the other facts are not known.
 fn public_record(item: &Value) -> Value {
+    if name_only_record(item) {
+        return json!({"name": item["name"]});
+    }
     let text = |key: &str| match item[key].as_str() {
         Some(value) => Value::String(redactor(value)),
         None => item[key].clone(),
@@ -926,6 +941,28 @@ mod tests {
             assert_eq!(data["namePrefixAvailable"], false);
             assert_eq!(data["extensions"].as_array().unwrap().len(), prefixes.len());
         }
+        // Пакетный Конфигуратор (раннер 0.17) называет только имя: запись
+        // принимается и передаётся одним именем.
+        let root = tempfile::tempdir().unwrap();
+        let mut prepared = fixture(root.path(), Operation::List);
+        let preview = envelope(&prepared, true);
+        let mut applied = envelope(&prepared, false);
+        applied["data"]["extensions"] = json!([{"name": "Sales"}, {"name": "Audit"}]);
+        let tool = tool(root.path());
+        prepared.dry_run = false;
+        let result = prepared.execute_with(
+            &SequenceRunner::new(vec![preview, applied]),
+            &tool,
+            super::super::runner::VERSION,
+            CancellationToken::new(),
+        );
+        assert!(result.ok, "{result:?}");
+        let data = result.data.unwrap();
+        assert_eq!(
+            data["extensions"],
+            json!([{"name": "Sales"}, {"name": "Audit"}])
+        );
+        assert_eq!(data["namePrefixAvailable"], false);
     }
     /// rule: INV.RUNTIME.EXTENSION-OPERATIONS
     #[test]

@@ -1695,8 +1695,10 @@ fn validate_preview(
 /// stay private; the public receipt exposes only the validated provider facts.
 ///
 /// Runner 0.12 adds `endpoint` once an agent session was opened, so an apply may
-/// carry it and its preview may not. It is validated and left out of the returned
-/// receipt: the preview and apply receipts compare by the selected provider.
+/// carry it and its preview may not. Runner 0.17 adds `live` to the endpoint of a
+/// managed agent: whether the command took a live agent and whether it stays. It
+/// is validated and left out of the returned receipt with the endpoint: the
+/// preview and apply receipts compare by the selected provider.
 pub(super) fn validate_provider_receipt(value: &Value) -> Result<Value, &'static str> {
     let object = value
         .as_object()
@@ -1710,15 +1712,15 @@ pub(super) fn validate_provider_receipt(value: &Value) -> Result<Value, &'static
     }
     if let Some(endpoint) = object.get("endpoint") {
         let valid = endpoint.as_object().is_some_and(|endpoint| {
-            endpoint.len() == 2
-                && matches!(
-                    endpoint.get("mode").and_then(Value::as_str),
-                    Some("managed" | "attached" | "gate")
-                )
+            let mode = endpoint.get("mode").and_then(Value::as_str);
+            let live = endpoint.get("live");
+            endpoint.len() == 2 + usize::from(live.is_some())
+                && matches!(mode, Some("managed" | "attached" | "gate"))
                 && endpoint
                     .get("address")
                     .and_then(Value::as_str)
                     .is_some_and(|address| !address.is_empty() && address.len() <= 512)
+                && live.is_none_or(|live| mode == Some("managed") && valid_live_receipt(live))
         });
         if !valid {
             return Err("v8-runner returned an invalid provider endpoint");
@@ -1761,6 +1763,24 @@ pub(super) fn validate_provider_receipt(value: &Value) -> Result<Value, &'static
         .expect("validated receipt object")
         .remove("endpoint");
     Ok(receipt)
+}
+
+/// `endpoint.live` of runner 0.17: `reused` and `kept`, the holders, and the
+/// reason an agent did not stay.
+fn valid_live_receipt(live: &Value) -> bool {
+    live.as_object().is_some_and(|live| {
+        live.keys()
+            .all(|key| ["reused", "kept", "holders", "reason"].contains(&key.as_str()))
+            && live.get("reused").is_some_and(Value::is_boolean)
+            && live.get("kept").is_some_and(Value::is_boolean)
+            && live
+                .get("holders")
+                .and_then(Value::as_array)
+                .is_some_and(|holders| holders.len() <= 64 && holders.iter().all(Value::is_object))
+            && live
+                .get("reason")
+                .is_none_or(|reason| reason.as_str().is_some_and(|reason| reason.len() <= 64))
+    })
 }
 
 fn valid_provider_id(value: &str) -> bool {
@@ -3022,11 +3042,31 @@ mod tests {
                 "{mode}"
             );
         }
+        // Раннер 0.17 у управляемого агента называет, был ли агент живым.
+        for live in [
+            json!({"reused": true, "kept": true,
+                   "holders": [{"pid": 4242, "started_at": "2026-11-13T08:00:00Z"}]}),
+            json!({"reused": false, "kept": false, "holders": [], "reason": "job"}),
+        ] {
+            let mut applied = apply_envelope(&output);
+            applied["data"]["provider"]["endpoint"] =
+                json!({"mode": "managed", "address": "127.0.0.1:1543", "live": live});
+            assert_eq!(
+                validate_apply(&prepared, &applied).as_deref(),
+                Ok("designer"),
+                "{live}"
+            );
+        }
         for endpoint in [
             json!({"mode": "remote", "address": "127.0.0.1:1543"}),
             json!({"mode": "managed", "address": ""}),
             json!({"mode": "managed", "address": "h:1", "user": "admin"}),
             json!("127.0.0.1:1543"),
+            json!({"mode": "attached", "address": "h:1",
+                   "live": {"reused": true, "kept": true, "holders": []}}),
+            json!({"mode": "managed", "address": "h:1", "live": {"kept": true}}),
+            json!({"mode": "managed", "address": "h:1",
+                   "live": {"reused": true, "kept": true, "holders": [], "pid": 1}}),
         ] {
             let mut applied = apply_envelope(&output);
             applied["data"]["provider"]["endpoint"] = endpoint.clone();

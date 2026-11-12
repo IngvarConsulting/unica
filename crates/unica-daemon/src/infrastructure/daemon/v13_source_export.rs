@@ -619,8 +619,9 @@ fn performed_mode(value: &Value) -> Option<&'static str> {
     }
 }
 
-/// Причина расхождения режимов: закрытый словарь раннера 0.15; поле
-/// необязательно.
+/// Причина расхождения режимов: закрытый словарь раннера; поле необязательно.
+/// С 0.17 выгрузка Конфигуратора или агента с обновлением, переписавшая каждый
+/// файл набора, называется `platform_rewrote_all`.
 fn mode_reason(value: &Value) -> Result<Option<&'static str>, ()> {
     match value {
         Value::Null => Ok(None),
@@ -628,6 +629,7 @@ fn mode_reason(value: &Value) -> Result<Option<&'static str>, ()> {
             "version_file" => Ok(Some("version_file")),
             "foreign_format" => Ok(Some("foreign_format")),
             "platform_forecast" => Ok(Some("platform_forecast")),
+            "platform_rewrote_all" => Ok(Some("platform_rewrote_all")),
             "unknown" => Ok(Some("unknown")),
             _ => Err(()),
         },
@@ -2363,6 +2365,18 @@ mod medium_tests {
         assert_eq!(request.arguments.mode, ExportMode::Incremental);
         assert_eq!(plan.performed_mode, "full");
         assert_eq!(plan.mode_reason, Some("version_file"));
+        // Каждая причина раннера 0.17 принимается и называется как есть.
+        for reason in [
+            "version_file",
+            "foreign_format",
+            "platform_forecast",
+            "platform_rewrote_all",
+            "unknown",
+        ] {
+            performed["data"]["mode_reason"] = json!(reason);
+            let plan = validate_envelope(&request, &inputs, &identity, &performed, true).unwrap();
+            assert_eq!(plan.mode_reason, Some(reason));
+        }
 
         // Ответ на другой запрошенный режим и неизвестный режим не принимаются.
         for (field, value) in [

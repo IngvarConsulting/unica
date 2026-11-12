@@ -154,7 +154,7 @@ impl PreparedSourceImport {
         if force && !dry_run {
             let sets = match &arguments.source_set {
                 Some(source_set) => vec![source_set.clone()],
-                None => declared_source_sets(&context.workspace_root.join(CONFIG_NAME))?,
+                None => declared_source_sets(&context.workspace_root.join(CONFIG_NAME))?.0,
             };
             if !HumanChoice::is_confirmed(
                 &push_force_question(&sets),
@@ -287,6 +287,9 @@ struct StableInputs {
     config_sha256: String,
     local_config_sha256: Option<String>,
     declared: Vec<String>,
+    /// Наборы внешних обработок и отчётов: раннер готовит их к упаковке и в
+    /// базу не грузит, их шаг всегда пропущен.
+    external: Vec<String>,
 }
 
 fn capture_inputs(prepared: &PreparedSourceImport) -> Result<StableInputs, DomainResult> {
@@ -304,7 +307,7 @@ fn capture_inputs(prepared: &PreparedSourceImport) -> Result<StableInputs, Domai
     let local_config_sha256 = digest_optional_workspace_file(root, Path::new(LOCAL_CONFIG_NAME))
         .map_err(|error| reject(RefusalCode::InvalidState, error))?
         .map(|(digest, _)| digest);
-    let declared = declared_source_sets(&root.join(CONFIG_NAME))?;
+    let (declared, external) = declared_source_sets(&root.join(CONFIG_NAME))?;
     if let Some(source_set) = &prepared.arguments.source_set {
         if !declared.contains(source_set) {
             return Err(reject(
@@ -320,12 +323,14 @@ fn capture_inputs(prepared: &PreparedSourceImport) -> Result<StableInputs, Domai
         config_sha256,
         local_config_sha256,
         declared,
+        external,
     })
 }
 
-/// Имена наборов из `v8project.yaml` в объявленном порядке. Файл уже проверен
+/// Имена наборов из `v8project.yaml` в объявленном порядке и, отдельно, имена
+/// наборов внешних обработок и отчётов. Файл уже проверен
 /// как обычный файл рабочего пространства при взятии дайджеста.
-fn declared_source_sets(config: &Path) -> Result<Vec<String>, DomainResult> {
+fn declared_source_sets(config: &Path) -> Result<(Vec<String>, Vec<String>), DomainResult> {
     let text = std::fs::read_to_string(config)
         .map_err(|error| reject(RefusalCode::InvalidState, format!("{CONFIG_NAME}: {error}")))?;
     let document: serde_yaml::Value = serde_yaml::from_str(&text).map_err(|error| {
@@ -350,6 +355,7 @@ fn declared_source_sets(config: &Path) -> Result<Vec<String>, DomainResult> {
         ));
     }
     let mut names = Vec::new();
+    let mut external = Vec::new();
     for entry in document
         .get("source-set")
         .and_then(serde_yaml::Value::as_sequence)
@@ -362,6 +368,12 @@ fn declared_source_sets(config: &Path) -> Result<Vec<String>, DomainResult> {
                 format!("{CONFIG_NAME} declares a source-set without a name"),
             ));
         };
+        if matches!(
+            entry.get("type").and_then(serde_yaml::Value::as_str),
+            Some("EXTERNAL_DATA_PROCESSORS" | "EXTERNAL_REPORTS")
+        ) {
+            external.push(name.to_string());
+        }
         names.push(name.to_string());
     }
     if names.is_empty() {
@@ -370,7 +382,7 @@ fn declared_source_sets(config: &Path) -> Result<Vec<String>, DomainResult> {
             format!("{CONFIG_NAME} declares no source-set; there is nothing to import"),
         ));
     }
-    Ok(names)
+    Ok((names, external))
 }
 
 fn execute_with_runner(
@@ -434,6 +446,9 @@ struct PlannedStep {
     /// `push` без `--no-apply` — `true`; у пропущенного `true` значит, что раннер
     /// применил загрузку, которую прежний `push` оставил непринятой.
     applied: bool,
+    /// Набор внешних обработок или отчётов: его шаг пропущен всегда, раннер
+    /// только готовит артефакты к упаковке.
+    external: bool,
 }
 
 impl PlannedStep {
@@ -449,7 +464,7 @@ impl PlannedStep {
     }
 }
 
-fn planned_steps(envelope: &Value) -> Result<Vec<PlannedStep>, DomainResult> {
+fn planned_steps(envelope: &Value, external: &[String]) -> Result<Vec<PlannedStep>, DomainResult> {
     let steps = envelope["data"]["steps"]
         .as_array()
         .filter(|steps| !steps.is_empty() && steps.len() <= STEPS_MAX)
@@ -503,10 +518,12 @@ fn planned_steps(envelope: &Value) -> Result<Vec<PlannedStep>, DomainResult> {
                 format!("v8-runner push reported a step without a boolean applied flag for `{source_set}`"),
             )
         })?;
+        let external = external.contains(&source_set);
         planned.push(PlannedStep {
             source_set,
             mode,
             applied,
+            external,
         });
     }
     Ok(planned)
@@ -631,7 +648,7 @@ fn apply(
         Ok(envelope) => envelope,
         Err(result) => return result,
     };
-    let performed = match planned_steps(&applied) {
+    let performed = match planned_steps(&applied, &inputs.external) {
         Ok(steps) => steps,
         Err(result) => return result,
     };
@@ -816,7 +833,7 @@ const SKIPPED_WARNING_CODE: &str = "infobase_state_unverified";
 fn skipped_warning(plan: &[PlannedStep]) -> Option<Value> {
     let skipped: Vec<&str> = plan
         .iter()
-        .filter(|step| !step.changed_infobase())
+        .filter(|step| !step.changed_infobase() && !step.external)
         .map(|step| step.source_set.as_str())
         .collect();
     (!skipped.is_empty()).then(|| {
@@ -967,7 +984,7 @@ fn validate_preview(
             "v8-runner preview did not prove that Designer was not dispatched",
         ));
     }
-    let plan = planned_steps(envelope)?;
+    let plan = planned_steps(envelope, &inputs.external)?;
     check_plan(prepared, inputs, &plan)?;
     Ok(plan)
 }
@@ -991,7 +1008,9 @@ fn check_plan(
         ));
     }
     if (prepared.arguments.full_rebuild || prepared.arguments.force)
-        && plan.iter().any(|step| step.mode != StepMode::Full)
+        && plan
+            .iter()
+            .any(|step| step.mode != StepMode::Full && !step.external)
     {
         return Err(reject(
             RefusalCode::InvalidResult,
@@ -1527,6 +1546,53 @@ pub(super) mod tests {
 
     fn full() -> Value {
         json!("full")
+    }
+
+    /// Набор внешних обработок раннер 0.17 только готовит к упаковке: его шаг
+    /// пропущен и при полной загрузке, и это не частичный импорт и не пропуск
+    /// по памяти раннера.
+    #[test]
+    fn an_external_set_is_skipped_even_by_a_full_push() {
+        let root = workspace();
+        let config = root.path().join(CONFIG_NAME);
+        let text = fs::read_to_string(&config).unwrap();
+        fs::write(
+            &config,
+            format!(
+                "{text}  - name: tools
+    type: EXTERNAL_DATA_PROCESSORS
+    path: tools
+"
+            ),
+        )
+        .unwrap();
+        let request = prepared(root.path(), None, true, true);
+        let inputs = capture_inputs(&request).unwrap();
+        let preview = envelope(
+            &[
+                ("main", full()),
+                ("ext-sales", full()),
+                ("tools", json!("skipped")),
+            ],
+            false,
+        );
+        let plan = validate_preview(&request, &inputs, &preview).unwrap();
+        assert!(plan
+            .iter()
+            .any(|step| step.source_set == "tools" && step.external));
+        assert_eq!(skipped_warning(&plan), None);
+
+        // Набор конфигурации, пропущенный при полной загрузке, — по-прежнему
+        // негодный план.
+        let partial_plan = envelope(
+            &[
+                ("main", json!("skipped")),
+                ("ext-sales", full()),
+                ("tools", json!("skipped")),
+            ],
+            false,
+        );
+        assert!(validate_preview(&request, &inputs, &partial_plan).is_err());
     }
 
     fn partial(files: u64) -> Value {
