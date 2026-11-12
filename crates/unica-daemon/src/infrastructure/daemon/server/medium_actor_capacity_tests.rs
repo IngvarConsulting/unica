@@ -5,7 +5,7 @@ include!(concat!(
     "/medium_actor_capacity_tests_modules.rs"
 ));
 
-use super::super::runner_015::VERSION as RUNNER_VERSION;
+use super::super::runner::VERSION as RUNNER_VERSION;
 use super::*;
 use crate::infrastructure::analysis_composition::provider_host::ProviderHostKey;
 use unica_artifact_delivery::shared::{ArtifactReady, DeliveryFormIdentity, DeliveryWorkKey};

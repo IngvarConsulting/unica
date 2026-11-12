@@ -16,7 +16,7 @@
 //! не идут.
 
 use super::protocol::InvocationRequest;
-use super::runner_015::Runner015ProcessRunner;
+use super::runner::PinnedRunner;
 use super::v13_infobase_exports::{
     digest_optional_workspace_file, digest_required_workspace_file, missing_runner_rejection,
     note_another_copy, resolve_bundled_runner, runner_rejection, runner_start_rejection,
@@ -202,7 +202,7 @@ impl PreparedSourceExport {
     }
 
     pub(super) fn execute(&self, cancellation: CancellationToken) -> DomainResult {
-        execute_with_runner(self, &Runner015ProcessRunner, cancellation)
+        execute_with_runner(self, &PinnedRunner, cancellation)
     }
 }
 
