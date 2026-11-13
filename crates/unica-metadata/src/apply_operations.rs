@@ -305,16 +305,18 @@ mod tests {
             assert!(new.get("x-unica-later-lines").is_none());
             let schema = json!({"type":"object","properties":{"color":new["properties"]["color"]}});
             let oracle = jsonschema::validator_for(&schema).unwrap();
-            for color in [
-                "auto",
-                "#FF00aa",
-                "web:Red",
-                "style:ButtonBackColor",
-                "win:WindowColor",
-            ] {
+            for color in ["auto", "#FF00aa", "web:Red", "style:ButtonBackColor"] {
                 assert!(oracle.is_valid(&json!({"color":color})), "{color}");
             }
-            for color in ["", "Red", "#FF00", "web:", "web:Red;", "AUTO"] {
+            for color in [
+                "",
+                "Red",
+                "#FF00",
+                "web:",
+                "web:Unknown",
+                "win:WindowColor",
+                "AUTO",
+            ] {
                 assert!(!oracle.is_valid(&json!({"color":color})), "{color}");
             }
         }

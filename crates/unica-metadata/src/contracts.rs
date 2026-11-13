@@ -196,14 +196,13 @@ pub fn metadata_element_input_schema(update: bool, attributes: bool) -> &'static
 }
 
 /// The color of an enumeration value, from 8.5.1: `auto`, `#RRGGBB`, or a
-/// web, Windows or style color by name, as the platform XDTO type `Color`.
+/// web or style color by the name the platform knows, as for a style item.
 pub fn enum_value_color_schema() -> Value {
-    json!({"type":"string","pattern":ENUM_VALUE_COLOR_PATTERN,
-        "description":"auto, #RRGGBB, or web:<Name>, win:<Name>, style:<Name>"})
+    json!({"anyOf":[
+        {"type":"string","enum":["auto"]},
+        crate::style_color::StyleItemColor::argument_schema(),
+    ]})
 }
-
-pub const ENUM_VALUE_COLOR_PATTERN: &str =
-    r"^(auto|#[0-9A-Fa-f]{6}|(web|win|style):[A-Za-z_][0-9A-Za-z_]*)$";
 
 /// Preserve the host-visible internal envelope while deriving its field
 /// definitions from the same input owner. The old envelope is deliberately

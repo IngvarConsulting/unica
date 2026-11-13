@@ -141,6 +141,17 @@ fn a_set_of_line_8_5_1_sets_the_color_of_an_enumeration_value() {
     assert!(value.contains("<Color>web:Red</Color>"), "{value}");
     // The other value keeps its own color.
     assert_eq!(text.matches("<Color>auto</Color>").count(), 3);
+    // The platform refuses a color it does not know (checked on 8.5.1).
+    for color in ["win:WindowColor", "web:Unknown"] {
+        let error = parse_metadata_plan_operation(
+            "enumValue.set",
+            &json!({"at":ENUM_VALUE,"values":{"color":color}}),
+            0,
+            &fixture.binding,
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue, "{color}");
+    }
 }
 
 /// rule: INV.SOURCE.PROFILE-CAPABILITIES

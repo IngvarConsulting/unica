@@ -998,6 +998,16 @@ impl MetaElementUpdate {
                 "color is a property of an enumeration value",
             ));
         }
+        if let Some(color) = &input.color {
+            if color != "auto"
+                && crate::style_color::StyleItemColor::parse_argument(color).is_none()
+            {
+                return Err(invalid_operation(
+                    format!("{field}.color"),
+                    "color must be auto, #RRGGBB, or a web or style color the platform knows",
+                ));
+            }
+        }
         let spec = metadata_collection_spec(collection);
         validate_element_fields(
             spec,
