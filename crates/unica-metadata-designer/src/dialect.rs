@@ -21,6 +21,13 @@ pub(crate) struct MetadataDialect {
     /// Compatibility modes the platform line adds to the 8.3 modes every
     /// line knows: the line writes its own mode into the configuration.
     pub(crate) line_compatibility_modes: &'static [&'static str],
+    /// The properties, with their default values, the format writes last in
+    /// the `Properties` of a new child of an object type, after those of 2.20.
+    pub(crate) added_child_properties: fn(&str) -> &'static [&'static str],
+    /// The properties, with their default values, the format writes in the
+    /// `Properties` of a new object of a kind, each right after the named
+    /// property of 2.20.
+    pub(crate) added_object_properties: fn(&str) -> &'static [(&'static str, &'static str)],
 }
 
 impl MetadataDialect {
@@ -37,6 +44,8 @@ static V2_20: MetadataDialect = MetadataDialect {
     kind_declares_child_objects: v2_20::kind_declares_child_objects,
     boolean_properties: v2_20::boolean_properties,
     line_compatibility_modes: &[],
+    added_child_properties: v2_20::added_child_properties,
+    added_object_properties: v2_20::added_object_properties,
 };
 
 /// The dialects the codec has, one per export format version.

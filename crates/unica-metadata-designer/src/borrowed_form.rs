@@ -120,7 +120,7 @@ pub fn borrowed_form_descriptor(name: &str, uuid: &str, parent: &ParentForm) -> 
         "\u{feff}<?xml version=\"1.0\" encoding=\"UTF-8\"?>".to_string(),
         format!(
             "<MetaDataObject {} version=\"{}\">",
-            unica_source_designer::layout::full_md_namespace_declarations(),
+            unica_source_designer::layout::full_md_namespace_declarations(&parent.version),
             escape(&parent.version)
         ),
         format!("\t<Form uuid=\"{}\">", escape(uuid)),

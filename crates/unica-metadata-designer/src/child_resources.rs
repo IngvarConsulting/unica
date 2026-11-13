@@ -1221,7 +1221,7 @@ fn new_template_descriptor_image(
         .ok_or_else(invalid)?;
     let mut output = format!(
         "\u{feff}<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n<MetaDataObject {} version=\"{}\">\r\n",
-        crate::template_catalog::meta_xmlns_decl(),
+        crate::template_catalog::meta_xmlns_decl(set_version),
         set_version
     );
     append(source, template, 1, &mut output).ok_or_else(invalid)?;

@@ -32,6 +32,9 @@ version-literal-baseline = 9
 component = "codec"
 file-io = "none"
 inputs = [
+    "tests/fixtures/formats/platform_xml/2.20/all_kinds",
+    "tests/fixtures/formats/platform_xml/2.21/all_kinds",
+    "tests/fixtures/formats/platform_xml/2.22/all_kinds",
     "tests/fixtures/acceptance/workspace-information-register-dimension-flags",
     "tests/fixtures/acceptance/workspace-metadata-edit-type",
     "tests/fixtures/acceptance/workspace-register-dimensions",
