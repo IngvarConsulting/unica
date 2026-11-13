@@ -2419,11 +2419,11 @@ pub(crate) fn open_absolute_directory_path_nofollow(path: &Path) -> io::Result<f
     let mut current = open_directory_nofollow(Path::new("/"))?;
     for component in path.components() {
         match component {
-            Component::RootDir | Component::CurDir => {}
+            Component::RootDir => {}
             Component::Normal(name) => {
                 current = open_directory_child_nofollow(&current, name)?;
             }
-            Component::ParentDir | Component::Prefix(_) => {
+            Component::CurDir | Component::ParentDir | Component::Prefix(_) => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
                     "secure directory path contains a non-normal component",
@@ -2485,7 +2485,7 @@ pub(crate) fn open_or_create_absolute_directory_path_nofollow(path: &Path) -> io
     let mut current = open_directory_nofollow(Path::new("/"))?;
     for component in path.components() {
         match component {
-            Component::RootDir | Component::CurDir => {}
+            Component::RootDir => {}
             Component::Normal(name) => {
                 current = match open_directory_child_nofollow(&current, name) {
                     Ok(directory) => directory,
@@ -2504,7 +2504,7 @@ pub(crate) fn open_or_create_absolute_directory_path_nofollow(path: &Path) -> io
                     Err(error) => return Err(error),
                 };
             }
-            Component::ParentDir | Component::Prefix(_) => {
+            Component::CurDir | Component::ParentDir | Component::Prefix(_) => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
                     "secure directory path contains a non-normal component",
@@ -3076,6 +3076,28 @@ pub(crate) fn open_directory_nofollow(path: &Path) -> io::Result<fs::File> {
     Ok(file)
 }
 
+/// Отклонить `.` и `..` до нормализации пути.
+///
+/// `std::path::absolute` на Windows разрешает их лексически, по правилам
+/// `GetFullPathName`, и после неё путь выглядит нормальным. На Unix она их
+/// сохраняет, и такой путь отклоняется. Проверка до нормализации даёт обеим
+/// ОС одно правило и один текст отказа.
+#[cfg(windows)]
+fn reject_non_normal_path_components(path: &Path) -> io::Result<()> {
+    use std::path::Component;
+
+    if path
+        .components()
+        .any(|component| matches!(component, Component::ParentDir | Component::CurDir))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "secure directory path contains a non-normal component",
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(windows)]
 pub(crate) fn open_absolute_directory_path_nofollow(path: &Path) -> io::Result<fs::File> {
     use std::path::Component;
@@ -3086,6 +3108,7 @@ pub(crate) fn open_absolute_directory_path_nofollow(path: &Path) -> io::Result<f
             "secure directory path must be absolute",
         ));
     }
+    reject_non_normal_path_components(path)?;
     let absolute = std::path::absolute(path)?;
     let mut components = absolute.components();
     let Some(Component::Prefix(prefix)) = components.next() else {
@@ -3108,8 +3131,10 @@ pub(crate) fn open_absolute_directory_path_nofollow(path: &Path) -> io::Result<f
             Component::Normal(name) => {
                 current = open_directory_child_nofollow(&current, name)?;
             }
-            Component::CurDir => {}
-            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+            Component::CurDir
+            | Component::ParentDir
+            | Component::RootDir
+            | Component::Prefix(_) => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
                     "secure directory path contains a non-normal component",
@@ -3130,6 +3155,7 @@ pub(crate) fn open_or_create_absolute_directory_path_nofollow(path: &Path) -> io
             "secure directory path must be absolute",
         ));
     }
+    reject_non_normal_path_components(path)?;
     let absolute = std::path::absolute(path)?;
     let mut components = absolute.components();
     let Some(Component::Prefix(prefix)) = components.next() else {
@@ -3164,8 +3190,10 @@ pub(crate) fn open_or_create_absolute_directory_path_nofollow(path: &Path) -> io
                     Err(error) => return Err(error),
                 };
             }
-            Component::CurDir => {}
-            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+            Component::CurDir
+            | Component::ParentDir
+            | Component::RootDir
+            | Component::Prefix(_) => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
                     "secure directory path contains a non-normal component",
@@ -6728,6 +6756,51 @@ mod medium_tests {
         );
         drop(opened);
         fs::remove_dir_all(root).unwrap();
+    }
+
+    /// На Windows `std::path::absolute` убирала `.` и `..` до проверки, и путь
+    /// проходил; на Unix тот же путь отклонялся. Тест держит одно правило
+    /// и один текст отказа на обеих ОС.
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn secure_absolute_directory_open_rejects_parent_component_on_every_os() {
+        use super::{
+            open_absolute_directory_path_nofollow, open_or_create_absolute_directory_path_nofollow,
+        };
+        use std::path::PathBuf;
+
+        let created = unique_temp_root("secure-open-non-normal");
+        fs::create_dir_all(created.join("inner")).unwrap();
+        // Корень берётся физическим: временный каталог macOS лежит под
+        // симлинком `/var`, и защищённое открытие отвергло бы его раньше,
+        // чем дошло бы до проверяемого элемента.
+        let root = fs::canonicalize(&created).unwrap();
+        // Цель существует: отказ даёт сам элемент `..`, а не её отсутствие.
+        assert!(root.join("inner").is_dir());
+        // Путь собирается строкой: на пути с префиксом `\\?\` (его даёт
+        // `canonicalize` на Windows) `PathBuf::push` убрал бы `..` сам,
+        // и проверялся бы уже нормализованный путь.
+        let mut text = root.into_os_string();
+        for name in ["inner", "..", "inner"] {
+            text.push(std::path::MAIN_SEPARATOR_STR);
+            text.push(name);
+        }
+        let detoured = PathBuf::from(text);
+
+        for error in [
+            open_absolute_directory_path_nofollow(&detoured)
+                .expect_err("путь с `..` не открывается"),
+            open_or_create_absolute_directory_path_nofollow(&detoured)
+                .expect_err("путь с `..` не создаётся"),
+        ] {
+            assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+            assert_eq!(
+                error.to_string(),
+                "secure directory path contains a non-normal component"
+            );
+        }
+
+        fs::remove_dir_all(created).unwrap();
     }
 
     #[cfg(any(unix, windows))]
