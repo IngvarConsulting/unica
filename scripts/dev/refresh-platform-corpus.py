@@ -91,6 +91,58 @@ class CorpusError(RuntimeError):
     pass
 
 
+# Kinds a later line adds. The 2.20 seed cannot hold them: 8.3.27 does not load
+# them. The all_kinds case of a line that has the kind adds one object to the
+# seed copy before packaging; the platform writes its file and its place among
+# the ChildObjects of the configuration. Tag: (first line, directory, name, XML).
+LINE_KIND_ADDITIONS: Dict[str, tuple] = {
+    "PaletteColor": (
+        "8.5.1",
+        "PaletteColors",
+        "Probe",
+        """<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" version="2.20">
+\t<PaletteColor uuid="5c1f3b0e-6d2a-4e8b-9a71-2f4c8d1e7b30">
+\t\t<Properties>
+\t\t\t<Name>Probe</Name>
+\t\t\t<Synonym>
+\t\t\t\t<v8:item>
+\t\t\t\t\t<v8:lang>ru</v8:lang>
+\t\t\t\t\t<v8:content>Проба</v8:content>
+\t\t\t\t</v8:item>
+\t\t\t</Synonym>
+\t\t\t<Comment>all_kinds</Comment>
+\t\t\t<Color>#1A2B3C</Color>
+\t\t</Properties>
+\t</PaletteColor>
+</MetaDataObject>
+""",
+    ),
+}
+CHILD_OBJECTS_START = re.compile(rb"(<Configuration\b.*?<ChildObjects>)", re.S)
+
+
+def add_line_kinds(root: Path, line: str) -> List[str]:
+    """Add to the seed copy at ``root`` one object of each kind ``line`` adds."""
+    added = []
+    for tag, (since, directory, name, xml) in LINE_KIND_ADDITIONS.items():
+        if build_key(line) < build_key(since):
+            continue
+        (root / directory).mkdir(exist_ok=True)
+        (root / directory / f"{name}.xml").write_text(xml, encoding="utf-8")
+        path = root / "Configuration.xml"
+        data, count = CHILD_OBJECTS_START.subn(
+            rb"\g<1>\n\t\t\t<%s>%s</%s>" % (tag.encode(), name.encode(), tag.encode()),
+            path.read_bytes(),
+            count=1,
+        )
+        if count != 1:
+            raise CorpusError(f"{path}: no ChildObjects of the configuration")
+        path.write_bytes(data)
+        added.append(tag)
+    return added
+
+
 def platform_roots() -> List[Path]:
     roots = []
     for variable in ("ProgramFiles", "ProgramFiles(x86)"):
@@ -227,17 +279,27 @@ def root_version(path: Path) -> Optional[str]:
 
 
 def load_and_export(
-    fmt: str, build: str, packager: str, runner: Runner, work: Path, sets: Sequence[tuple]
+    fmt: str,
+    build: str,
+    packager: str,
+    runner: Runner,
+    work: Path,
+    sets: Sequence[tuple],
+    line_kinds: bool = False,
 ) -> tuple:
     """Package ``sets`` (name, kind, source, extension name) and export them.
 
-    Returns the dump project and the compatibility properties lowered per set.
+    With ``line_kinds`` a configuration set gets the kinds the target line
+    adds (LINE_KIND_ADDITIONS). Returns the dump project and the
+    compatibility properties lowered per set.
     """
     target = TARGETS[fmt]
     package_project = work / fmt / "package"
     lowered: Dict[str, List[str]] = {}
-    for name, _, source, _ in sets:
+    for name, kind, source, _ in sets:
         shutil.copytree(source, package_project / "seed" / name)
+        if line_kinds and kind == "CONFIGURATION":
+            add_line_kinds(package_project / "seed" / name, target.line)
         if target.lowered_to:
             lowered[name] = lower_compatibility(package_project / "seed" / name, target.lowered_to)
     write_project(
@@ -324,7 +386,13 @@ def refresh_all_kinds(
             raise CorpusError(f"no seed {sources}; make the 2.20 reference first")
         seed_name = f"{SEED_FORMAT}/all_kinds"
     dump_project, lowered = load_and_export(
-        fmt, build, packager, runner, work, [("main", "CONFIGURATION", sources, None)]
+        fmt,
+        build,
+        packager,
+        runner,
+        work,
+        [("main", "CONFIGURATION", sources, None)],
+        line_kinds=True,
     )
     excluded = sorted(
         f"all_kinds/src/{name}"
@@ -341,6 +409,13 @@ def refresh_all_kinds(
     if found != fmt:
         raise CorpusError(f"{fmt}/all_kinds was exported as format {found}")
     manifest = manifest_for(fmt, build, packager, runner, seed_name, lowered, excluded)
+    line_kinds = [
+        tag
+        for tag, (since, *_) in LINE_KIND_ADDITIONS.items()
+        if build_key(TARGETS[fmt].line) >= build_key(since)
+    ]
+    if line_kinds:
+        manifest["lineKinds"] = line_kinds
     (staged / "all_kinds" / "manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )

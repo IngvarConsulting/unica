@@ -62,6 +62,7 @@ pub enum PropertiesIntent {
     Subsystem(SubsystemPropertyChanges),
     Configuration(ConfigurationPropertyChanges),
     StyleItem(StyleItemPropertyChanges),
+    PaletteColor(PaletteColorPropertyChanges),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -69,6 +70,21 @@ pub struct FunctionalOptionPropertyChanges {
     pub comment: Option<String>,
     pub location: Option<String>,
     pub privileged_get_mode: Option<bool>,
+}
+
+/// A palette colour is written `#RRGGBB`.
+pub const PALETTE_COLOR_PATTERN: &str = "^#[0-9A-Fa-f]{6}$";
+
+/// The Color and Comment of a palette colour; at least one is set.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PaletteColorPropertyChanges {
+    pub color: Option<String>,
+    pub comment: Option<String>,
+}
+
+fn is_palette_color(raw: &str) -> bool {
+    raw.strip_prefix('#')
+        .is_some_and(|digits| digits.len() == 6 && digits.chars().all(|c| c.is_ascii_hexdigit()))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -355,6 +371,25 @@ fn decode_with_contract(
                             .and_then(Value::as_bool),
                         comment: values_reader.string(DescriptorProperty::Comment)?,
                     })
+                }
+                PropertiesSite::PaletteColor => {
+                    let comment = values_reader.string(DescriptorProperty::Comment)?;
+                    let color = match values_reader.field("Color", false)? {
+                        Some(value) => Some(
+                            value
+                                .as_str()
+                                .filter(|raw| is_palette_color(raw))
+                                .map(str::to_owned)
+                                .ok_or_else(|| {
+                                    invalid(format!("{values_path}.Color"), "Color must be #RRGGBB")
+                                })?,
+                        ),
+                        None => None,
+                    };
+                    if color.is_none() && comment.is_none() {
+                        return Err(invalid(&values_path, "Color or Comment is required"));
+                    }
+                    PropertiesIntent::PaletteColor(PaletteColorPropertyChanges { color, comment })
                 }
                 PropertiesSite::StyleItem => {
                     let comment = values_reader.string(DescriptorProperty::Comment)?;

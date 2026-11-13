@@ -1041,6 +1041,7 @@ pub fn metadata_generated_types_8_3_27(
         | "ScheduledJob"
         | "FunctionalOption"
         | "FunctionalOptionsParameter"
+        | "PaletteColor"
         | "CommonCommand"
         | "CommandGroup"
         | "CommonForm"
