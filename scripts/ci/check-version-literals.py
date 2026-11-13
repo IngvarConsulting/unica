@@ -5,7 +5,8 @@ Code asks the source profile what exists and what is allowed; only the profile,
 the format family crates and their dialects know which format and platform
 versions there are. A version literal elsewhere is a place a new version would
 have to edit: a comparison with `"2.20"`, `PLATFORM_XML_8_3_27_FORMAT_2_20`,
-`version="2.20"`, a `*_8_3_27` function, an `ACTIVE_*` profile constant.
+`version="2.20"`, a `*_8_3_27` function, an `ACTIVE_*` profile constant, a
+platform line value `PlatformLine::new(8, 5, 1)`.
 
 Each crate declares in its `Cargo.toml`:
 
@@ -20,7 +21,9 @@ crates do not meet in one list. A lowered count does not fail;
 Production code is a crate's `.rs` files outside `tests/`, `*_tests.rs`,
 `tests.rs`, test-support and fixture files and files gated whole by a leading
 `#![cfg(test)]`, cut at the first `#[cfg(test)]` module; comment lines are
-skipped. The files that own versions are allowed.
+skipped. The files that own versions are allowed. Literals are matched line by
+line, so a `PlatformLine::new` call whose arguments rustfmt wrapped is not seen;
+a comparison of two line values names no version and is not seen either.
 """
 from __future__ import annotations
 
@@ -44,6 +47,7 @@ LITERAL = re.compile(
     r'|version=\\?"2\.\d+'         # version="2.20" in written XML
     r"|FORMAT_2_\d+|Format2_\d+"   # PLATFORM_XML_8_3_27_FORMAT_2_20, Format2_20
     r"|\bACTIVE_(?:SERIALIZATION_FORMAT|PLATFORM_LINE|FORMAT_PROFILE)\b"
+    r"|PlatformLine::new\(\s*8\s*,\s*\d+\s*,\s*\d+\s*\)"  # PlatformLine::new(8, 5, 1)
 )
 # The places that own versions: the format identity and the platform line,
 # the Designer format family's table, and format dialects.
