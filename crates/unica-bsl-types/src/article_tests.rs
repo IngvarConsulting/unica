@@ -408,3 +408,29 @@ fn links_inside_the_text_address_other_articles() {
     );
     assert_eq!(article.links[0].label, "Массив");
 }
+
+/// Адрес ссылки в справке бывает без кавычек: он кончается скобкой тега,
+/// а не пробелом. Иначе такая ссылка теряется, а при пробеле дальше в путь
+/// уходит разметка до него.
+#[test]
+fn an_unquoted_link_target_ends_at_the_tag() {
+    let html = page(&format!(
+        "<p class=\"V8SH_title\">Пример (Sample)</p>\
+         {}<a href=Sample/methods/Add110.html>Добавить (Add)</a><br>\
+         <a href=Sample/methods/Delete2.html target=_blank>Удалить (Delete)</a><br>",
+        chapter("Методы:"),
+    ));
+    let article = parse("objects/catalog9/Sample.html", &html);
+    assert_eq!(
+        article.member_lists[0]
+            .members
+            .iter()
+            .map(|link| link.path.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "objects/catalog9/Sample/methods/Add110",
+            "objects/catalog9/Sample/methods/Delete2",
+        ]
+    );
+    assert_eq!(article.member_lists[0].members[0].label, "Добавить (Add)");
+}

@@ -867,7 +867,16 @@ fn hrefs(markup: &str) -> Vec<(&str, &str)> {
         let after = &rest[at + "href=".len()..];
         let quoted = after.starts_with('"');
         let value = if quoted { &after[1..] } else { after };
-        let Some(end) = value.find(if quoted { '"' } else { ' ' }) else {
+        // Адрес без кавычек кончается пробелом или самой скобкой тега:
+        // `<a href=X.html>` в справке встречается, и поиск одного лишь
+        // пробела либо терял такую ссылку, либо уводил в её путь разметку
+        // до следующего пробела.
+        let end = if quoted {
+            value.find('"')
+        } else {
+            value.find(['>', ' ', '\t', '\r', '\n'])
+        };
+        let Some(end) = end else {
             break;
         };
         let href = &value[..end];
