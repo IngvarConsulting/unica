@@ -209,6 +209,7 @@ pub fn canonical_snapshot_at(
             poll_interval_ms,
             version,
             cancel_requested,
+            awaits_interrupted_work: false,
         },
         InvocationStatus::Completed => V5DaemonTaskSnapshot::Completed {
             task_id,

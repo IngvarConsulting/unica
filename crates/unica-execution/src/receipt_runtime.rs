@@ -330,14 +330,17 @@ impl V5ActiveTaskCancellations {
         ))
     }
 
+    /// The cancel waits on the token's dispatch gate, which a process launch
+    /// holds while it joins its group: the registry is not locked meanwhile,
+    /// so reads of other Tasks and of this one go on.
     fn cancel(&self, task_id: unica_execution_contract::invocation::TaskId) {
-        if let Some(token) = self
+        let token = self
             .tokens
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(&task_id)
-            .cloned()
-        {
+            .cloned();
+        if let Some(token) = token {
             token.cancel();
         }
     }
@@ -363,15 +366,32 @@ impl V5ActiveTaskCancellations {
             .is_empty()
     }
 
+    /// Fail-stop waits for nothing: interrupted work ends at once instead of
+    /// waiting for its own answer.
     fn cancel_all(&self) {
-        for token in self
+        let tokens: Vec<CancellationToken> = self
             .tokens
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .values()
-        {
-            token.cancel();
+            .cloned()
+            .collect();
+        for token in tokens {
+            token.cancel_now();
         }
+    }
+
+    /// Whether a process of the task was interrupted by its cancel and still
+    /// waits for its own answer.
+    fn awaits_interrupted_work(
+        &self,
+        task_id: unica_execution_contract::invocation::TaskId,
+    ) -> bool {
+        self.tokens
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&task_id)
+            .is_some_and(CancellationToken::awaits_interrupted_work)
     }
 }
 
@@ -525,11 +545,39 @@ fn task_outcome_after_cancel(
     cancel_requested: bool,
     authority: FactualOutcomeAuthority,
 ) -> ReceiptTerminalOutcome {
-    if cancel_requested && authority == FactualOutcomeAuthority::Cancellable {
+    let result = match &candidate {
+        ReceiptTerminalOutcome::Completed { result } => Some(result.as_ref()),
+        _ => None,
+    };
+    if cancel_requested && cancel_stands(result, authority) {
         ReceiptTerminalOutcome::Cancelled
     } else {
         candidate
     }
+}
+
+/// Whether a requested cancel is the outcome of the call: the work confirmed
+/// nothing else, or it confirmed only that an interrupted process answered
+/// and the call itself still refused as cancelled (a later command of the
+/// call did not answer the cancel).
+fn cancel_stands(
+    result: Option<&unica_execution_contract::invocation::DomainResult>,
+    authority: FactualOutcomeAuthority,
+) -> bool {
+    match authority {
+        FactualOutcomeAuthority::Cancellable => true,
+        FactualOutcomeAuthority::AnsweredInterrupt => result.is_some_and(is_cancel_refusal),
+        _ => false,
+    }
+}
+
+fn is_cancel_refusal(result: &unica_execution_contract::invocation::DomainResult) -> bool {
+    !result.ok
+        && result
+            .diagnostics
+            .first()
+            .and_then(|diagnostic| diagnostic["code"].as_str())
+            == Some("cancelled")
 }
 
 /// What the inline worker hands back to the session handler.
@@ -5012,7 +5060,7 @@ impl<H: InvocationHost> V5ReceiptRuntime<H> {
         }
         let result = prepared.execute(cancellation.clone());
         let authority = cancellation.factual_outcome_authority();
-        if cancellation.is_cancelled() && authority == FactualOutcomeAuthority::Cancellable {
+        if cancellation.is_cancelled() && cancel_stands(result.as_ref().ok(), authority) {
             // A stop the process asked for on fail-stop is no cancel the
             // client requested.
             if self.restart_required() {
@@ -6406,6 +6454,29 @@ impl<H: InvocationHost> V5ReceiptRuntime<H> {
             }
             other => other,
         }
+        .map(|snapshot| self.with_live_cancel_wait(snapshot))
+    }
+
+    /// A working Task whose cancel was requested shows whether a process of
+    /// it was interrupted by that cancel and still works on until its own
+    /// answer. Live state of this daemon, never stored.
+    fn with_live_cancel_wait(
+        &self,
+        mut snapshot: response::V5DaemonTaskSnapshot,
+    ) -> response::V5DaemonTaskSnapshot {
+        if let response::V5DaemonTaskSnapshot::Working {
+            task_id,
+            cancel_requested: true,
+            awaits_interrupted_work,
+            ..
+        } = &mut snapshot
+        {
+            // A joined holder's reply carries the flag of the shared Task.
+            *awaits_interrupted_work |= self
+                .active_task_cancellations
+                .awaits_interrupted_work(*task_id);
+        }
+        snapshot
     }
 
     /// The Task id a lost-submit refusal names while its call is no Task:
@@ -6620,7 +6691,9 @@ impl<H: InvocationHost> V5ReceiptRuntime<H> {
             deadline,
         )?;
         match reply {
-            ReceiptReply::Json(ReceiptResponse::Task { snapshot }) => Ok(snapshot),
+            ReceiptReply::Json(ReceiptResponse::Task { snapshot }) => {
+                Ok(self.with_live_cancel_wait(snapshot))
+            }
             _ => unreachable!("Task normalization preserves the reply envelope"),
         }
     }
@@ -7284,6 +7357,7 @@ fn task_store_snapshot(record: &V5StoredInvocationRecord) -> response::V5DaemonT
             poll_interval_ms: common.6,
             version: common.7,
             cancel_requested: common.8,
+            awaits_interrupted_work: false,
         },
         V5StoredTask::Completed {
             terminal_epoch_ms,
