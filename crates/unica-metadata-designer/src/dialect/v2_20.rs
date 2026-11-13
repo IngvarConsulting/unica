@@ -10,6 +10,16 @@ pub(crate) fn kind_declares_child_objects(kind: MetadataKind) -> bool {
         .expect("every typed metadata kind has a physical ChildObjects profile")
 }
 
+/// 2.20 is the base the other dialects add properties to.
+pub(crate) fn added_child_properties(_child_type: &str) -> &'static [&'static str] {
+    &[]
+}
+
+/// 2.20 is the base the other dialects add object properties to.
+pub(crate) fn added_object_properties(_kind: &str) -> &'static [(&'static str, &'static str)] {
+    &[]
+}
+
 /// The properties of an object type whose value is a canonical `xs:boolean`.
 pub(crate) fn boolean_properties(object_type: &str) -> &'static [&'static str] {
     match object_type {

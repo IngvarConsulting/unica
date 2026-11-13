@@ -193,6 +193,7 @@ Platform-generated CDFI sidecar `ConfigDumpInfo.xml` с корнем
 | `app` | `http://v8.1c.ru/8.2/managed-application/core` | Ядро управляемого приложения (ChoiceParameters) |
 | `xen` | `http://v8.1c.ru/8.3/xcf/enums` | Перечисления формата |
 | `xpr` | `http://v8.1c.ru/8.3/xcf/predef` | Предопределённые типы |
+| `pal` | `http://v8.1c.ru/8.1/data/ui/colors/palette` | Палитра цветов; объявлено с формата 2.21 (§ 26.3) |
 
 ### 2.3. Элемент типа объекта
 
@@ -1906,16 +1907,90 @@ XML-элемент: `<WebService>`. Трёхуровневая вложенно�
 </TabularSection>
 ```
 
-### 26.2. Стабильные элементы
+### 26.2. Стабильные элементы 8.3
 
-Между версиями 8.3.20 → 8.3.24 → 8.3.27:
+Между версиями 8.3.20 → 8.3.24 → 8.3.27 (что меняют линии 8.5 — в § 26.3):
 - Структура каталогов **без изменений**
 - Пространства имён **без изменений**
 - UUID объектов **сохраняются**
 - Именование файлов и каталогов **без изменений**
 
----
 <!-- legacy-format-reference:end -->
+
+### 26.3. Версия 2.20 → 2.21 → 2.22
+
+Платформа 8.5.1 пишет формат 2.21, платформа 8.5.4 — формат 2.22. Набор
+остаётся в своём формате: новые файлы правки получают формат набора и всё,
+что этот формат добавляет. Эталоны — выгрузки `all_kinds` в
+`tests/fixtures/formats/platform_xml/<версия>/all_kinds/src/`.
+
+**Изменения в версии 2.21 (платформа 8.5.1):**
+
+1. **Пространство имён палитры** объявлено в корне каждого `<MetaDataObject>`,
+   по алфавиту префиксов — между `lf` и `style`. Корень из эталона
+   `tests/fixtures/formats/platform_xml/2.21/all_kinds/src/Catalogs/Валюты.xml`:
+
+```xml
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:app="http://v8.1c.ru/8.2/managed-application/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:cmi="http://v8.1c.ru/8.2/managed-application/cmi" xmlns:ent="http://v8.1c.ru/8.1/data/enterprise" xmlns:lf="http://v8.1c.ru/8.2/managed-application/logform" xmlns:pal="http://v8.1c.ru/8.1/data/ui/colors/palette" xmlns:style="http://v8.1c.ru/8.1/data/ui/style" xmlns:sys="http://v8.1c.ru/8.1/data/ui/fonts/system" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:v8ui="http://v8.1c.ru/8.1/data/ui" xmlns:web="http://v8.1c.ru/8.1/data/ui/colors/web" xmlns:win="http://v8.1c.ru/8.1/data/ui/colors/windows" xmlns:xen="http://v8.1c.ru/8.3/xcf/enums" xmlns:xpr="http://v8.1c.ru/8.3/xcf/predef" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.21">
+```
+
+2. **Color** — последнее свойство значения перечисления, по умолчанию `auto`.
+   Эталон `tests/fixtures/formats/platform_xml/2.21/all_kinds/src/Enums/СпособыУстановкиКурсаВалюты.xml`:
+
+```xml
+<EnumValue uuid="fd400786-6741-5718-8b41-09e2ecc331c5">
+	<Properties>
+		<Name>ЗагрузкаИзИнтернета</Name>
+		<Synonym>
+			<v8:item>
+				<v8:lang>ru</v8:lang>
+				<v8:content>Загрузка из интернета</v8:content>
+			</v8:item>
+		</Synonym>
+		<Comment/>
+		<Color>auto</Color>
+	</Properties>
+</EnumValue>
+```
+
+3. **UseInInterfaceCompatibilityMode** — в описании формы сразу после
+   `UsePurposes`, по умолчанию `Any`. Эталон
+   `tests/fixtures/formats/platform_xml/2.21/all_kinds/src/CommonForms/MainA.xml`:
+
+```xml
+<UsePurposes>
+	<v8:Value xsi:type="app:ApplicationUsePurpose">PlatformApplication</v8:Value>
+	<v8:Value xsi:type="app:ApplicationUsePurpose">MobilePlatformApplication</v8:Value>
+</UsePurposes>
+<UseInInterfaceCompatibilityMode>Any</UseInInterfaceCompatibilityMode>
+```
+
+4. **Свойства конфигурации**, эталон `tests/fixtures/formats/platform_xml/2.21/all_kinds/src/Configuration.xml`:
+   формы `AuxiliaryReportForm`, `AuxiliaryReportVariantForm`,
+   `AuxiliaryReportSettingsForm`, `AuxiliaryDynamicListSettingsForm`,
+   `AuxiliaryDataHistoryChangeHistoryForm`, `AuxiliaryDataHistoryVersionDataForm`,
+   `AuxiliaryDataHistoryVersionDifferencesForm`,
+   `AuxiliaryCollaborationSystemUsersChoiceForm`;
+   `MainClientApplicationWindowInterfaceVariant`, `ClientApplicationTheme`,
+   `ClientApplicationWindowsOpenVariant`, `Caption`, `ShortCaption`,
+   `Version85InterfaceMigrationMode`. Режим совместимости расширений —
+   `Version8_5_1`.
+
+**Изменения в версии 2.22 (платформа 8.5.4):**
+
+1. **MainAnalyticsSystemSchema** — свойство отчёта сразу после
+   `MainDataCompositionSchema`, по умолчанию пустое. Эталон
+   `tests/fixtures/formats/platform_xml/2.22/all_kinds/src/Reports/АнализВерсийОбъектов.xml`:
+
+```xml
+<MainDataCompositionSchema>Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных</MainDataCompositionSchema>
+<MainAnalyticsSystemSchema/>
+```
+
+2. Режим совместимости расширений `Version8_5_4`, эталон
+   `tests/fixtures/formats/platform_xml/2.22/all_kinds/src/Configuration.xml`.
+
+---
 
 ## 27. Сводная таблица: свойства по типам объектов
 

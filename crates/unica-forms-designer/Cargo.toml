@@ -29,6 +29,9 @@ version-literal-baseline = 2
 component = "codec"
 file-io = "none"
 inputs = [
+    "tests/fixtures/formats/platform_xml/2.20/all_kinds",
+    "tests/fixtures/formats/platform_xml/2.21/all_kinds",
+    "tests/fixtures/formats/platform_xml/2.22/all_kinds",
     "crates/unica-metadata-designer/tests/platform/dump_parity",
     "plugins/unica/skills/form-compile/SKILL.md",
     "tests/fixtures/formats/platform_xml/2.20/external_artifacts",

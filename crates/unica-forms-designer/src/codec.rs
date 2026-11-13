@@ -3086,7 +3086,12 @@ pub fn form_add_metadata_xml(
     } else {
         ""
     };
-    format!(
+    let format_properties: String =
+        crate::dialect::descriptor_properties_after_use_purposes(format_version)
+            .iter()
+            .map(|property| format!("\t\t\t{property}\r\n"))
+            .collect();
+    let descriptor = format!(
         concat!(
             "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n",
             "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\"",
@@ -3123,6 +3128,7 @@ pub fn form_add_metadata_xml(
             "\t\t\t\t<v8:Value xsi:type=\"app:ApplicationUsePurpose\">PlatformApplication</v8:Value>\r\n",
             "\t\t\t\t<v8:Value xsi:type=\"app:ApplicationUsePurpose\">MobilePlatformApplication</v8:Value>\r\n",
             "\t\t\t</UsePurposes>\r\n",
+            "{format_properties}",
             "{extended_presentation}",
             "\t\t</Properties>\r\n",
             "\t</Form>\r\n",
@@ -3133,7 +3139,17 @@ pub fn form_add_metadata_xml(
         form_name = unica_xml_format::text::escape_xml(form_name),
         synonym = unica_xml_format::text::escape_xml(synonym),
         extended_presentation = extended_presentation,
+        format_properties = format_properties,
         lang = unica_xml_format::text::escape_xml(lang),
+    );
+    unica_source_designer::layout::declare_format_namespaces(descriptor, format_version)
+}
+
+/// Namespace declarations of a `Form.xml` root in `format_version`.
+fn form_root_namespaces(format_version: &str) -> String {
+    unica_source_designer::layout::format_namespace_declarations(
+        FORM_ROOT_NAMESPACES,
+        format_version,
     )
 }
 
@@ -3165,9 +3181,10 @@ const FORM_ROOT_NAMESPACES: &str = concat!(
 /// into `callType="Before"` interceptors of the extension.
 pub fn borrowed_form_content_xml(format_version: &str) -> String {
     let version = unica_xml_format::text::escape_xml(format_version);
+    let namespaces = form_root_namespaces(format_version);
     [
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>".to_string(),
-        format!("<Form {FORM_ROOT_NAMESPACES} version=\"{version}\">"),
+        format!("<Form {namespaces} version=\"{version}\">"),
         "\t<AutoCommandBar name=\"\" id=\"-1\"/>".to_string(),
         "\t<Attributes/>".to_string(),
         format!("\t<BaseForm version=\"{version}\">"),
@@ -3201,7 +3218,7 @@ pub fn form_add_content_xml_with_variant(
     format_version: &str,
     script_variant: ScriptVariant,
 ) -> Result<String, String> {
-    let ns = FORM_ROOT_NAMESPACES;
+    let ns = form_root_namespaces(format_version);
     let names = FormEmissionContext::with_script_variant(script_variant);
     let command_bar = names.select("ФормаКоманднаяПанель", "FormCommandBar");
     if matches!(purpose, "List" | "Choice") {
@@ -6691,7 +6708,10 @@ pub fn form_compile_xml(
 
     lines.push("</Form>".to_string());
     Ok((
-        format!("{}\n", lines.join("\n")),
+        unica_source_designer::layout::declare_format_namespaces(
+            format!("{}\n", lines.join("\n")),
+            format_version,
+        ),
         FormCompileStats {
             element_ids: ids.next,
             attributes,
@@ -10389,5 +10409,103 @@ pub fn form_validation_require_valid(
             Err(format!("form validation failed: {details}"))
         }
         Err(error) => Err(format!("form validation failed: {error}")),
+    }
+}
+
+#[cfg(test)]
+mod export_format_descriptor_tests {
+    const MD: &str = "http://v8.1c.ru/8.3/MDClasses";
+
+    fn document(xml: &str) -> roxmltree::Document<'_> {
+        roxmltree::Document::parse(xml.trim_start_matches('\u{feff}')).unwrap()
+    }
+
+    /// The root declarations and the property names of a form descriptor.
+    fn shape(xml: &str) -> (Vec<(Option<String>, String)>, Vec<String>) {
+        let document = document(xml);
+        let root = document.root_element();
+        let mut declared: Vec<_> = root
+            .namespaces()
+            .map(|namespace| {
+                (
+                    namespace.name().map(str::to_owned),
+                    namespace.uri().to_owned(),
+                )
+            })
+            .collect();
+        declared.sort();
+        let properties = root
+            .descendants()
+            .find(|node| node.has_tag_name((MD, "Properties")))
+            .unwrap()
+            .children()
+            .filter(|node| node.is_element())
+            .map(|node| node.tag_name().name().to_owned())
+            .collect();
+        (declared, properties)
+    }
+
+    /// rule: INV.SOURCE.WRITABLE-PROFILE
+    #[test]
+    fn a_new_form_descriptor_has_the_shape_of_its_set_format() {
+        for (version, corpus) in [
+            (
+                "2.20",
+                include_str!("../../../tests/fixtures/formats/platform_xml/2.20/all_kinds/src/DataProcessors/Обработка/Forms/Форма.xml"),
+            ),
+            (
+                "2.21",
+                include_str!("../../../tests/fixtures/formats/platform_xml/2.21/all_kinds/src/DataProcessors/Обработка/Forms/Форма.xml"),
+            ),
+            (
+                "2.22",
+                include_str!("../../../tests/fixtures/formats/platform_xml/2.22/all_kinds/src/DataProcessors/Обработка/Forms/Форма.xml"),
+            ),
+        ] {
+            let written = super::form_add_metadata_xml(
+                "Форма",
+                "Форма",
+                "DataProcessor",
+                version,
+                "00000000-0000-4000-8000-000000000003",
+                "ru",
+            );
+            assert_eq!(shape(&written), shape(corpus), "{version}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod export_format_content_tests {
+    /// The start tag of the `Form` root, as written.
+    fn root(xml: &str) -> &str {
+        let start = xml.find("<Form ").unwrap();
+        &xml[start..start + xml[start..].find('>').unwrap()]
+    }
+
+    /// rule: INV.SOURCE.WRITABLE-PROFILE
+    #[test]
+    fn a_new_form_content_declares_the_namespaces_of_its_set_format() {
+        for (version, corpus) in [
+            (
+                "2.20",
+                include_str!("../../../tests/fixtures/formats/platform_xml/2.20/all_kinds/src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml"),
+            ),
+            (
+                "2.21",
+                include_str!("../../../tests/fixtures/formats/platform_xml/2.21/all_kinds/src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml"),
+            ),
+            (
+                "2.22",
+                include_str!("../../../tests/fixtures/formats/platform_xml/2.22/all_kinds/src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml"),
+            ),
+        ] {
+            let added = super::form_add_content_xml("Catalog", "Валюты", "Item", version).unwrap();
+            assert_eq!(root(&added), root(corpus), "{version}");
+            let borrowed = super::borrowed_form_content_xml(version);
+            assert_eq!(root(&borrowed), root(corpus), "{version}");
+            let (compiled, _) = super::form_compile_xml(&serde_json::json!({}), version).unwrap();
+            assert_eq!(root(&compiled), root(corpus), "{version}");
+        }
     }
 }

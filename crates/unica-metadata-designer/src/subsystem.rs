@@ -1425,7 +1425,8 @@ pub fn child_subsystem_stub_xml(
     let mut lines = Vec::new();
     lines.push("<?xml version=\"1.0\" encoding=\"UTF-8\"?>".to_string());
     lines.push(format!(
-        "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" xmlns:app=\"http://v8.1c.ru/8.2/managed-application/core\" xmlns:cfg=\"http://v8.1c.ru/8.1/data/enterprise/current-config\" xmlns:cmi=\"http://v8.1c.ru/8.2/managed-application/cmi\" xmlns:ent=\"http://v8.1c.ru/8.1/data/enterprise\" xmlns:lf=\"http://v8.1c.ru/8.2/managed-application/logform\" xmlns:style=\"http://v8.1c.ru/8.1/data/ui/style\" xmlns:sys=\"http://v8.1c.ru/8.1/data/ui/fonts/system\" xmlns:v8=\"http://v8.1c.ru/8.1/data/core\" xmlns:v8ui=\"http://v8.1c.ru/8.1/data/ui\" xmlns:web=\"http://v8.1c.ru/8.1/data/ui/colors/web\" xmlns:win=\"http://v8.1c.ru/8.1/data/ui/colors/windows\" xmlns:xen=\"http://v8.1c.ru/8.3/xcf/enums\" xmlns:xpr=\"http://v8.1c.ru/8.3/xcf/predef\" xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" version=\"{format_version}\">"
+        "<MetaDataObject {} version=\"{format_version}\">",
+        full_md_namespace_declarations(format_version)
     ));
     lines.push(format!("\t<Subsystem uuid=\"{}\">", subsystem_uuid));
     lines.push("\t\t<Properties>".to_string());
@@ -1978,7 +1979,7 @@ pub fn emit_subsystem_edit_model(model: &SubsystemEditModel) -> String {
     lines.push("<?xml version=\"1.0\" encoding=\"UTF-8\"?>".to_string());
     lines.push(format!(
         "<MetaDataObject {} version=\"{}\">",
-        full_md_namespace_declarations(),
+        full_md_namespace_declarations(&model.version),
         unica_xml_format::text::escape_xml(&model.version)
     ));
     lines.push(format!(
@@ -2504,3 +2505,36 @@ mod subsystem_list_patch_tests;
 #[cfg(test)]
 #[path = "../tests/platform/subsystem_codec.rs"]
 mod tests;
+
+#[cfg(test)]
+mod export_format_tests {
+    fn declarations(xml: &str) -> Vec<(Option<String>, String)> {
+        let document = roxmltree::Document::parse(xml.trim_start_matches('\u{feff}')).unwrap();
+        let mut declared: Vec<_> = document
+            .root_element()
+            .namespaces()
+            .map(|namespace| {
+                (
+                    namespace.name().map(str::to_owned),
+                    namespace.uri().to_owned(),
+                )
+            })
+            .collect();
+        declared.sort();
+        declared
+    }
+
+    /// rule: INV.SOURCE.WRITABLE-PROFILE
+    #[test]
+    fn a_rewritten_subsystem_keeps_the_namespaces_of_its_format() {
+        for corpus in [
+            include_str!("../../../tests/fixtures/formats/platform_xml/2.20/all_kinds/src/Subsystems/СтандартныеПодсистемы.xml"),
+            include_str!("../../../tests/fixtures/formats/platform_xml/2.21/all_kinds/src/Subsystems/СтандартныеПодсистемы.xml"),
+            include_str!("../../../tests/fixtures/formats/platform_xml/2.22/all_kinds/src/Subsystems/СтандартныеПодсистемы.xml"),
+        ] {
+            let model = super::parse_subsystem_edit_model(corpus, "corpus").unwrap();
+            let written = super::emit_subsystem_edit_model(&model);
+            assert_eq!(declarations(&written), declarations(corpus));
+        }
+    }
+}
