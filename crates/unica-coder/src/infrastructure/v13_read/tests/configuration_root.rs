@@ -220,7 +220,11 @@ fn a_palette_color_is_shown_in_the_lines_that_have_it() {
         }
         assert_eq!(branch.unwrap()["count"], 1, "{line}");
         let color = service.view(ViewRequest::new("main:PaletteColor.Probe").unwrap());
-        assert!(color.ok, "{line}: {} {:?}", color.summary, color.diagnostics);
+        assert!(
+            color.ok,
+            "{line}: {} {:?}",
+            color.summary, color.diagnostics
+        );
         let props = &color.data.as_ref().unwrap()["props"];
         assert_eq!(props["kind"], "PaletteColor", "{line}");
         assert_eq!(props["Synonym"], "Проба", "{line}");

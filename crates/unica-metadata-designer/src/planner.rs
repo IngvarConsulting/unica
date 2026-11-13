@@ -1682,9 +1682,8 @@ fn stage_descriptor_properties(
                 ));
             }
             let text = match &values.color {
-                Some(color) => {
-                    crate::palette_color_write::patch_color(&source, name, color).map_err(invalid)?
-                }
+                Some(color) => crate::palette_color_write::patch_color(&source, name, color)
+                    .map_err(invalid)?,
                 None => source.clone(),
             };
             let text = if let Some(comment) = &values.comment {

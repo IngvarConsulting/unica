@@ -11,14 +11,16 @@ fn palette_fixture() -> Fixture {
     for relative in ["Configuration.xml", "Languages/Русский.xml"] {
         let path = fixture.source.join(relative);
         let text = std::fs::read_to_string(&path).unwrap();
-        let text = text.replace("version=\"2.20\"", "version=\"2.22\"").replace(
-            "</ChildObjects>",
-            if relative == "Configuration.xml" {
-                "<PaletteColor>Probe</PaletteColor></ChildObjects>"
-            } else {
-                "</ChildObjects>"
-            },
-        );
+        let text = text
+            .replace("version=\"2.20\"", "version=\"2.22\"")
+            .replace(
+                "</ChildObjects>",
+                if relative == "Configuration.xml" {
+                    "<PaletteColor>Probe</PaletteColor></ChildObjects>"
+                } else {
+                    "</ChildObjects>"
+                },
+            );
         std::fs::write(path, text).unwrap();
     }
     std::fs::create_dir_all(fixture.source.join("PaletteColors")).unwrap();
@@ -52,7 +54,11 @@ fn a_palette_color_is_written_and_back_to_the_platform_export() {
     );
 
     let path = fixture.source.join("PaletteColors/Probe.xml");
-    set(&runtime, &fixture, json!({"Color":"#FF0000","Comment":"changed"}));
+    set(
+        &runtime,
+        &fixture,
+        json!({"Color":"#FF0000","Comment":"changed"}),
+    );
     let written = std::fs::read_to_string(&path).unwrap();
     assert_eq!(
         written,
@@ -64,7 +70,11 @@ fn a_palette_color_is_written_and_back_to_the_platform_export() {
     assert_eq!(props["Color"], "#FF0000");
     assert_eq!(props["Comment"], "changed");
 
-    set(&runtime, &fixture, json!({"Color":"#1A2B3C","comment":"all_kinds"}));
+    set(
+        &runtime,
+        &fixture,
+        json!({"Color":"#1A2B3C","comment":"all_kinds"}),
+    );
     assert_eq!(std::fs::read_to_string(&path).unwrap(), EXPORT);
 
     let before = unica_workspace::test_support::tree_snapshot(&fixture.workspace);

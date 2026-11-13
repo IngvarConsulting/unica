@@ -11,7 +11,9 @@ fn single<'a, 'input>(
     ns: &str,
     name: &str,
 ) -> Result<Option<Node<'a, 'input>>, String> {
-    let mut found = node.children().filter(|child| child.has_tag_name((ns, name)));
+    let mut found = node
+        .children()
+        .filter(|child| child.has_tag_name((ns, name)));
     let first = found.next();
     if found.next().is_some() {
         return Err(format!("duplicate {name}"));
