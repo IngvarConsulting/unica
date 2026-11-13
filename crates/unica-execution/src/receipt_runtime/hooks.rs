@@ -124,6 +124,9 @@ pub enum V5PausePoint {
     /// A cancel holds its key's lock, has found no Task link for the key and
     /// has not written its ledger cancel yet.
     BeforeCancelReservation,
+    /// A Task read has found no bound Task for its id and has not read the
+    /// receipt ledger yet.
+    BeforeTaskLedgerRead,
     /// A cancel has read the bound Task it is about to mark and has not
     /// written the mark yet.
     BeforeTaskCancelWrite,
