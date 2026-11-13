@@ -113,6 +113,29 @@ class ParsingTests(unittest.TestCase):
         split = "test a ... FAILED\ntest b ... child output\nFAILED\ntest result: FAILED. 0 passed; 2 failed\n"
         self.assertEqual(CHECK.parse_libtest(split, 101).failures, ["a", "прогон оборвался или итог неполон, код 101"])
 
+    def test_a_cargo_build_in_class_setup_is_a_build_failure(self):
+        output = (
+            "ERROR: setUpClass (m.Corpus)\n" + "-" * 70 + "\n"
+            "Traceback (most recent call last):\n"
+            "subprocess.CalledProcessError: Command '['cargo', 'build', '--quiet', '-p', 'unica-product']'"
+            " returned non-zero exit status 101.\n\n" + "=" * 70 + "\n"
+            "FAIL: test_b (m.A.test_b)\nAssertionError: 1 != 2\n"
+        )
+        result = CHECK.parse_unittest(output, 1)
+        self.assertEqual(result.failures, ["m.A.test_b", "m.Corpus"])
+        self.assertEqual(result.build, ["m.Corpus"])
+        self.assertEqual(CHECK.parse_libtest("error[E0425]: x\n", 101).build, ["сборка: x"])
+        self.assertEqual(CHECK.parse_libtest("killed\n", 1).build, [])
+
+    def test_a_product_run_or_a_later_section_is_not_a_build_failure(self):
+        output = (
+            "FAIL: test_run (m.A.test_run)\n" + "-" * 70 + "\n"
+            "CalledProcessError: Command '['cargo', 'run', '-p', 'unica']' returned non-zero exit status 1.\n\n"
+            + "=" * 70 + "\n"
+            "Ran 3 tests\nerror: could not compile `x` printed after the summary\n"
+        )
+        self.assertEqual(CHECK.parse_unittest(output, 1).build, [])
+
     def test_clippy_keys_ignore_lines_and_absolute_prefixes(self):
         root = Path(tempfile.gettempdir()).resolve()
         output = (f"{root / 'crates' / 'a' / 'src' / 'lib.rs'}:10:5: error: unused variable: `x`\n"
@@ -146,6 +169,19 @@ class BaselineTests(unittest.TestCase):
         }
         base = {"python:tests/ci": ["m.A.known", "m.A.fixed_on_branch"], "test:unica-x": ["a::b"]}
         self.assertEqual(CHECK.new_failures(current, base), {"python:tests/ci": ["m.A.fresh"]})
+
+    def test_a_class_that_failed_whole_on_the_base_covers_its_methods(self):
+        current = {"python:tests/ci": CHECK.Result(["m.A.test_x", "m.Ax.test_y"])}
+        self.assertEqual(CHECK.new_failures(current, {"python:tests/ci": ["m.A"]}),
+                         {"python:tests/ci": ["m.Ax.test_y"]})
+        # Класс, не исполнивший методов на ветке, не прячется за одним методом базы:
+        # его разбирает повтор.
+        current = {"python:tests/ci": CHECK.Result(["m.A"])}
+        self.assertEqual(CHECK.new_failures(current, {"python:tests/ci": ["m.A.test_x"]}),
+                         {"python:tests/ci": ["m.A"]})
+        # Ключи Rust по префиксу не сопоставляются.
+        current = {"test:x": CHECK.Result(["a.b"])}
+        self.assertEqual(CHECK.new_failures(current, {"test:x": ["a"]}), {"test:x": ["a.b"]})
 
     def test_one_more_repeat_of_a_known_clippy_error_is_new(self):
         current = {"clippy:x": CHECK.Result(["a.rs: needless return"] * 2)}
@@ -187,8 +223,8 @@ class RecheckTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory, \
                 mock.patch.object(CHECK.subprocess, "run", return_value=completed) as run, \
                 redirect_stdout(io.StringIO()):
-            result = CHECK.recheck(check, fresh, REPO_ROOT, {}, Path(directory))
-        return result, run
+            repeated, unstable = CHECK.recheck(check, fresh, REPO_ROOT, {}, Path(directory))
+        return (repeated.failures, unstable), run
 
     def test_a_test_that_passes_on_repeat_is_unstable_not_new(self):
         check = CHECK.Check("python:tests/ci", "python", "tests/ci")
@@ -197,6 +233,41 @@ class RecheckTests(unittest.TestCase):
         (stable, unstable), run = self.recheck(check, ["m.A.test_x", "m.A.test_y"], output, 1)
         self.assertEqual((stable, unstable), (["m.A.test_y"], ["m.A.test_x"]))
         self.assertEqual(run.call_args.args[0][-2:], ["m.A.test_x", "m.A.test_y"])
+
+    def test_a_passing_repeat_stays_unstable_beside_a_failure_outside_the_names(self):
+        # Повтор класса исполняет и его метод; падение метода не отменяет повтор.
+        check = CHECK.Check("python:tests/ci", "python", "tests/ci")
+        output = ("test_x (m.A.test_x) ... ok\ntest_m (m.B.test_m) ... ERROR\n\n"
+                  "ERROR: test_m (m.B.test_m)\nKeyError: 'author'\n")
+        (stable, unstable), _ = self.recheck(check, ["m.A.test_x", "m.B"], output, 1)
+        self.assertEqual((stable, unstable), (["m.B.test_m"], ["m.A.test_x"]))
+        base = {"python:tests/ci": ["m.B.test_m"]}
+        self.assertEqual(CHECK.new_failures({"python:tests/ci": CHECK.Result(stable)}, base), {})
+
+    def test_class_setup_on_the_branch_against_a_method_on_the_base(self):
+        # Сборка в `setUpClass` упала на ветке, при повторе прошла, и метод упал как на базе.
+        check = CHECK.Check("python:tests/ci", "python", "tests/ci")
+        base = {"python:tests/ci": ["m.Corpus.test_facts"]}
+        first = {"python:tests/ci": CHECK.Result(["m.Corpus"], build=["m.Corpus"])}
+        fresh = CHECK.new_failures(first, base)["python:tests/ci"]
+        output = "ERROR: test_facts (m.Corpus.test_facts)\nKeyError: 'author'\n"
+        (stable, unstable), _ = self.recheck(check, fresh, output, 1)
+        self.assertEqual((stable, unstable), (["m.Corpus.test_facts"], []))
+        self.assertEqual(CHECK.new_failures({"python:tests/ci": CHECK.Result(stable)}, base), {})
+
+    def test_a_class_failing_whole_on_repeat_keeps_the_repeated_names(self):
+        # Повтор метода уронил `setUpClass`: метод не исполнился и остаётся
+        # новым своим ключом, падение соседа на базе его не прячет.
+        check = CHECK.Check("python:tests/ci", "python", "tests/ci")
+        output = ("ERROR: setUpClass (m.C)\n" + "-" * 70 + "\n"
+                  "CalledProcessError: Command '['cargo', 'build']' returned non-zero exit status 101.\n")
+        completed = mock.Mock(stdout=output, returncode=1)
+        with mock.patch.object(CHECK.subprocess, "run", return_value=completed), redirect_stdout(io.StringIO()), \
+                tempfile.TemporaryDirectory() as directory:
+            repeated, unstable = CHECK.recheck(check, ["m.C.test_a"], REPO_ROOT, {}, Path(directory))
+        self.assertEqual((repeated.failures, repeated.build, unstable), (["m.C.test_a"], ["m.C.test_a"], []))
+        base = {"python:tests/ci": ["m.C.test_z"]}
+        self.assertEqual(CHECK.new_failures({"python:tests/ci": repeated}, base), {"python:tests/ci": ["m.C.test_a"]})
 
     def test_a_repeat_that_breaks_itself_keeps_every_failure(self):
         check = CHECK.Check("test:unica-x", "test", "unica-x")
@@ -209,8 +280,8 @@ class RecheckTests(unittest.TestCase):
         self.assertEqual((stable, unstable), ([], ["a::b"]))
         self.assertEqual(run.call_args.args[0][-3:], ["--show-output", "--exact", "a::b"])
         with mock.patch.object(CHECK.subprocess, "run") as run:
-            self.assertEqual(CHECK.recheck(check, ["сборка: boom"], REPO_ROOT, {}, REPO_ROOT),
-                             (["сборка: boom"], []))
+            repeated, unstable = CHECK.recheck(check, ["сборка: boom"], REPO_ROOT, {}, REPO_ROOT)
+        self.assertEqual((repeated.failures, unstable), (["сборка: boom"], []))
         run.assert_not_called()
 
 
@@ -327,7 +398,7 @@ class MainTests(unittest.TestCase):
                 mock.patch.object(CHECK, "run_check", side_effect=lambda check, *rest: results.get(
                     check.key, CHECK.Result([]))), \
                 mock.patch.object(CHECK, "baseline", return_value=base), \
-                mock.patch.object(CHECK, "recheck", side_effect=lambda check, fresh, *rest: (fresh, [])), \
+                mock.patch.object(CHECK, "recheck", side_effect=lambda check, fresh, *rest: (CHECK.Result(fresh), [])), \
                 redirect_stdout(out), redirect_stderr(err):
             code = CHECK.main([])
         return code, out.getvalue()
