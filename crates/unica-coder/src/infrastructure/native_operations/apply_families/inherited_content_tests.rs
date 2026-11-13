@@ -393,11 +393,9 @@ fn enum_value_properties(text: &str) -> Vec<String> {
         .collect()
 }
 
-/// A borrowed enumeration value of an extension 2.21 is written as 8.5.1
-/// exports it: without the color a new value of that format has.
-/// rule: INV.SOURCE.WRITABLE-PROFILE
-#[test]
-fn a_borrowed_enumeration_value_of_format_2_21_has_the_platform_shape() {
+/// The files an `object.borrow` of `from` writes into the `empty_extension`
+/// corpus of 2.21 over the `all_kinds` corpus of the same format.
+fn borrow_in_2_21(from: &str) -> std::collections::BTreeMap<std::path::PathBuf, Vec<u8>> {
     use unica_source_contract::format_identity::PlatformLine;
     let corpus = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../tests/fixtures/formats/platform_xml/2.21");
@@ -454,20 +452,33 @@ fn a_borrowed_enumeration_value_of_format_2_21_has_the_platform_shape() {
         )
         .unwrap();
     let args = json!({"at":"ext:Configuration","dryRun":true,"ops":[{"op":"object.borrow","args":{
-        "from":"main:Enum.СпособыУстановкиКурсаВалюты.EnumValue.ЗагрузкаИзИнтернета"}}]});
+        "from":from}}]});
     let request = ApplyRequest::parse(args.as_object().unwrap(), &["ext", "main"]).unwrap();
     let (staged, _) = plan_hidden_v13_apply(&request, &binding, &admission).unwrap();
-    let written = staged
+    staged
         .planned_changes()
         .into_iter()
-        .find(|change| change.relative_path == Path::new("Enums/СпособыУстановкиКурсаВалюты.xml"))
-        .map(|change| match change.current {
+        .filter_map(|change| match change.current {
             unica_source_contract::proposal::StagedFileState::Bytes(bytes) => {
-                String::from_utf8(bytes).unwrap()
+                Some((change.relative_path, bytes))
             }
-            unica_source_contract::proposal::StagedFileState::Absent => panic!("written"),
+            unica_source_contract::proposal::StagedFileState::Absent => None,
         })
-        .unwrap();
+        .collect()
+}
+
+/// A borrowed enumeration value of an extension 2.21 is written as 8.5.1
+/// exports it: without the color a new value of that format has.
+/// rule: INV.SOURCE.WRITABLE-PROFILE
+#[test]
+fn a_borrowed_enumeration_value_of_format_2_21_has_the_platform_shape() {
+    let corpus = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures/formats/platform_xml/2.21");
+    let files =
+        borrow_in_2_21("main:Enum.СпособыУстановкиКурсаВалюты.EnumValue.ЗагрузкаИзИнтернета");
+    let written =
+        String::from_utf8(files[Path::new("Enums/СпособыУстановкиКурсаВалюты.xml")].clone())
+            .unwrap();
     let platform =
         std::fs::read_to_string(corpus.join("cfe_borrow/extension-enum-value.xml")).unwrap();
     assert_eq!(
@@ -475,4 +486,42 @@ fn a_borrowed_enumeration_value_of_format_2_21_has_the_platform_shape() {
         enum_value_properties(&platform)
     );
     assert!(!written.contains("<Color>"));
+}
+
+/// A form borrowed into an extension 2.21 is the descriptor and Form.xml 8.5.1
+/// exports for it: the descriptor has no interface compatibility mode, which
+/// a new form of that format has.
+/// rule: INV.SOURCE.WRITABLE-PROFILE
+#[test]
+fn a_borrowed_form_of_format_2_21_is_what_the_platform_exports() {
+    let corpus = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures/formats/platform_xml/2.21/cfe_borrow");
+    let files = borrow_in_2_21("main:Catalog.Валюты.Form.ФормаЭлемента");
+    for (relative, platform) in [
+        (
+            "Catalogs/Валюты/Forms/ФормаЭлемента.xml",
+            "extension-form-borrowed.xml",
+        ),
+        (
+            "Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+            "extension-form-borrowed-Form.xml",
+        ),
+    ] {
+        // The form's own uuid is fresh for each borrow.
+        let fresh = |bytes: &[u8]| {
+            let text = String::from_utf8(bytes.to_vec()).unwrap();
+            match text.find("<Form uuid=\"") {
+                Some(start) => {
+                    let value = start + "<Form uuid=\"".len();
+                    format!("{}{}", &text[..value], &text[value + 36..])
+                }
+                None => text,
+            }
+        };
+        assert_eq!(
+            fresh(&files[Path::new(relative)]),
+            fresh(&std::fs::read(corpus.join(platform)).unwrap()),
+            "{relative}"
+        );
+    }
 }
