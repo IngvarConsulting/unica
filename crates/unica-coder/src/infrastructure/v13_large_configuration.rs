@@ -936,6 +936,8 @@ pub(super) fn read_configuration_root(
         "format": version,
         "name": property("Name").unwrap_or_default(),
         "synonym": optional("Synonym"),
+        "caption": optional("Caption"),
+        "shortCaption": optional("ShortCaption"),
         "version": optional("Version"),
         "vendor": optional("Vendor"),
         "extensionPurpose": optional("ConfigurationExtensionPurpose"),
@@ -953,6 +955,10 @@ pub(super) fn read_configuration_root(
             "synchronousCallUseMode": optional("SynchronousPlatformExtensionAndAddInCallUseMode"),
             "databaseTablespacesUseMode": optional("DatabaseTablespacesUseMode"),
             "mainWindowMode": optional("MainClientApplicationWindowMode"),
+            "mainWindowInterfaceVariant": optional("MainClientApplicationWindowInterfaceVariant"),
+            "clientApplicationTheme": optional("ClientApplicationTheme"),
+            "windowsOpenVariant": optional("ClientApplicationWindowsOpenVariant"),
+            "version85InterfaceMigrationMode": optional("Version85InterfaceMigrationMode"),
             "comment": optional("Comment"),
             "namePrefix": optional("NamePrefix"),
             "updateCatalogAddress": optional("UpdateCatalogAddress"),
@@ -1257,8 +1263,11 @@ impl RootState {
                 role = FrameRole::ChildObjects { primary };
             }
             Some(FrameRole::Properties) if md => {
-                if name.local_name == "Synonym" && !self.properties.contains_key("Synonym") {
+                if let Some(property) = localized_root_property(&name.local_name)
+                    .filter(|property| !self.properties.contains_key(*property))
+                {
                     role = FrameRole::Synonym {
+                        property,
                         ru: None,
                         fallback: None,
                     };
@@ -1373,9 +1382,13 @@ impl RootState {
                     .entry(name)
                     .or_insert_with(|| frame.first_text.unwrap_or_default());
             }
-            FrameRole::Synonym { ru, fallback } => {
+            FrameRole::Synonym {
+                property,
+                ru,
+                fallback,
+            } => {
                 self.properties
-                    .entry("Synonym".to_string())
+                    .entry(property.to_string())
                     .or_insert(ru.or(fallback).unwrap_or_default());
             }
             FrameRole::SynonymItem {
@@ -1384,7 +1397,7 @@ impl RootState {
                 first_content,
             } => {
                 if let Some(Frame {
-                    role: FrameRole::Synonym { ru, fallback },
+                    role: FrameRole::Synonym { ru, fallback, .. },
                     ..
                 }) = self.stack.last_mut()
                 {
@@ -1480,7 +1493,10 @@ enum FrameRole {
         name_seen: bool,
     },
     RegistrationName,
+    /// A localized root property: `Synonym`, or `Caption` and
+    /// `ShortCaption` from 8.5.1.
     Synonym {
+        property: &'static str,
         ru: Option<String>,
         fallback: Option<String>,
     },
@@ -1491,6 +1507,14 @@ enum FrameRole {
     },
     SynonymLang,
     SynonymContent,
+}
+
+/// The localized root properties the view reads in Russian or the first
+/// language; a set whose line lacks one has no such element.
+fn localized_root_property(name: &str) -> Option<&'static str> {
+    ["Synonym", "Caption", "ShortCaption"]
+        .into_iter()
+        .find(|property| *property == name)
 }
 
 fn is_root_property(name: &str) -> bool {
@@ -1512,6 +1536,10 @@ fn is_root_property(name: &str) -> bool {
             | "SynchronousPlatformExtensionAndAddInCallUseMode"
             | "DatabaseTablespacesUseMode"
             | "MainClientApplicationWindowMode"
+            | "MainClientApplicationWindowInterfaceVariant"
+            | "ClientApplicationTheme"
+            | "ClientApplicationWindowsOpenVariant"
+            | "Version85InterfaceMigrationMode"
             | "Comment"
             | "NamePrefix"
             | "UpdateCatalogAddress"
