@@ -2851,6 +2851,62 @@ mod tests {
         serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
     }
 
+    fn captured_017_2(name: &str) -> Value {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/v8_runner_017_2")
+            .join(name);
+        serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
+    }
+
+    /// Живые конверты раннера 0.17.2: недоступная точка входа агента и чужой
+    /// SSH-сервер на его порту — слой `agent_endpoint` из поля, а не
+    /// несовместимость и не прочая среда раннера.
+    /// rule: INV.RUNTIME.RUNNER-ENVIRONMENT-LAYER
+    #[test]
+    fn captured_endpoint_refusals_of_the_runner_name_the_agent_endpoint() {
+        for name in ["attach-unreachable.json", "attach-foreign-ssh-server.json"] {
+            let envelope = captured_017_2(name);
+            let error = &envelope["error"];
+            let rejection = runner_envelope_refusal(
+                runner_rejection(
+                    Some("pull".to_string()),
+                    error["code"].as_str().unwrap(),
+                    error["layer"].as_str(),
+                    redactor(error["message"].as_str().unwrap()),
+                ),
+                &envelope,
+            );
+            let diagnostic = &rejection.diagnostics[0];
+            assert_eq!(diagnostic["code"], "provider_unavailable", "{name}");
+            assert_eq!(diagnostic["detailCode"], "endpoint_unreachable", "{name}");
+            assert_eq!(diagnostic["outcome"], "needsHuman", "{name}");
+            assert_eq!(
+                rejection.data.as_ref().unwrap()["layer"],
+                "agent_endpoint",
+                "{name}"
+            );
+        }
+    }
+
+    /// Живые конверты раннера 0.17.2: запись в базу другой копии несёт код в
+    /// `warning_details`, и ответ Unica называет её своим предупреждением даже
+    /// без прозы раннера; взятие базы без владельца предупреждения не даёт.
+    /// rule: INV.RUNTIME.RUNNER-BASE-REFUSALS
+    #[test]
+    fn captured_warning_codes_of_the_runner_name_the_infobase_of_another_copy() {
+        let mut preview = captured_017_2("push-other-copy-force-preview.json");
+        assert!(another_copy_warning(&preview).is_some());
+        // The code alone decides: the prose may change.
+        preview["warnings"] = json!(["reworded by a later runner"]);
+        preview["warning_details"][0]["message"] = json!("reworded by a later runner");
+        let warning = another_copy_warning(&preview).expect("the code names it");
+        assert_eq!(warning["code"], ANOTHER_COPY_WARNING_CODE);
+        assert!(!warning["message"].as_str().unwrap().contains("workspace"));
+
+        let taken = captured_017_2("pull-takes-unowned-infobase.json");
+        assert!(another_copy_warning(&taken).is_none());
+    }
+
     /// Раннер 0.17.2 называет базу другой копии кодом в `warning_details`, и
     /// код решает прежде текста: проза без кода предупреждения не даёт, а код
     /// не требует прозы. Раннер без поля опознаётся по тексту.
