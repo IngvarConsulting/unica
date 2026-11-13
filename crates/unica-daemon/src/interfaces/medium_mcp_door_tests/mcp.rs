@@ -3240,3 +3240,371 @@ async fn a_native_push_task_asks_about_the_diverged_base_as_input_required() {
     client.shutdown().await;
     daemon.finish();
 }
+
+/// The pinned runner of a workspace whose infobase is held by sessions. The
+/// mode file says how: `cluster` — sessions the runner can end, `file` —
+/// sessions of a file infobase, `restart` — ending them does not help until
+/// the own standalone server restarts, `free` — nothing holds the base.
+/// Every call is logged.
+const BUSY_BASE_RUNNER: &str = r##"
+use std::{env, fs, io::Write};
+fn main() {
+    let args: Vec<String> = env::args().collect();
+    let cwd = env::current_dir().unwrap();
+    let mut log = fs::OpenOptions::new().create(true).append(true).open(cwd.join("probe-calls.log")).unwrap();
+    writeln!(log, "{}", args[1..].join(" ")).unwrap();
+    let mode = fs::read_to_string(cwd.join("probe-mode")).unwrap_or_default();
+    let mode = mode.trim();
+    if args.iter().any(|arg| arg == "standalone") {
+        fs::write(cwd.join("restarted.marker"), "").unwrap();
+        print!(r#"{{"ok":true,"command":"standalone restart","duration_ms":0,"data":{{}},"warnings":[],"steps":[]}}"#);
+        return;
+    }
+    let forced = args.windows(2).any(|pair| pair[0] == "--sessions" && pair[1] == "force");
+    let answer = match mode {
+        "free" => "probe-loaded.json",
+        "cluster" if forced => "probe-loaded-forced.json",
+        "restart" if forced && cwd.join("restarted.marker").exists() => "probe-loaded.json",
+        "restart" if forced => "probe-restart.json",
+        "file" => "probe-file-sessions.json",
+        _ => "probe-sessions.json",
+    };
+    print!("{}", fs::read_to_string(cwd.join(answer)).unwrap());
+    if !answer.starts_with("probe-loaded") {
+        std::process::exit(3);
+    }
+}
+"##;
+
+/// A workspace whose base is busy: the runner of [`BUSY_BASE_RUNNER`] and its
+/// answers, built on the captured refusal of a `push`.
+fn busy_base_workspace(root: &std::path::Path, mode: &str) -> std::path::PathBuf {
+    crate::infrastructure::daemon::server::actor_capacity_tests::install_runner_probe(
+        root,
+        BUSY_BASE_RUNNER,
+    );
+    let workspace = root.join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    std::fs::write(
+        workspace.join("v8project.yaml"),
+        "format: DESIGNER\ninfobase:\n  connection: 'File=build/ib'\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: main\n",
+    )
+    .unwrap();
+    std::fs::write(workspace.join("probe-mode"), mode).unwrap();
+    let fixtures = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    let refused: Value = serde_json::from_slice(
+        &std::fs::read(fixtures.join("v8_runner_017/push-untracked-base-preview.json")).unwrap(),
+    )
+    .unwrap();
+    let session = |computer: &str| {
+        json!({"computer": computer, "application": "1CV8C", "application_title": "Тонкий клиент",
+               "started": "2026-11-12T09:05:41", "user": null, "id": "1"})
+    };
+    let with_error = |error: Value| {
+        let mut envelope = refused.clone();
+        envelope["error"] = error;
+        envelope.to_string()
+    };
+    let sessions = |terminable: bool| {
+        json!({
+            "code": "infobase_sessions", "kind": "infobase_sessions",
+            "message": "the database configuration was not updated: other sessions hold the infobase",
+            "sessions": {
+                "base": "Srvr=srv;Ref=dev", "list": [session("PC1"), session("PC2")],
+                "from_this_machine": false, "terminable": terminable,
+                "lock": {"denied": false}, "evidence": "executor", "executor_error": null
+            },
+            "next": {"command": "push", "keys": {"--sessions": "force"}}
+        })
+    };
+    std::fs::write(
+        workspace.join("probe-sessions.json"),
+        with_error(sessions(true)),
+    )
+    .unwrap();
+    std::fs::write(
+        workspace.join("probe-file-sessions.json"),
+        with_error(sessions(false)),
+    )
+    .unwrap();
+    std::fs::write(
+        workspace.join("probe-restart.json"),
+        with_error(json!({
+            "code": "platform_failure", "kind": "platform_failure",
+            "message": "the sessions were ended, but the update failed again",
+            "next": {"command": "standalone restart"}
+        })),
+    )
+    .unwrap();
+    std::fs::copy(
+        fixtures.join("v8_runner_015/push-after-edit-apply.json"),
+        workspace.join("probe-loaded.json"),
+    )
+    .unwrap();
+    let mut forced: Value = serde_json::from_slice(
+        &std::fs::read(fixtures.join("v8_runner_015/push-after-edit-apply.json")).unwrap(),
+    )
+    .unwrap();
+    forced["data"]["sessions"] = json!({
+        "terminated": [session("PC1"), session("PC2")],
+        "lock": {"denied": false}, "message_delivered": false
+    });
+    std::fs::write(
+        workspace.join("probe-loaded-forced.json"),
+        forced.to_string(),
+    )
+    .unwrap();
+    std::fs::canonicalize(workspace).unwrap()
+}
+
+/// Reads the result of `task_id` until it is no longer working; a question
+/// comes as an `elicitation/create` request.
+async fn read_task_result(client: &mut McpClient, task_id: &str, from: u64) -> Value {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut id = from;
+    loop {
+        client
+            .send(json!({
+                "jsonrpc": "2.0", "id": id, "method": "tools/call",
+                "params": {"name": "unica.task.result", "arguments": {"taskId": task_id, "waitMs": 7000}}
+            }))
+            .await;
+        let message = client.receive().await;
+        if message["method"] == "elicitation/create"
+            || message["result"]["structuredContent"]["data"]["task"]["status"] != "working"
+        {
+            return message;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the Task never settled: {message}"
+        );
+        id += 1;
+    }
+}
+
+async fn forms_client(daemon: &LiveDaemon, workspace: &std::path::Path) -> McpClient {
+    let (mut client, _) = spawn_unica_server(UnicaServer::with_canonical_daemon(
+        daemon.owner(),
+        workspace.to_string_lossy().into_owned(),
+    ));
+    client
+        .send(json!({
+            "jsonrpc": "2.0", "id": 0, "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-11-25",
+                "capabilities": {"elicitation": {"form": {}}},
+                "clientInfo": {"name": "unica-tests", "version": "1"}
+            }
+        }))
+        .await;
+    assert_eq!(client.receive().await["id"], 0);
+    client
+        .send(json!({"jsonrpc": "2.0", "method": "notifications/initialized"}))
+        .await;
+    client
+}
+
+/// Pushes `main` and answers the first question its Task asks with `choice`.
+/// Returns the question and the final result of the chosen call.
+async fn push_and_answer(client: &mut McpClient, choice: &str) -> (Value, Value) {
+    client
+        .send(json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "unica.run", "arguments": {
+                "op": "push", "args": {"sourceSet": "main"}, "dryRun": false
+            }}
+        }))
+        .await;
+    let submitted = client.receive().await;
+    let task_id = submitted["result"]["structuredContent"]["data"]["task"]["taskId"]
+        .as_str()
+        .unwrap_or_else(|| panic!("a push continues as a Task: {submitted}"))
+        .to_owned();
+    let asked = read_task_result(client, &task_id, 10).await;
+    assert_eq!(asked["method"], "elicitation/create", "{asked}");
+    client
+        .send(json!({
+            "jsonrpc": "2.0", "id": asked["id"],
+            "result": {"action": "accept", "content": {"choice": choice}}
+        }))
+        .await;
+    let answered = client.receive().await;
+    let follower = answered["result"]["structuredContent"]["data"]["task"]["taskId"]
+        .as_str()
+        .map(str::to_owned);
+    let done = match follower {
+        Some(follower) => read_task_result(client, &follower, 100).await,
+        None => answered,
+    };
+    (asked, done)
+}
+
+/// A `push` the runner refuses because sessions hold the infobase asks the
+/// person when its Task's result is read. «End the sessions and continue»
+/// repeats the same call with the sessions ended by the runner.
+/// rule: INV.RUNTIME.INFOBASE-SESSIONS-QUESTION
+/// rule: INV.MCP.HUMAN-CHOICE
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_push_held_by_sessions_ends_them_by_the_persons_choice() {
+    use crate::infrastructure::daemon::server::actor_capacity_tests::canonical_v13_service;
+
+    let root = tempfile::tempdir().unwrap();
+    let workspace = busy_base_workspace(root.path(), "cluster");
+    let daemon = LiveDaemon::start(canonical_v13_service());
+    let mut client = forms_client(&daemon, &workspace).await;
+
+    let (asked, done) = push_and_answer(&mut client, "terminate").await;
+    let question = &asked["params"]["_meta"]["unica/question"];
+    assert_eq!(question["code"], "infobase.sessions_active", "{asked}");
+    let message = asked["params"]["message"].as_str().unwrap();
+    assert!(
+        message.starts_with(
+            "Базу «origin» держат открытые сеансы: 2.\nPC1 — Тонкий клиент, с 2026-11-12 09:05"
+        ),
+        "{message}"
+    );
+    assert!(
+        message.contains(
+            "Завершить сеансы и продолжить: несохранённые данные в этих сеансах пропадут."
+        ),
+        "{message}"
+    );
+    assert!(!message.contains("повторить:"), "{message}");
+    assert_eq!(done["result"]["structuredContent"]["ok"], true, "{done}");
+    // The answer names the sessions the runner ended.
+    let terminated = &done["result"]["structuredContent"]["data"]["sessionsTerminated"];
+    assert_eq!(terminated[0]["computer"], "PC1", "{done}");
+    assert_eq!(terminated.as_array().map(Vec::len), Some(2), "{done}");
+    let calls = runner_calls(&workspace);
+    assert_eq!(calls.len(), 2, "{calls:?}");
+    assert!(!calls[0].contains("--sessions"), "{calls:?}");
+    assert!(
+        calls[1].ends_with("push main --sessions force"),
+        "{calls:?}"
+    );
+
+    client.shutdown().await;
+    daemon.finish();
+}
+
+/// Sessions of a file infobase cannot be ended from here: the person closes
+/// them, and the answer repeats the call as it was.
+/// rule: INV.RUNTIME.INFOBASE-SESSIONS-QUESTION
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_push_held_by_file_sessions_is_repeated_after_the_person_closed_them() {
+    use crate::infrastructure::daemon::server::actor_capacity_tests::canonical_v13_service;
+
+    let root = tempfile::tempdir().unwrap();
+    let workspace = busy_base_workspace(root.path(), "file");
+    let daemon = LiveDaemon::start(canonical_v13_service());
+    let mut client = forms_client(&daemon, &workspace).await;
+
+    client
+        .send(json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "unica.run", "arguments": {
+                "op": "push", "args": {"sourceSet": "main"}, "dryRun": false
+            }}
+        }))
+        .await;
+    let submitted = client.receive().await;
+    let task_id = submitted["result"]["structuredContent"]["data"]["task"]["taskId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let asked = read_task_result(&mut client, &task_id, 10).await;
+    assert_eq!(
+        asked["params"]["_meta"]["unica/question"]["code"], "infobase.sessions_active",
+        "{asked}"
+    );
+    let message = asked["params"]["message"].as_str().unwrap();
+    assert!(
+        message.starts_with("Базу «origin» держат открытые сеансы: 2. Завершить их отсюда нельзя."),
+        "{message}"
+    );
+    let offered: Vec<_> = asked["params"]["_meta"]["unica/question"]["options"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|option| option["value"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(offered, ["retry", "cancel"], "{asked}");
+
+    // The person closed the sessions.
+    std::fs::write(workspace.join("probe-mode"), "free").unwrap();
+    client
+        .send(json!({
+            "jsonrpc": "2.0", "id": asked["id"],
+            "result": {"action": "accept", "content": {"choice": "retry"}}
+        }))
+        .await;
+    let answered = client.receive().await;
+    let follower = answered["result"]["structuredContent"]["data"]["task"]["taskId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let done = read_task_result(&mut client, &follower, 100).await;
+    assert_eq!(done["result"]["structuredContent"]["ok"], true, "{done}");
+    let calls = runner_calls(&workspace);
+    assert_eq!(calls.len(), 2, "{calls:?}");
+    assert!(
+        calls.iter().all(|call| !call.contains("--sessions")),
+        "{calls:?}"
+    );
+
+    client.shutdown().await;
+    daemon.finish();
+}
+
+/// Ending the sessions does not help while the own standalone server is not
+/// restarted: the refusal asks to restart it, and the answer restarts the
+/// server and repeats the same call with the sessions ended.
+/// rule: INV.RUNTIME.INFOBASE-SESSIONS-QUESTION
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failed_retry_after_ending_sessions_restarts_the_server_by_the_persons_choice() {
+    use crate::infrastructure::daemon::server::actor_capacity_tests::canonical_v13_service;
+
+    let root = tempfile::tempdir().unwrap();
+    let workspace = busy_base_workspace(root.path(), "restart");
+    let daemon = LiveDaemon::start(canonical_v13_service());
+    let mut client = forms_client(&daemon, &workspace).await;
+
+    let (_, after_terminate) = push_and_answer(&mut client, "terminate").await;
+    // The forced push fails again: its Task asks to restart the server.
+    assert_eq!(
+        after_terminate["method"], "elicitation/create",
+        "{after_terminate}"
+    );
+    assert_eq!(
+        after_terminate["params"]["_meta"]["unica/question"]["code"], "infobase.server_restart",
+        "{after_terminate}"
+    );
+    assert!(after_terminate["params"]["message"]
+        .as_str()
+        .unwrap()
+        .starts_with("Обновление базы «origin» не прошло после завершения сеансов. Обычно помогает перезапуск сервера."));
+    client
+        .send(json!({
+            "jsonrpc": "2.0", "id": after_terminate["id"],
+            "result": {"action": "accept", "content": {"choice": "restart"}}
+        }))
+        .await;
+    let answered = client.receive().await;
+    let follower = answered["result"]["structuredContent"]["data"]["task"]["taskId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let done = read_task_result(&mut client, &follower, 200).await;
+    assert_eq!(done["result"]["structuredContent"]["ok"], true, "{done}");
+    let calls = runner_calls(&workspace);
+    assert_eq!(calls.len(), 4, "{calls:?}");
+    assert!(calls[2].ends_with("standalone restart"), "{calls:?}");
+    assert!(
+        calls[3].ends_with("push main --sessions force"),
+        "{calls:?}"
+    );
+
+    client.shutdown().await;
+    daemon.finish();
+}

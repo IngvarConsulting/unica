@@ -22,6 +22,7 @@ mod v13_documentation;
 mod v13_extensions;
 mod v13_infobase_create;
 mod v13_infobase_exports;
+mod v13_infobase_sessions;
 mod v13_read_modes;
 mod v13_run_dictionary;
 mod v13_search_admission;
