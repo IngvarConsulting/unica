@@ -9597,21 +9597,18 @@ fn connections_to_a_live_daemon_stand_on_a_busy_machine() {
         Duration::from_secs(30),
     );
     let peers: Vec<Result<(), V5TransportError>> = match &client {
-        Ok(client) => {
-            let client = &*client;
-            thread::scope(|scope| {
-                let peers: Vec<_> = (0..8)
-                    .map(|_| {
-                        scope.spawn(move || {
-                            client
-                                .connect_peer_before(Instant::now() + Duration::from_secs(7))
-                                .map(|_| ())
-                        })
+        Ok(client) => thread::scope(|scope| {
+            let peers: Vec<_> = (0..8)
+                .map(|_| {
+                    scope.spawn(move || {
+                        client
+                            .connect_peer_before(Instant::now() + Duration::from_secs(7))
+                            .map(|_| ())
                     })
-                    .collect();
-                peers.into_iter().map(|peer| peer.join().unwrap()).collect()
-            })
-        }
+                })
+                .collect();
+            peers.into_iter().map(|peer| peer.join().unwrap()).collect()
+        }),
         Err(_) => Vec::new(),
     };
 
