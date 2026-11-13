@@ -14,7 +14,7 @@ unica-address = { path = "../unica-address" }
 unica-source-contract = { path = "../unica-source-contract" }
 unica-xdto = { path = "../unica-xdto" }
 unica-source-designer = { path = "../unica-source-designer" }
-unica-metadata-designer = { path = "../unica-metadata-designer" }
+unica-metadata = { path = "../unica-metadata" }
 sha2.workspace = true
 roxmltree.workspace = true
 serde.workspace = true
