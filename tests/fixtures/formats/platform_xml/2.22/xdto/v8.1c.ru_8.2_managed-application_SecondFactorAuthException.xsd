@@ -1,0 +1,14 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:ns1="http://v8.1c.ru/8.1/data/core" xmlns:tns="http://v8.1c.ru/8.2/managed-application/SecondFactorAuthException" xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="http://v8.1c.ru/8.2/managed-application/SecondFactorAuthException" attributeFormDefault="unqualified" elementFormDefault="qualified">
+	<xs:import namespace="http://v8.1c.ru/8.1/data/core"/>
+	<xs:complexType name="SecondFactorAuthException">
+		<xs:complexContent>
+			<xs:extension base="ns1:GenericException">
+				<xs:attribute name="reason_2fa" type="xs:decimal"/>
+				<xs:attribute name="seanceid" type="xs:string"/>
+				<xs:attribute name="templatename" type="xs:string"/>
+				<xs:attribute name="nextRequestCanBeDoneInSec" type="xs:decimal"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+</xs:schema>

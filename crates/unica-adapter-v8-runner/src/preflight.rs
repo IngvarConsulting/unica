@@ -146,9 +146,8 @@ impl RuntimeBuildPreflight {
 }
 
 /// Normalizes build identity without inspecting configuration support. A
-/// default build remains a default v8-runner build; Unica decides about one
-/// full fallback only from the structured result of an actually failed partial
-/// step (#404).
+/// default build remains a default v8-runner build, and v8-runner chooses its
+/// import mode itself.
 pub fn plan_runtime_invocation(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
@@ -204,11 +203,11 @@ pub fn plan_runtime_invocation(
             Vec::new()
         } else {
             // `--json-message` replaces the runner's streamed text with one
-            // envelope printed at exit, which is what the classifier needs and
-            // what leaves the job logs empty until the build ends. A caller
-            // polling `unica.runtime.job.logs` has to be told that up front.
+            // envelope printed at exit, which leaves the job logs empty until
+            // the build ends. A caller polling `unica.runtime.job.logs` has to
+            // be told that up front.
             vec![
-                "v8-runner runs its normal build strategy first and reports one structured result when the process exits, so a durable build streams no progress into its logs; if that result proves a failed partial platform step, `unica.runtime.job.start` will retry once with a full rebuild"
+                "v8-runner runs its normal build strategy first and reports one structured result when the process exits, so a durable build streams no progress into its logs"
                     .to_string(),
             ]
         },

@@ -222,7 +222,10 @@ fn task_v5(snapshot: &V5DaemonTaskSnapshot) -> Result<Task, TaskProjectionError>
     )
     .with_ttl_ms(snapshot.ttl_ms())
     .with_poll_interval_ms(snapshot.poll_interval_ms());
-    if snapshot.cancel_requested() {
+    if snapshot.awaits_interrupted_work() {
+        projected = projected
+            .with_status_message(crate::application::v13::task_tools::CANCEL_WAITS_FOR_AGENT);
+    } else if snapshot.cancel_requested() {
         projected = projected.with_status_message(
             "Cancellation was requested; check task status and result for the actual outcome",
         );
@@ -321,6 +324,7 @@ mod tests {
             poll_interval_ms: 250,
             version: 2,
             cancel_requested: false,
+            awaits_interrupted_work: false,
         }
     }
 
@@ -385,6 +389,44 @@ mod tests {
         assert_eq!(
             serde_json::to_value(seed).unwrap()["statusMessage"],
             "Cancellation was requested; check task status and result for the actual outcome"
+        );
+    }
+
+    /// While the cancel of a working Task waits for the answer of an
+    /// interrupted runner, `statusMessage` says so and that a repeated cancel
+    /// stops the wait. The wire omits the live flag when it is off.
+    /// rule: CTR.WIRE.NATIVE-TASK-PROJECTION
+    #[test]
+    fn a_cancel_that_waits_for_the_agent_says_so_in_the_status() {
+        let mut waiting = v5_working();
+        let V5DaemonTaskSnapshot::Working {
+            cancel_requested,
+            awaits_interrupted_work,
+            ..
+        } = &mut waiting
+        else {
+            unreachable!()
+        };
+        *cancel_requested = true;
+        *awaits_interrupted_work = true;
+        let detailed = super::detailed_task_v5(&waiting, ResponseBudget::default()).unwrap();
+        assert_eq!(
+            serde_json::to_value(&detailed).unwrap()["statusMessage"],
+            "cancelling: the Designer agent is finishing its current request; cancel again to stop waiting"
+        );
+        let wire = serde_json::to_value(&waiting).unwrap();
+        assert_eq!(wire["awaitsInterruptedWork"], true);
+        assert_eq!(
+            serde_json::from_value::<V5DaemonTaskSnapshot>(wire).unwrap(),
+            waiting
+        );
+
+        let working = v5_working();
+        let quiet = serde_json::to_value(&working).unwrap();
+        assert!(quiet.get("awaitsInterruptedWork").is_none(), "{quiet}");
+        assert_eq!(
+            serde_json::from_value::<V5DaemonTaskSnapshot>(quiet).unwrap(),
+            working
         );
     }
 

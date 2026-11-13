@@ -20,6 +20,13 @@ use unica_source_contract::SourceSetKind;
 use unica_workspace::actor::{ApplyAdmission, ProviderRootBinding};
 use unica_workspace::apply::ApplyStagedState;
 
+/// Every family section of plan details that an apply plan may carry; the
+/// planner below fills exactly these.
+pub const PLAN_DETAIL_KEYS: &[unica_source_contract::proposal::PlanDetailKey] = &[
+    unica_xdto::results::XDTO_OBJECTS,
+    unica_metadata::EXCHANGE_CONTENT,
+];
+
 /// The writable platform XML profile is single (`DEC.2026-08-21.SINGLE-WRITABLE-PLATFORM-XML-PROFILE`):
 /// a write outside it refuses before the first byte. The retired v0.12
 /// mutators proved this through the dispatcher's format guard; the canonical
@@ -2162,6 +2169,7 @@ fn plan_apply(
                     &authority,
                     &operations,
                     &mut xdto_validation,
+                    crate::infrastructure::family_codecs::SUPPORT_MARKER_READER,
                 )?;
                 provisional.extend(planned);
             }
@@ -2252,6 +2260,7 @@ fn plan_apply(
                 ParsedApplyOperation::Xdto(operation) => Some(operation),
                 _ => None,
             }),
+            crate::infrastructure::family_codecs::SUPPORT_MARKER_READER,
         )?;
     }
     let xdto_operations = parsed

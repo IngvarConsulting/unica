@@ -3,11 +3,11 @@
 mod platform;
 
 pub use platform::process::{
-    detach_std_handles_from_inheritance, ensure_truncation_diagnostics, JobPolicy, ManagedChild,
-    ManagedCommand, ManagedLineOutput, ManagedOutput, ManagedSpawnFailure, ManagedStartupChild,
-    PendingProcessHandoff, PendingRunFailure, ProcessLineReply, RuntimeProcessTreeHandle,
-    RuntimeProcessTreeState, StreamControl, STDERR_CAPTURE_LIMIT, STDOUT_CAPTURE_LIMIT,
-    STREAM_LINE_TOO_LONG_ERROR, STREAM_RECORD_UNTERMINATED_ERROR,
+    detach_std_handles_from_inheritance, ensure_truncation_diagnostics, CancelPolicy, JobPolicy,
+    ManagedChild, ManagedCommand, ManagedLineOutput, ManagedOutput, ManagedSpawnFailure,
+    ManagedStartupChild, PendingProcessHandoff, PendingRunFailure, ProcessLineReply,
+    RuntimeProcessTreeHandle, RuntimeProcessTreeState, StreamControl, STDERR_CAPTURE_LIMIT,
+    STDOUT_CAPTURE_LIMIT, STREAM_LINE_TOO_LONG_ERROR, STREAM_RECORD_UNTERMINATED_ERROR,
 };
 pub use platform::process_metrics::{process_peak_rss_bytes, process_started_at};
 #[cfg(any(test, feature = "test-support"))]

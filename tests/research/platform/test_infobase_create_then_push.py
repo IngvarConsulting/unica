@@ -2,7 +2,7 @@
 
 Раннер записывает память рабочей копии о базе, которую создаёт
 `infobase create` без `--from`, поэтому первый `push` в неё идёт без
-`--force` (правило `INV.WIRE.INFOBASE-CREATE-ONLY-CREATES-AN-ABSENT-ONE`).
+`--force` (правило `INV.WIRE.INFOBASE-CREATE-RECREATES-BY-CHOICE`).
 Тест проверяет это через проводной `unica.run`, как его видит агент:
 
 1. `infobase.create` создаёт файловую базу из набора `main`;

@@ -1,5 +1,5 @@
 use std::sync::{
-    atomic::{AtomicBool, AtomicU8, Ordering},
+    atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering},
     Arc, Mutex,
 };
 
@@ -15,14 +15,28 @@ pub fn cancelled_error(detail: impl AsRef<str>) -> String {
 #[repr(u8)]
 pub enum FactualOutcomeAuthority {
     Cancellable,
+    /// A process that this cancel interrupted answered it itself: its answer
+    /// is the outcome of the call.
+    AnsweredInterrupt,
     StartedExternalProcess,
     CommittedWorkspaceApply,
 }
 
+/// How many times a token was cancelled: the first cancel interrupts work, a
+/// repeated one tells work that waits after the interrupt to stop waiting.
+/// [`HARD_CANCEL`] stops at once; a cancel by a person never reaches it.
+const HARD_CANCEL: u8 = u8::MAX;
+
 #[derive(Debug, Clone)]
 pub struct CancellationToken {
-    own_signal: Arc<AtomicBool>,
-    observed_signals: Arc<[Arc<AtomicBool>]>,
+    own_signal: Arc<AtomicU8>,
+    observed_signals: Arc<[Arc<AtomicU8>]>,
+    /// Processes of this token that were interrupted by a cancel and still
+    /// run until their own answer. Shared with linked children: the task of
+    /// the token shows that its cancel waits.
+    awaiting: Arc<AtomicUsize>,
+    /// How many interrupted processes of this token exited by themselves.
+    interrupt_answers: Arc<AtomicUsize>,
     dispatch_gate: Arc<Mutex<()>>,
     protected_started: Arc<AtomicBool>,
     factual_outcome: Arc<AtomicU8>,
@@ -31,10 +45,12 @@ pub struct CancellationToken {
 
 impl Default for CancellationToken {
     fn default() -> Self {
-        let own_signal = Arc::new(AtomicBool::new(false));
+        let own_signal = Arc::new(AtomicU8::new(0));
         Self {
             own_signal: Arc::clone(&own_signal),
             observed_signals: Arc::from([own_signal]),
+            awaiting: Arc::new(AtomicUsize::new(0)),
+            interrupt_answers: Arc::new(AtomicUsize::new(0)),
             dispatch_gate: Arc::new(Mutex::new(())),
             protected_started: Arc::new(AtomicBool::new(false)),
             factual_outcome: Arc::new(AtomicU8::new(FactualOutcomeAuthority::Cancellable as u8)),
@@ -53,22 +69,95 @@ impl CancellationToken {
             .dispatch_gate
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        self.own_signal.store(true, Ordering::Release);
+        let mut count = self.own_signal.load(Ordering::Acquire);
+        while count < HARD_CANCEL - 1 {
+            match self.own_signal.compare_exchange_weak(
+                count,
+                count + 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => break,
+                Err(current) => count = current,
+            }
+        }
+    }
+
+    /// Cancel that waits for nothing: the daemon stops, so work interrupted
+    /// by this token ends at once instead of waiting for its own answer.
+    pub fn cancel_now(&self) {
+        let _gate = self
+            .dispatch_gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.own_signal.store(HARD_CANCEL, Ordering::Release);
     }
 
     pub fn is_cancelled(&self) -> bool {
+        self.cancel_requests() > 0
+    }
+
+    /// How many cancels this token has seen, its own or its parents': the
+    /// most of them.
+    pub fn cancel_requests(&self) -> u8 {
         self.observed_signals
             .iter()
-            .any(|signal| signal.load(Ordering::Acquire))
+            .map(|signal| signal.load(Ordering::Acquire))
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// Whether the token was cancelled with [`Self::cancel_now`].
+    pub fn is_cancelled_now(&self) -> bool {
+        self.cancel_requests() == HARD_CANCEL
+    }
+
+    /// A process of this token was interrupted by a cancel and goes on until
+    /// its own answer; the guard marks the end of that wait.
+    pub fn awaiting_interrupted_work(&self) -> AwaitingInterruptedWork {
+        self.awaiting.fetch_add(1, Ordering::AcqRel);
+        AwaitingInterruptedWork {
+            awaiting: Arc::clone(&self.awaiting),
+        }
+    }
+
+    /// A process of this token that a cancel interrupted exited by itself.
+    pub fn note_interrupt_answered(&self) {
+        self.interrupt_answers.fetch_add(1, Ordering::AcqRel);
+    }
+
+    /// How many interrupted processes of this token exited by themselves; a
+    /// caller compares the count before and after its own process.
+    pub fn interrupt_answers(&self) -> usize {
+        self.interrupt_answers.load(Ordering::Acquire)
+    }
+
+    /// The answer of an interrupted process is the outcome of the call. An
+    /// applied change stays the stronger fact.
+    pub fn record_answered_interrupt(&self) {
+        let _ = self.factual_outcome.compare_exchange(
+            FactualOutcomeAuthority::Cancellable as u8,
+            FactualOutcomeAuthority::AnsweredInterrupt as u8,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+    }
+
+    /// Whether some process of this token, or of a linked child, waits for
+    /// its own answer after a cancel interrupted it.
+    pub fn awaits_interrupted_work(&self) -> bool {
+        self.awaiting.load(Ordering::Acquire) > 0
     }
 
     pub fn linked_child(&self) -> Self {
-        let own_signal = Arc::new(AtomicBool::new(false));
+        let own_signal = Arc::new(AtomicU8::new(0));
         let mut observed_signals = self.observed_signals.to_vec();
         observed_signals.push(Arc::clone(&own_signal));
         Self {
             own_signal,
             observed_signals: Arc::from(observed_signals),
+            awaiting: Arc::clone(&self.awaiting),
+            interrupt_answers: Arc::clone(&self.interrupt_answers),
             dispatch_gate: Arc::clone(&self.dispatch_gate),
             protected_started: Arc::new(AtomicBool::new(false)),
             factual_outcome: Arc::new(AtomicU8::new(FactualOutcomeAuthority::Cancellable as u8)),
@@ -132,12 +221,13 @@ impl CancellationToken {
     }
 
     pub fn factual_outcome_authority(&self) -> FactualOutcomeAuthority {
-        if self.factual_outcome.load(Ordering::Acquire)
-            == FactualOutcomeAuthority::CommittedWorkspaceApply as u8
-        {
+        let recorded = self.factual_outcome.load(Ordering::Acquire);
+        if recorded == FactualOutcomeAuthority::CommittedWorkspaceApply as u8 {
             FactualOutcomeAuthority::CommittedWorkspaceApply
         } else if self.protected_process_started() {
             FactualOutcomeAuthority::StartedExternalProcess
+        } else if recorded == FactualOutcomeAuthority::AnsweredInterrupt as u8 {
+            FactualOutcomeAuthority::AnsweredInterrupt
         } else {
             FactualOutcomeAuthority::Cancellable
         }
@@ -145,6 +235,18 @@ impl CancellationToken {
 
     pub fn protected_process_started(&self) -> bool {
         self.protected_started.load(Ordering::Acquire)
+    }
+}
+
+/// See [`CancellationToken::awaiting_interrupted_work`].
+#[derive(Debug)]
+pub struct AwaitingInterruptedWork {
+    awaiting: Arc<AtomicUsize>,
+}
+
+impl Drop for AwaitingInterruptedWork {
+    fn drop(&mut self) {
+        self.awaiting.fetch_sub(1, Ordering::AcqRel);
     }
 }
 
@@ -174,6 +276,44 @@ mod tests {
         let sibling = parent.linked_child();
         parent.cancel();
         assert!(sibling.is_cancelled());
+    }
+
+    /// A repeated cancel is counted: work that waits after the first one
+    /// learns that it should stop waiting. Linked children see the count of
+    /// their parents. The hard cancel of a stopping daemon is told apart.
+    #[test]
+    fn repeated_cancels_are_counted_and_seen_by_linked_children() {
+        let parent = CancellationToken::new();
+        let child = parent.linked_child();
+        assert_eq!(child.cancel_requests(), 0);
+        parent.cancel();
+        assert_eq!(child.cancel_requests(), 1);
+        parent.cancel();
+        assert_eq!(child.cancel_requests(), 2);
+        assert!(!child.is_cancelled_now());
+        for _ in 0..300 {
+            parent.cancel();
+        }
+        assert!(!child.is_cancelled_now());
+        parent.cancel_now();
+        assert!(child.is_cancelled_now());
+        assert!(child.is_cancelled());
+    }
+
+    /// Waiting after an interrupt is seen from the task's token, also when the
+    /// process runs under a linked child, until the last wait ends.
+    #[test]
+    fn waiting_after_an_interrupt_is_seen_until_the_last_wait_ends() {
+        let task = CancellationToken::new();
+        let child = task.linked_child();
+        assert!(!task.awaits_interrupted_work());
+        let first = child.awaiting_interrupted_work();
+        let second = task.awaiting_interrupted_work();
+        assert!(task.awaits_interrupted_work());
+        drop(first);
+        assert!(task.awaits_interrupted_work());
+        drop(second);
+        assert!(!task.awaits_interrupted_work());
     }
 
     #[test]

@@ -1,0 +1,348 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:ns1="http://v8.1c.ru/8.1/data-composition-system/core" xmlns:ns2="http://v8.1c.ru/8.1/data-composition-system/common" xmlns:ns3="http://v8.1c.ru/8.1/data-composition-system/area-template" xmlns:tns="http://v8.1c.ru/8.1/data-composition-system/composition-template" xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="http://v8.1c.ru/8.1/data-composition-system/composition-template" attributeFormDefault="unqualified" elementFormDefault="qualified">
+	<xs:import namespace="http://v8.1c.ru/8.1/data-composition-system/core"/>
+	<xs:import namespace="http://v8.1c.ru/8.1/data-composition-system/common"/>
+	<xs:import namespace="http://v8.1c.ru/8.1/data-composition-system/area-template"/>
+	<xs:element name="dataComposition" type="tns:DataCompositionTemplate"/>
+	<xs:simpleType name="DataCompositionDataSetsLinkType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Outer"/>
+			<xs:enumeration value="Inner"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:complexType name="ChartBodyTemplate">
+		<xs:sequence>
+			<xs:element name="groupTemplate" type="xs:string" minOccurs="0"/>
+			<xs:element name="template" type="xs:string"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="ChartGroup">
+		<xs:complexContent>
+			<xs:extension base="tns:ChartGroupBodyItem">
+				<xs:sequence>
+					<xs:element name="name" type="xs:string" minOccurs="0"/>
+					<xs:element name="group" type="tns:Group" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="recordsFilter" type="xs:string" minOccurs="0"/>
+					<xs:element name="groupFilter" type="xs:string" minOccurs="0"/>
+					<xs:element name="groupFilterHierarchy" type="xs:string" minOccurs="0"/>
+					<xs:element name="groupFilterHierarchyOnly" type="xs:string" minOccurs="0"/>
+					<xs:element name="order" type="ns2:OrderExpression" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="hierarchicalOrder" type="ns2:OrderExpression" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="body" type="tns:ChartGroupBodyItem" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="hierarchicalBody" type="tns:ChartGroupBodyItem" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="id" type="xs:string" minOccurs="0"/>
+					<xs:element name="recordsCount" type="xs:integer" minOccurs="0"/>
+					<xs:element name="recordsPercent" type="xs:integer" minOccurs="0"/>
+				</xs:sequence>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="ChartGroupBodyItem" abstract="true"/>
+	<xs:complexType name="ChartGroupTemplate">
+		<xs:complexContent>
+			<xs:extension base="tns:ChartGroupBodyItem">
+				<xs:sequence>
+					<xs:element name="template" type="xs:string"/>
+					<xs:element name="resourceTemplate" type="tns:ChartBodyTemplate" minOccurs="0" maxOccurs="unbounded"/>
+				</xs:sequence>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="ChartHierarchicalGroup">
+		<xs:complexContent>
+			<xs:extension base="tns:ChartGroupBodyItem"/>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="DataCompositionPart" abstract="true"/>
+	<xs:complexType name="DataCompositionPartChart">
+		<xs:complexContent>
+			<xs:extension base="tns:DataCompositionPart">
+				<xs:sequence>
+					<xs:element name="name" type="xs:string" minOccurs="0"/>
+					<xs:element name="template" type="xs:string"/>
+					<xs:element name="resourceTemplate" type="xs:string"/>
+					<xs:element name="point" type="tns:ChartGroup" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="series" type="tns:ChartGroup" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="id" type="xs:string" minOccurs="0"/>
+				</xs:sequence>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="DataCompositionPartGroup">
+		<xs:complexContent>
+			<xs:extension base="tns:DataCompositionPart">
+				<xs:sequence>
+					<xs:element name="name" type="xs:string" minOccurs="0"/>
+					<xs:element name="group" type="tns:Group" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="recordsFilter" type="xs:string" minOccurs="0"/>
+					<xs:element name="groupFilter" type="xs:string" minOccurs="0"/>
+					<xs:element name="groupFilterHierarchy" type="xs:string" minOccurs="0"/>
+					<xs:element name="groupFilterHierarchyOnly" type="xs:string" minOccurs="0"/>
+					<xs:element name="order" type="ns2:OrderExpression" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="hierarchicalOrder" type="ns2:OrderExpression" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="headerTemplate" type="xs:string" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="footerTemplate" type="xs:string" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="body" type="tns:DataCompositionPart" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="hierarchicalBody" type="tns:DataCompositionPart" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="id" type="xs:string" minOccurs="0"/>
+					<xs:element name="recordsCount" type="xs:integer" minOccurs="0"/>
+					<xs:element name="recordsPercent" type="xs:integer" minOccurs="0"/>
+				</xs:sequence>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="DataCompositionPartHierarchicalGroup">
+		<xs:complexContent>
+			<xs:extension base="tns:DataCompositionPart"/>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="DataCompositionPartHierarchicalRecords">
+		<xs:complexContent>
+			<xs:extension base="tns:DataCompositionPart"/>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="DataCompositionPartNestedObject">
+		<xs:complexContent>
+			<xs:extension base="tns:DataCompositionPart">
+				<xs:sequence>
+					<xs:element name="name" type="xs:string" minOccurs="0"/>
+					<xs:element name="id" type="xs:string" minOccurs="0"/>
+					<xs:element ref="tns:dataComposition"/>
+					<xs:element name="parameterValue" type="tns:ParameterValue" minOccurs="0" maxOccurs="unbounded"/>
+				</xs:sequence>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="DataCompositionPartRecords">
+		<xs:complexContent>
+			<xs:extension base="tns:DataCompositionPart">
+				<xs:sequence>
+					<xs:element name="name" type="xs:string" minOccurs="0"/>
+					<xs:element name="dataSet" type="xs:string" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="requiredDataSet" type="xs:string" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="recordsFilter" type="xs:string" minOccurs="0"/>
+					<xs:element name="groupFilterHierarchy" type="xs:string" minOccurs="0"/>
+					<xs:element name="order" type="ns2:OrderExpression" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="headerTemplate" type="xs:string" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="footerTemplate" type="xs:string" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="body" type="tns:DataCompositionPart" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="id" type="xs:string" minOccurs="0"/>
+					<xs:element name="recordsCount" type="xs:integer" minOccurs="0"/>
+					<xs:element name="recordsPercent" type="xs:integer" minOccurs="0"/>
+				</xs:sequence>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="DataCompositionPartTable">
+		<xs:complexContent>
+			<xs:extension base="tns:DataCompositionPart">
+				<xs:sequence>
+					<xs:element name="name" type="xs:string" minOccurs="0"/>
+					<xs:element name="headerTemplate" type="xs:string"/>
+					<xs:element name="rowsTotalTemplate" type="xs:string"/>
+					<xs:element name="columnsTotalTemplate" type="xs:string"/>
+					<xs:element name="overallsTemplate" type="xs:string"/>
+					<xs:element name="rowsTotalPlacement" type="ns1:DataCompositionTotalPlacement"/>
+					<xs:element name="columnsTotalPlacement" type="ns1:DataCompositionTotalPlacement"/>
+					<xs:element name="column" type="tns:TableGroupBodyItem" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="row" type="tns:TableGroupBodyItem" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="id" type="xs:string" minOccurs="0"/>
+				</xs:sequence>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="DataCompositionPartTemplate">
+		<xs:complexContent>
+			<xs:extension base="tns:DataCompositionPart">
+				<xs:sequence>
+					<xs:element name="template" type="xs:string"/>
+				</xs:sequence>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="DataCompositionTemplate">
+		<xs:sequence>
+			<xs:element name="dataSource" type="tns:DataSource" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="dataSet" type="tns:DataSet" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="dataSetLink" type="tns:DataSetLink" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="parameterValue" type="tns:ParameterValue" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="template" type="tns:TemplateDefinition" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="body" type="tns:DataCompositionPart" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="DataSet" abstract="true">
+		<xs:sequence>
+			<xs:element name="name" type="xs:string" minOccurs="0"/>
+			<xs:element name="filter" type="xs:string" minOccurs="0"/>
+			<xs:element name="field" type="tns:DataSetField" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="nestedDataSet" type="tns:DataSetNested" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="DataSetField">
+		<xs:sequence>
+			<xs:element name="dataPath" type="xs:string"/>
+			<xs:element name="name" type="xs:string"/>
+			<xs:element name="role" type="ns2:DataSetFieldRole" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="DataSetLink">
+		<xs:sequence>
+			<xs:element name="sourceDataSet" type="xs:string"/>
+			<xs:element name="destinationDataSet" type="xs:string"/>
+			<xs:element name="sourceExpression" type="xs:string"/>
+			<xs:element name="destinationExpression" type="xs:string"/>
+			<xs:element name="parameter" type="xs:string" minOccurs="0"/>
+			<xs:element name="parameterListAllowed" type="xs:boolean" minOccurs="0"/>
+			<xs:element name="linkConditionExpression" type="xs:string" minOccurs="0"/>
+			<xs:element name="startExpression" type="xs:string" minOccurs="0"/>
+			<xs:element name="linkType" type="tns:DataCompositionDataSetsLinkType" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="DataSetNested">
+		<xs:complexContent>
+			<xs:extension base="tns:DataSet">
+				<xs:sequence>
+					<xs:element name="dataPath" type="xs:string"/>
+				</xs:sequence>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="DataSetObject">
+		<xs:complexContent>
+			<xs:extension base="tns:DataSet">
+				<xs:sequence>
+					<xs:element name="dataSource" type="xs:string"/>
+					<xs:element name="objectName" type="xs:string"/>
+				</xs:sequence>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="DataSetQuery">
+		<xs:complexContent>
+			<xs:extension base="tns:DataSet">
+				<xs:sequence>
+					<xs:element name="dataSource" type="xs:string"/>
+					<xs:element name="query" type="xs:string"/>
+					<xs:element name="parameterValue" type="tns:ParameterValue" minOccurs="0" maxOccurs="unbounded"/>
+				</xs:sequence>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="DataSetUnion">
+		<xs:complexContent>
+			<xs:extension base="tns:DataSet">
+				<xs:sequence>
+					<xs:element name="item" type="tns:DataSet" minOccurs="0" maxOccurs="unbounded"/>
+				</xs:sequence>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="DataSource">
+		<xs:sequence>
+			<xs:element name="name" type="xs:string"/>
+			<xs:element name="type" type="xs:string"/>
+			<xs:element name="connectionString" type="xs:string" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="Group">
+		<xs:sequence>
+			<xs:element name="expression" type="xs:string"/>
+			<xs:element name="groupType" type="ns1:DataCompositionGroupType" minOccurs="0"/>
+			<xs:element name="hierarchyDataSet" type="xs:string" minOccurs="0"/>
+			<xs:element name="periodAddition" type="tns:PeriodAddition" minOccurs="0"/>
+			<xs:element name="fieldName" type="xs:string" minOccurs="0"/>
+			<xs:element name="resourceGroup" type="xs:boolean" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="ParameterValue">
+		<xs:sequence>
+			<xs:element name="name" type="xs:string"/>
+			<xs:element name="value" nillable="true" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="PeriodAddition">
+		<xs:sequence>
+			<xs:element name="additionType" type="ns1:DataCompositionPeriodAdditionType"/>
+			<xs:element name="begin" nillable="true" minOccurs="0"/>
+			<xs:element name="end" nillable="true" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="TableBodyTemplate">
+		<xs:sequence>
+			<xs:element name="groupTemplate" type="xs:string" minOccurs="0"/>
+			<xs:element name="template" type="xs:string"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="TableGroup">
+		<xs:complexContent>
+			<xs:extension base="tns:TableGroupBodyItem">
+				<xs:sequence>
+					<xs:element name="name" type="xs:string" minOccurs="0"/>
+					<xs:element name="group" type="tns:Group" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="recordsFilter" type="xs:string" minOccurs="0"/>
+					<xs:element name="groupFilter" type="xs:string" minOccurs="0"/>
+					<xs:element name="groupFilterHierarchy" type="xs:string" minOccurs="0"/>
+					<xs:element name="groupFilterHierarchyOnly" type="xs:string" minOccurs="0"/>
+					<xs:element name="order" type="ns2:OrderExpression" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="hierarchicalOrder" type="ns2:OrderExpression" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="headerTemplate" type="tns:TableGroupTemplate" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="footerTemplate" type="tns:TableGroupTemplate" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="body" type="tns:TableGroupBodyItem" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="hierarchicalBody" type="tns:TableGroupBodyItem" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="id" type="xs:string" minOccurs="0"/>
+					<xs:element name="recordsCount" type="xs:integer" minOccurs="0"/>
+					<xs:element name="recordsPercent" type="xs:integer" minOccurs="0"/>
+				</xs:sequence>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="TableGroupBodyItem" abstract="true"/>
+	<xs:complexType name="TableGroupTemplate">
+		<xs:complexContent>
+			<xs:extension base="tns:TableGroupBodyItem">
+				<xs:sequence>
+					<xs:element name="template" type="xs:string"/>
+					<xs:element name="resourceTemplate" type="tns:TableBodyTemplate" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="resourceTotalTemplate" type="xs:string" minOccurs="0"/>
+				</xs:sequence>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="TableHierarchicalGroup">
+		<xs:complexContent>
+			<xs:extension base="tns:TableGroupBodyItem"/>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="TableHierarchicalRecords">
+		<xs:complexContent>
+			<xs:extension base="tns:TableGroupBodyItem"/>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="TableRecords">
+		<xs:complexContent>
+			<xs:extension base="tns:TableGroupBodyItem">
+				<xs:sequence>
+					<xs:element name="name" type="xs:string" minOccurs="0"/>
+					<xs:element name="dataSet" type="xs:string" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="requiredDataSet" type="xs:string" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="recordsFilter" type="xs:string" minOccurs="0"/>
+					<xs:element name="groupFilterHierarchy" type="xs:string" minOccurs="0"/>
+					<xs:element name="order" type="ns2:OrderExpression" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="headerTemplate" type="tns:TableGroupTemplate" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="footerTemplate" type="tns:TableGroupTemplate" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="body" type="tns:TableGroupBodyItem" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="id" type="xs:string" minOccurs="0"/>
+					<xs:element name="recordsCount" type="xs:integer" minOccurs="0"/>
+					<xs:element name="recordsPercent" type="xs:integer" minOccurs="0"/>
+				</xs:sequence>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="TemplateDefinition">
+		<xs:sequence>
+			<xs:element name="name" type="xs:string"/>
+			<xs:element name="template"/>
+			<xs:element name="parameter" type="ns3:AreaTemplateParameter" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+</xs:schema>

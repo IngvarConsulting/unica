@@ -3335,6 +3335,7 @@ fn nonterminal_probe_task(
             poll_interval_ms: SCENARIO_TASK_POLL_INTERVAL_MS,
             version: 1,
             cancel_requested: false,
+            awaits_interrupted_work: false,
         }
     } else {
         V5DaemonTaskSnapshot::Queued {

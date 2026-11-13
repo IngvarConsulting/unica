@@ -3,14 +3,18 @@
 Версии формата выгрузки, которые профиль формата считает измеренными
 (`MEASURED_EXPORT_FORMATS`), должны иметь в корпусе выгрузку пустой
 конфигурации и пустого расширения. Корень каждого объекта метаданных в этих
-выгрузках называет ту же версию. Скрипт сравнения корпусов отличает файлы
-с разными байтами от файлов только на одной стороне.
+выгрузках называет ту же версию. Записываемые форматы несут экспорт XDTO-схем
+платформы своей линии: паспорт называет сборку этой линии и каждый файл.
+Скрипт сравнения корпусов отличает файлы с разными байтами от файлов только
+на одной стороне.
 """
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import io
+import json
 import re
 import tempfile
 import unittest
@@ -84,6 +88,31 @@ class AllKindsCorpusTests(unittest.TestCase):
                     checked += 1
                     self.assertEqual(match.group(1).decode(), fmt, path)
                 self.assertGreater(checked, 40, root)
+
+
+# Записываемые форматы и линии, которые их пишут: экспорт XDTO снят на сборке
+# этой линии (scripts/dev/export-platform-xdto.py).
+XDTO_FORMAT_LINES = {"2.20": "8.3.27", "2.21": "8.5.1", "2.22": "8.5.4"}
+
+
+class XdtoCorpusTests(unittest.TestCase):
+    def test_every_writable_format_has_the_xdto_export_of_its_line(self) -> None:
+        for fmt, line in XDTO_FORMAT_LINES.items():
+            root = CORPUS_ROOT / fmt / "xdto"
+            with self.subTest(format=fmt):
+                manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
+                self.assertEqual(manifest["format"], fmt)
+                self.assertTrue(manifest["build"].startswith(line + "."), manifest["build"])
+                listed = sorted(name for names in manifest["files"].values() for name in names)
+                on_disk = sorted(path.name for path in root.glob("*.xsd"))
+                self.assertEqual(listed, on_disk)
+                self.assertEqual(manifest["packages"], len(manifest["files"]))
+                self.assertEqual(manifest["schemas"], len(on_disk))
+                digest = hashlib.sha256()
+                for name in on_disk:
+                    digest.update(name.encode("utf-8") + b"\0" + (root / name).read_bytes())
+                self.assertEqual(manifest["sha256"], digest.hexdigest())
+                self.assertIn("http://v8.1c.ru/8.3/xcf/enums", manifest["files"])
 
 
 class PlatformCorpusDiffTests(unittest.TestCase):

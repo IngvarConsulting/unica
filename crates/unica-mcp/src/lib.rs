@@ -655,7 +655,8 @@ fn project_compatibility_snapshot(
         snapshot.updated_at_epoch_ms(),
         snapshot.ttl_ms(),
         snapshot.poll_interval_ms(),
-    );
+    )
+    .with_awaiting_interrupted_work(snapshot.awaits_interrupted_work());
     crate::application::v13::task_tools::project_task_snapshot(&state, projection).unwrap_or_else(
         |_| {
             crate::application::v13::task_tools::task_tool_error_result(

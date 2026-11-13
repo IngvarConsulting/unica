@@ -1,0 +1,215 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:ns1="http://v8.1c.ru/8.1/data/core" xmlns:tns="http://v8.1c.ru/8.2/virtual-resource-system" xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="http://v8.1c.ru/8.2/virtual-resource-system" attributeFormDefault="unqualified" elementFormDefault="qualified">
+	<xs:import namespace="http://v8.1c.ru/8.1/data/core"/>
+	<xs:element name="exception" type="ns1:GenericException"/>
+	<xs:element name="point" type="tns:Point"/>
+	<xs:simpleType name="DebugProtocol">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="tcp"/>
+			<xs:enumeration value="http"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:complexType name="AccessTokenAuthentication">
+		<xs:sequence>
+			<xs:element name="issuers" type="tns:AccessTokenIssuers" minOccurs="0"/>
+			<xs:element name="accessTokenRecepientName" type="xs:string" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="AccessTokenIssuer">
+		<xs:attribute name="name" type="xs:string" use="required"/>
+		<xs:attribute name="authenticationClaimName" type="xs:string"/>
+		<xs:attribute name="authenticationUserPropertyName" type="xs:string"/>
+		<xs:attribute name="keyInformation" type="xs:string"/>
+	</xs:complexType>
+	<xs:complexType name="AccessTokenIssuers">
+		<xs:sequence>
+			<xs:element name="issuer" type="tns:AccessTokenIssuer" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="Analytics">
+		<xs:attribute name="enable" type="xs:boolean"/>
+		<xs:attribute name="sessionMaxAge" type="xs:decimal"/>
+		<xs:attribute name="poolSize" type="xs:decimal"/>
+		<xs:attribute name="poolTimeout" type="xs:decimal"/>
+	</xs:complexType>
+	<xs:complexType name="AuthMethod">
+		<xs:attribute name="type" type="xs:string" use="required"/>
+		<xs:attribute name="visible" type="xs:boolean"/>
+	</xs:complexType>
+	<xs:complexType name="Authentication">
+		<xs:sequence>
+			<xs:element name="logonView" type="tns:AuthenticationLogonView" minOccurs="0"/>
+		</xs:sequence>
+		<xs:attribute name="allowSaveForReauthentication" type="xs:boolean"/>
+		<xs:attribute name="savedAuthenticationParametersLifeTime" type="xs:decimal"/>
+	</xs:complexType>
+	<xs:complexType name="AuthenticationLogonView">
+		<xs:sequence>
+			<xs:element name="method" type="tns:AuthMethod" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+		<xs:attribute name="saveForReauthenticationByDefault" type="xs:boolean"/>
+	</xs:complexType>
+	<xs:complexType name="Debug">
+		<xs:attribute name="enable" type="xs:boolean"/>
+		<xs:attribute name="protocol" type="tns:DebugProtocol" default="tcp"/>
+		<xs:attribute name="url" type="xs:string"/>
+	</xs:complexType>
+	<xs:complexType name="Exception">
+		<xs:complexContent>
+			<xs:extension base="ns1:GenericException">
+				<xs:attribute name="reason" type="xs:decimal"/>
+				<xs:attribute name="seanceID" type="xs:string"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="HttpService">
+		<xs:sequence>
+			<xs:element name="accessTokenAuthentication" type="tns:AccessTokenAuthentication" minOccurs="0"/>
+		</xs:sequence>
+		<xs:attribute name="name" type="xs:Name" use="required"/>
+		<xs:attribute name="rootUrl" type="xs:string" use="required"/>
+		<xs:attribute name="enable" type="xs:boolean" default="true"/>
+		<xs:attribute name="reuseSessions" type="xs:string"/>
+		<xs:attribute name="sessionMaxAge" type="xs:decimal"/>
+		<xs:attribute name="poolSize" type="xs:decimal"/>
+		<xs:attribute name="poolTimeout" type="xs:decimal"/>
+	</xs:complexType>
+	<xs:complexType name="HttpServices">
+		<xs:sequence>
+			<xs:element name="service" type="tns:HttpService" maxOccurs="unbounded"/>
+		</xs:sequence>
+		<xs:attribute name="publishByDefault" type="xs:boolean" default="true"/>
+		<xs:attribute name="publishExtensionsByDefault" type="xs:boolean" default="false"/>
+	</xs:complexType>
+	<xs:complexType name="MobileAppRecord">
+		<xs:attribute name="type" type="xs:string" use="required"/>
+		<xs:attribute name="name" type="xs:string" use="required"/>
+		<xs:attribute name="url" type="xs:string" use="required"/>
+		<xs:attribute name="appid" type="xs:string"/>
+	</xs:complexType>
+	<xs:complexType name="MobileApps">
+		<xs:sequence>
+			<xs:element name="application" type="tns:MobileAppRecord" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="OData">
+		<xs:attribute name="enable" type="xs:boolean"/>
+		<xs:attribute name="reuseSessions" type="xs:string"/>
+		<xs:attribute name="sessionMaxAge" type="xs:decimal"/>
+		<xs:attribute name="poolSize" type="xs:decimal"/>
+		<xs:attribute name="poolTimeout" type="xs:decimal"/>
+	</xs:complexType>
+	<xs:complexType name="OpenID">
+		<xs:choice>
+			<xs:element name="rely" type="tns:OpenIDRelyingPartyParams" minOccurs="0"/>
+			<xs:element name="provider" type="tns:OpenIDProviderParams" minOccurs="0"/>
+		</xs:choice>
+	</xs:complexType>
+	<xs:complexType name="OpenIDConnectRP">
+		<xs:sequence>
+			<xs:element name="providers" type="xs:string" minOccurs="0"/>
+			<xs:element name="allowStandardAuthentication" type="xs:string" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="OpenIDProviderParams">
+		<xs:sequence>
+			<xs:element name="lifetime" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="returnto" type="xs:string" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="OpenIDRelyingPartyParams">
+		<xs:attribute name="url" type="xs:string" use="required"/>
+	</xs:complexType>
+	<xs:complexType name="Point">
+		<xs:choice>
+			<xs:element name="pool" type="tns:Pool" minOccurs="0"/>
+			<xs:element name="ws" type="tns:WebServices" minOccurs="0"/>
+			<xs:element name="standardOdata" type="tns:OData" minOccurs="0"/>
+			<xs:element name="httpServices" type="tns:HttpServices" minOccurs="0"/>
+			<xs:element name="zones" type="tns:ZoneInfos" minOccurs="0"/>
+			<xs:element name="debug" type="tns:Debug" minOccurs="0"/>
+			<xs:element name="analytics" type="tns:Analytics" minOccurs="0"/>
+			<xs:element name="openid" type="tns:OpenID" minOccurs="0"/>
+			<xs:element name="openidconnect" type="tns:OpenIDConnectRP" minOccurs="0"/>
+			<xs:element name="exitURL" type="xs:string" minOccurs="0"/>
+			<xs:element name="progressiveWebApplication" type="tns:ProgressiveWebApplication" minOccurs="0"/>
+			<xs:element name="authVersion" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="accessTokenAuthentication" type="tns:AccessTokenAuthentication" minOccurs="0"/>
+			<xs:element name="authentication" type="tns:Authentication" minOccurs="0"/>
+			<xs:element name="mobileApps" type="tns:MobileApps" minOccurs="0"/>
+		</xs:choice>
+		<xs:attribute name="base" type="xs:string" use="required"/>
+		<xs:attribute name="ib" type="xs:string" use="required"/>
+		<xs:attribute name="enable" type="xs:boolean" default="true"/>
+		<xs:attribute name="enableStandardOData" type="xs:boolean" default="true"/>
+		<xs:attribute name="temp" type="xs:anyURI"/>
+		<xs:attribute name="pubdst" type="xs:string"/>
+		<xs:attribute name="pubdst32" type="xs:string"/>
+		<xs:attribute name="pubdst64" type="xs:string"/>
+		<xs:attribute name="pubdstwin32" type="xs:string"/>
+		<xs:attribute name="pubdstwin64" type="xs:string"/>
+		<xs:attribute name="pubdstlindeb32" type="xs:string"/>
+		<xs:attribute name="pubdstlindeb64" type="xs:string"/>
+		<xs:attribute name="pubdstlinrpm32" type="xs:string"/>
+		<xs:attribute name="pubdstlinrpm64" type="xs:string"/>
+		<xs:attribute name="pubdstlin32" type="xs:string"/>
+		<xs:attribute name="pubdstlin64" type="xs:string"/>
+		<xs:attribute name="pubdstmac64" type="xs:string"/>
+		<xs:attribute name="pubdstmacarm64" type="xs:string"/>
+		<xs:attribute name="pubdstlindebarm64" type="xs:string"/>
+		<xs:attribute name="pubdstlinrpmarm64" type="xs:string"/>
+		<xs:attribute name="pubdstlindebe2k" type="xs:string"/>
+		<xs:attribute name="pubdstlinrpme2k" type="xs:string"/>
+		<xs:attribute name="allowexecutescheduledjobs" type="xs:string"/>
+	</xs:complexType>
+	<xs:complexType name="Pool">
+		<xs:attribute name="size" type="xs:decimal"/>
+		<xs:attribute name="maxAge" type="xs:decimal"/>
+		<xs:attribute name="attempts" type="xs:decimal"/>
+		<xs:attribute name="attemptTimeout" type="xs:decimal"/>
+		<xs:attribute name="waitTimeout" type="xs:decimal"/>
+		<xs:attribute name="serverPingTimeout" type="xs:decimal"/>
+		<xs:attribute name="serverPingPeriod" type="xs:decimal"/>
+	</xs:complexType>
+	<xs:complexType name="ProgressiveWebApplication">
+		<xs:attribute name="name" type="xs:string"/>
+	</xs:complexType>
+	<xs:complexType name="RDbgPoint">
+		<xs:choice>
+			<xs:element name="pool" type="tns:Pool" minOccurs="0"/>
+		</xs:choice>
+		<xs:attribute name="base" type="xs:string" use="required"/>
+		<xs:attribute name="ib" type="xs:string" use="required"/>
+		<xs:attribute name="temp" type="xs:anyURI"/>
+	</xs:complexType>
+	<xs:complexType name="WebService">
+		<xs:sequence>
+			<xs:element name="accessTokenAuthentication" type="tns:AccessTokenAuthentication" minOccurs="0"/>
+		</xs:sequence>
+		<xs:attribute name="name" type="xs:Name" use="required"/>
+		<xs:attribute name="alias" type="xs:string"/>
+		<xs:attribute name="enable" type="xs:boolean" default="true"/>
+		<xs:attribute name="reuseSessions" type="xs:string"/>
+		<xs:attribute name="sessionMaxAge" type="xs:decimal"/>
+		<xs:attribute name="poolSize" type="xs:decimal"/>
+		<xs:attribute name="poolTimeout" type="xs:decimal"/>
+	</xs:complexType>
+	<xs:complexType name="WebServices">
+		<xs:sequence>
+			<xs:element name="point" type="tns:WebService" maxOccurs="unbounded"/>
+		</xs:sequence>
+		<xs:attribute name="enable" type="xs:boolean" default="true"/>
+		<xs:attribute name="pointEnableCommon" type="xs:boolean" default="true"/>
+		<xs:attribute name="publishExtensionsByDefault" type="xs:boolean" default="false"/>
+	</xs:complexType>
+	<xs:complexType name="ZoneInfo">
+		<xs:attribute name="specify" type="xs:boolean" default="false"/>
+		<xs:attribute name="value" type="xs:string"/>
+		<xs:attribute name="safe" type="xs:boolean" default="false"/>
+	</xs:complexType>
+	<xs:complexType name="ZoneInfos">
+		<xs:sequence>
+			<xs:element name="zone" type="tns:ZoneInfo" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+</xs:schema>

@@ -37,10 +37,12 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from collections import Counter
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Dict, Iterable, List, Optional, Sequence, Set, Tuple
+from typing import Callable, Dict, Iterable, Iterator, List, Optional, Sequence, Set, Tuple
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -53,6 +55,11 @@ PYTHON_SUITES = ("tests/ci", "tests/dev")
 # Крейт вне рабочего пространства: его гоняет `scripts/dev/run-research.py`.
 OUTSIDE_WORKSPACE = {"unica-research"}
 SKIP_MARKER = "unica-host-capability-skip:"
+# Замок рабочих копий в общем `.git`: создание и удаление копии базы
+# правят `.git/worktrees`, и параллельные прогоны из разных копий
+# одного репозитория мешают друг другу.
+WORKTREE_LOCK = "pre-ready-check-worktrees.lock"
+LOCK_WAIT_SECONDS = 300.0
 
 
 class Refusal(Exception):
@@ -92,6 +99,8 @@ class Result:
     failures: List[str]
     # Только для `test` и `python`: что на хосте не исполнилось.
     skipped: List[str] = field(default_factory=list)
+    # Падения, причина которых — сбой сборки продукта, а не проверка.
+    build: List[str] = field(default_factory=list)
 
 
 LIBTEST_LINE = re.compile(r"^test (\S+) \.\.\. (ok|FAILED|ignored)\b", re.M)
@@ -102,6 +111,11 @@ BUILD_SUMMARY = re.compile(r"^(?:could not compile|aborting due to|\d+ previous 
 CLIPPY_LINE = re.compile(r"^(.+?):\d+:\d+: (?:error|warning)(?:\[\w+\])?: (.+)$", re.M)
 FMT_LINE = re.compile(r"^Diff in (.+?)(?: at line \d+|:\d+):?\s*$", re.M)
 UNITTEST_FAILED = re.compile(r"^(?:FAIL|ERROR): \S+ \(([^)]+)\)", re.M)
+# `cargo build` в подготовке набора: `subprocess.CalledProcessError` с этой командой.
+CARGO_FAILED = re.compile(
+    r"Command '\[['\"]cargo['\"], ['\"]build['\"][^\n]*returned non-zero exit status"
+    r"|^error: could not compile", re.M)
+UNITTEST_SEPARATOR = re.compile(r"^(?:=|-){70}$", re.M)
 UNITTEST_SKIPPED = re.compile(r"\(([\w.]+)\)(?:\n[^\n]*?)? \.\.\. skipped\b", re.M)
 
 
@@ -110,6 +124,11 @@ def build_errors(output: str, returncode: int) -> List[str]:
     errors = sorted({f"сборка: {match.group(1).strip()}" for match in ERROR_LINE.finditer(output)
                      if not BUILD_SUMMARY.match(match.group(1))})
     return errors or [f"сборка или запуск не прошли, код {returncode}"]
+
+
+def is_build_failure(key: str) -> bool:
+    """Ошибка компиляции крейта; упавший при запуске бинарь сюда не входит."""
+    return key.startswith("сборка:")
 
 
 def parse_libtest(output: str, returncode: int) -> Result:
@@ -131,7 +150,7 @@ def parse_libtest(output: str, returncode: int) -> Result:
             # Бинарь упал посреди прогона или строку итога теста разорвал чужой
             # вывод: часть тестов не исполнена или не учтена.
             failures.append(f"прогон оборвался или итог неполон, код {returncode}")
-    return Result(failures, sorted(skipped))
+    return Result(failures, sorted(skipped), [key for key in failures if is_build_failure(key)])
 
 
 def normalize_path(raw: str, root: Path) -> str:
@@ -151,7 +170,8 @@ def parse_clippy(output: str, returncode: int, root: Path) -> Result:
                       for path, message in CLIPPY_LINE.findall(output))
     if returncode != 0 and not failures:
         failures = build_errors(output, returncode)
-    return Result(failures if returncode != 0 else [])
+    failures = failures if returncode != 0 else []
+    return Result(failures, build=[key for key in failures if is_build_failure(key)])
 
 
 def parse_fmt(output: str, returncode: int, root: Path) -> Result:
@@ -162,10 +182,20 @@ def parse_fmt(output: str, returncode: int, root: Path) -> Result:
 
 
 def parse_unittest(output: str, returncode: int) -> Result:
-    failures = sorted(set(UNITTEST_FAILED.findall(output)))
+    """Падения по ключу теста; `setUpClass` и `setUpModule` дают ключ класса или модуля."""
+    headers = list(UNITTEST_FAILED.finditer(output))
+    failures = sorted({header.group(1) for header in headers})
+    build = set()
+    for index, header in enumerate(headers):
+        end = headers[index + 1].start() if index + 1 < len(headers) else len(output)
+        # Раздел: строка `---…`, трассировка, следующая строка `===…`.
+        dashes = UNITTEST_SEPARATOR.search(output, header.end(), end)
+        closing = UNITTEST_SEPARATOR.search(output, dashes.end(), end) if dashes else None
+        if CARGO_FAILED.search(output, header.end(), closing.start() if closing else end):
+            build.add(header.group(1))
     if returncode != 0 and not failures:
         failures = [f"набор упал без списка тестов, код {returncode}"]
-    return Result(failures, sorted(set(UNITTEST_SKIPPED.findall(output))))
+    return Result(failures, sorted(set(UNITTEST_SKIPPED.findall(output))), sorted(build))
 
 
 def parse(check: Check, output: str, returncode: int, root: Path) -> Result:
@@ -564,8 +594,99 @@ def git(root: Path, *args: str) -> str:
     completed = subprocess.run(["git", *args], cwd=root, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                text=True, encoding="utf-8", errors="replace")
     if completed.returncode != 0:
-        raise Refusal(f"git {' '.join(args)}: {completed.stderr.strip()}")
+        said = completed.stderr.strip() or completed.stdout.strip() or "git ничего не вывел"
+        raise Refusal(f"git {' '.join(args)}: код {completed.returncode}: {said}")
     return completed.stdout
+
+
+def try_lock(descriptor: int) -> bool:
+    """Блокировка ОС на первый байт файла; её снимает и смерть процесса."""
+    try:
+        if os.name == "nt":
+            import msvcrt
+
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return False
+    return True
+
+
+def unlock(descriptor: int) -> None:
+    if os.name == "nt":
+        import msvcrt
+
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+    else:
+        import fcntl
+
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+
+
+def lock_holder(path: Path) -> str:
+    """Кто держит замок: держатель пишет себя после первого, заблокированного байта."""
+    try:
+        with open(path, "rb") as handle:
+            handle.seek(1)
+            text = handle.read(512).decode("utf-8", errors="replace").strip("\0 \n")
+    except OSError:
+        text = ""
+    return text or "неизвестный прогон"
+
+
+@contextmanager
+def worktree_lock(root: Path, wait: float = LOCK_WAIT_SECONDS, poll: float = 0.5) -> Iterator[None]:
+    """Замок на создание и удаление рабочей копии базы в общем `.git` репозитория.
+
+    Файл замка не удаляется: держит блокировка ОС, и прерванный прогон
+    не оставляет её за собой.
+    """
+    common = Path(git(root, "rev-parse", "--git-common-dir").strip())
+    path = (common if common.is_absolute() else root / common) / WORKTREE_LOCK
+    descriptor = os.open(path, os.O_RDWR | os.O_CREAT, 0o666)
+    try:
+        deadline = time.monotonic() + wait
+        announced = False
+        while not try_lock(descriptor):
+            holder = lock_holder(path)
+            if time.monotonic() >= deadline:
+                raise Refusal(
+                    f"рабочие копии репозитория правит другой прогон pre-ready-check ({holder}); "
+                    f"ждал {wait:.0f} с. Дождитесь его конца и повторите; если он завис, остановите его")
+            if not announced:
+                print(f"  … жду замок рабочих копий: его держит {holder}", flush=True)
+                announced = True
+            time.sleep(poll)
+        try:
+            os.lseek(descriptor, 1, os.SEEK_SET)
+            os.write(descriptor, f"pid {os.getpid()}, копия {root}".encode("utf-8").ljust(512, b" "))
+            yield
+        finally:
+            unlock(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def add_base_tree(root: Path, tree: Path, base: str) -> None:
+    """Свежая рабочая копия базы на месте прежней."""
+    with worktree_lock(root):
+        if tree.exists() or tree.is_symlink():
+            subprocess.run(["git", "worktree", "remove", "--force", str(tree)], cwd=root,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            shutil.rmtree(tree, ignore_errors=True)
+        git(root, "worktree", "prune")
+        git(root, "worktree", "add", "--detach", str(tree), base)
+
+
+def remove_base_tree(root: Path, tree: Path) -> None:
+    with worktree_lock(root):
+        subprocess.run(["git", "worktree", "remove", "--force", str(tree)], cwd=root,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
 def workspace_packages(root: Path, env: Dict[str, str]) -> Dict[str, Tuple[str, bool]]:
@@ -628,11 +749,7 @@ def baseline(checks: Sequence[Check], base: str, cache_dir: Path, env: Dict[str,
         return cached
     tree = cache_dir / "base"
     print(f"База {base[:12]}: считаю {len(missing)} проверок в {tree}", flush=True)
-    if tree.exists():
-        subprocess.run(["git", "worktree", "remove", "--force", str(tree)], cwd=REPO_ROOT)
-        shutil.rmtree(tree, ignore_errors=True)
-        git(REPO_ROOT, "worktree", "prune")
-    git(REPO_ROOT, "worktree", "add", "--detach", str(tree), base)
+    add_base_tree(REPO_ROOT, tree, base)
     base_env = {**env, "CARGO_TARGET_DIR": str(cache_dir / "base-build")}
     try:
         for check in missing:
@@ -642,7 +759,11 @@ def baseline(checks: Sequence[Check], base: str, cache_dir: Path, env: Dict[str,
             cached[check.key] = run_check(check, tree, base_env, cache_dir / "logs-base").failures
             save_cache(cache_path, base, cached)
     finally:
-        subprocess.run(["git", "worktree", "remove", "--force", str(tree)], cwd=REPO_ROOT)
+        try:
+            remove_base_tree(REPO_ROOT, tree)
+        except Refusal as error:
+            # Не заслонять итог проверок: копию уберёт следующий прогон.
+            print(f"pre-ready-check: копия базы не убрана: {error}", file=sys.stderr)
     save_cache(cache_path, base, cached)
     return cached
 
@@ -654,24 +775,48 @@ def crate_exists_on_base(tree: Path, package: str) -> bool:
     )
 
 
+def related(first: str, second: str) -> bool:
+    """Один тест Python или тест и его класс (модуль): `setUpClass` падает ключом класса."""
+    return first == second or first.startswith(second + ".") or second.startswith(first + ".")
+
+
+def covered(name: str, known: Iterable[str]) -> bool:
+    """Падение Python известно базе: тот же тест или его класс (модуль) упал там целиком.
+
+    Обратное не действует: `setUpClass` на ветке не исполнил ни одного метода,
+    и падение одного из них на базе не говорит об остальных. Такой класс
+    разбирает повтор: он исполняет методы, и их падения сверяются по своим ключам.
+    """
+    return any(name == other or name.startswith(other + ".") for other in known)
+
+
 def new_failures(current: Dict[str, Result], base: Dict[str, List[str]]) -> Dict[str, List[str]]:
-    return {key: fresh for key, result in current.items()
-            if (fresh := sorted((Counter(result.failures) - Counter(base.get(key, []))).elements()))}
+    result: Dict[str, List[str]] = {}
+    for key, outcome in current.items():
+        known = base.get(key, [])
+        fresh = sorted((Counter(outcome.failures) - Counter(known)).elements())
+        if key.startswith("python:"):
+            fresh = [name for name in fresh if not covered(name, known)]
+        if fresh:
+            result[key] = fresh
+    return result
 
 
 SYNTHETIC = ("сборка", "прогон оборвался", "набор упал", "форматирование:")
 
 
 def recheck(check: Check, fresh: List[str], root: Path, env: Dict[str, str],
-            log_dir: Path) -> Tuple[List[str], List[str]]:
-    """Новые падения тестов повторяются один раз: (устойчивые, нестабильные).
+            log_dir: Path) -> Tuple[Result, List[str]]:
+    """Новые падения тестов повторяются один раз: (падения повтора, нестабильные).
 
-    На Windows часть тестов изредка падает на занятом файле. Тест, прошедший
-    при повторе, печатается отдельно и итог не краснит.
+    На Windows часть тестов изредка падает на занятом файле. Тест, ни одно
+    падение которого не повторилось, печатается отдельно и итог не краснит.
+    Повтор класса исполняет все его методы: их падения возвращаются своими
+    ключами, и вызывающий заново сверяет их с базой.
     """
     names = sorted({name for name in fresh if not name.startswith(SYNTHETIC)})
     if check.kind not in ("test", "python") or not names:
-        return fresh, []
+        return Result(fresh), []
     if check.kind == "python":
         command = [sys.executable, "-m", "unittest", "-v", *names]
         env = {**env, "PYTHONPATH": os.pathsep.join(filter(None, [str(root / check.target),
@@ -683,11 +828,26 @@ def recheck(check: Check, fresh: List[str], root: Path, env: Dict[str, str],
                                text=True, encoding="utf-8", errors="replace")
     log_dir.mkdir(parents=True, exist_ok=True)
     (log_dir / (re.sub(r"[^\w.-]+", "_", check.key) + ".rerun.log")).write_text(completed.stdout, encoding="utf-8")
-    still = set(parse(check, completed.stdout, completed.returncode, root).failures)
-    if still - set(names):
-        return fresh, []  # повтор сам не прошёл: доверять нечему
-    unstable = sorted(set(names) - still)
-    return [name for name in fresh if name not in unstable], unstable
+    repeated = parse(check, completed.stdout, completed.returncode, root)
+    if any(name.startswith(SYNTHETIC) for name in repeated.failures):
+        return Result(fresh), []  # повтор сам не прошёл: доверять нечему
+    unstable = [name for name in names if not any(related(failure, name) for failure in repeated.failures)]
+    still: List[str] = [name for name in fresh if name.startswith(SYNTHETIC)]
+    build: Set[str] = set()
+    for failure in repeated.failures:
+        if any(failure == name or failure.startswith(name + ".") for name in names):
+            still.append(failure)  # сам повторённый тест или метод повторённого класса
+            if failure in repeated.build:
+                build.add(failure)
+            continue
+        # Класс или модуль упал целиком: повторённые под ним тесты не исполнились,
+        # и их падения остаются своими ключами, а не ключом класса.
+        for name in names:
+            if name.startswith(failure + "."):
+                still.append(name)
+                if failure in repeated.build:
+                    build.add(name)
+    return Result(sorted(set(still)), build=sorted(build)), unstable
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
@@ -729,25 +889,31 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 2
     fresh = new_failures(current, base_failures)
     unstable: Dict[str, List[str]] = {}
+    build: Dict[str, Set[str]] = {key: set(result.build) for key, result in current.items()}
     for check in checks:
         if check.key in fresh:
-            stable, flaky = recheck(check, fresh[check.key], REPO_ROOT, env, cache_dir / "logs")
-            fresh[check.key] = stable
+            repeated, flaky = recheck(check, fresh[check.key], REPO_ROOT, env, cache_dir / "logs")
+            build[check.key] = set(repeated.build)
+            stable = new_failures({check.key: repeated}, base_failures).get(check.key, [])
             if flaky:
                 unstable[check.key] = flaky
-            if not stable:
+            if stable:
+                fresh[check.key] = stable
+            else:
                 del fresh[check.key]
 
     print()
     for check in checks:
-        known = (len(current[check.key].failures) - len(fresh.get(check.key, []))
-                 - len(unstable.get(check.key, [])))
+        known_on_base = base_failures.get(check.key, [])
+        known = sum(1 for failure in set(current[check.key].failures)
+                    if failure in known_on_base
+                    or (check.key.startswith("python:") and covered(failure, known_on_base)))
         status = f"новых падений: {len(fresh[check.key])}" if check.key in fresh else "ok"
         if known:
             status += f", падают и на базе: {known}"
         print(f"[{status}] {check.key}")
         for failure in fresh.get(check.key, []):
-            print(f"    {failure}")
+            print(f"    {'сбой сборки: ' if failure in build[check.key] else ''}{failure}")
         for failure in unstable.get(check.key, []):
             print(f"    нестабилен, прошёл при повторе: {failure}")
     crate_packages = {crate: name for crate, (name, _) in packages.items()}
@@ -760,7 +926,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     unrun = unrun_tests(lines, read, current, crate_packages, host_facts())
     print()
-    print(f"Новые падения: {sum(map(len, fresh.values())) if fresh else 'нет'}")
+    builds = sum(failure in build[key] for key, failures in fresh.items() for failure in failures)
+    count = sum(map(len, fresh.values()))
+    print(f"Новые падения: {count if fresh else 'нет'}"
+          + (f" (из них сбой сборки: {builds} — сборка продукта, а не проверка)" if builds else ""))
     print(f"Не исполнены на этой ОС, разобрать по коду: {'; '.join(unrun) if unrun else 'нет'}")
     print(f"Журналы: {cache_dir / 'logs'}")
     return 1 if fresh else 0
