@@ -6,7 +6,7 @@ use serde_json::{json, Map, Value};
 use unica_address::address::{NodeKind, QualifiedAddress};
 use unica_operation_contract::OperationSkeleton;
 use unica_operation_contract::{object, OperationContract};
-use unica_source_contract::format_identity::PlatformLine;
+use unica_source_contract::format_identity::{configuration_root_additions_after, PlatformLine};
 use unica_source_contract::SourceSetKind;
 
 macro_rules! properties_operations {
@@ -61,7 +61,8 @@ pub enum PropertiesSite {
     /// The root of a source set: the configuration's own `Configuration.xml`,
     /// or an extension's, which may change only its identity properties.
     /// `line` is the platform line of the set's format; it decides which
-    /// root properties and values exist (`None`: those of every line).
+    /// root properties and values exist. A set without a known line has only
+    /// those every described line has.
     Configuration {
         extension: bool,
         line: Option<PlatformLine>,
@@ -112,12 +113,12 @@ impl LaterLineCapability {
     }
 }
 
-/// The platform line from which the 8.5 interface properties exist.
-const INTERFACE_85_LINE: PlatformLine = PlatformLine::new(8, 5, 1);
-
-/// Whether a set of platform `line` has what exists from line `since`.
-fn line_has(line: Option<PlatformLine>, since: PlatformLine) -> bool {
-    line.is_some_and(|line| line >= since)
+/// Whether the profile of platform `line` lacks a configuration root
+/// `property`, or its `value`: a later line adds it.
+fn line_lacks(line: Option<PlatformLine>, property: &str, value: Option<&str>) -> bool {
+    configuration_root_additions_after(line)
+        .iter()
+        .any(|addition| addition.property == property && addition.value == value)
 }
 
 /// The Designer export format platform `line` writes.
@@ -165,7 +166,7 @@ macro_rules! descriptor_properties {
                     PropertiesSite::Role => match self { $(Self::$field => $role),+ },
                     PropertiesSite::Configuration { extension: false, line } => {
                         self.on_configuration_root()
-                            && self.since().is_none_or(|since| line_has(line, since))
+                            && !line_lacks(line, self.names()[0], None)
                     }
                     PropertiesSite::Configuration { extension: true, .. } => {
                         match self { $(Self::$field => $extension),+ }
@@ -243,29 +244,6 @@ impl DescriptorProperty {
         )
     }
 
-    /// The platform line the property exists from; `None` for a property
-    /// every described line has. The values are those of the platform XDTO
-    /// export of each line (`tests/fixtures/formats/platform_xml/<format>/xdto/`).
-    pub const fn since(self) -> Option<PlatformLine> {
-        match self {
-            Self::Caption
-            | Self::ShortCaption
-            | Self::MainClientApplicationWindowInterfaceVariant
-            | Self::ClientApplicationTheme
-            | Self::ClientApplicationWindowsOpenVariant
-            | Self::Version85InterfaceMigrationMode => Some(INTERFACE_85_LINE),
-            _ => None,
-        }
-    }
-
-    /// Values a later line than the property's own adds to it.
-    fn later_values(self) -> &'static [(&'static str, PlatformLine)] {
-        match self {
-            Self::InterfaceCompatibilityMode => &[("Version8_5", INTERFACE_85_LINE)],
-            _ => &[],
-        }
-    }
-
     /// The closed value set of an enumerated property in the line it first
     /// exists in. A compatibility mode leaves out `DontUse`: the platform
     /// reads it back as another mode.
@@ -291,11 +269,13 @@ impl DescriptorProperty {
     /// The values of an enumerated property in a set of platform `line`.
     pub fn allowed_values_in(self, line: Option<PlatformLine>) -> Vec<&'static str> {
         let mut values = self.allowed_values().to_vec();
+        let property = self.names()[0];
         values.extend(
-            self.later_values()
-                .iter()
-                .filter(|(_, since)| line_has(line, *since))
-                .map(|(value, _)| *value),
+            configuration_root_additions_after(None)
+                .into_iter()
+                .filter(|addition| addition.property == property)
+                .filter_map(|addition| addition.value)
+                .filter(|value| !line_lacks(line, property, Some(value))),
         );
         values
     }
@@ -355,31 +335,19 @@ impl PropertiesSite {
         else {
             return Vec::new();
         };
-        let mut later = Vec::new();
-        for field in DescriptorProperty::ALL
-            .iter()
-            .copied()
-            .filter(|field| field.on_configuration_root())
-        {
-            if let Some(since) = field.since().filter(|since| !line_has(line, *since)) {
-                later.push(LaterLineCapability {
-                    property: field.names()[0],
-                    value: None,
-                    since,
-                });
-                continue;
-            }
-            for (value, since) in field.later_values() {
-                if !line_has(line, *since) {
-                    later.push(LaterLineCapability {
-                        property: field.names()[0],
-                        value: Some(value),
-                        since: *since,
-                    });
-                }
-            }
-        }
-        later
+        configuration_root_additions_after(line)
+            .into_iter()
+            .filter(|addition| {
+                DescriptorProperty::ALL.iter().any(|field| {
+                    field.on_configuration_root() && field.names()[0] == addition.property
+                })
+            })
+            .map(|addition| LaterLineCapability {
+                property: addition.property,
+                value: addition.value,
+                since: addition.since,
+            })
+            .collect()
     }
 
     /// Read routing is deliberately irrelevant here: CommonModule is read as

@@ -246,6 +246,21 @@ pub fn parse_cf_info_xml(
     })
 }
 
+/// Whether the line of a dialect has a configuration root `value` of
+/// `property` that a line after the first adds (INV.SOURCE.PROFILE-CAPABILITIES).
+fn line_adds_root_value(platform_line: &str, property: &str, value: &str) -> bool {
+    use unica_source_contract::format_identity::{
+        configuration_root_additions_after, PlatformLine,
+    };
+    let added = |addition: &unica_source_contract::format_identity::LineAddition| {
+        addition.property == property && addition.value == Some(value)
+    };
+    configuration_root_additions_after(None).iter().any(added)
+        && !configuration_root_additions_after(PlatformLine::parse(platform_line))
+            .iter()
+            .any(added)
+}
+
 pub fn cf_prop_text(props: roxmltree::Node<'_, '_>, local_name: &str) -> String {
     unica_xml_format::read::child_text(props, local_name, Some("http://v8.1c.ru/8.3/MDClasses"))
 }
@@ -2107,12 +2122,15 @@ pub fn validate_cf_source(
             let value = cf_validate_child_text(props_node, property, Some(MD_NS));
             if !value.is_empty() {
                 let allowed = cf_validate_enum_allowed(property);
+                let dialect = crate::dialect::for_version(version_literal.as_deref());
                 let line_mode = matches!(
                     *property,
                     "CompatibilityMode" | "ConfigurationExtensionCompatibilityMode"
-                ) && crate::dialect::for_version(version_literal.as_deref())
-                    .knows_line_compatibility_mode(&value);
-                if !allowed.contains(&value.as_str()) && !line_mode {
+                ) && dialect.knows_line_compatibility_mode(&value);
+                if !allowed.contains(&value.as_str())
+                    && !line_mode
+                    && !line_adds_root_value(dialect.platform_line, property, &value)
+                {
                     report.error(format!(
                         "4. Property '{property}' has invalid value '{value}'"
                     ));
