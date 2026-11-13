@@ -70,6 +70,24 @@ class VersionLiteralTests(unittest.TestCase):
         self.assertEqual(guard.check(self.workspace.root), [])
         self.assertEqual(guard.report(self.workspace.root), "")
 
+    def test_the_submodules_of_a_test_module_are_not_counted(self) -> None:
+        """rule: INV.SOURCE.PROFILE-CAPABILITIES"""
+        literal = 'const V: &str = "2.20";\n'
+        files = {
+            "src/x/foo_tests/case.rs": literal,
+            "src/x/tests/case.rs": literal,
+            "src/x/test_support/case.rs": literal,
+            "src/x/fixtures/case.rs": literal,
+            "src/x/foo/case.rs": literal,
+            "src/x/contests/case.rs": literal,
+        }
+        self.workspace.crate("sample", files)
+        found = guard.crate_literals(self.workspace.root, guard.load_crates(self.workspace.root)[0])
+        self.assertEqual(
+            [item.path for item in found],
+            ["crates/sample/src/x/contests/case.rs", "crates/sample/src/x/foo/case.rs"],
+        )
+
     def test_a_cfg_test_attribute_later_in_a_file_does_not_hide_it(self) -> None:
         source = 'const V: &str = "2.20";\n#![cfg(test)]\n'
         self.assertEqual(len(guard.source_literals("crates/sample/src/lib.rs", source)), 1)
