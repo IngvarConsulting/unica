@@ -1,6 +1,7 @@
 //! Действующая возможность правки узла `view` по поддержке (#2877).
 
 use super::*;
+use crate::infrastructure::native_operations::apply_families::removes_support_node;
 use crate::infrastructure::v13_read_port::{attach_editability, own_rule, shows_editability};
 use unica_source_contract::proposal::SupportPolicyMode;
 
@@ -28,7 +29,8 @@ impl<'a> LogicalViewReadAuthority<'a> {
             .is_some_and(|entries| {
                 entries
                     .iter()
-                    .any(|entry| entry.get("op").and_then(Value::as_str) == Some("object.remove"))
+                    .filter_map(|entry| entry.get("op").and_then(Value::as_str))
+                    .any(|op| removes_support_node(op, at))
             });
         let removal_blocked = if removes {
             self.read.removal_blocked_reason(at, &editability)?
@@ -36,7 +38,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
             None
         };
         let rule = own_rule(data, at, owner_rule);
-        attach_editability(data, &editability, rule, removal_blocked);
+        attach_editability(data, at, &editability, rule, removal_blocked);
         Ok(())
     }
 }

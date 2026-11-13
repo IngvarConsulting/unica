@@ -3,7 +3,9 @@
 //! read.
 //!
 //! The runner reads `v8project.yaml` and `v8project.local.yaml` of the working
-//! copy in place, from the `--config` argument; Unica does not copy them. The
+//! copy in place, from the `--config` argument; Unica does not copy them,
+//! except for a re-export, which runs on a config of its own
+//! ([`write_reexport_config`]). The
 //! only key Unica writes is the strict platform choice in the local file, once
 //! per operation and before the operation reads its inputs
 //! ([`prepare_working_copy`]). The runner records the directory of that config
@@ -14,7 +16,7 @@ use serde_yaml::{Mapping, Value};
 use std::path::{Path, PathBuf};
 use unica_execution_contract::invocation::DomainResult;
 use unica_process::runner::{
-    ProcessCommand, ProcessOutput, ProcessRunner, ProcessStreamFailure, SystemProcessRunner,
+    BreakawayProcessRunner, ProcessCommand, ProcessOutput, ProcessRunner, ProcessStreamFailure,
 };
 use unica_process::PendingProcessHandoff;
 use unica_refusal::RefusalCode;
@@ -38,12 +40,36 @@ const LOCAL_NAME: &str = "v8project.local.yaml";
 const ORIGIN: &str = "origin";
 
 /// Runs the pinned runner on the working-copy config, one invocation per
-/// working copy at a time.
-pub(super) struct PinnedRunner;
+/// working copy at a time. Its group lets the runner's live Designer agent
+/// leave it ([`BreakawayProcessRunner`]). It keeps what the last runner
+/// command said about that agent ([`agent_receipt`]).
+#[derive(Default)]
+pub(super) struct PinnedRunner {
+    agent: std::sync::Mutex<Option<serde_json::Value>>,
+}
+
+impl PinnedRunner {
+    fn note(&self, output: &ProcessOutput) {
+        if let Some(agent) = agent_receipt(&output.stdout) {
+            *self.agent.lock().unwrap_or_else(|error| error.into_inner()) = Some(agent);
+        }
+    }
+
+    /// `data.agent` of the last runner command that named its live agent.
+    fn agent(&self) -> Option<serde_json::Value> {
+        self.agent
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone()
+    }
+}
+
 impl ProcessRunner for PinnedRunner {
     fn run(&self, command: &ProcessCommand) -> Result<ProcessOutput, String> {
         let _lock = lock_for(command)?;
-        SystemProcessRunner.run(command)
+        let output = BreakawayProcessRunner.run(command)?;
+        self.note(&output);
+        Ok(output)
     }
 
     /// Waiting for the lock happens before any process exists, but it is not
@@ -51,7 +77,9 @@ impl ProcessRunner for PinnedRunner {
     /// never as an unstartable engine.
     fn run_staged(&self, command: &ProcessCommand) -> Result<ProcessOutput, ProcessStreamFailure> {
         let _lock = lock_for(command).map_err(ProcessStreamFailure::Run)?;
-        SystemProcessRunner.run_staged(command)
+        let output = BreakawayProcessRunner.run_staged(command)?;
+        self.note(&output);
+        Ok(output)
     }
 
     fn run_pending_handoff(
@@ -59,7 +87,9 @@ impl ProcessRunner for PinnedRunner {
         command: &ProcessCommand,
     ) -> Result<(ProcessOutput, PendingProcessHandoff), String> {
         let _lock = lock_for(command)?;
-        SystemProcessRunner.run_pending_handoff(command)
+        let (output, handoff) = BreakawayProcessRunner.run_pending_handoff(command)?;
+        self.note(&output);
+        Ok((output, handoff))
     }
 
     /// As [`Self::run_staged`]: waiting for the lock is not a failed launch.
@@ -68,8 +98,35 @@ impl ProcessRunner for PinnedRunner {
         command: &ProcessCommand,
     ) -> Result<(ProcessOutput, PendingProcessHandoff), ProcessStreamFailure> {
         let _lock = lock_for(command).map_err(ProcessStreamFailure::Run)?;
-        SystemProcessRunner.run_pending_handoff_staged(command)
+        let (output, handoff) = BreakawayProcessRunner.run_pending_handoff_staged(command)?;
+        self.note(&output);
+        Ok((output, handoff))
     }
+}
+
+/// `data.agent` from the runner's answer: whether the command took a live
+/// Designer agent (`reused`), whether the agent stays (`kept`) and why not
+/// (`reason`, the runner's word), how many holders it has and whether this
+/// Unica process is one of them. The runner names it in
+/// `provider.endpoint.live` of a managed agent session; other holders' pids
+/// stay private.
+fn agent_receipt(stdout: &str) -> Option<serde_json::Value> {
+    let envelope: serde_json::Value = serde_json::from_str(stdout.trim()).ok()?;
+    let live = envelope["data"]["provider"]["endpoint"]["live"].as_object()?;
+    let reused = live.get("reused")?.as_bool()?;
+    let kept = live.get("kept")?.as_bool()?;
+    let holders = live.get("holders")?.as_array()?;
+    let own = u64::from(std::process::id());
+    let mut agent = serde_json::json!({
+        "reused": reused,
+        "kept": kept,
+        "holders": holders.len(),
+        "heldByUnica": holders.iter().any(|holder| holder["pid"].as_u64() == Some(own)),
+    });
+    if let Some(reason) = live.get("reason").and_then(serde_json::Value::as_str) {
+        agent["reason"] = serde_json::Value::from(reason);
+    }
+    Some(agent)
 }
 
 fn lock_for(command: &ProcessCommand) -> Result<RunnerLock, String> {
@@ -95,17 +152,57 @@ fn lock_for(command: &ProcessCommand) -> Result<RunnerLock, String> {
 /// ([`with_prepared_working_copy`]). Without it `run` refuses with the absent
 /// runner, and a refused operation leaves the working copy as it was: no lock
 /// file, no written key.
+///
+/// The answer carries `data.agent` when a runner command of the operation
+/// named its live Designer agent ([`agent_receipt`]).
 pub(super) fn with_bundled_runner(
     root: &Path,
     cwd: &Path,
     at: &str,
     cancellation: CancellationToken,
-    run: impl FnOnce(CancellationToken) -> DomainResult,
+    run: impl FnOnce(&PinnedRunner, CancellationToken) -> DomainResult,
 ) -> DomainResult {
-    if super::v13_infobase_exports::resolve_bundled_runner(cwd).is_err() {
-        return run(cancellation);
+    let runner = PinnedRunner::default();
+    let Ok(resolved) = super::v13_infobase_exports::resolve_bundled_runner(cwd) else {
+        return run(&runner, cancellation);
+    };
+    let agents = super::live_agent::live_agents();
+    agents.touch(root, std::time::Instant::now());
+    let mut result = with_prepared_working_copy(root, at, cancellation, |cancellation| {
+        run(&runner, cancellation)
+    });
+    let Some(mut agent) = runner.agent() else {
+        return result;
+    };
+    let after = agents.after_command(
+        root,
+        &resolved.tool.program,
+        &agent,
+        std::time::Instant::now(),
+    );
+    // Holding and letting go take the runner lock of a working copy: they run
+    // apart from the answer, which another command of that copy could hold up.
+    if !after.marks.is_empty() {
+        let marks = after.marks;
+        let _ = std::thread::Builder::new()
+            .name("unica-live-agent-mark".to_string())
+            .spawn(move || {
+                if agents.perform(&PinnedRunner::default(), &marks) {
+                    agents.keep_sweeping();
+                }
+            });
     }
-    with_prepared_working_copy(root, at, cancellation, run)
+    match after.reply {
+        Some(super::live_agent::AgentReply::Warning(warning)) => result.warnings.push(warning),
+        Some(super::live_agent::AgentReply::Note(note)) => {
+            agent["note"] = serde_json::Value::from(note);
+        }
+        None => {}
+    }
+    if let Some(serde_json::Value::Object(data)) = result.data.as_mut() {
+        data.insert("agent".to_string(), agent);
+    }
+    result
 }
 
 /// Runs a runner operation on a prepared working copy: [`prepare_working_copy`]
@@ -655,6 +752,139 @@ fn merge_yaml_values(base: &mut Value, overlay: Value) {
     }
 }
 
+/// The config of a re-export (INV.SOURCE.WRITABLE-PROFILE), written into
+/// `directory`, the re-export's own: the project's source sets at their own
+/// directories, a temporary file infobase `directory/ib`, the runner's working
+/// files and personal state inside `directory`, and the platform line that
+/// writes the target format. The project's own config, infobase, `.local` and
+/// the runner's memory of them stay untouched. Only the shared settings of the
+/// two layers are carried over: infobase sections with their credentials, the
+/// platform location and the test and MCP settings are not. Returns the
+/// private `v8project.yaml`; the runner reads its sibling local file.
+pub(super) fn write_reexport_config(
+    root: &Path,
+    directory: &Path,
+    platform_line: &str,
+) -> Result<PathBuf, String> {
+    let root = normalize_path_identity(root).map_err(|error| error.to_string())?;
+    let mut base =
+        read_yaml_config(&root, BASE_NAME)?.ok_or_else(|| format!("{BASE_NAME} is absent"))?;
+    let mut local =
+        read_yaml_config(&root, LOCAL_NAME)?.unwrap_or_else(|| Value::Mapping(Mapping::new()));
+    for (layer, file) in [(&mut base, BASE_NAME), (&mut local, LOCAL_NAME)] {
+        let map = layer
+            .as_mapping_mut()
+            .ok_or_else(|| format!("{file} must be a mapping"))?;
+        for key in [
+            "workPath",
+            "localPath",
+            "infobases",
+            "infobase",
+            "tests",
+            "mcp",
+        ] {
+            map.remove(Value::from(key));
+        }
+        if let Some(platform) = map
+            .get_mut(Value::from("tools"))
+            .and_then(Value::as_mapping_mut)
+            .and_then(|tools| tools.get_mut(Value::from("platform")))
+            .and_then(Value::as_mapping_mut)
+        {
+            platform.remove(Value::from("path"));
+            platform.remove(Value::from("version"));
+        }
+        absolutize_shared_paths(layer, &root, file)?;
+    }
+    let base_map = base.as_mapping_mut().expect("checked mapping");
+    base_map.insert(
+        Value::from("workPath"),
+        Value::from(directory.join("work").display().to_string()),
+    );
+    base_map.insert(
+        Value::from("localPath"),
+        Value::from(directory.join("local").display().to_string()),
+    );
+    let local_map = local.as_mapping_mut().expect("checked mapping");
+    let mut origin = Mapping::new();
+    origin.insert(
+        Value::from("connection"),
+        Value::from(format!("File=\"{}\"", directory.join("ib").display())),
+    );
+    let mut infobases = Mapping::new();
+    infobases.insert(Value::from(ORIGIN), Value::Mapping(origin));
+    local_map.insert(Value::from("infobases"), Value::Mapping(infobases));
+    let tools = local_map
+        .entry(Value::from("tools"))
+        .or_insert_with(|| Value::Mapping(Mapping::new()))
+        .as_mapping_mut()
+        .ok_or_else(|| format!("tools in {LOCAL_NAME} must be a mapping"))?;
+    tools
+        .entry(Value::from("platform"))
+        .or_insert_with(|| Value::Mapping(Mapping::new()))
+        .as_mapping_mut()
+        .ok_or_else(|| format!("tools.platform in {LOCAL_NAME} must be a mapping"))?
+        .insert(Value::from("version"), Value::from(platform_line));
+    std::fs::create_dir_all(directory).map_err(|error| error.to_string())?;
+    for (name, layer) in [(BASE_NAME, &base), (LOCAL_NAME, &local)] {
+        let text = serde_yaml::to_string(layer).map_err(|error| error.to_string())?;
+        std::fs::write(directory.join(name), text).map_err(|error| error.to_string())?;
+    }
+    Ok(directory.join(BASE_NAME))
+}
+
+/// The runner resolves relative paths from the directory of its config. In a
+/// config written elsewhere the shared paths of a layer become absolute from
+/// the working-copy root: the source sets and the tools the runner may start.
+/// A bare EDT name without a directory is a discovery hint, not a path.
+fn absolutize_shared_paths(layer: &mut Value, root: &Path, file: &str) -> Result<(), String> {
+    if let Some(sets) = layer.get_mut("source-set").and_then(Value::as_sequence_mut) {
+        for set in sets {
+            absolutize(set, &["path"], root, file)?;
+        }
+    }
+    for parts in [
+        &["tools", "va", "epf_path"][..],
+        &["tools", "designer_agent", "host-key"],
+        &["tools", "designer_agent", "base-dir"],
+        &["tools", "client_mcp", "extension", "source", "path"],
+        &["tools", "client_mcp", "extension", "artifact", "path"],
+    ] {
+        absolutize(layer, parts, root, file)?;
+    }
+    if let Some(edt) = layer
+        .get_mut("tools")
+        .and_then(|tools| tools.get_mut("edt_cli"))
+        .and_then(|edt| edt.get_mut("path"))
+    {
+        if let Some(text) = edt
+            .as_str()
+            .filter(|text| Path::new(text).components().count() > 1)
+        {
+            *edt = Value::from(root.join(text).display().to_string());
+        }
+    }
+    Ok(())
+}
+
+fn absolutize(value: &mut Value, parts: &[&str], root: &Path, file: &str) -> Result<(), String> {
+    let mut current = value;
+    for part in parts {
+        match current.get_mut(*part) {
+            Some(next) => current = next,
+            None => return Ok(()),
+        }
+    }
+    if current.is_null() {
+        return Ok(());
+    }
+    let text = current
+        .as_str()
+        .ok_or_else(|| format!("{} in {file} must be a path", parts.join(".")))?;
+    *current = Value::from(root.join(text).display().to_string());
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -985,6 +1215,47 @@ source-set:
         assert!(!cleanup.exists());
     }
 
+    /// Ответ называет живого агента команды из `provider.endpoint.live`
+    /// раннера: взят ли он, остаётся ли и почему нет, сколько у него
+    /// держателей и держит ли его Unica. Номера чужих держателей наружу не идут.
+    #[test]
+    fn the_answer_names_the_live_agent_of_the_command() {
+        let envelope = |live: serde_json::Value| {
+            serde_json::json!({"ok": true, "data": {"provider": {
+                "selected": "designer",
+                "endpoint": {"mode": "managed", "address": "127.0.0.1:1543", "live": live}
+            }}})
+            .to_string()
+        };
+        let own = std::process::id();
+        let held = agent_receipt(&envelope(serde_json::json!({
+            "reused": true, "kept": true,
+            "holders": [{"pid": own, "started_at": "2026-11-13T08:00:00Z"}, {"pid": 4242}]
+        })))
+        .unwrap();
+        assert_eq!(
+            held,
+            serde_json::json!({"reused": true, "kept": true, "holders": 2, "heldByUnica": true})
+        );
+        assert!(!held.to_string().contains("4242"));
+        let one_off = agent_receipt(&envelope(serde_json::json!({
+            "reused": false, "kept": false, "holders": [], "reason": "job"
+        })))
+        .unwrap();
+        assert_eq!(
+            one_off,
+            serde_json::json!({
+                "reused": false, "kept": false, "holders": 0, "heldByUnica": false, "reason": "job"
+            })
+        );
+        // Без сессии управляемого агента ответ агента не называет.
+        assert_eq!(
+            agent_receipt(r#"{"ok": true, "data": {"provider": {"selected": "ibcmd"}}}"#),
+            None
+        );
+        assert_eq!(agent_receipt("not json"), None);
+    }
+
     #[test]
     fn the_former_projection_lies_beside_the_lock() {
         let root = Path::new("/work/a");
@@ -1089,5 +1360,67 @@ source-set:
         ] {
             assert!(check_version(version).is_err());
         }
+    }
+}
+
+#[cfg(test)]
+mod reexport_config_tests {
+    use super::*;
+
+    /// The config of a re-export keeps the project's sets at their own
+    /// directories and names a temporary file infobase, the runner's own
+    /// working files and personal state and the platform line of the target
+    /// format; credentials and the platform location are not carried over and
+    /// the project files are not written.
+    /// rule: INV.SOURCE.WRITABLE-PROFILE
+    #[test]
+    fn a_reexport_config_points_at_a_temporary_infobase_and_the_target_line() {
+        let root = tempfile::tempdir().unwrap();
+        let base = "format: DESIGNER\nlocalPath: personal\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n";
+        let local = "infobases:\n  origin:\n    connection: 'File=base'\n    user: Admin\n    password: secret\ntools:\n  platform:\n    path: 'C:/Program Files/1cv8/8.3.24'\n    version: '8.3.24'\nproviders:\n  pull: designer\n";
+        std::fs::write(root.path().join(BASE_NAME), base).unwrap();
+        std::fs::write(root.path().join(LOCAL_NAME), local).unwrap();
+        let work = root.path().join(".build/unica/reexport/one");
+        let config = write_reexport_config(root.path(), &work, "8.5.4").unwrap();
+        assert_eq!(config, work.join(BASE_NAME));
+        let projected: Value =
+            serde_yaml::from_str(&std::fs::read_to_string(&config).unwrap()).unwrap();
+        let private_text = std::fs::read_to_string(work.join(LOCAL_NAME)).unwrap();
+        let private: Value = serde_yaml::from_str(&private_text).unwrap();
+        let root_identity = normalize_path_identity(root.path()).unwrap();
+        assert_eq!(
+            projected["source-set"][0]["path"]
+                .as_str()
+                .map(PathBuf::from),
+            Some(root_identity.join("src"))
+        );
+        assert_eq!(
+            projected["workPath"].as_str().map(PathBuf::from),
+            Some(work.join("work"))
+        );
+        assert_eq!(
+            projected["localPath"].as_str().map(PathBuf::from),
+            Some(work.join("local"))
+        );
+        assert_eq!(
+            private["infobases"]["origin"]["connection"].as_str(),
+            Some(format!("File=\"{}\"", work.join("ib").display()).as_str())
+        );
+        assert!(private["infobases"]["origin"].get("user").is_none());
+        assert!(!private_text.contains("secret"));
+        assert_eq!(
+            private["tools"]["platform"]["version"],
+            Value::from("8.5.4")
+        );
+        assert!(private["tools"]["platform"].get("path").is_none());
+        assert_eq!(private["providers"]["pull"], Value::from("designer"));
+        assert_eq!(
+            std::fs::read_to_string(root.path().join(BASE_NAME)).unwrap(),
+            base
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.path().join(LOCAL_NAME)).unwrap(),
+            local
+        );
     }
 }

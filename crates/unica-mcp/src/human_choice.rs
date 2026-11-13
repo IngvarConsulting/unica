@@ -17,9 +17,7 @@ use rmcp::model::{
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use std::time::Duration;
-use unica_execution_contract::invocation::{
-    without_confirmation, HumanChoice, HumanChoiceOption, HUMAN_CONFIRMATION_KEY,
-};
+use unica_execution_contract::invocation::{without_confirmation, HumanChoice, HumanChoiceOption};
 
 /// Key of the question in `inputRequests` and `inputResponses`.
 pub(crate) const CHOICE_INPUT_KEY: &str = "unica.choice";
@@ -153,6 +151,43 @@ pub(crate) fn input_required(choice: &HumanChoice) -> InputRequiredResult {
         InputRequest::Elicitation(request),
     );
     InputRequiredResult::new(Some(requests), Some(choice_state(choice)))
+}
+
+/// The `input_required` Task asking the question: the Task keeps its identity
+/// and times, and its one input request is the question's form.
+pub(crate) fn task_asking(
+    detailed: rmcp::model::DetailedTask,
+    choice: &HumanChoice,
+) -> rmcp::model::DetailedTask {
+    let requests = input_required(choice)
+        .input_requests
+        .expect("the question has its form");
+    rmcp::model::DetailedTask::new(
+        detailed.task,
+        rmcp::model::TaskPayload::InputRequired {
+            input_requests: requests,
+        },
+    )
+}
+
+/// The completed Task whose result is what the person's answer ran.
+pub(crate) fn task_completed(
+    detailed: rmcp::model::DetailedTask,
+    result: &CallToolResult,
+) -> Result<rmcp::model::DetailedTask, crate::task_projection::TaskProjectionError> {
+    let result = serde_json::to_value(result)
+        .ok()
+        .and_then(|value| value.as_object().cloned())
+        .ok_or(crate::task_projection::TaskProjectionError::Serialization)?;
+    Ok(rmcp::model::DetailedTask::new(
+        detailed.task,
+        rmcp::model::TaskPayload::Completed { result },
+    ))
+}
+
+/// The answer a `tasks/update` carries for the question of a Task.
+pub(crate) fn task_answer(responses: &InputResponses) -> Option<ElicitResult> {
+    Some(answer_of(responses.get(CHOICE_INPUT_KEY)?.clone()))
 }
 
 /// Digest of the question and its calls. It is not trusted: it only says
@@ -337,9 +372,13 @@ pub(crate) fn calls(option: &HumanChoiceOption) -> Vec<(&str, &Map<String, Value
         .collect()
 }
 
-/// Whether a call names the confirmation only the door may set.
-pub(crate) fn carries_confirmation(arguments: Option<&Map<String, Value>>) -> bool {
-    arguments.is_some_and(|arguments| arguments.contains_key(HUMAN_CONFIRMATION_KEY))
+/// The argument only the door may set from a person's answer — the
+/// confirmation or the re-export before an edit — that a call names.
+pub(crate) fn carried_answer_key(arguments: Option<&Map<String, Value>>) -> Option<&'static str> {
+    let arguments = arguments?;
+    unica_execution_contract::invocation::HUMAN_ANSWER_KEYS
+        .into_iter()
+        .find(|key| arguments.contains_key(*key))
 }
 
 /// How one call of a chosen answer ended.

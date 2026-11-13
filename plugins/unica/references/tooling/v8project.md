@@ -90,6 +90,38 @@ The holder is the working copy of the config the runner read. Unica starts the
 runner with `--config` on the workspace `v8project.yaml`, so Unica and a person
 running the runner by hand in the same working copy are one holder.
 
+## Live Designer agent
+
+The runner keeps the Designer agent of a working copy alive between its
+commands, so a command does not start the Designer anew or take another license
+session. The answer of a runner operation whose command used that agent carries
+`data.agent`:
+
+- `reused`: the command took an agent already running;
+- `kept`: the agent stays after the command;
+- `reason`: why it did not stay, in the runner's word (`limit`,
+  `live_agent_off`, `job` and others);
+- `holders`: how many processes hold it;
+- `heldByUnica`: Unica holds it.
+
+Unica holds the agent after a command it stayed after. Unica lets it go after
+10 minutes without runner commands and without editor sessions of the working
+copy, when the last editor session of the working copy closes, or to make room
+for a third working copy: Unica holds the agents of two working copies at most,
+the runner's default `tools.designer_agent.live-max`. An editor session does not
+start an agent. When the limit left a command without an agent, the answer warns
+`live_agent_not_held`. An agent switched off (`tools.designer_agent.live:
+false`) or impossible in the Windows Job Unica was started in is named once in
+`data.agent.note`.
+
+A live agent stays connected to its infobase between commands, as the runner
+keeps it, and so locks a file infobase for configuring: while Unica holds the
+agent, a batch update or restore of the infobase in the Designer is refused with
+a lock error. To free the infobase, run `v8-runner agent release` in the working
+copy: it disconnects the agent, and the next runner command connects it again.
+Otherwise Unica lets the agent go after 10 minutes without runner commands and
+without editor sessions of the working copy.
+
 ## Runner migration
 
 The top-level `builder` key is rejected. Remove it to use the runner's per-operation
@@ -239,6 +271,7 @@ directory named `main` keeps it.
 | Create an absent infobase | `infobase.create`, empty args; a file infobase is created with the main configuration of the `CONFIGURATION` source set (`initializesSources: true`), and the first `push` loads that set only if it changed and the other sets in full; a cluster infobase is created empty, and the first `push` loads every set in full |
 | Send sources / delete an extension | `push`, optional `sourceSet`, `full` and `force`; applies the database configuration after the generation check, `force:true` overwrites the infobase. Deletion uses only `delete: "InstalledName"` |
 | Export one source set from the working configuration | `pull`, optional `sourceSet`, `extension` and `force`; without `force` the runner chooses a partial or full export, `force:true` replaces the whole set; no copy of the previous sources is kept |
+| Re-export one source set in a writable export format | `source.reexport`, `sourceSet` and `format` (`2.20`, `2.21` or `2.22`); the set is loaded into a temporary file infobase with the platform line of the format (8.3.27, 8.5.1, 8.5.4) and exported back in full, replacing the files of the set; the project infobase and files stay unchanged. An edit refused for an older or mixed export format asks the person to re-export |
 | Export the configuration or an extension as `.cf`/`.cfe` | `download`, `state=working` or `state=database`, `output`, optional `extension` |
 | Load a `.cf`/`.cfe` into the working configuration only | `upload` — unavailable: the pinned v8-runner upload still applies the database configuration, and the adapter does not run `apply` or `reset` yet ([#1246](https://github.com/IngvarConsulting/unica/issues/1246)) |
 | Build a `.cf`/`.cfe`/`.epf`/`.erf` from sources | `make`, `output`; for CF/CFE optional `sourceSet` and `extension` (CFE); EPF/ERF require `sourceSet` naming a singleton matching Designer external source set and a declared main configuration |

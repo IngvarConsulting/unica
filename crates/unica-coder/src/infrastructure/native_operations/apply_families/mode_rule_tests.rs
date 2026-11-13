@@ -150,3 +150,59 @@ fn an_extension_is_read_only_by_its_own_mode() {
         .expect_err("only raising its own mode is allowed");
     assert_eq!(refusal_code(&error), "compatibilityModeUnsupported");
 }
+
+/// A configuration whose root records `root_format` and whose document records
+/// `document_format`.
+fn formatted(root_format: &str, document_format: &str) -> ApplySeamFixture {
+    let seam = fixture("Version8_3_24");
+    for (file, format) in [
+        ("Configuration.xml", root_format),
+        ("Documents/First.xml", document_format),
+    ] {
+        let path = seam.source_dir().join(file);
+        let text = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(
+            &path,
+            text.replace("version=\"2.20\"", &format!("version=\"{format}\"")),
+        )
+        .unwrap();
+    }
+    seam
+}
+
+/// An edit refused for an older or mixed export format names the set and the
+/// formats, so the person may be asked to re-export it; the sources stay as
+/// they were.
+/// rule: INV.SOURCE.WRITABLE-PROFILE
+#[test]
+fn an_old_or_mixed_export_format_refusal_names_the_set_and_its_formats() {
+    use unica_source_contract::proposal::{FormatReexport, FormatReexportKind};
+    let old = formatted("2.19", "2.19");
+    let before = tree_snapshot(&old.source_dir());
+    let error = plan(&old, add_fixed_string(10)).expect_err("2.19 is older than writable");
+    assert_eq!(
+        error.format_reexport(),
+        Some(&FormatReexport {
+            source_set: "main".to_string(),
+            kind: FormatReexportKind::Old {
+                actual: "2.19".to_string()
+            },
+        }),
+        "{error:?}"
+    );
+    assert_eq!(tree_snapshot(&old.source_dir()), before);
+
+    let mixed = formatted("2.20", "2.21");
+    let error = plan(&mixed, add_fixed_string(10)).expect_err("the roots record two formats");
+    assert_eq!(
+        error.format_reexport(),
+        Some(&FormatReexport {
+            source_set: "main".to_string(),
+            kind: FormatReexportKind::Mixed {
+                set_format: "2.20".to_string(),
+                other: "2.21".to_string(),
+            },
+        }),
+        "{error:?}"
+    );
+}

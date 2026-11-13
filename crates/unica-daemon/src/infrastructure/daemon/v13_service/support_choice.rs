@@ -271,3 +271,142 @@ pub(super) fn support_requests(lock: &SupportLock, answer: &str) -> Vec<Map<Stri
         })
         .collect()
 }
+
+const FORMAT_OLD_CODE: &str = "source.format_old";
+const FORMAT_MIXED_CODE: &str = "source.format_mixed";
+
+/// The question about a set whose export format keeps it from an edit, with
+/// the agreed words (INV.SOURCE.WRITABLE-PROFILE). Each answer re-exports the
+/// set in one writable format and then makes the refused `call` again, both
+/// in one `unica.apply`: a long re-export continues as one Task with the edit.
+/// The choice is the person's consent to replace the files of the set, so the
+/// re-export asks nothing more.
+pub(super) fn format_choice(
+    reexport: &unica_source_contract::proposal::FormatReexport,
+    call: &Map<String, Value>,
+) -> HumanChoice {
+    use unica_source_contract::proposal::FormatReexportKind;
+    use unica_source_designer::format_profile::{
+        platform_line_for_export_format, WRITABLE_EXPORT_FORMATS,
+    };
+    let set = &reexport.source_set;
+    let line = |format: &str| platform_line_for_export_format(format).unwrap_or_default();
+    let answer = |id: String, title: String, format: &str| HumanChoiceOption {
+        id,
+        title,
+        description: "файлы набора перезапишутся, несохранённые правки в них пропадут".to_string(),
+        tool: APPLY_TOOL.to_string(),
+        arguments: crate::infrastructure::daemon::v13_source_export::reexport_before_apply_call(
+            call, set, format,
+        ),
+        then: Vec::new(),
+    };
+    match &reexport.kind {
+        FormatReexportKind::Old { actual } => {
+            let target = WRITABLE_EXPORT_FORMATS[0];
+            HumanChoice {
+                code: FORMAT_OLD_CODE.to_string(),
+                question: format!(
+                    "Набор «{set}» выгружен в формате {actual}. Правки доступны с формата {target} (платформа {}).",
+                    line(target)
+                ),
+                data: Some(json!({
+                    "sourceSet": set,
+                    "format": actual,
+                    "targetFormat": target,
+                    "platformLine": line(target),
+                })),
+                options: vec![answer(
+                    "reexport".to_string(),
+                    format!("Перевыгрузить набор в формате {target}"),
+                    target,
+                )],
+                cancel_description: None,
+                proceeds_unasked: false,
+            }
+        }
+        FormatReexportKind::Mixed { set_format, other } => HumanChoice {
+            code: FORMAT_MIXED_CODE.to_string(),
+            question: format!(
+                "Корни набора «{set}» выгружены в разных форматах: {set_format} и {other}. Правка сохраняет один формат."
+            ),
+            data: Some(json!({"sourceSet": set, "formats": [set_format, other]})),
+            options: [set_format, other]
+                .into_iter()
+                .map(|format| {
+                    answer(
+                        format!("reexport-{format}"),
+                        format!("Перевыгрузить в формате {format} ({})", line(format)),
+                        format,
+                    )
+                })
+                .collect(),
+            cancel_description: None,
+            proceeds_unasked: false,
+        },
+    }
+}
+
+#[cfg(test)]
+mod format_choice_tests {
+    use super::*;
+    use unica_source_contract::proposal::{FormatReexport, FormatReexportKind};
+
+    /// A set whose roots record two writable formats is offered both, each
+    /// with its platform line, in the agreed words; each answer re-exports the
+    /// set in its format and makes the same edit again.
+    /// rule: INV.SOURCE.WRITABLE-PROFILE
+    #[test]
+    fn a_mixed_set_is_offered_a_reexport_in_each_of_its_formats() {
+        let call: Map<String, Value> = serde_json::from_value(json!({
+            "at": "main:Catalog.Products",
+            "ops": [{"op": "attribute.add", "args": {"items": [{"name": "Extra"}]}}]
+        }))
+        .unwrap();
+        let choice = format_choice(
+            &FormatReexport {
+                source_set: "main".to_string(),
+                kind: FormatReexportKind::Mixed {
+                    set_format: "2.20".to_string(),
+                    other: "2.22".to_string(),
+                },
+            },
+            &call,
+        );
+        assert_eq!(choice.code, "source.format_mixed");
+        assert_eq!(
+            choice.question,
+            "Корни набора «main» выгружены в разных форматах: 2.20 и 2.22. Правка сохраняет один формат."
+        );
+        let titles = choice
+            .options
+            .iter()
+            .map(|option| option.title.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            titles,
+            [
+                "Перевыгрузить в формате 2.20 (8.3.27)",
+                "Перевыгрузить в формате 2.22 (8.5.4)"
+            ]
+        );
+        for (option, format) in choice.options.iter().zip(["2.20", "2.22"]) {
+            assert_eq!(
+                option.description,
+                "файлы набора перезапишутся, несохранённые правки в них пропадут"
+            );
+            assert_eq!(option.tool, APPLY_TOOL);
+            assert!(option.then.is_empty());
+            let mut edit = option.arguments.clone();
+            assert_eq!(
+                edit.remove(unica_execution_contract::invocation::HUMAN_REEXPORT_KEY),
+                Some(json!({"sourceSet": "main", "format": format}))
+            );
+            assert_eq!(edit, call);
+        }
+        assert_eq!(
+            choice.data,
+            Some(json!({"sourceSet": "main", "formats": ["2.20", "2.22"]}))
+        );
+    }
+}

@@ -173,10 +173,10 @@ impl CanonicalV13ReadService {
             unica_source_contract::proposal::ReadOnlyMode,
             crate::domain::apply::ApplyRequest,
         )> = None;
-        let mut support: Option<(
+        let mut support: Vec<(
             unica_source_contract::proposal::SupportLock,
             Vec<crate::domain::apply::ApplyOp>,
-        )> = None;
+        )> = Vec::new();
         let mut remove_support = false;
         let planned = loop {
             let planned = families::plan_hidden_v13_apply_with_person_choices(
@@ -187,9 +187,13 @@ impl CanonicalV13ReadService {
                     mode_raise: mode_raise.as_ref().map(|(read_only, request)| {
                         families::PersonChosenModeRaise { read_only, request }
                     }),
-                    support: support.as_ref().map(|(lock, operations)| {
-                        families::PersonChosenSupportChange { lock, operations }
-                    }),
+                    support: support
+                        .iter()
+                        .map(|(lock, operations)| families::PersonChosenSupportChange {
+                            lock,
+                            operations,
+                        })
+                        .collect(),
                     remove_support,
                 },
             );
@@ -223,7 +227,11 @@ impl CanonicalV13ReadService {
                 remove_support = true;
                 continue;
             }
-            if let Some(lock) = error.support_lock().filter(|_| support.is_none()) {
+            // Each lock is lifted once; a lock the answers leave asks anew.
+            if let Some(lock) = error
+                .support_lock()
+                .filter(|lock| support.iter().all(|(lifted, _)| lifted != *lock))
+            {
                 if let Some(answer) = support_choice::chosen_answer(lock, invocation.arguments()) {
                     let mut operations = Vec::new();
                     for change in support_choice::support_requests(lock, &answer) {
@@ -238,7 +246,7 @@ impl CanonicalV13ReadService {
                             }
                         }
                     }
-                    support = Some((lock.clone(), operations));
+                    support.push((lock.clone(), operations));
                     continue;
                 }
             }
@@ -280,7 +288,9 @@ impl CanonicalV13ReadService {
                     (None, None) if error.support_state_unreadable() => Some(
                         support_choice::remove_support_choice(&source_set, invocation.arguments()),
                     ),
-                    (None, None) => None,
+                    (None, None) => error.format_reexport().map(|reexport| {
+                        support_choice::format_choice(reexport, invocation.arguments())
+                    }),
                 };
                 if let Some(choice) = choice {
                     refusal.human_choice = Some(Box::new(choice));

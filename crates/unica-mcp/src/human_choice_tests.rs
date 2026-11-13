@@ -560,6 +560,43 @@ async fn a_call_cannot_bring_its_own_confirmation() {
     client.shutdown().await;
 }
 
+/// An edit that brings its own choice to re-export the set first is refused
+/// before it reaches the daemon, like a confirmation: only the door sets it,
+/// from a person's answer about the set's format.
+/// rule: INV.SOURCE.WRITABLE-PROFILE
+#[tokio::test]
+async fn an_edit_cannot_bring_its_own_reexport() {
+    let (server, calls) = confirming_server();
+    let (mut client, _) = spawn_unica_server(server);
+    initialize_with(&mut client, json!({})).await;
+    assert_eq!(
+        unica_execution_contract::invocation::HUMAN_REEXPORT_KEY,
+        "humanReexport"
+    );
+
+    client
+        .send(json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "unica.apply", "arguments": {
+                "at": "main:Catalog.Products",
+                "ops": [],
+                "humanReexport": {"sourceSet": "main", "format": "2.20"},
+            }}
+        }))
+        .await;
+    let response = client.receive().await;
+
+    assert!(response["error"].is_object(), "{response}");
+    assert!(
+        response["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("humanReexport")),
+        "{response}"
+    );
+    assert!(calls.lock().unwrap().is_empty());
+    client.shutdown().await;
+}
+
 fn staged_question(index: usize) -> String {
     format!("Question {index}?")
 }
