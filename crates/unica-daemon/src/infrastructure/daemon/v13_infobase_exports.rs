@@ -1244,10 +1244,13 @@ pub(super) enum RunnerLayer {
 /// (до 0.17.2, IngvarConsulting/v8-runner-rust#485). Удалить вместе с
 /// [`RunnerLayer::of_environment_message`] в следующем цикле.
 const RUNNER_CREDENTIALS_REJECTED: &str = " rejected the credentials of user ";
-const RUNNER_ENDPOINT_FAILURES: [&str; 3] = [
+const RUNNER_ENDPOINT_FAILURES: [&str; 5] = [
     " is unreachable: ",
     "SSH handshake with the agent at ",
     " as its host key, but ",
+    // Another SSH server on the port of the managed agent.
+    ": another SSH server holds the port",
+    " did not open a shell channel: ",
 ];
 
 impl RunnerLayer {
@@ -2174,7 +2177,7 @@ mod tests {
     /// rule: INV.RUNTIME.RUNNER-ENVIRONMENT-LAYER
     #[test]
     fn runner_environment_refusals_name_the_layer_that_refused() {
-        // Тексты — `AgentError` раннера 0.14 дословно, с контекстом, который
+        // Тексты — `AgentError` раннеров 0.14–0.17 дословно, с контекстом, который
         // раннер дописывает перед ним.
         for (message, detail, layer) in [
             (
@@ -2199,6 +2202,16 @@ mod tests {
             ),
             (
                 "agent at 127.0.0.1:56018 presented SHA256:a as its host key, but SHA256:b was expected",
+                "endpoint_unreachable",
+                "agent_endpoint",
+            ),
+            (
+                "127.0.0.1:56018 answered with host key SHA256:a, not with the key the runner handed to the agent it launched (SHA256:b): another SSH server holds the port, and the runner does not talk to it",
+                "endpoint_unreachable",
+                "agent_endpoint",
+            ),
+            (
+                "agent at 127.0.0.1:56018 did not open a shell channel: Disconnect",
                 "endpoint_unreachable",
                 "agent_endpoint",
             ),
