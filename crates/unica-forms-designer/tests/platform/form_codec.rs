@@ -841,6 +841,80 @@ fn form_compile_refuses_button_representation_on_command() {
     }
 }
 
+/// A kind the compiler does not emit is refused by name, at the top level and
+/// inside a group, instead of being written as an input field.
+#[test]
+fn form_compile_refuses_an_element_kind_it_does_not_emit() {
+    for kind in [
+        "radio",
+        "picture",
+        "picField",
+        "calendar",
+        "columnGroup",
+        "spreadsheet",
+        "formattedDoc",
+        "progressBar",
+        "trackBar",
+        "chart",
+        "ganttChart",
+        "graphicalSchema",
+        "planner",
+        "periodField",
+        "dendrogram",
+        "popup",
+        "buttonGroup",
+    ] {
+        let element = json!({ kind: "Поле", "name": "Поле", "path": "Объект" });
+        for definition in [
+            json!({ "elements": [element.clone()] }),
+            json!({ "elements": [{ "group": "vertical", "name": "Группа", "children": [element] }] }),
+        ] {
+            let error = form_compile_xml(&definition, "2.20").unwrap_err();
+            assert_eq!(
+                error,
+                format!("form element kind `{kind}` is not supported by the form compiler")
+            );
+        }
+    }
+}
+
+/// A top-level key the compiler skips is refused: elements under another
+/// name would otherwise leave an empty form behind a successful call.
+#[test]
+fn form_compile_refuses_a_top_level_key_it_does_not_write() {
+    let error = form_compile_xml(
+        &json!({ "children": [{ "input": "Поле", "path": "Объект" }] }),
+        "2.20",
+    )
+    .unwrap_err();
+    assert_eq!(
+        error,
+        "unknown form description key `children`; expected one of: title, properties, events, elements, attributes, parameters, commands"
+    );
+    for key in [
+        "excludedCommands",
+        "mobileCommandBarContent",
+        "commandInterface",
+        "conditionalAppearance",
+    ] {
+        let error = form_compile_xml(&json!({ key: [] }), "2.20").unwrap_err();
+        assert_eq!(
+            error,
+            format!("form description key `{key}` is not supported by the form compiler")
+        );
+    }
+    let (xml, _) = form_compile_xml(
+        &json!({
+            "title": "Форма",
+            "attributes": [{ "name": "Объект", "type": "string" }],
+            "elements": [{ "input": "Поле", "path": "Объект" }]
+        }),
+        "2.20",
+    )
+    .unwrap();
+    assert!(xml.contains("<InputField name=\"Поле\""), "{xml}");
+}
+
 #[test]
 fn form_compile_emits_supported_table_properties() {
     let definition = json!({
