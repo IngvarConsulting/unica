@@ -9568,6 +9568,10 @@ fn canonical_object_borrow_previews_publishes_and_rejects_changed_parent_revisio
     apply_args["executionToken"] = preview.data.as_ref().unwrap()["executionToken"].clone();
     let applied = submit_canonical(&runtime, workspace.path(), ToolIdentity::Apply, apply_args);
     assert!(applied.ok, "{applied:?}");
+    assert_eq!(
+        applied.data.as_ref().unwrap()["borrowing"],
+        preview.data.as_ref().unwrap()["borrowing"]
+    );
     let read = submit_canonical(
         &runtime,
         workspace.path(),
@@ -9589,6 +9593,21 @@ fn canonical_object_borrow_previews_publishes_and_rejects_changed_parent_revisio
     assert!(
         repeat.changed.is_empty(),
         "unchanged repeat is not an update"
+    );
+    assert_eq!(
+        serde_json::to_string(&repeat.data.as_ref().unwrap()["borrowing"]).unwrap(),
+        r#"[{"index":0,"at":"ext:Catalog.Items","from":"parent:Catalog.Items","parentUuid":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","created":false,"changedProperties":[],"protectedOverrides":[]}]"#
+    );
+    let noop_applied = submit_canonical(
+        &runtime,
+        workspace.path(),
+        ToolIdentity::Apply,
+        serde_json::json!({"executionToken": repeat.data.as_ref().unwrap()["executionToken"]}),
+    );
+    assert!(noop_applied.ok, "{noop_applied:?}");
+    assert_eq!(
+        noop_applied.data.as_ref().unwrap()["borrowing"],
+        repeat.data.as_ref().unwrap()["borrowing"]
     );
 
     // The form example borrows a managed form into the borrowed owner.
@@ -9624,6 +9643,14 @@ fn canonical_object_borrow_previews_publishes_and_rejects_changed_parent_revisio
         serde_json::json!({"executionToken": form_preview.data.as_ref().unwrap()["executionToken"]}),
     );
     assert!(form_applied.ok, "{form_applied:?}");
+    assert_eq!(
+        form_applied.data.as_ref().unwrap()["borrowing"],
+        form_preview.data.as_ref().unwrap()["borrowing"]
+    );
+    assert_eq!(
+        form_preview.data.as_ref().unwrap()["borrowing"][0]["at"],
+        "ext:Catalog.Items.Form.ItemForm"
+    );
     assert!(borrowed.join("Ext/Form.xml").exists());
     let form = submit_canonical(
         &runtime,

@@ -299,7 +299,6 @@ impl CanonicalV13ReadService {
             }
             Ok(planned) => planned,
         };
-        let borrowing = effects.borrowing().to_vec();
         let plan_details = effects
             .details()
             .map(|(key, rows)| (key, rows.to_vec()))
@@ -385,10 +384,6 @@ impl CanonicalV13ReadService {
         if !operations.is_empty() {
             result.data.as_mut().expect("apply data exists")["operations"] =
                 serde_json::Value::Array(operations);
-        }
-        if !borrowing.is_empty() {
-            result.data.as_mut().expect("apply data exists")["borrowing"] =
-                serde_json::json!(borrowing);
         }
         for (key, rows) in plan_details {
             debug_assert!(
