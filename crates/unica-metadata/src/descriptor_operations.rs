@@ -134,7 +134,7 @@ pub fn later_line_reason(
 }
 
 /// The Designer export format platform `line` writes.
-pub(crate) fn line_format(line: PlatformLine) -> &'static str {
+pub fn line_format(line: PlatformLine) -> &'static str {
     unica_source_contract::SourceProfile::platform_xml_of_line(line)
         .and_then(unica_source_contract::SourceProfile::serialization_format)
         .unwrap_or("unknown")
@@ -235,8 +235,8 @@ descriptor_properties!(
     ModalityUseMode => ("ModalityUseMode", "modalityUseMode", Enum, false, false, true, false),
     SynchronousPlatformExtensionAndAddInCallUseMode => ("SynchronousPlatformExtensionAndAddInCallUseMode", "synchronousPlatformExtensionAndAddInCallUseMode", Enum, false, false, true, false),
     MainClientApplicationWindowMode => ("MainClientApplicationWindowMode", "mainClientApplicationWindowMode", Enum, false, false, true, false),
-    Caption => ("Caption", "caption", String, false, false, true, false),
-    ShortCaption => ("ShortCaption", "shortCaption", String, false, false, true, false),
+    Caption => ("Caption", "caption", String, false, false, true, true),
+    ShortCaption => ("ShortCaption", "shortCaption", String, false, false, true, true),
     MainClientApplicationWindowInterfaceVariant => ("MainClientApplicationWindowInterfaceVariant", "mainClientApplicationWindowInterfaceVariant", Enum, false, false, true, false),
     ClientApplicationTheme => ("ClientApplicationTheme", "clientApplicationTheme", Enum, false, false, true, false),
     ClientApplicationWindowsOpenVariant => ("ClientApplicationWindowsOpenVariant", "clientApplicationWindowsOpenVariant", Enum, false, false, true, false),
@@ -788,8 +788,9 @@ mod tests {
             site.later_line_refusal("main", values.as_object().unwrap()),
             None
         );
-        // An extension root has none of the 8.5 interface properties; of the
-        // later lines it has only its own compatibility modes.
+        // An extension root has of the later lines its captions (the
+        // empty_extension export of 2.21) and its own compatibility modes,
+        // none of the 8.5 interface properties.
         let extension =
             PropertiesSite::root_of(SourceSetKind::Extension, Some(PlatformLine::new(8, 3, 27)))
                 .unwrap();
@@ -800,6 +801,8 @@ mod tests {
                 .map(|item| (item.property, item.value))
                 .collect::<Vec<_>>(),
             vec![
+                ("Caption", None),
+                ("ShortCaption", None),
                 (
                     "ConfigurationExtensionCompatibilityMode",
                     Some("Version8_5_1")

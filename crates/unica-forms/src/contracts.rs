@@ -6,6 +6,9 @@ use crate::operations::FormOperation;
 use serde_json::{json, Map, Value};
 use unica_metadata::event::FormCallType;
 use unica_operation_contract::{object, text, OperationContract};
+use unica_source_contract::format_identity::{
+    member_property_exists, member_property_since, PlatformLine,
+};
 
 const FORM_HELP: &str = "skills/form-edit/SKILL.md";
 
@@ -465,7 +468,7 @@ fn attribute_item_schema() -> Value {
 
 /// Every form slot `form.set` writes: the contract key and its Platform XML
 /// element.
-pub const FORM_SLOTS: [(&str, &str); 21] = [
+pub const FORM_SLOTS: [(&str, &str); 22] = [
     ("defaultObjectForm", "DefaultObjectForm"),
     ("defaultFolderForm", "DefaultFolderForm"),
     ("defaultListForm", "DefaultListForm"),
@@ -487,6 +490,8 @@ pub const FORM_SLOTS: [(&str, &str); 21] = [
     ("auxiliarySettingsForm", "AuxiliarySettingsForm"),
     ("auxiliarySaveForm", "AuxiliarySaveForm"),
     ("auxiliaryLoadForm", "AuxiliaryLoadForm"),
+    // From 8.5.1 (format 2.21): the slot of a report kind a later line adds.
+    ("auxiliaryVariantForm", "AuxiliaryVariantForm"),
 ];
 
 /// The form slots an owner kind has in the 8.3.27 export, by contract key;
@@ -556,14 +561,51 @@ pub fn form_slots_of(kind: &str) -> Option<&'static [&'static str]> {
     })
 }
 
+/// The form slots an owner kind has in a set of platform `line`: those of
+/// 8.3.27 and those a later line adds up to `line`
+/// (INV.SOURCE.PROFILE-CAPABILITIES).
+pub fn form_slots_in(kind: &str, line: Option<PlatformLine>) -> Option<Vec<&'static str>> {
+    let mut slots = form_slots_of(kind)?.to_vec();
+    slots.extend(
+        FORM_SLOTS
+            .iter()
+            .filter(|(_, property)| {
+                member_property_since(kind, property).is_some()
+                    && member_property_exists(line, kind, property)
+            })
+            .map(|(key, _)| *key),
+    );
+    Some(slots)
+}
+
+/// The form slots of `kind` a later line than `line` adds, with the line
+/// each exists from.
+pub fn later_form_slots(
+    kind: &str,
+    line: Option<PlatformLine>,
+) -> Vec<(&'static str, &'static str, PlatformLine)> {
+    FORM_SLOTS
+        .iter()
+        .filter_map(|(key, property)| {
+            let since = member_property_since(kind, property)?;
+            (!member_property_exists(line, kind, property)).then_some((*key, *property, since))
+        })
+        .collect()
+}
+
 /// The `form.set` contract for the owner kind, or for any owner.
 pub fn form_set(kind: Option<&str>) -> OperationContract {
+    form_set_in(kind, None)
+}
+
+/// The `form.set` contract for the owner kind in a set of platform `line`:
+/// it offers the slots of that line and names those a later line adds.
+pub fn form_set_in(kind: Option<&str>, line: Option<PlatformLine>) -> OperationContract {
     let at = || ("at", text(true));
     let slot = json!({"type":"string",
         "description":"A form name of this owner; an empty string clears the slot, as an export with no such form writes it."});
     let keys = kind
-        .and_then(form_slots_of)
-        .map(<[&str]>::to_vec)
+        .and_then(|kind| form_slots_in(kind, line))
         .unwrap_or_else(|| FORM_SLOTS.iter().map(|(key, _)| *key).collect());
     let mut values = object(
         &keys
@@ -579,6 +621,19 @@ pub fn form_set(kind: Option<&str>) -> OperationContract {
         &[],
     );
     values["minProperties"] = json!(1);
+    if let Some(kind) = kind {
+        let later = later_form_slots(kind, line);
+        if !later.is_empty() {
+            let format = unica_metadata::descriptor_operations::line_format;
+            values["x-unica-later-lines"] = json!({
+                "line": line.map(|line| line.to_string()),
+                "format": line.map(format),
+                "items": later.iter().map(|(key, _, since)| json!({
+                    "property": key, "since": since.to_string(), "format": format(*since),
+                })).collect::<Vec<_>>(),
+            });
+        }
+    }
     let mut example = serde_json::Map::new();
     example.insert(keys[0].to_string(), json!("Sample"));
     OperationContract {
@@ -808,6 +863,34 @@ pub fn form_move() -> OperationContract {
 
 #[cfg(test)]
 mod tests {
+    /// rule: INV.SOURCE.PROFILE-CAPABILITIES
+    #[test]
+    fn a_report_is_offered_its_auxiliary_variant_form_in_the_lines_that_have_it() {
+        use unica_source_contract::format_identity::PlatformLine;
+        let values = |line| {
+            super::form_set_in(Some("Report"), Some(line)).schema["properties"]["values"].clone()
+        };
+        let old = values(PlatformLine::new(8, 3, 27));
+        assert!(old["properties"].get("auxiliaryVariantForm").is_none());
+        assert_eq!(
+            old["x-unica-later-lines"]["items"],
+            serde_json::json!([{"property":"auxiliaryVariantForm","since":"8.5.1","format":"2.21"}])
+        );
+        for line in [PlatformLine::new(8, 5, 1), PlatformLine::new(8, 5, 4)] {
+            let new = values(line);
+            assert!(
+                new["properties"].get("auxiliaryVariantForm").is_some(),
+                "{line}"
+            );
+            assert!(new.get("x-unica-later-lines").is_none(), "{line}");
+        }
+        // Another kind has no such slot in any line.
+        let catalog = super::form_set_in(Some("Catalog"), Some(PlatformLine::new(8, 5, 4)));
+        assert!(catalog.schema["properties"]["values"]["properties"]
+            .get("auxiliaryVariantForm")
+            .is_none());
+    }
+
     use super::*;
 
     #[test]

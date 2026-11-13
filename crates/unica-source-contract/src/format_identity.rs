@@ -341,11 +341,19 @@ pub fn configuration_root_additions_after(line: Option<PlatformLine>) -> Vec<Lin
         .collect()
 }
 
-/// What a platform line adds to the members of metadata objects: the member
-/// kind, its property and the line it exists from, by the all_kinds export
-/// and the platform XDTO of each line (INV.SOURCE.PROFILE-CAPABILITIES).
-const MEMBER_LINE_ADDITIONS: &[(&str, &str, PlatformLine)] =
-    &[("EnumValue", "Color", PlatformLine::new(8, 5, 1))];
+/// What a platform line adds to metadata objects and their members: the
+/// object or member kind, its property and the line it exists from, by the
+/// all_kinds export, the empty external report and the platform XDTO of each
+/// line (INV.SOURCE.PROFILE-CAPABILITIES).
+const MEMBER_LINE_ADDITIONS: &[(&str, &str, PlatformLine)] = &[
+    ("EnumValue", "Color", PlatformLine::new(8, 5, 1)),
+    ("Report", "AuxiliaryVariantForm", PlatformLine::new(8, 5, 1)),
+    (
+        "ExternalReport",
+        "AuxiliaryVariantForm",
+        PlatformLine::new(8, 5, 1),
+    ),
+];
 
 /// The line a `member` kind's `property` exists from, when a later line than
 /// the first described one adds it.
