@@ -1787,9 +1787,14 @@ impl ManagedChild {
                 self.process_tree.cleanup_after_leader_exit(&mut self.child);
                 self.state = ChildState::Reaped;
                 // An interrupted process answered the cancel itself: its
-                // output is its answer, and the run stays cancelled.
-                let interrupted = self.end_interrupt_wait();
-                return Ok(finish_output(status, stdout, stderr, false, interrupted));
+                // output and exit are its answer, and the run stays cancelled.
+                if self.end_interrupt_wait() {
+                    self.cancellation.note_interrupt_answered();
+                    let mut output = finish_output(status, stdout, stderr, false, false);
+                    output.cancelled = true;
+                    return Ok(output);
+                }
+                return Ok(finish_output(status, stdout, stderr, false, false));
             }
 
             thread::sleep(PROCESS_POLL_INTERVAL);

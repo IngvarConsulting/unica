@@ -15,6 +15,9 @@ pub fn cancelled_error(detail: impl AsRef<str>) -> String {
 #[repr(u8)]
 pub enum FactualOutcomeAuthority {
     Cancellable,
+    /// A process that this cancel interrupted answered it itself: its answer
+    /// is the outcome of the call.
+    AnsweredInterrupt,
     StartedExternalProcess,
     CommittedWorkspaceApply,
 }
@@ -32,6 +35,8 @@ pub struct CancellationToken {
     /// run until their own answer. Shared with linked children: the task of
     /// the token shows that its cancel waits.
     awaiting: Arc<AtomicUsize>,
+    /// How many interrupted processes of this token exited by themselves.
+    interrupt_answers: Arc<AtomicUsize>,
     dispatch_gate: Arc<Mutex<()>>,
     protected_started: Arc<AtomicBool>,
     factual_outcome: Arc<AtomicU8>,
@@ -45,6 +50,7 @@ impl Default for CancellationToken {
             own_signal: Arc::clone(&own_signal),
             observed_signals: Arc::from([own_signal]),
             awaiting: Arc::new(AtomicUsize::new(0)),
+            interrupt_answers: Arc::new(AtomicUsize::new(0)),
             dispatch_gate: Arc::new(Mutex::new(())),
             protected_started: Arc::new(AtomicBool::new(false)),
             factual_outcome: Arc::new(AtomicU8::new(FactualOutcomeAuthority::Cancellable as u8)),
@@ -115,6 +121,28 @@ impl CancellationToken {
         }
     }
 
+    /// A process of this token that a cancel interrupted exited by itself.
+    pub fn note_interrupt_answered(&self) {
+        self.interrupt_answers.fetch_add(1, Ordering::AcqRel);
+    }
+
+    /// How many interrupted processes of this token exited by themselves; a
+    /// caller compares the count before and after its own process.
+    pub fn interrupt_answers(&self) -> usize {
+        self.interrupt_answers.load(Ordering::Acquire)
+    }
+
+    /// The answer of an interrupted process is the outcome of the call. An
+    /// applied change stays the stronger fact.
+    pub fn record_answered_interrupt(&self) {
+        let _ = self.factual_outcome.compare_exchange(
+            FactualOutcomeAuthority::Cancellable as u8,
+            FactualOutcomeAuthority::AnsweredInterrupt as u8,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+    }
+
     /// Whether some process of this token, or of a linked child, waits for
     /// its own answer after a cancel interrupted it.
     pub fn awaits_interrupted_work(&self) -> bool {
@@ -129,6 +157,7 @@ impl CancellationToken {
             own_signal,
             observed_signals: Arc::from(observed_signals),
             awaiting: Arc::clone(&self.awaiting),
+            interrupt_answers: Arc::clone(&self.interrupt_answers),
             dispatch_gate: Arc::clone(&self.dispatch_gate),
             protected_started: Arc::new(AtomicBool::new(false)),
             factual_outcome: Arc::new(AtomicU8::new(FactualOutcomeAuthority::Cancellable as u8)),
@@ -192,12 +221,13 @@ impl CancellationToken {
     }
 
     pub fn factual_outcome_authority(&self) -> FactualOutcomeAuthority {
-        if self.factual_outcome.load(Ordering::Acquire)
-            == FactualOutcomeAuthority::CommittedWorkspaceApply as u8
-        {
+        let recorded = self.factual_outcome.load(Ordering::Acquire);
+        if recorded == FactualOutcomeAuthority::CommittedWorkspaceApply as u8 {
             FactualOutcomeAuthority::CommittedWorkspaceApply
         } else if self.protected_process_started() {
             FactualOutcomeAuthority::StartedExternalProcess
+        } else if recorded == FactualOutcomeAuthority::AnsweredInterrupt as u8 {
+            FactualOutcomeAuthority::AnsweredInterrupt
         } else {
             FactualOutcomeAuthority::Cancellable
         }

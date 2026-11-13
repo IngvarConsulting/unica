@@ -987,6 +987,47 @@ fn committed_canonical_apply_and_saved_replay_keep_their_receipts_after_task_can
 }
 
 /// rule: INV.RUNTIME.RUNNER-MUTATION-CANCELLATION
+/// The answer of a process that the cancel reached as an interrupt is
+/// what the work confirmed: the call publishes it. Without that answer the
+/// call ends cancelled, whatever the executor returned later.
+/// rule: INV.APP.ADMISSION-FAILURE-ISOLATION
+#[test]
+fn an_answer_to_the_interrupt_is_the_outcome_and_nothing_else_replaces_the_cancel() {
+    let abandoned = || ReceiptTerminalOutcome::Completed {
+        result: Box::new(DomainResult::canonical_rejection(
+            None,
+            unica_refusal::RefusalCode::ConcurrentChange,
+            "the runner abandoned the command of the Designer agent",
+        )),
+    };
+    let answered = CancellationToken::new();
+    answered.cancel();
+    answered.note_interrupt_answered();
+    answered.record_answered_interrupt();
+    assert_eq!(
+        answered.factual_outcome_authority(),
+        FactualOutcomeAuthority::AnsweredInterrupt
+    );
+    assert!(matches!(
+        task_outcome_after_cancel(abandoned(), true, answered.factual_outcome_authority()),
+        ReceiptTerminalOutcome::Completed { result } if !result.ok
+    ));
+    // An applied change stays the stronger fact.
+    answered.record_committed_apply();
+    answered.record_answered_interrupt();
+    assert_eq!(
+        answered.factual_outcome_authority(),
+        FactualOutcomeAuthority::CommittedWorkspaceApply
+    );
+
+    let unanswered = CancellationToken::new();
+    unanswered.cancel();
+    assert!(matches!(
+        task_outcome_after_cancel(abandoned(), true, unanswered.factual_outcome_authority()),
+        ReceiptTerminalOutcome::Cancelled
+    ));
+}
+
 #[test]
 fn protected_mutation_preserves_success_and_failure_after_cancel_request() {
     let cancellation = CancellationToken::new();
