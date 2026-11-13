@@ -583,7 +583,6 @@ fn enum_refusal(values: &[Value]) -> String {
     // evidence: crates/unica-operation-contract/src/lib.rs::enum_preview_boundaries_keep_whole_escaped_json_literals
     // evidence: crates/unica-daemon/src/infrastructure/daemon/v13_can_honesty_tests.rs::dcs_and_metadata_member_enum_refusals_open_source_backed_contracts
     // decision: Для компактного сообщения выбран предел восемь целых JSON-значений и 256 UTF-8 байт списка. При достижении предела полный домен доступен через next; это предел представления, а не допустимого ввода.
-    // decision-date: 2026-10-28
     // decision-source: https://github.com/IngvarConsulting/unica/issues/2015
     // review: Проверены границы 8/9 значений, 256/257 байт, UTF-8 и открытие полного контракта через MCP.
     const MAX_VALUES: usize = 8;
@@ -601,7 +600,6 @@ fn enum_refusal(values: &[Value]) -> String {
     // evidence: crates/unica-operation-contract/src/lib.rs::enum_preview_boundaries_keep_whole_escaped_json_literals
     // evidence: crates/unica-daemon/src/infrastructure/daemon/v13_can_honesty_tests.rs::dcs_and_metadata_member_enum_refusals_open_source_backed_contracts
     // decision: Для компактного сообщения выбран предел восемь целых JSON-значений и 256 UTF-8 байт списка. При достижении предела полный домен доступен через next; это предел представления, а не допустимого ввода.
-    // decision-date: 2026-10-28
     // decision-source: https://github.com/IngvarConsulting/unica/issues/2015
     // review: Проверены границы 8/9 значений, 256/257 байт, UTF-8 и открытие полного контракта через MCP.
     const MAX_PREVIEW_BYTES: usize = 256;

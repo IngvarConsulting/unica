@@ -14,7 +14,6 @@ use std::time::Duration;
 // problem: неизвестно
 // on-reach: настройка отвергается диагностикой OutOfRange
 // decision: закреплено правилом INV.APP.CONFIG-SNAPSHOT
-// decision-date: 2026-09-22
 // decision-source: arch/rules/analysis/diagnostics-timeout-overlay.md
 const EXPLICIT_DIAGNOSTICS_ANALYZE_MIN_SECONDS: u64 = 30;
 // resource-limit: check.diagnostics-analyze-timeout-max

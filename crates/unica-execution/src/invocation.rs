@@ -19,7 +19,6 @@ use unica_work_control::clock::Clock;
 // problem: неизвестно
 // on-reach: демон возвращает задание с заранее выделенным taskId, та же попытка продолжает работу
 // decision: закреплено правилом
-// decision-date: 2026-09-22
 // decision-source: arch/rules/runtime/invocation-handoff.md
 pub const INVOCATION_HANDOFF_WINDOW: Duration = Duration::from_secs(7);
 // resource-limit: invocation.response-serialization-margin
@@ -33,7 +32,6 @@ pub const INVOCATION_HANDOFF_WINDOW: Duration = Duration::from_secs(7);
 // problem: неизвестно
 // on-reach: квитанция, не решённая к бюджету плюс 125 мс, считается потерянной: frontend отвечает закрытым отказом о потерянном вызове
 // decision: закреплено правилом INV.WIRE.DAEMON-RESPONSE-TIME
-// decision-date: 2026-09-22
 // decision-source: arch/rules/runtime/daemon-response-time.md
 pub const RESPONSE_SERIALIZATION_MARGIN_MS: u64 = 125;
 pub const RESPONSE_SERIALIZATION_MARGIN: Duration =
@@ -49,7 +47,6 @@ pub const RESPONSE_SERIALIZATION_MARGIN: Duration =
 // problem: Короткий бюджет вызывающего не должен прерывать начатую запись хранилища и переводить демон в fail-stop (#1387).
 // on-reach: ошибка срока ожидания задания; начатый шаг хранилища получает не меньше этого времени
 // decision: закреплено правилом
-// decision-date: 2026-10-12
 // decision-source: arch/rules/runtime/receipt-store-fail-stop.md
 pub const TASK_RECONCILIATION_BUDGET: Duration = Duration::from_secs(2);
 
