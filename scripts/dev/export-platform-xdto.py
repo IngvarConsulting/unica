@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -102,8 +103,20 @@ class ExportError(RuntimeError):
     pass
 
 
+BUILD = re.compile(r"\d+(\.\d+){3}")
+
+
+def platform_roots() -> List[Path]:
+    roots = [
+        Path(value) / "1cv8"
+        for value in (os.environ.get("ProgramFiles"), os.environ.get("ProgramFiles(x86)"))
+        if value
+    ]
+    return [root for root in roots if root.is_dir()]
+
+
 def platform_executable(build: str) -> Path:
-    for root in (Path("C:/Program Files/1cv8"), Path("C:/Program Files (x86)/1cv8")):
+    for root in platform_roots():
         executable = root / build / "bin" / "1cv8.exe"
         if executable.is_file():
             return executable
@@ -112,13 +125,12 @@ def platform_executable(build: str) -> Path:
 
 def newest_build(line: str) -> str:
     pattern = re.compile(rf"^{re.escape(line)}\.\d+$")
-    builds = [
+    builds = {
         entry.name
-        for root in (Path("C:/Program Files/1cv8"), Path("C:/Program Files (x86)/1cv8"))
-        if root.is_dir()
+        for root in platform_roots()
         for entry in root.iterdir()
-        if pattern.match(entry.name)
-    ]
+        if entry.is_dir() and pattern.match(entry.name)
+    }
     if not builds:
         raise ExportError(f"no installed build of platform line {line}")
     return max(builds, key=lambda build: tuple(int(part) for part in build.split(".")))
@@ -159,7 +171,7 @@ def run_platform(executable: Path, arguments: Sequence[str], log: Path, step: st
     except (OSError, subprocess.TimeoutExpired) as error:
         raise ExportError(f"{step}: {error}") from error
     if completed.returncode != 0:
-        detail = log.read_text(encoding="utf-8", errors="replace") if log.exists() else ""
+        detail = log.read_text(encoding="utf-8-sig", errors="replace") if log.exists() else ""
         raise ExportError(f"{step} exited with {completed.returncode}: {detail.strip()}")
 
 
@@ -197,26 +209,37 @@ def schema_file_name(namespace: str, index: int) -> str:
 
 def collect(out: Path) -> List[Tuple[str, str, bytes]]:
     seen: Dict[str, int] = {}
+    owners: Dict[str, str] = {}
     schemas = []
     for line in (out / "packages.tsv").read_text(encoding="utf-8-sig").splitlines():
         if not line.strip():
             continue
-        namespace, exported = line.split("\t")
+        fields = line.split("\t")
+        if len(fields) != 2:
+            raise ExportError(f"the package list has a malformed line: {line!r}")
+        namespace, exported = fields
         seen[namespace] = seen.get(namespace, 0) + 1
-        schemas.append((namespace, schema_file_name(namespace, seen[namespace]),
-                        (out / exported).read_bytes()))
+        name = schema_file_name(namespace, seen[namespace])
+        if owners.setdefault(name, namespace) != namespace:
+            raise ExportError(f"{owners[name]} and {namespace} map to the same file {name}")
+        try:
+            payload = (out / exported).read_bytes()
+        except OSError as error:
+            raise ExportError(f"the client listed {exported}, which is unreadable: {error}") from error
+        schemas.append((namespace, name, payload))
     return schemas
 
 
 def publish(export_format: str, build: str, schemas: List[Tuple[str, str, bytes]]) -> Path:
     target = CORPUS_ROOT / export_format / "xdto"
-    if target.exists():
-        shutil.rmtree(target)
-    target.mkdir(parents=True)
+    staging = target.with_name("xdto.new")
+    if staging.exists():
+        shutil.rmtree(staging)
+    staging.mkdir(parents=True)
     digest = hashlib.sha256()
     packages: Dict[str, List[str]] = {}
     for namespace, name, payload in sorted(schemas, key=lambda schema: schema[1]):
-        (target / name).write_bytes(payload)
+        (staging / name).write_bytes(payload)
         digest.update(name.encode("utf-8") + b"\0" + payload)
         packages.setdefault(namespace, []).append(name)
     manifest = {
@@ -229,9 +252,12 @@ def publish(export_format: str, build: str, schemas: List[Tuple[str, str, bytes]
         "otherBuilds": OTHER_BUILDS.get(export_format),
         "files": dict(sorted(packages.items())),
     }
-    (target / "manifest.json").write_text(
+    (staging / "manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
+    if target.exists():
+        shutil.rmtree(target)
+    staging.rename(target)
     return target
 
 
@@ -241,6 +267,10 @@ def parse_builds(values: Sequence[str]) -> Dict[str, str]:
         export_format, separator, build = value.partition("=")
         if not separator or export_format not in LINES:
             raise ExportError(f"--build expects FORMAT=BUILD with a known format: {value}")
+        if not BUILD.fullmatch(build) or not build.startswith(LINES[export_format] + "."):
+            raise ExportError(
+                f"--build {value}: a build of line {LINES[export_format]} writes {export_format}"
+            )
         builds[export_format] = build
     return builds
 
@@ -259,14 +289,20 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     args = parser.parse_args(argv)
     try:
         builds = parse_builds(args.build)
+        work_root = args.work.resolve() if args.work else None
+        if work_root is not None and work_root.exists():
+            raise ExportError(f"--work must name a new directory: {work_root}")
         for export_format in args.formats:
             build = builds.get(export_format) or newest_build(LINES[export_format])
-            if args.work:
-                work = args.work / build
+            if work_root is not None:
+                work = work_root / build
                 work.mkdir(parents=True)
                 refresh(export_format, build, work)
             else:
-                with tempfile.TemporaryDirectory(prefix="unica-xdto-") as temporary:
+                # The platform may still hold the infobase files for a moment.
+                with tempfile.TemporaryDirectory(
+                    prefix="unica-xdto-", ignore_cleanup_errors=True
+                ) as temporary:
                     refresh(export_format, build, Path(temporary))
     except ExportError as error:
         print(f"export-platform-xdto: {error}", file=sys.stderr)
