@@ -1012,6 +1012,23 @@ fn an_answer_to_the_interrupt_is_the_outcome_and_nothing_else_replaces_the_cance
         task_outcome_after_cancel(abandoned(), true, answered.factual_outcome_authority()),
         ReceiptTerminalOutcome::Completed { result } if !result.ok
     ));
+    // A later command of the call that did not answer the cancel leaves the
+    // call cancelled although an earlier one answered.
+    let refused_as_cancelled = ReceiptTerminalOutcome::Completed {
+        result: Box::new(DomainResult::canonical_rejection(
+            None,
+            unica_refusal::RefusalCode::Cancelled,
+            "v8-runner was cancelled",
+        )),
+    };
+    assert!(matches!(
+        task_outcome_after_cancel(
+            refused_as_cancelled,
+            true,
+            answered.factual_outcome_authority()
+        ),
+        ReceiptTerminalOutcome::Cancelled
+    ));
     // An applied change stays the stronger fact.
     answered.record_committed_apply();
     answered.record_answered_interrupt();

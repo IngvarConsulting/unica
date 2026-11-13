@@ -3399,8 +3399,11 @@ impl ProcessTree {
     }
 
     /// CTRL_BREAK to the process group the process leads, only while the
-    /// process still runs: an event for a group without its leader would
-    /// reach other processes of the console.
+    /// process still runs: an event for a group without any live member
+    /// reaches other processes of the console. The check and the event are
+    /// not atomic; the group lives at least as long as its leader, and a
+    /// leader that exits between them leaves its console children (if any)
+    /// as the group the event reaches.
     fn interrupt(&mut self, child: &mut Child) -> io::Result<bool> {
         use windows_sys::Win32::System::Console::{GenerateConsoleCtrlEvent, CTRL_BREAK_EVENT};
 
