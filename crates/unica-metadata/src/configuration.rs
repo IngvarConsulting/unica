@@ -52,6 +52,54 @@ pub struct CfInfoProperties {
     pub comment: Option<String>,
     pub name_prefix: Option<String>,
     pub update_catalog_address: Option<String>,
+    /// The form slots of the root its line has, by camel-case name: the
+    /// common form each names, `null` when empty (`ROOT_FORM_SLOTS`).
+    pub forms: serde_json::Map<String, serde_json::Value>,
+}
+
+/// The form slots of a configuration root in the order the platform writes
+/// them; the auxiliary ones exist from 8.5.1.
+pub const ROOT_FORM_SLOTS: &[&str] = &[
+    "DefaultReportForm",
+    "DefaultReportVariantForm",
+    "DefaultReportSettingsForm",
+    "DefaultDynamicListSettingsForm",
+    "DefaultSearchForm",
+    "DefaultDataHistoryChangeHistoryForm",
+    "DefaultDataHistoryVersionDataForm",
+    "DefaultDataHistoryVersionDifferencesForm",
+    "DefaultCollaborationSystemUsersChoiceForm",
+    "AuxiliaryReportForm",
+    "AuxiliaryReportVariantForm",
+    "AuxiliaryReportSettingsForm",
+    "AuxiliaryDynamicListSettingsForm",
+    "AuxiliaryDataHistoryChangeHistoryForm",
+    "AuxiliaryDataHistoryVersionDataForm",
+    "AuxiliaryDataHistoryVersionDifferencesForm",
+    "AuxiliaryCollaborationSystemUsersChoiceForm",
+    "DefaultConstantsForm",
+];
+
+/// The form slots of a configuration root by camel-case name, from the
+/// first text of each `slot` the root has.
+pub fn root_form_slots<'a>(
+    slot: impl Fn(&str) -> Option<&'a str>,
+) -> serde_json::Map<String, serde_json::Value> {
+    ROOT_FORM_SLOTS
+        .iter()
+        .filter_map(|name| {
+            let value = slot(name)?;
+            let key = format!("{}{}", name[..1].to_lowercase(), &name[1..]);
+            Some((
+                key,
+                if value.is_empty() {
+                    serde_json::Value::Null
+                } else {
+                    serde_json::Value::String(value.to_string())
+                },
+            ))
+        })
+        .collect()
 }
 
 #[derive(serde::Serialize)]

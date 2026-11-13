@@ -259,6 +259,35 @@ fn set_report_variant_form(
     std::collections::BTreeMap<PathBuf, String>,
     unica_source_contract::proposal::ApplyPlanError,
 > {
+    hidden_apply(
+        source,
+        line,
+        |main| {
+            let report = main.join("Reports/АнализВерсийОбъектов.xml");
+            let text = std::fs::read_to_string(&report).unwrap();
+            let text = text.replacen(
+                "<ChildObjects>",
+                "<ChildObjects>\r\n\t\t\t<Form>Вариант</Form>",
+                1,
+            );
+            std::fs::write(&report, text).unwrap();
+        },
+        json!({"at":"main:Report.АнализВерсийОбъектов","dryRun":true,"ops":[
+            {"op":"form.set","args":{"values":{"auxiliaryVariantForm":"Вариант"}}}]}),
+    )
+}
+
+/// The answer of a dry-run `apply` of `args` in a copy of the export at
+/// `source`, set `main` of platform `line`, after `prepare` edits the copy.
+fn hidden_apply(
+    source: &str,
+    line: PlatformLine,
+    prepare: impl FnOnce(&Path),
+    args: serde_json::Value,
+) -> Result<
+    std::collections::BTreeMap<PathBuf, String>,
+    unica_source_contract::proposal::ApplyPlanError,
+> {
     fn copy_tree(from: &Path, to: &Path) {
         std::fs::create_dir_all(to).unwrap();
         for entry in std::fs::read_dir(from).unwrap() {
@@ -275,14 +304,7 @@ fn set_report_variant_form(
     let workspace_root = std::fs::canonicalize(root.path()).unwrap();
     let main = workspace_root.join("src");
     copy_tree(&Path::new(env!("CARGO_MANIFEST_DIR")).join(source), &main);
-    let report = main.join("Reports/АнализВерсийОбъектов.xml");
-    let text = std::fs::read_to_string(&report).unwrap();
-    let text = text.replacen(
-        "<ChildObjects>",
-        "<ChildObjects>\r\n\t\t\t<Form>Вариант</Form>",
-        1,
-    );
-    std::fs::write(&report, text).unwrap();
+    prepare(&main);
     std::fs::write(
         workspace_root.join("v8project.yaml"),
         "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
@@ -303,7 +325,7 @@ fn set_report_variant_form(
             SourceFormat::PlatformXml,
             SourceProfile::platform_xml_of_line(line).unwrap(),
         )],
-        "report-variant-form",
+        "hidden-apply",
     )
     .unwrap();
     let actor = crate::infrastructure::source_workspace::new_actor(identity, context).unwrap();
@@ -317,8 +339,6 @@ fn set_report_variant_form(
             &CancellationToken::new(),
         )
         .unwrap();
-    let args = json!({"at":"main:Report.АнализВерсийОбъектов","dryRun":true,"ops":[
-        {"op":"form.set","args":{"values":{"auxiliaryVariantForm":"Вариант"}}}]});
     let request =
         crate::domain::apply::ApplyRequest::parse(args.as_object().unwrap(), &["main"]).unwrap();
     let (staged, _) = super::super::super::plan_hidden_v13_apply(&request, &binding, &admission)?;
@@ -353,4 +373,95 @@ fn a_report_of_line_8_3_27_refuses_an_auxiliary_variant_form() {
         error.to_string(),
         "Property `AuxiliaryVariantForm` exists from platform 8.5.1 (format 2.21); source set `main` is in format 2.20 (platform 8.3.27)."
     );
+}
+
+/// `form.set` of `values` at the root of a copy of the `all_kinds` export
+/// at `source`, set of platform `line`.
+fn set_root_forms(
+    source: &str,
+    line: PlatformLine,
+    values: serde_json::Value,
+) -> Result<
+    std::collections::BTreeMap<PathBuf, String>,
+    unica_source_contract::proposal::ApplyPlanError,
+> {
+    hidden_apply(
+        source,
+        line,
+        |_| {},
+        json!({"at":"main:Configuration","dryRun":true,"ops":[
+            {"op":"form.set","args":{"values":values}}]}),
+    )
+}
+
+/// The configuration root points its default forms, and from 8.5.1 its
+/// auxiliary ones, at common forms of the set, and clears them.
+/// rule: INV.SOURCE.PROFILE-CAPABILITIES
+#[test]
+fn a_configuration_of_line_8_5_1_points_its_root_form_slots() {
+    let source = "../../tests/fixtures/formats/platform_xml/2.21/all_kinds/src";
+    let line = PlatformLine::new(8, 5, 1);
+    let texts = set_root_forms(
+        source,
+        line,
+        json!({
+            "defaultSearchForm":"MainA",
+            "auxiliaryReportForm":"CommonForm.MainA",
+            "defaultConstantsForm":"main:CommonForm.MainA",
+        }),
+    )
+    .unwrap();
+    let text = &texts[Path::new("Configuration.xml")];
+    for element in [
+        "<DefaultSearchForm>CommonForm.MainA</DefaultSearchForm>",
+        "<AuxiliaryReportForm>CommonForm.MainA</AuxiliaryReportForm>",
+        "<DefaultConstantsForm>CommonForm.MainA</DefaultConstantsForm>",
+        "<DefaultReportForm/>",
+    ] {
+        assert!(text.contains(element), "{element}");
+    }
+    // An empty name clears the slot.
+    let texts = hidden_apply(
+        source,
+        line,
+        |main| {
+            let path = main.join("Configuration.xml");
+            let text = std::fs::read_to_string(&path).unwrap().replacen(
+                "<DefaultSearchForm/>",
+                "<DefaultSearchForm>CommonForm.MainA</DefaultSearchForm>",
+                1,
+            );
+            std::fs::write(&path, text).unwrap();
+        },
+        json!({"at":"main:Configuration","dryRun":true,"ops":[
+            {"op":"form.set","args":{"values":{"defaultSearchForm":""}}}]}),
+    )
+    .unwrap();
+    assert!(texts[Path::new("Configuration.xml")].contains("<DefaultSearchForm/>"));
+}
+
+/// A configuration of 8.3.27 refuses the auxiliary forms 8.5.1 adds, and a
+/// root slot takes only a common form registered in the set.
+/// rule: INV.SOURCE.PROFILE-CAPABILITIES
+#[test]
+fn a_configuration_root_refuses_slots_and_forms_it_does_not_have() {
+    let source = "../../tests/fixtures/formats/platform_xml/2.20/all_kinds/src";
+    let line = PlatformLine::new(8, 3, 27);
+    let error = set_root_forms(source, line, json!({"auxiliaryReportForm":"MainA"})).unwrap_err();
+    assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue);
+    assert_eq!(
+        error.to_string(),
+        "Property `AuxiliaryReportForm` exists from platform 8.5.1 (format 2.21); source set `main` is in format 2.20 (platform 8.3.27)."
+    );
+    let texts = set_root_forms(source, line, json!({"defaultReportForm":"MainA"})).unwrap();
+    assert!(texts[Path::new("Configuration.xml")]
+        .contains("<DefaultReportForm>CommonForm.MainA</DefaultReportForm>"));
+    for (values, kind) in [
+        (json!({"defaultReportForm":"Missing"}), ApplyPlanErrorKind::NotFound),
+        (json!({"defaultReportForm":"Catalog.Валюты"}), ApplyPlanErrorKind::BadValue),
+        (json!({"defaultObjectForm":"MainA"}), ApplyPlanErrorKind::BadValue),
+    ] {
+        let error = set_root_forms(source, line, values.clone()).unwrap_err();
+        assert_eq!(error.kind(), kind, "{values}");
+    }
 }

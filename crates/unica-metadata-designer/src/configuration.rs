@@ -230,6 +230,18 @@ pub fn parse_cf_info_xml(
             comment: optional(cf_prop_text(props, "Comment")),
             name_prefix: optional(cf_prop_text(props, "NamePrefix")),
             update_catalog_address: optional(cf_prop_text(props, "UpdateCatalogAddress")),
+            forms: unica_metadata::configuration::root_form_slots(|name| {
+                props
+                    .children()
+                    .find(|node| {
+                        unica_xml_format::names::element_has_name(
+                            *node,
+                            name,
+                            Some("http://v8.1c.ru/8.3/MDClasses"),
+                        )
+                    })
+                    .map(|node| node.text().unwrap_or_default())
+            }),
         },
         child_objects: counts
             .into_iter()

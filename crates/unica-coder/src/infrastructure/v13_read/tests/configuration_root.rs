@@ -742,3 +742,53 @@ pub(crate) fn production_authorities_reach_all_profile_module_capabilities_from_
         );
     }
 }
+
+/// The root shows the form slots of its line, each the common form it names.
+/// rule: INV.SOURCE.PROFILE-CAPABILITIES
+#[test]
+fn configuration_root_shows_the_form_slots_of_its_line() {
+    use unica_source_contract::format_identity::PlatformLine;
+    for (format, line, count) in [
+        ("2.20", PlatformLine::new(8, 3, 27), 10),
+        ("2.21", PlatformLine::new(8, 5, 1), 18),
+        ("2.22", PlatformLine::new(8, 5, 4), 18),
+    ] {
+        let fixture = std::fs::canonicalize(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tests/fixtures/formats/platform_xml")
+                .join(format)
+                .join("all_kinds/src"),
+        )
+        .unwrap();
+        let copy = tempfile::tempdir().unwrap();
+        let source = std::fs::canonicalize(copy.path()).unwrap();
+        let text = std::fs::read_to_string(fixture.join("Configuration.xml"))
+            .unwrap()
+            .replacen(
+                "<DefaultSearchForm/>",
+                "<DefaultSearchForm>CommonForm.MainA</DefaultSearchForm>",
+                1,
+            );
+        std::fs::write(source.join("Configuration.xml"), text).unwrap();
+        let cancellation = CancellationToken::new();
+        let source_root = Arc::new(unica_workspace::read::open_source_directory(&source).unwrap());
+        let authority = LogicalViewReadAuthority::new(
+            &cancellation,
+            "main",
+            "actor-fixture-main",
+            SourceSetKind::Configuration,
+            source_root,
+            PlatformProfile::for_line(line).unwrap(),
+        );
+        let service = ViewService::new(authority, ViewCursorStore::default());
+        let root = service.view(ViewRequest::new("main:Configuration").unwrap());
+        let forms = root.data.as_ref().unwrap()["props"]["properties"]["forms"]
+            .as_object()
+            .unwrap()
+            .clone();
+        assert_eq!(forms.len(), count, "{format}");
+        assert_eq!(forms["defaultSearchForm"], "CommonForm.MainA", "{format}");
+        assert!(forms["defaultReportForm"].is_null(), "{format}");
+        assert_eq!(forms.contains_key("auxiliaryReportForm"), count == 18);
+    }
+}
