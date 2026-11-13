@@ -976,7 +976,12 @@ fn parse_runner_output(output: ProcessOutput) -> Result<Value, DomainResult> {
             .map(redactor)
             .unwrap_or_else(|| "v8-runner failed without a typed message".to_string());
         return Err(runner_envelope_refusal(
-            runner_rejection(Some(OPERATION.to_string()), code, message),
+            runner_rejection(
+                Some(OPERATION.to_string()),
+                code,
+                envelope["error"]["layer"].as_str(),
+                message,
+            ),
             &envelope,
         ));
     }
