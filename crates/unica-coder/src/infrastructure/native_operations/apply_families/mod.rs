@@ -1711,7 +1711,7 @@ pub struct PersonChosenModeRaise<'a> {
 }
 
 /// Everything a person chose for one call, planned before its edits: the
-/// mode of the set and its vendor support.
+/// vendor support changes first, then the raise of the set's mode.
 pub struct PersonChosenChanges<'a> {
     pub mode_raise: Option<PersonChosenModeRaise<'a>>,
     /// The support changes in the order the person was asked about them:
