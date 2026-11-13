@@ -785,6 +785,15 @@ fn an_extension_root_shows_the_actions_of_its_line() {
             &properties["actionOnExtendedConfigurationObjectsMissing"],
         ];
         if expected {
+            // The parts keep the order the platform writes them.
+            assert_eq!(
+                properties["actionOnExtendedConfigurationObjectsMissing"]
+                    .as_object()
+                    .unwrap()
+                    .keys()
+                    .collect::<Vec<_>>(),
+                ["adoptedObject", "notifiedObject", "checkedObject", "extendedObject"]
+            );
             assert_eq!(
                 observed,
                 [

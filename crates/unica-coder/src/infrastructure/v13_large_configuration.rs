@@ -932,13 +932,25 @@ pub(super) fn read_configuration_root(
     })?;
     let property = |name: &str| properties.get(name).cloned();
     let optional = |name: &str| property(name).filter(|value| !value.is_empty());
-    // The parts of a composite property by their camel-case names; a set
-    // whose line lacks the property has `null`.
+    // The parts of a composite property by their camel-case names, in the
+    // order the platform writes them, as the bounded reader keeps them; a
+    // set whose line lacks the property has `null`.
     let parts = |name: &str| {
-        let parts = properties
+        let mut parts = properties
             .iter()
-            .filter_map(|(key, value)| {
-                let part = key.strip_prefix(name)?.strip_prefix('.')?;
+            .filter_map(|(key, value)| Some((key.strip_prefix(name)?.strip_prefix('.')?, value)))
+            .collect::<Vec<_>>();
+        let order = |part: &str| {
+            unica_metadata::descriptor_operations::DescriptorProperty::ActionOnExtendedConfigurationObjectsMissing
+                .parts()
+                .iter()
+                .position(|names| names[0] == part)
+                .unwrap_or(usize::MAX)
+        };
+        parts.sort_by_key(|(part, _)| order(part));
+        let parts = parts
+            .into_iter()
+            .filter_map(|(part, value)| {
                 let mut chars = part.chars();
                 let first = chars.next()?.to_lowercase().collect::<String>();
                 Some((format!("{first}{}", chars.as_str()), json!(value)))
@@ -1296,9 +1308,11 @@ impl RootState {
                 {
                     role = FrameRole::Property(name.local_name);
                 } else if COMPOSITE_ROOT_PROPERTIES.contains(&name.local_name.as_str()) {
-                    // The first such property counts, like a scalar one.
-                    let prefix = format!("{}.", name.local_name);
-                    if !self.properties.keys().any(|key| key.starts_with(&prefix)) {
+                    // The first such property counts, like a scalar one, even
+                    // when it has no parts.
+                    if !self.properties.contains_key(&name.local_name) {
+                        self.properties
+                            .insert(name.local_name.clone(), String::new());
                         role = FrameRole::Parts(name.local_name);
                     }
                 }
