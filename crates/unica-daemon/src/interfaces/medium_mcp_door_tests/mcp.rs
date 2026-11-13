@@ -2918,7 +2918,7 @@ async fn a_push_task_asks_about_the_diverged_base_when_its_result_is_read() {
 
     let root = tempfile::tempdir().unwrap();
     let workspace = diverged_base_workspace(root.path());
-    let calls = || runner_calls(&workspace);
+    let calls = || runner_writes(&workspace);
 
     let daemon = LiveDaemon::start(canonical_v13_service());
     let (mut client, _) = spawn_unica_server(UnicaServer::with_canonical_daemon(
@@ -3095,6 +3095,18 @@ async fn a_push_task_asks_about_the_diverged_base_when_its_result_is_read() {
 /// The workspace of a diverged base: its runner refuses a plain `push` with
 /// `untracked_base` and loads the set on `push --force`.
 fn diverged_base_workspace(root: &std::path::Path) -> std::path::PathBuf {
+    let workspace = diverged_base_of_another_copy(root);
+    // Without the runner's warning: the infobase is this copy's own.
+    let force = workspace.join("probe-force.json");
+    let mut envelope: Value = serde_json::from_slice(&std::fs::read(&force).unwrap()).unwrap();
+    envelope["warnings"] = json!([]);
+    std::fs::write(&force, envelope.to_string()).unwrap();
+    workspace
+}
+
+/// [`diverged_base_workspace`] whose file infobase another working copy
+/// holds: the forced push is warned about it, as the captured envelope is.
+fn diverged_base_of_another_copy(root: &std::path::Path) -> std::path::PathBuf {
     crate::infrastructure::daemon::server::actor_capacity_tests::install_runner_probe(
         root,
         DIVERGED_BASE_RUNNER,
@@ -3125,6 +3137,16 @@ fn runner_calls(workspace: &std::path::Path) -> Vec<String> {
         .unwrap_or_default()
         .lines()
         .map(str::to_owned)
+        .collect()
+}
+
+/// The writing calls of the probe runner: an executed write over a file
+/// infobase first checks the runner's preview for the infobase of another
+/// copy, and these previews are left out.
+fn runner_writes(workspace: &std::path::Path) -> Vec<String> {
+    runner_calls(workspace)
+        .into_iter()
+        .filter(|call| !call.ends_with("--dry-run"))
         .collect()
 }
 
@@ -3195,7 +3217,7 @@ async fn a_native_push_task_asks_about_the_diverged_base_as_input_required() {
         question["params"]["_meta"]["unica/question"]["code"], "source.base_divergence",
         "{asking}"
     );
-    assert_eq!(runner_calls(&workspace).len(), 1);
+    assert_eq!(runner_writes(&workspace).len(), 1);
 
     // A restarted door asks the same question again.
     client.shutdown().await;
@@ -3222,7 +3244,7 @@ async fn a_native_push_task_asks_about_the_diverged_base_as_input_required() {
         done["result"]["result"]["structuredContent"]["ok"], true,
         "{done}"
     );
-    let calls = runner_calls(&workspace);
+    let calls = runner_writes(&workspace);
     assert_eq!(calls.len(), 2, "{calls:?}");
     assert!(calls[1].ends_with("push main --force"), "{calls:?}");
 
@@ -3235,7 +3257,7 @@ async fn a_native_push_task_asks_about_the_diverged_base_as_input_required() {
         refused["error"]["data"]["code"], "task_input_not_supported",
         "{refused}"
     );
-    assert_eq!(runner_calls(&workspace).len(), 2);
+    assert_eq!(runner_writes(&workspace).len(), 2);
 
     client.shutdown().await;
     daemon.finish();
@@ -3476,7 +3498,7 @@ async fn a_push_held_by_sessions_ends_them_by_the_persons_choice() {
     let terminated = &done["result"]["structuredContent"]["data"]["sessionsTerminated"];
     assert_eq!(terminated[0]["computer"], "PC1", "{done}");
     assert_eq!(terminated.as_array().map(Vec::len), Some(2), "{done}");
-    let calls = runner_calls(&workspace);
+    let calls = runner_writes(&workspace);
     assert_eq!(calls.len(), 2, "{calls:?}");
     assert!(!calls[0].contains("--sessions"), "{calls:?}");
     assert!(
@@ -3546,7 +3568,7 @@ async fn a_push_held_by_file_sessions_is_repeated_after_the_person_closed_them()
         .to_owned();
     let done = read_task_result(&mut client, &follower, 100).await;
     assert_eq!(done["result"]["structuredContent"]["ok"], true, "{done}");
-    let calls = runner_calls(&workspace);
+    let calls = runner_writes(&workspace);
     assert_eq!(calls.len(), 2, "{calls:?}");
     assert!(
         calls.iter().all(|call| !call.contains("--sessions")),
@@ -3597,7 +3619,7 @@ async fn a_failed_retry_after_ending_sessions_restarts_the_server_by_the_persons
         .to_owned();
     let done = read_task_result(&mut client, &follower, 200).await;
     assert_eq!(done["result"]["structuredContent"]["ok"], true, "{done}");
-    let calls = runner_calls(&workspace);
+    let calls = runner_writes(&workspace);
     assert_eq!(calls.len(), 4, "{calls:?}");
     assert!(calls[2].ends_with("standalone restart"), "{calls:?}");
     assert!(
@@ -3748,6 +3770,58 @@ async fn an_existing_infobase_is_recreated_by_the_persons_choice() {
         "{calls:?}"
     );
     assert!(calls[3].ends_with("infobase create --dry-run"), "{calls:?}");
+
+    client.shutdown().await;
+    daemon.finish();
+}
+
+/// A write into the file infobase of another working copy runs only by the
+/// person's choice: the runner's preview warns about that infobase, and the
+/// Task asks when its result is read. Answers add up: after «Перезаписать
+/// базу» the same push asks about the other copy, and «Продолжить с этой
+/// базой» runs it.
+/// rule: INV.RUNTIME.RUNNER-BASE-REFUSALS
+/// rule: INV.MCP.HUMAN-CHOICE
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_push_into_another_copys_base_runs_by_the_persons_choice() {
+    use crate::infrastructure::daemon::server::actor_capacity_tests::canonical_v13_service;
+
+    let root = tempfile::tempdir().unwrap();
+    let workspace = diverged_base_of_another_copy(root.path());
+    let daemon = LiveDaemon::start(canonical_v13_service());
+    let mut client = forms_client(&daemon, &workspace).await;
+
+    let (diverged, asked) = push_and_answer(&mut client, "overwrite").await;
+    assert_eq!(
+        diverged["params"]["_meta"]["unica/question"]["code"], "source.base_divergence",
+        "{diverged}"
+    );
+    assert_eq!(asked["method"], "elicitation/create", "{asked}");
+    assert_eq!(
+        asked["params"]["_meta"]["unica/question"]["code"], "infobase.another_copy",
+        "{asked}"
+    );
+    assert_eq!(
+        asked["params"]["message"],
+        "Базу «origin» изменяла другая рабочая копия проекта.\n\nПродолжить с этой базой: правки другой копии могут быть перезаписаны."
+    );
+    assert_eq!(runner_writes(&workspace).len(), 1, "nothing written yet");
+
+    client
+        .send(json!({
+            "jsonrpc": "2.0", "id": asked["id"],
+            "result": {"action": "accept", "content": {"choice": "continue"}}
+        }))
+        .await;
+    let answered = client.receive().await;
+    let done = match answered["result"]["structuredContent"]["data"]["task"]["taskId"].as_str() {
+        Some(follower) => read_task_result(&mut client, follower, 300).await,
+        None => answered,
+    };
+    assert_eq!(done["result"]["structuredContent"]["ok"], true, "{done}");
+    let writes = runner_writes(&workspace);
+    assert_eq!(writes.len(), 2, "{writes:?}");
+    assert!(writes[1].ends_with("push main --force"), "{writes:?}");
 
     client.shutdown().await;
     daemon.finish();
