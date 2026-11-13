@@ -176,11 +176,17 @@ fn agent_receipt(stdout: &str) -> Option<serde_json::Value> {
 }
 
 fn lock_for(command: &ProcessCommand) -> Result<RunnerLock, String> {
-    let config = command
-        .args
+    // `init` takes no global `--config`: it names the project file it writes
+    // beside with `--output`.
+    let config = ["--config", "--output"]
         .iter()
-        .position(|value| value == "--config")
-        .and_then(|position| command.args.get(position + 1))
+        .find_map(|key| {
+            command
+                .args
+                .iter()
+                .position(|value| value == key)
+                .and_then(|position| command.args.get(position + 1))
+        })
         .ok_or("runner adapter requires an explicit project config")?;
     let root = Path::new(config)
         .parent()

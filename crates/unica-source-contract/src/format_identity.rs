@@ -317,6 +317,28 @@ pub fn configuration_root_additions_after(line: Option<PlatformLine>) -> Vec<Lin
         .collect()
 }
 
+/// What a platform line adds to the members of metadata objects: the member
+/// kind, its property and the line it exists from, by the all_kinds export
+/// and the platform XDTO of each line (INV.SOURCE.PROFILE-CAPABILITIES).
+const MEMBER_LINE_ADDITIONS: &[(&str, &str, PlatformLine)] =
+    &[("EnumValue", "Color", PlatformLine::new(8, 5, 1))];
+
+/// The line a `member` kind's `property` exists from, when a later line than
+/// the first described one adds it.
+pub fn member_property_since(member: &str, property: &str) -> Option<PlatformLine> {
+    MEMBER_LINE_ADDITIONS
+        .iter()
+        .find(|(kind, name, _)| *kind == member && *name == property)
+        .map(|(_, _, since)| *since)
+}
+
+/// Whether a set of platform `line` has the `property` of a `member` kind; a
+/// set without a known line has only what every described line has.
+pub fn member_property_exists(line: Option<PlatformLine>, member: &str, property: &str) -> bool {
+    member_property_since(member, property)
+        .is_none_or(|since| line.is_some_and(|line| line >= since))
+}
+
 /// The platform lines whose capabilities are described, with their text.
 pub const DESCRIBED_PLATFORM_LINES: &[(PlatformLine, &str)] = &[
     (PlatformLine::new(8, 3, 27), "8.3.27"),

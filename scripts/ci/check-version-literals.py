@@ -18,9 +18,11 @@ and new ones do not. The key lives in the crate, so PRs touching different
 crates do not meet in one list. A lowered count does not fail;
 `--write-baseline` lowers the baselines to the current counts.
 
-Production code is a crate's `.rs` files outside `tests/`, `*_tests.rs`,
-`tests.rs`, test-support and fixture files and files gated whole by a leading
-`#![cfg(test)]`, cut at the first `#[cfg(test)]` module; comment lines are
+Production code is a crate's `.rs` files whose path within the crate has no
+test part: `tests`, `*_tests`, test support or fixtures, as a directory or a
+file name, so the submodules in `foo_tests/` are test code as `foo_tests.rs` is.
+A file gated whole by a leading `#![cfg(test)]` is test code too. Each file is
+cut at its first `#[cfg(test)]` module; comment lines are
 skipped. The files that own versions are allowed. Literals are matched line by
 line, so a `PlatformLine::new` call whose arguments rustfmt wrapped is not seen;
 a comparison of two line values names no version and is not seen either.
@@ -99,13 +101,23 @@ def load_crates(root: Path) -> list[Crate]:
     return crates
 
 
-def is_production(relative: str) -> bool:
-    name = relative.rsplit("/", 1)[-1]
-    if "/tests/" in relative or "/target/" in relative or "/benches/" in relative:
+def is_test_part(part: str) -> bool:
+    """A directory or file stem that holds test code: `tests`, `foo_tests`, test support, fixtures."""
+    return (
+        part in ("tests", "benches", "target")
+        or part.endswith("_tests")
+        or "test_support" in part
+        or "fixture" in part
+    )
+
+
+def is_production(inside: str) -> bool:
+    """`inside` is the path within the crate. A test module's submodules live in its
+    directory, so every directory on the path counts, not only the file name."""
+    *directories, name = inside.split("/")
+    if name == "build.rs":
         return False
-    if name == "tests.rs" or name.endswith("_tests.rs") or name == "build.rs":
-        return False
-    return "test_support" not in name and "fixture" not in name
+    return not any(is_test_part(part) for part in [*directories, name.removesuffix(".rs")])
 
 
 def is_owner(relative: str) -> bool:
@@ -133,9 +145,10 @@ def source_literals(relative: str, source: str) -> list[Literal]:
 
 def crate_literals(root: Path, crate: Crate) -> list[Literal]:
     found = []
-    for path in sorted((root / crate.directory).rglob("*.rs")):
+    directory = root / crate.directory
+    for path in sorted(directory.rglob("*.rs")):
         relative = path.relative_to(root).as_posix()
-        if not is_production(relative) or is_owner(relative):
+        if not is_production(path.relative_to(directory).as_posix()) or is_owner(relative):
             continue
         found.extend(source_literals(relative, path.read_text(encoding="utf-8", errors="replace")))
     return found

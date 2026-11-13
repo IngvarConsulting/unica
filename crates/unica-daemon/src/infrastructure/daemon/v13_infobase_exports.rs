@@ -694,6 +694,22 @@ fn execute_with_resolved_runner(
             ),
         );
     }
+    if prepared.operation == ExportOperation::Restore
+        && super::v13_infobase_another_copy::needs_preview(
+            &prepared.context.workspace_root,
+            &prepared.call,
+        )
+    {
+        if let Ok(preview) = invoke_runner(prepared, tool, runner, &cancellation, true) {
+            if let Some(refusal) = super::v13_infobase_another_copy::refusal_for(
+                prepared.operation.name(),
+                &preview,
+                &prepared.call,
+            ) {
+                return refusal;
+            }
+        }
+    }
     let applied = match invoke_runner(prepared, tool, runner, &cancellation, false) {
         Ok(envelope) => envelope,
         Err(result) => return result,
@@ -1488,9 +1504,10 @@ pub(super) const ANOTHER_COPY_WARNING_CODE: &str = "infobase_of_another_copy";
 /// Устойчивая часть предупреждения раннера о базе другой рабочей копии
 /// (`use_cases::infobase_owner`: «<команда> writes the infobase '<путь>' of
 /// another working copy: it is held by …»). Машинного кода у предупреждения
-/// нет: опознание по этой части — решение владельца, оно закреплено тестами на
-/// живых конвертах push, pull, extensions и infobase.restore. Сменит раннер
-/// прозу — тесты на конвертах упадут при следующем переходе.
+/// пока нет (v8-runner-rust#460), поэтому опознание идёт по этой части; его
+/// держат тесты на живых конвертах push, pull, extensions и infobase.restore.
+/// Сменит раннер прозу — эти тесты упадут при следующем переходе. Это
+/// единственное место опознания: код раннера заменит его одной правкой.
 const ANOTHER_COPY_RUNNER_FRAGMENT: &str = " of another working copy: it is held by ";
 
 /// Своё предупреждение Unica вместо прозы раннера: без путей чужой копии, без
@@ -2758,6 +2775,30 @@ mod tests {
         );
         assert!(result.ok, "{result:?}");
         super::super::v13_source_import::tests::assert_another_copy_is_named(&result);
+
+        // Над файловой базой исполнение без согласия человека сначала
+        // сверяется с превью и отменяется с вопросом.
+        fs::write(
+            root.path().join(CONFIG_NAME),
+            "format: DESIGNER
+infobase:
+  connection: 'File=build/ib'
+",
+        )
+        .unwrap();
+        let runner = SequenceRunner::new(vec![process(preview)]);
+        let refused = execute_with_resolved_runner(
+            &prepared_restore(root.path(), false, RestoreMode::Replace),
+            &runner,
+            CancellationToken::new(),
+            &tool,
+            "0.14.0",
+        );
+        assert_eq!(refused.diagnostics[0]["code"], "cancelled", "{refused:?}");
+        assert_eq!(
+            refused.human_choice.as_deref().expect("a question").code,
+            "infobase.another_copy"
+        );
     }
 
     /// rule: INV.RUNTIME.RUNNER-MUTATION-CANCELLATION

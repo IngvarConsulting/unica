@@ -338,6 +338,7 @@ pub fn typed_element(
             deny_incomplete_values: None,
             fill_value: None,
             addressing_dimension: None,
+            color: None,
             properties: properties_readback,
             standard_attributes: None,
             property_limits: Vec::new(),
@@ -556,6 +557,9 @@ pub fn typed_element(
         .into_iter()
         .chain(profile_properties)
         .collect();
+    let color = (node.tag_name().name() == "EnumValue")
+        .then(|| crate::info_projection::direct_md_child_text(properties, "Color"))
+        .flatten();
     Some(MetaElementData {
         name,
         incomplete,
@@ -568,6 +572,7 @@ pub fn typed_element(
         deny_incomplete_values,
         fill_value,
         addressing_dimension,
+        color,
         properties: properties_readback,
         standard_attributes,
         property_limits,

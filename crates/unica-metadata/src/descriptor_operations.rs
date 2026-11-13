@@ -85,18 +85,7 @@ impl LaterLineCapability {
             Some(value) => format!("Value `{value}` of `{}`", self.property),
             None => format!("Property `{}`", self.property),
         };
-        let set = match line {
-            Some(line) => format!(
-                "source set `{source_set}` is in format {} (platform {line})",
-                line_format(line)
-            ),
-            None => format!("source set `{source_set}` names no platform line"),
-        };
-        format!(
-            "{subject} exists from platform {} (format {}); {set}.",
-            self.since,
-            line_format(self.since)
-        )
+        later_line_reason(&subject, self.since, source_set, line)
     }
 
     /// The `can` mark: what is missing, from which line and format.
@@ -121,8 +110,29 @@ fn line_lacks(line: Option<PlatformLine>, property: &str, value: Option<&str>) -
         .any(|addition| addition.property == property && addition.value == value)
 }
 
+/// Why `subject` is missing in a set of platform `line`: it exists from
+/// line `since`. `can` and the refusal of an edit give this one reason.
+pub fn later_line_reason(
+    subject: &str,
+    since: PlatformLine,
+    source_set: &str,
+    line: Option<PlatformLine>,
+) -> String {
+    let set = match line {
+        Some(line) => format!(
+            "source set `{source_set}` is in format {} (platform {line})",
+            line_format(line)
+        ),
+        None => format!("source set `{source_set}` names no platform line"),
+    };
+    format!(
+        "{subject} exists from platform {since} (format {}); {set}.",
+        line_format(since)
+    )
+}
+
 /// The Designer export format platform `line` writes.
-fn line_format(line: PlatformLine) -> &'static str {
+pub(crate) fn line_format(line: PlatformLine) -> &'static str {
     unica_source_contract::SourceProfile::platform_xml_of_line(line)
         .and_then(unica_source_contract::SourceProfile::serialization_format)
         .unwrap_or("unknown")
