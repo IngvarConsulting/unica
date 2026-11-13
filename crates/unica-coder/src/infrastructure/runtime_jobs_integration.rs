@@ -15,10 +15,6 @@ use std::{
 use unica_adapter_v8_runner::worker::{self, test_support::*};
 use unica_adapter_v8_runner::{
     backend::SystemRuntimeJobRunner,
-    fallback::{
-        classify_partial_platform_failure, full_rebuild_argv, BuildAttempt, FallbackRejection,
-        PARTIAL_FALLBACK_WARNING,
-    },
     preflight::RuntimeBuildPreflight,
     request::{
         production_runtime_connection_markers, production_runtime_secret_flags, redact_argv,
@@ -33,7 +29,6 @@ use unica_process::runtime_job::{
     cancel_and_reap, cancel_and_reap_with_budget, RuntimeJobOutput, RuntimeJobProcess,
     RuntimeJobProcessState, RuntimeJobSpawnFailure, RuntimeJobSpawnResult, StreamTail,
 };
-use unica_process::STDOUT_CAPTURE_LIMIT;
 
 use unica_execution::runner::{
     attempt::{RuntimeAttemptScope, RuntimeJobRunner},
@@ -43,7 +38,6 @@ use unica_work_control::cancellation::CancellationToken;
 use uuid::Uuid;
 type JobResult<T> = Result<T, String>;
 type RuntimeJobService = runtime_jobs::RuntimeJobService<RuntimeJobRequest>;
-const FALLBACK_RECEIPT_BYTES: usize = STDOUT_CAPTURE_LIMIT;
 
 fn run_worker_from_reader(reader: impl Read) -> JobResult<()> {
     worker::run_worker_from_reader(reader, shared_workspace_observer(), &RuntimeCacheLifecycle)
@@ -442,159 +436,6 @@ pub(crate) mod tests {
                 "worker output leaked {secret}: {output}"
             );
         }
-    }
-
-    #[test]
-    fn truncated_worker_stdout_cannot_authorize_full_fallback() {
-        let receipt = completed_partial_failure_json();
-        let mut padded_receipt = receipt.clone();
-        padded_receipt.push_str(&" ".repeat(FALLBACK_RECEIPT_BYTES - receipt.len()));
-        let mut bytes = b"discarded-prefix".to_vec();
-        bytes.extend_from_slice(padded_receipt.as_bytes());
-        let mut tail = StreamTail::spawn_with_receipt(Cursor::new(bytes));
-        assert!(!tail.finish().expect("finish output reader"));
-        let output = tail.tail(OUTPUT_TAIL_BYTES).expect("read output tail");
-        let (receipt, receipt_truncated) = tail.receipt().expect("read classification receipt");
-        let argv = vec!["--json-message".to_string(), "build".to_string()];
-
-        assert_eq!(output.len(), OUTPUT_TAIL_BYTES);
-        assert!(receipt.is_none());
-        assert!(receipt_truncated);
-        assert_eq!(
-            classify_partial_platform_failure(&BuildAttempt {
-                argv: &argv,
-                process_exit_code: Some(4),
-                status_success: false,
-                timed_out: false,
-                cancelled: false,
-                stdout_truncated: receipt_truncated,
-                stdout_had_invalid_utf8: false,
-                stdout: receipt.as_deref().unwrap_or_default(),
-            }),
-            Err(FallbackRejection::Receipt(
-                "the captured output was truncated"
-            )),
-            "a valid JSON tail must not hide discarded stdout bytes"
-        );
-    }
-
-    #[test]
-    fn redacted_worker_logs_do_not_corrupt_transient_fallback_evidence() {
-        let receipt = completed_partial_failure_json()
-            .replace("/tmp/partial.lst", "/tmp/token=durable-secret/partial.lst");
-        let mut tail = StreamTail::spawn_with_receipt(Cursor::new(receipt.into_bytes()));
-        assert!(!tail.finish().expect("finish output reader"));
-        let output = tail.tail(OUTPUT_TAIL_BYTES).expect("read output tail");
-        let (receipt, receipt_truncated) = tail.receipt().expect("read classification receipt");
-        let receipt = receipt.expect("complete raw receipt");
-        let argv = vec!["--json-message".to_string(), "build".to_string()];
-
-        assert!(!output.contains("durable-secret"));
-        assert!(!receipt_truncated);
-        assert!(
-            classify_partial_platform_failure(&BuildAttempt {
-                argv: &argv,
-                process_exit_code: Some(4),
-                status_success: false,
-                timed_out: false,
-                cancelled: false,
-                stdout_truncated: receipt_truncated,
-                stdout_had_invalid_utf8: false,
-                stdout: &receipt,
-            })
-            .is_ok(),
-            "redaction for persisted logs must not change transient retry evidence"
-        );
-    }
-
-    #[test]
-    fn redacted_tail_truncation_does_not_reject_a_complete_raw_receipt() {
-        let expanded_log = "token=x,".repeat(600);
-        let receipt = completed_partial_failure_json().replace("sanitized", &expanded_log);
-        assert!(receipt.len() <= OUTPUT_TAIL_BYTES);
-        let mut tail = StreamTail::spawn_with_receipt(Cursor::new(receipt.into_bytes()));
-        assert!(!tail.finish().expect("finish output reader"));
-        let redacted = tail.tail(OUTPUT_TAIL_BYTES).expect("read redacted tail");
-        let (receipt, receipt_truncated) = tail.receipt().expect("read classification receipt");
-        let receipt = receipt.expect("complete raw receipt");
-        let argv = vec!["--json-message".to_string(), "build".to_string()];
-
-        // Redaction expanded the persisted tail past its cap while the raw
-        // receipt stayed whole, which is exactly the split the classifier reads.
-        assert_eq!(redacted.len(), OUTPUT_TAIL_BYTES);
-        assert!(!receipt_truncated);
-        assert!(
-            classify_partial_platform_failure(&BuildAttempt {
-                argv: &argv,
-                process_exit_code: Some(4),
-                status_success: false,
-                timed_out: false,
-                cancelled: false,
-                stdout_truncated: receipt_truncated,
-                stdout_had_invalid_utf8: false,
-                stdout: &receipt,
-            })
-            .is_ok(),
-            "only truncation of the raw receipt may reject retry evidence"
-        );
-    }
-
-    #[test]
-    fn durable_fallback_accepts_a_receipt_within_the_sync_capture_limit() {
-        let expanded_log = "x".repeat(OUTPUT_TAIL_BYTES);
-        let receipt = completed_partial_failure_json().replace("sanitized", &expanded_log);
-        assert!(receipt.len() > OUTPUT_TAIL_BYTES);
-        assert!(receipt.len() < FALLBACK_RECEIPT_BYTES);
-
-        let mut tail = StreamTail::spawn_with_receipt(Cursor::new(receipt.into_bytes()));
-        tail.finish().expect("finish output reader");
-        let (receipt, receipt_truncated) = tail.receipt().expect("read classification receipt");
-        let receipt = receipt.expect("complete raw receipt");
-        let argv = vec!["--json-message".to_string(), "build".to_string()];
-
-        assert!(!receipt_truncated);
-        assert!(
-            classify_partial_platform_failure(&BuildAttempt {
-                argv: &argv,
-                process_exit_code: Some(4),
-                status_success: false,
-                timed_out: false,
-                cancelled: false,
-                stdout_truncated: receipt_truncated,
-                stdout_had_invalid_utf8: false,
-                stdout: &receipt,
-            })
-            .is_ok(),
-            "durable classification must accept every complete receipt that sync capture accepts"
-        );
-    }
-
-    #[test]
-    fn raw_receipt_preserves_utf8_split_across_stream_chunks() {
-        let template = completed_partial_failure_json();
-        let marker = template.find("sanitized").expect("platform log marker");
-        let padding = 4095usize.saturating_sub(marker);
-        let receipt = template.replace("sanitized", &format!("{}я", "a".repeat(padding)));
-        assert!(receipt.len() <= OUTPUT_TAIL_BYTES);
-        let mut tail = StreamTail::spawn_with_receipt(Cursor::new(receipt.into_bytes()));
-        tail.finish().expect("finish output reader");
-        let (receipt, truncated) = tail.receipt().expect("read classification receipt");
-        let receipt = receipt.expect("complete UTF-8 receipt");
-        let argv = vec!["--json-message".to_string(), "build".to_string()];
-
-        assert!(!truncated);
-        assert!(receipt.contains('я'));
-        assert!(classify_partial_platform_failure(&BuildAttempt {
-            argv: &argv,
-            process_exit_code: Some(4),
-            status_success: false,
-            timed_out: false,
-            cancelled: false,
-            stdout_truncated: false,
-            stdout_had_invalid_utf8: false,
-            stdout: &receipt,
-        })
-        .is_ok());
     }
 
     #[test]
@@ -2635,84 +2476,6 @@ pub(crate) mod tests {
 
     /// rule: INV.APP.RUNTIME-JOB-DIRECTORY-AUTHORITY
     #[test]
-    fn full_rebuild_fallback_never_follows_a_replaced_job_directory() {
-        let cache = TestCache::new();
-        let jobs_root = cache.path().join("jobs");
-        let sequence = Arc::new(SequenceRunner::new(vec![
-            FakeProcessState {
-                polls_until_exit: 1,
-                result: FakeResult::Exit(4),
-                stdout: completed_partial_failure_json(),
-                stderr: String::new(),
-                cancel_calls: 0,
-            },
-            FakeProcessState {
-                polls_until_exit: 1,
-                result: FakeResult::Exit(0),
-                stdout: "full rebuild done".to_string(),
-                stderr: String::new(),
-                cancel_calls: 0,
-            },
-        ]));
-        let service = RuntimeJobService::new(cache.path(), sequence.clone());
-        let job = service
-            .test_start(fallback_build_request(&cache.path()))
-            .unwrap();
-        let armed = arm_directory_swaps(&service);
-        let (swap, installed) =
-            ReplacedJobDirectory::deferred(jobs_root.clone(), Arc::new(Mutex::new(job.id.clone())));
-        *armed.lock().unwrap() = Some((DirectoryAuthorityHookPoint::LogsWritten, swap));
-
-        // The partial attempt exited and its logs are written; the directory
-        // is swapped before the fallback decision. The fallback itself must
-        // refuse: no second process may start for the replacement.
-        service
-            .poll(&job.id)
-            .expect_err("the fallback must not follow a replaced job directory");
-        let during = installed
-            .try_recv()
-            .expect("the swap ran before the fallback");
-        during.assert_untouched(service.test_store(), &job.id);
-        assert_eq!(sequence.requests.lock().unwrap().len(), 1);
-        assert!(service.test_has_retained_process(&job.id));
-        let (aside, installed_bytes) = during.restore();
-
-        // Restored, the same retained authority still holds the pending full
-        // rebuild and carries the job into it.
-        assert_eq!(
-            service.poll(&job.id).unwrap().phase,
-            RuntimeJobPhase::Running
-        );
-        assert_eq!(sequence.requests.lock().unwrap().len(), 2);
-
-        // Swapped again while the full rebuild runs.
-        let between = ReplacedJobDirectory::install(&jobs_root, &job.id);
-        service
-            .poll(&job.id)
-            .expect_err("the full rebuild poll must not follow a replaced job directory");
-        between.assert_untouched(service.test_store(), &job.id);
-        let (second_aside, second_installed) = between.restore();
-
-        let finished = service.poll(&job.id).unwrap();
-        assert_finished_in_admitted_directory(
-            &service,
-            &job.id,
-            &finished,
-            RuntimeJobPhase::Succeeded,
-        );
-        assert_eq!(sequence.requests.lock().unwrap().len(), 2);
-        assert_eq!(
-            unica_workspace::test_support::tree_snapshot(&aside),
-            installed_bytes
-        );
-        assert_eq!(
-            unica_workspace::test_support::tree_snapshot(&second_aside),
-            second_installed
-        );
-    }
-
-    /// rule: INV.APP.RUNTIME-JOB-DIRECTORY-AUTHORITY
-    #[test]
     fn record_publication_and_lock_release_never_follow_a_replaced_job_directory() {
         let cache = TestCache::new();
         let jobs_root = cache.path().join("jobs");
@@ -2931,36 +2694,6 @@ pub(crate) mod tests {
         assert!(cache.path().join("jobs/active.lock").exists());
     }
 
-    #[test]
-    fn uncertain_post_spawn_failure_retains_active_lock_for_full_build_fallback() {
-        let cache = TestCache::new();
-        let first = FakeProcessState {
-            polls_until_exit: 1,
-            result: FakeResult::Exit(4),
-            stdout: completed_partial_failure_json(),
-            stderr: String::new(),
-            cancel_calls: 0,
-        };
-        let runner = Arc::new(UncertainSpawnRunner::fail_on_attempt(1, Some(first)));
-        let service = RuntimeJobService::new(cache.path(), runner);
-        let started = service
-            .test_start(fallback_build_request(&cache.path()))
-            .expect("start first partial attempt");
-
-        service
-            .poll(&started.id)
-            .expect_err("uncertain fallback ownership must fail closed");
-
-        assert!(
-            service.test_store().active_lock_path().exists(),
-            "uncertain fallback ownership released active.lock"
-        );
-        assert_eq!(
-            service.test_store().read_record(&started.id).unwrap().phase,
-            RuntimeJobPhase::Lost
-        );
-    }
-
     fn complete_uncertain_process(runner: &UncertainSpawnRunner) {
         let state = runner
             .processes
@@ -3031,47 +2764,6 @@ pub(crate) mod tests {
         finished_rx
             .recv_timeout(Duration::from_secs(2))
             .expect("worker did not finish supervision")
-            .expect("supervisor exits after proof");
-        worker.join().expect("join worker");
-        assert!(!store.active_lock_path().exists());
-        assert_replacement_available(&cache, &request);
-    }
-
-    /// rule: INV.APP.RUNTIME-RESOURCE-TREE
-    #[test]
-    fn worker_supervises_fallback_retained_ownership_until_proven_terminal() {
-        let cache = TestCache::new();
-        let first = FakeProcessState {
-            polls_until_exit: 1,
-            result: FakeResult::Exit(4),
-            stdout: completed_partial_failure_json(),
-            stderr: String::new(),
-            cancel_calls: 0,
-        };
-        let request = fallback_build_request(&cache.path());
-        let queued = RuntimeJobService::enqueue(cache.path(), &request).expect("queue build");
-        let handoff = worker_request(&cache, &queued.id, &request);
-        let runner = Arc::new(UncertainSpawnRunner::fail_on_attempt(1, Some(first)));
-        let worker_runner = Arc::clone(&runner);
-        let (finished_tx, finished_rx) = mpsc::channel();
-        let worker = thread::spawn(move || {
-            finished_tx
-                .send(run_worker_request(handoff, worker_runner))
-                .expect("send worker result");
-        });
-        let store = RuntimeJobStore::new(cache.path(), DEFAULT_STALE_AFTER);
-        wait_for_lost_record(&store, &queued.id);
-        assert!(
-            finished_rx.try_recv().is_err(),
-            "worker abandoned fallback authority"
-        );
-        assert!(store.active_lock_path().exists());
-        assert_replacement_refused(&cache, &request);
-
-        complete_uncertain_process(&runner);
-        finished_rx
-            .recv_timeout(Duration::from_secs(2))
-            .expect("fallback supervisor did not finish")
             .expect("supervisor exits after proof");
         worker.join().expect("join worker");
         assert!(!store.active_lock_path().exists());
@@ -3424,23 +3116,6 @@ pub(crate) mod tests {
         );
     }
 
-    /// rule: INV.APP.RUNTIME-RESOURCE-TREE
-    #[test]
-    fn worker_retains_fallback_process_when_running_record_write_fails() {
-        let cache = TestCache::new();
-        let request = fallback_build_request(&cache.path());
-        // Recreate the fixture inside the helper's cache-independent request
-        // while keeping its captured workspace alive for reauthorization.
-        let first = FakeProcessState {
-            polls_until_exit: 1,
-            result: FakeResult::Exit(4),
-            stdout: completed_partial_failure_json(),
-            stderr: String::new(),
-            cancel_calls: 0,
-        };
-        assert_worker_supervises_post_spawn_record_failure(request, Some(first));
-    }
-
     #[test]
     fn poisoned_process_registry_recovers_before_post_spawn_ownership_transfer() {
         let cache = TestCache::new();
@@ -3478,32 +3153,6 @@ pub(crate) mod tests {
             !service.test_store().active_lock_path().exists(),
             "only proven childless startup may release active.lock"
         );
-    }
-
-    /// rule: INV.APP.RUNTIME-RESOURCE-TREE
-    #[test]
-    fn proven_childless_fallback_spawn_failure_releases_active_lock() {
-        let cache = TestCache::new();
-        let first = FakeProcessState {
-            polls_until_exit: 1,
-            result: FakeResult::Exit(4),
-            stdout: completed_partial_failure_json(),
-            stderr: String::new(),
-            cancel_calls: 0,
-        };
-        let runner = Arc::new(UncertainSpawnRunner::proven_childless_on_attempt(
-            1,
-            Some(first),
-        ));
-        let service = RuntimeJobService::new(cache.path(), runner);
-        let started = service
-            .test_start(fallback_build_request(&cache.path()))
-            .expect("start partial attempt");
-
-        let failed = service.poll(&started.id).expect("publish proven failure");
-
-        assert_eq!(failed.phase, RuntimeJobPhase::Failed);
-        assert!(!service.test_store().active_lock_path().exists());
     }
 
     #[test]
@@ -3573,20 +3222,16 @@ pub(crate) mod tests {
         fixture_owner_close_blocks_late_nested_admission();
         unfinished_nested_supervisor_is_restored_with_same_owner_root_and_handle();
         uncertain_post_spawn_failure_retains_active_lock_for_initial_attempt();
-        uncertain_post_spawn_failure_retains_active_lock_for_full_build_fallback();
         worker_supervises_initial_retained_ownership_until_proven_terminal();
-        worker_supervises_fallback_retained_ownership_until_proven_terminal();
         worker_quarantines_poll_failure_until_later_terminal_proof();
         worker_quarantines_output_failure_until_later_eof_proof();
         stale_local_worker_retains_process_until_later_terminal_proof();
         stream_tail_read_failure_is_sticky_across_quarantine_probes();
         stream_tail_panic_is_sticky_across_quarantine_probes();
         worker_retains_initial_process_when_running_record_write_fails();
-        worker_retains_fallback_process_when_running_record_write_fails();
         quarantine_thread_spawn_failure_retains_process_authority_and_active_lock();
         poisoned_process_registry_recovers_before_post_spawn_ownership_transfer();
         proven_childless_spawn_failure_releases_initial_active_lock();
-        proven_childless_fallback_spawn_failure_releases_active_lock();
         two_nonterminating_output_readers_share_one_absolute_cleanup_deadline();
         crate::infrastructure::platform::assert_runtime_generation_authority_for_test();
         system_runtime_job_keeps_resource_owned_after_leader_exit_until_descendant_dies();
@@ -3881,346 +3526,6 @@ pub(crate) mod tests {
         assert_eq!(terminal.phase, RuntimeJobPhase::Failed);
         assert_eq!(terminal.exit_code, Some(23));
         assert!(terminal.finished_at_ms.is_some());
-    }
-
-    #[test]
-    fn failed_partial_build_restarts_once_as_full_under_the_same_job() {
-        let cache = TestCache::new();
-        let request = fallback_build_request(&cache.path());
-        let runner = Arc::new(SequenceRunner::new(vec![
-            FakeProcessState {
-                polls_until_exit: 1,
-                result: FakeResult::Exit(4),
-                stdout: completed_partial_failure_json(),
-                stderr: String::new(),
-                cancel_calls: 0,
-            },
-            FakeProcessState {
-                polls_until_exit: 1,
-                result: FakeResult::Exit(0),
-                stdout: "full build completed".to_string(),
-                stderr: String::new(),
-                cancel_calls: 0,
-            },
-        ]));
-        let service = RuntimeJobService::new(cache.path(), runner.clone());
-
-        let started = service.test_start(request).expect("start partial build");
-        let retried = service.poll(&started.id).expect("start full fallback");
-
-        assert_eq!(retried.phase, RuntimeJobPhase::Running);
-        assert_ne!(retried.pid, started.pid);
-        assert!(service.test_store().active_lock_path().exists());
-        let completed = service.poll(&started.id).expect("finish full fallback");
-        assert_eq!(completed.phase, RuntimeJobPhase::Succeeded);
-        assert!(!service.test_store().active_lock_path().exists());
-        let requests = runner.requests.lock().expect("lock recorded requests");
-        assert_eq!(requests.len(), 2);
-        assert!(!requests[0].iter().any(|arg| arg == "--full-rebuild"));
-        assert!(requests[1].iter().any(|arg| arg == "--full-rebuild"));
-        drop(requests);
-        let logs = service.test_logs(&started.id).expect("read combined logs");
-        assert!(logs.stdout.contains("--- initial partial attempt ---"));
-        assert!(logs.stdout.contains("partial load list path"));
-        assert!(logs.stdout.contains("--- full rebuild fallback ---"));
-        assert!(logs.stdout.contains("full build completed"));
-        assert!(completed
-            .warnings
-            .iter()
-            .any(|warning| warning == PARTIAL_FALLBACK_WARNING));
-    }
-
-    #[test]
-    fn durable_fallback_classifies_with_the_unredacted_source_set() {
-        let cache = TestCache::new();
-        let mut request = fallback_build_request(&cache.path());
-        request
-            .raw_argv_mut_for_test()
-            .extend(["--source-set".to_string(), "file=configuration".to_string()]);
-        request.replace_fallback_for_test(full_rebuild_argv(request.raw_argv()));
-        let receipt = completed_partial_failure_json()
-            .replace("source-set 'main'", "source-set 'file=configuration'")
-            .replace(
-                "\"source_set\":\"main\"",
-                "\"source_set\":\"file=configuration\"",
-            );
-        let runner = Arc::new(SequenceRunner::new(vec![
-            FakeProcessState {
-                polls_until_exit: 1,
-                result: FakeResult::Exit(4),
-                stdout: receipt,
-                stderr: String::new(),
-                cancel_calls: 0,
-            },
-            FakeProcessState {
-                polls_until_exit: 1,
-                result: FakeResult::Exit(0),
-                stdout: "full build completed".to_string(),
-                stderr: String::new(),
-                cancel_calls: 0,
-            },
-        ]));
-        let service = RuntimeJobService::new(cache.path(), runner.clone());
-
-        let started = service.test_start(request).expect("start partial build");
-        let retried = service.poll(&started.id).expect("start full fallback");
-
-        assert_eq!(retried.phase, RuntimeJobPhase::Running);
-        assert_eq!(runner.requests.lock().expect("lock requests").len(), 2);
-    }
-
-    #[test]
-    fn durable_fallback_never_persists_or_retains_the_raw_receipt() {
-        const RECEIPT_SECRET: &str = "durable-receipt-secret";
-
-        let cache = TestCache::new();
-        let receipt = completed_partial_failure_json().replace(
-            "/tmp/partial.lst",
-            &format!("/tmp/token={RECEIPT_SECRET}/partial.lst"),
-        );
-        let runner = Arc::new(SequenceRunner::new(vec![
-            FakeProcessState {
-                polls_until_exit: 1,
-                result: FakeResult::Exit(4),
-                stdout: receipt,
-                stderr: String::new(),
-                cancel_calls: 0,
-            },
-            FakeProcessState {
-                polls_until_exit: 1,
-                result: FakeResult::Exit(0),
-                stdout: "full build completed".to_string(),
-                stderr: String::new(),
-                cancel_calls: 0,
-            },
-        ]));
-        let service = RuntimeJobService::new(cache.path(), runner.clone());
-
-        let started = service
-            .test_start(fallback_build_request(&cache.path()))
-            .expect("start partial build");
-        assert_eq!(
-            service.poll(&started.id).expect("start fallback").phase,
-            RuntimeJobPhase::Running
-        );
-        {
-            let processes = service
-                .test_processes()
-                .lock()
-                .expect("lock active processes");
-            let previous = processes
-                .get(&started.id)
-                .and_then(|active| active.previous_output.as_ref())
-                .expect("retain redacted first attempt");
-            assert!(previous.fallback_receipt.is_none());
-        }
-        let record = fs::read_to_string(
-            service
-                .test_store()
-                .record_path(&started.id)
-                .expect("record path"),
-        )
-        .expect("read record");
-        let logs = service.test_logs(&started.id).expect("read logs");
-
-        assert_eq!(runner.requests.lock().expect("lock requests").len(), 2);
-        assert!(!record.contains(RECEIPT_SECRET));
-        assert!(!logs.stdout.contains(RECEIPT_SECRET));
-        assert!(logs.stdout.contains("<redacted>"));
-
-        drop(service);
-        {
-            let registry = test_fixture_registry()
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let state = registry
-                .owners
-                .get(&cache.owner)
-                .expect("current fallback fixture owner remains registered before drain");
-            assert_eq!(state.supervisors.len(), 1);
-            assert_eq!(state.supervisors[0].service_root, cache.path());
-        }
-        cache.drain_supervisors();
-        assert!(
-            !test_fixture_registry()
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .owners
-                .contains_key(&cache.owner),
-            "current fallback fixture owner remained after exact supervisor join"
-        );
-    }
-
-    #[test]
-    fn durable_fallback_rejects_config_change_between_attempts() {
-        let cache = TestCache::new();
-        let request = fallback_build_request(&cache.path());
-        let config = cache.path().join("workspace/v8project.yaml");
-        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let calls_for_hook = Arc::clone(&calls);
-        let _hook = unica_adapter_v8_runner::preflight::set_before_reauthorization_hook_for_test(
-            move || {
-                if calls_for_hook.fetch_add(1, Ordering::SeqCst) == 2 {
-                    fs::write(
-                        &config,
-                        "format: DESIGNER\nsource-set: []\n# changed before fallback\n",
-                    )
-                    .expect("change config before fallback reauthorization");
-                }
-            },
-        );
-        let runner = Arc::new(SequenceRunner::new(vec![FakeProcessState {
-            polls_until_exit: 1,
-            result: FakeResult::Exit(4),
-            stdout: completed_partial_failure_json(),
-            stderr: String::new(),
-            cancel_calls: 0,
-        }]));
-        let service = RuntimeJobService::new(cache.path(), runner.clone());
-
-        let started = service.test_start(request).expect("start partial build");
-        let terminal = service
-            .poll(&started.id)
-            .expect("identity change terminalizes the original attempt");
-
-        assert_eq!(terminal.phase, RuntimeJobPhase::Failed);
-        assert_eq!(terminal.exit_code, Some(4));
-        assert_eq!(runner.requests.lock().expect("lock requests").len(), 1);
-        assert!(!service.test_store().active_lock_path().exists());
-        assert!(terminal
-            .warnings
-            .iter()
-            .any(|warning| warning.contains("identity changed")));
-    }
-
-    #[test]
-    fn failed_full_fallback_is_not_retried_a_third_time() {
-        let cache = TestCache::new();
-        let runner = Arc::new(SequenceRunner::new(vec![
-            FakeProcessState {
-                polls_until_exit: 1,
-                result: FakeResult::Exit(4),
-                stdout: completed_partial_failure_json(),
-                stderr: String::new(),
-                cancel_calls: 0,
-            },
-            FakeProcessState {
-                polls_until_exit: 1,
-                result: FakeResult::Exit(4),
-                stdout: completed_partial_failure_json(),
-                stderr: String::new(),
-                cancel_calls: 0,
-            },
-        ]));
-        let service = RuntimeJobService::new(cache.path(), runner.clone());
-
-        let started = service
-            .test_start(fallback_build_request(&cache.path()))
-            .expect("start partial build");
-        assert_eq!(
-            service.poll(&started.id).expect("start fallback").phase,
-            RuntimeJobPhase::Running
-        );
-        assert_eq!(
-            service.poll(&started.id).expect("finish fallback").phase,
-            RuntimeJobPhase::Failed
-        );
-        assert_eq!(
-            service
-                .poll(&started.id)
-                .expect("read terminal state")
-                .phase,
-            RuntimeJobPhase::Failed
-        );
-        assert_eq!(runner.requests.lock().expect("lock requests").len(), 2);
-        assert!(!service.test_store().active_lock_path().exists());
-    }
-
-    #[test]
-    fn unrelated_build_failure_does_not_start_full_fallback() {
-        let cache = TestCache::new();
-        let unrelated = completed_partial_failure_json().replace(
-            "load failed for source-set",
-            "update_db_cfg failed for source-set",
-        );
-        let runner = Arc::new(SequenceRunner::new(vec![FakeProcessState {
-            polls_until_exit: 1,
-            result: FakeResult::Exit(4),
-            stdout: unrelated,
-            stderr: String::new(),
-            cancel_calls: 0,
-        }]));
-        let service = RuntimeJobService::new(cache.path(), runner.clone());
-
-        let started = service
-            .test_start(fallback_build_request(&cache.path()))
-            .expect("start partial build");
-        let completed = service.poll(&started.id).expect("observe failure");
-
-        assert_eq!(completed.phase, RuntimeJobPhase::Failed);
-        assert_eq!(runner.requests.lock().expect("lock requests").len(), 1);
-        assert!(!service.test_store().active_lock_path().exists());
-    }
-
-    #[test]
-    fn deferred_cancel_prevents_full_fallback_after_partial_failure() {
-        let cache = TestCache::new();
-        let runner = Arc::new(SequenceRunner::new(vec![FakeProcessState {
-            polls_until_exit: 1,
-            result: FakeResult::Exit(4),
-            stdout: completed_partial_failure_json(),
-            stderr: String::new(),
-            cancel_calls: 0,
-        }]));
-        let service = RuntimeJobService::new(cache.path(), runner.clone());
-
-        let started = service
-            .test_start(fallback_build_request(&cache.path()))
-            .expect("start partial build");
-        let completed = service
-            .test_cancel(&started.id)
-            .expect("cancel marker must win before fallback starts");
-
-        assert_eq!(completed.phase, RuntimeJobPhase::Failed);
-        assert!(completed.cancel_deferred);
-        assert_eq!(runner.requests.lock().expect("lock requests").len(), 1);
-        assert!(!service.test_store().active_lock_path().exists());
-    }
-
-    #[test]
-    fn fallback_spawn_failure_terminalizes_the_same_job() {
-        let cache = TestCache::new();
-        let runner = Arc::new(SequenceRunner::new(vec![FakeProcessState {
-            polls_until_exit: 1,
-            result: FakeResult::Exit(4),
-            stdout: completed_partial_failure_json(),
-            stderr: String::new(),
-            cancel_calls: 0,
-        }]));
-        let service = RuntimeJobService::new(cache.path(), runner.clone());
-
-        let started = service
-            .test_start(fallback_build_request(&cache.path()))
-            .expect("start partial build");
-        let completed = service
-            .poll(&started.id)
-            .expect("fallback spawn error is a terminal job outcome");
-
-        assert_eq!(completed.phase, RuntimeJobPhase::Failed);
-        assert!(completed
-            .warnings
-            .iter()
-            .any(|warning| warning.contains("failed to spawn")));
-        assert!(completed
-            .warnings
-            .iter()
-            .any(|warning| warning.contains("fallback was not started")));
-        assert!(!completed
-            .warnings
-            .iter()
-            .any(|warning| warning == PARTIAL_FALLBACK_WARNING));
-        assert_eq!(runner.requests.lock().expect("lock requests").len(), 1);
-        assert!(!service.test_store().active_lock_path().exists());
     }
 
     #[test]
@@ -5460,13 +4765,6 @@ pub(crate) mod tests {
         initial: FakeProcessState,
     }
 
-    struct SequenceRunner {
-        next_id: AtomicU32,
-        states: Mutex<std::collections::VecDeque<FakeProcessState>>,
-        processes: Arc<Mutex<HashMap<u32, Arc<Mutex<FakeProcessState>>>>>,
-        requests: Mutex<Vec<Vec<String>>>,
-    }
-
     struct UncertainSpawnRunner {
         next_id: AtomicU32,
         attempt: AtomicU32,
@@ -5637,128 +4935,6 @@ pub(crate) mod tests {
                 state,
             }))
         }
-    }
-
-    impl SequenceRunner {
-        fn new(states: Vec<FakeProcessState>) -> Self {
-            Self {
-                next_id: AtomicU32::new(100),
-                states: Mutex::new(states.into()),
-                processes: Arc::new(Mutex::new(HashMap::new())),
-                requests: Mutex::new(Vec::new()),
-            }
-        }
-    }
-
-    impl RuntimeJobRunner for SequenceRunner {
-        type Request = RuntimeJobRequest;
-        fn scope(&self, request: &RuntimeJobRequest) -> RuntimeAttemptScope {
-            request.bound_scope(std::path::PathBuf::new())
-        }
-        fn reauthorize(&self, request: &RuntimeJobRequest) -> JobResult<()> {
-            match request.build_preflight() {
-                Some(preflight) => {
-                    preflight.reauthorize_current_workspace(super::workspace_observer())
-                }
-                None => Ok(()),
-            }
-        }
-
-        fn spawn(&self, request: &RuntimeJobRequest) -> RuntimeJobSpawnResult {
-            (|| -> JobResult<Box<dyn RuntimeJobProcess>> {
-                let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-                let state = Arc::new(Mutex::new(
-                    self.states
-                        .lock()
-                        .map_err(|error| redacted_error(&format!("lock sequence: {error}")))?
-                        .pop_front()
-                        .ok_or_else(|| redacted_error("sequence runner exhausted"))?,
-                ));
-                self.requests
-                    .lock()
-                    .map_err(|error| redacted_error(&format!("lock requests: {error}")))?
-                    .push(request.raw_argv().to_vec());
-                self.processes
-                    .lock()
-                    .map_err(|error| redacted_error(&format!("lock sequence processes: {error}")))?
-                    .insert(id, state.clone());
-                Ok(Box::new(FakeProcess { id, state }))
-            })()
-            .map_err(RuntimeJobSpawnFailure::ProvenChildless)
-        }
-
-        fn attach(&self, process_id: u32) -> JobResult<Box<dyn RuntimeJobProcess>> {
-            let state = self
-                .processes
-                .lock()
-                .map_err(|error| redacted_error(&format!("lock sequence processes: {error}")))?
-                .get(&process_id)
-                .cloned()
-                .ok_or_else(|| redacted_error("sequence process unavailable"))?;
-            Ok(Box::new(FakeProcess {
-                id: process_id,
-                state,
-            }))
-        }
-    }
-
-    fn completed_partial_failure_json() -> String {
-        let message = "load failed for source-set 'main' with exit code 1; platform log: sanitized; platform log path: /tmp/out.log; partial load list path: /tmp/partial.lst";
-        serde_json::to_string(&json!({
-            "ok": false,
-            "command": "build",
-            "duration_ms": 12,
-            "data": {
-                "ok": false,
-                "steps": [{
-                    "source_set": "main",
-                    "mode": { "partial": { "file_count": 1 } },
-                    "ok": false,
-                    "message": format!("platform error: {message}"),
-                    "duration_ms": 0
-                }],
-                "duration_ms": 12
-            },
-            "warnings": [],
-            "steps": [],
-            "error": {
-                "code": "platform_failure",
-                "kind": "platform",
-                "message": message
-            }
-        }))
-        .expect("serialize partial failure")
-    }
-
-    fn fallback_build_request(cache_root: &Path) -> RuntimeJobRequest {
-        let workspace = cache_root.join("workspace");
-        fs::create_dir_all(&workspace).expect("create workspace");
-        fs::write(
-            workspace.join("v8project.yaml"),
-            "format: DESIGNER\nsource-set: []\n",
-        )
-        .expect("write config");
-        let context = discover_workspace(Some(workspace)).expect("discover workspace");
-        let args = Map::from_iter([("operation".to_string(), json!("build"))]);
-        RuntimeJobRequest::new(
-            RuntimeJobOperation::Build,
-            vec![
-                "--json-message".to_string(),
-                "--config".to_string(),
-                context
-                    .workspace_root
-                    .join("v8project.yaml")
-                    .display()
-                    .to_string(),
-                "build".to_string(),
-            ],
-            "workspace:test",
-            None,
-        )
-        .with_build_preflight(Some(
-            RuntimeBuildPreflight::capture(&args, &context, super::workspace_observer())
-                .expect("capture build identity"),
-        ))
     }
 
     impl FakeRunner {
