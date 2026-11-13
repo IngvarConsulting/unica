@@ -244,8 +244,45 @@ fn refuse_targets_on_locked_vendor_objects(
     staged: &mut ApplyStagedState,
 ) -> Result<Vec<GateWarning>, ApplyPlanError> {
     let policy = admission.support_policy_mode();
-    // Every operation answers for its own target: an `args.at` below the
-    // request's node may sit under a node with its own `locked` record.
+    let mut warnings = Vec::new();
+    for (target, removes) in gate_targets(request, binding) {
+        warnings.extend(refuse_target_on_locked_vendor_object(
+            target, removes, policy, binding, staged,
+        )?);
+    }
+    Ok(warnings)
+}
+
+/// Every lock of the gate on the targets of `request`, not only the first:
+/// the locks a person may be asked about in the current support state.
+/// Another refusal of the gate (support that cannot be read) is returned.
+fn locks_on_targets(
+    request: &ApplyRequest,
+    binding: &ProviderRootBinding,
+    admission: &ApplyAdmission,
+    staged: &mut ApplyStagedState,
+) -> Result<Vec<SupportLock>, ApplyPlanError> {
+    let policy = admission.support_policy_mode();
+    let mut locks = Vec::new();
+    for (target, removes) in gate_targets(request, binding) {
+        match refuse_target_on_locked_vendor_object(target, removes, policy, binding, staged) {
+            Ok(_) => {}
+            Err(error) => match error.support_lock() {
+                Some(lock) => locks.push(lock.clone()),
+                None => return Err(error),
+            },
+        }
+    }
+    Ok(locks)
+}
+
+/// The targets the gate checks: every operation answers for its own target,
+/// since an `args.at` below the request's node may sit under a node with its
+/// own `locked` record; with whether an operation removes it.
+fn gate_targets<'a>(
+    request: &'a ApplyRequest,
+    binding: &ProviderRootBinding,
+) -> Vec<(&'a unica_address::address::QualifiedAddress, bool)> {
     let mut targets: Vec<(&unica_address::address::QualifiedAddress, bool)> = Vec::new();
     for operation in request.ops() {
         if changes_support_state(operation.name(), Some(operation.at()), binding) {
@@ -258,13 +295,7 @@ fn refuse_targets_on_locked_vendor_objects(
             None => targets.push((operation.at(), removes)),
         }
     }
-    let mut warnings = Vec::new();
-    for (target, removes) in targets {
-        warnings.extend(refuse_target_on_locked_vendor_object(
-            target, removes, policy, binding, staged,
-        )?);
-    }
-    Ok(warnings)
+    targets
 }
 
 /// A `support_locked` warning of the gate under `warn`, with the source
@@ -1635,7 +1666,7 @@ pub fn plan_hidden_v13_apply(
         admission,
         PersonChosenChanges {
             mode_raise: None,
-            support: None,
+            support: Vec::new(),
             remove_support: false,
         },
     )
@@ -1651,7 +1682,8 @@ pub struct PersonChosenSupportChange<'a> {
 
 /// Plans `request` together with the support change a person chose: both
 /// go into one plan and publish together. The change lifts only the lock
-/// the person was asked about; another lock, or none, refuses as before.
+/// the person was asked about; the targets are then checked against the
+/// support it leaves, and another lock, or none, refuses as before.
 pub fn plan_hidden_v13_apply_with_person_chosen_support(
     request: &ApplyRequest,
     binding: &ProviderRootBinding,
@@ -1664,7 +1696,7 @@ pub fn plan_hidden_v13_apply_with_person_chosen_support(
         admission,
         PersonChosenChanges {
             mode_raise: None,
-            support: Some(change),
+            support: vec![change],
             remove_support: false,
         },
     )
@@ -1678,11 +1710,13 @@ pub struct PersonChosenModeRaise<'a> {
     pub request: &'a ApplyRequest,
 }
 
-/// Everything a person chose for one call, planned before its edits in this
-/// order: the mode of the set, then its vendor support.
+/// Everything a person chose for one call, planned before its edits: the
+/// mode of the set and its vendor support.
 pub struct PersonChosenChanges<'a> {
     pub mode_raise: Option<PersonChosenModeRaise<'a>>,
-    pub support: Option<PersonChosenSupportChange<'a>>,
+    /// The support changes in the order the person was asked about them:
+    /// each lifts the lock the gate showed after the changes before it.
+    pub support: Vec<PersonChosenSupportChange<'a>>,
     /// The person took the configuration off vendor support entirely: its
     /// unreadable marker is replaced by the platform's marker of removed
     /// support before the edits (INV.SAFETY.APPLY-SUPPORT-GATE).
@@ -1791,18 +1825,12 @@ fn plan_apply(
             )
             .map_err(|error| ApplyPlanError::staging(error, request.at().to_string()))?;
     }
-    let mut support_warning = match (&chosen_support, gate) {
-        (None, gate) => gate?,
-        // The person lifts exactly the lock they were asked about.
-        (Some(chosen), Err(error)) if error.support_lock() == Some(chosen.lock) => Vec::new(),
-        (Some(_), Err(error)) => return Err(error),
-        (Some(_), Ok(_)) => {
-            return Err(ApplyPlanError::new(
-                ApplyPlanErrorKind::InvalidState,
-                "the vendor support state changed after the person's answer; repeat the apply to be asked again",
-            )
-            .at_path(request.at().to_string()))
-        }
+    let mut support_warning = match gate {
+        Ok(warnings) => warnings,
+        // A lock the person answered is checked again below, against the
+        // support their answers leave.
+        Err(error) if !chosen_support.is_empty() && error.support_lock().is_some() => Vec::new(),
+        Err(error) => return Err(error),
     };
     // The request the model composed never mixes support and ordinary edits.
     let support_operations = request
@@ -1817,9 +1845,41 @@ fn plan_apply(
         )
         .at_path("ops"));
     }
-    if let Some(chosen) = &chosen_support {
-        // The chosen support change runs first, so every family plans the
-        // edits against the support state the person agreed to.
+    if let Some(raise) = &mode_raise {
+        // The raise edits the configuration root: vendor support guards it
+        // as any edit. Only the lock of the whole configuration the person
+        // also lifted lets it pass.
+        match refuse_targets_on_locked_vendor_objects(
+            raise.request,
+            binding,
+            admission,
+            &mut staged,
+        ) {
+            Ok(warnings) => support_warning.extend(warnings),
+            Err(error)
+                if error.support_lock().is_some_and(|lock| {
+                    lock.kind == SupportLockKind::ConfigurationLocked
+                        && chosen_support.iter().any(|chosen| {
+                            chosen.lock.kind == SupportLockKind::ConfigurationLocked
+                                && chosen.lock.source_set == lock.source_set
+                        })
+                }) => {}
+            Err(error) => return Err(error),
+        }
+        let mut raised = Vec::with_capacity(raise.request.ops().len() + parsed.len());
+        for operation in raise.request.ops() {
+            raised.push(parse_apply_operation(0, operation, binding)?);
+        }
+        raised.append(&mut parsed);
+        parsed = raised;
+    }
+    // The chosen support changes are planned first, each against the
+    // support the ones before it leave: a change lifts the lock it was asked
+    // about only while the gate still shows that lock. Then every target is
+    // checked against the support the answers leave, so a lock the answers
+    // did not lift refuses and asks its own question.
+    let mut chosen_planned = Vec::new();
+    for chosen in &chosen_support {
         let lock = chosen.lock;
         let owner = format!("{}:{}", lock.source_set, lock.owner);
         let root = format!("{}:Configuration", lock.source_set);
@@ -1837,38 +1897,38 @@ fn plan_apply(
                 )
                 .at_path("ops"));
             }
-            support.push(parse_apply_operation(0, operation, binding)?);
+            match parse_apply_operation(0, operation, binding)? {
+                ParsedApplyOperation::FormResource(operation) => support.push(operation),
+                _ => {
+                    return Err(ApplyPlanError::new(
+                        ApplyPlanErrorKind::InvalidState,
+                        "a person-chosen support change carries only support operations",
+                    )
+                    .at_path("ops"))
+                }
+            }
         }
-        support.append(&mut parsed);
-        parsed = support;
+        if !locks_on_targets(request, binding, admission, &mut staged)?.contains(lock) {
+            return Err(ApplyPlanError::new(
+                ApplyPlanErrorKind::InvalidState,
+                "the vendor support state changed after the person's answer; repeat the apply to be asked again",
+            )
+            .at_path(request.at().to_string()));
+        }
+        let authority = admission.form_resource_planning_authority(binding)?;
+        chosen_planned.extend(form_resource::plan_form_resource_batch(
+            &mut staged.proposal(),
+            &authority,
+            &support,
+        )?);
     }
-    if let Some(raise) = &mode_raise {
-        // The raise edits the configuration root: vendor support guards it
-        // as any edit. Only the lock of the whole configuration the person
-        // also lifted lets it pass.
-        match refuse_targets_on_locked_vendor_objects(
-            raise.request,
+    if !chosen_support.is_empty() {
+        support_warning.extend(refuse_targets_on_locked_vendor_objects(
+            request,
             binding,
             admission,
             &mut staged,
-        ) {
-            Ok(warnings) => support_warning.extend(warnings),
-            Err(error)
-                if error.support_lock().is_some_and(|lock| {
-                    lock.kind == SupportLockKind::ConfigurationLocked
-                        && chosen_support.as_ref().is_some_and(|chosen| {
-                            chosen.lock.kind == SupportLockKind::ConfigurationLocked
-                                && chosen.lock.source_set == lock.source_set
-                        })
-                }) => {}
-            Err(error) => return Err(error),
-        }
-        let mut raised = Vec::with_capacity(raise.request.ops().len() + parsed.len());
-        for operation in raise.request.ops() {
-            raised.push(parse_apply_operation(0, operation, binding)?);
-        }
-        raised.append(&mut parsed);
-        parsed = raised;
+        )?);
     }
     let code_type_plan = unica_metadata_designer::planner::PredefinedCodeTypePlan::from_operations(
         parsed.iter().filter_map(|operation| match operation {
@@ -1876,7 +1936,7 @@ fn plan_apply(
             _ => None,
         }),
     );
-    let mut provisional = Vec::new();
+    let mut provisional = chosen_planned;
     let mut code_support_warnings = Vec::new();
     let mut xdto_validation = unica_xdto_designer::planner::XdtoValidationLedger::default();
     let mut borrowing = Vec::new();

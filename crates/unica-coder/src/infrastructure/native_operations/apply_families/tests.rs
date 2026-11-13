@@ -1065,7 +1065,7 @@ fn taking_support_off_replaces_an_unreadable_marker_in_the_same_plan() {
             &fixture.admission(),
             PersonChosenChanges {
                 mode_raise: None,
-                support: None,
+                support: Vec::new(),
                 remove_support: true,
             },
         )
