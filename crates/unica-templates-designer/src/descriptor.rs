@@ -80,3 +80,59 @@ pub fn template_content_xml(template_type: &str, _extension: &str) -> Result<Str
         other => Err(format!("unsupported template type: {other}")),
     }
 }
+
+#[cfg(test)]
+mod export_format_tests {
+    use unica_source_designer::layout::{
+        declare_element_format_namespaces, declare_format_namespaces,
+    };
+
+    /// The first start tag named `element`, as written.
+    fn start_tag<'a>(xml: &'a str, element: &str) -> &'a str {
+        let start = xml.find(&format!("<{element} ")).unwrap();
+        &xml[start..start + xml[start..].find('>').unwrap()]
+    }
+
+    /// rule: INV.SOURCE.WRITABLE-PROFILE
+    #[test]
+    fn the_seeds_of_new_templates_take_the_namespaces_of_their_set_format() {
+        // The metadata codec declares the format namespaces on these seeds
+        // as it writes them into a set (child_resources, planner).
+        for (version, mxl, dcs) in [
+            (
+                "2.20",
+                include_str!("../../../tests/fixtures/formats/platform_xml/2.20/all_kinds/src/DataProcessors/Обработка/Templates/Макет/Ext/Template.xml"),
+                include_str!("../../../tests/fixtures/formats/platform_xml/2.20/all_kinds/src/DataProcessors/Обработка/Templates/СхемаКомпоновки/Ext/Template.xml"),
+            ),
+            (
+                "2.21",
+                include_str!("../../../tests/fixtures/formats/platform_xml/2.21/all_kinds/src/DataProcessors/Обработка/Templates/Макет/Ext/Template.xml"),
+                include_str!("../../../tests/fixtures/formats/platform_xml/2.21/all_kinds/src/DataProcessors/Обработка/Templates/СхемаКомпоновки/Ext/Template.xml"),
+            ),
+            (
+                "2.22",
+                include_str!("../../../tests/fixtures/formats/platform_xml/2.22/all_kinds/src/DataProcessors/Обработка/Templates/Макет/Ext/Template.xml"),
+                include_str!("../../../tests/fixtures/formats/platform_xml/2.22/all_kinds/src/DataProcessors/Обработка/Templates/СхемаКомпоновки/Ext/Template.xml"),
+            ),
+        ] {
+            let spreadsheet =
+                declare_format_namespaces(crate::mxl_root::empty_spreadsheet_document_xml(), version);
+            assert_eq!(start_tag(&spreadsheet, "document"), start_tag(mxl, "document"), "{version}");
+            let schema = declare_element_format_namespaces(
+                super::template_content_xml("DataCompositionSchema", "").unwrap(),
+                "dcsset:settings",
+                version,
+            );
+            assert_eq!(
+                start_tag(&schema, "dcsset:settings"),
+                start_tag(dcs, "dcsset:settings"),
+                "{version}"
+            );
+            assert_eq!(
+                start_tag(&schema, "DataCompositionSchema"),
+                start_tag(dcs, "DataCompositionSchema"),
+                "{version}"
+            );
+        }
+    }
+}

@@ -810,7 +810,10 @@ pub fn typed_template_initial_content(
 ) -> Vec<u8> {
     let xml = match template_type {
         unica_metadata::validation_subject::MetadataTemplateType::SpreadsheetDocument => {
-            (templates.spreadsheet.0)()
+            unica_source_designer::layout::declare_format_namespaces(
+                (templates.spreadsheet.0)(),
+                set_version,
+            )
         }
         // Платформенная форма HTMLDocument: primary — дескриптор страниц
         // `<Help>` (extrnprops), сами страницы лежат в Ext/Template/*.html.
@@ -818,8 +821,11 @@ pub fn typed_template_initial_content(
         // форму, которую закрепил валидатор по реальным дампам 8.3.27.
         unica_metadata::validation_subject::MetadataTemplateType::HtmlDocument => (templates.html_descriptor)(set_version),
         unica_metadata::validation_subject::MetadataTemplateType::DataCompositionSchema => {
-            (templates.content_xml)("DataCompositionSchema", "")
-                .expect("closed template kind")
+            unica_source_designer::layout::declare_element_format_namespaces(
+                (templates.content_xml)("DataCompositionSchema", "").expect("closed template kind"),
+                "dcsset:settings",
+                set_version,
+            )
         }
         unica_metadata::validation_subject::MetadataTemplateType::TextDocument
         | unica_metadata::validation_subject::MetadataTemplateType::BinaryData
@@ -1280,3 +1286,104 @@ pub type TypedChildTree = (Vec<(PathBuf, Vec<u8>)>, Vec<PathBuf>);
 // problem: неизвестно
 // on-reach: отказ ProviderUnavailable «typed child resource topology is unavailable»
 const TYPED_CHILD_TREE_MAX_DEPTH: usize = 64;
+
+#[cfg(test)]
+mod export_format_tests {
+    use unica_metadata::validation_subject::MetadataTemplateType;
+    use unica_metadata::MetadataKind;
+
+    /// The first start tag named `element`, as written.
+    fn start_tag<'a>(xml: &'a str, element: &str) -> &'a str {
+        let start = xml.find(&format!("<{element} ")).unwrap();
+        &xml[start..start + xml[start..].find('>').unwrap()]
+    }
+
+    fn emitters() -> super::TemplateSeedEmitters {
+        super::TemplateSeedEmitters {
+            spreadsheet: crate::planner::TemplateSeedEmitter(|| {
+                include_str!("../../../tests/fixtures/formats/platform_xml/2.20/all_kinds/src/DataProcessors/Обработка/Templates/Макет/Ext/Template.xml")
+                .trim_start_matches('\u{feff}')
+                .to_owned()
+            }),
+            html_descriptor: |_| String::new(),
+            html_page: || "",
+            content_xml: |_, _| {
+                Ok(include_str!("../../../tests/fixtures/formats/platform_xml/2.20/all_kinds/src/DataProcessors/Обработка/Templates/СхемаКомпоновки/Ext/Template.xml")
+                .trim_start_matches('\u{feff}')
+                .to_owned())
+            },
+        }
+    }
+
+    fn initial(template_type: MetadataTemplateType, version: &str) -> String {
+        let bytes = super::typed_template_initial_content(emitters(), template_type, version);
+        String::from_utf8(bytes).unwrap()
+    }
+
+    /// rule: INV.SOURCE.WRITABLE-PROFILE
+    #[test]
+    fn a_new_template_declares_the_namespaces_of_its_set_format() {
+        for (version, mxl, dcs) in [
+            (
+                "2.20",
+                include_str!("../../../tests/fixtures/formats/platform_xml/2.20/all_kinds/src/DataProcessors/Обработка/Templates/Макет/Ext/Template.xml"),
+                include_str!("../../../tests/fixtures/formats/platform_xml/2.20/all_kinds/src/DataProcessors/Обработка/Templates/СхемаКомпоновки/Ext/Template.xml"),
+            ),
+            (
+                "2.21",
+                include_str!("../../../tests/fixtures/formats/platform_xml/2.21/all_kinds/src/DataProcessors/Обработка/Templates/Макет/Ext/Template.xml"),
+                include_str!("../../../tests/fixtures/formats/platform_xml/2.21/all_kinds/src/DataProcessors/Обработка/Templates/СхемаКомпоновки/Ext/Template.xml"),
+            ),
+            (
+                "2.22",
+                include_str!("../../../tests/fixtures/formats/platform_xml/2.22/all_kinds/src/DataProcessors/Обработка/Templates/Макет/Ext/Template.xml"),
+                include_str!("../../../tests/fixtures/formats/platform_xml/2.22/all_kinds/src/DataProcessors/Обработка/Templates/СхемаКомпоновки/Ext/Template.xml"),
+            ),
+        ] {
+            let spreadsheet = initial(MetadataTemplateType::SpreadsheetDocument, version);
+            assert_eq!(
+                start_tag(&spreadsheet, "document"),
+                start_tag(mxl, "document")
+            );
+            let schema = initial(MetadataTemplateType::DataCompositionSchema, version);
+            assert_eq!(
+                start_tag(&schema, "DataCompositionSchema"),
+                start_tag(dcs, "DataCompositionSchema")
+            );
+            assert_eq!(
+                start_tag(&schema, "dcsset:settings"),
+                start_tag(dcs, "dcsset:settings")
+            );
+        }
+    }
+
+    /// rule: INV.SOURCE.WRITABLE-PROFILE
+    #[test]
+    fn a_new_flowchart_declares_the_namespaces_of_its_set_format() {
+        for (version, corpus) in [
+            (
+                "2.20",
+                include_str!("../../../tests/fixtures/formats/platform_xml/2.20/all_kinds/src/BusinessProcesses/Approval/Ext/Flowchart.xml"),
+            ),
+            (
+                "2.21",
+                include_str!("../../../tests/fixtures/formats/platform_xml/2.21/all_kinds/src/BusinessProcesses/Approval/Ext/Flowchart.xml"),
+            ),
+            (
+                "2.22",
+                include_str!("../../../tests/fixtures/formats/platform_xml/2.22/all_kinds/src/BusinessProcesses/Approval/Ext/Flowchart.xml"),
+            ),
+        ] {
+            let files = crate::template_catalog::minimal_auxiliary_files(
+                MetadataKind::BusinessProcess,
+                version,
+            );
+            let (_, _, flowchart) = &files[0];
+            assert_eq!(
+                start_tag(flowchart, "GraphicalSchema"),
+                start_tag(corpus, "GraphicalSchema"),
+                "{version}"
+            );
+        }
+    }
+}

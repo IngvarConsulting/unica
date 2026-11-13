@@ -341,6 +341,36 @@ pub fn declare_format_namespaces(mut document: String, export_format: &str) -> S
     document
 }
 
+/// `document` whose every `element` start tag that declares namespaces
+/// declares those of its export format, as a root does (DCS settings carry
+/// their own declarations inside a template).
+pub fn declare_element_format_namespaces(
+    mut document: String,
+    element: &str,
+    export_format: &str,
+) -> String {
+    let opening = format!("<{element}");
+    let mut insertions = Vec::new();
+    for (start, _) in document.match_indices(&opening) {
+        let name_end = start + opening.len();
+        if !document[name_end..].starts_with(|c: char| c.is_ascii_whitespace()) {
+            continue;
+        }
+        let Some(close) = document[name_end..].find('>') else {
+            continue;
+        };
+        if let Some((at, text)) =
+            palette_insertion(&document[name_end..name_end + close], export_format)
+        {
+            insertions.push((name_end + at, text));
+        }
+    }
+    for (at, text) in insertions.into_iter().rev() {
+        document.insert_str(at, &text);
+    }
+    document
+}
+
 /// Root namespace `declarations` as `export_format` writes them. From 2.21
 /// the palette namespace `pal` joins the prefixed declarations in prefix
 /// order, as the platform writes them, with the separator of the declaration
@@ -521,6 +551,41 @@ mod format_namespace_tests {
         );
         let bare = "<Root version=\"2.21\"/>".to_owned();
         assert_eq!(declare_format_namespaces(bare.clone(), "2.21"), bare);
+    }
+
+    #[test]
+    fn an_element_declares_the_palette_only_where_it_declares_prefixes() {
+        let pal = "xmlns:pal=\"http://v8.1c.ru/8.1/data/ui/colors/palette\"";
+        let schema = concat!(
+            "<s xmlns:v8=\"urn:v8\">",
+            "<dcsset:settingsVariant xmlns:style=\"urn:s\"/>",
+            "<dcsset:settings xmlns:style=\"urn:s\" xmlns:win=\"urn:w\">",
+            "<dcsset:settings/><dcsset:settings a=\"1\"/>",
+            "</dcsset:settings>",
+            "<dcsset:settings xmlns:sys=\"urn:y\"/>",
+            "</s>"
+        );
+        let written =
+            super::declare_element_format_namespaces(schema.to_owned(), "dcsset:settings", "2.21");
+        assert_eq!(
+            written,
+            format!(
+                concat!(
+                    "<s xmlns:v8=\"urn:v8\">",
+                    "<dcsset:settingsVariant xmlns:style=\"urn:s\"/>",
+                    "<dcsset:settings {pal} xmlns:style=\"urn:s\" xmlns:win=\"urn:w\">",
+                    "<dcsset:settings/><dcsset:settings a=\"1\"/>",
+                    "</dcsset:settings>",
+                    "<dcsset:settings {pal} xmlns:sys=\"urn:y\"/>",
+                    "</s>"
+                ),
+                pal = pal
+            )
+        );
+        assert_eq!(
+            super::declare_element_format_namespaces(schema.to_owned(), "dcsset:settings", "2.20"),
+            schema
+        );
     }
 }
 
