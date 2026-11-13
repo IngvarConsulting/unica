@@ -19,10 +19,10 @@ crates do not meet in one list. A lowered count does not fail;
 `--write-baseline` lowers the baselines to the current counts.
 
 Production code is a crate's `.rs` files whose path within the crate has no
-test part — `tests`, `*_tests`, test support or fixtures, as a directory or a
-file name, so the submodules in `foo_tests/` count as `foo_tests.rs` does —
-and that are not gated whole by a leading `#![cfg(test)]`, cut at the first
-`#[cfg(test)]` module; comment lines are
+test part: `tests`, `*_tests`, test support or fixtures, as a directory or a
+file name, so the submodules in `foo_tests/` are test code as `foo_tests.rs` is.
+A file gated whole by a leading `#![cfg(test)]` is test code too. Each file is
+cut at its first `#[cfg(test)]` module; comment lines are
 skipped. The files that own versions are allowed. Literals are matched line by
 line, so a `PlatformLine::new` call whose arguments rustfmt wrapped is not seen;
 a comparison of two line values names no version and is not seen either.
