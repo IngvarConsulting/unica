@@ -183,6 +183,8 @@ pub fn parse_cf_info_xml(
         format: version.to_string(),
         name: cf_prop_text(props, "Name"),
         synonym: optional(cf_prop_ml(props, "Synonym")),
+        caption: optional(cf_prop_ml(props, "Caption")),
+        short_caption: optional(cf_prop_ml(props, "ShortCaption")),
         version: optional(cf_prop_text(props, "Version")),
         vendor: optional(cf_prop_text(props, "Vendor")),
         support,
@@ -212,6 +214,19 @@ pub fn parse_cf_info_xml(
                 "DatabaseTablespacesUseMode",
             )),
             main_window_mode: optional(cf_prop_text(props, "MainClientApplicationWindowMode")),
+            main_window_interface_variant: optional(cf_prop_text(
+                props,
+                "MainClientApplicationWindowInterfaceVariant",
+            )),
+            client_application_theme: optional(cf_prop_text(props, "ClientApplicationTheme")),
+            windows_open_variant: optional(cf_prop_text(
+                props,
+                "ClientApplicationWindowsOpenVariant",
+            )),
+            version85_interface_migration_mode: optional(cf_prop_text(
+                props,
+                "Version85InterfaceMigrationMode",
+            )),
             comment: optional(cf_prop_text(props, "Comment")),
             name_prefix: optional(cf_prop_text(props, "NamePrefix")),
             update_catalog_address: optional(cf_prop_text(props, "UpdateCatalogAddress")),

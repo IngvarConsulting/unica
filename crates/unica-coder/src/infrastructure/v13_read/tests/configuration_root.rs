@@ -62,6 +62,64 @@ fn configuration_root_carries_vendor_support_and_closed_root_properties() {
     }
 }
 
+/// The root shows the properties of its set's line with the file's values;
+/// a set of an earlier line has none of them.
+/// rule: INV.SOURCE.PROFILE-CAPABILITIES
+#[test]
+fn configuration_root_shows_the_properties_of_its_line() {
+    use unica_source_contract::format_identity::PlatformLine;
+    for (format, source, line, expected) in [
+        (
+            "2.20",
+            "../../tests/fixtures/formats/platform_xml/2.20/all_kinds/src",
+            PlatformLine::new(8, 3, 27),
+            None,
+        ),
+        (
+            "2.21",
+            "../../tests/fixtures/formats/platform_xml/2.21/all_kinds/src",
+            PlatformLine::new(8, 5, 1),
+            Some(["NavigationLeft", "Auto", "OpenDataInDialogs", "DontUse"]),
+        ),
+        (
+            "2.22",
+            "../../tests/fixtures/formats/platform_xml/2.22/all_kinds/src",
+            PlatformLine::new(8, 5, 4),
+            Some(["NavigationLeft", "Auto", "OpenDataInDialogs", "DontUse"]),
+        ),
+    ] {
+        let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(source);
+        let cancellation = CancellationToken::new();
+        let source_root = Arc::new(unica_workspace::read::open_source_directory(&source).unwrap());
+        let authority = LogicalViewReadAuthority::new(
+            &cancellation,
+            "main",
+            "actor-fixture-main",
+            SourceSetKind::Configuration,
+            source_root,
+            PlatformProfile::for_line(line).unwrap(),
+        );
+        let service = ViewService::new(authority, ViewCursorStore::default());
+        let root = service.view(ViewRequest::new("main:Configuration").unwrap());
+        let props = root.data.as_ref().unwrap()["props"].as_object().unwrap();
+        assert_eq!(props["format"], format);
+        assert!(props["caption"].is_null(), "{format}");
+        let properties = &props["properties"];
+        let observed = [
+            "mainWindowInterfaceVariant",
+            "clientApplicationTheme",
+            "windowsOpenVariant",
+            "version85InterfaceMigrationMode",
+        ]
+        .map(|key| properties[key].as_str());
+        assert_eq!(
+            observed,
+            expected.map(|values| values.map(Some)).unwrap_or([None; 4]),
+            "{format}"
+        );
+    }
+}
+
 /// rule: INV.SOURCE.LOGICAL-BRANCH-COUNT
 #[test]
 fn configuration_root_branch_counts_match_every_reachable_collection() {

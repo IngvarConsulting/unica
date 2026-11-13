@@ -62,6 +62,19 @@ impl MetadataFixture {
     }
 
     fn with_kind_and_files(kind: SourceSetKind, files: &[(&str, &str)]) -> Self {
+        Self::with_profile_and_files(
+            kind,
+            SourceProfile::platform_xml_8_3_27_format_2_20(),
+            files,
+        )
+    }
+
+    /// A `main` set of `kind` whose format is that of `profile`.
+    fn with_profile_and_files(
+        kind: SourceSetKind,
+        profile: SourceProfile,
+        files: &[(&str, &str)],
+    ) -> Self {
         let root = tempfile::tempdir().unwrap();
         let source = root.path().join("src");
         std::fs::create_dir_all(&source).unwrap();
@@ -96,7 +109,7 @@ impl MetadataFixture {
                 &source,
                 kind,
                 SourceFormat::PlatformXml,
-                SourceProfile::platform_xml_8_3_27_format_2_20(),
+                profile,
             )],
             "metadata-family-planner-test",
         )

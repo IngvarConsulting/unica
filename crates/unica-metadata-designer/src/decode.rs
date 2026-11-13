@@ -19,6 +19,9 @@ pub struct MetadataDecodeContext<'a> {
     pub source_set_name: &'a str,
     /// The addressed source set's kind selects the root property profile.
     pub source_kind: unica_source_contract::SourceSetKind,
+    /// The platform line of the set's format: which root properties and
+    /// values exist (INV.SOURCE.PROFILE-CAPABILITIES).
+    pub source_line: Option<unica_source_contract::format_identity::PlatformLine>,
     pub registry: OperationRegistry,
 }
 impl MetadataDecodeContext<'_> {
@@ -1071,7 +1074,7 @@ pub fn parse_properties(
         target.segments(),
         [root] if root.kind() == NodeKind::Configuration && root.name().is_none()
     ) {
-        PropertiesSite::root_of(binding.source_kind)
+        PropertiesSite::root_of(binding.source_kind, binding.source_line)
     } else {
         PropertiesSite::from_address(&target, binding.source_kind)
     }
@@ -1101,6 +1104,14 @@ pub fn parse_properties(
     // internal carrier key, not part of the published property arguments.
     let mut payload = args.clone();
     payload.remove("at");
+    if let Some((name, reason)) = payload
+        .get("values")
+        .and_then(Value::as_object)
+        .and_then(|values| site.later_line_refusal(binding.source_set_name(), values))
+    {
+        return Err(ApplyPlanError::new(ApplyPlanErrorKind::BadValue, reason)
+            .at_path(format!("ops[{op_index}].args.values.{name}")));
+    }
     let contract = operation.contract(site);
     reject_unknown_input_args(
         operation.name(),
