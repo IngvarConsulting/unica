@@ -75,7 +75,7 @@ impl PinnedRunner {
             return;
         };
         let code = envelope["error"]["code"].as_str();
-        if code == Some("cancelled") || !envelope["ok"].is_boolean() {
+        if answers_the_cancel(&envelope) || !envelope["ok"].is_boolean() {
             return;
         }
         output.cancelled = false;
@@ -104,6 +104,19 @@ impl PinnedRunner {
             .unwrap_or_else(|error| error.into_inner())
             .clone()
     }
+}
+
+/// Whether the runner's answer to an interrupt is the cancel itself.
+///
+/// v8-runner 0.17.2 answers a cancel that arrives before the command reached
+/// its live agent with `environment_unavailable` of layer `agent_start`
+/// instead of `cancelled` (IngvarConsulting/v8-runner-rust#728). The cancel
+/// Unica sent in this call is older than that layer, so it stays the
+/// outcome. Remove the second branch with the move to 0.17.3.
+fn answers_the_cancel(envelope: &serde_json::Value) -> bool {
+    let error = &envelope["error"];
+    error["code"] == "cancelled"
+        || (error["code"] == "environment_unavailable" && error["layer"] == "agent_start")
 }
 
 impl ProcessRunner for PinnedRunner {
@@ -1342,6 +1355,24 @@ source-set:
         assert_eq!(
             answered(cancelled, true),
             (true, FactualOutcomeAuthority::Cancellable, false)
+        );
+        // v8-runner 0.17.2 answers a cancel that came before the command
+        // reached its live agent as a failed agent start
+        // (IngvarConsulting/v8-runner-rust#728): the cancel stays the outcome.
+        // Another layer is the runner's own answer.
+        let early_cancel = serde_json::json!({"ok": false, "error": {
+            "code": "environment_unavailable", "kind": "environment", "layer": "agent_start"
+        }});
+        assert_eq!(
+            answered(early_cancel, true),
+            (true, FactualOutcomeAuthority::Cancellable, false)
+        );
+        let endpoint = serde_json::json!({"ok": false, "error": {
+            "code": "environment_unavailable", "kind": "environment", "layer": "agent_endpoint"
+        }});
+        assert_eq!(
+            answered(endpoint, true),
+            (false, FactualOutcomeAuthority::AnsweredInterrupt, false)
         );
         assert_eq!(
             answered(abandoned, false),
