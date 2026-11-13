@@ -56,19 +56,27 @@ impl V5DaemonClient {
         &self,
         deadline: Instant,
     ) -> Result<V5DaemonProcessOwner, V5TransportError> {
-        self.peer_before(deadline)
-            .map_err(V5TransportError::RequestNotSent)
+        self.peer_before(deadline).map_err(|failure| match failure {
+            V5ConnectFailure::NotInTime { .. } => {
+                V5TransportError::NotConnectedInTime(failure.to_string())
+            }
+            V5ConnectFailure::Refused(message) => V5TransportError::RequestNotSent(message),
+        })
     }
 
-    fn peer_before(&self, deadline: Instant) -> Result<V5DaemonProcessOwner, String> {
+    /// A peer of the anchor's daemon. The anchor's endpoint answers in the
+    /// whole remaining time: a busy daemon is waited for, not replaced, and
+    /// only an endpoint that refuses the connection sends discovery to start
+    /// a daemon again.
+    fn peer_before(&self, deadline: Instant) -> Result<V5DaemonProcessOwner, V5ConnectFailure> {
         loop {
-            remaining(deadline, "connection acquisition")?;
+            in_time(deadline, "connection acquisition")?;
             let mut state = self
                 .state
                 .lock()
                 .map_err(|_| "daemon connection state is poisoned")?;
             while state.refreshing {
-                let budget = remaining(deadline, "connection refresh")?;
+                let budget = in_time(deadline, "connection refresh")?;
                 state = self
                     .refreshed
                     .wait_timeout(state, budget)
@@ -78,17 +86,21 @@ impl V5DaemonClient {
             let anchor = Arc::clone(&state.anchor);
             drop(state);
             let Some(configuration) = &self.configuration else {
-                return V5DaemonProcessOwner::connect_before(anchor.record.clone(), deadline);
+                return V5DaemonProcessOwner::connect_classified_before(
+                    anchor.record.clone(),
+                    deadline,
+                )
+                .map_err(Into::into);
             };
             let directory = DaemonStateDirectory::open(&configuration.state_root, &self.identity)?;
             if directory.read_v5_endpoint_record()?.as_ref() == Some(&anchor.record) {
                 match V5DaemonProcessOwner::connect_classified_before(
                     anchor.record.clone(),
-                    existing_endpoint_probe_deadline(deadline)?,
+                    deadline,
                 ) {
                     Ok(peer) => return Ok(peer),
-                    Err(ConnectionFailure::Rejected(message)) => return Err(message),
                     Err(ConnectionFailure::Unavailable(_)) => {}
+                    Err(failure) => return Err(failure.into()),
                 }
             }
             // Only discovery is serialized. A completed refresh by a competing
@@ -122,7 +134,11 @@ impl V5DaemonClient {
             self.refreshed.notify_all();
             drop(state);
             // Peers never own discovery's mutex, including their handshake.
-            return V5DaemonProcessOwner::connect_before(result?.record.clone(), deadline);
+            return V5DaemonProcessOwner::connect_classified_before(
+                result?.record.clone(),
+                deadline,
+            )
+            .map_err(Into::into);
         }
     }
 }

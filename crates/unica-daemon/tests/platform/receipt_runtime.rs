@@ -9526,3 +9526,104 @@ fn the_deadline_fixed_at_frame_receipt_governs_the_whole_call() {
         .expect("daemon thread did not panic")
         .expect("daemon exits cleanly");
 }
+
+/// A daemon on a busy machine: its own work before it reads the hello of
+/// each connection (`delay`) on top of threads that keep every core busy.
+struct SlowOwnerHandshakes {
+    delay: Duration,
+}
+
+impl V5RuntimeHooks<CanonicalInvocationHost> for SlowOwnerHandshakes {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn before_owner_handshake(&self, _peer_port: u16) {
+        thread::sleep(self.delay);
+    }
+}
+
+/// Frontends connect to a live daemon on a busy machine. The daemon's own
+/// delay before it reads a hello outlasts the 2 s it gives a silent client,
+/// and every core is busy. Every connection still stands in the time of a
+/// call, none is answered as an incompatible daemon, and no second daemon is
+/// started beside the live one: the executable the client would start is
+/// absent (#2969).
+/// rule: INV.WIRE.LOST-SUBMIT-TASK-ID
+#[test]
+fn connections_to_a_live_daemon_stand_on_a_busy_machine() {
+    use unica_daemon_protocol::client_v5::{V5DaemonClient, V5TransportError};
+    let root = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(root.path()).unwrap();
+    let identity = CoreIdentity::production_v5();
+    let config = DaemonServerConfig::new(
+        state_root.clone(),
+        identity.clone(),
+        Duration::from_secs(30),
+    )
+    .with_runtime_hooks_for_test(Arc::new(SlowOwnerHandshakes {
+        delay: Duration::from_millis(2_500),
+    }));
+    let stop = Arc::new(AtomicBool::new(false));
+    let server_stop = stop.clone();
+    let server = thread::spawn(move || {
+        run_daemon_configured_until(
+            (config).into_transport_config(),
+            |runtime| runtime,
+            || server_stop.load(Ordering::SeqCst),
+        )
+    });
+    wait_for_v5_record(&state_root, &identity);
+
+    // Two busy threads per core: the load of two parallel test runs.
+    let busy = Arc::new(AtomicBool::new(true));
+    let cores = thread::available_parallelism().map_or(8, usize::from);
+    let burners: Vec<_> = (0..cores * 2)
+        .map(|_| {
+            let busy = Arc::clone(&busy);
+            thread::spawn(move || {
+                let mut spin = 0u64;
+                while busy.load(Ordering::Relaxed) {
+                    spin = std::hint::black_box(spin.wrapping_mul(31).wrapping_add(7));
+                }
+            })
+        })
+        .collect();
+
+    let client = V5DaemonClient::connect(
+        state_root.clone(),
+        identity,
+        root.path().join("absent-daemon-executable"),
+        Duration::from_secs(30),
+    );
+    let peers: Vec<Result<(), V5TransportError>> = match &client {
+        Ok(client) => {
+            let client = &*client;
+            thread::scope(|scope| {
+                let peers: Vec<_> = (0..8)
+                    .map(|_| {
+                        scope.spawn(move || {
+                            client
+                                .connect_peer_before(Instant::now() + Duration::from_secs(7))
+                                .map(|_| ())
+                        })
+                    })
+                    .collect();
+                peers.into_iter().map(|peer| peer.join().unwrap()).collect()
+            })
+        }
+        Err(_) => Vec::new(),
+    };
+
+    busy.store(false, Ordering::Relaxed);
+    for burner in burners {
+        burner.join().unwrap();
+    }
+    let client = client.expect("the live daemon answers the frontend's start");
+    drop(client);
+    stop.store(true, Ordering::SeqCst);
+    server.join().unwrap().unwrap();
+    for outcome in peers {
+        assert!(outcome.is_ok(), "{outcome:?}");
+    }
+}
