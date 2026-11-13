@@ -976,7 +976,12 @@ fn parse_runner_output(output: ProcessOutput) -> Result<Value, DomainResult> {
             .map(redactor)
             .unwrap_or_else(|| "v8-runner failed without a typed message".to_string());
         return Err(runner_envelope_refusal(
-            runner_rejection(Some(OPERATION.to_string()), code, message),
+            runner_rejection(
+                Some(OPERATION.to_string()),
+                code,
+                envelope["error"]["layer"].as_str(),
+                message,
+            ),
             &envelope,
         ));
     }
@@ -1312,7 +1317,7 @@ mod tests {
                 &runner,
                 CancellationToken::new(),
                 &tool(root.path()),
-                "0.17.1",
+                "0.17.2",
             );
             assert!(result.ok, "{result:?}");
             assert_eq!(
@@ -1371,7 +1376,7 @@ mod tests {
             &runner,
             CancellationToken::new(),
             &tool(root.path()),
-            "0.17.1",
+            "0.17.2",
         );
         assert!(result.ok, "{result:?}");
         let data = result.data.unwrap();
@@ -1419,7 +1424,7 @@ mod tests {
                 &runner,
                 CancellationToken::new(),
                 &tool(root.path()),
-                "0.17.1",
+                "0.17.2",
             );
             assert!(!result.ok, "{behavior}: {result:?}");
             let expected_code = match behavior {
@@ -1469,7 +1474,7 @@ mod tests {
                 &runner,
                 CancellationToken::new(),
                 &tool(root.path()),
-                "0.17.1",
+                "0.17.2",
             )
         });
         assert!(!result.ok, "{result:?}");
@@ -1537,7 +1542,7 @@ mod tests {
                                 &runner,
                                 worker_cancellation,
                                 &runner_tool,
-                                "0.17.1",
+                                "0.17.2",
                             )
                         },
                     )
