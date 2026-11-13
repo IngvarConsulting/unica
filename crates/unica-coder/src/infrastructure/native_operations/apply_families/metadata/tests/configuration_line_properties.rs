@@ -130,7 +130,7 @@ fn a_set_of_line_8_5_1_sets_the_color_of_an_enumeration_value() {
         &fixture,
         &[(
             "enumValue.set",
-            json!({"at":ENUM_VALUE,"values":{"color":"web:Red"}}),
+            json!({"at":ENUM_VALUE,"values":{"color":"#ff00aa"}}),
         )],
     )
     .unwrap();
@@ -138,7 +138,7 @@ fn a_set_of_line_8_5_1_sets_the_color_of_an_enumeration_value() {
     let text = &texts[Path::new("Enums/СпособыУстановкиКурсаВалюты.xml")];
     let value = &text[text.find("<Name>ЗагрузкаИзИнтернета</Name>").unwrap()..];
     let value = &value[..value.find("</Properties>").unwrap()];
-    assert!(value.contains("<Color>web:Red</Color>"), "{value}");
+    assert!(value.contains("<Color>#FF00AA</Color>"), "{value}");
     // The other value keeps its own color.
     assert_eq!(text.matches("<Color>auto</Color>").count(), 3);
     // The platform refuses a color it does not know (checked on 8.5.1).

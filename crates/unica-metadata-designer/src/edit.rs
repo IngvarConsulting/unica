@@ -2524,8 +2524,8 @@ pub fn update_typed_element(
         // The value of a set whose line has the color: its export carries it.
         let open = properties_text.find("<Color>").ok_or_else(|| {
             typed_diagnostic(
-                MetaDiagnosticCode::ProviderUnavailable,
-                "the enumeration value has no Color property",
+                MetaDiagnosticCode::InvalidArguments,
+                "the enumeration value has no Color property to set",
                 Some("color"),
             )
         })?;
@@ -2542,7 +2542,10 @@ pub fn update_typed_element(
                 })?;
         flag_edits.push((
             properties_start + value_start..properties_start + value_end,
-            unica_xml_format::text::escape_xml(color),
+            // The platform writes a color as its public text: `#RRGGBB` in
+            // upper case.
+            unica_metadata::style_color::StyleItemColor::parse_argument(color)
+                .map_or_else(|| color.clone(), |color| color.public_text()),
         ));
     }
     flag_edits.sort_by_key(|(range, _)| std::cmp::Reverse(range.start));
