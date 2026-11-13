@@ -596,11 +596,13 @@ def built_copies(target: Path, root: Path) -> List[Path]:
     Видны крейты, которые читают `CARGO_MANIFEST_DIR`: rustc пишет его в `.d`.
     Чужой корень — путь вида `<корень>/crates/<крейт>`, где `<крейт>` есть
     и в этой копии; каталоги сторонних зависимостей так не выглядят.
+    Просматриваются `<профиль>/deps` и `<триплет>/<профиль>/deps`: с
+    `CARGO_BUILD_TARGET` Cargo кладёт сборку под каталог триплета.
     """
     crates = {path.parent.name for path in (root / "crates").glob("*/Cargo.toml")}
     found: List[Path] = []
-    for profile in ("debug", "release"):
-        for dep_info in sorted((target / profile / "deps").glob("*.d")):
+    for pattern in ("*/deps/*.d", "*/*/deps/*.d"):
+        for dep_info in sorted(target.glob(pattern)):
             try:
                 text = dep_info.read_text(encoding="utf-8", errors="replace")
             except OSError:

@@ -481,8 +481,8 @@ class TargetOwnerTests(unittest.TestCase):
         (root / "crates" / "unica-core" / "Cargo.toml").write_text("", encoding="utf-8")
         return root
 
-    def dep_info(self, name, manifest):
-        deps = self.target / "debug" / "deps"
+    def dep_info(self, name, manifest, layout=("debug",)):
+        deps = self.target.joinpath(*layout, "deps")
         deps.mkdir(parents=True, exist_ok=True)
         escaped = str(manifest).replace("\\", "\\\\")
         (deps / f"{name}.d").write_text(
@@ -496,6 +496,19 @@ class TargetOwnerTests(unittest.TestCase):
         self.dep_info("unknown", self.base / "elsewhere" / "crates" / "not-ours")
         found = CHECK.built_copies(self.target, self.copy)
         self.assertEqual([os.path.normcase(path) for path in found], [os.path.normcase(self.other)])
+
+    def test_a_build_under_a_target_triple_or_another_profile_is_found(self):
+        for layout in (("x86_64-pc-windows-msvc", "debug"), ("test",)):
+            with self.subTest(layout=layout):
+                shutil.rmtree(self.target, ignore_errors=True)
+                self.dep_info("foreign", self.other / "crates" / "unica-core", layout)
+                found = CHECK.built_copies(self.target, self.copy)
+                self.assertEqual([os.path.normcase(path) for path in found], [os.path.normcase(self.other)])
+        shutil.rmtree(self.target, ignore_errors=True)
+        # The base tree of the check builds in its own directory inside.
+        self.dep_info("base", self.other / "crates" / "unica-core",
+                      (CHECK.CACHE_DIR_NAME, "base-build", "debug"))
+        self.assertEqual(CHECK.built_copies(self.target, self.copy), [])
 
     def test_the_first_copy_claims_the_directory_and_may_use_it_again(self):
         self.dep_info("own", self.copy / "crates" / "unica-core")
