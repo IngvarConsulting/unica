@@ -166,6 +166,15 @@ macro_rules! descriptor_properties {
                 match self { $(Self::$field => $configuration),+ }
             }
 
+            /// Whether a root of the given kind, of some line, has the property.
+            const fn on_root(self, extension: bool) -> bool {
+                if extension {
+                    match self { $(Self::$field => $extension),+ }
+                } else {
+                    self.on_configuration_root()
+                }
+            }
+
             pub const fn kind(self) -> DescriptorPropertyKind {
                 match self { $(Self::$field => DescriptorPropertyKind::$kind),+ }
             }
@@ -174,12 +183,8 @@ macro_rules! descriptor_properties {
                 match site {
                     PropertiesSite::Subsystem => match self { $(Self::$field => $subsystem),+ },
                     PropertiesSite::Role => match self { $(Self::$field => $role),+ },
-                    PropertiesSite::Configuration { extension: false, line } => {
-                        self.on_configuration_root()
-                            && !line_lacks(line, self.names()[0], None)
-                    }
-                    PropertiesSite::Configuration { extension: true, .. } => {
-                        match self { $(Self::$field => $extension),+ }
+                    PropertiesSite::Configuration { extension, line } => {
+                        self.on_root(extension) && !line_lacks(line, self.names()[0], None)
                     }
                     PropertiesSite::Metadata { .. } => false,
                     PropertiesSite::DocumentNumerator => self == Self::Comment,
@@ -338,19 +343,15 @@ impl PropertiesSite {
     /// its set does not have, each with the line it exists from
     /// (INV.SOURCE.PROFILE-CAPABILITIES).
     pub fn later_line_capabilities(self) -> Vec<LaterLineCapability> {
-        let Self::Configuration {
-            extension: false,
-            line,
-        } = self
-        else {
+        let Self::Configuration { extension, line } = self else {
             return Vec::new();
         };
         configuration_root_additions_after(line)
             .into_iter()
             .filter(|addition| {
-                DescriptorProperty::ALL.iter().any(|field| {
-                    field.on_configuration_root() && field.names()[0] == addition.property
-                })
+                DescriptorProperty::ALL
+                    .iter()
+                    .any(|field| field.on_root(extension) && field.names()[0] == addition.property)
             })
             .map(|addition| LaterLineCapability {
                 property: addition.property,
@@ -529,18 +530,16 @@ impl PropertiesSite {
         source_set: &str,
         values: &Map<String, Value>,
     ) -> Option<(String, String)> {
-        let Self::Configuration {
-            extension: false,
-            line,
-        } = self
-        else {
+        let Self::Configuration { extension, line } = self else {
             return None;
         };
         let later = self.later_line_capabilities();
         for (name, value) in values {
-            let Some(field) = DescriptorProperty::ALL.iter().copied().find(|field| {
-                field.on_configuration_root() && field.names().contains(&name.as_str())
-            }) else {
+            let Some(field) = DescriptorProperty::ALL
+                .iter()
+                .copied()
+                .find(|field| field.on_root(extension) && field.names().contains(&name.as_str()))
+            else {
                 continue;
             };
             let canonical = field.names()[0];
@@ -734,7 +733,22 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .contains(&json!("Version8_5")));
-            assert!(values.get("x-unica-later-lines").is_none(), "{line}");
+            // 8.5.1 lacks only the modes of 8.5.4; 8.5.4 lacks nothing.
+            let later = values["x-unica-later-lines"]["items"]
+                .as_array()
+                .map(|items| {
+                    items
+                        .iter()
+                        .map(|item| item["value"].as_str().unwrap_or_default())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            let expected: &[&str] = if line == PlatformLine::new(8, 5, 1) {
+                &["Version8_5_4"]
+            } else {
+                &[]
+            };
+            assert_eq!(later, expected, "{line}");
             let oracle = jsonschema::validator_for(&new.schema).unwrap();
             assert!(oracle.is_valid(&json!({"values":{
                 "ClientApplicationTheme":"Dark","InterfaceCompatibilityMode":"Version8_5",
@@ -761,11 +775,76 @@ mod tests {
             site.later_line_refusal("main", values.as_object().unwrap()),
             None
         );
-        // An extension root has none of these properties in any line.
+        // An extension root has none of the 8.5 interface properties; of the
+        // later lines it has only its own compatibility modes.
         let extension =
             PropertiesSite::root_of(SourceSetKind::Extension, Some(PlatformLine::new(8, 3, 27)))
                 .unwrap();
-        assert!(extension.later_line_capabilities().is_empty());
+        assert_eq!(
+            extension
+                .later_line_capabilities()
+                .iter()
+                .map(|item| (item.property, item.value))
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    "ConfigurationExtensionCompatibilityMode",
+                    Some("Version8_5_1")
+                ),
+                (
+                    "ConfigurationExtensionCompatibilityMode",
+                    Some("Version8_5_4")
+                ),
+            ]
+        );
+    }
+
+    /// rule: INV.SOURCE.PROFILE-CAPABILITIES
+    #[test]
+    fn compatibility_modes_of_a_line_exist_from_that_line() {
+        for (extension, property) in [
+            (false, "CompatibilityMode"),
+            (true, "ConfigurationExtensionCompatibilityMode"),
+        ] {
+            let kind = if extension {
+                SourceSetKind::Extension
+            } else {
+                SourceSetKind::Configuration
+            };
+            let field = PropertiesSite::root_of(kind, None)
+                .unwrap()
+                .descriptor_fields()
+                .find(|field| field.names()[0] == property)
+                .unwrap();
+            for (line, offered) in [
+                (PlatformLine::new(8, 3, 27), &[][..]),
+                (PlatformLine::new(8, 5, 1), &["Version8_5_1"][..]),
+                (
+                    PlatformLine::new(8, 5, 4),
+                    &["Version8_5_1", "Version8_5_4"][..],
+                ),
+            ] {
+                let values = field.allowed_values_in(Some(line));
+                for mode in ["Version8_5_1", "Version8_5_4"] {
+                    assert_eq!(
+                        values.contains(&mode),
+                        offered.contains(&mode),
+                        "{property} {line} {mode}"
+                    );
+                }
+                assert!(values.contains(&"Version8_3_27"));
+                assert!(!values.contains(&"DontUse"));
+            }
+            let site = PropertiesSite::root_of(kind, Some(PlatformLine::new(8, 5, 1))).unwrap();
+            let values = json!({ property: "Version8_5_4" });
+            assert_eq!(
+                site.later_line_refusal("main", values.as_object().unwrap()),
+                Some((
+                    property.to_string(),
+                    format!("Value `Version8_5_4` of `{property}` exists from platform 8.5.4 (format 2.22); source set `main` is in format 2.21 (platform 8.5.1).")
+                ))
+            );
+        }
     }
 
     #[test]

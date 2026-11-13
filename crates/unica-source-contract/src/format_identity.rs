@@ -292,6 +292,30 @@ const CONFIGURATION_ROOT_LINE_ADDITIONS: &[(&str, Option<&str>, PlatformLine)] =
         Some("Version8_5"),
         PlatformLine::new(8, 5, 1),
     ),
+    // The modes of the line itself: 8.5.1 refuses to load `Version8_5_4`
+    // ("необходима версия платформы не меньше, чем 8.5.4"). The Designer of
+    // 8.5.1 lists the modes up to 8.3.27, but the platform loads and exports
+    // `Version8_5_1` from a file.
+    (
+        "CompatibilityMode",
+        Some("Version8_5_1"),
+        PlatformLine::new(8, 5, 1),
+    ),
+    (
+        "CompatibilityMode",
+        Some("Version8_5_4"),
+        PlatformLine::new(8, 5, 4),
+    ),
+    (
+        "ConfigurationExtensionCompatibilityMode",
+        Some("Version8_5_1"),
+        PlatformLine::new(8, 5, 1),
+    ),
+    (
+        "ConfigurationExtensionCompatibilityMode",
+        Some("Version8_5_4"),
+        PlatformLine::new(8, 5, 4),
+    ),
 ];
 
 /// A configuration root property, or a value of one, that a later line than
