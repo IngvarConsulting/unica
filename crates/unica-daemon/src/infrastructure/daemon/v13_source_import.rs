@@ -550,7 +550,23 @@ fn execute_with_resolved_runner(
     };
     if !prepared.dry_run {
         // Исполнение не повторяет preview раннера: входы прочитаны один раз,
-        // а исполненный план сверяется с аргументами вызова.
+        // а исполненный план сверяется с аргументами вызова. Только запись в
+        // файловую базу без согласия писать в базу другой копии сначала
+        // сверяется с превью: раннер предупреждает о такой базе уже в нём.
+        if super::v13_infobase_another_copy::needs_preview(
+            &prepared.context.workspace_root,
+            &prepared.call,
+        ) {
+            if let Ok(preview) = invoke_runner(prepared, tool, runner, &cancellation, true) {
+                if let Some(refusal) = super::v13_infobase_another_copy::refusal_for(
+                    OPERATION,
+                    &preview,
+                    &prepared.call,
+                ) {
+                    return refusal;
+                }
+            }
+        }
         return apply(prepared, &before, tool, runner, &cancellation);
     }
     let preview = match invoke_runner(prepared, tool, runner, &cancellation, true) {
@@ -1510,7 +1526,7 @@ pub(super) mod tests {
         dry_run: bool,
     ) -> PreparedSourceImport {
         PreparedSourceImport {
-            call: Map::new(),
+            call: super::super::v13_infobase_another_copy::with_consent(&Map::new()),
             arguments: ImportArguments {
                 source_set: source_set.map(str::to_string),
                 full_rebuild,

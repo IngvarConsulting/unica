@@ -96,6 +96,9 @@ pub(super) struct PreparedSourceExport {
     context: WorkspaceContext,
     /// The writable export format of a re-export; `None` for `pull`.
     reexport: Option<&'static str>,
+    /// The call as made: the question about the infobase of another copy
+    /// repeats it.
+    call: Map<String, Value>,
 }
 
 pub(super) enum Preparation {
@@ -265,6 +268,7 @@ impl PreparedSourceExport {
             dry_run,
             context,
             reexport: None,
+            call: request.arguments().clone(),
         })
     }
 
@@ -354,6 +358,7 @@ impl PreparedSourceExport {
             dry_run,
             context,
             reexport: Some(format),
+            call: request.arguments().clone(),
         })
     }
 
@@ -670,9 +675,25 @@ fn execute_with_resolved_runner(
     // Существование цели снимается до запуска: после записи раннером оно
     // уже не говорит, создана цель или обновлена.
     let existed_before = selected_target_exists(prepared, &root);
+    // Запись в базу другой копии — по согласию человека: исполнение над
+    // файловой базой сначала сверяется с превью раннера.
+    if !prepared.dry_run
+        && super::v13_infobase_another_copy::needs_preview(
+            &prepared.context.workspace_root,
+            &prepared.call,
+        )
+    {
+        if let Ok(preview) = invoke_runner(prepared, tool, runner, &cancellation, true) {
+            if let Some(refusal) =
+                super::v13_infobase_another_copy::refusal_for(OPERATION, &preview, &prepared.call)
+            {
+                return refusal;
+            }
+        }
+    }
     // Исполнение вызывает раннер один раз; цель пишет сам раннер, а правки
     // набора через Unica на это время исключены блокировкой рабочей области.
-    let envelope = match invoke_runner(prepared, tool, runner, &cancellation) {
+    let envelope = match invoke_runner(prepared, tool, runner, &cancellation, prepared.dry_run) {
         Ok(envelope) => envelope,
         Err(result) => return result,
     };
@@ -712,6 +733,7 @@ fn invoke_runner(
     tool: &BundledTool,
     runner: &dyn ProcessRunner,
     cancellation: &CancellationToken,
+    dry_run: bool,
 ) -> Result<Value, DomainResult> {
     if cancellation.is_cancelled() {
         return Err(reject(
@@ -740,7 +762,7 @@ fn invoke_runner(
         args.push("--extension".to_string());
         args.push(extension.clone());
     }
-    if prepared.dry_run {
+    if dry_run {
         args.push("--dry-run".to_string());
     }
     let output = runner
@@ -1718,6 +1740,7 @@ mod medium_tests {
                 workspace_epoch: 1,
             },
             reexport: None,
+            call: super::super::v13_infobase_another_copy::with_consent(&Map::new()),
         }
     }
 
@@ -2111,6 +2134,17 @@ mod medium_tests {
         );
         assert!(result.ok, "{result:?}");
         super::super::v13_source_import::tests::assert_another_copy_is_named(&result);
+
+        // Без согласия человека исполнение после превью отменяется с вопросом.
+        let mut unasked = prepared(root.path(), ExportMode::Full, Some("main"), None, false);
+        unasked.call = Map::new();
+        let runner = SequenceRunner::new(vec![process(preview, true)]);
+        let refused = run(root.path(), &unasked, &runner);
+        assert_eq!(refused.diagnostics[0]["code"], "cancelled", "{refused:?}");
+        assert_eq!(
+            refused.human_choice.as_deref().expect("a question").code,
+            "infobase.another_copy"
+        );
     }
     /// rule: INV.WIRE.SOURCE-EXPORT-TARGET-STAYS-INSIDE-THE-WORKSPACE
     #[test]
