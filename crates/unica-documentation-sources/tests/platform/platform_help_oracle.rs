@@ -929,7 +929,7 @@ fn derive(root: &Path, pinning: Pinning) -> Result<PlatformEventCatalogFixture, 
 }
 
 #[test]
-#[ignore = "vendor help: needs UNICA_PLATFORM_HELP_DIR=<1C 8.3.27.2074 installation>; run with --run-ignored only"]
+#[ignore = "vendor help: needs UNICA_PLATFORM_HELP_DIR=<1C 8.3.27 installation>; run scripts/dev/check-platform-catalogs.py"]
 fn checked_platform_event_catalog_matches_complete_8_3_27_vendor_oracle() {
     let root = platform_help_dir();
     let derived = derive_fixture(&root).expect("derive complete event fixture from vendor corpus");
@@ -942,7 +942,7 @@ fn checked_platform_event_catalog_matches_complete_8_3_27_vendor_oracle() {
 }
 
 #[test]
-#[ignore = "vendor help: needs UNICA_PLATFORM_HELP_DIR=<1C 8.3.27.2074 installation>; run with --run-ignored only"]
+#[ignore = "vendor help: needs UNICA_PLATFORM_HELP_DIR=<1C 8.3.27 installation>; run scripts/dev/check-platform-catalogs.py"]
 fn vendor_oracle_rejects_a_matching_hbk_from_the_wrong_installation_version() {
     let root = platform_help_dir();
     let checked: PlatformEventCatalogFixture =
@@ -1025,7 +1025,7 @@ fn an_unknown_vendor_owner_cannot_enter_the_reviewed_out_of_profile_category() {
 }
 
 #[test]
-#[ignore = "vendor help: needs UNICA_PLATFORM_HELP_DIR=<1C 8.3.27.2074 installation>; run with --run-ignored only"]
+#[ignore = "vendor help: needs UNICA_PLATFORM_HELP_DIR=<1C 8.3.27 installation>; run scripts/dev/check-platform-catalogs.py"]
 fn bilingual_template_exceptions_are_exact_and_source_guarded() {
     let root = platform_help_dir();
     let checked: PlatformEventCatalogFixture =
@@ -1092,7 +1092,7 @@ fn bilingual_template_exceptions_are_exact_and_source_guarded() {
 }
 
 #[test]
-#[ignore = "vendor help: needs UNICA_PLATFORM_HELP_DIR=<1C 8.3.27.2074 installation>; run with --run-ignored only"]
+#[ignore = "vendor help: needs UNICA_PLATFORM_HELP_DIR=<1C 8.3.27 installation>; run scripts/dev/check-platform-catalogs.py"]
 fn every_vendor_event_markup_page_belongs_to_one_closed_partition_category() {
     let root = platform_help_dir();
     let checked: PlatformEventCatalogFixture =
