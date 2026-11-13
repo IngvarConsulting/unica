@@ -680,6 +680,50 @@ impl ActorBoundExecution {
                     })
             })
             .collect::<Result<Vec<_>, ApplyAdmissionError>>()?;
+        let mut dependencies = dependencies;
+        // A root edit of a compatibility mode reads the sets the mode is
+        // compared with: an extension its configuration, a configuration its
+        // extensions; the answer warns when an extension is above it.
+        const MODE_KEYS: &[&str] = &[
+            "CompatibilityMode",
+            "compatibilityMode",
+            "ConfigurationExtensionCompatibilityMode",
+            "configurationExtensionCompatibilityMode",
+        ];
+        let compares_modes = request.ops().iter().any(|operation| {
+            operation.name() == "props.set"
+                && matches!(
+                    operation.at().segments(),
+                    [root] if root.kind() == unica_address::address::NodeKind::Configuration
+                )
+                && operation
+                    .args()
+                    .get("values")
+                    .and_then(serde_json::Value::as_object)
+                    .is_some_and(|values| values.keys().any(|key| MODE_KEYS.contains(&key.as_str())))
+        });
+        let compared = match binding.source_kind() {
+            unica_source_contract::SourceSetKind::Extension => {
+                Some(unica_source_contract::SourceSetKind::Configuration)
+            }
+            unica_source_contract::SourceSetKind::Configuration => {
+                Some(unica_source_contract::SourceSetKind::Extension)
+            }
+            _ => None,
+        };
+        if let (true, Some(compared)) = (compares_modes, compared) {
+            for source in &self.invocation.read_sources {
+                let name = source.binding.source_set_name();
+                if source.binding.source_kind() == compared
+                    && name != binding.source_set_name()
+                    && dependencies
+                        .iter()
+                        .all(|dependency: &ProviderRootBinding| dependency.source_set_name() != name)
+                {
+                    dependencies.push(source.binding.clone());
+                }
+            }
+        }
         let deadline = ProviderDeadline::no_deadline();
         #[cfg(test)]
         test_control::record_apply_deadline(deadline);

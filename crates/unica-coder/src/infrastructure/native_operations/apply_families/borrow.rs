@@ -199,6 +199,27 @@ pub(super) fn plan(
     )
 }
 
+/// A borrow takes its parent from a configuration: the admission reads an
+/// extension too when an apply compares compatibility modes.
+fn require_configuration_parent(
+    admission: &ApplyAdmission,
+    parent: &QualifiedAddress,
+) -> Result<(), ApplyPlanError> {
+    let kind = admission
+        .read_dependency_sets()
+        .into_iter()
+        .find(|(name, _)| *name == parent.source_set())
+        .map(|(_, kind)| kind);
+    if kind.is_some_and(|kind| kind != SourceSetKind::Configuration) {
+        return Err(ApplyPlanError::new(
+            ApplyPlanErrorKind::BadValue,
+            "from must name an object of a configuration source set",
+        )
+        .at_path(parent.to_string()));
+    }
+    Ok(())
+}
+
 fn parent_form_name(parent: &QualifiedAddress) -> Option<&str> {
     parent
         .segments()
@@ -234,6 +255,7 @@ fn plan_object(
         .at_path(at.clone())
     })?;
     let relative = PathBuf::from(layout.directory).join(format!("{name}.xml"));
+    require_configuration_parent(admission, parent)?;
     let parent_owner =
         admission.read_apply_dependency(parent.source_set(), Path::new("Configuration.xml"))?;
     if !registered(&parent_owner, kind, name)? {
@@ -496,6 +518,7 @@ fn plan_form(
         ApplyPlanError::new(kind, error.to_string()).at_path(from.clone())
     };
 
+    require_configuration_parent(admission, parent)?;
     let parent_configuration =
         admission.read_apply_dependency(parent.source_set(), Path::new("Configuration.xml"))?;
     if !registered(&parent_configuration, kind, name)? {
