@@ -163,6 +163,39 @@ class ParsingTests(unittest.TestCase):
         self.assertEqual(CHECK.parse_unittest("ImportError\n", 1).failures, ["набор упал без списка тестов, код 1"])
 
 
+# Сокращённый вывод `cargo test --tests --no-fail-fast` на Windows: упавший
+# тест в библиотеке, аварийно вышедшая цель без строки итога, проходящая цель.
+CARGO_TARGETS = """\
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.76s
+     Running unittests src\\lib.rs (target\\debug\\deps\\probe-9abf6b1a8c694067.exe)
+
+running 2 tests
+test tests::bad ... FAILED
+test tests::good ... ok
+
+test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+
+error: test failed, to rerun pass `--lib`
+     Running tests\\crash.rs (target\\debug\\deps\\crash-de074afcf8420d8f.exe)
+
+running 1 test
+error: test failed, to rerun pass `--test crash`
+
+Caused by:
+  process didn't exit successfully: `crash-de074afcf8420d8f.exe --show-output` (exit code: 0xc0000409)
+     Running tests\\zfine.rs (target\\debug\\deps\\zfine-e3f98eda0f0883c0.exe)
+
+running 1 test
+test fine ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+error: 2 targets failed:
+    `--lib`
+    `--test crash`
+"""
+
+
 class CompletenessTests(unittest.TestCase):
     """Проверка досчитана, когда её прогон закончился сам, а не оборван."""
 
@@ -173,14 +206,18 @@ class CompletenessTests(unittest.TestCase):
         finished = killed + "\n" + "-" * 70 + "\nRan 2 tests in 0.1s\n\nFAILED (failures=1)\n"
         self.assertTrue(CHECK.parse_unittest(finished, 1).complete)
 
-    def test_a_cargo_run_is_finished_when_it_succeeds_or_says_its_own_error(self):
-        killed = "   Compiling unica-x v0.1.0\n     Running unittests src/lib.rs\nrunning 3 tests\ntest a ... ok\n"
-        self.assertFalse(CHECK.parse_libtest(killed, 1).complete)
-        crashed = killed + "error: test failed, to rerun pass `-p unica-x --lib`\n"
-        result = CHECK.parse_libtest(crashed, 101)
+    def test_a_cargo_test_run_is_finished_only_by_its_closing_line(self):
+        # Вывод `cargo test --tests --no-fail-fast`: после одной упавшей цели
+        # прогон идёт дальше, досчитан он только строкой `error: N targets failed:`.
+        killed = CARGO_TARGETS.split("     Running tests\\zfine.rs")[0]
+        result = CHECK.parse_libtest(killed, 1)
+        self.assertFalse(result.complete)
+        result = CHECK.parse_libtest(CARGO_TARGETS, 101)
         self.assertTrue(result.complete)
-        self.assertTrue(result.failures)
-        self.assertTrue(CHECK.parse_libtest(LIBTEST.replace("FAILED. 2", "ok. 2"), 0).complete)
+        self.assertEqual(result.failures, ["tests::bad", "цель --test crash упала без итога"])
+        passing = CARGO_TARGETS.split("     Running tests\\crash.rs")[0].replace("FAILED", "ok")
+        self.assertTrue(CHECK.parse_libtest(passing, 0).complete)
+        self.assertTrue(CHECK.parse_libtest("error: could not compile `unica-x`\n", 101).complete)
         self.assertFalse(CHECK.parse_clippy("    Checking unica-x\n", 1, REPO_ROOT).complete)
         self.assertTrue(CHECK.parse_clippy("error: could not compile `unica-x`\n", 101, REPO_ROOT).complete)
         self.assertFalse(CHECK.parse_fmt("", 1, REPO_ROOT).complete)

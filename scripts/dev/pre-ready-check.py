@@ -128,6 +128,9 @@ CARGO_FAILED = re.compile(
 UNITTEST_SEPARATOR = re.compile(r"^(?:=|-){70}$", re.M)
 UNITTEST_SKIPPED = re.compile(r"\(([\w.]+)\)(?:\n[^\n]*?)? \.\.\. skipped\b", re.M)
 UNITTEST_RAN = re.compile(r"^Ran \d+ tests? in ", re.M)
+CARGO_RUNNING = re.compile(r"^[ \t]+Running ", re.M)
+CARGO_RERUN = re.compile(r"^error: test failed, to rerun pass `([^`]+)`", re.M)
+CARGO_TARGETS_FAILED = re.compile(r"^error: \d+ targets? failed:$", re.M)
 
 
 def cargo_finished(output: str, returncode: int) -> bool:
@@ -152,26 +155,52 @@ def is_build_failure(key: str) -> bool:
 
 
 def parse_libtest(output: str, returncode: int) -> Result:
-    statuses = {name: status for name, status in LIBTEST_LINE.findall(output)}
-    failures = sorted(name for name, status in statuses.items() if status == "FAILED")
-    skipped = {name for name, status in statuses.items() if status == "ignored"}
-    current = None
-    for line in output.splitlines():
-        header = SHOW_OUTPUT.match(line)
-        if header:
-            current = header.group(1)
-        elif current and SKIP_MARKER in line:
-            skipped.add(current)
-    summaries = LIBTEST_SUMMARY.findall(output)
-    if returncode != 0:
-        if not failures and not summaries:
-            failures = build_errors(output, returncode)
-        elif not summaries or sum(map(int, summaries)) != len(failures):
-            # Бинарь упал посреди прогона или строку итога теста разорвал чужой
-            # вывод: часть тестов не исполнена или не учтена.
+    """Падения `cargo test` по целям: у каждого бинаря свой раздел от строки `Running`.
+
+    Цель без строки итога упала сама (аварийный выход, переполнение стека):
+    её падение — ключ `цель <...> упала без итога`, даже если именованных
+    падений нет. Прогон досчитан по коду 0 или по заключительной строке
+    `error: N targets failed:`, которую `--no-fail-fast` печатает в конце;
+    строка `error: test failed` после одной цели об этом не говорит. Сбой
+    сборки до первой цели досчитан по строке `error:` самого `cargo`.
+    """
+    starts = [match.start() for match in CARGO_RUNNING.finditer(output)]
+    sections = [output[start:end] for start, end in zip(starts, starts[1:] + [len(output)])] or [output]
+    failures: List[str] = []
+    skipped: Set[str] = set()
+    for index, section in enumerate(sections):
+        statuses = LIBTEST_LINE.findall(section)
+        named = sorted(name for name, status in statuses if status == "FAILED")
+        failures.extend(named)
+        skipped.update(name for name, status in statuses if status == "ignored")
+        current = None
+        for line in section.splitlines():
+            header = SHOW_OUTPUT.match(line)
+            if header:
+                current = header.group(1)
+            elif current and SKIP_MARKER in line:
+                skipped.add(current)
+        summaries = LIBTEST_SUMMARY.findall(section)
+        if returncode == 0 or (not starts and not named and not summaries):
+            continue
+        rerun = CARGO_RERUN.search(section)
+        if not summaries and (rerun or index < len(sections) - 1):
+            target = rerun.group(1) if rerun else section.splitlines()[0].strip()
+            failures.append(f"цель {target} упала без итога")
+        elif summaries and sum(map(int, summaries)) != len(named):
+            # Строку итога теста разорвал чужой вывод: часть падений не учтена.
             failures.append(f"прогон оборвался или итог неполон, код {returncode}")
-    return Result(failures, sorted(skipped), [key for key in failures if is_build_failure(key)],
-                  cargo_finished(output, returncode))
+        elif not summaries and not starts:
+            failures.append(f"прогон оборвался или итог неполон, код {returncode}")
+    if returncode != 0 and not starts and not failures:
+        failures = build_errors(output, returncode)
+    if returncode == 0:
+        finished = True
+    elif starts:
+        finished = CARGO_TARGETS_FAILED.search(output) is not None
+    else:
+        finished = ERROR_LINE.search(output) is not None
+    return Result(sorted(failures), sorted(skipped), [key for key in failures if is_build_failure(key)], finished)
 
 
 def normalize_path(raw: str, root: Path) -> str:
@@ -868,7 +897,7 @@ def new_failures(current: Dict[str, Result], base: Dict[str, List[str]]) -> Dict
     return result
 
 
-SYNTHETIC = ("сборка", "прогон оборвался", "набор упал", "форматирование:")
+SYNTHETIC = ("сборка", "прогон оборвался", "набор упал", "форматирование:", "цель ")
 
 
 def recheck(check: Check, fresh: List[str], root: Path, env: Dict[str, str],
