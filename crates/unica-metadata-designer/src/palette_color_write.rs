@@ -28,18 +28,28 @@ pub fn patch_color(source: &str, name: &str, color: &str) -> Result<String, Stri
         .children()
         .filter(|node| node.has_tag_name((MD, "Color")));
     let node = colors.next().ok_or("PaletteColor Color is absent")?;
-    if colors.next().is_some() || node.children().any(|child| child.is_element()) {
+    // Only one text node is a color: a comment or markup inside it is not
+    // patched, so nothing beside the color is lost or kept by mistake.
+    let mut content = node.children();
+    let text = content.next();
+    if colors.next().is_some()
+        || content.next().is_some()
+        || text.is_some_and(|child| !child.is_text())
+    {
         return Err("PaletteColor Color is damaged".into());
     }
     let current = node.text().unwrap_or_default();
     if current.eq_ignore_ascii_case(color) {
         return Ok(source.to_string());
     }
-    let range = match node.first_child() {
+    let range = match text {
         Some(text) => text.range(),
         None => {
-            // `<Color/>`: the element is rewritten whole.
+            // An empty `<Color/>` is rewritten whole; a prefixed one is not.
             let range = node.range();
+            if !matches!(&source[range.clone()], "<Color/>" | "<Color></Color>") {
+                return Err("PaletteColor Color is damaged".into());
+            }
             let mut patched = source.to_string();
             patched.replace_range(range, &format!("<Color>{color}</Color>"));
             return Ok(patched);
@@ -70,5 +80,23 @@ mod tests {
         assert_eq!(patch_color(EXPORT, "Probe", "#1a2b3c").unwrap(), EXPORT);
         assert_eq!(patch_color(&patched, "Probe", "#1A2B3C").unwrap(), EXPORT);
         assert!(patch_color(EXPORT, "Other", "#ff0000").is_err());
+    }
+
+    /// A Color with a comment or markup beside its text is refused, not
+    /// patched; an empty Color gets the new color.
+    #[test]
+    fn a_color_with_more_than_its_text_is_refused() {
+        for damaged in [
+            "<Color><!--note-->#1A2B3C</Color>",
+            "<Color>#1A2B3C<!--note--></Color>",
+        ] {
+            let source = EXPORT.replace("<Color>#1A2B3C</Color>", damaged);
+            assert!(
+                patch_color(&source, "Probe", "#FF0000").is_err(),
+                "{damaged}"
+            );
+        }
+        let empty = EXPORT.replace("<Color>#1A2B3C</Color>", "<Color/>");
+        assert_eq!(patch_color(&empty, "Probe", "#1A2B3C").unwrap(), EXPORT);
     }
 }
