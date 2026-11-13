@@ -48,7 +48,6 @@ metadata_kind_registry! {
     "CommonTemplate" => { directory: "CommonTemplates", display_name_ru: "Общие макеты", config_dump_prefix: None, config_dump_module_suffix: None },
     "FilterCriterion" => { directory: "FilterCriteria", display_name_ru: "Критерии отбора", config_dump_prefix: None, config_dump_module_suffix: None },
     "CommonModule" => { directory: "CommonModules", display_name_ru: "Общие модули", config_dump_prefix: None, config_dump_module_suffix: None },
-    "Bot" => { directory: "Bots", display_name_ru: "Боты", config_dump_prefix: Some("Bot"), config_dump_module_suffix: Some(".Module") },
     "CommonAttribute" => { directory: "CommonAttributes", display_name_ru: "Общие реквизиты", config_dump_prefix: None, config_dump_module_suffix: None },
     "ExchangePlan" => { directory: "ExchangePlans", display_name_ru: "Планы обмена", config_dump_prefix: None, config_dump_module_suffix: None },
     "XDTOPackage" => { directory: "XDTOPackages", display_name_ru: "XDTO-пакеты", config_dump_prefix: None, config_dump_module_suffix: None },
@@ -61,6 +60,7 @@ metadata_kind_registry! {
     "FunctionalOption" => { directory: "FunctionalOptions", display_name_ru: "Функциональные опции", config_dump_prefix: None, config_dump_module_suffix: None },
     "FunctionalOptionsParameter" => { directory: "FunctionalOptionsParameters", display_name_ru: "Параметры ФО", config_dump_prefix: None, config_dump_module_suffix: None },
     "DefinedType" => { directory: "DefinedTypes", display_name_ru: "Определяемые типы", config_dump_prefix: None, config_dump_module_suffix: None },
+    "Bot" => { directory: "Bots", display_name_ru: "Боты", config_dump_prefix: Some("Bot"), config_dump_module_suffix: Some(".Module") },
     "CommonCommand" => { directory: "CommonCommands", display_name_ru: "Общие команды", config_dump_prefix: None, config_dump_module_suffix: None },
     "CommandGroup" => { directory: "CommandGroups", display_name_ru: "Группы команд", config_dump_prefix: None, config_dump_module_suffix: None },
     "Constant" => { directory: "Constants", display_name_ru: "Константы", config_dump_prefix: None, config_dump_module_suffix: None },
@@ -606,7 +606,6 @@ mod tests {
             "CommonTemplate",
             "FilterCriterion",
             "CommonModule",
-            "Bot",
             "CommonAttribute",
             "ExchangePlan",
             "XDTOPackage",
@@ -619,6 +618,7 @@ mod tests {
             "FunctionalOption",
             "FunctionalOptionsParameter",
             "DefinedType",
+            "Bot",
             "CommonCommand",
             "CommandGroup",
             "Constant",
@@ -691,7 +691,7 @@ mod tests {
         assert_eq!(bot.config_dump_module_suffix, Some(".Module"));
         assert_eq!(
             metadata_kind_index("Bot"),
-            metadata_kind_index("CommonModule").map(|index| index + 1)
+            metadata_kind_index("DefinedType").map(|index| index + 1)
         );
         assert_eq!(metadata_kind("SyntheticMetadata"), None);
     }
