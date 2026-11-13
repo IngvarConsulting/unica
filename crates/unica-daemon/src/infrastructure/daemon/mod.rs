@@ -20,6 +20,7 @@ mod v13_can_honesty_tests;
 mod v13_client_run;
 mod v13_documentation;
 mod v13_extensions;
+mod v13_infobase_another_copy;
 mod v13_infobase_create;
 mod v13_infobase_exports;
 mod v13_infobase_sessions;

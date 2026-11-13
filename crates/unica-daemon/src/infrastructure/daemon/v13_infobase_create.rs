@@ -242,6 +242,159 @@ fn execute_with_resolved_runner(
             "infobase.create cancelled before preflight",
         );
     }
+    // «Создать свою базу» (вопрос `infobase.another_copy`): сначала раннер
+    // объявляет этой копии свою базу в местном слое, затем она создаётся как
+    // обычно — уже по новому соединению.
+    let own_base =
+        !prepared.dry_run && super::v13_infobase_another_copy::declares_own_base(&prepared.call);
+    if own_base {
+        if let Err(result) = declare_own_base(prepared, tool, runner, &cancellation) {
+            return result;
+        }
+    }
+    let result = create_with_resolved_runner(prepared, runner, cancellation, tool);
+    if own_base {
+        return own_base_result(result);
+    }
+    result
+}
+
+/// Ответ «Создать свою базу»: создана — согласованный текст; не создана —
+/// отказ создания с предупреждением, что база уже объявлена.
+fn own_base_result(mut result: DomainResult) -> DomainResult {
+    if result.ok {
+        result.summary = "infobase.create declared an infobase of this working copy in v8project.local.yaml and created it; the infobase of the other working copy is kept as infobases.upstream and is not changed; repeat the original call on the new infobase".to_string();
+        if let Some(Value::Object(data)) = result.data.as_mut() {
+            data.insert("ownInfobaseDeclared".to_string(), Value::Bool(true));
+        }
+    } else {
+        result.warnings.push(json!({
+            "code": OWN_INFOBASE_DECLARED_CODE,
+            "message": "the infobase of this working copy is declared in v8project.local.yaml, but it was not created; the infobase of the other working copy is kept as infobases.upstream; create the new one with infobase.create",
+        }));
+    }
+    result
+}
+
+/// Предупреждение: своя база объявлена, но не создана.
+const OWN_INFOBASE_DECLARED_CODE: &str = "own_infobase_declared";
+
+/// Объявляет этой копии свою файловую базу раннером:
+/// `init --infobase "File=<localPath>/db"`. Прежняя секция `origin` уходит в
+/// `upstream`; занятое имя `upstream` — отказ до записи.
+fn declare_own_base(
+    prepared: &PreparedInfobaseCreate,
+    tool: &BundledTool,
+    runner: &dyn ProcessRunner,
+    cancellation: &CancellationToken,
+) -> Result<(), DomainResult> {
+    let root = &prepared.context.workspace_root;
+    match std::fs::symlink_metadata(root.join(LOCAL_CONFIG_NAME)) {
+        Ok(metadata) if !metadata.file_type().is_file() => {
+            return Err(local_layer_unwritable("it is a link"))
+        }
+        Ok(metadata) if metadata.permissions().readonly() => {
+            return Err(local_layer_unwritable("the file is read-only"))
+        }
+        _ => {}
+    }
+    let layer = |name: &str| {
+        super::v13_workspace_bootstrap::read_yaml_config(root, name)
+            .map_err(|error| reject(RefusalCode::InvalidState, redactor(&error)))
+    };
+    let base = layer(CONFIG_NAME)?;
+    let local = layer(LOCAL_CONFIG_NAME)?;
+    if local
+        .as_ref()
+        .and_then(|local| local.get("infobases"))
+        .and_then(|infobases| infobases.get("upstream"))
+        .is_some()
+    {
+        return Err(upstream_taken());
+    }
+    // Каталог своей базы — `localPath` раннера (местный слой важнее
+    // проектного), по умолчанию `.local`; путь считается от каталога
+    // `v8project.yaml`.
+    let local_path = [local.as_ref(), base.as_ref()]
+        .into_iter()
+        .flatten()
+        .find_map(|layer| layer.get("localPath").and_then(serde_yaml::Value::as_str))
+        .unwrap_or(".local")
+        .trim_end_matches(['/', '\\'])
+        .to_string();
+    if cancellation.is_cancelled() {
+        return Err(reject(
+            RefusalCode::Cancelled,
+            "infobase.create cancelled before declaring the infobase of this working copy",
+        ));
+    }
+    let output = runner
+        .run_staged(&ProcessCommand {
+            program: tool.program.clone(),
+            args: vec![
+                "--json-message".to_string(),
+                "init".to_string(),
+                // The global `--config` is refused by `init`: the project file
+                // it writes beside is named by `--output`.
+                "--output".to_string(),
+                root.join(CONFIG_NAME).display().to_string(),
+                "--infobase".to_string(),
+                format!("File={local_path}/db"),
+            ],
+            // Only from the project root: started elsewhere, a refusal of the
+            // runner leaves a partial write (v8-runner-rust#718).
+            cwd: root.clone(),
+            env: Vec::new(),
+            env_remove: Vec::new(),
+            capture_limits: Some((RUNNER_OUTPUT_LIMIT, RUNNER_OUTPUT_LIMIT)),
+            timeout: None,
+            cancellation: cancellation.protect_process_on_spawn(),
+        })
+        .map_err(|error| {
+            runner_start_rejection(Some(OPERATION.to_string()), &error, &tool.program)
+        })?;
+    let envelope: Value = serde_json::from_str(&output.stdout).unwrap_or(Value::Null);
+    if output.status_success && envelope["ok"] == true {
+        return Ok(());
+    }
+    let code = envelope["error"]["code"]
+        .as_str()
+        .unwrap_or("provider_failed");
+    let message = envelope["error"]["message"].as_str().unwrap_or_default();
+    if code == "invalid_argument" && message.contains("upstream") {
+        return Err(upstream_taken());
+    }
+    Err(runner_rejection(
+        Some(OPERATION.to_string()),
+        code,
+        if message.is_empty() {
+            "v8-runner could not declare the infobase of this working copy".to_string()
+        } else {
+            redactor(message)
+        },
+    ))
+}
+
+fn upstream_taken() -> DomainResult {
+    reject(
+        RefusalCode::InvalidState,
+        "this working copy already keeps another infobase as infobases.upstream in v8project.local.yaml; remove or rename that section, then answer again",
+    )
+}
+
+fn local_layer_unwritable(reason: &str) -> DomainResult {
+    reject(
+        RefusalCode::InvalidState,
+        format!("v8project.local.yaml cannot be written: {reason}; declare infobases.origin with this working copy's own connection there, then create it with infobase.create"),
+    )
+}
+
+fn create_with_resolved_runner(
+    prepared: &PreparedInfobaseCreate,
+    runner: &dyn ProcessRunner,
+    cancellation: CancellationToken,
+    tool: &BundledTool,
+) -> DomainResult {
     let before = match capture_inputs(prepared) {
         Ok(inputs) => inputs,
         Err(result) => return result,
@@ -468,7 +621,7 @@ fn recreate_choice(call: &Map<String, Value>) -> HumanChoice {
         EXISTS_CODE,
         recreate_question(),
         "Пересоздать базу",
-        "Данные и конфигурация базы пропадут",
+        "данные и конфигурация базы пропадут",
         RUN_TOOL,
         call,
     )
@@ -1220,7 +1373,7 @@ mod tests {
         assert_eq!(choice.options[0].title, "Пересоздать базу");
         assert_eq!(
             choice.options[0].description,
-            "Данные и конфигурация базы пропадут"
+            "данные и конфигурация базы пропадут"
         );
         assert!(!recreates(&executed.call));
 
@@ -1244,6 +1397,130 @@ mod tests {
         assert_eq!(result.data.as_ref().unwrap()["state"], "recreated");
         assert_eq!(result.changed[0]["kind"], "recreated");
         assert!(result.summary.contains("recreated"), "{result:?}");
+    }
+
+    /// The call of «Создать свою базу» as the question about the infobase of
+    /// another copy offers it.
+    fn own_base_call() -> Map<String, Value> {
+        let warned = json!({"ok": true, "warnings": [
+            "push writes the infobase '/x/ib' of another working copy: it is held by /y (pid 1)"
+        ]});
+        let push = json!({"op": "push", "args": {}, "dryRun": false});
+        let refused = super::super::v13_infobase_another_copy::refusal_for(
+            "push",
+            &warned,
+            push.as_object().unwrap(),
+        )
+        .unwrap();
+        refused.human_choice.unwrap().options[1].arguments.clone()
+    }
+
+    /// «Создать свою базу»: раннер объявляет этой копии свою базу
+    /// `File=.local/db` в местном слое, затем она создаётся, и ответ говорит,
+    /// что база другой копии осталась секцией `upstream`.
+    /// rule: INV.RUNTIME.RUNNER-BASE-REFUSALS
+    #[test]
+    fn the_own_infobase_is_declared_by_the_runner_and_created() {
+        let root = workspace_with_main("File=../other/ib");
+        let mut answered = prepared(root.path(), false);
+        answered.call = own_base_call();
+        let declared = json!({"ok": true, "command": "init", "data": {"kind": "local",
+            "origin": {"change": "redirected", "connection": "File=.local/db"}}});
+        let runner = SequenceRunner::new(vec![
+            process(declared, true),
+            process(captured("infobase-create-preview.json"), true),
+            process(captured("infobase-create-apply.json"), true),
+            process(captured("infobase-create-receipt-preview.json"), false),
+        ]);
+        let result = run(root.path(), &answered, &runner);
+        assert!(result.ok, "{result:?}");
+        assert!(runner
+            .joined_args(0)
+            .ends_with("v8project.yaml --infobase File=.local/db"));
+        assert!(!runner.joined_args(0).contains("--config"));
+        assert!(runner.joined_args(0).contains("init --output "));
+        // `init` runs from the project root: started elsewhere, a refusal of the
+        // runner leaves a partial write (v8-runner-rust#718).
+        assert_eq!(runner.calls.lock().unwrap()[0].cwd, root.path());
+        assert!(runner.joined_args(1).ends_with("infobase create --dry-run"));
+        assert_eq!(
+            result.summary,
+            "infobase.create declared an infobase of this working copy in v8project.local.yaml and created it; the infobase of the other working copy is kept as infobases.upstream and is not changed; repeat the original call on the new infobase"
+        );
+        assert_eq!(result.data.as_ref().unwrap()["ownInfobaseDeclared"], true);
+
+        // A localPath of the project names the directory of the own infobase.
+        let root = workspace_with_main("File=../other/ib");
+        fs::write(
+            root.path().join(CONFIG_NAME),
+            format!(
+                "localPath: state/
+{}",
+                fs::read_to_string(root.path().join(CONFIG_NAME)).unwrap()
+            ),
+        )
+        .unwrap();
+        let runner = SequenceRunner::new(vec![process(
+            json!({"ok": false, "command": "init", "error": {"code": "invalid_argument",
+                "message": "infobases.upstream already exists"}}),
+            false,
+        )]);
+        let refused = run(root.path(), &answered_in(root.path()), &runner);
+        assert!(runner
+            .joined_args(0)
+            .ends_with("v8project.yaml --infobase File=state/db"));
+        assert_eq!(
+            refused.diagnostics[0]["message"],
+            "this working copy already keeps another infobase as infobases.upstream in v8project.local.yaml; remove or rename that section, then answer again"
+        );
+    }
+
+    fn answered_in(root: &Path) -> PreparedInfobaseCreate {
+        let mut answered = prepared(root, false);
+        answered.call = own_base_call();
+        answered
+    }
+
+    /// An `upstream` already declared, or a local layer that cannot be
+    /// written, refuses before the runner is called; nothing changes.
+    /// rule: INV.RUNTIME.RUNNER-BASE-REFUSALS
+    #[test]
+    fn the_own_infobase_is_not_declared_over_an_upstream_or_an_unwritable_layer() {
+        let root = workspace_with_main("File=../other/ib");
+        let local = root.path().join(LOCAL_CONFIG_NAME);
+        let text = format!(
+            "{}  upstream:
+    connection: 'File=../old/ib'
+",
+            fs::read_to_string(&local).unwrap()
+        );
+        fs::write(&local, &text).unwrap();
+        let runner = SequenceRunner::new(Vec::new());
+        let refused = run(root.path(), &answered_in(root.path()), &runner);
+        assert_eq!(
+            refused.diagnostics[0]["code"], "invalid_state",
+            "{refused:?}"
+        );
+        assert!(refused.diagnostics[0]["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("this working copy already keeps another infobase as infobases.upstream"));
+        assert_eq!(runner.call_count(), 0);
+
+        let root = workspace_with_main("File=../other/ib");
+        let local = root.path().join(LOCAL_CONFIG_NAME);
+        let mut permissions = fs::metadata(&local).unwrap().permissions();
+        permissions.set_readonly(true);
+        fs::set_permissions(&local, permissions.clone()).unwrap();
+        let refused = run(root.path(), &answered_in(root.path()), &runner);
+        assert_eq!(
+            refused.diagnostics[0]["message"],
+            "v8project.local.yaml cannot be written: the file is read-only; declare infobases.origin with this working copy's own connection there, then create it with infobase.create"
+        );
+        assert_eq!(runner.call_count(), 0);
+        #[allow(clippy::permissions_set_readonly_false)]
+        permissions.set_readonly(false);
+        fs::set_permissions(&local, permissions).unwrap();
     }
 
     /// Отказ самого шага пересоздания — не «база есть»: вопрос не повторяется.
