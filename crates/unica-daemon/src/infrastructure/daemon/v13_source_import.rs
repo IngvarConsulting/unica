@@ -24,7 +24,6 @@
 //! своим предупреждением `infobase_of_another_copy`.
 
 use super::protocol::InvocationRequest;
-use super::runner::PinnedRunner;
 use super::v13_infobase_exports::{
     digest_optional_workspace_file, digest_required_workspace_file, missing_runner_rejection,
     note_runner_warnings, resolve_bundled_runner, runner_envelope_refusal, runner_rejection,
@@ -198,7 +197,7 @@ impl PreparedSourceImport {
             &self.context.cwd,
             OPERATION,
             cancellation,
-            |cancellation| execute_with_runner(self, &PinnedRunner, cancellation),
+            |runner, cancellation| execute_with_runner(self, runner, cancellation),
         );
         super::v13_infobase_sessions::bind_to_call(result, &self.call)
     }

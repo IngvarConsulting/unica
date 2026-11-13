@@ -18,7 +18,6 @@
 //! квитанцию: размер и дайджест файла. Путь к платформе наружу не идёт.
 
 use super::protocol::InvocationRequest;
-use super::runner::PinnedRunner;
 use super::v13_infobase_exports::{
     closed_workspace_relative_path, configuration_source_set, digest_optional_workspace_file,
     digest_required_workspace_file, missing_runner_rejection, note_config_warnings,
@@ -172,7 +171,7 @@ impl PreparedArtifactBuild {
             &self.context.cwd,
             OPERATION,
             cancellation,
-            |cancellation| execute_with_runner(self, &PinnedRunner, cancellation),
+            |runner, cancellation| execute_with_runner(self, runner, cancellation),
         )
     }
 }

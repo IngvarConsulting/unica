@@ -3,7 +3,6 @@
 // that value intact avoids a second error model at this adapter boundary.
 
 use super::protocol::InvocationRequest;
-use super::runner::PinnedRunner;
 use super::v13_source_import::INFOBASE_NAME;
 use crate::domain::engine::MissingEngineRefusal;
 use crate::infrastructure::bundled_tools::{bundled_tool_version, resolve_bundled_tool};
@@ -261,7 +260,7 @@ impl PreparedInfobaseExport {
             &self.context.cwd,
             self.operation.name(),
             cancellation,
-            |cancellation| execute_with_runner(self, &PinnedRunner, cancellation),
+            |runner, cancellation| execute_with_runner(self, runner, cancellation),
         );
         super::v13_infobase_sessions::bind_to_call(result, &self.call)
     }

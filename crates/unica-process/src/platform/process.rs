@@ -952,6 +952,20 @@ pub fn reap_runtime_authority_test_child(process_id: u32) {
     }
 }
 
+/// Whether a process of the managed tree may leave its group on its own.
+///
+/// `Contained`: every descendant stays in the group and ends with it.
+/// `AllowsBreakaway`: a descendant that itself asks to leave the group (on
+/// Windows, `CREATE_BREAKAWAY_FROM_JOB`) leaves it; the others end with the
+/// group as before. The pinned runner starts its live Designer agent so.
+/// On Unix a process leaves the group by opening its own session, which no
+/// group forbids: the policy changes nothing there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JobPolicy {
+    Contained,
+    AllowsBreakaway,
+}
+
 #[derive(Debug, Clone)]
 pub struct ManagedCommand {
     pub program: PathBuf,
@@ -1407,6 +1421,14 @@ impl ManagedChild {
 
     /// [`ManagedChild::spawn`] that names where the start failed.
     pub fn spawn_staged(command: ManagedCommand) -> Result<Self, ManagedSpawnFailure> {
+        Self::spawn_staged_in(command, JobPolicy::Contained)
+    }
+
+    /// [`ManagedChild::spawn_staged`] with the given group policy.
+    pub fn spawn_staged_in(
+        command: ManagedCommand,
+        policy: JobPolicy,
+    ) -> Result<Self, ManagedSpawnFailure> {
         let mut process = Command::new(&command.program);
         process.args(&command.args).current_dir(&command.cwd);
         for name in command.env_remove {
@@ -1418,6 +1440,7 @@ impl ManagedChild {
             command.timeout,
             command.cancellation,
             command.capture_limits,
+            policy,
         )
     }
 
@@ -1435,8 +1458,14 @@ impl ManagedChild {
         cancellation: CancellationToken,
         capture_limits: Option<(usize, usize)>,
     ) -> Result<Self, String> {
-        Self::spawn_process_staged(process, timeout, cancellation, capture_limits)
-            .map_err(ManagedSpawnFailure::into_message)
+        Self::spawn_process_staged(
+            process,
+            timeout,
+            cancellation,
+            capture_limits,
+            JobPolicy::Contained,
+        )
+        .map_err(ManagedSpawnFailure::into_message)
     }
 
     fn spawn_process_staged(
@@ -1444,6 +1473,7 @@ impl ManagedChild {
         timeout: Option<Duration>,
         cancellation: CancellationToken,
         capture_limits: Option<(usize, usize)>,
+        policy: JobPolicy,
     ) -> Result<Self, ManagedSpawnFailure> {
         // A missing working directory fails the OS launch with the same error
         // as a missing program; name it before the program is tried.
@@ -1458,7 +1488,7 @@ impl ManagedChild {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        let mut process_tree = ProcessTree::prepare(&mut process)
+        let mut process_tree = ProcessTree::prepare_in(&mut process, policy)
             .map_err(|error| ManagedSpawnFailure::Prepare(process_error(error)))?;
         // Cancellation and OS launch (including Windows Job attachment) are
         // serialized. A failed launch never claims the protected phase.
@@ -1518,7 +1548,15 @@ impl ManagedChild {
     pub fn run_pending_handoff_staged(
         command: ManagedCommand,
     ) -> Result<(ManagedOutput, PendingProcessHandoff), PendingRunFailure> {
-        let mut child = Self::spawn_staged(command).map_err(PendingRunFailure::Spawn)?;
+        Self::run_pending_handoff_staged_in(command, JobPolicy::Contained)
+    }
+
+    /// [`ManagedChild::run_pending_handoff_staged`] with the given group policy.
+    pub fn run_pending_handoff_staged_in(
+        command: ManagedCommand,
+        policy: JobPolicy,
+    ) -> Result<(ManagedOutput, PendingProcessHandoff), PendingRunFailure> {
+        let mut child = Self::spawn_staged_in(command, policy).map_err(PendingRunFailure::Spawn)?;
         let output = child
             .wait_for_pending_handoff_output()
             .map_err(PendingRunFailure::Run)?;
@@ -2681,6 +2719,11 @@ pub fn assert_released_unix_group_never_signals_reused_identity_for_test() {
 
 #[cfg(unix)]
 impl ProcessTree {
+    /// No Unix group forbids a process to open its own session.
+    fn prepare_in(command: &mut Command, _policy: JobPolicy) -> io::Result<Self> {
+        Self::prepare(command)
+    }
+
     fn prepare(command: &mut Command) -> io::Result<Self> {
         use std::os::unix::process::CommandExt;
 
@@ -3035,7 +3078,11 @@ unsafe impl Sync for ProcessTree {}
 #[cfg(windows)]
 impl ProcessTree {
     fn prepare(command: &mut Command) -> io::Result<Self> {
-        Self::prepare_with_policy(command, true)
+        Self::prepare_in(command, JobPolicy::Contained)
+    }
+
+    fn prepare_in(command: &mut Command, policy: JobPolicy) -> io::Result<Self> {
+        Self::prepare_with_policy(command, true, policy == JobPolicy::AllowsBreakaway)
     }
 
     fn prepare_runtime(command: &mut Command) -> io::Result<Self> {
@@ -3044,16 +3091,24 @@ impl ProcessTree {
         Ok(tree)
     }
 
+    /// The startup group of a detached service: the service itself starts
+    /// processes that may leave their groups (the runner's live agent), and a
+    /// process leaves only when every group above it allows that.
     fn prepare_detachable(command: &mut Command) -> io::Result<Self> {
-        Self::prepare_with_policy(command, false)
+        Self::prepare_with_policy(command, false, true)
     }
 
-    fn prepare_with_policy(command: &mut Command, kill_on_close: bool) -> io::Result<Self> {
+    fn prepare_with_policy(
+        command: &mut Command,
+        kill_on_close: bool,
+        allows_breakaway: bool,
+    ) -> io::Result<Self> {
         use std::mem::{size_of, zeroed};
         use std::os::windows::process::CommandExt;
         use windows_sys::Win32::System::JobObjects::{
             CreateJobObjectW, JobObjectExtendedLimitInformation, SetInformationJobObject,
-            JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+            JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_BREAKAWAY_OK,
+            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
         };
         use windows_sys::Win32::System::Threading::CREATE_SUSPENDED;
 
@@ -3065,10 +3120,17 @@ impl ProcessTree {
             return Err(io::Error::last_os_error());
         }
 
+        let mut flags = 0;
         if kill_on_close {
+            flags |= JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        }
+        if allows_breakaway {
+            flags |= JOB_OBJECT_LIMIT_BREAKAWAY_OK;
+        }
+        if flags != 0 {
             // SAFETY: this Windows POD structure is valid when zero-initialized.
             let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { zeroed() };
-            limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            limits.BasicLimitInformation.LimitFlags = flags;
             // SAFETY: `limits` points to the structure and size required by the information class.
             let configured = unsafe {
                 SetInformationJobObject(
@@ -3330,6 +3392,10 @@ struct ProcessTree;
 
 #[cfg(not(any(unix, windows)))]
 impl ProcessTree {
+    fn prepare_in(command: &mut Command, _policy: JobPolicy) -> io::Result<Self> {
+        Self::prepare(command)
+    }
+
     fn prepare(_command: &mut Command) -> io::Result<Self> {
         Ok(Self)
     }
@@ -7358,6 +7424,13 @@ mod medium_tests {
 
     #[test]
     fn managed_child_kills_descendants() {
+        managed_child_kills_descendants_in(super::JobPolicy::Contained);
+        // A group that lets a process leave it on request ends every process
+        // that did not ask, as before (the runner's live agent asks).
+        managed_child_kills_descendants_in(super::JobPolicy::AllowsBreakaway);
+    }
+
+    fn managed_child_kills_descendants_in(policy: super::JobPolicy) {
         let pid_file = std::env::temp_dir().join(format!(
             "unica-managed-child-pids-{}-{}",
             std::process::id(),
@@ -7368,30 +7441,33 @@ mod medium_tests {
         ));
         let _pid_file_cleanup = FileCleanupGuard(pid_file.clone());
         let cancellation = CancellationToken::new();
-        let managed = ManagedChild::spawn(ManagedCommand {
-            program: std::env::current_exe().unwrap(),
-            args: vec![
-                "--exact".into(),
-                "platform::process::medium_tests::managed_child_test_helper".into(),
-                "--ignored".into(),
-                "--nocapture".into(),
-            ],
-            cwd: std::env::current_dir().unwrap(),
-            env: vec![
-                (
-                    OsString::from(HELPER_ENV),
-                    OsString::from("process_tree_immediate_parent"),
-                ),
-                (
-                    OsString::from(HELPER_PID_FILE_ENV),
-                    pid_file.clone().into_os_string(),
-                ),
-            ],
-            env_remove: Vec::new(),
-            capture_limits: None,
-            timeout: Some(Duration::from_secs(10)),
-            cancellation: cancellation.clone(),
-        })
+        let managed = ManagedChild::spawn_staged_in(
+            ManagedCommand {
+                program: std::env::current_exe().unwrap(),
+                args: vec![
+                    "--exact".into(),
+                    "platform::process::medium_tests::managed_child_test_helper".into(),
+                    "--ignored".into(),
+                    "--nocapture".into(),
+                ],
+                cwd: std::env::current_dir().unwrap(),
+                env: vec![
+                    (
+                        OsString::from(HELPER_ENV),
+                        OsString::from("process_tree_immediate_parent"),
+                    ),
+                    (
+                        OsString::from(HELPER_PID_FILE_ENV),
+                        pid_file.clone().into_os_string(),
+                    ),
+                ],
+                env_remove: Vec::new(),
+                capture_limits: None,
+                timeout: Some(Duration::from_secs(10)),
+                cancellation: cancellation.clone(),
+            },
+            policy,
+        )
         .unwrap();
         let mut managed_cleanup = ManagedChildCleanupGuard::new(managed, cancellation.clone());
         let pids = read_helper_pids(&pid_file, Duration::from_secs(2));

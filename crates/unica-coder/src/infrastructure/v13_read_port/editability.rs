@@ -4,7 +4,7 @@
 
 use super::{ProviderReadAuthority, ViewError};
 use crate::infrastructure::native_operations::apply_families::{
-    support_gate_facts, SupportGateFacts, SupportGateMarker,
+    removes_support_node, support_gate_facts, SupportGateFacts, SupportGateMarker,
 };
 use serde_json::{json, Map, Value};
 use std::path::{Path, PathBuf};
@@ -355,6 +355,7 @@ fn rule_name(rule: u8) -> Option<&'static str> {
 /// has one (the object itself, a form).
 pub(crate) fn attach_editability(
     data: &mut Value,
+    at: &QualifiedAddress,
     editability: &NodeEditability,
     own_rule: Option<&str>,
     removal_blocked: Option<SupportReason>,
@@ -402,7 +403,7 @@ pub(crate) fn attach_editability(
             if SUPPORT_OPERATIONS.contains(&op) {
                 continue;
             }
-            let blocked = if op == "object.remove" {
+            let blocked = if removes_support_node(op, at) {
                 removal_blocked
             } else {
                 edit_blocked
@@ -465,6 +466,10 @@ pub(crate) fn own_rule(
 mod tests {
     use super::*;
 
+    fn catalog() -> QualifiedAddress {
+        QualifiedAddress::parse("main:Catalog.Items").unwrap()
+    }
+
     fn node() -> Value {
         json!({
             "at": "main:Catalog.Items",
@@ -499,7 +504,13 @@ mod tests {
             policy: SupportPolicyMode::Deny,
             marker_unreadable: false,
         };
-        attach_editability(&mut data, &editability, None, Some(SupportReason::Unknown));
+        attach_editability(
+            &mut data,
+            &catalog(),
+            &editability,
+            None,
+            Some(SupportReason::Unknown),
+        );
         assert_eq!(
             data["props"],
             json!({"support": {"editable": false, "reason": "unknown", "policy": "deny"}})
@@ -525,7 +536,7 @@ mod tests {
             };
             assert_eq!(editability.editable(), editable, "{policy:?}");
             let mut data = node();
-            attach_editability(&mut data, &editability, None, None);
+            attach_editability(&mut data, &catalog(), &editability, None, None);
             assert_eq!(data["props"]["support"]["editable"], editable, "{policy:?}");
         }
     }
@@ -542,7 +553,7 @@ mod tests {
                 policy,
                 marker_unreadable: false,
             };
-            attach_editability(&mut data, &editability, Some("locked"), None);
+            attach_editability(&mut data, &catalog(), &editability, Some("locked"), None);
             assert_eq!(data["props"]["support"]["editable"], true);
             assert_eq!(data["props"]["support"]["rule"], "locked");
             assert_eq!(blocked(&data), [None, None, None]);
@@ -562,7 +573,7 @@ mod tests {
             policy: SupportPolicyMode::Deny,
             marker_unreadable: false,
         };
-        attach_editability(&mut data, &editability, None, None);
+        attach_editability(&mut data, &catalog(), &editability, None, None);
         assert_eq!(
             data["props"]["support"],
             json!({"editable": true, "reason": "editableWithSupport", "policy": "deny",

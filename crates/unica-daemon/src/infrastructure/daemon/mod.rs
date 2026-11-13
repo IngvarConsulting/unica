@@ -940,5 +940,6 @@ mod tests {
     }
 }
 
+mod live_agent;
 mod runner;
 mod runner_secrets;
