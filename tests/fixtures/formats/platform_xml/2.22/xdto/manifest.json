@@ -1,0 +1,185 @@
+{
+  "format": "2.22",
+  "build": "8.5.4.2028",
+  "source": "XDTOFactory.ExportXMLSchema of every package, 1C:Enterprise client",
+  "packages": 58,
+  "schemas": 58,
+  "sha256": "445013bc348f1d9b24d3a25e296984c52fa2b4caae3ff1373b3f3f6033172512",
+  "otherBuilds": "8.5.4.1878: the same export format; its XDTO lacks the add-in architectures arm64 and e2k (managed-application/core, virtual-resource-system) and the package goskey/core",
+  "files": {
+    "http://v8.1c.ru/8.1/data-composition-system/appearance-template": [
+      "v8.1c.ru_8.1_data-composition-system_appearance-template.xsd"
+    ],
+    "http://v8.1c.ru/8.1/data-composition-system/area-template": [
+      "v8.1c.ru_8.1_data-composition-system_area-template.xsd"
+    ],
+    "http://v8.1c.ru/8.1/data-composition-system/common": [
+      "v8.1c.ru_8.1_data-composition-system_common.xsd"
+    ],
+    "http://v8.1c.ru/8.1/data-composition-system/composition-template": [
+      "v8.1c.ru_8.1_data-composition-system_composition-template.xsd"
+    ],
+    "http://v8.1c.ru/8.1/data-composition-system/core": [
+      "v8.1c.ru_8.1_data-composition-system_core.xsd"
+    ],
+    "http://v8.1c.ru/8.1/data-composition-system/details": [
+      "v8.1c.ru_8.1_data-composition-system_details.xsd"
+    ],
+    "http://v8.1c.ru/8.1/data-composition-system/result": [
+      "v8.1c.ru_8.1_data-composition-system_result.xsd"
+    ],
+    "http://v8.1c.ru/8.1/data-composition-system/schema": [
+      "v8.1c.ru_8.1_data-composition-system_schema.xsd"
+    ],
+    "http://v8.1c.ru/8.1/data-composition-system/settings": [
+      "v8.1c.ru_8.1_data-composition-system_settings.xsd"
+    ],
+    "http://v8.1c.ru/8.1/data/core": [
+      "v8.1c.ru_8.1_data_core.xsd"
+    ],
+    "http://v8.1c.ru/8.1/data/enterprise": [
+      "v8.1c.ru_8.1_data_enterprise.xsd"
+    ],
+    "http://v8.1c.ru/8.1/data/enterprise/current-config": [
+      "v8.1c.ru_8.1_data_enterprise_current-config.xsd"
+    ],
+    "http://v8.1c.ru/8.1/data/txtedt": [
+      "v8.1c.ru_8.1_data_txtedt.xsd"
+    ],
+    "http://v8.1c.ru/8.1/data/ui": [
+      "v8.1c.ru_8.1_data_ui.xsd"
+    ],
+    "http://v8.1c.ru/8.1/xdto": [
+      "v8.1c.ru_8.1_xdto.xsd"
+    ],
+    "http://v8.1c.ru/8.2/bsl": [
+      "v8.1c.ru_8.2_bsl.xsd"
+    ],
+    "http://v8.1c.ru/8.2/data/bsl": [
+      "v8.1c.ru_8.2_data_bsl.xsd"
+    ],
+    "http://v8.1c.ru/8.2/data/chart": [
+      "v8.1c.ru_8.2_data_chart.xsd"
+    ],
+    "http://v8.1c.ru/8.2/data/data-analysis": [
+      "v8.1c.ru_8.2_data_data-analysis.xsd"
+    ],
+    "http://v8.1c.ru/8.2/data/formatted-document": [
+      "v8.1c.ru_8.2_data_formatted-document.xsd"
+    ],
+    "http://v8.1c.ru/8.2/data/geo": [
+      "v8.1c.ru_8.2_data_geo.xsd"
+    ],
+    "http://v8.1c.ru/8.2/data/graphscheme": [
+      "v8.1c.ru_8.2_data_graphscheme.xsd"
+    ],
+    "http://v8.1c.ru/8.2/data/spreadsheet": [
+      "v8.1c.ru_8.2_data_spreadsheet.xsd"
+    ],
+    "http://v8.1c.ru/8.2/managed-application/InteractiveSecurityException": [
+      "v8.1c.ru_8.2_managed-application_InteractiveSecurityException.xsd"
+    ],
+    "http://v8.1c.ru/8.2/managed-application/SecondFactorAuthException": [
+      "v8.1c.ru_8.2_managed-application_SecondFactorAuthException.xsd"
+    ],
+    "http://v8.1c.ru/8.2/managed-application/cmi": [
+      "v8.1c.ru_8.2_managed-application_cmi.xsd"
+    ],
+    "http://v8.1c.ru/8.2/managed-application/core": [
+      "v8.1c.ru_8.2_managed-application_core.xsd"
+    ],
+    "http://v8.1c.ru/8.2/managed-application/dynamic-list-composition-template": [
+      "v8.1c.ru_8.2_managed-application_dynamic-list-composition-template.xsd"
+    ],
+    "http://v8.1c.ru/8.2/managed-application/dynamic-list-data": [
+      "v8.1c.ru_8.2_managed-application_dynamic-list-data.xsd"
+    ],
+    "http://v8.1c.ru/8.2/managed-application/dynamic-list-server": [
+      "v8.1c.ru_8.2_managed-application_dynamic-list-server.xsd"
+    ],
+    "http://v8.1c.ru/8.2/managed-application/edbexception": [
+      "v8.1c.ru_8.2_managed-application_edbexception.xsd"
+    ],
+    "http://v8.1c.ru/8.2/managed-application/logform": [
+      "v8.1c.ru_8.2_managed-application_logform.xsd"
+    ],
+    "http://v8.1c.ru/8.2/managed-application/logform/layouter": [
+      "v8.1c.ru_8.2_managed-application_logform_layouter.xsd"
+    ],
+    "http://v8.1c.ru/8.2/managed-application/logformexception": [
+      "v8.1c.ru_8.2_managed-application_logformexception.xsd"
+    ],
+    "http://v8.1c.ru/8.2/managed-application/modules": [
+      "v8.1c.ru_8.2_managed-application_modules.xsd"
+    ],
+    "http://v8.1c.ru/8.2/managed-application/objectlocksexception": [
+      "v8.1c.ru_8.2_managed-application_objectlocksexception.xsd"
+    ],
+    "http://v8.1c.ru/8.2/managed-application/remoteexception": [
+      "v8.1c.ru_8.2_managed-application_remoteexception.xsd"
+    ],
+    "http://v8.1c.ru/8.2/managed-application/seancecontextexception": [
+      "v8.1c.ru_8.2_managed-application_seancecontextexception.xsd"
+    ],
+    "http://v8.1c.ru/8.2/managed-application/user-settings": [
+      "v8.1c.ru_8.2_managed-application_user-settings.xsd"
+    ],
+    "http://v8.1c.ru/8.2/roles": [
+      "v8.1c.ru_8.2_roles.xsd"
+    ],
+    "http://v8.1c.ru/8.2/uobjects": [
+      "v8.1c.ru_8.2_uobjects.xsd"
+    ],
+    "http://v8.1c.ru/8.2/virtual-resource-system": [
+      "v8.1c.ru_8.2_virtual-resource-system.xsd"
+    ],
+    "http://v8.1c.ru/8.3/TestAndRepairExchangePlanIntegrityReport": [
+      "v8.1c.ru_8.3_TestAndRepairExchangePlanIntegrityReport.xsd"
+    ],
+    "http://v8.1c.ru/8.3/data/entext": [
+      "v8.1c.ru_8.3_data_entext.xsd"
+    ],
+    "http://v8.1c.ru/8.3/data/ext": [
+      "v8.1c.ru_8.3_data_ext.xsd"
+    ],
+    "http://v8.1c.ru/8.3/data/mob": [
+      "v8.1c.ru_8.3_data_mob.xsd"
+    ],
+    "http://v8.1c.ru/8.3/data/ofdoc": [
+      "v8.1c.ru_8.3_data_ofdoc.xsd"
+    ],
+    "http://v8.1c.ru/8.3/data/pdf": [
+      "v8.1c.ru_8.3_data_pdf.xsd"
+    ],
+    "http://v8.1c.ru/8.3/data/planner": [
+      "v8.1c.ru_8.3_data_planner.xsd"
+    ],
+    "http://v8.1c.ru/8.3/dbcopies": [
+      "v8.1c.ru_8.3_dbcopies.xsd"
+    ],
+    "http://v8.1c.ru/8.3/ecs/core": [
+      "v8.1c.ru_8.3_ecs_core.xsd"
+    ],
+    "http://v8.1c.ru/8.3/goskey/core": [
+      "v8.1c.ru_8.3_goskey_core.xsd"
+    ],
+    "http://v8.1c.ru/8.3/managed-application/logform/hippo": [
+      "v8.1c.ru_8.3_managed-application_logform_hippo.xsd"
+    ],
+    "http://v8.1c.ru/8.3/stt/core": [
+      "v8.1c.ru_8.3_stt_core.xsd"
+    ],
+    "http://v8.1c.ru/8.3/xcf/dumpinfo": [
+      "v8.1c.ru_8.3_xcf_dumpinfo.xsd"
+    ],
+    "http://v8.1c.ru/8.3/xcf/enums": [
+      "v8.1c.ru_8.3_xcf_enums.xsd"
+    ],
+    "http://v8.1c.ru/8.3/xcf/readable": [
+      "v8.1c.ru_8.3_xcf_readable.xsd"
+    ],
+    "http://www.w3.org/2001/XMLSchema": [
+      "www.w3.org_2001_XMLSchema.xsd"
+    ]
+  }
+}

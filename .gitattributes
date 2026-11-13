@@ -102,3 +102,6 @@ crates/unica-coder/tests/fixtures/meta-add-sources/** -text -whitespace
 /tests/fixtures/formats/platform_xml/2.19/** -text whitespace=cr-at-eol
 /tests/fixtures/formats/platform_xml/2.21/** -text whitespace=cr-at-eol
 /tests/fixtures/formats/platform_xml/2.22/** -text whitespace=cr-at-eol
+# The platform XDTO export (scripts/dev/export-platform-xdto.py): bytes as the
+# platform wrote them, so the passport hash holds on every checkout.
+/tests/fixtures/formats/platform_xml/2.20/xdto/** -text whitespace=cr-at-eol

@@ -1,0 +1,2363 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:ns1="http://v8.1c.ru/8.1/data/core" xmlns:ns2="http://v8.1c.ru/8.1/data/ui" xmlns:ns3="http://v8.1c.ru/8.2/managed-application/core" xmlns:ns4="http://v8.1c.ru/8.2/uobjects" xmlns:ns5="http://v8.1c.ru/8.1/data/enterprise" xmlns:ns6="http://v8.1c.ru/8.2/data/spreadsheet" xmlns:tns="http://v8.1c.ru/8.2/managed-application/logform" xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="http://v8.1c.ru/8.2/managed-application/logform" attributeFormDefault="unqualified" elementFormDefault="qualified">
+	<xs:import namespace="http://v8.1c.ru/8.1/data/core"/>
+	<xs:import namespace="http://v8.1c.ru/8.1/data/ui"/>
+	<xs:import namespace="http://v8.1c.ru/8.2/managed-application/core"/>
+	<xs:import namespace="http://v8.1c.ru/8.2/uobjects"/>
+	<xs:import namespace="http://v8.1c.ru/8.1/data/enterprise"/>
+	<xs:import namespace="http://v8.1c.ru/8.2/data/spreadsheet"/>
+	<xs:simpleType name="AppearanceVariantInCard">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="Extended"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="AutoCapitalizationOnTextInput">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="None"/>
+			<xs:enumeration value="Words"/>
+			<xs:enumeration value="Sentences"/>
+			<xs:enumeration value="AllCharacters"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="AutoCorrectionOnTextInput">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="Use"/>
+			<xs:enumeration value="DontUse"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="AutoSaveFormDataInSettings">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="DontUse"/>
+			<xs:enumeration value="Use"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="AutoShowClearButtonMode">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="Always"/>
+			<xs:enumeration value="FilledOnly"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="AutoShowOpenButtonMode">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="Always"/>
+			<xs:enumeration value="FilledOnly"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="AutoWidthInTable">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="ByData"/>
+			<xs:enumeration value="None"/>
+			<xs:enumeration value="ByDataAndTitle"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="AutofillHint">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="DontUse"/>
+			<xs:enumeration value="FullName"/>
+			<xs:enumeration value="GivenName"/>
+			<xs:enumeration value="FamilyName"/>
+			<xs:enumeration value="MiddleName"/>
+			<xs:enumeration value="NamePrefix"/>
+			<xs:enumeration value="NameSuffix"/>
+			<xs:enumeration value="Street"/>
+			<xs:enumeration value="City"/>
+			<xs:enumeration value="Region"/>
+			<xs:enumeration value="Country"/>
+			<xs:enumeration value="PostalCode"/>
+			<xs:enumeration value="UserName"/>
+			<xs:enumeration value="Password"/>
+			<xs:enumeration value="NewPassword"/>
+			<xs:enumeration value="OneTimeCode"/>
+			<xs:enumeration value="Email"/>
+			<xs:enumeration value="PhoneNumber"/>
+			<xs:enumeration value="CreditCardNumber"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="BWAValue">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="true"/>
+			<xs:enumeration value="false"/>
+			<xs:enumeration value="auto"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ButtonGroupRepresentation">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="Usual"/>
+			<xs:enumeration value="Compact"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ButtonImportance">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Main"/>
+			<xs:enumeration value="Normal"/>
+			<xs:enumeration value="Supplementary"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ButtonLocationInCommandBar">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="InAdditionalSubmenu"/>
+			<xs:enumeration value="InCommandBar"/>
+			<xs:enumeration value="InCommandBarAndInAdditionalSubmenu"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ButtonRepresentation">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Text"/>
+			<xs:enumeration value="Picture"/>
+			<xs:enumeration value="PictureAndText"/>
+			<xs:enumeration value="Auto"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ButtonShape">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="Usual"/>
+			<xs:enumeration value="Oval"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ButtonShapeRepresentation">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="Always"/>
+			<xs:enumeration value="WhenActive"/>
+			<xs:enumeration value="None"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="CardBehaviorOnVerticalCompression">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="MoveItemsToSwipeablePages"/>
+			<xs:enumeration value="HideItems"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="CardPictureAndTitleAlignVariant">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="LeftHorizontallySidesVertically"/>
+			<xs:enumeration value="CenterHorizontallySidesVertically"/>
+			<xs:enumeration value="CenterHorizontallyCenterVertically"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="CardRepresentationType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Usual"/>
+			<xs:enumeration value="Group"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="CellActionsButtonViewMode">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="DontShow"/>
+			<xs:enumeration value="ShowOnHover"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="CellHyperlinkDisplayVariant">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="Always"/>
+			<xs:enumeration value="OnRowHover"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="CellHyperlinkRepresentation">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="Show"/>
+			<xs:enumeration value="DontShow"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="CellHyperlinksRepresentation">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="AutoForSingle"/>
+			<xs:enumeration value="ForAll"/>
+			<xs:enumeration value="DontShow"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="CheckBoxType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="CheckBox"/>
+			<xs:enumeration value="Tumbler"/>
+			<xs:enumeration value="Switcher"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ChildrenTitleLocation">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="Left"/>
+			<xs:enumeration value="LeftIfPossible"/>
+			<xs:enumeration value="Top"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ChoiceButtonRepresentation">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="ShowInDropList"/>
+			<xs:enumeration value="ShowInDropListAndInInputField"/>
+			<xs:enumeration value="ShowInInputField"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ChoiceDataGetModeOnInputByString">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Directly"/>
+			<xs:enumeration value="Background"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ChoiceHistoryOnInput">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="DontUse"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="CollapseFormItemsByImportance">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="Use"/>
+			<xs:enumeration value="DontUse"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ColumnsGroup">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Horizontal"/>
+			<xs:enumeration value="Vertical"/>
+			<xs:enumeration value="InCell"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="CommandActionPurpose">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Usual"/>
+			<xs:enumeration value="Create"/>
+			<xs:enumeration value="Finish"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="CurrentRowUse">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Use"/>
+			<xs:enumeration value="DontUse"/>
+			<xs:enumeration value="Auto"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="DisplayImportance">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="VeryHigh"/>
+			<xs:enumeration value="High"/>
+			<xs:enumeration value="Usual"/>
+			<xs:enumeration value="Low"/>
+			<xs:enumeration value="VeryLow"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="DrawingSelectionShowMode">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Show"/>
+			<xs:enumeration value="DontShow"/>
+			<xs:enumeration value="Auto"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="EditTextUpdate">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="DontUse"/>
+			<xs:enumeration value="OnValueChange"/>
+			<xs:enumeration value="Always"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="EventHandlerCallType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Before"/>
+			<xs:enumeration value="After"/>
+			<xs:enumeration value="Override"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="FileDragMode">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="AsFile"/>
+			<xs:enumeration value="AsFileRef"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="FoldersAndItems">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Items"/>
+			<xs:enumeration value="Folders"/>
+			<xs:enumeration value="FoldersAndItems"/>
+			<xs:enumeration value="Auto"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="FormBaseFontVariant">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="Normal"/>
+			<xs:enumeration value="Compact"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="FormButtonPictureLocation">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="Left"/>
+			<xs:enumeration value="Right"/>
+			<xs:enumeration value="Top"/>
+			<xs:enumeration value="Bottom"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="FormChildrenAlign">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="None"/>
+			<xs:enumeration value="ItemsLeftTitlesLeft"/>
+			<xs:enumeration value="ItemsRightTitlesLeft"/>
+			<xs:enumeration value="ItemsLeftTitlesRight"/>
+			<xs:enumeration value="ItemsRightTitlesRight"/>
+			<xs:enumeration value="TitlesLeftDataLeft"/>
+			<xs:enumeration value="TitlesLeftDataRight"/>
+			<xs:enumeration value="TitlesRightDataLeft"/>
+			<xs:enumeration value="TitlesRightDataRight"/>
+			<xs:enumeration value="TitlesLeftDataAuto"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="FormChildrenGroup">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Horizontal"/>
+			<xs:enumeration value="Vertical"/>
+			<xs:enumeration value="HorizontalIfPossible"/>
+			<xs:enumeration value="AlwaysHorizontal"/>
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="AutoScreenTypeSensitive"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="FormChildrenWidth">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="Equal"/>
+			<xs:enumeration value="LeftWide"/>
+			<xs:enumeration value="LeftWidest"/>
+			<xs:enumeration value="LeftNarrow"/>
+			<xs:enumeration value="LeftNarrowest"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="FormCommandBarAppearanceMode">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="CommandBar"/>
+			<xs:enumeration value="UsualGroup"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="FormDateSelectionMode">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Single"/>
+			<xs:enumeration value="Multiple"/>
+			<xs:enumeration value="Interval"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="FormElementCommandBarLocation">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="None"/>
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="Top"/>
+			<xs:enumeration value="Bottom"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="FormElementOrientation">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Horizontal"/>
+			<xs:enumeration value="Vertical"/>
+			<xs:enumeration value="HorizontalIfPossible"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="FormElementOrigin">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Source"/>
+			<xs:enumeration value="AutoGenerated"/>
+			<xs:enumeration value="AddedFromContext"/>
+			<xs:enumeration value="AddedFromMainConf"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="FormElementTitleLocation">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="None"/>
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="Left"/>
+			<xs:enumeration value="Top"/>
+			<xs:enumeration value="Right"/>
+			<xs:enumeration value="Bottom"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="FormEnterKeyBehavior">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="ControlNavigation"/>
+			<xs:enumeration value="DefaultButton"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="FormFixedInTable">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="None"/>
+			<xs:enumeration value="Left"/>
+			<xs:enumeration value="Right"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="FormItemSpacing">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="None"/>
+			<xs:enumeration value="Half"/>
+			<xs:enumeration value="Single"/>
+			<xs:enumeration value="OneAndHalf"/>
+			<xs:enumeration value="Double"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="FormPagesRepresentation">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="None"/>
+			<xs:enumeration value="TabsOnTop"/>
+			<xs:enumeration value="TabsOnBottom"/>
+			<xs:enumeration value="TabsOnLeftHorizontal"/>
+			<xs:enumeration value="TabsOnRightHorizontal"/>
+			<xs:enumeration value="Swipe"/>
+			<xs:enumeration value="Auto"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="FormPagesState">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="TitlesAndCurrentPage"/>
+			<xs:enumeration value="Titles"/>
+			<xs:enumeration value="CurrentPage"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="FormProgressBarRepresentation">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Smooth"/>
+			<xs:enumeration value="Broken"/>
+			<xs:enumeration value="BrokenTilt"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="FormStandardURLVariant">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Object"/>
+			<xs:enumeration value="Record"/>
+			<xs:enumeration value="Report"/>
+			<xs:enumeration value="ReportVariant"/>
+			<xs:enumeration value="ReportWithCurrentSettings"/>
+			<xs:enumeration value="List"/>
+			<xs:enumeration value="ListWithCurrentSettings"/>
+			<xs:enumeration value="ListWithCurrentSettingsAndRow"/>
+			<xs:enumeration value="ListCurrentRowObject"/>
+			<xs:enumeration value="ListCurrentRowRecord"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="FormTableType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="List"/>
+			<xs:enumeration value="Cards"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="FormTimeChoiceMode">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="DontChoose"/>
+			<xs:enumeration value="CustomTime"/>
+			<xs:enumeration value="Interval1Minute"/>
+			<xs:enumeration value="Interval5Minutes"/>
+			<xs:enumeration value="Interval10Minutes"/>
+			<xs:enumeration value="Interval15Minutes"/>
+			<xs:enumeration value="Interval15And20Minutes"/>
+			<xs:enumeration value="Interval20Minutes"/>
+			<xs:enumeration value="Interval30Minutes"/>
+			<xs:enumeration value="Interval60Minutes"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="FormWindowOpeningMode">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Independent"/>
+			<xs:enumeration value="LockOwnerWindow"/>
+			<xs:enumeration value="LockWholeInterface"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="FormWindowViewMode">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="InMainWindow"/>
+			<xs:enumeration value="InDialogWindow"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="FullTextSearchOnInputByString">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Use"/>
+			<xs:enumeration value="DontUse"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="GanttChartIntervalsSelectionMode">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="Multiple"/>
+			<xs:enumeration value="Single"/>
+			<xs:enumeration value="None"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="GanttChartTableLocation">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="Left"/>
+			<xs:enumeration value="Right"/>
+			<xs:enumeration value="None"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="GanttChartValuesSelectionMode">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="Multiple"/>
+			<xs:enumeration value="Single"/>
+			<xs:enumeration value="None"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="HeightControlVariant">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="UseHeightInFormRows"/>
+			<xs:enumeration value="UseContentHeight"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="HierarchyPanelLocation">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="None"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="IncompleteItemChoiceMode">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="OnEnterPressed"/>
+			<xs:enumeration value="OnActivate"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="InputFieldMultipleValuePictureShape">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="Rect"/>
+			<xs:enumeration value="Circle"/>
+			<xs:enumeration value="Square"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="InputFieldMultipleValuePictureSize">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="Small"/>
+			<xs:enumeration value="Medium"/>
+			<xs:enumeration value="Large"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ItemHorizontalAlignment">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Left"/>
+			<xs:enumeration value="Center"/>
+			<xs:enumeration value="Right"/>
+			<xs:enumeration value="Auto"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ItemVerticalAlignment">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Top"/>
+			<xs:enumeration value="Center"/>
+			<xs:enumeration value="Bottom"/>
+			<xs:enumeration value="Auto"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="LFTableListEditingMode">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="None"/>
+			<xs:enumeration value="MultipleSelection"/>
+			<xs:enumeration value="LinesRearrangement"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="LogFormElementAdditionKind">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="SearchStringRepresentation"/>
+			<xs:enumeration value="ViewStatusRepresentation"/>
+			<xs:enumeration value="SearchControl"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="LogFormScrollMode">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="auto"/>
+			<xs:enumeration value="use"/>
+			<xs:enumeration value="useIfNecessary"/>
+			<xs:enumeration value="useWithoutStretch"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="LogFormShowConversations">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="Show"/>
+			<xs:enumeration value="DontShow"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ManagedFormButtonType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="CommandBarButton"/>
+			<xs:enumeration value="UsualButton"/>
+			<xs:enumeration value="Hyperlink"/>
+			<xs:enumeration value="CommandBarHyperlink"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ManagedFormDecorationType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Label"/>
+			<xs:enumeration value="Picture"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ManagedFormFieldType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Default"/>
+			<xs:enumeration value="LabelField"/>
+			<xs:enumeration value="InputField"/>
+			<xs:enumeration value="CheckBoxField"/>
+			<xs:enumeration value="PictureField"/>
+			<xs:enumeration value="RadioButtonField"/>
+			<xs:enumeration value="SpreadsheetDocumentField"/>
+			<xs:enumeration value="TextDocumentField"/>
+			<xs:enumeration value="FormattedDocumentField"/>
+			<xs:enumeration value="PlannerField"/>
+			<xs:enumeration value="CalendarField"/>
+			<xs:enumeration value="PeriodField"/>
+			<xs:enumeration value="ProgressBarField"/>
+			<xs:enumeration value="TrackBarField"/>
+			<xs:enumeration value="ChartField"/>
+			<xs:enumeration value="GanttChartField"/>
+			<xs:enumeration value="DendrogramField"/>
+			<xs:enumeration value="GraphicalSchemaField"/>
+			<xs:enumeration value="HTMLDocumentField"/>
+			<xs:enumeration value="GeographicalSchemaField"/>
+			<xs:enumeration value="PDFDocumentField"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ManagedFormGroupType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="CommandBar"/>
+			<xs:enumeration value="Popup"/>
+			<xs:enumeration value="ColumnGroup"/>
+			<xs:enumeration value="Pages"/>
+			<xs:enumeration value="Page"/>
+			<xs:enumeration value="UsualGroup"/>
+			<xs:enumeration value="ButtonGroup"/>
+			<xs:enumeration value="ContextMenu"/>
+			<xs:enumeration value="AutoCommandBar"/>
+			<xs:enumeration value="Navigator"/>
+			<xs:enumeration value="SelectedItemsActionsPanel"/>
+			<xs:enumeration value="RowActionsPanel"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="MarkingStyle">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="DontShow"/>
+			<xs:enumeration value="TopLeft"/>
+			<xs:enumeration value="BottomRight"/>
+			<xs:enumeration value="BothSides"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="MenuElementPlacementArea">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="mainCmdsLeft"/>
+			<xs:enumeration value="autoCmds"/>
+			<xs:enumeration value="userCmds"/>
+			<xs:enumeration value="mainCmdsRight"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="OnFormWindowOpenLockMode">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="DontBlock"/>
+			<xs:enumeration value="LockOwner"/>
+			<xs:enumeration value="LockWholeInterface"/>
+			<xs:enumeration value="Independent"/>
+			<xs:enumeration value="LockOwnerWindow"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="OnMainServerUnavalableBehavior">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="MakeDisable"/>
+			<xs:enumeration value="DontChangeBehavior"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="OnScreenKeyboardReturnKeyText">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="Return"/>
+			<xs:enumeration value="Go"/>
+			<xs:enumeration value="Join"/>
+			<xs:enumeration value="Next"/>
+			<xs:enumeration value="Search"/>
+			<xs:enumeration value="Send"/>
+			<xs:enumeration value="Done"/>
+			<xs:enumeration value="Continue"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="PictureBackgroundShowMode">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="DontShow"/>
+			<xs:enumeration value="ShowAndIncreaseSize"/>
+			<xs:enumeration value="ShowAndDontIncreaseSize"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="PictureRepresentationEffect">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="None"/>
+			<xs:enumeration value="Semitransparency"/>
+			<xs:enumeration value="SemitransparencyAndBlur"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="PictureSize">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="RealSize"/>
+			<xs:enumeration value="Stretch"/>
+			<xs:enumeration value="Proportionally"/>
+			<xs:enumeration value="Tile"/>
+			<xs:enumeration value="AutoSize"/>
+			<xs:enumeration value="RealSizeIgnoreScale"/>
+			<xs:enumeration value="AutoSizeIgnoreScale"/>
+			<xs:enumeration value="ByFontSize"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="RadioButtonType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="RadioButtons"/>
+			<xs:enumeration value="Tumbler"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="RefreshRequestMethod">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="None"/>
+			<xs:enumeration value="PullFromTop"/>
+			<xs:enumeration value="PullFromBottom"/>
+			<xs:enumeration value="PullFromTopOrBottom"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ReportFormType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Main"/>
+			<xs:enumeration value="Settings"/>
+			<xs:enumeration value="Variant"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="RepresentationInContextMenu">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="None"/>
+			<xs:enumeration value="AdditionalInContextMenu"/>
+			<xs:enumeration value="OnlyInContextMenu"/>
+			<xs:enumeration value="Auto"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="SaveFormDataInSettings">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="DontUse"/>
+			<xs:enumeration value="UseList"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="SaveTableAppearance">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="ForUser"/>
+			<xs:enumeration value="ByKeyForUser"/>
+			<xs:enumeration value="DontUse"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="SearchControlLocation">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="None"/>
+			<xs:enumeration value="CommandBar"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="SearchOnInput">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Use"/>
+			<xs:enumeration value="DontUse"/>
+			<xs:enumeration value="Auto"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="SearchStringLocation">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="None"/>
+			<xs:enumeration value="CommandBar"/>
+			<xs:enumeration value="Top"/>
+			<xs:enumeration value="Bottom"/>
+			<xs:enumeration value="FormCaption"/>
+			<xs:enumeration value="PullFromTop"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="SearchStringModeOnInputByString">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Begin"/>
+			<xs:enumeration value="AnyPart"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="SelectedRowsUse">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Use"/>
+			<xs:enumeration value="DontUse"/>
+			<xs:enumeration value="Auto"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="SelectionShowMode">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="WhenActive"/>
+			<xs:enumeration value="Always"/>
+			<xs:enumeration value="DontShow"/>
+			<xs:enumeration value="WhenMultipleCellsSelected"/>
+			<xs:enumeration value="WhenMultipleCellsSelectedWhenActive"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="SpecialTextInputMode">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="None"/>
+			<xs:enumeration value="DigitsAndPunctuation"/>
+			<xs:enumeration value="URL"/>
+			<xs:enumeration value="Email"/>
+			<xs:enumeration value="PhoneNumber"/>
+			<xs:enumeration value="Digits"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="SpellCheckingOnTextInput">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="Use"/>
+			<xs:enumeration value="DontUse"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="SpreadSheetDocumentScrollBarUse">
+		<xs:union memberTypes="tns:TableScrollBarUse xs:boolean"/>
+	</xs:simpleType>
+	<xs:simpleType name="SpreadsheetDocumentMultipleSelectionPanelViewMode">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="DontShow"/>
+			<xs:enumeration value="ShowOnMultipleSelection"/>
+			<xs:enumeration value="ShowAlways"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="TableBehaviorOnHorizontalCompression">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="HideItemsByImportance"/>
+			<xs:enumeration value="MoveItemsByImportance"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="TableCellMarkType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="None"/>
+			<xs:enumeration value="ShapeUnderTextOval"/>
+			<xs:enumeration value="IconCircle"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="TableColumnCheckBoxKind">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="CheckBox"/>
+			<xs:enumeration value="Tumbler"/>
+			<xs:enumeration value="Switcher"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="TableCurrentRowUse">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="Choice"/>
+			<xs:enumeration value="SelectionPresentation"/>
+			<xs:enumeration value="SelectionPresentationAndChoice"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="TableFieldEditMode">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Directly"/>
+			<xs:enumeration value="Enter"/>
+			<xs:enumeration value="EnterOnInput"/>
+			<xs:enumeration value="Auto"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="TableHeightControlVariant">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="UseHeightInFormRows"/>
+			<xs:enumeration value="UseHeightInTableRows"/>
+			<xs:enumeration value="UseContentHeight"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="TableInitialListView">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Beginning"/>
+			<xs:enumeration value="End"/>
+			<xs:enumeration value="Auto"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="TableInitialRowActivation">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="Activate"/>
+			<xs:enumeration value="NoActivate"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="TableInitialTreeView">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="NoExpand"/>
+			<xs:enumeration value="ExpandTopLevel"/>
+			<xs:enumeration value="ExpandAllLevels"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="TableRepresentation">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="List"/>
+			<xs:enumeration value="HierarchicalList"/>
+			<xs:enumeration value="Tree"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="TableRowActionsShowType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="DontShow"/>
+			<xs:enumeration value="ShowOnHover"/>
+			<xs:enumeration value="ShowAlways"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="TableRowInputMode">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="EndOfList"/>
+			<xs:enumeration value="EndOfWindow"/>
+			<xs:enumeration value="AfterCurrentRow"/>
+			<xs:enumeration value="BeforeCurrentRow"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="TableRowSelectionMode">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="Cell"/>
+			<xs:enumeration value="Row"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="TableScrollBarUse">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="DontUse"/>
+			<xs:enumeration value="UseAlways"/>
+			<xs:enumeration value="AutoUse"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="TableSelectionMode">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="SingleRow"/>
+			<xs:enumeration value="MultiRow"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="TextSize">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Enlarged"/>
+			<xs:enumeration value="Normal"/>
+			<xs:enumeration value="Reduced"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="TooltipRepresentation">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="None"/>
+			<xs:enumeration value="Balloon"/>
+			<xs:enumeration value="Button"/>
+			<xs:enumeration value="ShowAuto"/>
+			<xs:enumeration value="ShowTop"/>
+			<xs:enumeration value="ShowLeft"/>
+			<xs:enumeration value="ShowBottom"/>
+			<xs:enumeration value="ShowRight"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="TumblerRepresentation">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Text"/>
+			<xs:enumeration value="Picture"/>
+			<xs:enumeration value="Auto"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="UsedServer">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Standalone"/>
+			<xs:enumeration value="Main"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="UsualGroupBehavior">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Usual"/>
+			<xs:enumeration value="Collapsible"/>
+			<xs:enumeration value="PopUp"/>
+			<xs:enumeration value="Auto"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="UsualGroupControlRepresentation">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="TitleHyperlink"/>
+			<xs:enumeration value="Picture"/>
+			<xs:enumeration value="Button"/>
+			<xs:enumeration value="ButtonInParentElement"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="UsualGroupRepresentation">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="None"/>
+			<xs:enumeration value="StrongSeparation"/>
+			<xs:enumeration value="WeakSeparation"/>
+			<xs:enumeration value="NormalSeparation"/>
+			<xs:enumeration value="GroupBox"/>
+			<xs:enumeration value="Line"/>
+			<xs:enumeration value="Margin"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="UsualGroupThroughAlign">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Use"/>
+			<xs:enumeration value="DontUse"/>
+			<xs:enumeration value="Auto"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="VerticalAlign">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Top"/>
+			<xs:enumeration value="Bottom"/>
+			<xs:enumeration value="Center"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ViewScalingMode">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="Normal"/>
+			<xs:enumeration value="Large"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ViewStatusLocation">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="None"/>
+			<xs:enumeration value="Top"/>
+			<xs:enumeration value="Bottom"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="WarningOnEditRepresentation">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Show"/>
+			<xs:enumeration value="DontShow"/>
+			<xs:enumeration value="Auto"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="WidthVariantInCard">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="Full"/>
+			<xs:enumeration value="Half"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:complexType name="AddProp">
+		<xs:sequence>
+			<xs:element name="id" type="xs:decimal"/>
+			<xs:element name="val"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="AddProps">
+		<xs:sequence>
+			<xs:element name="prop" type="tns:AddProp" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="Addition">
+		<xs:choice>
+			<xs:element name="source" type="tns:AdditionSource"/>
+			<xs:element name="searchStringData" type="tns:SearchStringData" minOccurs="0"/>
+			<xs:element name="viewStatusData" type="tns:ViewStatusData" minOccurs="0"/>
+			<xs:element name="searchControlData" type="tns:SearchControlData" minOccurs="0"/>
+			<xs:element name="predefined" type="tns:Predefined" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="title" type="xs:string" minOccurs="0"/>
+			<xs:element name="tooltip" type="xs:string" minOccurs="0"/>
+			<xs:element name="event" type="tns:Event" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="group" type="tns:Group" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="button" type="tns:Button" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:choice>
+		<xs:attribute name="id" type="xs:decimal"/>
+		<xs:attribute name="name" type="xs:string"/>
+		<xs:attribute name="org" type="tns:FormElementOrigin"/>
+		<xs:attribute name="users" type="xs:boolean"/>
+		<xs:attribute name="kind" type="tns:LogFormElementAdditionKind"/>
+		<xs:attribute name="visible" type="xs:boolean"/>
+		<xs:attribute name="userVisible" type="xs:boolean"/>
+		<xs:attribute name="enabled" type="xs:boolean"/>
+		<xs:attribute name="plcm" type="tns:MenuElementPlacementArea"/>
+		<xs:attribute name="tooltipRepres" type="tns:TooltipRepresentation"/>
+		<xs:attribute name="groupHAlign" type="tns:ItemHorizontalAlignment"/>
+		<xs:attribute name="groupVAlign" type="tns:ItemVerticalAlignment"/>
+		<xs:attribute name="displayImportance" type="tns:DisplayImportance"/>
+	</xs:complexType>
+	<xs:complexType name="AdditionSource">
+		<xs:sequence>
+			<xs:element name="elementId" type="xs:decimal"/>
+			<xs:element name="additionId" type="xs:decimal"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="AutoMenuGroupData">
+		<xs:attribute name="hAlign" type="tns:ItemHorizontalAlignment"/>
+		<xs:attribute name="fillStd" type="xs:boolean"/>
+		<xs:attribute name="apMode" type="tns:FormCommandBarAppearanceMode"/>
+	</xs:complexType>
+	<xs:complexType name="Button">
+		<xs:sequence>
+			<xs:element name="command" type="ns1:CompositeID"/>
+			<xs:element name="commandParam"/>
+			<xs:element name="prop" type="tns:DataPath" minOccurs="0"/>
+			<xs:element name="propName" type="xs:string" minOccurs="0"/>
+			<xs:element name="tdp" type="ns1:TypeDescription" minOccurs="0"/>
+			<xs:element name="bkClr" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="txtClr" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="brdClr" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="fnt" type="ns2:Font" minOccurs="0"/>
+			<xs:element name="stcut" type="ns2:ShortCutType" minOccurs="0"/>
+			<xs:element name="pic" type="ns2:Picture" minOccurs="0"/>
+			<xs:element name="title" type="xs:string" minOccurs="0"/>
+			<xs:element name="ricm" type="tns:RepresentationInContextMenu" minOccurs="0"/>
+			<xs:element name="backPic" type="ns2:Picture" minOccurs="0"/>
+			<xs:element name="predefined" type="tns:Predefined" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+		<xs:attribute name="id" type="xs:decimal"/>
+		<xs:attribute name="name" type="xs:string"/>
+		<xs:attribute name="org" type="tns:FormElementOrigin"/>
+		<xs:attribute name="kind" type="tns:ManagedFormButtonType"/>
+		<xs:attribute name="visible" type="xs:boolean"/>
+		<xs:attribute name="userVisible" type="xs:boolean"/>
+		<xs:attribute name="titleRowsCount" type="xs:decimal"/>
+		<xs:attribute name="repres" type="tns:ButtonRepresentation"/>
+		<xs:attribute name="defButton" type="xs:boolean"/>
+		<xs:attribute name="skipOnInput" type="tns:BWAValue"/>
+		<xs:attribute name="enabled" type="xs:boolean"/>
+		<xs:attribute name="defItem" type="xs:boolean"/>
+		<xs:attribute name="important" type="tns:BWAValue"/>
+		<xs:attribute name="width" type="xs:decimal"/>
+		<xs:attribute name="height" type="xs:decimal"/>
+		<xs:attribute name="horStretch" type="xs:boolean"/>
+		<xs:attribute name="verStretch" type="xs:boolean"/>
+		<xs:attribute name="autoMaxWidth" type="xs:boolean"/>
+		<xs:attribute name="maxWidth" type="xs:decimal"/>
+		<xs:attribute name="minWidth" type="xs:decimal"/>
+		<xs:attribute name="autoMaxHeight" type="xs:boolean"/>
+		<xs:attribute name="maxHeight" type="xs:decimal"/>
+		<xs:attribute name="plcm" type="tns:MenuElementPlacementArea"/>
+		<xs:attribute name="check" type="xs:boolean"/>
+		<xs:attribute name="tooltipRepres" type="tns:TooltipRepresentation"/>
+		<xs:attribute name="groupHAlign" type="tns:ItemHorizontalAlignment"/>
+		<xs:attribute name="groupVAlign" type="tns:ItemVerticalAlignment"/>
+		<xs:attribute name="shape" type="tns:ButtonShape"/>
+		<xs:attribute name="shapeRepres" type="tns:ButtonShapeRepresentation"/>
+		<xs:attribute name="picLocation" type="tns:FormButtonPictureLocation"/>
+		<xs:attribute name="displayImportance" type="tns:DisplayImportance"/>
+		<xs:attribute name="locationInCommandBar" type="tns:ButtonLocationInCommandBar"/>
+		<xs:attribute name="commandUniqueness" type="xs:boolean"/>
+		<xs:attribute name="MSIB" type="tns:OnMainServerUnavalableBehavior"/>
+		<xs:attribute name="showAsCard" type="xs:boolean"/>
+		<xs:attribute name="backPictRepresEffect" type="tns:PictureRepresentationEffect"/>
+		<xs:attribute name="cardPictureAndTitleAlign" type="tns:CardPictureAndTitleAlignVariant"/>
+		<xs:attribute name="pictureHeight" type="xs:decimal"/>
+		<xs:attribute name="buttonImportance" type="tns:ButtonImportance"/>
+	</xs:complexType>
+	<xs:complexType name="ButtonsGroupData">
+		<xs:sequence>
+			<xs:element name="cmdGroups" type="ns1:CompositeID"/>
+			<xs:element name="repres" type="tns:ButtonGroupRepresentation"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="CalendarFieldData">
+		<xs:sequence>
+			<xs:element name="fnt" type="ns2:Font" minOccurs="0"/>
+			<xs:element name="brdClr" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="brd" type="ns2:Border" minOccurs="0"/>
+			<xs:element name="event" type="tns:Event" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+		<xs:attribute name="width" type="xs:decimal"/>
+		<xs:attribute name="height" type="xs:decimal"/>
+		<xs:attribute name="horStretch" type="xs:boolean"/>
+		<xs:attribute name="verStretch" type="xs:boolean"/>
+		<xs:attribute name="autoMaxWidth" type="xs:boolean"/>
+		<xs:attribute name="maxWidth" type="xs:decimal"/>
+		<xs:attribute name="minWidth" type="xs:decimal"/>
+		<xs:attribute name="autoMaxHeight" type="xs:boolean"/>
+		<xs:attribute name="maxHeight" type="xs:decimal"/>
+		<xs:attribute name="dateSel" type="tns:FormDateSelectionMode"/>
+		<xs:attribute name="showCurDate" type="xs:boolean"/>
+		<xs:attribute name="navigation" type="xs:boolean"/>
+		<xs:attribute name="begPeriod" type="xs:dateTime"/>
+		<xs:attribute name="endPeriod" type="xs:dateTime"/>
+		<xs:attribute name="startDrag" type="xs:boolean"/>
+		<xs:attribute name="drag" type="xs:boolean"/>
+		<xs:attribute name="monthPanelVisible" type="xs:boolean"/>
+		<xs:attribute name="widthInMonths" type="xs:decimal"/>
+		<xs:attribute name="heightInMonths" type="xs:decimal"/>
+		<xs:attribute name="clearEvents" type="xs:boolean"/>
+	</xs:complexType>
+	<xs:complexType name="ChartFieldData">
+		<xs:sequence>
+			<xs:element name="event" type="tns:Event" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+		<xs:attribute name="width" type="xs:decimal"/>
+		<xs:attribute name="height" type="xs:decimal"/>
+		<xs:attribute name="horStretch" type="xs:boolean"/>
+		<xs:attribute name="verStretch" type="xs:boolean"/>
+		<xs:attribute name="autoMaxWidth" type="xs:boolean"/>
+		<xs:attribute name="maxWidth" type="xs:decimal"/>
+		<xs:attribute name="minWidth" type="xs:decimal"/>
+		<xs:attribute name="autoMaxHeight" type="xs:boolean"/>
+		<xs:attribute name="maxHeight" type="xs:decimal"/>
+		<xs:attribute name="clearEvents" type="xs:boolean"/>
+	</xs:complexType>
+	<xs:complexType name="CheckBoxFieldData">
+		<xs:sequence>
+			<xs:element name="brdClr" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="bkClr" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="txtClr" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="fnt" type="ns2:Font" minOccurs="0"/>
+		</xs:sequence>
+		<xs:attribute name="checkBoxType" type="tns:CheckBoxType"/>
+		<xs:attribute name="threeState" type="xs:boolean"/>
+		<xs:attribute name="format" type="xs:string"/>
+		<xs:attribute name="tbRepres" type="tns:TumblerRepresentation"/>
+		<xs:attribute name="horStretch" type="tns:BWAValue"/>
+		<xs:attribute name="elemTitleHeight" type="xs:decimal"/>
+		<xs:attribute name="elemHeight" type="xs:decimal"/>
+		<xs:attribute name="elemWidth" type="xs:decimal"/>
+		<xs:attribute name="eqWidth" type="tns:BWAValue"/>
+	</xs:complexType>
+	<xs:complexType name="ColumnsGroupData">
+		<xs:sequence>
+			<xs:element name="headerPic" type="ns2:Picture" minOccurs="0"/>
+			<xs:element name="titleBkClr" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="hdProp" type="tns:DataPath" minOccurs="0"/>
+			<xs:element name="hdPropName" type="xs:string" minOccurs="0"/>
+			<xs:element name="hdTdp" type="ns1:TypeDescription" minOccurs="0"/>
+		</xs:sequence>
+		<xs:attribute name="grouping" type="tns:ColumnsGroup"/>
+		<xs:attribute name="showTitle" type="tns:BWAValue"/>
+		<xs:attribute name="showInHeader" type="xs:boolean"/>
+		<xs:attribute name="headerHAlign" type="tns:ItemHorizontalAlignment"/>
+		<xs:attribute name="headerFormat" type="xs:string"/>
+		<xs:attribute name="fixedInTable" type="tns:FormFixedInTable"/>
+		<xs:attribute name="showInCard" type="xs:boolean"/>
+		<xs:attribute name="fixInCard" type="tns:BWAValue"/>
+		<xs:attribute name="showTitleInCard" type="tns:BWAValue"/>
+	</xs:complexType>
+	<xs:complexType name="Command">
+		<xs:sequence>
+			<xs:element name="handlers" type="tns:EventHandlers" maxOccurs="unbounded"/>
+		</xs:sequence>
+		<xs:attribute name="id" type="ns1:CompositeID"/>
+		<xs:attribute name="name" type="xs:string"/>
+		<xs:attribute name="modifiesData" type="xs:boolean"/>
+		<xs:attribute name="currentRowUse" type="tns:CurrentRowUse"/>
+		<xs:attribute name="associatedTableElementId" type="xs:decimal"/>
+		<xs:attribute name="actionPurpose" type="tns:CommandActionPurpose"/>
+		<xs:attribute name="selectedRowsUse" type="tns:SelectedRowsUse"/>
+	</xs:complexType>
+	<xs:complexType name="CommandsInclusion">
+		<xs:sequence>
+			<xs:element name="uuid" type="ns1:UUID" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="ContextMenuGroupData">
+		<xs:attribute name="fillStd" type="xs:boolean"/>
+	</xs:complexType>
+	<xs:complexType name="DataPath">
+		<xs:sequence>
+			<xs:element name="id" type="ns1:CompositeID" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="Decoration">
+		<xs:choice>
+			<xs:element name="txtClr" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="fnt" type="ns2:Font" minOccurs="0"/>
+			<xs:element name="stcut" type="ns2:ShortCutType" minOccurs="0"/>
+			<xs:element name="textData" type="tns:TextDecorationData" minOccurs="0"/>
+			<xs:element name="pictureData" type="tns:PictureDecorationData" minOccurs="0"/>
+			<xs:element name="predefined" type="tns:Predefined" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="title" type="tns:FormattedString" minOccurs="0"/>
+			<xs:element name="tooltip" type="xs:string" minOccurs="0"/>
+		</xs:choice>
+		<xs:attribute name="id" type="xs:decimal"/>
+		<xs:attribute name="name" type="xs:string"/>
+		<xs:attribute name="org" type="tns:FormElementOrigin"/>
+		<xs:attribute name="users" type="xs:boolean"/>
+		<xs:attribute name="kind" type="tns:ManagedFormDecorationType"/>
+		<xs:attribute name="visible" type="xs:boolean"/>
+		<xs:attribute name="userVisible" type="xs:boolean"/>
+		<xs:attribute name="enabled" type="xs:boolean"/>
+		<xs:attribute name="width" type="xs:decimal"/>
+		<xs:attribute name="height" type="xs:decimal"/>
+		<xs:attribute name="horStretch" type="tns:BWAValue"/>
+		<xs:attribute name="verStretch" type="tns:BWAValue"/>
+		<xs:attribute name="autoMaxWidth" type="xs:boolean"/>
+		<xs:attribute name="maxWidth" type="xs:decimal"/>
+		<xs:attribute name="minWidth" type="xs:decimal"/>
+		<xs:attribute name="autoMaxHeight" type="xs:boolean"/>
+		<xs:attribute name="maxHeight" type="xs:decimal"/>
+		<xs:attribute name="skipOnInput" type="tns:BWAValue"/>
+		<xs:attribute name="tooltipRepres" type="tns:TooltipRepresentation"/>
+		<xs:attribute name="groupHAlign" type="tns:ItemHorizontalAlignment"/>
+		<xs:attribute name="groupVAlign" type="tns:ItemVerticalAlignment"/>
+		<xs:attribute name="displayImportance" type="tns:DisplayImportance"/>
+		<xs:attribute name="MSIB" type="tns:OnMainServerUnavalableBehavior"/>
+	</xs:complexType>
+	<xs:complexType name="DendrogramFieldData">
+		<xs:sequence>
+			<xs:element name="event" type="tns:Event" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+		<xs:attribute name="width" type="xs:decimal"/>
+		<xs:attribute name="height" type="xs:decimal"/>
+		<xs:attribute name="horStretch" type="xs:boolean"/>
+		<xs:attribute name="verStretch" type="xs:boolean"/>
+		<xs:attribute name="autoMaxWidth" type="xs:boolean"/>
+		<xs:attribute name="maxWidth" type="xs:decimal"/>
+		<xs:attribute name="minWidth" type="xs:decimal"/>
+		<xs:attribute name="autoMaxHeight" type="xs:boolean"/>
+		<xs:attribute name="maxHeight" type="xs:decimal"/>
+		<xs:attribute name="clearEvents" type="xs:boolean"/>
+	</xs:complexType>
+	<xs:complexType name="ElementsChanges">
+		<xs:sequence>
+			<xs:element name="elemcs" type="tns:ElementsChangesItem" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="ElementsChangesItem">
+		<xs:choice>
+			<xs:element name="guid" type="ns1:UUID"/>
+			<xs:element name="main" type="tns:MainElement" minOccurs="0"/>
+			<xs:element name="field" type="tns:Field" minOccurs="0"/>
+			<xs:element name="group" type="tns:Group" minOccurs="0"/>
+			<xs:element name="table" type="tns:Table" minOccurs="0"/>
+			<xs:element name="button" type="tns:Button" minOccurs="0"/>
+			<xs:element name="decoration" type="tns:Decoration" minOccurs="0"/>
+			<xs:element name="addition" type="tns:Addition" minOccurs="0"/>
+		</xs:choice>
+		<xs:attribute name="type" type="xs:decimal"/>
+		<xs:attribute name="id" type="xs:decimal"/>
+		<xs:attribute name="name" type="xs:string"/>
+		<xs:attribute name="pid" type="xs:decimal"/>
+		<xs:attribute name="aid" type="xs:decimal"/>
+	</xs:complexType>
+	<xs:complexType name="Event">
+		<xs:sequence>
+			<xs:element name="handlers" type="tns:EventHandlers" maxOccurs="unbounded"/>
+		</xs:sequence>
+		<xs:attribute name="id" type="ns1:UUID"/>
+	</xs:complexType>
+	<xs:complexType name="EventHandler">
+		<xs:attribute name="handlerName" type="xs:string"/>
+		<xs:attribute name="callType" type="tns:EventHandlerCallType"/>
+	</xs:complexType>
+	<xs:complexType name="EventHandlers">
+		<xs:sequence>
+			<xs:element name="handler" type="tns:EventHandler" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="Field">
+		<xs:choice>
+			<xs:element name="textData" type="tns:TextFieldData" minOccurs="0"/>
+			<xs:element name="inputData" type="tns:InputFieldData" minOccurs="0"/>
+			<xs:element name="checkData" type="tns:CheckBoxFieldData" minOccurs="0"/>
+			<xs:element name="imageData" type="tns:ImageFieldData" minOccurs="0"/>
+			<xs:element name="radioData" type="tns:RadioButtonsData" minOccurs="0"/>
+			<xs:element name="spereadsheetData" type="tns:SpreadsheetFieldData" minOccurs="0"/>
+			<xs:element name="textDocData" type="tns:TextDocFieldData" minOccurs="0"/>
+			<xs:element name="formattedDocData" type="tns:FormattedDocFieldData" minOccurs="0"/>
+			<xs:element name="plannerData" type="tns:PlannerFieldData" minOccurs="0"/>
+			<xs:element name="calendarData" type="tns:CalendarFieldData" minOccurs="0"/>
+			<xs:element name="periodData" type="tns:PeriodFieldData" minOccurs="0"/>
+			<xs:element name="progressBarData" type="tns:ProgressBarFieldData" minOccurs="0"/>
+			<xs:element name="trackBarData" type="tns:TrackBarFieldData" minOccurs="0"/>
+			<xs:element name="chartData" type="tns:ChartFieldData" minOccurs="0"/>
+			<xs:element name="ganttChartData" type="tns:GanttChartFieldData" minOccurs="0"/>
+			<xs:element name="dendrogramData" type="tns:DendrogramFieldData" minOccurs="0"/>
+			<xs:element name="flowchartData" type="tns:FlowchartFieldData" minOccurs="0"/>
+			<xs:element name="htmlData" type="tns:HTMLFieldData" minOccurs="0"/>
+			<xs:element name="geographicalMapData" type="tns:GeographicalMapFieldData" minOccurs="0"/>
+			<xs:element name="pdfDocumentData" type="tns:PDFDocumentFieldData" minOccurs="0"/>
+			<xs:element name="prop" type="tns:DataPath" minOccurs="0"/>
+			<xs:element name="propName" type="xs:string" minOccurs="0"/>
+			<xs:element name="tdp" type="ns1:TypeDescription" minOccurs="0"/>
+			<xs:element name="ftProp" type="tns:DataPath" minOccurs="0"/>
+			<xs:element name="ftPropName" type="xs:string" minOccurs="0"/>
+			<xs:element name="ftTdp" type="ns1:TypeDescription" minOccurs="0"/>
+			<xs:element name="headerPic" type="ns2:Picture" minOccurs="0"/>
+			<xs:element name="footerPic" type="ns2:Picture" minOccurs="0"/>
+			<xs:element name="titleTxtClr" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="titleFnt" type="ns2:Font" minOccurs="0"/>
+			<xs:element name="titleBkClr" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="ftrTxtClr" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="ftrBkClr" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="ftrFnt" type="ns2:Font" minOccurs="0"/>
+			<xs:element name="stcut" type="ns2:ShortCutType" minOccurs="0"/>
+			<xs:element name="event" type="tns:Event" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="commands" type="tns:CommandsInclusion"/>
+			<xs:element name="predefined" type="tns:Predefined" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="title" type="xs:string" minOccurs="0"/>
+			<xs:element name="tooltip" type="xs:string" minOccurs="0"/>
+		</xs:choice>
+		<xs:attribute name="id" type="xs:decimal"/>
+		<xs:attribute name="name" type="xs:string"/>
+		<xs:attribute name="org" type="tns:FormElementOrigin"/>
+		<xs:attribute name="users" type="xs:boolean"/>
+		<xs:attribute name="kind" type="tns:ManagedFormFieldType"/>
+		<xs:attribute name="visible" type="xs:boolean"/>
+		<xs:attribute name="userVisible" type="xs:boolean"/>
+		<xs:attribute name="titleLocation" type="tns:FormElementTitleLocation"/>
+		<xs:attribute name="titleRowsCount" type="xs:decimal"/>
+		<xs:attribute name="enabled" type="xs:boolean"/>
+		<xs:attribute name="cellHyper" type="xs:boolean"/>
+		<xs:attribute name="readOnly" type="xs:boolean"/>
+		<xs:attribute name="skipOnInput" type="tns:BWAValue"/>
+		<xs:attribute name="defItem" type="xs:boolean"/>
+		<xs:attribute name="warningOnEditRepresentation" type="tns:WarningOnEditRepresentation"/>
+		<xs:attribute name="warningOnEdit" type="xs:string"/>
+		<xs:attribute name="footerText" type="xs:string"/>
+		<xs:attribute name="showInHeader" type="xs:boolean"/>
+		<xs:attribute name="showInFooter" type="xs:boolean"/>
+		<xs:attribute name="hAlign" type="tns:ItemHorizontalAlignment"/>
+		<xs:attribute name="headerHAlign" type="tns:ItemHorizontalAlignment"/>
+		<xs:attribute name="footerHAlign" type="tns:ItemHorizontalAlignment"/>
+		<xs:attribute name="vAlign" type="tns:ItemVerticalAlignment"/>
+		<xs:attribute name="groupHAlign" type="tns:ItemHorizontalAlignment"/>
+		<xs:attribute name="groupVAlign" type="tns:ItemVerticalAlignment"/>
+		<xs:attribute name="displayImportance" type="tns:DisplayImportance"/>
+		<xs:attribute name="columnEditMode" type="tns:TableFieldEditMode"/>
+		<xs:attribute name="autoCellHeight" type="xs:boolean"/>
+		<xs:attribute name="fixedInTable" type="tns:FormFixedInTable"/>
+		<xs:attribute name="tooltipRepres" type="tns:TooltipRepresentation"/>
+		<xs:attribute name="clearEvents" type="xs:boolean"/>
+		<xs:attribute name="MSIB" type="tns:OnMainServerUnavalableBehavior"/>
+		<xs:attribute name="markRequiredComplete" type="tns:BWAValue"/>
+		<xs:attribute name="cellMark" type="tns:TableCellMarkType"/>
+		<xs:attribute name="autoEditMode" type="xs:boolean"/>
+		<xs:attribute name="checkBoxKind" type="tns:TableColumnCheckBoxKind"/>
+		<xs:attribute name="multilineSelect" type="xs:boolean"/>
+		<xs:attribute name="appearanceInCard" type="tns:AppearanceVariantInCard"/>
+		<xs:attribute name="showTitleInCard" type="tns:BWAValue"/>
+		<xs:attribute name="widthInCard" type="tns:WidthVariantInCard"/>
+		<xs:attribute name="showInCard" type="xs:boolean"/>
+		<xs:attribute name="fixInCard" type="tns:BWAValue"/>
+		<xs:attribute name="autoWidthInTable" type="tns:AutoWidthInTable"/>
+		<xs:attribute name="cellHyperlinkRepresentation" type="tns:CellHyperlinkRepresentation"/>
+		<xs:attribute name="cellHyperlinkDisplayVariant" type="tns:CellHyperlinkDisplayVariant"/>
+	</xs:complexType>
+	<xs:complexType name="FlowchartFieldData">
+		<xs:sequence>
+			<xs:element name="brdClr" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="event" type="tns:Event" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+		<xs:attribute name="width" type="xs:decimal"/>
+		<xs:attribute name="height" type="xs:decimal"/>
+		<xs:attribute name="horStretch" type="xs:boolean"/>
+		<xs:attribute name="verStretch" type="xs:boolean"/>
+		<xs:attribute name="autoMaxWidth" type="xs:boolean"/>
+		<xs:attribute name="maxWidth" type="xs:decimal"/>
+		<xs:attribute name="minWidth" type="xs:decimal"/>
+		<xs:attribute name="autoMaxHeight" type="xs:boolean"/>
+		<xs:attribute name="maxHeight" type="xs:decimal"/>
+		<xs:attribute name="useOutput" type="ns2:UseOutput"/>
+		<xs:attribute name="edit" type="xs:boolean"/>
+		<xs:attribute name="clearEvents" type="xs:boolean"/>
+	</xs:complexType>
+	<xs:complexType name="Form">
+		<xs:sequence>
+			<xs:element name="elements" type="tns:MainElement"/>
+			<xs:element name="command" type="tns:Command" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="property" type="tns:Property" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="FormattedDocFieldData">
+		<xs:sequence>
+			<xs:element name="txtClr" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="bkClr" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="brdClr" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="fnt" type="ns2:Font" minOccurs="0"/>
+			<xs:element name="event" type="tns:Event" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+		<xs:attribute name="width" type="xs:decimal"/>
+		<xs:attribute name="height" type="xs:decimal"/>
+		<xs:attribute name="horStretch" type="xs:boolean"/>
+		<xs:attribute name="verStretch" type="xs:boolean"/>
+		<xs:attribute name="autoMaxWidth" type="xs:boolean"/>
+		<xs:attribute name="maxWidth" type="xs:decimal"/>
+		<xs:attribute name="minWidth" type="xs:decimal"/>
+		<xs:attribute name="autoMaxHeight" type="xs:boolean"/>
+		<xs:attribute name="maxHeight" type="xs:decimal"/>
+		<xs:attribute name="useOutput" type="ns2:UseOutput"/>
+	</xs:complexType>
+	<xs:complexType name="FormattedString">
+		<xs:sequence>
+			<xs:element name="str" type="xs:string"/>
+			<xs:element name="formatted" type="xs:boolean"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="GanttChartFieldData">
+		<xs:sequence>
+			<xs:element name="event" type="tns:Event" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+		<xs:attribute name="width" type="xs:decimal"/>
+		<xs:attribute name="height" type="xs:decimal"/>
+		<xs:attribute name="horStretch" type="xs:boolean"/>
+		<xs:attribute name="verStretch" type="xs:boolean"/>
+		<xs:attribute name="autoMaxWidth" type="xs:boolean"/>
+		<xs:attribute name="maxWidth" type="xs:decimal"/>
+		<xs:attribute name="minWidth" type="xs:decimal"/>
+		<xs:attribute name="autoMaxHeight" type="xs:boolean"/>
+		<xs:attribute name="maxHeight" type="xs:decimal"/>
+		<xs:attribute name="clearEvents" type="xs:boolean"/>
+		<xs:attribute name="tableLocation" type="tns:GanttChartTableLocation"/>
+		<xs:attribute name="valuesSelectionMode" type="tns:GanttChartValuesSelectionMode"/>
+		<xs:attribute name="intervalsSelectionMode" type="tns:GanttChartIntervalsSelectionMode"/>
+		<xs:attribute name="showHorizontalLinesFlag" type="tns:BWAValue"/>
+		<xs:attribute name="showVerticalLinesFlag" type="tns:BWAValue"/>
+	</xs:complexType>
+	<xs:complexType name="GeographicalMapFieldData">
+		<xs:sequence>
+			<xs:element name="brdClr" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="event" type="tns:Event" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+		<xs:attribute name="width" type="xs:decimal"/>
+		<xs:attribute name="height" type="xs:decimal"/>
+		<xs:attribute name="horStretch" type="xs:boolean"/>
+		<xs:attribute name="verStretch" type="xs:boolean"/>
+		<xs:attribute name="autoMaxWidth" type="xs:boolean"/>
+		<xs:attribute name="maxWidth" type="xs:decimal"/>
+		<xs:attribute name="minWidth" type="xs:decimal"/>
+		<xs:attribute name="autoMaxHeight" type="xs:boolean"/>
+		<xs:attribute name="maxHeight" type="xs:decimal"/>
+		<xs:attribute name="useOutput" type="ns2:UseOutput"/>
+		<xs:attribute name="clearEvents" type="xs:boolean"/>
+	</xs:complexType>
+	<xs:complexType name="Group">
+		<xs:choice>
+			<xs:element name="titleTxtClr" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="titleFnt" type="ns2:Font" minOccurs="0"/>
+			<xs:element name="stcut" type="ns2:ShortCutType" minOccurs="0"/>
+			<xs:element name="menuData" type="tns:MenuGroupData" minOccurs="0"/>
+			<xs:element name="autoMenuData" type="tns:AutoMenuGroupData" minOccurs="0"/>
+			<xs:element name="subMenuData" type="tns:SubmenuGroupData" minOccurs="0"/>
+			<xs:element name="buttonsData" type="tns:ButtonsGroupData" minOccurs="0"/>
+			<xs:element name="contextMenuData" type="tns:ContextMenuGroupData" minOccurs="0"/>
+			<xs:element name="columnsData" type="tns:ColumnsGroupData" minOccurs="0"/>
+			<xs:element name="pagesData" type="tns:PagesGroupData" minOccurs="0"/>
+			<xs:element name="pageData" type="tns:PageGroupData" minOccurs="0"/>
+			<xs:element name="usualData" type="tns:UsualGroupData" minOccurs="0"/>
+			<xs:element name="siapData" type="tns:SelectedItemsActionsPanelGroupData" minOccurs="0"/>
+			<xs:element name="racbData" type="tns:RowActionsCommandBarGroupData" minOccurs="0"/>
+			<xs:element name="field" type="tns:Field" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="group" type="tns:Group" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="table" type="tns:Table" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="button" type="tns:Button" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="decoration" type="tns:Decoration" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="addition" type="tns:Addition" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="title" type="xs:string" minOccurs="0"/>
+			<xs:element name="tooltip" type="xs:string" minOccurs="0"/>
+			<xs:element name="predefined" type="tns:Predefined" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:choice>
+		<xs:attribute name="id" type="xs:decimal"/>
+		<xs:attribute name="name" type="xs:string"/>
+		<xs:attribute name="org" type="tns:FormElementOrigin"/>
+		<xs:attribute name="users" type="xs:boolean"/>
+		<xs:attribute name="kind" type="tns:ManagedFormGroupType"/>
+		<xs:attribute name="visible" type="xs:boolean"/>
+		<xs:attribute name="userVisible" type="xs:boolean"/>
+		<xs:attribute name="contentChange" type="xs:boolean"/>
+		<xs:attribute name="enabled" type="xs:boolean"/>
+		<xs:attribute name="readOnly" type="xs:boolean"/>
+		<xs:attribute name="width" type="xs:decimal"/>
+		<xs:attribute name="height" type="xs:decimal"/>
+		<xs:attribute name="horStretch" type="tns:BWAValue"/>
+		<xs:attribute name="verStretch" type="tns:BWAValue"/>
+		<xs:attribute name="tooltipRepres" type="tns:TooltipRepresentation"/>
+		<xs:attribute name="groupHAlign" type="tns:ItemHorizontalAlignment"/>
+		<xs:attribute name="groupVAlign" type="tns:ItemVerticalAlignment"/>
+		<xs:attribute name="degeneratable" type="xs:boolean"/>
+		<xs:attribute name="displayImportance" type="tns:DisplayImportance"/>
+	</xs:complexType>
+	<xs:complexType name="HTMLFieldData">
+		<xs:sequence>
+			<xs:element name="brdClr" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="brd" type="ns2:Border" minOccurs="0"/>
+			<xs:element name="event" type="tns:Event" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+		<xs:attribute name="width" type="xs:decimal"/>
+		<xs:attribute name="height" type="xs:decimal"/>
+		<xs:attribute name="horStretch" type="xs:boolean"/>
+		<xs:attribute name="verStretch" type="xs:boolean"/>
+		<xs:attribute name="autoMaxWidth" type="xs:boolean"/>
+		<xs:attribute name="maxWidth" type="xs:decimal"/>
+		<xs:attribute name="minWidth" type="xs:decimal"/>
+		<xs:attribute name="autoMaxHeight" type="xs:boolean"/>
+		<xs:attribute name="maxHeight" type="xs:decimal"/>
+		<xs:attribute name="useOutput" type="ns2:UseOutput"/>
+		<xs:attribute name="clearEvents" type="xs:boolean"/>
+	</xs:complexType>
+	<xs:complexType name="HierarchyPanelMenuGroupData">
+		<xs:attribute name="fillStdCommands" type="xs:boolean"/>
+	</xs:complexType>
+	<xs:complexType name="ImageFieldData">
+		<xs:sequence>
+			<xs:element name="picValues" type="ns2:Picture" minOccurs="0"/>
+			<xs:element name="txtClr" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="brdClr" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="fnt" type="ns2:Font" minOccurs="0"/>
+			<xs:element name="brd" type="ns2:Border" minOccurs="0"/>
+			<xs:element name="backgroundShowMode" type="tns:PictureBackgroundShowMode" minOccurs="0"/>
+			<xs:element name="picClr" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="event" type="tns:Event" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+		<xs:attribute name="width" type="xs:decimal"/>
+		<xs:attribute name="height" type="xs:decimal"/>
+		<xs:attribute name="horStretch" type="xs:boolean"/>
+		<xs:attribute name="verStretch" type="xs:boolean"/>
+		<xs:attribute name="autoMaxWidth" type="xs:boolean"/>
+		<xs:attribute name="maxWidth" type="xs:decimal"/>
+		<xs:attribute name="minWidth" type="xs:decimal"/>
+		<xs:attribute name="autoMaxHeight" type="xs:boolean"/>
+		<xs:attribute name="maxHeight" type="xs:decimal"/>
+		<xs:attribute name="pictureSize" type="tns:PictureSize"/>
+		<xs:attribute name="zoomable" type="xs:boolean"/>
+		<xs:attribute name="imageScale" type="xs:decimal"/>
+		<xs:attribute name="hyper" type="xs:boolean"/>
+		<xs:attribute name="picText" type="xs:string"/>
+		<xs:attribute name="startDrag" type="xs:boolean"/>
+		<xs:attribute name="drag" type="xs:boolean"/>
+		<xs:attribute name="clearEvents" type="xs:boolean"/>
+		<xs:attribute name="fileDragMode" type="tns:FileDragMode"/>
+	</xs:complexType>
+	<xs:complexType name="InputFieldData">
+		<xs:sequence>
+			<xs:element name="event" type="tns:Event" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="minVal"/>
+			<xs:element name="maxVal"/>
+			<xs:element name="choiceBtnPic" type="ns2:Picture" minOccurs="0"/>
+			<xs:element name="choiceFormId" type="ns1:UUID"/>
+			<xs:element name="choiceParamLinks" type="ns3:ChoiceParameterLinks" minOccurs="0"/>
+			<xs:element name="choiceParams" type="ns3:ChoiceParameters" minOccurs="0"/>
+			<xs:element name="avlTypes" type="ns1:TypeDescription" minOccurs="0"/>
+			<xs:element name="valList" type="ns1:ValueListType"/>
+			<xs:element name="txtClr" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="bkClr" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="brdClr" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="fnt" type="ns2:Font" minOccurs="0"/>
+			<xs:element name="linkByType" type="ns3:TypeLink" minOccurs="0"/>
+			<xs:element name="multipleValuesFont" type="ns2:Font" minOccurs="0"/>
+			<xs:element name="multipleValuesPicture" type="ns2:Picture" minOccurs="0"/>
+			<xs:element name="multipleValueDataPath" type="tns:DataPath" minOccurs="0"/>
+			<xs:element name="multipleValueDataPathName" type="xs:string" minOccurs="0"/>
+			<xs:element name="multipleValuePictureDataPath" type="tns:DataPath" minOccurs="0"/>
+			<xs:element name="multipleValuePictureDataPathName" type="xs:string" minOccurs="0"/>
+			<xs:element name="multipleValuePresentDataPath" type="tns:DataPath" minOccurs="0"/>
+			<xs:element name="multipleValuePresentDataPathName" type="xs:string" minOccurs="0"/>
+			<xs:element name="pict" type="ns2:Picture" minOccurs="0"/>
+		</xs:sequence>
+		<xs:attribute name="width" type="xs:decimal"/>
+		<xs:attribute name="rowsCount" type="xs:decimal"/>
+		<xs:attribute name="horStretch" type="tns:BWAValue"/>
+		<xs:attribute name="verStretch" type="tns:BWAValue"/>
+		<xs:attribute name="autoMaxWidth" type="xs:boolean"/>
+		<xs:attribute name="maxWidth" type="xs:decimal"/>
+		<xs:attribute name="minWidth" type="xs:decimal"/>
+		<xs:attribute name="autoMaxHeight" type="xs:boolean"/>
+		<xs:attribute name="maxHeight" type="xs:decimal"/>
+		<xs:attribute name="wrap" type="xs:boolean"/>
+		<xs:attribute name="psw" type="tns:BWAValue"/>
+		<xs:attribute name="mlt" type="tns:BWAValue"/>
+		<xs:attribute name="extEdit" type="tns:BWAValue"/>
+		<xs:attribute name="markNeg" type="tns:BWAValue"/>
+		<xs:attribute name="choiceListBtn" type="tns:BWAValue"/>
+		<xs:attribute name="dropListBtn" type="tns:BWAValue"/>
+		<xs:attribute name="choiceBtn" type="tns:BWAValue"/>
+		<xs:attribute name="choiceBtnRepresentation" type="tns:ChoiceButtonRepresentation"/>
+		<xs:attribute name="clearBtn" type="tns:BWAValue"/>
+		<xs:attribute name="spinBtn" type="tns:BWAValue"/>
+		<xs:attribute name="openBtn" type="tns:BWAValue"/>
+		<xs:attribute name="createBtn" type="tns:BWAValue"/>
+		<xs:attribute name="mask" type="xs:string"/>
+		<xs:attribute name="listChoice" type="xs:boolean"/>
+		<xs:attribute name="choiceListHeight" type="xs:decimal"/>
+		<xs:attribute name="choiceListMinWidth" type="xs:decimal"/>
+		<xs:attribute name="multipleValuesTextColor" type="ns2:Color"/>
+		<xs:attribute name="multipleValuesBackColor" type="ns2:Color"/>
+		<xs:attribute name="multipleValuesHyperlink" type="tns:BWAValue"/>
+		<xs:attribute name="allowInputEmptyMultipleValues" type="xs:boolean"/>
+		<xs:attribute name="allowMultipleValuesDuplicates" type="xs:boolean"/>
+		<xs:attribute name="extendedEditMultipleValues" type="xs:boolean"/>
+		<xs:attribute name="showCheckBoxesInDropList" type="tns:BWAValue"/>
+		<xs:attribute name="autoChoice" type="tns:BWAValue"/>
+		<xs:attribute name="quickChoice" type="tns:BWAValue"/>
+		<xs:attribute name="choice" type="tns:FoldersAndItems"/>
+		<xs:attribute name="format" type="xs:string"/>
+		<xs:attribute name="inputFormat" type="xs:string"/>
+		<xs:attribute name="autoMark" type="tns:BWAValue"/>
+		<xs:attribute name="choiceType" type="xs:boolean"/>
+		<xs:attribute name="incompleteChoice" type="tns:IncompleteItemChoiceMode"/>
+		<xs:attribute name="typeDomainEnabled" type="xs:boolean"/>
+		<xs:attribute name="textEdit" type="xs:boolean"/>
+		<xs:attribute name="editTextUpdateMode" type="tns:EditTextUpdate"/>
+		<xs:attribute name="inputHint" type="xs:string"/>
+		<xs:attribute name="dropListTooltip" type="xs:string"/>
+		<xs:attribute name="choiceButtonTitle" type="xs:string"/>
+		<xs:attribute name="timeChoiceMode" type="tns:FormTimeChoiceMode"/>
+		<xs:attribute name="textSize" type="tns:TextSize"/>
+		<xs:attribute name="clearEvents" type="xs:boolean"/>
+		<xs:attribute name="choiceHistory" type="tns:ChoiceHistoryOnInput"/>
+		<xs:attribute name="autoShowClearButtonMode" type="tns:AutoShowClearButtonMode"/>
+		<xs:attribute name="autoShowOpenButtonMode" type="tns:AutoShowOpenButtonMode"/>
+		<xs:attribute name="autoCorrectionOnTextInput" type="tns:AutoCorrectionOnTextInput"/>
+		<xs:attribute name="spellCheckingOnTextInput" type="tns:SpellCheckingOnTextInput"/>
+		<xs:attribute name="autoCapitalizationOnTextInput" type="tns:AutoCapitalizationOnTextInput"/>
+		<xs:attribute name="autofillHint" type="tns:AutofillHint"/>
+		<xs:attribute name="specialTextInputMode" type="tns:SpecialTextInputMode"/>
+		<xs:attribute name="onScreenKeyboardReturnKeyText" type="tns:OnScreenKeyboardReturnKeyText"/>
+		<xs:attribute name="heightControlVariant" type="tns:HeightControlVariant"/>
+		<xs:attribute name="multipleValuePictureSize" type="tns:InputFieldMultipleValuePictureSize"/>
+		<xs:attribute name="multipleValuePictureShape" type="tns:InputFieldMultipleValuePictureShape"/>
+	</xs:complexType>
+	<xs:complexType name="ItemRef">
+		<xs:attribute name="id" type="xs:decimal"/>
+		<xs:attribute name="name" type="xs:string"/>
+	</xs:complexType>
+	<xs:complexType name="LFEDataPathRuntimeValue">
+		<xs:sequence>
+			<xs:element name="dataPath" type="ns1:CompositeID" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="stringDataPath" type="xs:string" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="LogFormUserAddedElement">
+		<xs:choice>
+			<xs:element name="fld" type="tns:Field" minOccurs="0"/>
+			<xs:element name="gr" type="tns:Group" minOccurs="0"/>
+			<xs:element name="tbl" type="tns:Table" minOccurs="0"/>
+			<xs:element name="btn" type="tns:Button" minOccurs="0"/>
+			<xs:element name="decor" type="tns:Decoration" minOccurs="0"/>
+			<xs:element name="addition" type="tns:Addition" minOccurs="0"/>
+		</xs:choice>
+		<xs:attribute name="pId" type="xs:decimal"/>
+	</xs:complexType>
+	<xs:complexType name="LogFormUserButtonChange">
+		<xs:attribute name="bId" type="xs:decimal"/>
+		<xs:attribute name="def" type="xs:boolean"/>
+		<xs:attribute name="ttlChg" type="xs:boolean"/>
+	</xs:complexType>
+	<xs:complexType name="LogFormUserChangesDescription">
+		<xs:sequence>
+			<xs:element name="addEl" type="tns:LogFormUserAddedElement" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="movEl" type="tns:LogFormUserMovedElement" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="tblChg" type="tns:LogFormUserTableChange" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="fldChg" type="tns:LogFormUserFieldChange" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="btnChg" type="tns:LogFormUserButtonChange" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="LogFormUserFieldChange">
+		<xs:attribute name="fId" type="xs:decimal"/>
+		<xs:attribute name="spin" type="tns:BWAValue"/>
+	</xs:complexType>
+	<xs:complexType name="LogFormUserMovedElement">
+		<xs:attribute name="pId" type="xs:decimal"/>
+		<xs:attribute name="eId" type="xs:decimal"/>
+		<xs:attribute name="aId" type="xs:decimal"/>
+	</xs:complexType>
+	<xs:complexType name="LogFormUserTableChange">
+		<xs:sequence>
+			<xs:element name="autoRef" minOccurs="0"/>
+			<xs:element name="autoRefInt" minOccurs="0"/>
+			<xs:element name="updOnDtCng" minOccurs="0"/>
+			<xs:element name="rstCurLn" minOccurs="0"/>
+			<xs:element name="showRoot" minOccurs="0"/>
+			<xs:element name="allowRootCh" minOccurs="0"/>
+		</xs:sequence>
+		<xs:attribute name="tId" type="xs:decimal"/>
+		<xs:attribute name="lstView" type="tns:TableInitialListView"/>
+	</xs:complexType>
+	<xs:complexType name="MainElement">
+		<xs:choice>
+			<xs:element name="storage" type="ns1:UUID" minOccurs="0"/>
+			<xs:element name="addProps" type="tns:AddProps" minOccurs="0"/>
+			<xs:element name="event" type="tns:Event" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="commands" type="tns:CommandsInclusion"/>
+			<xs:element name="navigator" type="tns:Group" minOccurs="0"/>
+			<xs:element name="autoCommandBar" type="tns:Group" minOccurs="0"/>
+			<xs:element name="field" type="tns:Field" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="group" type="tns:Group" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="table" type="tns:Table" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="button" type="tns:Button" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="decoration" type="tns:Decoration" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="addition" type="tns:Addition" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="title" type="xs:string" minOccurs="0"/>
+			<xs:element name="formURL" type="xs:string" minOccurs="0"/>
+			<xs:element name="mdcbc" type="ns1:ValueListType"/>
+			<xs:element name="createButtonsGroupTitle" type="xs:string" minOccurs="0"/>
+			<xs:element name="createButtonsGroupPicture" type="ns2:Picture" minOccurs="0"/>
+		</xs:choice>
+		<xs:attribute name="showCloseButton" type="xs:boolean"/>
+		<xs:attribute name="showTitle" type="tns:BWAValue"/>
+		<xs:attribute name="org" type="tns:FormElementOrigin"/>
+		<xs:attribute name="openingMode" type="tns:FormWindowOpeningMode"/>
+		<xs:attribute name="lockMode" type="tns:OnFormWindowOpenLockMode"/>
+		<xs:attribute name="width" type="xs:decimal"/>
+		<xs:attribute name="height" type="xs:decimal"/>
+		<xs:attribute name="scale" type="xs:decimal"/>
+		<xs:attribute name="enterKeyBehavior" type="tns:FormEnterKeyBehavior"/>
+		<xs:attribute name="saveFormDataInSettings" type="tns:SaveFormDataInSettings"/>
+		<xs:attribute name="autoSaveFormDataInSettings" type="tns:AutoSaveFormDataInSettings"/>
+		<xs:attribute name="saveWindowSettings" type="xs:boolean"/>
+		<xs:attribute name="autoTitle" type="xs:boolean"/>
+		<xs:attribute name="autoURL" type="xs:boolean"/>
+		<xs:attribute name="grouping" type="tns:FormChildrenGroup"/>
+		<xs:attribute name="align" type="tns:FormChildrenAlign"/>
+		<xs:attribute name="horizontalSpacing" type="tns:FormItemSpacing"/>
+		<xs:attribute name="verticalSpacing" type="tns:FormItemSpacing"/>
+		<xs:attribute name="hAlign" type="tns:ItemHorizontalAlignment"/>
+		<xs:attribute name="vAlign" type="tns:ItemVerticalAlignment"/>
+		<xs:attribute name="childrenWidth" type="tns:FormChildrenWidth"/>
+		<xs:attribute name="childrenTitleLocation" type="tns:ChildrenTitleLocation"/>
+		<xs:attribute name="scaleVariant" type="ns5:ClientApplicationFormScaleVariant"/>
+		<xs:attribute name="baseFontVariant" type="tns:FormBaseFontVariant"/>
+		<xs:attribute name="scrollMode" type="tns:LogFormScrollMode"/>
+		<xs:attribute name="autoFillCheck" type="xs:boolean"/>
+		<xs:attribute name="customizable" type="xs:boolean"/>
+		<xs:attribute name="enabled" type="xs:boolean"/>
+		<xs:attribute name="readOnly" type="xs:boolean"/>
+		<xs:attribute name="commandBarLocation" type="tns:FormElementCommandBarLocation"/>
+		<xs:attribute name="purposeUseKey" type="xs:string"/>
+		<xs:attribute name="windowOptionsKey" type="xs:string"/>
+		<xs:attribute name="clearEvents" type="xs:boolean"/>
+		<xs:attribute name="convRepresentation" type="tns:LogFormShowConversations"/>
+		<xs:attribute name="currentRowUse" type="tns:TableCurrentRowUse"/>
+		<xs:attribute name="collapseVariant" type="tns:CollapseFormItemsByImportance"/>
+		<xs:attribute name="windowRepresentationMode" type="tns:FormWindowViewMode"/>
+		<xs:attribute name="showCommandBar" type="tns:BWAValue"/>
+	</xs:complexType>
+	<xs:complexType name="MenuGroupData">
+		<xs:sequence>
+			<xs:element name="cmdGroups" type="ns1:CompositeID"/>
+		</xs:sequence>
+		<xs:attribute name="hAlign" type="tns:ItemHorizontalAlignment"/>
+		<xs:attribute name="apMode" type="tns:FormCommandBarAppearanceMode"/>
+	</xs:complexType>
+	<xs:complexType name="PDFDocumentFieldData">
+		<xs:sequence>
+			<xs:element name="brdClr" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="event" type="tns:Event" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+		<xs:attribute name="width" type="xs:decimal"/>
+		<xs:attribute name="height" type="xs:decimal"/>
+		<xs:attribute name="horStretch" type="xs:boolean"/>
+		<xs:attribute name="verStretch" type="xs:boolean"/>
+		<xs:attribute name="autoMaxWidth" type="xs:boolean"/>
+		<xs:attribute name="maxWidth" type="xs:decimal"/>
+		<xs:attribute name="minWidth" type="xs:decimal"/>
+		<xs:attribute name="autoMaxHeight" type="xs:boolean"/>
+		<xs:attribute name="maxHeight" type="xs:decimal"/>
+		<xs:attribute name="useOutput" type="ns2:UseOutput"/>
+		<xs:attribute name="scale" type="xs:decimal"/>
+		<xs:attribute name="currentPage" type="xs:decimal"/>
+		<xs:attribute name="orientation" type="xs:decimal"/>
+		<xs:attribute name="viewStatusLocation" type="tns:ViewStatusLocation"/>
+		<xs:attribute name="clearEvents" type="xs:boolean"/>
+	</xs:complexType>
+	<xs:complexType name="PageGroupData">
+		<xs:sequence>
+			<xs:element name="pic" type="ns2:Picture" minOccurs="0"/>
+			<xs:element name="prop" type="tns:DataPath" minOccurs="0"/>
+			<xs:element name="propName" type="xs:string" minOccurs="0"/>
+			<xs:element name="tdp" type="ns1:TypeDescription" minOccurs="0"/>
+			<xs:element name="bkClr" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="ttlClr" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="ttlFnt" type="ns2:Font" minOccurs="0"/>
+		</xs:sequence>
+		<xs:attribute name="grouping" type="tns:FormChildrenGroup"/>
+		<xs:attribute name="align" type="tns:FormChildrenAlign"/>
+		<xs:attribute name="horizontalSpacing" type="tns:FormItemSpacing"/>
+		<xs:attribute name="verticalSpacing" type="tns:FormItemSpacing"/>
+		<xs:attribute name="hAlign" type="tns:ItemHorizontalAlignment"/>
+		<xs:attribute name="vAlign" type="tns:ItemVerticalAlignment"/>
+		<xs:attribute name="childrenWidth" type="tns:FormChildrenWidth"/>
+		<xs:attribute name="childrenTitleLocation" type="tns:ChildrenTitleLocation"/>
+		<xs:attribute name="format" type="xs:string"/>
+		<xs:attribute name="showTitle" type="tns:BWAValue"/>
+		<xs:attribute name="scrollOnCompress" type="tns:BWAValue"/>
+	</xs:complexType>
+	<xs:complexType name="PagesGroupData">
+		<xs:sequence>
+			<xs:element name="event" type="tns:Event" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+		<xs:attribute name="repres" type="tns:FormPagesRepresentation"/>
+		<xs:attribute name="currentRowUse" type="tns:CurrentRowUse"/>
+		<xs:attribute name="associatedTableElementId" type="xs:decimal"/>
+		<xs:attribute name="clearEvents" type="xs:boolean"/>
+	</xs:complexType>
+	<xs:complexType name="PeriodFieldData">
+		<xs:sequence>
+			<xs:element name="fnt" type="ns2:Font" minOccurs="0"/>
+			<xs:element name="brdClr" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="brd" type="ns2:Border" minOccurs="0"/>
+			<xs:element name="event" type="tns:Event" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+		<xs:attribute name="width" type="xs:decimal"/>
+		<xs:attribute name="height" type="xs:decimal"/>
+		<xs:attribute name="horStretch" type="xs:boolean"/>
+		<xs:attribute name="verStretch" type="xs:boolean"/>
+		<xs:attribute name="autoMaxWidth" type="xs:boolean"/>
+		<xs:attribute name="maxWidth" type="xs:decimal"/>
+		<xs:attribute name="minWidth" type="xs:decimal"/>
+		<xs:attribute name="autoMaxHeight" type="xs:boolean"/>
+		<xs:attribute name="maxHeight" type="xs:decimal"/>
+		<xs:attribute name="clearEvents" type="xs:boolean"/>
+	</xs:complexType>
+	<xs:complexType name="PictureDecorationData">
+		<xs:sequence>
+			<xs:element name="pic" type="ns2:Picture" minOccurs="0"/>
+			<xs:element name="brdClr" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="brd" type="ns2:Border" minOccurs="0"/>
+			<xs:element name="backgroundShowMode" type="tns:PictureBackgroundShowMode" minOccurs="0"/>
+			<xs:element name="picClr" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="event" type="tns:Event" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+		<xs:attribute name="hyper" type="xs:boolean"/>
+		<xs:attribute name="pictureSize" type="tns:PictureSize"/>
+		<xs:attribute name="zoomable" type="xs:boolean"/>
+		<xs:attribute name="imageScale" type="xs:decimal"/>
+		<xs:attribute name="picText" type="xs:string"/>
+		<xs:attribute name="startDrag" type="xs:boolean"/>
+		<xs:attribute name="drag" type="xs:boolean"/>
+		<xs:attribute name="clearEvents" type="xs:boolean"/>
+		<xs:attribute name="fileDragMode" type="tns:FileDragMode"/>
+	</xs:complexType>
+	<xs:complexType name="PlannerFieldData">
+		<xs:sequence>
+			<xs:element name="event" type="tns:Event" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+		<xs:attribute name="width" type="xs:decimal"/>
+		<xs:attribute name="height" type="xs:decimal"/>
+		<xs:attribute name="horStretch" type="xs:boolean"/>
+		<xs:attribute name="verStretch" type="xs:boolean"/>
+		<xs:attribute name="autoMaxWidth" type="xs:boolean"/>
+		<xs:attribute name="maxWidth" type="xs:decimal"/>
+		<xs:attribute name="minWidth" type="xs:decimal"/>
+		<xs:attribute name="autoMaxHeight" type="xs:boolean"/>
+		<xs:attribute name="maxHeight" type="xs:decimal"/>
+		<xs:attribute name="startDrag" type="xs:boolean"/>
+		<xs:attribute name="drag" type="xs:boolean"/>
+		<xs:attribute name="timeScaleItemHyperlink" type="xs:boolean"/>
+		<xs:attribute name="dimensionItemHyperlink" type="xs:boolean"/>
+		<xs:attribute name="wrappedTimeScaleHeaderHyperlink" type="xs:boolean"/>
+	</xs:complexType>
+	<xs:complexType name="Predefined">
+		<xs:choice>
+			<xs:element name="contextMenu" type="tns:Group" minOccurs="0"/>
+			<xs:element name="contextMenuRef" type="tns:ItemRef" minOccurs="0"/>
+			<xs:element name="autoCommandBar" type="tns:Group" minOccurs="0"/>
+			<xs:element name="autoCommandBarRef" type="tns:ItemRef" minOccurs="0"/>
+			<xs:element name="extTooltip" type="tns:Decoration" minOccurs="0"/>
+			<xs:element name="extTooltipRef" type="tns:ItemRef" minOccurs="0"/>
+			<xs:element name="searchStringRepresentation" type="tns:Addition" minOccurs="0"/>
+			<xs:element name="searchStringRepresentationRef" type="tns:ItemRef" minOccurs="0"/>
+			<xs:element name="viewStatusRepresentation" type="tns:Addition" minOccurs="0"/>
+			<xs:element name="viewStatusRepresentationRef" type="tns:ItemRef" minOccurs="0"/>
+			<xs:element name="searchControl" type="tns:Addition" minOccurs="0"/>
+			<xs:element name="searchControlRef" type="tns:ItemRef" minOccurs="0"/>
+			<xs:element name="predefined" type="tns:Predefined" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="field" type="tns:Field" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="group" type="tns:Group" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="table" type="tns:Table" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="button" type="tns:Button" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="decoration" type="tns:Decoration" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="addition" type="tns:Addition" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:choice>
+	</xs:complexType>
+	<xs:complexType name="ProgressBarFieldData">
+		<xs:sequence>
+			<xs:element name="brdClr" type="ns2:Color" minOccurs="0"/>
+		</xs:sequence>
+		<xs:attribute name="width" type="xs:decimal"/>
+		<xs:attribute name="height" type="xs:decimal"/>
+		<xs:attribute name="horStretch" type="xs:boolean"/>
+		<xs:attribute name="verStretch" type="xs:boolean"/>
+		<xs:attribute name="autoMaxWidth" type="xs:boolean"/>
+		<xs:attribute name="maxWidth" type="xs:decimal"/>
+		<xs:attribute name="minWidth" type="xs:decimal"/>
+		<xs:attribute name="autoMaxHeight" type="xs:boolean"/>
+		<xs:attribute name="maxHeight" type="xs:decimal"/>
+		<xs:attribute name="minVal" type="xs:decimal"/>
+		<xs:attribute name="maxVal" type="xs:decimal"/>
+		<xs:attribute name="orientation" type="tns:FormElementOrientation"/>
+		<xs:attribute name="repres" type="tns:FormProgressBarRepresentation"/>
+		<xs:attribute name="showPercent" type="xs:boolean"/>
+	</xs:complexType>
+	<xs:complexType name="Property">
+		<xs:sequence>
+			<xs:element name="savingContent" type="tns:DataPath" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+		<xs:attribute name="id" type="ns1:CompositeID"/>
+		<xs:attribute name="main" type="xs:boolean"/>
+		<xs:attribute name="storedData" type="xs:boolean"/>
+	</xs:complexType>
+	<xs:complexType name="RadioButtonsData">
+		<xs:sequence>
+			<xs:element name="valList" type="ns1:ValueListType"/>
+			<xs:element name="txtClr" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="fnt" type="ns2:Font" minOccurs="0"/>
+			<xs:element name="brdClr" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="bkClr" type="ns2:Color" minOccurs="0"/>
+		</xs:sequence>
+		<xs:attribute name="radioButtonType" type="tns:RadioButtonType"/>
+		<xs:attribute name="colsCount" type="xs:decimal"/>
+		<xs:attribute name="tbRepres" type="tns:TumblerRepresentation"/>
+		<xs:attribute name="horStretch" type="tns:BWAValue"/>
+		<xs:attribute name="orientation" type="tns:FormElementOrientation"/>
+		<xs:attribute name="elementTitleHeight" type="xs:decimal"/>
+		<xs:attribute name="elementHeight" type="xs:decimal"/>
+		<xs:attribute name="elementWidth" type="xs:decimal"/>
+		<xs:attribute name="eqWidth" type="tns:BWAValue"/>
+	</xs:complexType>
+	<xs:complexType name="RowActionsCommandBarGroupData">
+		<xs:attribute name="fillStdCommands" type="xs:boolean"/>
+	</xs:complexType>
+	<xs:complexType name="SearchControlData">
+		<xs:sequence>
+			<xs:element name="bkClr" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="txtClr" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="brdClr" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="fnt" type="ns2:Font" minOccurs="0"/>
+			<xs:element name="event" type="tns:Event" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+		<xs:attribute name="width" type="xs:decimal"/>
+		<xs:attribute name="autoMaxWidth" type="xs:boolean"/>
+		<xs:attribute name="maxWidth" type="xs:decimal"/>
+		<xs:attribute name="minWidth" type="xs:decimal"/>
+		<xs:attribute name="horStretch" type="tns:BWAValue"/>
+	</xs:complexType>
+	<xs:complexType name="SearchStringData">
+		<xs:sequence>
+			<xs:element name="bkClr" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="txtClr" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="brdClr" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="fnt" type="ns2:Font" minOccurs="0"/>
+			<xs:element name="event" type="tns:Event" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+		<xs:attribute name="width" type="xs:decimal"/>
+		<xs:attribute name="autoMaxWidth" type="xs:boolean"/>
+		<xs:attribute name="maxWidth" type="xs:decimal"/>
+		<xs:attribute name="minWidth" type="xs:decimal"/>
+		<xs:attribute name="horStretch" type="tns:BWAValue"/>
+	</xs:complexType>
+	<xs:complexType name="SelectedItemsActionsPanelGroupData">
+		<xs:attribute name="fillStdCommands" type="xs:boolean"/>
+		<xs:attribute name="hAlign" type="tns:ItemHorizontalAlignment"/>
+		<xs:attribute name="appearanceMode" type="tns:FormCommandBarAppearanceMode"/>
+	</xs:complexType>
+	<xs:complexType name="SpreadsheetFieldData">
+		<xs:sequence>
+			<xs:element name="brdClr" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="event" type="tns:Event" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+		<xs:attribute name="width" type="xs:decimal"/>
+		<xs:attribute name="height" type="xs:decimal"/>
+		<xs:attribute name="horStretch" type="xs:boolean"/>
+		<xs:attribute name="verStretch" type="xs:boolean"/>
+		<xs:attribute name="autoMaxWidth" type="xs:boolean"/>
+		<xs:attribute name="maxWidth" type="xs:decimal"/>
+		<xs:attribute name="minWidth" type="xs:decimal"/>
+		<xs:attribute name="autoMaxHeight" type="xs:boolean"/>
+		<xs:attribute name="maxHeight" type="xs:decimal"/>
+		<xs:attribute name="showGrid" type="xs:boolean"/>
+		<xs:attribute name="showHdrs" type="xs:boolean"/>
+		<xs:attribute name="showVerScroll" type="tns:SpreadSheetDocumentScrollBarUse"/>
+		<xs:attribute name="showHorScroll" type="tns:SpreadSheetDocumentScrollBarUse"/>
+		<xs:attribute name="blackAndWhite" type="xs:boolean"/>
+		<xs:attribute name="protection" type="xs:boolean"/>
+		<xs:attribute name="selectionMode" type="tns:SelectionShowMode"/>
+		<xs:attribute name="useOutput" type="ns2:UseOutput"/>
+		<xs:attribute name="edit" type="xs:boolean"/>
+		<xs:attribute name="showGroups" type="xs:boolean"/>
+		<xs:attribute name="startDrag" type="xs:boolean"/>
+		<xs:attribute name="drag" type="xs:boolean"/>
+		<xs:attribute name="clearEvents" type="xs:boolean"/>
+		<xs:attribute name="selShow" type="tns:SelectionShowMode"/>
+		<xs:attribute name="viewScalingMode" type="tns:ViewScalingMode"/>
+		<xs:attribute name="showCellNames" type="xs:boolean"/>
+		<xs:attribute name="showRowAndColumnNames" type="xs:boolean"/>
+		<xs:attribute name="pointerType" type="ns6:SpreadsheetDocumentPointerType"/>
+		<xs:attribute name="drawingSelectionMode" type="tns:DrawingSelectionShowMode"/>
+		<xs:attribute name="cellActionsButtonShowMode" type="tns:CellActionsButtonViewMode"/>
+		<xs:attribute name="moxelActionBarShowMode" type="tns:SpreadsheetDocumentMultipleSelectionPanelViewMode"/>
+	</xs:complexType>
+	<xs:complexType name="SubmenuGroupData">
+		<xs:sequence>
+			<xs:element name="pic" type="ns2:Picture" minOccurs="0"/>
+			<xs:element name="cmdGroups" type="ns1:CompositeID"/>
+			<xs:element name="bkClr" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="brdClr" type="ns2:Color" minOccurs="0"/>
+		</xs:sequence>
+		<xs:attribute name="repres" type="tns:ButtonRepresentation"/>
+		<xs:attribute name="shape" type="tns:ButtonShape"/>
+		<xs:attribute name="shapeRepres" type="tns:ButtonShapeRepresentation"/>
+		<xs:attribute name="importance" type="tns:ButtonImportance"/>
+	</xs:complexType>
+	<xs:complexType name="Table">
+		<xs:choice>
+			<xs:element name="prop" type="tns:DataPath" minOccurs="0"/>
+			<xs:element name="propName" type="xs:string" minOccurs="0"/>
+			<xs:element name="tdp" type="ns1:TypeDescription" minOccurs="0"/>
+			<xs:element name="rowsPicProp" type="tns:DataPath" minOccurs="0"/>
+			<xs:element name="rowsPicPropName" type="xs:string" minOccurs="0"/>
+			<xs:element name="rowsPic" type="ns2:Picture" minOccurs="0"/>
+			<xs:element name="bkClr" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="txtClr" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="brdClr" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="fnt" type="ns2:Font" minOccurs="0"/>
+			<xs:element name="titleTxtClr" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="titleFnt" type="ns2:Font" minOccurs="0"/>
+			<xs:element name="stcut" type="ns2:ShortCutType" minOccurs="0"/>
+			<xs:element name="addProps" type="tns:AddProps" minOccurs="0"/>
+			<xs:element name="event" type="tns:Event" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="commands" type="tns:CommandsInclusion"/>
+			<xs:element name="predefined" type="tns:Predefined" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="field" type="tns:Field" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="group" type="tns:Group" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="title" type="xs:string" minOccurs="0"/>
+			<xs:element name="tooltip" type="xs:string" minOccurs="0"/>
+		</xs:choice>
+		<xs:attribute name="id" type="xs:decimal"/>
+		<xs:attribute name="name" type="xs:string"/>
+		<xs:attribute name="org" type="tns:FormElementOrigin"/>
+		<xs:attribute name="repres" type="tns:TableRepresentation"/>
+		<xs:attribute name="visible" type="xs:boolean"/>
+		<xs:attribute name="userVisible" type="xs:boolean"/>
+		<xs:attribute name="titleLocation" type="tns:FormElementTitleLocation"/>
+		<xs:attribute name="titleRowsCount" type="xs:decimal"/>
+		<xs:attribute name="commandBarLocation" type="tns:FormElementCommandBarLocation"/>
+		<xs:attribute name="autoFill" type="xs:boolean"/>
+		<xs:attribute name="enabled" type="xs:boolean"/>
+		<xs:attribute name="readOnly" type="xs:boolean"/>
+		<xs:attribute name="skipOnInput" type="tns:BWAValue"/>
+		<xs:attribute name="defItem" type="xs:boolean"/>
+		<xs:attribute name="changeRowSet" type="xs:boolean"/>
+		<xs:attribute name="changeRowOrder" type="xs:boolean"/>
+		<xs:attribute name="width" type="xs:decimal"/>
+		<xs:attribute name="height" type="xs:decimal"/>
+		<xs:attribute name="rowsCount" type="xs:decimal"/>
+		<xs:attribute name="heightControlVariant" type="tns:TableHeightControlVariant"/>
+		<xs:attribute name="autoMaxRowsCount" type="xs:boolean"/>
+		<xs:attribute name="maxRowsCount" type="xs:decimal"/>
+		<xs:attribute name="autoMaxWidth" type="xs:boolean"/>
+		<xs:attribute name="maxWidth" type="xs:decimal"/>
+		<xs:attribute name="minWidth" type="xs:decimal"/>
+		<xs:attribute name="autoMaxHeight" type="xs:boolean"/>
+		<xs:attribute name="maxHeight" type="xs:decimal"/>
+		<xs:attribute name="choiceMode" type="xs:boolean"/>
+		<xs:attribute name="multipleChoice" type="xs:boolean"/>
+		<xs:attribute name="rowInput" type="tns:TableRowInputMode"/>
+		<xs:attribute name="rowsSelection" type="tns:TableSelectionMode"/>
+		<xs:attribute name="rowSelection" type="tns:TableRowSelectionMode"/>
+		<xs:attribute name="showHeader" type="xs:boolean"/>
+		<xs:attribute name="headerHeight" type="xs:decimal"/>
+		<xs:attribute name="showFooter" type="xs:boolean"/>
+		<xs:attribute name="footerHeight" type="xs:decimal"/>
+		<xs:attribute name="horScroll" type="tns:TableScrollBarUse"/>
+		<xs:attribute name="verScroll" type="tns:TableScrollBarUse"/>
+		<xs:attribute name="showHorLines" type="xs:boolean"/>
+		<xs:attribute name="showVerLines" type="xs:boolean"/>
+		<xs:attribute name="showHorLinesBWA" type="tns:BWAValue"/>
+		<xs:attribute name="showVerLinesBWA" type="tns:BWAValue"/>
+		<xs:attribute name="fixedLeft" type="xs:decimal"/>
+		<xs:attribute name="fixedRight" type="xs:decimal"/>
+		<xs:attribute name="useAltRowColor" type="xs:boolean"/>
+		<xs:attribute name="useAltRowColorBWA" type="tns:BWAValue"/>
+		<xs:attribute name="autoInsert" type="xs:boolean"/>
+		<xs:attribute name="autoInsertNotcompleted" type="tns:BWAValue"/>
+		<xs:attribute name="autoMarkNotcompleted" type="tns:BWAValue"/>
+		<xs:attribute name="markRequiredComplete" type="tns:BWAValue"/>
+		<xs:attribute name="searchOnInput" type="tns:SearchOnInput"/>
+		<xs:attribute name="initListView" type="tns:TableInitialListView"/>
+		<xs:attribute name="initTreeView" type="tns:TableInitialTreeView"/>
+		<xs:attribute name="initRowActivation" type="tns:TableInitialRowActivation"/>
+		<xs:attribute name="rowActionsShowType" type="tns:TableRowActionsShowType"/>
+		<xs:attribute name="useOutput" type="ns2:UseOutput"/>
+		<xs:attribute name="horStretch" type="xs:boolean"/>
+		<xs:attribute name="verStretch" type="xs:boolean"/>
+		<xs:attribute name="startDrag" type="xs:boolean"/>
+		<xs:attribute name="drag" type="xs:boolean"/>
+		<xs:attribute name="tooltipRepres" type="tns:TooltipRepresentation"/>
+		<xs:attribute name="searchStringLocation" type="tns:SearchStringLocation"/>
+		<xs:attribute name="viewStatusLocation" type="tns:ViewStatusLocation"/>
+		<xs:attribute name="searchControlLocation" type="tns:SearchControlLocation"/>
+		<xs:attribute name="groupHAlign" type="tns:ItemHorizontalAlignment"/>
+		<xs:attribute name="groupVAlign" type="tns:ItemVerticalAlignment"/>
+		<xs:attribute name="clearEvents" type="xs:boolean"/>
+		<xs:attribute name="refreshRequest" type="tns:RefreshRequestMethod"/>
+		<xs:attribute name="currentRowUse" type="tns:TableCurrentRowUse"/>
+		<xs:attribute name="behaviorOnHorizontalCompression" type="tns:TableBehaviorOnHorizontalCompression"/>
+		<xs:attribute name="displayImportance" type="tns:DisplayImportance"/>
+		<xs:attribute name="fileDragMode" type="tns:FileDragMode"/>
+		<xs:attribute name="MSIB" type="tns:OnMainServerUnavalableBehavior"/>
+		<xs:attribute name="hierarchyPanelLocation" type="tns:HierarchyPanelLocation"/>
+		<xs:attribute name="hierarchyPanelVisible" type="xs:boolean"/>
+		<xs:attribute name="verticalScrollPanelVisible" type="xs:boolean"/>
+		<xs:attribute name="saveColors" type="tns:SaveTableAppearance"/>
+		<xs:attribute name="iconSaveColorsKey" type="xs:string"/>
+		<xs:attribute name="shapeSaveColorsKey" type="xs:string"/>
+		<xs:attribute name="showCommandBarNeedDereferenced" type="xs:boolean"/>
+		<xs:attribute name="showCommandBar" type="tns:BWAValue"/>
+		<xs:attribute name="mobileDeviceTableType" type="tns:FormTableType"/>
+		<xs:attribute name="autoMaxCardHeight" type="xs:boolean"/>
+		<xs:attribute name="maxCardHeight" type="xs:decimal"/>
+		<xs:attribute name="cardBehaviorOnVerticalCompression" type="tns:CardBehaviorOnVerticalCompression"/>
+		<xs:attribute name="cellHyperlinksRepresentation" type="tns:CellHyperlinksRepresentation"/>
+	</xs:complexType>
+	<xs:complexType name="TableColorPaletteDescription">
+		<xs:sequence>
+			<xs:element name="customPalette" type="ns1:Array" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="TextDecorationData">
+		<xs:sequence>
+			<xs:element name="bkClr" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="brdClr" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="brd" type="ns2:Border" minOccurs="0"/>
+			<xs:element name="event" type="tns:Event" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+		<xs:attribute name="hyper" type="xs:boolean"/>
+		<xs:attribute name="hAlign" type="tns:ItemHorizontalAlignment"/>
+		<xs:attribute name="vAlign" type="tns:ItemVerticalAlignment"/>
+		<xs:attribute name="titleHeight" type="xs:decimal"/>
+		<xs:attribute name="clearEvents" type="xs:boolean"/>
+	</xs:complexType>
+	<xs:complexType name="TextDocFieldData">
+		<xs:sequence>
+			<xs:element name="txtClr" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="bkClr" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="brdClr" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="fnt" type="ns2:Font" minOccurs="0"/>
+			<xs:element name="event" type="tns:Event" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+		<xs:attribute name="width" type="xs:decimal"/>
+		<xs:attribute name="height" type="xs:decimal"/>
+		<xs:attribute name="horStretch" type="xs:boolean"/>
+		<xs:attribute name="verStretch" type="xs:boolean"/>
+		<xs:attribute name="autoMaxWidth" type="xs:boolean"/>
+		<xs:attribute name="maxWidth" type="xs:decimal"/>
+		<xs:attribute name="minWidth" type="xs:decimal"/>
+		<xs:attribute name="autoMaxHeight" type="xs:boolean"/>
+		<xs:attribute name="maxHeight" type="xs:decimal"/>
+		<xs:attribute name="useOutput" type="ns2:UseOutput"/>
+		<xs:attribute name="clearEvents" type="xs:boolean"/>
+	</xs:complexType>
+	<xs:complexType name="TextFieldData">
+		<xs:sequence>
+			<xs:element name="txtClr" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="bkClr" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="brdClr" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="brd" type="ns2:Border" minOccurs="0"/>
+			<xs:element name="fnt" type="ns2:Font" minOccurs="0"/>
+			<xs:element name="event" type="tns:Event" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+		<xs:attribute name="width" type="xs:decimal"/>
+		<xs:attribute name="rowsCount" type="xs:decimal"/>
+		<xs:attribute name="horStretch" type="tns:BWAValue"/>
+		<xs:attribute name="verStretch" type="tns:BWAValue"/>
+		<xs:attribute name="autoMaxWidth" type="xs:boolean"/>
+		<xs:attribute name="maxWidth" type="xs:decimal"/>
+		<xs:attribute name="minWidth" type="xs:decimal"/>
+		<xs:attribute name="autoMaxHeight" type="xs:boolean"/>
+		<xs:attribute name="maxHeight" type="xs:decimal"/>
+		<xs:attribute name="markNeg" type="tns:BWAValue"/>
+		<xs:attribute name="format" type="xs:string"/>
+		<xs:attribute name="hyper" type="xs:boolean"/>
+		<xs:attribute name="psw" type="tns:BWAValue"/>
+		<xs:attribute name="useCopy" type="tns:BWAValue"/>
+		<xs:attribute name="clearEvents" type="xs:boolean"/>
+	</xs:complexType>
+	<xs:complexType name="TrackBarFieldData">
+		<xs:sequence>
+			<xs:element name="brdClr" type="ns2:Color" minOccurs="0"/>
+		</xs:sequence>
+		<xs:attribute name="width" type="xs:decimal"/>
+		<xs:attribute name="height" type="xs:decimal"/>
+		<xs:attribute name="horStretch" type="xs:boolean"/>
+		<xs:attribute name="verStretch" type="xs:boolean"/>
+		<xs:attribute name="autoMaxWidth" type="xs:boolean"/>
+		<xs:attribute name="maxWidth" type="xs:decimal"/>
+		<xs:attribute name="minWidth" type="xs:decimal"/>
+		<xs:attribute name="autoMaxHeight" type="xs:boolean"/>
+		<xs:attribute name="maxHeight" type="xs:decimal"/>
+		<xs:attribute name="minVal" type="xs:decimal"/>
+		<xs:attribute name="maxVal" type="xs:decimal"/>
+		<xs:attribute name="step" type="xs:decimal"/>
+		<xs:attribute name="pageSize" type="xs:decimal"/>
+		<xs:attribute name="markingStep" type="xs:decimal"/>
+		<xs:attribute name="orientation" type="tns:FormElementOrientation"/>
+		<xs:attribute name="marking" type="tns:MarkingStyle"/>
+	</xs:complexType>
+	<xs:complexType name="UsualGroupData">
+		<xs:sequence>
+			<xs:element name="backPic" type="ns2:Picture" minOccurs="0"/>
+			<xs:element name="prop" type="tns:DataPath" minOccurs="0"/>
+			<xs:element name="propName" type="xs:string" minOccurs="0"/>
+			<xs:element name="tdp" type="ns1:TypeDescription" minOccurs="0"/>
+			<xs:element name="bkClr" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="hiddenStateTitleBkClr" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="event" type="tns:Event" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+		<xs:attribute name="grouping" type="tns:FormChildrenGroup"/>
+		<xs:attribute name="align" type="tns:FormChildrenAlign"/>
+		<xs:attribute name="horizontalSpacing" type="tns:FormItemSpacing"/>
+		<xs:attribute name="verticalSpacing" type="tns:FormItemSpacing"/>
+		<xs:attribute name="hAlign" type="tns:ItemHorizontalAlignment"/>
+		<xs:attribute name="vAlign" type="tns:ItemVerticalAlignment"/>
+		<xs:attribute name="childrenWidth" type="tns:FormChildrenWidth"/>
+		<xs:attribute name="childrenTitleLocation" type="tns:ChildrenTitleLocation"/>
+		<xs:attribute name="repres" type="tns:UsualGroupRepresentation"/>
+		<xs:attribute name="bhv" type="tns:UsualGroupBehavior"/>
+		<xs:attribute name="mngRepres" type="tns:UsualGroupControlRepresentation"/>
+		<xs:attribute name="throughAlign" type="tns:UsualGroupThroughAlign"/>
+		<xs:attribute name="showTitle" type="tns:BWAValue"/>
+		<xs:attribute name="collapsed" type="xs:boolean"/>
+		<xs:attribute name="leftMargin" type="xs:boolean"/>
+		<xs:attribute name="united" type="xs:boolean"/>
+		<xs:attribute name="format" type="xs:string"/>
+		<xs:attribute name="clsTitle" type="xs:string"/>
+		<xs:attribute name="collapsedRepresentationItemId" type="xs:decimal"/>
+		<xs:attribute name="currentRowUse" type="tns:CurrentRowUse"/>
+		<xs:attribute name="associatedTableElementId" type="xs:decimal"/>
+		<xs:attribute name="showAsCard" type="xs:boolean"/>
+		<xs:attribute name="backPictRepresEffect" type="tns:PictureRepresentationEffect"/>
+		<xs:attribute name="cardRepresType" type="tns:CardRepresentationType"/>
+		<xs:attribute name="hyperlink" type="xs:boolean"/>
+		<xs:attribute name="scrollOnCompress" type="tns:BWAValue"/>
+		<xs:attribute name="clearEvents" type="xs:boolean"/>
+	</xs:complexType>
+	<xs:complexType name="ViewStatusData">
+		<xs:sequence>
+			<xs:element name="bkClr" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="btnClr" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="txtClr" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="titleTxtClr" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="brdClr" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="fnt" type="ns2:Font" minOccurs="0"/>
+			<xs:element name="titleFnt" type="ns2:Font" minOccurs="0"/>
+			<xs:element name="brd" type="ns2:Border" minOccurs="0"/>
+			<xs:element name="event" type="tns:Event" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+		<xs:attribute name="width" type="xs:decimal"/>
+		<xs:attribute name="autoMaxWidth" type="xs:boolean"/>
+		<xs:attribute name="maxWidth" type="xs:decimal"/>
+		<xs:attribute name="minWidth" type="xs:decimal"/>
+		<xs:attribute name="horStretch" type="tns:BWAValue"/>
+		<xs:attribute name="hAlign" type="tns:ItemHorizontalAlignment"/>
+	</xs:complexType>
+</xs:schema>

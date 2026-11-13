@@ -1,0 +1,66 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:ns1="http://v8.1c.ru/8.1/data-composition-system/settings" xmlns:tns="http://v8.1c.ru/8.1/data-composition-system/details" xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="http://v8.1c.ru/8.1/data-composition-system/details" attributeFormDefault="unqualified" elementFormDefault="qualified">
+	<xs:import namespace="http://v8.1c.ru/8.1/data-composition-system/settings"/>
+	<xs:element name="detailsInformation" type="tns:DetailsInformation"/>
+	<xs:simpleType name="DataCompositionDetailsProcessingAction">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="None"/>
+			<xs:enumeration value="DrillDown"/>
+			<xs:enumeration value="Filter"/>
+			<xs:enumeration value="Order"/>
+			<xs:enumeration value="Group"/>
+			<xs:enumeration value="OpenValue"/>
+			<xs:enumeration value="ApplyAppearance"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="DetailsID">
+		<xs:restriction base="xs:decimal"/>
+	</xs:simpleType>
+	<xs:complexType name="DetailsInformation">
+		<xs:sequence>
+			<xs:element name="detailsInformationKey" type="xs:string" minOccurs="0"/>
+			<xs:element name="itemsCount" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="settings" type="ns1:Settings" minOccurs="0"/>
+			<xs:element name="item" type="tns:DetailsItem" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="DetailsItem" abstract="true">
+		<xs:sequence>
+			<xs:element name="ID" type="tns:DetailsID"/>
+			<xs:element name="parentID" type="tns:DetailsID" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="DetailsItemFields">
+		<xs:complexContent>
+			<xs:extension base="tns:DetailsItem">
+				<xs:sequence>
+					<xs:element name="fieldValue" type="tns:FieldValue" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="mainAction" type="tns:DataCompositionDetailsProcessingAction" minOccurs="0"/>
+				</xs:sequence>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="DetailsItemGroup">
+		<xs:complexContent>
+			<xs:extension base="tns:DetailsItem">
+				<xs:sequence>
+					<xs:element name="group" type="xs:string"/>
+				</xs:sequence>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="DetailsProcessDescription">
+		<xs:sequence>
+			<xs:element name="data" type="xs:string"/>
+			<xs:element name="ID" type="tns:DetailsID" maxOccurs="unbounded"/>
+			<xs:element name="settingsToApply" type="ns1:Settings"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="FieldValue">
+		<xs:sequence>
+			<xs:element name="field" type="xs:string"/>
+			<xs:element name="value" nillable="true" minOccurs="0"/>
+			<xs:element name="hierarchy" type="xs:boolean" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+</xs:schema>
