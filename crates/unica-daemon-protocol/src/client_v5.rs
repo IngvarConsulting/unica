@@ -76,6 +76,7 @@ const OWNER_RESPONSE_SAFETY_TIMEOUT: Duration = Duration::from_secs(10);
 // problem: Под нагрузкой (две сборки на восьми ядрах) запуск отладочного демона не укладывался в 5 с срока подключения, и клиент дизайнера не поднимался вовсе.
 // on-reach: ошибка «the Unica daemon did not become ready within … s (<стадия>), most likely because the machine is busy; start again»
 // issue: #2969
+// evidence: Замер 13.11.2026, Windows 11, 8 логических ядер, от вызова connect_or_spawn до ответа ready (по 10 подъёмов, медиана / максимум): почти простой (загрузка ЦП 15–53 %) — отладочная сборка 0,73 / 0,86 с, сборка разработки d86dbe76 0,54 / 0,58 с; две проверки перед ready других сессий — 1,42 / 1,75 и 1,08 / 1,55 с; два прогона тестов unica-daemon — 1,63 / 2,11 и 1,72 / 2,69 с; сборка плюс прогон тестов — 3,56 / 4,87 и 1,71 / 2,57 с. Срок 30 с — около шести худших замеров: он сдерживает только зависший запуск, а упавший демон отвечает сразу.
 const STARTUP_READINESS_TIMEOUT: Duration = Duration::from_millis(30000);
 // resource-limit: daemon.startup-cleanup-timeout
 // class: deadline
