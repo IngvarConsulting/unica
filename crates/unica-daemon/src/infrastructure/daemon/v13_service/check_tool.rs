@@ -364,6 +364,16 @@ impl CanonicalV13ReadService {
 
 /// The root properties of `Configuration.xml` sit before its child objects;
 /// this prefix holds them in every export the corpora have.
+// resource-limit: check.root-properties-prefix-bytes
+// class: format
+// unit: bytes
+// scope: file
+// value: 65536
+// resource: Начало Configuration.xml соседнего набора, в котором unica.check ищет режим совместимости корня.
+// status: unproven
+// origin: #2730
+// problem: неизвестно
+// on-reach: режим не найден — предупреждения о режиме расширения выше основы нет; проверка не отказывает
 const ROOT_PROPERTIES_PREFIX_BYTES: usize = 64 * 1024;
 
 /// The text of `<tag>` in the root prefix of a set, if it is there.
