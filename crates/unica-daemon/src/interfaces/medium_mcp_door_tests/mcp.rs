@@ -3826,3 +3826,119 @@ async fn a_push_into_another_copys_base_runs_by_the_persons_choice() {
     client.shutdown().await;
     daemon.finish();
 }
+
+/// The pinned runner of a workspace whose file infobase another working copy
+/// holds, and which declares and creates an infobase of its own. Every call is
+/// logged.
+const ANOTHER_COPY_RUNNER: &str = r##"
+use std::{env, fs, io::Write};
+fn main() {
+    let args: Vec<String> = env::args().collect();
+    let cwd = env::current_dir().unwrap();
+    let mut log = fs::OpenOptions::new().create(true).append(true).open(cwd.join("probe-calls.log")).unwrap();
+    writeln!(log, "{}", args[1..].join(" ")).unwrap();
+    let has = |key: &str| args.iter().any(|arg| arg == key);
+    let answer = if has("init") {
+        "probe-init.json"
+    } else if has("create") && has("--dry-run") && cwd.join("created.marker").exists() {
+        print!("{}", fs::read_to_string(cwd.join("probe-create-receipt.json")).unwrap());
+        std::process::exit(2);
+    } else if has("create") && has("--dry-run") {
+        "probe-create-preview.json"
+    } else if has("create") {
+        fs::write(cwd.join("created.marker"), "").unwrap();
+        "probe-create-apply.json"
+    } else if has("push") && has("--dry-run") {
+        "probe-push-preview.json"
+    } else {
+        std::process::exit(9);
+    };
+    print!("{}", fs::read_to_string(cwd.join(answer)).unwrap());
+}
+"##;
+
+fn another_copy_workspace(root: &std::path::Path) -> std::path::PathBuf {
+    crate::infrastructure::daemon::server::actor_capacity_tests::install_runner_probe(
+        root,
+        ANOTHER_COPY_RUNNER,
+    );
+    let workspace = root.join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    std::fs::write(
+        workspace.join("v8project.yaml"),
+        "format: DESIGNER\ninfobase:\n  connection: 'File=../other/ib'\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: main\n",
+    )
+    .unwrap();
+    let fixtures =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/v8_runner_015");
+    for (from, to) in [
+        (
+            "push-other-copy-force-preview.json",
+            "probe-push-preview.json",
+        ),
+        ("infobase-create-preview.json", "probe-create-preview.json"),
+        ("infobase-create-apply.json", "probe-create-apply.json"),
+        (
+            "infobase-create-receipt-preview.json",
+            "probe-create-receipt.json",
+        ),
+    ] {
+        std::fs::copy(fixtures.join(from), workspace.join(to)).unwrap();
+    }
+    std::fs::write(
+        workspace.join("probe-init.json"),
+        json!({"ok": true, "command": "init", "data": {"kind": "local",
+            "origin": {"change": "redirected", "connection": "File=.local/db"}}})
+        .to_string(),
+    )
+    .unwrap();
+    std::fs::canonicalize(workspace).unwrap()
+}
+
+/// «Создать свою базу» answers the question about the infobase of another
+/// copy: the runner declares this copy's own infobase and it is created; the
+/// push itself is not repeated, and the infobase of the other copy is not
+/// written.
+/// rule: INV.RUNTIME.RUNNER-BASE-REFUSALS
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_person_gives_this_copy_an_infobase_of_its_own() {
+    use crate::infrastructure::daemon::server::actor_capacity_tests::canonical_v13_service;
+
+    let root = tempfile::tempdir().unwrap();
+    let workspace = another_copy_workspace(root.path());
+    let daemon = LiveDaemon::start(canonical_v13_service());
+    let mut client = forms_client(&daemon, &workspace).await;
+
+    let (asked, done) = push_and_answer(&mut client, "own_base").await;
+    assert_eq!(
+        asked["params"]["_meta"]["unica/question"]["code"], "infobase.another_copy",
+        "{asked}"
+    );
+    let message = asked["params"]["message"].as_str().unwrap();
+    assert!(
+        message.contains("Создать свою базу: эта копия получит новую базу из своих исходников; база другой копии не изменится"),
+        "{message}"
+    );
+    let structured = &done["result"]["structuredContent"];
+    assert_eq!(structured["ok"], true, "{done}");
+    assert_eq!(structured["data"]["ownInfobaseDeclared"], true, "{done}");
+    let calls = runner_calls(&workspace);
+    assert!(calls[0].ends_with("push main --dry-run"), "{calls:?}");
+    assert!(
+        calls[1].ends_with("--infobase File=.local/db") && calls[1].contains("init --output"),
+        "{calls:?}"
+    );
+    assert!(
+        calls[2..]
+            .iter()
+            .all(|call| call.contains("infobase create")),
+        "{calls:?}"
+    );
+    assert!(
+        !calls.iter().any(|call| call.ends_with("push main")),
+        "{calls:?}"
+    );
+
+    client.shutdown().await;
+    daemon.finish();
+}

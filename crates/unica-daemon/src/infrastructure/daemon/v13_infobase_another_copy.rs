@@ -18,6 +18,10 @@ use unica_refusal::RefusalCode;
 const CODE: &str = "infobase.another_copy";
 const RUN_TOOL: &str = "unica.run";
 const CONTINUE: &str = "continue";
+const OWN_BASE: &str = "own_base";
+/// Ключ отметки «создать свою базу»: не зависит от текста вопроса.
+const OWN_BASE_KEY: &str =
+    "infobase another copy: declare and create an infobase of this working copy's own";
 
 fn question() -> String {
     format!("Базу «{INFOBASE_NAME}» изменяла другая рабочая копия проекта.")
@@ -59,8 +63,42 @@ pub(super) fn refusal_for(
     )
     .with_data(json!({"infobase": INFOBASE_NAME}));
     choice.options[0].id = CONTINUE.to_string();
+    choice.options.push(own_base_option());
     rejection.human_choice = Some(Box::new(choice));
     Some(rejection)
+}
+
+/// «Создать свою базу»: `infobase.create` с отметкой ответа человека. Исходный
+/// вызов не повторяется: создание — фоновая задача, и цепочка двери её не ждёт.
+fn own_base_option() -> unica_execution_contract::invocation::HumanChoiceOption {
+    let create = json!({"op": super::v13_infobase_create::OPERATION, "args": {}, "dryRun": false});
+    let mut option = HumanChoice::confirmation(
+        "",
+        OWN_BASE_KEY,
+        "Создать свою базу",
+        "эта копия получит новую базу из своих исходников; база другой копии не изменится",
+        RUN_TOOL,
+        create.as_object().expect("an object"),
+    )
+    .options
+    .remove(0);
+    option.id = OWN_BASE.to_string();
+    option
+}
+
+/// Вызов `infobase.create` несёт выбор человека «Создать свою базу».
+pub(super) fn declares_own_base(call: &Map<String, Value>) -> bool {
+    HumanChoice::is_confirmed(OWN_BASE_KEY, RUN_TOOL, call)
+}
+
+/// The call with the person's consent to write into the infobase of another
+/// copy, as the door sets it from the answer: for tests of what follows it.
+#[cfg(test)]
+pub(super) fn with_consent(call: &Map<String, Value>) -> Map<String, Value> {
+    HumanChoice::confirmation(CODE, question(), "", "", RUN_TOOL, call)
+        .options
+        .remove(0)
+        .arguments
 }
 
 #[cfg(test)]
@@ -101,6 +139,18 @@ mod tests {
             choice.options[0].description,
             "правки другой копии могут быть перезаписаны"
         );
+        assert_eq!(choice.options.len(), 2);
+        let own = &choice.options[1];
+        assert_eq!(own.id, "own_base");
+        assert_eq!(own.title, "Создать свою базу");
+        assert_eq!(
+            own.description,
+            "эта копия получит новую базу из своих исходников; база другой копии не изменится"
+        );
+        assert_eq!(own.arguments["op"], "infobase.create");
+        assert_eq!(own.arguments["dryRun"], false);
+        assert!(declares_own_base(&own.arguments));
+        assert!(!declares_own_base(&choice.options[0].arguments));
         assert!(!consented(&call()));
         assert!(consented(&choice.options[0].arguments));
         assert!(refused
@@ -110,14 +160,4 @@ mod tests {
 
         assert!(refusal_for("push", &json!({"ok": true, "warnings": []}), &call()).is_none());
     }
-}
-
-/// The call with the person's consent to write into the infobase of another
-/// copy, as the door sets it from the answer: for tests of what follows it.
-#[cfg(test)]
-pub(super) fn with_consent(call: &Map<String, Value>) -> Map<String, Value> {
-    HumanChoice::confirmation(CODE, question(), "", "", RUN_TOOL, call)
-        .options
-        .remove(0)
-        .arguments
 }
