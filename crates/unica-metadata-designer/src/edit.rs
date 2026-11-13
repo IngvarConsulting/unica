@@ -4487,17 +4487,6 @@ mod export_format_tests {
 
     const MD: &str = "http://v8.1c.ru/8.3/MDClasses";
 
-    macro_rules! corpus {
-        ($version:literal, $path:literal) => {
-            include_str!(concat!(
-                "../../../tests/fixtures/formats/platform_xml/",
-                $version,
-                "/all_kinds/src/",
-                $path
-            ))
-        };
-    }
-
     fn document(xml: &str) -> roxmltree::Document<'_> {
         roxmltree::Document::parse(xml.trim_start_matches('\u{feff}')).unwrap()
     }
@@ -4557,15 +4546,15 @@ mod export_format_tests {
     #[test]
     fn a_new_enumeration_value_has_the_properties_of_its_set_format() {
         for corpus in [
-            corpus!("2.20", "Enums/СпособыУстановкиКурсаВалюты.xml"),
-            corpus!("2.21", "Enums/СпособыУстановкиКурсаВалюты.xml"),
-            corpus!("2.22", "Enums/СпособыУстановкиКурсаВалюты.xml"),
+            include_str!("../../../tests/fixtures/formats/platform_xml/2.20/all_kinds/src/Enums/СпособыУстановкиКурсаВалюты.xml"),
+            include_str!("../../../tests/fixtures/formats/platform_xml/2.21/all_kinds/src/Enums/СпособыУстановкиКурсаВалюты.xml"),
+            include_str!("../../../tests/fixtures/formats/platform_xml/2.22/all_kinds/src/Enums/СпособыУстановкиКурсаВалюты.xml"),
         ] {
             let values = enum_value_properties(&add_enum_value(corpus));
             let (new, existing) = values.split_last().unwrap();
             assert_eq!(new, &existing[0], "{values:?}");
         }
-        let written = add_enum_value(corpus!("2.21", "Enums/СпособыУстановкиКурсаВалюты.xml"));
+        let written = add_enum_value(include_str!("../../../tests/fixtures/formats/platform_xml/2.21/all_kinds/src/Enums/СпособыУстановкиКурсаВалюты.xml"));
         assert!(written.contains(
             "\t\t\t\t\t<Comment/>\r\n\t\t\t\t\t<Color>auto</Color>\r\n\t\t\t\t</Properties>"
         ));
@@ -4575,9 +4564,9 @@ mod export_format_tests {
     #[test]
     fn a_new_object_declares_the_namespaces_of_its_set_format() {
         for (version, corpus) in [
-            ("2.20", corpus!("2.20", "Catalogs/Валюты.xml")),
-            ("2.21", corpus!("2.21", "Catalogs/Валюты.xml")),
-            ("2.22", corpus!("2.22", "Catalogs/Валюты.xml")),
+            ("2.20", include_str!("../../../tests/fixtures/formats/platform_xml/2.20/all_kinds/src/Catalogs/Валюты.xml")),
+            ("2.21", include_str!("../../../tests/fixtures/formats/platform_xml/2.21/all_kinds/src/Catalogs/Валюты.xml")),
+            ("2.22", include_str!("../../../tests/fixtures/formats/platform_xml/2.22/all_kinds/src/Catalogs/Валюты.xml")),
         ] {
             let context = crate::template_catalog::MinimalTemplateContext::<()> {
                 chart_of_accounts: None,
@@ -4663,9 +4652,9 @@ mod export_format_tests {
     #[test]
     fn a_form_added_to_an_object_has_the_properties_of_its_set_format() {
         for (corpus, mode) in [
-            (corpus!("2.20", "Catalogs/Валюты.xml"), None),
-            (corpus!("2.21", "Catalogs/Валюты.xml"), Some("Any")),
-            (corpus!("2.22", "Catalogs/Валюты.xml"), Some("Any")),
+            (include_str!("../../../tests/fixtures/formats/platform_xml/2.20/all_kinds/src/Catalogs/Валюты.xml"), None),
+            (include_str!("../../../tests/fixtures/formats/platform_xml/2.21/all_kinds/src/Catalogs/Валюты.xml"), Some("Any")),
+            (include_str!("../../../tests/fixtures/formats/platform_xml/2.22/all_kinds/src/Catalogs/Валюты.xml"), Some("Any")),
         ] {
             let mut xml = corpus.trim_start_matches('\u{feff}').to_owned();
             let element = MetaElementDefinition {

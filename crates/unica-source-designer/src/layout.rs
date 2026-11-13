@@ -458,17 +458,6 @@ pub fn role_read_layout(rights_path: &Path) -> RoleReadLayout {
 mod format_namespace_tests {
     use super::declare_format_namespaces;
 
-    macro_rules! corpus {
-        ($version:literal, $path:literal) => {
-            include_str!(concat!(
-                "../../../tests/fixtures/formats/platform_xml/",
-                $version,
-                "/all_kinds/src/",
-                $path
-            ))
-        };
-    }
-
     fn root_start_tag(document: &str) -> &str {
         let (start, end) = super::root_start_tag(document).expect("a root");
         &document[start..end]
@@ -482,26 +471,20 @@ mod format_namespace_tests {
         // version is what a writer of 2.21 starts from.
         for (older, newer) in [
             (
-                corpus!("2.20", "Catalogs/Валюты.xml"),
-                corpus!("2.21", "Catalogs/Валюты.xml"),
+                include_str!("../../../tests/fixtures/formats/platform_xml/2.20/all_kinds/src/Catalogs/Валюты.xml"),
+                include_str!("../../../tests/fixtures/formats/platform_xml/2.21/all_kinds/src/Catalogs/Валюты.xml"),
             ),
             (
-                corpus!("2.20", "Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml"),
-                corpus!("2.21", "Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml"),
+                include_str!("../../../tests/fixtures/formats/platform_xml/2.20/all_kinds/src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml"),
+                include_str!("../../../tests/fixtures/formats/platform_xml/2.21/all_kinds/src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml"),
             ),
             (
-                corpus!(
-                    "2.20",
-                    "DataProcessors/Обработка/Templates/Макет/Ext/Template.xml"
-                ),
-                corpus!(
-                    "2.21",
-                    "DataProcessors/Обработка/Templates/Макет/Ext/Template.xml"
-                ),
+                include_str!("../../../tests/fixtures/formats/platform_xml/2.20/all_kinds/src/DataProcessors/Обработка/Templates/Макет/Ext/Template.xml"),
+                include_str!("../../../tests/fixtures/formats/platform_xml/2.21/all_kinds/src/DataProcessors/Обработка/Templates/Макет/Ext/Template.xml"),
             ),
             (
-                corpus!("2.20", "BusinessProcesses/Approval/Ext/Flowchart.xml"),
-                corpus!("2.21", "BusinessProcesses/Approval/Ext/Flowchart.xml"),
+                include_str!("../../../tests/fixtures/formats/platform_xml/2.20/all_kinds/src/BusinessProcesses/Approval/Ext/Flowchart.xml"),
+                include_str!("../../../tests/fixtures/formats/platform_xml/2.21/all_kinds/src/BusinessProcesses/Approval/Ext/Flowchart.xml"),
             ),
         ] {
             let seed = older.replace("version=\"2.20\"", "version=\"2.21\"");
