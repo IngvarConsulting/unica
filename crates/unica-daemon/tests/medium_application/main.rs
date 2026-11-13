@@ -1743,8 +1743,8 @@ fn bot_configuration_xml(include_bot: bool) -> String {
         concat!(
             "\t\t\t<Language>Русский</Language>\n",
             "\t\t\t<CommonModule>Core</CommonModule>\n",
-            "\t\t\t<Bot>Assistant</Bot>\n",
-            "\t\t\t<CommonAttribute>Shared</CommonAttribute>"
+            "\t\t\t<CommonAttribute>Shared</CommonAttribute>\n",
+            "\t\t\t<Bot>Assistant</Bot>"
         )
     } else {
         concat!(
@@ -1809,15 +1809,12 @@ fn cf_edit_adds_removes_and_noops_bot_through_registry() {
         .unwrap();
     assert!(add.ok, "{add:?}");
     let after_add = std::fs::read_to_string(&config_path).unwrap();
+    // The platform writes Bot after DefinedType, so after CommonAttribute.
     assert!(
-        after_add.find("<CommonModule>Core</CommonModule>").unwrap()
+        after_add
+            .find("<CommonAttribute>Shared</CommonAttribute>")
+            .unwrap()
             < after_add.find("<Bot>Assistant</Bot>").unwrap()
-    );
-    assert!(
-        after_add.find("<Bot>Assistant</Bot>").unwrap()
-            < after_add
-                .find("<CommonAttribute>Shared</CommonAttribute>")
-                .unwrap()
     );
 
     let duplicate = application()
