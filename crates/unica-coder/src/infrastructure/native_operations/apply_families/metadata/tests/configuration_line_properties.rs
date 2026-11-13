@@ -354,3 +354,104 @@ fn a_report_of_line_8_3_27_refuses_an_auxiliary_variant_form() {
         "Property `AuxiliaryVariantForm` exists from platform 8.5.1 (format 2.21); source set `main` is in format 2.20 (platform 8.3.27)."
     );
 }
+
+/// An extension root of 8.5.4 sets what it does when the configuration lacks
+/// one of its objects, how it checks extended properties and reduces types;
+/// a composite property changes only the parts given.
+/// rule: INV.SOURCE.PROFILE-CAPABILITIES
+#[test]
+fn an_extension_of_line_8_5_4_sets_its_root_actions() {
+    let fixture = extension_fixture(
+        "../../tests/fixtures/formats/platform_xml/2.22/empty_extension/ext",
+        PlatformLine::new(8, 5, 4),
+    );
+    let staged = plan_all(
+        &fixture,
+        &[(
+            "props.set",
+            json!({"at":"main:Configuration","values":{
+                "ActionOnConfigurationObjectMissing":"Warning",
+                "defaultExtensionPropertyCheckAction":"Ignore",
+                "TypeReductionByConfigurationExtensionMode":"DeleteData",
+                "ActionOnExtendedConfigurationObjectsMissing":{
+                    "AdoptedObject":"Warning","checkedObject":"Auto"
+                },
+            }}),
+        )],
+    )
+    .unwrap();
+    let text = &staged_texts(&staged)[Path::new("Configuration.xml")];
+    for element in [
+        "<ActionOnConfigurationObjectMissing>Warning</ActionOnConfigurationObjectMissing>",
+        "<DefaultExtensionPropertyCheckAction>Ignore</DefaultExtensionPropertyCheckAction>",
+        "<TypeReductionByConfigurationExtensionMode>DeleteData</TypeReductionByConfigurationExtensionMode>",
+        "<xr:AdoptedObject>Warning</xr:AdoptedObject>",
+        "<xr:NotifiedObject>Error</xr:NotifiedObject>",
+        "<xr:CheckedObject>Auto</xr:CheckedObject>",
+        "<xr:ExtendedObject>Error</xr:ExtendedObject>",
+    ] {
+        assert!(text.contains(element), "{element}");
+    }
+}
+
+/// An extension root of an earlier line refuses the actions 8.5.4 adds, and
+/// a composite value names only its own parts and values.
+/// rule: INV.SOURCE.PROFILE-CAPABILITIES
+#[test]
+fn an_extension_refuses_root_actions_its_line_lacks_or_does_not_name() {
+    let fixture = extension_fixture(
+        "../../tests/fixtures/formats/platform_xml/2.21/empty_extension/ext",
+        PlatformLine::new(8, 5, 1),
+    );
+    let error = parse_metadata_plan_operation(
+        "props.set",
+        &json!({"at":"main:Configuration","values":{
+            "ActionOnExtendedConfigurationObjectsMissing":{"AdoptedObject":"Warning"}
+        }}),
+        0,
+        &fixture.binding,
+    )
+    .unwrap_err();
+    assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue);
+    assert_eq!(
+        error.to_string(),
+        "Property `ActionOnExtendedConfigurationObjectsMissing` exists from platform 8.5.4 (format 2.22); source set `main` is in format 2.21 (platform 8.5.1)."
+    );
+    let fixture = extension_fixture(
+        "../../tests/fixtures/formats/platform_xml/2.22/empty_extension/ext",
+        PlatformLine::new(8, 5, 4),
+    );
+    for values in [
+        json!({"ActionOnExtendedConfigurationObjectsMissing":{"ExtendDataObject":"Error"}}),
+        json!({"ActionOnExtendedConfigurationObjectsMissing":{"AdoptedObject":"Deny"}}),
+        json!({"ActionOnExtendedConfigurationObjectsMissing":{}}),
+        json!({"TypeReductionByConfigurationExtensionMode":"Auto"}),
+    ] {
+        let error = parse_metadata_plan_operation(
+            "props.set",
+            &json!({"at":"main:Configuration","values":values}),
+            0,
+            &fixture.binding,
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue, "{values}");
+    }
+}
+
+/// A configuration root of 8.5.4 has none of the extension root actions.
+/// rule: INV.SOURCE.PROFILE-CAPABILITIES
+#[test]
+fn a_configuration_of_line_8_5_4_has_no_extension_root_actions() {
+    let fixture = fixture(
+        "../../tests/fixtures/formats/platform_xml/2.22/all_kinds/src",
+        PlatformLine::new(8, 5, 4),
+    );
+    let error = parse_metadata_plan_operation(
+        "props.set",
+        &json!({"at":"main:Configuration","values":{"ActionOnConfigurationObjectMissing":"Warning"}}),
+        0,
+        &fixture.binding,
+    )
+    .unwrap_err();
+    assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue);
+}

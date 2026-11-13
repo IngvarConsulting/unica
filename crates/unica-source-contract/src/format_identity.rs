@@ -292,6 +292,29 @@ const CONFIGURATION_ROOT_LINE_ADDITIONS: &[(&str, Option<&str>, PlatformLine)] =
         Some("Version8_5"),
         PlatformLine::new(8, 5, 1),
     ),
+    // The extension root of 8.5.4 (`2.22/empty_extension`): what the extension
+    // does when the configuration lacks one of its objects, how it checks the
+    // extended properties and reduces types.
+    (
+        "ActionOnConfigurationObjectMissing",
+        None,
+        PlatformLine::new(8, 5, 4),
+    ),
+    (
+        "DefaultExtensionPropertyCheckAction",
+        None,
+        PlatformLine::new(8, 5, 4),
+    ),
+    (
+        "TypeReductionByConfigurationExtensionMode",
+        None,
+        PlatformLine::new(8, 5, 4),
+    ),
+    (
+        "ActionOnExtendedConfigurationObjectsMissing",
+        None,
+        PlatformLine::new(8, 5, 4),
+    ),
     // The modes of the line itself: 8.5.1 refuses to load `Version8_5_4`
     // ("необходима версия платформы не меньше, чем 8.5.4"). The Designer of
     // 8.5.1 lists the modes up to 8.3.27, but the platform loads and exports

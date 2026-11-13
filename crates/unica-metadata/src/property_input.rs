@@ -30,6 +30,8 @@ pub struct SubsystemPropertyChanges {
 pub enum DescriptorPropertyValue {
     Text(String),
     Boolean(bool),
+    /// The parts given, each by its platform name, in the platform order.
+    Parts(Vec<(&'static str, String)>),
 }
 
 /// Root property changes in profile order; each property appears once.
@@ -253,6 +255,74 @@ impl<'a> PropertyArgumentReader<'a> {
                 }
             })
             .transpose()
+    }
+
+    fn parts(
+        &mut self,
+        field: DescriptorProperty,
+        allowed: &[&str],
+    ) -> DecodeResult<Option<Vec<(&'static str, String)>>> {
+        if field.kind() != DescriptorPropertyKind::Parts {
+            return Err(invalid(
+                &self.path,
+                "property kind disagrees with its parts decoder",
+            ));
+        }
+        let Some((value, path)) = self.alias(field)? else {
+            return Ok(None);
+        };
+        let object = value
+            .as_object()
+            .ok_or_else(|| invalid(&path, "property value must be an object"))?;
+        for name in object.keys() {
+            if !field.parts().iter().flatten().any(|part| part == name) {
+                return Err(invalid(
+                    format!("{path}.{name}"),
+                    format!("unknown part `{name}` of `{}`", field.names()[0]),
+                ));
+            }
+        }
+        let mut parts = Vec::new();
+        for names in field.parts() {
+            let given = names
+                .iter()
+                .filter_map(|name| object.get(*name).map(|value| (*name, value)))
+                .collect::<Vec<_>>();
+            match given.as_slice() {
+                [] => {}
+                [(name, value)] => {
+                    let part_path = format!("{path}.{name}");
+                    let value = value
+                        .as_str()
+                        .ok_or_else(|| invalid(&part_path, "part value must be a string"))?;
+                    if !allowed.contains(&value) {
+                        return Err(invalid(
+                            part_path,
+                            format!(
+                                "`{value}` is not a value of `{}.{}`; expected one of: {}",
+                                field.names()[0],
+                                names[0],
+                                allowed.join(", ")
+                            ),
+                        ));
+                    }
+                    parts.push((names[0], value.to_string()));
+                }
+                _ => {
+                    return Err(invalid(
+                        format!("{path}.{}", names[1]),
+                        format!(
+                            "part `{}` takes one spelling; choose either `{}` or `{}`",
+                            names[0], names[0], names[1]
+                        ),
+                    ))
+                }
+            }
+        }
+        if parts.is_empty() {
+            return Err(invalid(path, "name at least one part"));
+        }
+        Ok(Some(parts))
     }
 
     fn finish<T>(self, decoded: T) -> DecodeResult<T> {
@@ -530,6 +600,9 @@ fn decode_with_contract(
                             DescriptorPropertyKind::Boolean => values_reader
                                 .boolean(field)?
                                 .map(DescriptorPropertyValue::Boolean),
+                            DescriptorPropertyKind::Parts => values_reader
+                                .parts(field, &field.allowed_values_in(line))?
+                                .map(DescriptorPropertyValue::Parts),
                         };
                         if let Some(value) = value {
                             changes.push((field, value));
@@ -785,6 +858,9 @@ mod tests {
                         DescriptorPropertyKind::String => json!(""),
                         DescriptorPropertyKind::Boolean => json!(false),
                         DescriptorPropertyKind::Enum => json!(field.allowed_values()[0]),
+                        DescriptorPropertyKind::Parts => {
+                            json!({field.parts()[0][0]: field.allowed_values()[0]})
+                        }
                     };
                     assert!(
                         decode(site, json!({"values":{*spelling:value}})).is_ok(),
@@ -816,6 +892,9 @@ mod tests {
                         DescriptorPropertyKind::String => json!("value"),
                         DescriptorPropertyKind::Boolean => json!(true),
                         DescriptorPropertyKind::Enum => json!(field.allowed_values()[0]),
+                        DescriptorPropertyKind::Parts => {
+                            json!({field.parts()[0][0]: field.allowed_values()[0]})
+                        }
                     };
                     let other = if equal { value.clone() } else { json!(false) };
                     let error = decode(site, json!({"values":{names[0]:value,names[1]:other}}))
@@ -828,6 +907,7 @@ mod tests {
                         DescriptorPropertyKind::String => json!(false),
                         DescriptorPropertyKind::Boolean => json!("false"),
                         DescriptorPropertyKind::Enum => json!("NotAPlatformValue"),
+                        DescriptorPropertyKind::Parts => json!("Error"),
                     };
                     assert_eq!(
                         decode(site, json!({"values":{*spelling:invalid}}))
