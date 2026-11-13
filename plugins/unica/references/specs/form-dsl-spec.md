@@ -31,13 +31,15 @@
 |------|-----|----------|
 | `title` | string | Заголовок формы (необязательный) |
 | `properties` | object | Свойства формы (необязательный) |
-| `excludedCommands` | string[] | Исключённые стандартные команды (необязательный) |
-| `mobileCommandBarContent` | string[] | Состав командной панели моб. устройства — список имён командных панелей/кнопок (`<MobileDeviceCommandBarContent>`). Константы (Presentation/CheckState=0/xs:string) ставит компилятор |
+| `excludedCommands` | string[] | Исключённые стандартные команды. Компиляция этот ключ не пишет и отвергает |
+| `mobileCommandBarContent` | string[] | Состав командной панели моб. устройства — список имён командных панелей/кнопок (`<MobileDeviceCommandBarContent>`). Компиляция этот ключ не пишет и отвергает |
 | `events` | object | Обработчики событий формы (необязательный) |
 | `elements` | array | Дерево UI-элементов (необязательный) |
 | `attributes` | array | Реквизиты формы (необязательный) |
 | `parameters` | array | Параметры формы (необязательный) |
 | `commands` | array | Команды формы (необязательный) |
+
+Другой ключ верхнего уровня компиляция отвергает как неизвестный и называет его в отказе.
 
 ---
 
@@ -398,6 +400,12 @@ companion-панели с собственным контентом. Оба не
 > единственный эмитируемый формат — мапа `events`. Новые формы пишите через `events`.
 
 ### 4.3. Типы элементов
+
+Компиляция выпускает `group`, `input`, `check`, `label`, `labelField`, `table`,
+`pages`/`page`, `button`, `cmdBar`, `html` и `autoCmdBar`. Элемент вида `radio`,
+`picture`, `picField`, `calendar`, `columnGroup`, `popup`, `buttonGroup` и спец-полей
+(«документ/датчик» ниже) она отвергает и называет вид в отказе. Разделы этих видов
+описывают модель Form XML.
 
 #### group — UsualGroup
 
@@ -1169,7 +1177,8 @@ Shorthand: `"Имя [Заголовок]: тип = Выражение #noField #
 
 ## 7b. CommandInterface — командный интерфейс формы
 
-Форменный ключ `commandInterface` (XML `<CommandInterface>`, последний дочерний `<Form>`). Две панели:
+Форменный ключ `commandInterface` (XML `<CommandInterface>`, последний дочерний `<Form>`).
+Компиляция этот ключ не пишет и отвергает. Две панели:
 `commandBar` (командная панель) и `navigationPanel` (панель навигации). Платформа эмитит **только
 переопределения** авто-расстановки (видимость/положение), поэтому в списке лишь изменённые команды.
 
@@ -1210,6 +1219,7 @@ Shorthand: `"Имя [Заголовок]: тип = Выражение #noField #
 ## 7c. conditionalAppearance — условное оформление формы
 
 Форменный ключ `conditionalAppearance` (XML `<ConditionalAppearance>` — последний child `<Attributes>`).
+Компиляция этот ключ не пишет и отвергает.
 **Грамматика идентична `settings.conditionalAppearance` дин-списка** (DCS — см. §«order/filter/conditionalAppearance»):
 массив объектов `{ selection?, filter?, appearance?, presentation?, viewMode?, userSettingID?, use? }`.
 
