@@ -16,7 +16,6 @@ use unica_execution::invocation_store::ToolIdentity;
 // problem: неизвестно
 // on-reach: Отказ проверки запроса «canonical invocation response budget must be within 0..=7000 ms».
 // decision: закреплено правилом
-// decision-date: 2026-10-21
 // decision-source: arch/rules/runtime/invocation-handoff.md
 pub(crate) const MAX_TASK_WAIT_MS: u64 = 7_000;
 

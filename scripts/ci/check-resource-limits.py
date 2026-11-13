@@ -62,12 +62,10 @@ SCOPES = {
 STATUSES = {"unproven", "justified", "external"}
 ID = re.compile(r"^[a-z0-9]+(?:[.-][a-z0-9]+)*$")
 ISSUE = re.compile(r"^#[0-9]+$")
-DATE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
 # Поля блока в том порядке, в каком они пишутся; `evidence` повторяется.
 FIELDS = (
     "class", "unit", "scope", "value", "derived", "literal", "count", "expr", "resource", "status",
-    "origin", "problem", "on-reach", "issue", "evidence", "decision", "decision-date",
-    "decision-source", "review",
+    "origin", "problem", "on-reach", "issue", "evidence", "decision", "decision-source", "review",
 )
 REQUIRED = ("class", "unit", "scope", "resource", "status", "origin", "problem", "on-reach")
 # Происхождение или проблема, которых никто не знает, названы так прямо.
@@ -395,12 +393,10 @@ def field_errors(where: str, block: Block) -> tuple[dict, list[str]]:
     for name in ("value", "count"):
         if name in entry and not entry[name].isdigit():
             errors.append(f"{where}: {name} `{entry[name]}` is not a number")
-    decision = [name for name in ("decision", "decision-date", "decision-source") if name in entry]
-    if decision and len(decision) != 3:
-        errors.append(f"{where}: decision, decision-date and decision-source go together")
-    if "decision-date" in entry and not DATE.match(entry["decision-date"]):
-        errors.append(f"{where}: decision-date `{entry['decision-date']}` is not YYYY-MM-DD")
-    if entry.get("status") == "justified" and not (evidence and len(decision) == 3):
+    decision = [name for name in ("decision", "decision-source") if name in entry]
+    if decision and len(decision) != 2:
+        errors.append(f"{where}: decision and decision-source go together")
+    if entry.get("status") == "justified" and not (evidence and len(decision) == 2):
         errors.append(f"{where}: a justified limit names its evidence and decision")
     if entry.get("status") == "external" and entry.get("origin", UNKNOWN) == UNKNOWN:
         errors.append(f"{where}: an external limit names its origin")
@@ -423,8 +419,8 @@ def field_errors(where: str, block: Block) -> tuple[dict, list[str]]:
         "issue": entry.get("issue"),
         "evidence": evidence,
         "decision": (
-            {"date": entry["decision-date"], "text": entry["decision"], "source": entry["decision-source"]}
-            if len(decision) == 3 else None
+            {"text": entry["decision"], "source": entry["decision-source"]}
+            if len(decision) == 2 else None
         ),
         "review": entry.get("review"),
     }

@@ -158,7 +158,6 @@ const CUTOFF_HANDOFF_COMMIT_BUDGET: Duration = TASK_RECONCILIATION_BUDGET;
 // problem: Короткий бюджет вызывающего не должен объявлять начатую запись неопределённой и переводить демон в fail-stop.
 // on-reach: шаг хранилища продолжается до этого срока; короткий бюджет ограничивает только ожидание ответа
 // decision: закреплено правилом
-// decision-date: 2026-10-12
 // decision-source: arch/rules/runtime/receipt-store-fail-stop.md
 pub const DURABLE_STEP_BUDGET: Duration = TASK_RECONCILIATION_BUDGET;
 
@@ -212,7 +211,6 @@ const RETIREMENT_RETRY_INITIAL_DELAY_MS: u64 = 60_000;
 // problem: Неочищаемая запись должна стоить одну попытку за паузу, а не одну за каждый опрос.
 // on-reach: пауза перестаёт удваиваться; попытки продолжаются без ограничения числа
 // decision: закреплено правилом
-// decision-date: 2026-10-07
 // decision-source: arch/rules/runtime/task-retirement.md
 const RETIREMENT_RETRY_MAX_DELAY_MS: u64 = 3_600_000;
 

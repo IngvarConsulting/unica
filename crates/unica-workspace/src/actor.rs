@@ -119,7 +119,6 @@ fn run_apply_dry_run_after_confirmation_hook() {
 // problem: неизвестно
 // on-reach: актор без живого вызова и обещанного состояния освобождается, следующий вызов открывает корень заново
 // decision: закреплено правилом
-// decision-date: 2026-10-21
 // decision-source: arch/rules/workspace/actor-retention.md
 pub const WARM_WORKSPACE_ACTOR_TTL: Duration = Duration::from_secs(600);
 static APPLY_WRITER_AUTHORITY_SEQUENCE: AtomicU64 = AtomicU64::new(1);

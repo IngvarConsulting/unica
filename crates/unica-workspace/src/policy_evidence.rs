@@ -22,7 +22,6 @@ const POLICY_NAME: &str = ".v8-project.json";
 // problem: неизвестно
 // on-reach: политика сверх предела не разрешает warn/off: проверка поддержки идёт как deny
 // decision: закреплено правилом
-// decision-date: 2026-10-21
 // decision-source: arch/rules/workspace/support-policy-read-bounds.md
 const MAX_SUPPORT_POLICY_BYTES: usize = 32 * 1024 * 1024;
 // resource-limit: workspace.support-policy-read-chunk-bytes
@@ -36,7 +35,6 @@ const MAX_SUPPORT_POLICY_BYTES: usize = 32 * 1024 * 1024;
 // problem: неизвестно
 // on-reach: файл читается следующей порцией после проверки отмены и срока
 // decision: закреплено правилом INV.APP.SUPPORT-POLICY-READ-BOUNDS
-// decision-date: 2026-09-22
 // decision-source: arch/rules/workspace/support-policy-read-bounds.md
 const SUPPORT_POLICY_READ_CHUNK_BYTES: usize = 64 * 1024;
 

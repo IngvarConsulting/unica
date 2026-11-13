@@ -30,7 +30,6 @@ def block(ident: str = "demo.file-bytes", indent: str = "", **overrides: str | l
         "issue": "#1119",
         "evidence": [],
         "decision": None,
-        "decision-date": None,
         "decision-source": None,
         "review": None,
     }
@@ -160,11 +159,28 @@ class ResourceLimitBlockTests(unittest.TestCase):
                 status="justified",
                 evidence=["замер на УТ"],
                 decision="предел закреплён",
-                decision_date="2026-10-25",
                 decision_source="#1119",
             )
         )
         self.assertEqual(self.errors(), [])
+
+    def test_a_decision_names_its_source_and_no_date(self) -> None:
+        """rule: INV.RUNTIME.RESOURCE-LIMIT-EVIDENCE"""
+        justified = {"status": "justified", "evidence": ["замер на УТ"], "decision": "предел закреплён"}
+        self.lib(block(**justified))
+        self.assertTrue(any("decision and decision-source go together" in error for error in self.errors()), self.errors())
+        dated = block(**justified, decision_source="#1119").replace(
+            "// decision-source: #1119\n", "// decision-date: 2026-10-25\n// decision-source: #1119\n"
+        )
+        self.lib(dated)
+        self.assertTrue(any("unknown field `decision-date`" in error for error in self.errors()), self.errors())
+        self.lib(block(**justified, decision_source="arch/rules/runtime/resource-limit-evidence.md"))
+        found, errors = limits.inventory(self.root)
+        self.assertEqual(errors, [])
+        self.assertEqual(
+            found["limits"][0]["decision"],
+            {"text": "предел закреплён", "source": "arch/rules/runtime/resource-limit-evidence.md"},
+        )
 
     def test_rejects_an_unknown_class_field_or_order(self) -> None:
         self.lib(block(**{"class": "misc"}))

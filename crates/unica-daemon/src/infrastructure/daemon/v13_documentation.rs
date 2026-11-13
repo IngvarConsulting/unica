@@ -365,7 +365,6 @@ fn docs_page_result(
 // problem: неизвестно
 // on-reach: строка делится на фрагменты по курсору без потери байтов
 // decision: закреплено правилом INV.APP.DOCUMENTATION-TEXT-PAGES
-// decision-date: 2026-09-24
 // decision-source: arch/rules/analysis/documentation/document-text-pages.md
 const DOCUMENT_TEXT_FRAGMENT_BYTES: usize = 16 * 1024;
 
