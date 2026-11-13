@@ -30,6 +30,16 @@ use unica_work_control::cancellation::CancellationToken;
 use unica_workspace::paths::normalize_path_identity;
 
 /// Live agents Unica holds at most: the runner's `live-max` by default.
+// resource-limit: live-agent.held-agents
+// class: concurrency
+// unit: count
+// scope: process
+// value: 2
+// resource: Живые агенты Конфигуратора, которых держит один процесс демона Unica.
+// status: unproven
+// origin: предел live-max раннера v8-runner 0.17 по умолчанию (#2802)
+// problem: третий удержанный агент занял бы место, которого у учётной записи ОС нет, и лишний сеанс лицензии
+// on-reach: перед удержанием агента третьей рабочей копии Unica отпускает давно не нужного агента без сессий редактора
 pub(super) const LIMIT: usize = 2;
 
 /// Time without runner commands and editor sessions after which Unica lets go
@@ -39,6 +49,16 @@ pub(super) const IDLE: Duration = Duration::from_secs(600);
 
 /// How long `agent hold` and `agent release` may take: they only mark an agent
 /// that is already alive.
+// resource-limit: live-agent.mark-timeout
+// class: deadline
+// unit: ms
+// scope: request
+// value: 30000
+// resource: Время одной команды `agent hold` или `agent release` раннера.
+// status: unproven
+// origin: #2802
+// problem: отметка живого агента, которая не завершилась, держала бы поток удержания
+// on-reach: процесс раннера завершается; неоконченное удержание повторяется на следующей команде, отпуск считается сделанным
 const MARK_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Code of the warning that the agent of a command was not kept.

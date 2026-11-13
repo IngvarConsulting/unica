@@ -387,7 +387,11 @@ impl PreparedSourceExport {
                     "test",
                 );
             }
-            return execute_with_runner(self, &PinnedRunner, cancellation);
+            return execute_with_runner(
+                self,
+                &super::runner::PinnedRunner::default(),
+                cancellation,
+            );
         }
         super::runner::with_bundled_runner(
             &self.context.workspace_root,
