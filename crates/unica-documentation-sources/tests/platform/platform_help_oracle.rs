@@ -22,9 +22,9 @@ use unica_metadata::event_catalog::{
 };
 
 const FIXTURE: &str =
-    include_str!("../../../unica-metadata/src/platform-event-catalog-8.3.27.2074.json");
+    include_str!("../../../unica-metadata/src/platform-event-catalog-8.3.27.json");
 #[cfg(feature = "research")]
-const FIXTURE_PATH: &str = "../unica-metadata/src/platform-event-catalog-8.3.27.2074.json";
+const FIXTURE_PATH: &str = "../unica-metadata/src/platform-event-catalog-8.3.27.json";
 
 /// The platform installation holding the vendor help. Without it the oracle
 /// cannot execute, so an explicit run fails instead of passing empty.
@@ -731,71 +731,91 @@ fn ensure_supplemental_form_catalogs(fixture: &mut PlatformEventCatalogFixture) 
     }
 }
 
+/// Путь к контейнеру справки внутри установки платформы.
+///
+/// Раскладка Windows кладёт `.hbk` в `bin` каталога версии, а не в его корень;
+/// `discover` это знает. Собранный руками `root.join(имя)` — не знает, и на
+/// Windows не находит файл вовсе. Поэтому путь берётся только отсюда.
+fn container_path(root: &Path, language: &str, name: &str) -> Result<PathBuf, String> {
+    let corpora = discover(root, language).map_err(|error| format!("{error:?}"))?;
+    corpora
+        .syntax_context
+        .containers
+        .into_iter()
+        .find(|path| path.file_name().and_then(|file| file.to_str()) == Some(name))
+        .ok_or_else(|| {
+            format!(
+                "installed {} has no selected {name} container",
+                corpora.version
+            )
+        })
+}
+
+/// Сверка с закреплённым источником: версия установки и хеши контейнеров
+/// обязаны совпасть с эталоном, иначе это другая сборка платформы.
 fn derive_fixture(root: &Path) -> Result<PlatformEventCatalogFixture, String> {
+    derive(root, Pinning::Checked)
+}
+
+/// Каталог с той установки, что стоит на хосте: личность источника берётся
+/// у неё. Так эталон переснимается на новую сборку линии; сверку этим
+/// режимом не делают, иначе она сверяла бы снимок сам с собой.
+#[cfg(feature = "research")]
+fn rederive_fixture(root: &Path) -> Result<PlatformEventCatalogFixture, String> {
+    derive(root, Pinning::Installed)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Pinning {
+    Checked,
+    #[cfg_attr(not(feature = "research"), allow(dead_code))]
+    Installed,
+}
+
+fn derive(root: &Path, pinning: Pinning) -> Result<PlatformEventCatalogFixture, String> {
     let mut fixture: PlatformEventCatalogFixture =
         serde_json::from_str(FIXTURE).map_err(|error| error.to_string())?;
     ensure_supplemental_form_catalogs(&mut fixture);
     let corpora = discover(root, "ru").map_err(|error| format!("{error:?}"))?;
-    if corpora.version != fixture.source.installation_version {
+    if pinning == Pinning::Checked && corpora.version != fixture.source.installation_version {
         return Err(format!(
             "Syntax Assistant installation version differs: expected {}, actual {}",
             fixture.source.installation_version, corpora.version
         ));
     }
-    let container = corpora
-        .syntax_context
-        .containers
-        .into_iter()
-        .find(|path| {
-            path.file_name().and_then(|name| name.to_str())
-                == Some(fixture.source.container.as_str())
-        })
-        .ok_or_else(|| {
-            format!(
-                "installed {} has no selected {} container",
-                corpora.version, fixture.source.container
-            )
-        })?;
+    fixture
+        .source
+        .installation_version
+        .clone_from(&corpora.version);
+    let container = container_path(root, "ru", &fixture.source.container)?;
     let bytes = std::fs::read(&container).map_err(|error| error.to_string())?;
     let digest = Sha256::digest(&bytes)
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
-    if digest != fixture.source.sha256 {
+    if pinning == Pinning::Checked && digest != fixture.source.sha256 {
         return Err(format!(
             "Syntax Assistant digest differs for {}: expected {}, actual {digest}",
             container.display(),
             fixture.source.sha256
         ));
     }
+    fixture.source.sha256 = digest;
     let pages = read_corpus(&bytes).map_err(|error| format!("{error:?}"))?;
-    let english_corpora = discover(root, "root").map_err(|error| format!("{error:?}"))?;
-    let english_container = english_corpora
-        .syntax_context
-        .containers
-        .into_iter()
-        .find(|path| {
-            path.file_name().and_then(|name| name.to_str())
-                == Some(fixture.source.english_container.as_str())
-        })
-        .ok_or_else(|| {
-            format!(
-                "installed {} has no selected {} container",
-                english_corpora.version, fixture.source.english_container
-            )
-        })?;
+    let english_container = container_path(root, "root", &fixture.source.english_container)?;
     let english_bytes = std::fs::read(&english_container).map_err(|error| error.to_string())?;
     let english_digest = Sha256::digest(&english_bytes)
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
-    if english_digest != fixture.source.english_sha256 {
+    if pinning == Pinning::Checked && english_digest != fixture.source.english_sha256 {
         return Err(format!(
             "English Syntax Assistant digest differs for {}: expected {}, actual {english_digest}",
             english_container.display(),
             fixture.source.english_sha256
         ));
     }
+    fixture.source.english_sha256 = english_digest;
     let english_pages = read_corpus(&english_bytes).map_err(|error| format!("{error:?}"))?;
     let english_by_path = english_pages
         .iter()
@@ -931,15 +951,18 @@ fn vendor_oracle_rejects_a_matching_hbk_from_the_wrong_installation_version() {
     let wrong_root = temp.path().join("8.3.27.9999");
     std::fs::create_dir(&wrong_root).expect("wrong-version installation root");
     std::fs::copy(
-        root.join(&checked.source.container),
+        container_path(&root, "ru", &checked.source.container).unwrap(),
         wrong_root.join(&checked.source.container),
     )
     .expect("copy pinned syntax assistant under a deliberately wrong version");
 
     let error = derive_fixture(&wrong_root)
         .expect_err("the installation root version is source identity, not fixture metadata");
+    // Закреплённая сборка берётся из эталона, а не пишется здесь числом:
+    // эталон переснимается на новую сборку линии, и зашитое число сделало бы
+    // этот оракул красным после каждого переснятия.
     assert!(
-        error.contains("8.3.27.9999") && error.contains("8.3.27.2074"),
+        error.contains("8.3.27.9999") && error.contains(&checked.source.installation_version),
         "version mismatch must name actual and expected versions: {error}"
     );
 }
@@ -1007,8 +1030,11 @@ fn bilingual_template_exceptions_are_exact_and_source_guarded() {
     let root = platform_help_dir();
     let checked: PlatformEventCatalogFixture =
         serde_json::from_str(FIXTURE).expect("checked event fixture");
-    let ru_bytes = std::fs::read(root.join(&checked.source.container)).unwrap();
-    let en_bytes = std::fs::read(root.join(&checked.source.english_container)).unwrap();
+    let ru_bytes =
+        std::fs::read(container_path(&root, "ru", &checked.source.container).unwrap()).unwrap();
+    let en_bytes =
+        std::fs::read(container_path(&root, "root", &checked.source.english_container).unwrap())
+            .unwrap();
     let ru_pages = read_corpus(&ru_bytes).unwrap();
     let en_pages = read_corpus(&en_bytes).unwrap();
     let mut broken = ru_pages
@@ -1071,7 +1097,8 @@ fn every_vendor_event_markup_page_belongs_to_one_closed_partition_category() {
     let root = platform_help_dir();
     let checked: PlatformEventCatalogFixture =
         serde_json::from_str(FIXTURE).expect("checked event fixture");
-    let bytes = std::fs::read(root.join(&checked.source.container)).expect("syntax assistant");
+    let bytes = std::fs::read(container_path(&root, "ru", &checked.source.container).unwrap())
+        .expect("syntax assistant");
     let pages = read_corpus(&bytes).expect("read complete syntax assistant");
     let event_pages = pages
         .iter()
@@ -1145,7 +1172,8 @@ fn regenerate_checked_platform_event_catalog() {
         "set UNICA_UPDATE_PLATFORM_EVENT_CATALOG=1 explicitly"
     );
     let root = platform_help_dir();
-    let derived = derive_fixture(&root).expect("derive complete event fixture from vendor corpus");
+    let derived =
+        rederive_fixture(&root).expect("derive complete event fixture from vendor corpus");
     let text = format!(
         "{}\n",
         serde_json::to_string_pretty(&derived).expect("serialize derived event fixture")

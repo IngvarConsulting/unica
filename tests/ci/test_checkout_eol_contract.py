@@ -64,7 +64,7 @@ class CheckoutEolContractTests(unittest.TestCase):
         for path in [
             "crates/unica-daemon/src/infrastructure/daemon/server.rs",
             "crates/unica-bindings-integration-tests/tests/fixtures/modules/syntax-boundaries.bsl",
-            "crates/unica-metadata/src/platform-event-catalog-8.3.27.2074.json",
+            "crates/unica-metadata/src/platform-event-catalog-8.3.27.json",
         ]:
             self.assertEqual(attributes(path), {"text": "set", "eol": "lf"}, path)
 

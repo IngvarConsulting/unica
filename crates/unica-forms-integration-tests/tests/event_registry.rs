@@ -1427,8 +1427,7 @@ mod tests {
     fn checked_event_catalog_is_a_closed_immutable_8_3_27_set() {
         use sha2::{Digest, Sha256};
 
-        let bytes =
-            include_bytes!("../../unica-metadata/src/platform-event-catalog-8.3.27.2074.json");
+        let bytes = include_bytes!("../../unica-metadata/src/platform-event-catalog-8.3.27.json");
         let digest = Sha256::digest(bytes)
             .iter()
             .map(|byte| format!("{byte:02x}"))
