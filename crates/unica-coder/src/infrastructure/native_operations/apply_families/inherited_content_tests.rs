@@ -379,3 +379,100 @@ fn predefined_writes_refuse_an_owner_without_code_type() {
         );
     }
 }
+
+/// The properties of the first enumeration value of `text`, its uuids aside.
+fn enum_value_properties(text: &str) -> Vec<String> {
+    let start = text.find("<EnumValue ").unwrap();
+    let end = text[start..].find("</EnumValue>").unwrap() + start;
+    text[start..end]
+        .lines()
+        .skip(1)
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with("<ExtendedConfigurationObject>"))
+        .map(str::to_owned)
+        .collect()
+}
+
+/// A borrowed enumeration value of an extension 2.21 is written as 8.5.1
+/// exports it: without the color a new value of that format has.
+/// rule: INV.SOURCE.WRITABLE-PROFILE
+#[test]
+fn a_borrowed_enumeration_value_of_format_2_21_has_the_platform_shape() {
+    use unica_source_contract::format_identity::PlatformLine;
+    let corpus = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures/formats/platform_xml/2.21");
+    let root = tempfile::tempdir().unwrap();
+    let workspace_root = std::fs::canonicalize(root.path()).unwrap();
+    let main = workspace_root.join("cf");
+    let ext = workspace_root.join("ext");
+    copy_tree(&corpus.join("all_kinds/src"), &main);
+    copy_tree(&corpus.join("empty_extension/ext"), &ext);
+    std::fs::write(
+        workspace_root.join("v8project.yaml"),
+        "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: cf\n  - name: ext\n    type: EXTENSION\n    path: ext\n",
+    )
+    .unwrap();
+    let profile = SourceProfile::platform_xml_of_line(PlatformLine::new(8, 5, 1)).unwrap();
+    let context = WorkspaceContext {
+        cwd: workspace_root.clone(),
+        workspace_root: workspace_root.clone(),
+        cache_root: workspace_root.join(".build/unica"),
+        workspace_epoch: 1,
+    };
+    let identity = WorkspaceIdentity::new(
+        &context,
+        [
+            WorkspaceSourceSetInput::new(
+                "main",
+                &main,
+                SourceSetKind::Configuration,
+                SourceFormat::PlatformXml,
+                profile,
+            ),
+            WorkspaceSourceSetInput::new(
+                "ext",
+                &ext,
+                SourceSetKind::Extension,
+                SourceFormat::PlatformXml,
+                profile,
+            ),
+        ],
+        "borrowed-enum-value-2-21",
+    )
+    .unwrap();
+    let actor = crate::infrastructure::source_workspace::new_actor(identity, context).unwrap();
+    let binding = actor.bind_provider_root("ext", &ext).unwrap();
+    let parent = actor.bind_provider_root("main", &main).unwrap();
+    let admission = actor
+        .admit_apply_with_dependencies(
+            &binding,
+            &[parent],
+            None,
+            true,
+            ProviderDeadline::from_budget(Duration::from_secs(5)),
+            &CancellationToken::new(),
+        )
+        .unwrap();
+    let args = json!({"at":"ext:Configuration","dryRun":true,"ops":[{"op":"object.borrow","args":{
+        "from":"main:Enum.СпособыУстановкиКурсаВалюты.EnumValue.ЗагрузкаИзИнтернета"}}]});
+    let request = ApplyRequest::parse(args.as_object().unwrap(), &["ext", "main"]).unwrap();
+    let (staged, _) = plan_hidden_v13_apply(&request, &binding, &admission).unwrap();
+    let written = staged
+        .planned_changes()
+        .into_iter()
+        .find(|change| change.relative_path == Path::new("Enums/СпособыУстановкиКурсаВалюты.xml"))
+        .map(|change| match change.current {
+            unica_source_contract::proposal::StagedFileState::Bytes(bytes) => {
+                String::from_utf8(bytes).unwrap()
+            }
+            unica_source_contract::proposal::StagedFileState::Absent => panic!("written"),
+        })
+        .unwrap();
+    let platform =
+        std::fs::read_to_string(corpus.join("cfe_borrow/extension-enum-value.xml")).unwrap();
+    assert_eq!(
+        enum_value_properties(&written),
+        enum_value_properties(&platform)
+    );
+    assert!(!written.contains("<Color>"));
+}
