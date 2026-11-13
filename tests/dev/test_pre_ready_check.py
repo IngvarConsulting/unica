@@ -464,6 +464,61 @@ class UnrunTests(unittest.TestCase):
         ])
 
 
+class TargetOwnerTests(unittest.TestCase):
+    """Каталог сборки собирает одну рабочую копию; чужой каталог — отказ."""
+
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.base = Path(directory.name)
+        self.target = self.base / "target"
+        self.copy = self.copy_root("this")
+        self.other = self.copy_root("other")
+
+    def copy_root(self, name):
+        root = self.base / name
+        (root / "crates" / "unica-core").mkdir(parents=True)
+        (root / "crates" / "unica-core" / "Cargo.toml").write_text("", encoding="utf-8")
+        return root
+
+    def dep_info(self, name, manifest):
+        deps = self.target / "debug" / "deps"
+        deps.mkdir(parents=True, exist_ok=True)
+        escaped = str(manifest).replace("\\", "\\\\")
+        (deps / f"{name}.d").write_text(
+            f"{deps / name}.d: src/lib.rs\n\nsrc/lib.rs:\n\n# env-dep:CARGO_MANIFEST_DIR={escaped}\n",
+            encoding="utf-8")
+
+    def test_a_crate_built_from_another_copy_is_found(self):
+        self.dep_info("own", self.copy / "crates" / "unica-core")
+        self.dep_info("foreign", self.other / "crates" / "unica-core")
+        self.dep_info("registry", self.base / "registry" / "serde-1.0.0")
+        self.dep_info("unknown", self.base / "elsewhere" / "crates" / "not-ours")
+        found = CHECK.built_copies(self.target, self.copy)
+        self.assertEqual([os.path.normcase(path) for path in found], [os.path.normcase(self.other)])
+
+    def test_the_first_copy_claims_the_directory_and_may_use_it_again(self):
+        self.dep_info("own", self.copy / "crates" / "unica-core")
+        CHECK.claim_target(self.target, self.copy)
+        CHECK.claim_target(self.target, self.copy)
+        self.assertEqual((self.target / CHECK.TARGET_OWNER).read_text(encoding="utf-8").strip(), str(self.copy))
+
+    def test_a_directory_of_another_copy_is_refused(self):
+        CHECK.claim_target(self.target, self.other)
+        with self.assertRaises(CHECK.Refusal) as refused:
+            CHECK.claim_target(self.target, self.copy)
+        self.assertIn(str(self.other), str(refused.exception))
+        self.assertIn("свой CARGO_TARGET_DIR", str(refused.exception))
+        self.assertEqual((self.target / CHECK.TARGET_OWNER).read_text(encoding="utf-8").strip(), str(self.other))
+
+    def test_a_plain_cargo_build_from_another_copy_is_refused_without_the_owner_file(self):
+        self.dep_info("foreign", self.other / "crates" / "unica-core")
+        with self.assertRaises(CHECK.Refusal) as refused:
+            CHECK.claim_target(self.target, self.copy)
+        self.assertIn(str(self.other), str(refused.exception))
+        self.assertFalse((self.target / CHECK.TARGET_OWNER).exists())
+
+
 class MainTests(unittest.TestCase):
     def run_main(self, results, base):
         out, err = io.StringIO(), io.StringIO()
@@ -497,6 +552,14 @@ class MainTests(unittest.TestCase):
             os.environ.pop("CARGO_TARGET_DIR", None)
             self.assertEqual(CHECK.main([]), 2)
         self.assertIn("CARGO_TARGET_DIR", err.getvalue())
+
+    def test_a_build_directory_of_another_copy_refuses_before_any_check(self):
+        err = io.StringIO()
+        with tempfile.TemporaryDirectory() as directory,                 mock.patch.dict(os.environ, {"CARGO_TARGET_DIR": directory}),                 mock.patch.object(CHECK, "run_check") as run_check,                 redirect_stdout(io.StringIO()), redirect_stderr(err):
+            (Path(directory) / CHECK.TARGET_OWNER).write_text(str(Path(directory) / "other-copy"), encoding="utf-8")
+            self.assertEqual(CHECK.main([]), 2)
+        run_check.assert_not_called()
+        self.assertIn("собирал другую рабочую копию", err.getvalue())
 
 
 if __name__ == "__main__":

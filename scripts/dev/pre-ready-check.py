@@ -22,7 +22,11 @@
 или `unittest.skip`. Очередь гоняет их на Linux, поэтому их разбирают по коду.
 
 Без `CARGO_TARGET_DIR` скрипт отказывает: сборка в `target/` рабочей копии
-не годится для конвейера. Рабочая копия базы и её сборка лежат
+не годится для конвейера. Отказывает он и с каталогом сборки, который собирал
+другую рабочую копию: Cargo решает, что пересобрать, по времени файлов, и
+может проверить код той копии вместо этой. Копию-хозяина каталог помнит
+в файле `unica-worktree`; сборки обычным `cargo` из другой копии видны
+по `CARGO_MANIFEST_DIR` в файлах `.d` крейтов рабочего пространства. Рабочая копия базы и её сборка лежат
 в `$CARGO_TARGET_DIR/pre-ready-check/`, поэтому два прогона с одним каталогом
 сборки одновременно не запускают.
 """
@@ -60,6 +64,9 @@ SKIP_MARKER = "unica-host-capability-skip:"
 # одного репозитория мешают друг другу.
 WORKTREE_LOCK = "pre-ready-check-worktrees.lock"
 LOCK_WAIT_SECONDS = 300.0
+# Файл в каталоге сборки с корнем рабочей копии, которая им пользуется.
+TARGET_OWNER = "unica-worktree"
+MANIFEST_DIR_DEP = re.compile(r"^# env-dep:CARGO_MANIFEST_DIR=(.+)$", re.MULTILINE)
 
 
 class Refusal(Exception):
@@ -576,6 +583,57 @@ def unrun_tests(
     return report
 
 
+# --- Каталог сборки одной рабочей копии ----------------------------------------
+
+
+def same_path(first: Path, second: Path) -> bool:
+    return os.path.normcase(os.path.abspath(first)) == os.path.normcase(os.path.abspath(second))
+
+
+def built_copies(target: Path, root: Path) -> List[Path]:
+    """Корни других копий этого репозитория, чьи крейты собраны в `target`.
+
+    Видны крейты, которые читают `CARGO_MANIFEST_DIR`: rustc пишет его в `.d`.
+    Чужой корень — путь вида `<корень>/crates/<крейт>`, где `<крейт>` есть
+    и в этой копии; каталоги сторонних зависимостей так не выглядят.
+    """
+    crates = {path.parent.name for path in (root / "crates").glob("*/Cargo.toml")}
+    found: List[Path] = []
+    for profile in ("debug", "release"):
+        for dep_info in sorted((target / profile / "deps").glob("*.d")):
+            try:
+                text = dep_info.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            for match in MANIFEST_DIR_DEP.finditer(text):
+                manifest = Path(match.group(1).strip().replace("\\\\", "\\"))
+                if manifest.parent.name != "crates" or manifest.name not in crates:
+                    continue
+                copy = manifest.parent.parent
+                if not same_path(copy, root) and not any(same_path(copy, known) for known in found):
+                    found.append(copy)
+    return found
+
+
+def claim_target(target: Path, root: Path) -> None:
+    """Закрепляет каталог сборки за копией `root` или отказывает, если он собирал другую."""
+    owner_file = target / TARGET_OWNER
+    try:
+        owner = Path(owner_file.read_text(encoding="utf-8").strip())
+    except OSError:
+        owner = None
+    others = [owner] if owner is not None and not same_path(owner, root) else []
+    others += [copy for copy in built_copies(target, root) if not any(same_path(copy, o) for o in others)]
+    if others:
+        raise Refusal(
+            f"каталог сборки {target} собирал другую рабочую копию: {', '.join(map(str, others))}. "
+            "Cargo может счесть её артефакты свежими и проверить её код вместо этого. "
+            "Задайте этой копии свой CARGO_TARGET_DIR; если та копия закончена, удалите каталог сборки целиком."
+        )
+    target.mkdir(parents=True, exist_ok=True)
+    owner_file.write_text(f"{root}\n", encoding="utf-8")
+
+
 # --- Запуск ---------------------------------------------------------------------
 
 
@@ -862,6 +920,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     cache_dir = cargo_target_dir(REPO_ROOT).resolve() / CACHE_DIR_NAME
     env = {**os.environ, "PYTHONUTF8": "1"}
     try:
+        claim_target(cache_dir.parent, REPO_ROOT)
         base = git(REPO_ROOT, "merge-base", args.base, "HEAD").strip()
         lines = changed_lines(git(REPO_ROOT, "-c", "core.quotePath=false", "diff", "-U0", "--no-color", "--no-renames", base))
         dirty = git(REPO_ROOT, "status", "--porcelain", "--untracked-files=no").strip()
