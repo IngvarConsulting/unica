@@ -227,6 +227,11 @@ fn lost_submit_response_follows_replaced_endpoint_without_resubmitting() {
     }));
     let state = DaemonStateDirectory::open(&state_root, &identity).unwrap();
     state.publish_v5_endpoint_record(&first.record).unwrap();
+    // A live daemon of the build holds the receipt authority of the state.
+    let _alive =
+        unica_execution::receipt_runtime::authority::ReceiptAuthorityLock::try_acquire(&state)
+            .unwrap()
+            .unwrap();
     let client = V5DaemonClient::connect(
         state_root,
         identity,
@@ -630,6 +635,18 @@ fn a_call_whose_connection_never_stood_was_not_delivered() {
         call(&router, Some(Duration::from_millis(200))).expect_err("an unreachable daemon refuses");
 
     assert_not_delivered(&refusal);
+    // The daemon may be alive and busy: the answer names the lack of time,
+    // not an incompatible daemon (#2969).
+    assert!(
+        refusal.message.starts_with(
+            "the Unica daemon did not answer in time (handshake response), most likely because \
+             the machine is busy"
+        ) && refusal
+            .message
+            .ends_with("; the call did not reach the daemon and may be repeated as is"),
+        "{}",
+        refusal.message
+    );
     assert_eq!(fake.submissions(), 0);
 }
 
