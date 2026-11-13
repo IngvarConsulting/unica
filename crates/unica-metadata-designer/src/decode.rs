@@ -1469,6 +1469,31 @@ pub fn parse_addressed_member_change(
         )
         .at_path(format!("ops[{op_index}].args.values")));
     }
+    // A property a later line adds is refused with the reason `can` marks
+    // it with (INV.SOURCE.PROFILE-CAPABILITIES).
+    if values.contains_key("color")
+        && !unica_source_contract::format_identity::member_property_exists(
+            binding.source_line,
+            member_kind.as_str(),
+            "Color",
+        )
+    {
+        let since = unica_source_contract::format_identity::member_property_since(
+            member_kind.as_str(),
+            "Color",
+        )
+        .expect("a later line adds the color");
+        return Err(ApplyPlanError::new(
+            ApplyPlanErrorKind::BadValue,
+            unica_metadata::descriptor_operations::later_line_reason(
+                "Property `Color`",
+                since,
+                binding.source_set_name(),
+                binding.source_line,
+            ),
+        )
+        .at_path(format!("ops[{op_index}].args.values.color")));
+    }
     values.insert("name".to_string(), Value::String(name));
     Ok(addressed_edit(
         parse_legacy_edit(
