@@ -468,7 +468,7 @@ fn recreate_choice(call: &Map<String, Value>) -> HumanChoice {
         EXISTS_CODE,
         recreate_question(),
         "Пересоздать базу",
-        "Данные и конфигурация базы пропадут",
+        "данные и конфигурация базы пропадут",
         RUN_TOOL,
         call,
     )
@@ -1220,7 +1220,7 @@ mod tests {
         assert_eq!(choice.options[0].title, "Пересоздать базу");
         assert_eq!(
             choice.options[0].description,
-            "Данные и конфигурация базы пропадут"
+            "данные и конфигурация базы пропадут"
         );
         assert!(!recreates(&executed.call));
 

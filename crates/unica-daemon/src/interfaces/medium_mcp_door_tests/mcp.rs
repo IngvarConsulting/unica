@@ -3739,7 +3739,7 @@ async fn an_existing_infobase_is_recreated_by_the_persons_choice() {
         "{message}"
     );
     assert!(
-        message.contains("Пересоздать базу: Данные и конфигурация базы пропадут"),
+        message.contains("Пересоздать базу: данные и конфигурация базы пропадут"),
         "{message}"
     );
     client
