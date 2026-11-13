@@ -77,6 +77,11 @@ pub enum CompatibilityProjection {
     TerminalResult,
 }
 
+/// The status of a working Task whose cancel interrupted the v8-runner and
+/// waits for the answer of its Designer agent.
+pub const CANCEL_WAITS_FOR_AGENT: &str =
+    "cancelling: the Designer agent is finishing its current request; cancel again to stop waiting";
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct CompatibilityTaskSnapshot {
     pub(crate) task_id: TaskId,
@@ -89,6 +94,8 @@ pub struct CompatibilityTaskSnapshot {
     pub(crate) updated_at_epoch_ms: u64,
     pub(crate) ttl_ms: u64,
     pub(crate) poll_interval_ms: u64,
+    /// Live state, not stored: the cancel waits for an interrupted process.
+    pub(crate) awaits_interrupted_work: bool,
 }
 
 impl CompatibilityTaskSnapshot {
@@ -114,7 +121,14 @@ impl CompatibilityTaskSnapshot {
             updated_at_epoch_ms,
             ttl_ms,
             poll_interval_ms,
+            awaits_interrupted_work: false,
         }
+    }
+
+    /// The cancel of the working Task waits for a process it interrupted.
+    pub fn with_awaiting_interrupted_work(mut self, awaits: bool) -> Self {
+        self.awaits_interrupted_work = awaits;
+        self
     }
 }
 
@@ -275,6 +289,9 @@ pub fn project_task_snapshot(
     });
     if snapshot.cancel_requested {
         data["task"]["cancelRequested"] = json!(true);
+        if snapshot.awaits_interrupted_work && snapshot.status == InvocationStatus::Working {
+            data["task"]["statusMessage"] = json!(CANCEL_WAITS_FOR_AGENT);
+        }
     }
     let mut result = DomainResult::success(summary);
     result.ok = ok;
@@ -568,6 +585,25 @@ mod tests {
             project_task_snapshot(&completed, CompatibilityProjection::State).unwrap(),
             subject,
             "get projects state while result projects the subject payload"
+        );
+    }
+
+    /// A cancel that waits for an interrupted runner says so, as the
+    /// native `statusMessage` does; a plain cancel request adds nothing.
+    /// rule: CTR.WIRE.COMPATIBILITY-TASK-TOOLS
+    #[test]
+    fn a_cancel_that_waits_for_the_agent_says_so_in_the_task_state() {
+        let mut state = snapshot(InvocationStatus::Working);
+        state.cancel_requested = true;
+        let plain = project_task_snapshot(&state, CompatibilityProjection::State).unwrap();
+        assert!(plain.data.as_ref().unwrap()["task"]
+            .get("statusMessage")
+            .is_none());
+        let waiting = state.with_awaiting_interrupted_work(true);
+        let projected = project_task_snapshot(&waiting, CompatibilityProjection::State).unwrap();
+        assert_eq!(
+            projected.data.as_ref().unwrap()["task"]["statusMessage"],
+            super::CANCEL_WAITS_FOR_AGENT
         );
     }
 

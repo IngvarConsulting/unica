@@ -1,7 +1,8 @@
 use crate::{
-    ensure_truncation_diagnostics, JobPolicy, ManagedChild, ManagedCommand, ManagedLineOutput,
-    ManagedOutput, ManagedSpawnFailure, PendingProcessHandoff, PendingRunFailure, ProcessLineReply,
-    StreamControl, STREAM_LINE_TOO_LONG_ERROR, STREAM_RECORD_UNTERMINATED_ERROR,
+    ensure_truncation_diagnostics, CancelPolicy, JobPolicy, ManagedChild, ManagedCommand,
+    ManagedLineOutput, ManagedOutput, ManagedSpawnFailure, PendingProcessHandoff,
+    PendingRunFailure, ProcessLineReply, StreamControl, STREAM_LINE_TOO_LONG_ERROR,
+    STREAM_RECORD_UNTERMINATED_ERROR,
 };
 use std::{ffi::OsString, path::PathBuf, time::Duration};
 
@@ -292,20 +293,22 @@ pub trait ProcessRunner {
 pub struct SystemProcessRunner;
 static SYSTEM_PROCESS_RUNNER: SystemProcessRunner = SystemProcessRunner;
 
-/// [`SystemProcessRunner`] for a program that itself starts a process meant to
-/// outlive the command: the pinned runner's live Designer agent. Its group
-/// lets a process that asks to leave it go ([`JobPolicy::AllowsBreakaway`]);
-/// every other process of the tree ends with the group as before.
+/// [`SystemProcessRunner`] for the pinned v8-runner. It starts a process meant
+/// to outlive the command, its live Designer agent: the group lets a process
+/// that asks to leave it go ([`JobPolicy::AllowsBreakaway`]), every other
+/// process of the tree ends with the group as before. And it answers a cancel
+/// itself ([`CancelPolicy::Interrupt`]): a cancel interrupts it and waits for
+/// its answer instead of ending the tree at once.
 pub struct BreakawayProcessRunner;
 
 impl ProcessRunner for BreakawayProcessRunner {
     fn run(&self, command: &ProcessCommand) -> Result<ProcessOutput, String> {
-        run_staged_in(command, JobPolicy::AllowsBreakaway)
+        run_staged_in(command, JobPolicy::AllowsBreakaway, CancelPolicy::Interrupt)
             .map_err(|failure| failure.message().to_string())
     }
 
     fn run_staged(&self, command: &ProcessCommand) -> Result<ProcessOutput, ProcessStreamFailure> {
-        run_staged_in(command, JobPolicy::AllowsBreakaway)
+        run_staged_in(command, JobPolicy::AllowsBreakaway, CancelPolicy::Interrupt)
     }
 
     fn run_pending_handoff(
@@ -327,10 +330,11 @@ impl ProcessRunner for BreakawayProcessRunner {
 fn run_staged_in(
     command: &ProcessCommand,
     policy: JobPolicy,
+    cancel: CancelPolicy,
 ) -> Result<ProcessOutput, ProcessStreamFailure> {
     #[cfg(any(test, feature = "test-support"))]
     process_launch_probe::record(&command.cwd, command.program.as_ref());
-    let mut child = ManagedChild::spawn_staged_in(managed_command(command), policy)
+    let mut child = ManagedChild::spawn_staged_in(managed_command(command), policy, cancel)
         .map_err(ProcessStreamFailure::from_spawn)?;
     let output = child.wait_for_output().map_err(ProcessStreamFailure::Run)?;
     Ok(map_managed_process_output(output))
@@ -389,7 +393,7 @@ pub fn system_process_runner() -> &'static (dyn ProcessRunner + Send + Sync) {
 
 impl ProcessRunner for SystemProcessRunner {
     fn run_staged(&self, command: &ProcessCommand) -> Result<ProcessOutput, ProcessStreamFailure> {
-        run_staged_in(command, JobPolicy::Contained)
+        run_staged_in(command, JobPolicy::Contained, CancelPolicy::Terminate)
     }
 
     fn run(&self, command: &ProcessCommand) -> Result<ProcessOutput, String> {
