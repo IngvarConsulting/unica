@@ -6769,20 +6769,23 @@ mod medium_tests {
         };
         use std::path::PathBuf;
 
-        let root = unique_temp_root("secure-open-non-normal");
-        fs::create_dir_all(root.join("inner")).unwrap();
+        let created = unique_temp_root("secure-open-non-normal");
+        fs::create_dir_all(created.join("inner")).unwrap();
+        // Корень берётся физическим: временный каталог macOS лежит под
+        // симлинком `/var`, и защищённое открытие отвергло бы его раньше,
+        // чем дошло бы до проверяемого элемента.
+        let root = fs::canonicalize(&created).unwrap();
+        // Цель существует: отказ даёт сам элемент `..`, а не её отсутствие.
+        assert!(root.join("inner").is_dir());
         // Путь собирается строкой: на пути с префиксом `\\?\` (его даёт
         // `canonicalize` на Windows) `PathBuf::push` убрал бы `..` сам,
         // и проверялся бы уже нормализованный путь.
-        let mut text = root.clone().into_os_string();
+        let mut text = root.into_os_string();
         for name in ["inner", "..", "inner"] {
             text.push(std::path::MAIN_SEPARATOR_STR);
             text.push(name);
         }
         let detoured = PathBuf::from(text);
-        // Каталог существует и после нормализации лежит внутри корня: отказ
-        // даёт сам элемент `..`, а не отсутствие каталога.
-        assert!(fs::metadata(&detoured).is_ok());
 
         for error in [
             open_absolute_directory_path_nofollow(&detoured)
@@ -6797,7 +6800,7 @@ mod medium_tests {
             );
         }
 
-        fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(created).unwrap();
     }
 
     #[cfg(any(unix, windows))]
