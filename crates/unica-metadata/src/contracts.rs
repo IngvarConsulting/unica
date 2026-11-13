@@ -189,10 +189,21 @@ pub fn metadata_element_input_schema(update: bool, attributes: bool) -> &'static
         } else {
             fields.remove("templateType");
             fields.insert("typeReductionMode".into(), json!({"type":"string", "enum":["Deny", "TransformValues"]}));
+            fields.insert("color".into(), enum_value_color_schema());
         }
         json!({"type":"object","additionalProperties":false,"required":["name"],"properties":fields})
     })
 }
+
+/// The color of an enumeration value, from 8.5.1: `auto`, `#RRGGBB`, or a
+/// web, Windows or style color by name, as the platform XDTO type `Color`.
+pub fn enum_value_color_schema() -> Value {
+    json!({"type":"string","pattern":ENUM_VALUE_COLOR_PATTERN,
+        "description":"auto, #RRGGBB, or web:<Name>, win:<Name>, style:<Name>"})
+}
+
+pub const ENUM_VALUE_COLOR_PATTERN: &str =
+    r"^(auto|#[0-9A-Fa-f]{6}|(web|win|style):[A-Za-z_][0-9A-Za-z_]*)$";
 
 /// Preserve the host-visible internal envelope while deriving its field
 /// definitions from the same input owner. The old envelope is deliberately

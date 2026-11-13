@@ -2519,8 +2519,33 @@ pub fn update_typed_element(
             flag_edits.push(edit);
         }
     }
-    flag_edits.sort_by_key(|(range, _)| std::cmp::Reverse(range.start));
     let properties_start = range.start + properties_range.start;
+    if let Some(color) = &update.color {
+        // The value of a set whose line has the color: its export carries it.
+        let open = properties_text.find("<Color>").ok_or_else(|| {
+            typed_diagnostic(
+                MetaDiagnosticCode::ProviderUnavailable,
+                "the enumeration value has no Color property",
+                Some("color"),
+            )
+        })?;
+        let value_start = open + "<Color>".len();
+        let value_end = value_start
+            + properties_text[value_start..]
+                .find("</Color>")
+                .ok_or_else(|| {
+                    typed_diagnostic(
+                        MetaDiagnosticCode::ProviderUnavailable,
+                        "the enumeration value has a malformed Color property",
+                        Some("color"),
+                    )
+                })?;
+        flag_edits.push((
+            properties_start + value_start..properties_start + value_end,
+            unica_xml_format::text::escape_xml(color),
+        ));
+    }
+    flag_edits.sort_by_key(|(range, _)| std::cmp::Reverse(range.start));
     for (range, value) in flag_edits {
         properties_text.replace_range(
             range.start - properties_start..range.end - properties_start,

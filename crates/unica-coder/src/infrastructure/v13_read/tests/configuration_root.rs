@@ -123,6 +123,51 @@ fn configuration_root_shows_the_properties_of_its_line() {
     }
 }
 
+/// An enumeration value shows its color in a set whose line has it.
+/// rule: INV.SOURCE.PROFILE-CAPABILITIES
+#[test]
+fn an_enumeration_value_shows_its_color_in_the_lines_that_have_it() {
+    use unica_source_contract::format_identity::PlatformLine;
+    for (source, line, expected) in [
+        (
+            "../../tests/fixtures/formats/platform_xml/2.20/all_kinds/src",
+            PlatformLine::new(8, 3, 27),
+            None,
+        ),
+        (
+            "../../tests/fixtures/formats/platform_xml/2.21/all_kinds/src",
+            PlatformLine::new(8, 5, 1),
+            Some("auto"),
+        ),
+    ] {
+        // The secure source reader takes only normal path components.
+        let source =
+            std::fs::canonicalize(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(source))
+                .unwrap();
+        let cancellation = CancellationToken::new();
+        let source_root = Arc::new(unica_workspace::read::open_source_directory(&source).unwrap());
+        let authority = LogicalViewReadAuthority::new(
+            &cancellation,
+            "main",
+            "actor-fixture-main",
+            SourceSetKind::Configuration,
+            source_root,
+            PlatformProfile::for_line(line).unwrap(),
+        );
+        let service = ViewService::new(authority, ViewCursorStore::default());
+        let value = service.view(
+            ViewRequest::new("main:Enum.СпособыУстановкиКурсаВалюты.EnumValue.ЗагрузкаИзИнтернета")
+                .unwrap(),
+        );
+        let props = &value.data.as_ref().unwrap()["props"];
+        assert_eq!(
+            props.get("color").and_then(|color| color.as_str()),
+            expected,
+            "{line}"
+        );
+    }
+}
+
 /// rule: INV.SOURCE.LOGICAL-BRANCH-COUNT
 #[test]
 fn configuration_root_branch_counts_match_every_reachable_collection() {
