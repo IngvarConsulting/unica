@@ -27,8 +27,9 @@ fn cf_consumers_share_the_canonical_metadata_kind_order() {
     }
 }
 
-/// Every kind of the registry stands in the order in which the platform
-/// writes the `ChildObjects` of the 2.20 reference export.
+/// The registry kinds of the 2.20 reference export stand in the order in
+/// which the platform writes its `ChildObjects`; kinds of later lines are
+/// checked against their own exports.
 /// rule: INV.SOURCE.CHILD-OBJECTS-PLATFORM-ORDER
 #[test]
 fn the_registry_follows_the_child_objects_order_of_the_platform_export() {
@@ -59,11 +60,6 @@ fn the_registry_follows_the_child_objects_order_of_the_platform_export() {
         .filter(|kind| exported.contains(kind))
         .collect::<Vec<_>>();
     assert_eq!(ordered, known);
-    assert_eq!(
-        ordered.len(),
-        registry.len(),
-        "every registered kind is exported"
-    );
 }
 
 /// rule: INV.SOURCE.CHILD-OBJECTS-PLATFORM-ORDER
