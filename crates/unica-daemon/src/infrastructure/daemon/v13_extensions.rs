@@ -3,7 +3,6 @@
 //! Even inventory starts a platform session, so every operation is previewApply.
 
 use super::protocol::InvocationRequest;
-use super::runner::PinnedRunner;
 use super::v13_infobase_exports::{
     digest_optional_workspace_file, digest_required_workspace_file, missing_runner_rejection,
     resolve_bundled_runner, runner_envelope_refusal, runner_rejection, runner_start_rejection,
@@ -167,13 +166,10 @@ impl PreparedExtensions {
             &self.context.cwd,
             self.operation.name(),
             cancellation,
-            |cancellation| match resolve_bundled_runner(&self.context.cwd) {
-                Ok(resolved) => self.execute_with(
-                    &PinnedRunner,
-                    &resolved.tool,
-                    &resolved.version,
-                    cancellation,
-                ),
+            |runner, cancellation| match resolve_bundled_runner(&self.context.cwd) {
+                Ok(resolved) => {
+                    self.execute_with(runner, &resolved.tool, &resolved.version, cancellation)
+                }
                 Err(message) => {
                     missing_runner_rejection(Some(self.operation.name().into()), message)
                 }

@@ -16,7 +16,6 @@
 //! не идут.
 
 use super::protocol::InvocationRequest;
-use super::runner::PinnedRunner;
 use super::v13_infobase_exports::{
     digest_optional_workspace_file, digest_required_workspace_file, missing_runner_rejection,
     note_runner_warnings, resolve_bundled_runner, runner_envelope_refusal, runner_rejection,
@@ -388,14 +387,18 @@ impl PreparedSourceExport {
                     "test",
                 );
             }
-            return execute_with_runner(self, &PinnedRunner, cancellation);
+            return execute_with_runner(
+                self,
+                &super::runner::PinnedRunner::default(),
+                cancellation,
+            );
         }
         super::runner::with_bundled_runner(
             &self.context.workspace_root,
             &self.context.cwd,
             OPERATION,
             cancellation,
-            |cancellation| execute_with_runner(self, &PinnedRunner, cancellation),
+            |runner, cancellation| execute_with_runner(self, runner, cancellation),
         )
     }
 }

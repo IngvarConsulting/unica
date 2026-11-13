@@ -25,7 +25,7 @@
 //! Записи поколения после создания нет: первый `push` поколение не сверяет.
 
 use super::protocol::InvocationRequest;
-use super::runner::{origin_kind, OriginKind, PinnedRunner};
+use super::runner::{origin_kind, OriginKind};
 use super::v13_infobase_exports::{
     configuration_source_set, digest_optional_workspace_file, digest_required_workspace_file,
     missing_runner_rejection, note_config_warnings, resolve_bundled_runner,
@@ -125,7 +125,7 @@ impl PreparedInfobaseCreate {
             &self.context.cwd,
             OPERATION,
             cancellation,
-            |cancellation| execute_with_runner(self, &PinnedRunner, cancellation),
+            |runner, cancellation| execute_with_runner(self, runner, cancellation),
         )
     }
 }

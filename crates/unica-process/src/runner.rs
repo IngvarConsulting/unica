@@ -1,7 +1,7 @@
 use crate::{
-    ensure_truncation_diagnostics, ManagedChild, ManagedCommand, ManagedLineOutput, ManagedOutput,
-    ManagedSpawnFailure, PendingProcessHandoff, PendingRunFailure, ProcessLineReply, StreamControl,
-    STREAM_LINE_TOO_LONG_ERROR, STREAM_RECORD_UNTERMINATED_ERROR,
+    ensure_truncation_diagnostics, JobPolicy, ManagedChild, ManagedCommand, ManagedLineOutput,
+    ManagedOutput, ManagedSpawnFailure, PendingProcessHandoff, PendingRunFailure, ProcessLineReply,
+    StreamControl, STREAM_LINE_TOO_LONG_ERROR, STREAM_RECORD_UNTERMINATED_ERROR,
 };
 use std::{ffi::OsString, path::PathBuf, time::Duration};
 
@@ -291,6 +291,66 @@ pub trait ProcessRunner {
 
 pub struct SystemProcessRunner;
 static SYSTEM_PROCESS_RUNNER: SystemProcessRunner = SystemProcessRunner;
+
+/// [`SystemProcessRunner`] for a program that itself starts a process meant to
+/// outlive the command: the pinned runner's live Designer agent. Its group
+/// lets a process that asks to leave it go ([`JobPolicy::AllowsBreakaway`]);
+/// every other process of the tree ends with the group as before.
+pub struct BreakawayProcessRunner;
+
+impl ProcessRunner for BreakawayProcessRunner {
+    fn run(&self, command: &ProcessCommand) -> Result<ProcessOutput, String> {
+        run_staged_in(command, JobPolicy::AllowsBreakaway)
+            .map_err(|failure| failure.message().to_string())
+    }
+
+    fn run_staged(&self, command: &ProcessCommand) -> Result<ProcessOutput, ProcessStreamFailure> {
+        run_staged_in(command, JobPolicy::AllowsBreakaway)
+    }
+
+    fn run_pending_handoff(
+        &self,
+        command: &ProcessCommand,
+    ) -> Result<(ProcessOutput, PendingProcessHandoff), String> {
+        run_pending_handoff_staged_in(command, JobPolicy::AllowsBreakaway)
+            .map_err(|failure| failure.message().to_string())
+    }
+
+    fn run_pending_handoff_staged(
+        &self,
+        command: &ProcessCommand,
+    ) -> Result<(ProcessOutput, PendingProcessHandoff), ProcessStreamFailure> {
+        run_pending_handoff_staged_in(command, JobPolicy::AllowsBreakaway)
+    }
+}
+
+fn run_staged_in(
+    command: &ProcessCommand,
+    policy: JobPolicy,
+) -> Result<ProcessOutput, ProcessStreamFailure> {
+    #[cfg(any(test, feature = "test-support"))]
+    process_launch_probe::record(&command.cwd, command.program.as_ref());
+    let mut child = ManagedChild::spawn_staged_in(managed_command(command), policy)
+        .map_err(ProcessStreamFailure::from_spawn)?;
+    let output = child.wait_for_output().map_err(ProcessStreamFailure::Run)?;
+    Ok(map_managed_process_output(output))
+}
+
+fn run_pending_handoff_staged_in(
+    command: &ProcessCommand,
+    policy: JobPolicy,
+) -> Result<(ProcessOutput, PendingProcessHandoff), ProcessStreamFailure> {
+    #[cfg(any(test, feature = "test-support"))]
+    process_launch_probe::record(&command.cwd, command.program.as_ref());
+    let (output, handoff) =
+        ManagedChild::run_pending_handoff_staged_in(managed_command(command), policy).map_err(
+            |failure| match failure {
+                PendingRunFailure::Spawn(failure) => ProcessStreamFailure::from_spawn(failure),
+                PendingRunFailure::Run(message) => ProcessStreamFailure::Run(message),
+            },
+        )?;
+    Ok((map_managed_process_output(output), handoff))
+}
 /// Тестовый наблюдатель запусков процессов системным исполнителем: записывает
 /// программу каждого запуска, рабочий каталог которого лежит под корнем.
 #[cfg(any(test, feature = "test-support"))]
@@ -329,12 +389,7 @@ pub fn system_process_runner() -> &'static (dyn ProcessRunner + Send + Sync) {
 
 impl ProcessRunner for SystemProcessRunner {
     fn run_staged(&self, command: &ProcessCommand) -> Result<ProcessOutput, ProcessStreamFailure> {
-        #[cfg(any(test, feature = "test-support"))]
-        process_launch_probe::record(&command.cwd, command.program.as_ref());
-        let mut child = ManagedChild::spawn_staged(managed_command(command))
-            .map_err(ProcessStreamFailure::from_spawn)?;
-        let output = child.wait_for_output().map_err(ProcessStreamFailure::Run)?;
-        Ok(map_managed_process_output(output))
+        run_staged_in(command, JobPolicy::Contained)
     }
 
     fn run(&self, command: &ProcessCommand) -> Result<ProcessOutput, String> {
@@ -365,14 +420,7 @@ impl ProcessRunner for SystemProcessRunner {
         &self,
         command: &ProcessCommand,
     ) -> Result<(ProcessOutput, PendingProcessHandoff), ProcessStreamFailure> {
-        #[cfg(any(test, feature = "test-support"))]
-        process_launch_probe::record(&command.cwd, command.program.as_ref());
-        let (output, handoff) = ManagedChild::run_pending_handoff_staged(managed_command(command))
-            .map_err(|failure| match failure {
-                PendingRunFailure::Spawn(failure) => ProcessStreamFailure::from_spawn(failure),
-                PendingRunFailure::Run(message) => ProcessStreamFailure::Run(message),
-            })?;
-        Ok((map_managed_process_output(output), handoff))
+        run_pending_handoff_staged_in(command, JobPolicy::Contained)
     }
 
     fn run_with_input(
