@@ -1317,7 +1317,7 @@ mod tests {
                 &runner,
                 CancellationToken::new(),
                 &tool(root.path()),
-                "0.17.1",
+                "0.17.2",
             );
             assert!(result.ok, "{result:?}");
             assert_eq!(
@@ -1376,7 +1376,7 @@ mod tests {
             &runner,
             CancellationToken::new(),
             &tool(root.path()),
-            "0.17.1",
+            "0.17.2",
         );
         assert!(result.ok, "{result:?}");
         let data = result.data.unwrap();
@@ -1424,7 +1424,7 @@ mod tests {
                 &runner,
                 CancellationToken::new(),
                 &tool(root.path()),
-                "0.17.1",
+                "0.17.2",
             );
             assert!(!result.ok, "{behavior}: {result:?}");
             let expected_code = match behavior {
@@ -1474,7 +1474,7 @@ mod tests {
                 &runner,
                 CancellationToken::new(),
                 &tool(root.path()),
-                "0.17.1",
+                "0.17.2",
             )
         });
         assert!(!result.ok, "{result:?}");
@@ -1542,7 +1542,7 @@ mod tests {
                                 &runner,
                                 worker_cancellation,
                                 &runner_tool,
-                                "0.17.1",
+                                "0.17.2",
                             )
                         },
                     )

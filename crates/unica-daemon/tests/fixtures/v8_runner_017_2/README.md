@@ -6,6 +6,11 @@ Captured 2026-11-14 on Windows from v8-runner built from tag `v0.17.2`
 directory is replaced by `C:\workspace` and the host name by `workstation`;
 every other byte is as captured.
 
+Rechecked with the published release binary (`v8-runner-windows-x86_64.zip`
+of release `v0.17.2`, `v8-runner.exe` SHA-256
+`336ba463f1d31c1ab13f84831e7def52803bf79c01730fcc6d55e7b0891d1298`): the same
+commands give the same envelopes apart from `duration_ms` and the agent port.
+
 Working copies have `format: DESIGNER`, one `CONFIGURATION` set `main` in
 `src`, and the file infobase `origin` declared in `v8project.local.yaml`.
 
