@@ -555,6 +555,7 @@ pub fn parse_form_operation(
     args: &Map<String, Value>,
     op_index: usize,
     source_set_name: &str,
+    source_line: Option<unica_source_contract::format_identity::PlatformLine>,
 ) -> Result<FormPlan, ApplyPlanError> {
     let operation_name = operation.name();
     let address =
@@ -826,12 +827,35 @@ pub fn parse_form_operation(
                 .ok_or_else(|| bad(op_index, "values", "`values` must be an object"))?;
             let mut defaults = Vec::new();
             let owner_kind = target.owner.segments().next();
-            let kind_slots = owner_kind.and_then(unica_forms::contracts::form_slots_of);
+            let kind_slots = owner_kind
+                .and_then(|kind| unica_forms::contracts::form_slots_in(kind, source_line));
             for (key, value) in values {
+                // A slot a later line adds is refused with the reason `can`
+                // marks it with (INV.SOURCE.PROFILE-CAPABILITIES).
+                if let Some((_, property, since)) = owner_kind
+                    .into_iter()
+                    .flat_map(|kind| unica_forms::contracts::later_form_slots(kind, source_line))
+                    .find(|(slot, _, _)| slot == key)
+                {
+                    return Err(bad(
+                        op_index,
+                        &format!("values.{key}"),
+                        unica_metadata::descriptor_operations::later_line_reason(
+                            &format!("Property `{property}`"),
+                            since,
+                            source_set_name,
+                            source_line,
+                        ),
+                    ));
+                }
                 let property = default_form_property(key)
-                    .filter(|_| kind_slots.is_none_or(|slots| slots.contains(&key.as_str())))
+                    .filter(|_| {
+                        kind_slots
+                            .as_ref()
+                            .is_none_or(|slots| slots.contains(&key.as_str()))
+                    })
                     .ok_or_else(|| {
-                        let slots = kind_slots.map_or_else(
+                        let slots = kind_slots.as_ref().map_or_else(
                             || {
                                 unica_forms::contracts::FORM_SLOTS
                                     .iter()
@@ -2022,6 +2046,7 @@ mod column_type_tests {
             args.as_object().unwrap(),
             0,
             "main",
+            None,
         );
         assert!(result.is_ok(), "{result:?}");
     }
@@ -2041,7 +2066,8 @@ mod column_type_tests {
                     FormOperation::PropsSet,
                     args.as_object().unwrap(),
                     0,
-                    "main"
+                    "main",
+                    None
                 )
                 .is_err(),
                 "{args}"
@@ -2054,14 +2080,15 @@ mod column_type_tests {
             FormOperation::EventBind,
         ] {
             let args = json!({"at":at,"values":{"type":"Boolean"}});
-            assert!(parse_form_operation(op, args.as_object().unwrap(), 0, "main").is_err());
+            assert!(parse_form_operation(op, args.as_object().unwrap(), 0, "main", None).is_err());
         }
         let invalid_owner = json!({"at":"main:DefinedType.Existing.Form.Main.Attribute.Rows.Column.Value","values":{"Title":"wrong profile"}});
         assert!(parse_form_operation(
             FormOperation::PropsSet,
             invalid_owner.as_object().unwrap(),
             0,
-            "main"
+            "main",
+            None
         )
         .is_err());
         for at in [
@@ -2074,7 +2101,8 @@ mod column_type_tests {
                 FormOperation::PropsSet,
                 args.as_object().unwrap(),
                 0,
-                "main"
+                "main",
+                None
             )
             .is_err());
         }
@@ -2095,6 +2123,7 @@ mod column_add_tests {
             args.as_object().unwrap(),
             0,
             "main",
+            None,
         )
         .unwrap();
         let FormPlan::FormEdit {
@@ -2123,7 +2152,8 @@ mod column_add_tests {
                     FormOperation::ColumnAdd,
                     args.as_object().unwrap(),
                     0,
-                    "main"
+                    "main",
+                    None
                 )
                 .is_err(),
                 "{at}"
@@ -2134,7 +2164,8 @@ mod column_add_tests {
             FormOperation::PropsSet,
             args.as_object().unwrap(),
             0,
-            "main"
+            "main",
+            None
         )
         .is_err());
         let args = json!({"at":at,"items":[{"name":"Added","type":"Boolean","id":42}]});
@@ -2142,7 +2173,8 @@ mod column_add_tests {
             FormOperation::ColumnAdd,
             args.as_object().unwrap(),
             0,
-            "main"
+            "main",
+            None
         )
         .is_err());
     }

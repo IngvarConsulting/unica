@@ -14,10 +14,14 @@ pub(crate) static DIALECT: MetadataDialect = MetadataDialect {
 };
 
 /// The all_kinds corpus of 2.22 names the main analytics system schema of a
-/// report, empty by default, right after its main data composition schema.
+/// report, empty by default, right after its main data composition schema,
+/// besides the auxiliary variant form of 2.21.
 pub(crate) fn added_object_properties(kind: &str) -> &'static [(&'static str, &'static str)] {
     match kind {
-        "Report" => &[("MainDataCompositionSchema", "<MainAnalyticsSystemSchema/>")],
+        "Report" => &[
+            ("MainDataCompositionSchema", "<MainAnalyticsSystemSchema/>"),
+            ("DefaultVariantForm", "<AuxiliaryVariantForm/>"),
+        ],
         _ => &[],
     }
 }
