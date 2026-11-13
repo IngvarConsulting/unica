@@ -541,7 +541,7 @@ impl DocumentationProvider for PlatformSyntaxHelpProvider {
                     continue;
                 }
             };
-            if let Some(page) = page {
+            if let Some((page, markup)) = page {
                 return Some(Ok(unica_documentation::model::DocumentationDocument {
                     provider: self.id(),
                     corpus: corpus_id.to_string(),
@@ -557,6 +557,12 @@ impl DocumentationProvider for PlatformSyntaxHelpProvider {
                         .and_then(|value| signature_in(value, &source.language)),
                     applicable_version: corpora.version.clone(),
                     text: page.text,
+                    // Статья полями разбирается из разметки той же записи;
+                    // плоский текст остаётся рядом запасным путём.
+                    article: Some(super::article_fields::public_article(
+                        corpus_id,
+                        &unica_bsl_types::article::parse(path, &markup),
+                    )),
                 }));
             }
         }

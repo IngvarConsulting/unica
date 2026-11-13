@@ -1,0 +1,189 @@
+{
+  "id": "S-2864-docs-article-fields",
+  "issue": 2864,
+  "area": "Справка",
+  "task": "Открыть статью справки платформы полями: вид статьи, владелец, параметры с типом и локатором, возвращаемое значение, доступность значениями, версия появления и пример; отличить поле, которого у вида статьи не бывает, от пустого и от неразобранного раздела",
+  "workspace": "tests/fixtures/acceptance/workspace-docs-article",
+  "wire": [
+    {
+      "tool": "unica.docs",
+      "args": {
+        "query": "platform-syntax-help:syntax-context:objects/SampleTable/methods/Copy1.html",
+        "source": "platform-help"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/document/schemaVersion",
+          "eq": 1
+        },
+        {
+          "pointer": "/data/document/article/kind",
+          "eq": "method"
+        },
+        {
+          "pointer": "/data/document/article/name/ru",
+          "eq": "Скопировать"
+        },
+        {
+          "pointer": "/data/document/article/name/en",
+          "eq": "Copy"
+        },
+        {
+          "pointer": "/data/document/article/owner/ru",
+          "eq": "ТаблицаОбразца"
+        },
+        {
+          "pointer": "/data/document/article/ownerDocumentId",
+          "eq": "platform-syntax-help:syntax-context:objects/SampleTable.html"
+        },
+        {
+          "pointer": "/data/document/article/variants/0/call",
+          "eq": "Скопировать(<Строки>)"
+        },
+        {
+          "pointer": "/data/document/article/variants/0/parameters/0/name",
+          "eq": "Строки"
+        },
+        {
+          "pointer": "/data/document/article/variants/0/parameters/0/optional",
+          "eq": true
+        },
+        {
+          "pointer": "/data/document/article/variants/0/parameters/0/typeText",
+          "eq": "МассивОбразца"
+        },
+        {
+          "pointer": "/data/document/article/variants/0/parameters/0/types/0/documentId",
+          "eq": "platform-syntax-help:syntax-context:objects/SampleArray.html"
+        },
+        {
+          "pointer": "/data/document/article/variants/0/returns/typeText",
+          "eq": "ТаблицаОбразца"
+        },
+        {
+          "pointer": "/data/document/article/availability/0",
+          "eq": "server"
+        },
+        {
+          "pointer": "/data/document/article/availability/1",
+          "eq": "thick-client"
+        },
+        {
+          "pointer": "/data/document/article/sinceVersion",
+          "eq": "8.1"
+        },
+        {
+          "pointer": "/data/document/article/description",
+          "eq": "Создаёт копию таблицы образца."
+        },
+        {
+          "pointer": "/data/document/article/example",
+          "eq": "Копия = Таблица.Скопировать();"
+        },
+        {
+          "pointer": "/data/document/article/note",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/document/article/readOnly",
+          "absent": true
+        },
+        {
+          "pointer": "/data/document/article/memberLists",
+          "absent": true
+        },
+        {
+          "pointer": "/data/document/text",
+          "eq": "ТаблицаОбразца.Скопировать (SampleTable.Copy) ТаблицаОбразца (SampleTable) Скопировать (Copy) Синтаксис: Скопировать(<Строки>) Параметры: <Строки> (необязательный) Тип: МассивОбразца . Строки для копирования. Возвращаемое значение: Тип: ТаблицаОбразца . Описание: Создаёт копию таблицы образца. Доступность: Сервер, толстый клиент. Пример: Копия = Таблица . Скопировать ( ) ; Использование в версии: Доступен, начиная с версии 8.1."
+        }
+      ]
+    },
+    {
+      "tool": "unica.docs",
+      "args": {
+        "query": "platform-syntax-help:syntax-context:objects/SampleTable/properties/Columns2.html",
+        "source": "platform-help"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/document/article/kind",
+          "eq": "property"
+        },
+        {
+          "pointer": "/data/document/article/readOnly",
+          "eq": true
+        },
+        {
+          "pointer": "/data/document/article/valueTypeText",
+          "eq": "МассивОбразца"
+        },
+        {
+          "pointer": "/data/document/article/valueTypes/0/text",
+          "eq": "МассивОбразца"
+        },
+        {
+          "pointer": "/data/document/article/description",
+          "eq": "Колонки таблицы образца."
+        },
+        {
+          "pointer": "/data/document/article/note",
+          "eq": "Колонку добавляет сама таблица."
+        },
+        {
+          "pointer": "/data/document/article/variants",
+          "absent": true
+        },
+        {
+          "pointer": "/data/document/article/memberLists",
+          "absent": true
+        },
+        {
+          "pointer": "/data/document/article/example",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/document/article/unparsed",
+          "eq": {}
+        }
+      ]
+    },
+    {
+      "tool": "unica.docs",
+      "args": {
+        "query": "platform-syntax-help:syntax-context:objects/SampleTable/methods/Sort3.html",
+        "source": "platform-help"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/document/article/variants/0/parameters",
+          "eq": null
+        },
+        {
+          "pointer": "/data/document/article/variants/0/unparsed/parameters/reason",
+          "eq": "no-parameter-rubric"
+        },
+        {
+          "pointer": "/data/document/article/variants/0/unparsed/parameters/text",
+          "eq": "Колонки перечисляются через запятую."
+        },
+        {
+          "pointer": "/data/document/article/variants/0/call",
+          "eq": "Сортировать(<Колонки>)"
+        },
+        {
+          "pointer": "/data/document/text",
+          "eq": "ТаблицаОбразца.Сортировать (SampleTable.Sort) ТаблицаОбразца (SampleTable) Сортировать (Sort) Синтаксис: Сортировать(<Колонки>) Параметры: Колонки перечисляются через запятую. Описание: Сортирует строки таблицы образца."
+        }
+      ]
+    }
+  ]
+}
