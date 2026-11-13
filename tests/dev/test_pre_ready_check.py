@@ -10,7 +10,10 @@ import importlib.util
 import io
 import os
 import sys
+import shutil
+import subprocess
 import tempfile
+import threading
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
@@ -173,8 +176,8 @@ class BaselineTests(unittest.TestCase):
                 return CHECK.Result(["base failure"])
 
             checks = [CHECK.Check("fmt", "fmt"), CHECK.Check("python:tests/ci", "python", "tests/ci")]
-            with mock.patch.object(CHECK, "run_check", fake_run), mock.patch.object(CHECK, "git"), \
-                    mock.patch.object(CHECK.subprocess, "run"), redirect_stdout(io.StringIO()):
+            with mock.patch.object(CHECK, "run_check", fake_run), mock.patch.object(CHECK, "add_base_tree"), \
+                    mock.patch.object(CHECK, "remove_base_tree"), redirect_stdout(io.StringIO()):
                 result = CHECK.baseline(checks, "sha", cache_dir, {})
             self.assertEqual(ran, ["python:tests/ci"])
             self.assertEqual(result, {"fmt": [], "python:tests/ci": ["base failure"]})
@@ -212,6 +215,80 @@ class RecheckTests(unittest.TestCase):
             self.assertEqual(CHECK.recheck(check, ["сборка: boom"], REPO_ROOT, {}, REPO_ROOT),
                              (["сборка: boom"], []))
         run.assert_not_called()
+
+
+def git_repository(directory: Path) -> str:
+    """Репозиторий с одним коммитом; возвращает его sha."""
+    environment = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.invalid",
+                   "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.invalid"}
+    for command in (["init", "-q"], ["commit", "-q", "--allow-empty", "-m", "base"]):
+        subprocess.run(["git", "-c", "commit.gpgsign=false", *command], cwd=directory, check=True,
+                       env=environment, capture_output=True)
+    return CHECK.git(directory, "rev-parse", "HEAD").strip()
+
+
+@unittest.skipUnless(shutil.which("git"), "нужен git")
+class BaseTreeTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.directory, ignore_errors=True)
+        self.repository = self.directory / "repo"
+        self.repository.mkdir()
+        self.sha = git_repository(self.repository)
+
+    def test_a_git_refusal_carries_its_code_and_text(self):
+        with self.assertRaises(CHECK.Refusal) as caught:
+            CHECK.git(self.repository, "worktree", "add", "--detach", str(self.directory / "x"), "no-such-ref")
+        message = str(caught.exception)
+        self.assertRegex(message, r"код \d+: \S")
+        self.assertIn("no-such-ref", message)
+
+    def test_parallel_base_trees_of_one_repository_do_not_fail(self):
+        errors = []
+
+        def create(index):
+            try:
+                for _ in range(2):
+                    tree = self.directory / f"cache-{index}" / "base"
+                    CHECK.add_base_tree(self.repository, tree, self.sha)
+                    CHECK.remove_base_tree(self.repository, tree)
+            except Exception as error:  # noqa: BLE001 - итог потока проверяется ниже
+                errors.append(error)
+
+        threads = [threading.Thread(target=create, args=(index,)) for index in range(3)]
+        with redirect_stdout(io.StringIO()):
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+        self.assertEqual(errors, [])
+
+    def test_a_held_lock_names_its_holder_and_what_to_do(self):
+        held, release = threading.Event(), threading.Event()
+
+        def holder():
+            with CHECK.worktree_lock(self.repository):
+                held.set()
+                release.wait(10)
+
+        thread = threading.Thread(target=holder)
+        thread.start()
+        self.addCleanup(thread.join)
+        self.addCleanup(release.set)
+        self.assertTrue(held.wait(10))
+        with redirect_stdout(io.StringIO()), self.assertRaises(CHECK.Refusal) as caught:
+            with CHECK.worktree_lock(self.repository, wait=0.2, poll=0.05):
+                pass
+        message = str(caught.exception)
+        self.assertIn(f"pid {os.getpid()}", message)
+        self.assertIn("Дождитесь", message)
+
+    def test_a_released_lock_is_taken_again_and_its_file_stays(self):
+        with CHECK.worktree_lock(self.repository, wait=0.2):
+            pass
+        with CHECK.worktree_lock(self.repository, wait=0.2):
+            pass
+        self.assertTrue((self.repository / ".git" / CHECK.WORKTREE_LOCK).exists())
 
 
 class DiffTests(unittest.TestCase):
