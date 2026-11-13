@@ -72,7 +72,7 @@ fn request(query: &str) -> DocumentationSearchRequest {
 }
 
 #[test]
-#[ignore = "vendor help: needs UNICA_PLATFORM_HELP_DIR=<1C platform installation>; run with --run-ignored only"]
+#[ignore = "vendor help: needs UNICA_PLATFORM_HELP_DIR=<1C platform installation>; run scripts/dev/check-platform-catalogs.py"]
 fn retrieval_gate_finds_every_golden_query_within_budget() {
     let root = platform_help_dir();
     // Слот индекса общий на процесс: гейт не должен делить его перестройку
