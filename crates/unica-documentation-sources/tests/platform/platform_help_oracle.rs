@@ -73,10 +73,18 @@ fn event_id(page: &CorpusPage) -> Result<String, String> {
     }
 }
 
+/// Разрыв строки в записи `.st` платформа пишет по-разному: 8.3.27 ставит
+/// `<br>`, 8.5 — настоящий перевод строки. Для сверки с закреплёнными
+/// образцами оба вида приводятся к `<br>`.
+fn normalized_breaks(raw: &str) -> String {
+    raw.replace("\r\n", "<br>").replace('\n', "<br>")
+}
+
 fn declaration(raw: &str) -> String {
+    let raw = normalized_breaks(raw);
     raw.split("<br>")
         .next()
-        .unwrap_or(raw)
+        .unwrap_or(&raw)
         .replace("&lt;", "<")
         .replace("&gt;", ">")
         .replace("&amp;", "&")
@@ -116,7 +124,7 @@ fn exact_english_template(
         .and_then(|signature| signature.ru.as_deref());
     let english_page = english_page
         .ok_or_else(|| format!("missing adjacent English evidence page for {}", page.path))?;
-    if raw_ru != Some(expected_ru)
+    if raw_ru.map(normalized_breaks).as_deref() != Some(expected_ru)
         || english_page
             .signature
             .as_ref()
@@ -125,8 +133,13 @@ fn exact_english_template(
         || !english_page.text.contains(english_syntax)
     {
         return Err(format!(
-            "pinned bilingual exception evidence changed for {}",
-            page.path
+            "pinned bilingual exception evidence changed for {}: ru={raw_ru:?}, english signature={:?}, english syntax {english_syntax:?} present={}",
+            page.path,
+            english_page
+                .signature
+                .as_ref()
+                .and_then(|signature| signature.en.as_deref()),
+            english_page.text.contains(english_syntax)
         ));
     }
     Ok(canonical.to_string())
@@ -530,6 +543,10 @@ fn out_of_profile_exclusions(pages: &[CorpusPage]) -> Result<Vec<ExcludedEventPa
         .map(|page| source_page_path(&page.page_id).to_string())
         .collect::<BTreeSet<_>>();
     let mut excluded = Vec::new();
+    // Непросмотренные владельцы собираются все: на другой сборке платформы
+    // их может быть много, и отказ по первому заставлял бы искать их по
+    // одному. Человек смотрит сразу весь список.
+    let mut unreviewed = Vec::new();
     for page in pages
         .iter()
         .filter(|page| page.path.contains("/events/"))
@@ -538,13 +555,17 @@ fn out_of_profile_exclusions(pages: &[CorpusPage]) -> Result<Vec<ExcludedEventPa
         .filter(|page| !external.contains(&page.path))
         .filter(|page| !generic.contains(&page.path))
     {
-        let reason = reviewed_out_of_profile_reason(page).ok_or_else(|| {
-            format!(
-                "unreviewed out-of-profile event owner on {} | {}",
-                page.path, page.title
-            )
-        })?;
-        excluded.push(excluded_page(page, reason));
+        match reviewed_out_of_profile_reason(page) {
+            Some(reason) => excluded.push(excluded_page(page, reason)),
+            None => unreviewed.push(format!("{} | {}", page.path, page.title)),
+        }
+    }
+    if !unreviewed.is_empty() {
+        return Err(format!(
+            "unreviewed out-of-profile event owners ({}):\n{}",
+            unreviewed.len(),
+            unreviewed.join("\n")
+        ));
     }
     excluded.sort_by(|left, right| left.page_id.cmp(&right.page_id));
     Ok(excluded)
@@ -921,6 +942,52 @@ fn vendor_oracle_rejects_a_matching_hbk_from_the_wrong_installation_version() {
         error.contains("8.3.27.9999") && error.contains("8.3.27.2074"),
         "version mismatch must name actual and expected versions: {error}"
     );
+}
+
+/// 8.3.27 пишет разрыв строки в записи `.st` как `<br>`, 8.5 — настоящим
+/// переводом строки. Без этого на 8.5 «первой строкой» объявления
+/// становился весь многострочный текст вместе с телом процедуры.
+#[test]
+fn a_declaration_ends_at_the_first_line_break_of_either_markup() {
+    let expected = "Процедура ПриИзменении(Элемент)";
+    for raw in [
+        "Процедура ПриИзменении(Элемент)<br>    <?><br>КонецПроцедуры",
+        "Процедура ПриИзменении(Элемент)\r\n    <?>\r\nКонецПроцедуры",
+        "Процедура ПриИзменении(Элемент)\n    <?>\nКонецПроцедуры",
+    ] {
+        assert_eq!(declaration(raw), expected, "{raw:?}");
+    }
+}
+
+/// Новая сборка платформы приносит сразу несколько неизвестных владельцев.
+/// Отказ по первому заставлял бы искать их по одному прогону за штуку.
+#[test]
+fn every_unreviewed_out_of_profile_owner_is_named_at_once() {
+    let pages = ["FirstUnknown", "SecondUnknown"]
+        .into_iter()
+        .map(|owner| CorpusPage {
+            path: format!("objects/future/{owner}/events/Click1.html"),
+            title: format!("Нажатие ({owner}.Click)"),
+            text: String::new(),
+            // Без подписи страница считается оглавлением, а не событием.
+            signature: Some(crate::platform_help::corpus::Signature {
+                ru: Some("Процедура Нажатие(Элемент)".to_string()),
+                en: Some("Procedure Click(Item)".to_string()),
+            }),
+        })
+        .collect::<Vec<_>>();
+
+    let error = out_of_profile_exclusions(&pages).expect_err("unknown owners are not reviewed");
+
+    assert!(error.contains("FirstUnknown"), "{error}");
+    assert!(error.contains("SecondUnknown"), "{error}");
+    assert!(error.contains("(2)"), "{error}");
+}
+
+#[test]
+fn normalized_breaks_leave_a_single_line_declaration_as_it_is() {
+    let single = "Procedure OnChange(Item)";
+    assert_eq!(normalized_breaks(single), single);
 }
 
 #[test]

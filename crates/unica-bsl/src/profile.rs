@@ -60,8 +60,12 @@ impl PlatformProfile {
     /// roles exist (axis 2 of the source profile). `None` for a line whose
     /// capabilities are not described yet.
     pub fn for_line(line: PlatformLine) -> Option<Self> {
-        // 8.5.1 and 8.5.4 keep the module, event and role tables of 8.3.27:
-        // their all_kinds corpora add properties, not modules or roles.
+        // 8.5.1 and 8.5.4 keep the module and role tables of 8.3.27. Their
+        // event tables do not: the vendor help of 8.5.1 adds `Click` to the
+        // extension of a usual form group, and 8.5.4 adds two more events on
+        // the queue manager. Until those owners enter the catalog, every line
+        // is still served the 8.3.27 event tables, so an 8.5 set is answered
+        // about events the way 8.3.27 is.
         unica_source_contract::format_identity::DESCRIBED_PLATFORM_LINES
             .iter()
             .find(|(described, _)| *described == line)
