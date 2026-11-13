@@ -2613,7 +2613,7 @@
           "eq": "bad_value"
         }
       ],
-      "refusal": "bad_value: value is not one of the supported alternatives"
+      "refusal": "bad_value: value is not one of the supported alternatives; allowed: [\"ForItem\", \"ForFolder\", \"ForFolderAndItem\"]"
     },
     {
       "tool": "unica.apply",
