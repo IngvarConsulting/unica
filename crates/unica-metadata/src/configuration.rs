@@ -10,6 +10,9 @@ pub struct CfInfoData {
     pub format: String,
     pub name: String,
     pub synonym: Option<String>,
+    /// From 8.5.1; `null` in a set of an earlier line.
+    pub caption: Option<String>,
+    pub short_caption: Option<String>,
     pub version: Option<String>,
     pub vendor: Option<String>,
     pub extension_purpose: Option<String>,
@@ -40,6 +43,12 @@ pub struct CfInfoProperties {
     pub synchronous_call_use_mode: Option<String>,
     pub database_tablespaces_use_mode: Option<String>,
     pub main_window_mode: Option<String>,
+    /// The 8.5 interface properties, from 8.5.1; `null` in a set of an
+    /// earlier line (INV.SOURCE.PROFILE-CAPABILITIES).
+    pub main_window_interface_variant: Option<String>,
+    pub client_application_theme: Option<String>,
+    pub windows_open_variant: Option<String>,
+    pub version85_interface_migration_mode: Option<String>,
     pub comment: Option<String>,
     pub name_prefix: Option<String>,
     pub update_catalog_address: Option<String>,

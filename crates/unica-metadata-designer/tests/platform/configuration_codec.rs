@@ -64,3 +64,27 @@ fn an_interface_without_an_order_section_is_empty_not_a_failure() {
     .expect("пустой интерфейс — законное состояние");
     assert!(parsed.subsystem_order.is_empty());
 }
+
+/// `cf.validate` accepts a root value only in the line that has it.
+/// rule: INV.SOURCE.PROFILE-CAPABILITIES
+#[test]
+fn validation_accepts_a_root_value_from_the_line_that_adds_it() {
+    let line = |format| crate::dialect::for_version(Some(format)).platform_line;
+    for format in ["2.21", "2.22"] {
+        assert!(line_adds_root_value(
+            line(format),
+            "InterfaceCompatibilityMode",
+            "Version8_5"
+        ));
+    }
+    assert!(!line_adds_root_value(
+        line("2.20"),
+        "InterfaceCompatibilityMode",
+        "Version8_5"
+    ));
+    assert!(!line_adds_root_value(
+        line("2.21"),
+        "InterfaceCompatibilityMode",
+        "Version8_6"
+    ));
+}

@@ -263,6 +263,82 @@ pub(crate) fn platform_xml_profile_of_line(line: PlatformLine) -> Option<crate::
     .map(crate::SourceProfile::PlatformXmlRelease)
 }
 
+/// What a platform line adds to the root of a configuration: the property,
+/// or one value of it, and the line it exists from. The values are those of
+/// the platform XDTO export of each line
+/// (`tests/fixtures/formats/platform_xml/<format>/xdto/`); a property or value
+/// absent here exists in every described line (INV.SOURCE.PROFILE-CAPABILITIES).
+const CONFIGURATION_ROOT_LINE_ADDITIONS: &[(&str, Option<&str>, PlatformLine)] = &[
+    ("Caption", None, PlatformLine::new(8, 5, 1)),
+    ("ShortCaption", None, PlatformLine::new(8, 5, 1)),
+    (
+        "MainClientApplicationWindowInterfaceVariant",
+        None,
+        PlatformLine::new(8, 5, 1),
+    ),
+    ("ClientApplicationTheme", None, PlatformLine::new(8, 5, 1)),
+    (
+        "ClientApplicationWindowsOpenVariant",
+        None,
+        PlatformLine::new(8, 5, 1),
+    ),
+    (
+        "Version85InterfaceMigrationMode",
+        None,
+        PlatformLine::new(8, 5, 1),
+    ),
+    (
+        "InterfaceCompatibilityMode",
+        Some("Version8_5"),
+        PlatformLine::new(8, 5, 1),
+    ),
+];
+
+/// A configuration root property, or a value of one, that a later line than
+/// some set's adds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LineAddition {
+    pub property: &'static str,
+    pub value: Option<&'static str>,
+    pub since: PlatformLine,
+}
+
+/// What lines later than `line` add to a configuration root; a set without a
+/// known line has none of the additions.
+pub fn configuration_root_additions_after(line: Option<PlatformLine>) -> Vec<LineAddition> {
+    CONFIGURATION_ROOT_LINE_ADDITIONS
+        .iter()
+        .filter(|(_, _, since)| line.is_none_or(|line| line < *since))
+        .map(|(property, value, since)| LineAddition {
+            property,
+            value: *value,
+            since: *since,
+        })
+        .collect()
+}
+
+/// What a platform line adds to the members of metadata objects: the member
+/// kind, its property and the line it exists from, by the all_kinds export
+/// and the platform XDTO of each line (INV.SOURCE.PROFILE-CAPABILITIES).
+const MEMBER_LINE_ADDITIONS: &[(&str, &str, PlatformLine)] =
+    &[("EnumValue", "Color", PlatformLine::new(8, 5, 1))];
+
+/// The line a `member` kind's `property` exists from, when a later line than
+/// the first described one adds it.
+pub fn member_property_since(member: &str, property: &str) -> Option<PlatformLine> {
+    MEMBER_LINE_ADDITIONS
+        .iter()
+        .find(|(kind, name, _)| *kind == member && *name == property)
+        .map(|(_, _, since)| *since)
+}
+
+/// Whether a set of platform `line` has the `property` of a `member` kind; a
+/// set without a known line has only what every described line has.
+pub fn member_property_exists(line: Option<PlatformLine>, member: &str, property: &str) -> bool {
+    member_property_since(member, property)
+        .is_none_or(|since| line.is_some_and(|line| line >= since))
+}
+
 /// The platform lines whose capabilities are described, with their text.
 pub const DESCRIBED_PLATFORM_LINES: &[(PlatformLine, &str)] = &[
     (PlatformLine::new(8, 3, 27), "8.3.27"),

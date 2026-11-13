@@ -770,6 +770,7 @@ fn lost_cutoff_fake(foreign: bool) -> FakeDaemon {
                         poll_interval_ms: 250,
                         version: 2,
                         cancel_requested: false,
+                        awaits_interrupted_work: false,
                     },
                 },
             })

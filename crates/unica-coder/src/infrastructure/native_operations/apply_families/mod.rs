@@ -1309,6 +1309,7 @@ fn parse_family_operation(
                 &unica_metadata_designer::decode::MetadataDecodeContext {
                     source_set_name: binding.source_set_name(),
                     source_kind: binding.source_kind(),
+                    source_line: binding.source_profile().semantic_line(),
                     registry: crate::domain::apply::operation_registry(),
                 },
             )?;

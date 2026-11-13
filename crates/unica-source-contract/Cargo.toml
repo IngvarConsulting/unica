@@ -15,6 +15,6 @@ serde.workspace = true
 unica-address = { path = "../unica-address" }
 
 [package.metadata.unica]
-version-literal-baseline = 51
+version-literal-baseline = 52
 component = "abstraction"
 file-io = "domain"

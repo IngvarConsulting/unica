@@ -1,6 +1,9 @@
 #[cfg(any(windows, test))]
 mod windows_job_exit;
 
+#[cfg(test)]
+mod interrupt_tests;
+
 #[cfg(any(test, feature = "test-support"))]
 use std::cell::Cell;
 use std::ffi::OsString;
@@ -39,6 +42,39 @@ const PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(25);
 // problem: неизвестно
 // on-reach: процесс остаётся неподобранным, вывод собирается со статусом «termination pending»
 const TERMINATION_WAIT_LIMIT: Duration = Duration::from_millis(500);
+// resource-limit: process.second-interrupt-after
+// class: deadline
+// unit: ms
+// scope: process
+// value: 30000
+// resource: Ожидание ответа процесса, прерванного отменой, до второго прерывания без повторной отмены.
+// status: unproven
+// origin: #2896 (рекомендация v8-runner #296)
+// problem: без человека, который отменит ещё раз, вызов ждал бы итога агента Конфигуратора без срока
+// on-reach: процесс прерывается второй раз и бросает ожидание итога агента
+const SECOND_INTERRUPT_AFTER: Duration = Duration::from_secs(30);
+// resource-limit: process.interrupt-gap
+// class: step
+// unit: ms
+// scope: process
+// value: 1000
+// resource: Наименьший промежуток между первым и вторым прерыванием процесса.
+// status: unproven
+// origin: #2896 (договор v8-runner #296: второй сигнал раньше 1 с раннер не различает)
+// problem: второе прерывание сразу за первым раннер принял бы за одно
+// on-reach: второе прерывание ждёт, пока промежуток не пройдёт
+const INTERRUPT_GAP: Duration = Duration::from_secs(1);
+// resource-limit: process.kill-after-interrupts
+// class: deadline
+// unit: ms
+// scope: process
+// value: 10000
+// resource: Ожидание ответа процесса после второго прерывания до принудительного завершения его дерева.
+// status: unproven
+// origin: #2896 (договор v8-runner #296)
+// problem: процесс, который не отвечает и на второе прерывание, держал бы вызов без срока
+// on-reach: дерево процесса завершается принудительно, как при отмене без прерывания
+const KILL_AFTER_INTERRUPTS: Duration = Duration::from_secs(10);
 // resource-limit: process.reader-wait-limit
 // class: deadline
 // unit: ms
@@ -966,6 +1002,23 @@ pub enum JobPolicy {
     AllowsBreakaway,
 }
 
+/// What a cancel does to the managed process.
+///
+/// `Terminate`: the tree ends at once (on Unix after a short grace for
+/// SIGTERM). `Interrupt`: the process answers a cancel itself, as v8-runner
+/// does. The first cancel interrupts it (Unix: SIGTERM to its group; Windows:
+/// CTRL_BREAK to its console process group) and Unica waits for its answer.
+/// A repeated cancel, or [`SECOND_INTERRUPT_AFTER`] without one, interrupts it
+/// again, at least [`INTERRUPT_GAP`] after the first. [`KILL_AFTER_INTERRUPTS`]
+/// after the second interrupt without an exit the tree ends. A hard cancel
+/// ([`CancellationToken::cancel_now`]) ends it at once, and so does a cancel
+/// on Windows when this process has no console to send the interrupt through.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CancelPolicy {
+    Terminate,
+    Interrupt,
+}
+
 #[derive(Debug, Clone)]
 pub struct ManagedCommand {
     pub program: PathBuf,
@@ -1158,6 +1211,29 @@ pub struct ManagedChild {
     timeout: Option<Duration>,
     cancellation: CancellationToken,
     capture_limits: Option<(usize, usize)>,
+    /// `Some` for [`CancelPolicy::Interrupt`]: the interrupts sent so far.
+    interrupts: Option<Interrupts>,
+}
+
+/// The interrupts a cancel sent to a process that answers it itself.
+#[derive(Default)]
+struct Interrupts {
+    first: Option<Instant>,
+    second: Option<Instant>,
+    /// Held from the first interrupt until the process ends: the task of the
+    /// token shows that its cancel waits for the answer of the process.
+    waiting: Option<unica_work_control::cancellation::AwaitingInterruptedWork>,
+}
+
+/// What a cancel does to the process at this poll.
+#[derive(Debug, PartialEq, Eq)]
+enum CancelStep {
+    /// The process was interrupted and answers itself: wait for its exit.
+    Wait,
+    /// End the tree as a cancel without interrupts does.
+    Terminate,
+    /// The interrupts got no answer, or the cancel is hard: end the tree now.
+    Kill,
 }
 
 /// Where a run that hands its process tree over failed.
@@ -1421,13 +1497,14 @@ impl ManagedChild {
 
     /// [`ManagedChild::spawn`] that names where the start failed.
     pub fn spawn_staged(command: ManagedCommand) -> Result<Self, ManagedSpawnFailure> {
-        Self::spawn_staged_in(command, JobPolicy::Contained)
+        Self::spawn_staged_in(command, JobPolicy::Contained, CancelPolicy::Terminate)
     }
 
-    /// [`ManagedChild::spawn_staged`] with the given group policy.
+    /// [`ManagedChild::spawn_staged`] with the given group and cancel policies.
     pub fn spawn_staged_in(
         command: ManagedCommand,
         policy: JobPolicy,
+        cancel: CancelPolicy,
     ) -> Result<Self, ManagedSpawnFailure> {
         let mut process = Command::new(&command.program);
         process.args(&command.args).current_dir(&command.cwd);
@@ -1441,6 +1518,7 @@ impl ManagedChild {
             command.cancellation,
             command.capture_limits,
             policy,
+            cancel,
         )
     }
 
@@ -1464,6 +1542,7 @@ impl ManagedChild {
             cancellation,
             capture_limits,
             JobPolicy::Contained,
+            CancelPolicy::Terminate,
         )
         .map_err(ManagedSpawnFailure::into_message)
     }
@@ -1474,6 +1553,7 @@ impl ManagedChild {
         cancellation: CancellationToken,
         capture_limits: Option<(usize, usize)>,
         policy: JobPolicy,
+        cancel: CancelPolicy,
     ) -> Result<Self, ManagedSpawnFailure> {
         // A missing working directory fails the OS launch with the same error
         // as a missing program; name it before the program is tried.
@@ -1488,7 +1568,7 @@ impl ManagedChild {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        let mut process_tree = ProcessTree::prepare_in(&mut process, policy)
+        let mut process_tree = ProcessTree::prepare_in(&mut process, policy, cancel)
             .map_err(|error| ManagedSpawnFailure::Prepare(process_error(error)))?;
         // Cancellation and OS launch (including Windows Job attachment) are
         // serialized. A failed launch never claims the protected phase.
@@ -1522,6 +1602,7 @@ impl ManagedChild {
             timeout,
             cancellation,
             capture_limits,
+            interrupts: (cancel == CancelPolicy::Interrupt).then(Interrupts::default),
         })
     }
 
@@ -1556,7 +1637,10 @@ impl ManagedChild {
         command: ManagedCommand,
         policy: JobPolicy,
     ) -> Result<(ManagedOutput, PendingProcessHandoff), PendingRunFailure> {
-        let mut child = Self::spawn_staged_in(command, policy).map_err(PendingRunFailure::Spawn)?;
+        // A launch hands its client over and answers no interrupt: a cancel
+        // ends its tree as before.
+        let mut child = Self::spawn_staged_in(command, policy, CancelPolicy::Terminate)
+            .map_err(PendingRunFailure::Spawn)?;
         let output = child
             .wait_for_pending_handoff_output()
             .map_err(PendingRunFailure::Run)?;
@@ -1681,16 +1765,35 @@ impl ManagedChild {
 
         loop {
             if self.cancellation.is_cancelled() {
-                self.terminate_gracefully()?;
-                return self.finish_after_termination(stdout, stderr, false, true);
+                match self.cancel_step(Instant::now()) {
+                    CancelStep::Wait => {}
+                    CancelStep::Terminate => {
+                        self.terminate_gracefully()?;
+                        return self.finish_after_termination(stdout, stderr, false, true);
+                    }
+                    CancelStep::Kill => {
+                        self.end_interrupt_wait();
+                        self.terminate()?;
+                        return self.finish_after_termination(stdout, stderr, false, true);
+                    }
+                }
             }
             if self.timeout.is_some_and(|limit| started.elapsed() >= limit) {
+                self.end_interrupt_wait();
                 self.terminate()?;
                 return self.finish_after_termination(stdout, stderr, true, false);
             }
             if let Some(status) = self.try_wait_owned_leader()? {
                 self.process_tree.cleanup_after_leader_exit(&mut self.child);
                 self.state = ChildState::Reaped;
+                // An interrupted process answered the cancel itself: its
+                // output and exit are its answer, and the run stays cancelled.
+                if self.end_interrupt_wait() {
+                    self.cancellation.note_interrupt_answered();
+                    let mut output = finish_output(status, stdout, stderr, false, false);
+                    output.cancelled = true;
+                    return Ok(output);
+                }
                 return Ok(finish_output(status, stdout, stderr, false, false));
             }
 
@@ -2090,6 +2193,66 @@ impl ManagedChild {
                 clock.sleep(PROCESS_POLL_INTERVAL);
             }
         }
+    }
+
+    /// The next move of a cancel ([`CancelPolicy`]): interrupt the process,
+    /// interrupt it again, wait for its answer or end its tree.
+    fn cancel_step(&mut self, now: Instant) -> CancelStep {
+        let hard = self.cancellation.is_cancelled_now();
+        let repeated = self.cancellation.cancel_requests() >= 2;
+        let Some(interrupts) = self.interrupts.as_mut() else {
+            return CancelStep::Terminate;
+        };
+        if hard {
+            return if interrupts.first.is_some() {
+                CancelStep::Kill
+            } else {
+                CancelStep::Terminate
+            };
+        }
+        match (interrupts.first, interrupts.second) {
+            (None, _) => match self.process_tree.interrupt(&mut self.child) {
+                Ok(true) => {
+                    interrupts.first = Some(now);
+                    interrupts.waiting = Some(self.cancellation.awaiting_interrupted_work());
+                    CancelStep::Wait
+                }
+                // No interrupt reaches it (it is gone, or there is no
+                // console): the cancel ends the tree as before.
+                Ok(false) | Err(_) => CancelStep::Terminate,
+            },
+            (Some(first), None) => {
+                let since = now.saturating_duration_since(first);
+                if since < INTERRUPT_GAP || !(repeated || since >= SECOND_INTERRUPT_AFTER) {
+                    return CancelStep::Wait;
+                }
+                match self.process_tree.interrupt(&mut self.child) {
+                    Ok(true) => {
+                        interrupts.second = Some(now);
+                        CancelStep::Wait
+                    }
+                    // It exited meanwhile: the next poll sees that.
+                    Ok(false) => CancelStep::Wait,
+                    Err(_) => CancelStep::Kill,
+                }
+            }
+            (_, Some(second)) => {
+                if now.saturating_duration_since(second) < KILL_AFTER_INTERRUPTS {
+                    CancelStep::Wait
+                } else {
+                    CancelStep::Kill
+                }
+            }
+        }
+    }
+
+    /// Ends the wait for the answer of an interrupted process; returns
+    /// whether the process was interrupted.
+    fn end_interrupt_wait(&mut self) -> bool {
+        self.interrupts.as_mut().is_some_and(|interrupts| {
+            interrupts.waiting = None;
+            interrupts.first.is_some()
+        })
     }
 
     pub fn terminate(&mut self) -> Result<(), String> {
@@ -2719,9 +2882,29 @@ pub fn assert_released_unix_group_never_signals_reused_identity_for_test() {
 
 #[cfg(unix)]
 impl ProcessTree {
-    /// No Unix group forbids a process to open its own session.
-    fn prepare_in(command: &mut Command, _policy: JobPolicy) -> io::Result<Self> {
+    /// No Unix group forbids a process to open its own session, and every
+    /// managed process leads its own group, which an interrupt reaches.
+    fn prepare_in(
+        command: &mut Command,
+        _policy: JobPolicy,
+        _cancel: CancelPolicy,
+    ) -> io::Result<Self> {
         Self::prepare(command)
+    }
+
+    /// SIGTERM to the group of the process, while that group is still owned.
+    fn interrupt(&mut self, _child: &mut Child) -> io::Result<bool> {
+        let Some(authority) = self.signalable_authority()? else {
+            return Ok(false);
+        };
+        if self.kill_sent {
+            return Ok(false);
+        }
+        match authority.signal(libc::SIGTERM) {
+            Ok(()) => Ok(true),
+            Err(error) if error.raw_os_error() == Some(libc::ESRCH) => Ok(false),
+            Err(error) => Err(error),
+        }
     }
 
     fn prepare(command: &mut Command) -> io::Result<Self> {
@@ -3060,10 +3243,45 @@ impl ProcessTree {
     }
 }
 
+/// The console of this process, through which CTRL_BREAK reaches a child that
+/// leads its own process group.
+#[cfg(windows)]
+mod windows_console {
+    use std::sync::Once;
+    use windows_sys::Win32::Foundation::BOOL;
+    use windows_sys::Win32::System::Console::{
+        GetConsoleCP, SetConsoleCtrlHandler, CTRL_BREAK_EVENT,
+    };
+
+    /// Whether this process has a console, with a window or without one.
+    pub(super) fn attached() -> bool {
+        // SAFETY: plain query; 0 means there is no console.
+        unsafe { GetConsoleCP() != 0 }
+    }
+
+    /// This process ignores CTRL_BREAK: an event meant for a child's group
+    /// must never end the process that sends it.
+    pub(super) fn ignore_break_here() {
+        static INSTALLED: Once = Once::new();
+        INSTALLED.call_once(|| {
+            // SAFETY: the handler is a plain function that lives as long as
+            // the process.
+            unsafe { SetConsoleCtrlHandler(Some(ignore_break), 1) };
+        });
+    }
+
+    unsafe extern "system" fn ignore_break(kind: u32) -> BOOL {
+        BOOL::from(kind == CTRL_BREAK_EVENT)
+    }
+}
+
 #[cfg(windows)]
 struct ProcessTree {
     job: windows_sys::Win32::Foundation::HANDLE,
     exit_census: Option<windows_job_exit::Census>,
+    /// The process leads its own process group of this process's console:
+    /// CTRL_BREAK reaches it and its console descendants only.
+    console_group: bool,
 }
 
 // SAFETY: Windows kernel handles may be transferred and used from other threads.
@@ -3078,11 +3296,27 @@ unsafe impl Sync for ProcessTree {}
 #[cfg(windows)]
 impl ProcessTree {
     fn prepare(command: &mut Command) -> io::Result<Self> {
-        Self::prepare_in(command, JobPolicy::Contained)
+        Self::prepare_in(command, JobPolicy::Contained, CancelPolicy::Terminate)
     }
 
-    fn prepare_in(command: &mut Command, policy: JobPolicy) -> io::Result<Self> {
-        Self::prepare_with_policy(command, true, policy == JobPolicy::AllowsBreakaway)
+    /// An interrupted process gets its own process group of this process's
+    /// console, when there is one: without a console there is nothing to send
+    /// CTRL_BREAK through, and a cancel ends the tree at once.
+    fn prepare_in(
+        command: &mut Command,
+        policy: JobPolicy,
+        cancel: CancelPolicy,
+    ) -> io::Result<Self> {
+        let console_group = cancel == CancelPolicy::Interrupt && windows_console::attached();
+        if console_group {
+            windows_console::ignore_break_here();
+        }
+        Self::prepare_with_policy(
+            command,
+            true,
+            policy == JobPolicy::AllowsBreakaway,
+            console_group,
+        )
     }
 
     fn prepare_runtime(command: &mut Command) -> io::Result<Self> {
@@ -3095,13 +3329,14 @@ impl ProcessTree {
     /// processes that may leave their groups (the runner's live agent), and a
     /// process leaves only when every group above it allows that.
     fn prepare_detachable(command: &mut Command) -> io::Result<Self> {
-        Self::prepare_with_policy(command, false, true)
+        Self::prepare_with_policy(command, false, true, false)
     }
 
     fn prepare_with_policy(
         command: &mut Command,
         kill_on_close: bool,
         allows_breakaway: bool,
+        console_group: bool,
     ) -> io::Result<Self> {
         use std::mem::{size_of, zeroed};
         use std::os::windows::process::CommandExt;
@@ -3110,9 +3345,15 @@ impl ProcessTree {
             JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_BREAKAWAY_OK,
             JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
         };
-        use windows_sys::Win32::System::Threading::CREATE_SUSPENDED;
+        use windows_sys::Win32::System::Threading::{CREATE_NEW_PROCESS_GROUP, CREATE_SUSPENDED};
 
-        command.creation_flags(CREATE_SUSPENDED);
+        // One call: a later `creation_flags` replaces the flags, and without
+        // CREATE_SUSPENDED the process would run before it joins the Job.
+        command.creation_flags(if console_group {
+            CREATE_SUSPENDED | CREATE_NEW_PROCESS_GROUP
+        } else {
+            CREATE_SUSPENDED
+        });
 
         // SAFETY: null security attributes and name request an unnamed job with defaults.
         let job = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
@@ -3153,7 +3394,28 @@ impl ProcessTree {
         Ok(Self {
             job,
             exit_census: None,
+            console_group,
         })
+    }
+
+    /// CTRL_BREAK to the process group the process leads, only while the
+    /// process still runs: an event for a group without any live member
+    /// reaches other processes of the console. The check and the event are
+    /// not atomic; the group lives at least as long as its leader, and a
+    /// leader that exits between them leaves its console children (if any)
+    /// as the group the event reaches.
+    fn interrupt(&mut self, child: &mut Child) -> io::Result<bool> {
+        use windows_sys::Win32::System::Console::{GenerateConsoleCtrlEvent, CTRL_BREAK_EVENT};
+
+        if !self.console_group || child.try_wait()?.is_some() {
+            return Ok(false);
+        }
+        // SAFETY: plain call; the group id is the id of the live leader, whose
+        // handle `child` holds, so the id is not reused meanwhile.
+        if unsafe { GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, child.id()) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(true)
     }
 
     fn attach(&mut self, child: &mut Child) -> io::Result<Option<ExitStatus>> {
@@ -3392,8 +3654,16 @@ struct ProcessTree;
 
 #[cfg(not(any(unix, windows)))]
 impl ProcessTree {
-    fn prepare_in(command: &mut Command, _policy: JobPolicy) -> io::Result<Self> {
+    fn prepare_in(
+        command: &mut Command,
+        _policy: JobPolicy,
+        _cancel: CancelPolicy,
+    ) -> io::Result<Self> {
         Self::prepare(command)
+    }
+
+    fn interrupt(&mut self, _child: &mut Child) -> io::Result<bool> {
+        Ok(false)
     }
 
     fn prepare(_command: &mut Command) -> io::Result<Self> {
@@ -7424,13 +7694,17 @@ mod medium_tests {
 
     #[test]
     fn managed_child_kills_descendants() {
-        managed_child_kills_descendants_in(super::JobPolicy::Contained);
+        use super::{CancelPolicy, JobPolicy};
+        managed_child_kills_descendants_in(JobPolicy::Contained, CancelPolicy::Terminate);
         // A group that lets a process leave it on request ends every process
         // that did not ask, as before (the runner's live agent asks).
-        managed_child_kills_descendants_in(super::JobPolicy::AllowsBreakaway);
+        managed_child_kills_descendants_in(JobPolicy::AllowsBreakaway, CancelPolicy::Terminate);
+        // A process that answers a cancel itself starts in its own group as
+        // well, only after it joined the group, and its tree ends with it.
+        managed_child_kills_descendants_in(JobPolicy::AllowsBreakaway, CancelPolicy::Interrupt);
     }
 
-    fn managed_child_kills_descendants_in(policy: super::JobPolicy) {
+    fn managed_child_kills_descendants_in(policy: super::JobPolicy, cancel: super::CancelPolicy) {
         let pid_file = std::env::temp_dir().join(format!(
             "unica-managed-child-pids-{}-{}",
             std::process::id(),
@@ -7467,6 +7741,7 @@ mod medium_tests {
                 cancellation: cancellation.clone(),
             },
             policy,
+            cancel,
         )
         .unwrap();
         let mut managed_cleanup = ManagedChildCleanupGuard::new(managed, cancellation.clone());

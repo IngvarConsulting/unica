@@ -6,6 +6,7 @@ use serde_json::{json, Map, Value};
 use unica_address::address::{NodeKind, QualifiedAddress};
 use unica_operation_contract::OperationSkeleton;
 use unica_operation_contract::{object, OperationContract};
+use unica_source_contract::format_identity::{configuration_root_additions_after, PlatformLine};
 use unica_source_contract::SourceSetKind;
 
 macro_rules! properties_operations {
@@ -59,9 +60,82 @@ pub enum PropertiesSite {
     StyleItem,
     /// The root of a source set: the configuration's own `Configuration.xml`,
     /// or an extension's, which may change only its identity properties.
+    /// `line` is the platform line of the set's format; it decides which
+    /// root properties and values exist. A set without a known line has only
+    /// those every described line has.
     Configuration {
         extension: bool,
+        line: Option<PlatformLine>,
     },
+}
+
+/// A root property, or a value of one, that a later platform line than the
+/// set's adds: `can` leaves it out and an edit is refused with this reason.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LaterLineCapability {
+    pub property: &'static str,
+    pub value: Option<&'static str>,
+    pub since: PlatformLine,
+}
+
+impl LaterLineCapability {
+    /// The reason `can` and the refusal give, naming the set's format and line.
+    pub fn reason(self, source_set: &str, line: Option<PlatformLine>) -> String {
+        let subject = match self.value {
+            Some(value) => format!("Value `{value}` of `{}`", self.property),
+            None => format!("Property `{}`", self.property),
+        };
+        later_line_reason(&subject, self.since, source_set, line)
+    }
+
+    /// The `can` mark: what is missing, from which line and format.
+    fn mark(self) -> Value {
+        let mut mark = json!({
+            "property": self.property,
+            "since": self.since.to_string(),
+            "format": line_format(self.since),
+        });
+        if let Some(value) = self.value {
+            mark["value"] = json!(value);
+        }
+        mark
+    }
+}
+
+/// Whether the profile of platform `line` lacks a configuration root
+/// `property`, or its `value`: a later line adds it.
+fn line_lacks(line: Option<PlatformLine>, property: &str, value: Option<&str>) -> bool {
+    configuration_root_additions_after(line)
+        .iter()
+        .any(|addition| addition.property == property && addition.value == value)
+}
+
+/// Why `subject` is missing in a set of platform `line`: it exists from
+/// line `since`. `can` and the refusal of an edit give this one reason.
+pub fn later_line_reason(
+    subject: &str,
+    since: PlatformLine,
+    source_set: &str,
+    line: Option<PlatformLine>,
+) -> String {
+    let set = match line {
+        Some(line) => format!(
+            "source set `{source_set}` is in format {} (platform {line})",
+            line_format(line)
+        ),
+        None => format!("source set `{source_set}` names no platform line"),
+    };
+    format!(
+        "{subject} exists from platform {since} (format {}); {set}.",
+        line_format(since)
+    )
+}
+
+/// The Designer export format platform `line` writes.
+pub(crate) fn line_format(line: PlatformLine) -> &'static str {
+    unica_source_contract::SourceProfile::platform_xml_of_line(line)
+        .and_then(unica_source_contract::SourceProfile::serialization_format)
+        .unwrap_or("unknown")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -87,6 +161,11 @@ macro_rules! descriptor_properties {
                 match self { $(Self::$field => &[$name, $alias]),+ }
             }
 
+            /// Whether a configuration root of some line has the property.
+            const fn on_configuration_root(self) -> bool {
+                match self { $(Self::$field => $configuration),+ }
+            }
+
             pub const fn kind(self) -> DescriptorPropertyKind {
                 match self { $(Self::$field => DescriptorPropertyKind::$kind),+ }
             }
@@ -95,10 +174,11 @@ macro_rules! descriptor_properties {
                 match site {
                     PropertiesSite::Subsystem => match self { $(Self::$field => $subsystem),+ },
                     PropertiesSite::Role => match self { $(Self::$field => $role),+ },
-                    PropertiesSite::Configuration { extension: false } => {
-                        match self { $(Self::$field => $configuration),+ }
+                    PropertiesSite::Configuration { extension: false, line } => {
+                        self.on_configuration_root()
+                            && !line_lacks(line, self.names()[0], None)
                     }
-                    PropertiesSite::Configuration { extension: true } => {
+                    PropertiesSite::Configuration { extension: true, .. } => {
                         match self { $(Self::$field => $extension),+ }
                     }
                     PropertiesSite::Metadata { .. } => false,
@@ -148,6 +228,12 @@ descriptor_properties!(
     ModalityUseMode => ("ModalityUseMode", "modalityUseMode", Enum, false, false, true, false),
     SynchronousPlatformExtensionAndAddInCallUseMode => ("SynchronousPlatformExtensionAndAddInCallUseMode", "synchronousPlatformExtensionAndAddInCallUseMode", Enum, false, false, true, false),
     MainClientApplicationWindowMode => ("MainClientApplicationWindowMode", "mainClientApplicationWindowMode", Enum, false, false, true, false),
+    Caption => ("Caption", "caption", String, false, false, true, false),
+    ShortCaption => ("ShortCaption", "shortCaption", String, false, false, true, false),
+    MainClientApplicationWindowInterfaceVariant => ("MainClientApplicationWindowInterfaceVariant", "mainClientApplicationWindowInterfaceVariant", Enum, false, false, true, false),
+    ClientApplicationTheme => ("ClientApplicationTheme", "clientApplicationTheme", Enum, false, false, true, false),
+    ClientApplicationWindowsOpenVariant => ("ClientApplicationWindowsOpenVariant", "clientApplicationWindowsOpenVariant", Enum, false, false, true, false),
+    Version85InterfaceMigrationMode => ("Version85InterfaceMigrationMode", "version85InterfaceMigrationMode", Enum, false, false, true, false),
 );
 
 impl DescriptorProperty {
@@ -163,13 +249,24 @@ impl DescriptorProperty {
                 | Self::Copyright
                 | Self::VendorInformationAddress
                 | Self::ConfigurationInformationAddress
+                | Self::Caption
+                | Self::ShortCaption
         )
     }
 
-    /// The closed 8.3.27 value set of an enumerated property. A compatibility
-    /// mode leaves out `DontUse`: the platform reads it back as another mode.
+    /// The closed value set of an enumerated property in the line it first
+    /// exists in. A compatibility mode leaves out `DontUse`: the platform
+    /// reads it back as another mode.
     pub fn allowed_values(self) -> &'static [&'static str] {
-        let values = crate::configuration::cf_validate_enum_allowed(self.names()[0]);
+        let values = match self {
+            Self::MainClientApplicationWindowInterfaceVariant => {
+                &["NavigationLeft", "NavigationTop"][..]
+            }
+            Self::ClientApplicationTheme => &["Auto", "Light", "Dark"],
+            Self::ClientApplicationWindowsOpenVariant => &["OpenDataInTabs", "OpenDataInDialogs"],
+            Self::Version85InterfaceMigrationMode => &["Use", "DontUse"],
+            _ => crate::configuration::cf_validate_enum_allowed(self.names()[0]),
+        };
         match (self, values.split_first()) {
             (
                 Self::CompatibilityMode | Self::ConfigurationExtensionCompatibilityMode,
@@ -178,6 +275,20 @@ impl DescriptorProperty {
             _ => values,
         }
     }
+
+    /// The values of an enumerated property in a set of platform `line`.
+    pub fn allowed_values_in(self, line: Option<PlatformLine>) -> Vec<&'static str> {
+        let mut values = self.allowed_values().to_vec();
+        let property = self.names()[0];
+        values.extend(
+            configuration_root_additions_after(None)
+                .into_iter()
+                .filter(|addition| addition.property == property)
+                .filter_map(|addition| addition.value)
+                .filter(|value| !line_lacks(line, property, Some(value))),
+        );
+        values
+    }
 }
 
 impl PropertiesSite {
@@ -185,7 +296,11 @@ impl PropertiesSite {
     /// profile of its kind, any other address its descriptor owner.
     pub fn from_site(site: &unica_source_contract::context::OperationSite<'_>) -> Option<Self> {
         if site.route() == unica_source_contract::route::RouteClass::Configuration {
-            return Self::root_of(site.source().kind());
+            let source = site.source();
+            return Self::root_of(
+                source.kind(),
+                source.classification_profile().semantic_line(),
+            );
         }
         let profile = Self::from_address(site.at(), site.source().kind())?;
         if site.source().kind() != unica_source_contract::SourceSetKind::Configuration {
@@ -200,18 +315,49 @@ impl PropertiesSite {
         Some(profile)
     }
 
-    /// The root profile of a source set; external processors and reports
-    /// have none.
-    pub fn root_of(kind: unica_source_contract::SourceSetKind) -> Option<Self> {
+    /// The root profile of a source set of platform `line`; external
+    /// processors and reports have none.
+    pub fn root_of(
+        kind: unica_source_contract::SourceSetKind,
+        line: Option<PlatformLine>,
+    ) -> Option<Self> {
         match kind {
-            unica_source_contract::SourceSetKind::Configuration => {
-                Some(Self::Configuration { extension: false })
-            }
-            unica_source_contract::SourceSetKind::Extension => {
-                Some(Self::Configuration { extension: true })
-            }
+            unica_source_contract::SourceSetKind::Configuration => Some(Self::Configuration {
+                extension: false,
+                line,
+            }),
+            unica_source_contract::SourceSetKind::Extension => Some(Self::Configuration {
+                extension: true,
+                line,
+            }),
             _ => None,
         }
+    }
+
+    /// The properties and values of a configuration root that the line of
+    /// its set does not have, each with the line it exists from
+    /// (INV.SOURCE.PROFILE-CAPABILITIES).
+    pub fn later_line_capabilities(self) -> Vec<LaterLineCapability> {
+        let Self::Configuration {
+            extension: false,
+            line,
+        } = self
+        else {
+            return Vec::new();
+        };
+        configuration_root_additions_after(line)
+            .into_iter()
+            .filter(|addition| {
+                DescriptorProperty::ALL.iter().any(|field| {
+                    field.on_configuration_root() && field.names()[0] == addition.property
+                })
+            })
+            .map(|addition| LaterLineCapability {
+                property: addition.property,
+                value: addition.value,
+                since: addition.since,
+            })
+            .collect()
     }
 
     /// Read routing is deliberately irrelevant here: CommonModule is read as
@@ -318,7 +464,7 @@ impl PropertiesSite {
                         DescriptorPropertyKind::String => json!({"type":"string"}),
                         DescriptorPropertyKind::Boolean => json!({"type":"boolean"}),
                         DescriptorPropertyKind::Enum => {
-                            json!({"type":"string", "enum":field.allowed_values()})
+                            json!({"type":"string", "enum":self.enum_values(field)})
                         }
                     };
                     let schema = if field == DescriptorProperty::Location {
@@ -354,7 +500,59 @@ impl PropertiesSite {
             // neither merge these groups nor erase diagnostic provenance.
             values["x-unica-alias-groups"] = json!(groups);
         }
+        let later = self.later_line_capabilities();
+        if let (Self::Configuration { line, .. }, false) = (self, later.is_empty()) {
+            // `can` names what a later line adds, with the reason the edit
+            // is refused for (INV.SOURCE.PROFILE-CAPABILITIES).
+            values["x-unica-later-lines"] = json!({
+                "line": line.map(|line| line.to_string()),
+                "format": line.map(line_format),
+                "items": later.iter().map(|item| item.mark()).collect::<Vec<_>>(),
+            });
+        }
         values
+    }
+
+    /// The values of an enumerated `field` this site offers.
+    fn enum_values(self, field: DescriptorProperty) -> Vec<&'static str> {
+        match self {
+            Self::Configuration { line, .. } => field.allowed_values_in(line),
+            _ => field.allowed_values().to_vec(),
+        }
+    }
+
+    /// The refusal of a configuration root edit that names a property or
+    /// value the line of `source_set` does not have; it is the reason `can`
+    /// marks the same property or value with.
+    pub fn later_line_refusal(
+        self,
+        source_set: &str,
+        values: &Map<String, Value>,
+    ) -> Option<(String, String)> {
+        let Self::Configuration {
+            extension: false,
+            line,
+        } = self
+        else {
+            return None;
+        };
+        let later = self.later_line_capabilities();
+        for (name, value) in values {
+            let Some(field) = DescriptorProperty::ALL.iter().copied().find(|field| {
+                field.on_configuration_root() && field.names().contains(&name.as_str())
+            }) else {
+                continue;
+            };
+            let canonical = field.names()[0];
+            let missing = later.iter().find(|item| {
+                item.property == canonical
+                    && item.value.is_none_or(|later| value.as_str() == Some(later))
+            });
+            if let Some(item) = missing {
+                return Some((name.clone(), item.reason(source_set, line)));
+            }
+        }
+        None
     }
 }
 
@@ -367,8 +565,8 @@ impl PropertiesOperation {
                     PropertiesSite::Language => "An existing registered Language of an ordinary configuration. Its Comment can change; LanguageCode changes only for an unused additional language.",
                     PropertiesSite::WSReference => "An existing registered WSReference in a configuration source set, platform XML 2.20. Its Comment and existing LocationURL properties can change.",
                     PropertiesSite::StyleItem => "The existing named StyleItem with observed Type=Color and a supported explicit Value: `<set>:StyleItem.<name>`.",
-                    PropertiesSite::Configuration { extension: false } => "The configuration root `<set>:Configuration`. The address selects the root property profile.",
-                    PropertiesSite::Configuration { extension: true } => "The extension root `<set>:Configuration`. An extension changes only its own identity properties.",
+                    PropertiesSite::Configuration { extension: false, .. } => "The configuration root `<set>:Configuration`. The address selects the root property profile.",
+                    PropertiesSite::Configuration { extension: true, .. } => "The extension root `<set>:Configuration`. An extension changes only its own identity properties.",
                     PropertiesSite::CommentOnly(NodeKind::CommonForm) => "The existing common form descriptor at `<set>:CommonForm.Name.Metadata`.",
                     PropertiesSite::CommentOnly(_) => "The existing named root metadata descriptor at `<set>:Kind.Name`. This profile changes only Comment.",
                     _ => "The existing named top-level metadata object, role or subsystem, or a nested subsystem, at its full address. The address selects the property profile.",
@@ -475,6 +673,100 @@ impl unica_operations::FamilyOperation for PropertiesOperation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// rule: INV.SOURCE.PROFILE-CAPABILITIES
+    #[test]
+    fn can_offers_the_root_properties_and_values_of_the_set_line() {
+        use unica_source_contract::context::{OperationSite, SourceSetTraits};
+        use unica_source_contract::route::RouteClass;
+        use unica_source_contract::SourceProfile;
+        let at = QualifiedAddress::parse("main:Configuration").unwrap();
+        let contract = |line: PlatformLine| {
+            let profile = SourceProfile::platform_xml_of_line(line).unwrap();
+            let source = SourceSetTraits::from_profiles(
+                SourceSetKind::Configuration,
+                Some(profile),
+                profile,
+            );
+            let site = OperationSite::from_route(&at, source, RouteClass::Configuration);
+            PropertiesOperation::Set
+                .descriptor()
+                .argument_contract_at(&site)
+                .unwrap()
+        };
+
+        let old = contract(PlatformLine::new(8, 3, 27));
+        let values = &old.schema["properties"]["values"];
+        for name in [
+            "ClientApplicationTheme",
+            "clientApplicationTheme",
+            "Caption",
+            "Version85InterfaceMigrationMode",
+        ] {
+            assert!(values["properties"].get(name).is_none(), "{name}");
+        }
+        assert!(!values["properties"]["InterfaceCompatibilityMode"]["enum"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("Version8_5")));
+        let later = &values["x-unica-later-lines"];
+        assert_eq!(later["line"], "8.3.27");
+        assert_eq!(later["format"], "2.20");
+        let items = later["items"].as_array().unwrap();
+        assert!(items.contains(&json!({
+            "property":"ClientApplicationTheme","since":"8.5.1","format":"2.21"
+        })));
+        assert!(items.contains(&json!({
+            "property":"InterfaceCompatibilityMode","value":"Version8_5",
+            "since":"8.5.1","format":"2.21"
+        })));
+        let oracle = jsonschema::validator_for(&old.schema).unwrap();
+        assert!(!oracle.is_valid(&json!({"values":{"ClientApplicationTheme":"Dark"}})));
+
+        for line in [PlatformLine::new(8, 5, 1), PlatformLine::new(8, 5, 4)] {
+            let new = contract(line);
+            let values = &new.schema["properties"]["values"];
+            assert_eq!(
+                values["properties"]["ClientApplicationTheme"]["enum"],
+                json!(["Auto", "Light", "Dark"])
+            );
+            assert!(values["properties"]["InterfaceCompatibilityMode"]["enum"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("Version8_5")));
+            assert!(values.get("x-unica-later-lines").is_none(), "{line}");
+            let oracle = jsonschema::validator_for(&new.schema).unwrap();
+            assert!(oracle.is_valid(&json!({"values":{
+                "ClientApplicationTheme":"Dark","InterfaceCompatibilityMode":"Version8_5",
+                "caption":"Учёт"
+            }})));
+        }
+
+        // The refusal of an edit gives the reason `can` marks it with.
+        let site = PropertiesSite::root_of(
+            SourceSetKind::Configuration,
+            Some(PlatformLine::new(8, 3, 27)),
+        )
+        .unwrap();
+        let values = json!({"Comment":"x","clientApplicationTheme":"Dark"});
+        assert_eq!(
+            site.later_line_refusal("main", values.as_object().unwrap()),
+            Some((
+                "clientApplicationTheme".to_string(),
+                "Property `ClientApplicationTheme` exists from platform 8.5.1 (format 2.21); source set `main` is in format 2.20 (platform 8.3.27).".to_string()
+            ))
+        );
+        let values = json!({"InterfaceCompatibilityMode":"Taxi"});
+        assert_eq!(
+            site.later_line_refusal("main", values.as_object().unwrap()),
+            None
+        );
+        // An extension root has none of these properties in any line.
+        let extension =
+            PropertiesSite::root_of(SourceSetKind::Extension, Some(PlatformLine::new(8, 3, 27)))
+                .unwrap();
+        assert!(extension.later_line_capabilities().is_empty());
+    }
 
     #[test]
     fn edit_type_profile_uses_the_actual_source_kind() {
@@ -827,7 +1119,7 @@ mod tests {
             );
         }
         assert_eq!(
-            PropertiesSite::root_of(unica_source_contract::SourceSetKind::ExternalReport),
+            PropertiesSite::root_of(unica_source_contract::SourceSetKind::ExternalReport, None),
             None
         );
         for property in [

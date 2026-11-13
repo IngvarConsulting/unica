@@ -16,6 +16,8 @@ const ITEM_SCALAR_KEYS: &[&str] = &[
     "denyIncompleteValues",
     "fillValue",
     "addressingDimension",
+    // Цвет значения перечисления — с 8.5.1 (формат 2.21).
+    "color",
     "incomplete",
     "template",
     "httpMethod",

@@ -39,16 +39,58 @@ const BASE_NAME: &str = "v8project.yaml";
 const LOCAL_NAME: &str = "v8project.local.yaml";
 const ORIGIN: &str = "origin";
 
+/// The warning of a command that the runner abandoned on a second interrupt
+/// while the Designer agent of the standalone server may still hold the
+/// infobase.
+const ABANDONED_STANDALONE_CODE: &str = "agent_command_abandoned_standalone";
+const ABANDONED_STANDALONE: &str = "the command was abandoned while the Designer agent of the standalone server may still be working on the infobase and holding it open; to release it, run `v8-runner standalone restart` in the working copy";
+
 /// Runs the pinned runner on the working-copy config, one invocation per
 /// working copy at a time. Its group lets the runner's live Designer agent
-/// leave it ([`BreakawayProcessRunner`]). It keeps what the last runner
-/// command said about that agent ([`agent_receipt`]).
+/// leave it, and a cancel interrupts it instead of ending it
+/// ([`BreakawayProcessRunner`]). It keeps what the last runner command said
+/// about that agent ([`agent_receipt`]) and whether the runner abandoned a
+/// command of the agent.
 #[derive(Default)]
 pub(super) struct PinnedRunner {
     agent: std::sync::Mutex<Option<serde_json::Value>>,
+    abandoned: std::sync::atomic::AtomicBool,
 }
 
 impl PinnedRunner {
+    /// The runner that a cancel interrupted answered it itself: its answer is
+    /// the outcome of the call, unless the answer is the cancel. A finished
+    /// command or an abandoned one goes to the adapter as any answer of the
+    /// runner, and the call publishes it instead of the cancel.
+    fn take_answer_to_interrupt(
+        &self,
+        command: &ProcessCommand,
+        answers_before: usize,
+        output: &mut ProcessOutput,
+    ) {
+        if !output.cancelled || command.cancellation.interrupt_answers() == answers_before {
+            return;
+        }
+        let Ok(envelope) = serde_json::from_str::<serde_json::Value>(output.stdout.trim()) else {
+            return;
+        };
+        let code = envelope["error"]["code"].as_str();
+        if code == Some("cancelled") || !envelope["ok"].is_boolean() {
+            return;
+        }
+        output.cancelled = false;
+        command.cancellation.record_answered_interrupt();
+        if code == Some("agent_command_abandoned") {
+            self.abandoned
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
+    }
+
+    /// Whether the runner abandoned a command of its Designer agent.
+    fn abandoned(&self) -> bool {
+        self.abandoned.load(std::sync::atomic::Ordering::Acquire)
+    }
+
     fn note(&self, output: &ProcessOutput) {
         if let Some(agent) = agent_receipt(&output.stdout) {
             *self.agent.lock().unwrap_or_else(|error| error.into_inner()) = Some(agent);
@@ -67,7 +109,9 @@ impl PinnedRunner {
 impl ProcessRunner for PinnedRunner {
     fn run(&self, command: &ProcessCommand) -> Result<ProcessOutput, String> {
         let _lock = lock_for(command)?;
-        let output = BreakawayProcessRunner.run(command)?;
+        let answers = command.cancellation.interrupt_answers();
+        let mut output = BreakawayProcessRunner.run(command)?;
+        self.take_answer_to_interrupt(command, answers, &mut output);
         self.note(&output);
         Ok(output)
     }
@@ -77,7 +121,9 @@ impl ProcessRunner for PinnedRunner {
     /// never as an unstartable engine.
     fn run_staged(&self, command: &ProcessCommand) -> Result<ProcessOutput, ProcessStreamFailure> {
         let _lock = lock_for(command).map_err(ProcessStreamFailure::Run)?;
-        let output = BreakawayProcessRunner.run_staged(command)?;
+        let answers = command.cancellation.interrupt_answers();
+        let mut output = BreakawayProcessRunner.run_staged(command)?;
+        self.take_answer_to_interrupt(command, answers, &mut output);
         self.note(&output);
         Ok(output)
     }
@@ -130,11 +176,17 @@ fn agent_receipt(stdout: &str) -> Option<serde_json::Value> {
 }
 
 fn lock_for(command: &ProcessCommand) -> Result<RunnerLock, String> {
-    let config = command
-        .args
+    // `init` takes no global `--config`: it names the project file it writes
+    // beside with `--output`.
+    let config = ["--config", "--output"]
         .iter()
-        .position(|value| value == "--config")
-        .and_then(|position| command.args.get(position + 1))
+        .find_map(|key| {
+            command
+                .args
+                .iter()
+                .position(|value| value == key)
+                .and_then(|position| command.args.get(position + 1))
+        })
         .ok_or("runner adapter requires an explicit project config")?;
     let root = Path::new(config)
         .parent()
@@ -171,6 +223,7 @@ pub(super) fn with_bundled_runner(
     let mut result = with_prepared_working_copy(root, at, cancellation, |cancellation| {
         run(&runner, cancellation)
     });
+    result.warnings.extend(abandoned_warning(root, &runner));
     let Some(mut agent) = runner.agent() else {
         return result;
     };
@@ -203,6 +256,18 @@ pub(super) fn with_bundled_runner(
         data.insert("agent".to_string(), agent);
     }
     result
+}
+
+/// After the runner abandoned a command of the Designer agent of a
+/// standalone server, the agent may still work on the infobase and hold it
+/// open: the answer says how to release it.
+fn abandoned_warning(root: &Path, runner: &PinnedRunner) -> Option<serde_json::Value> {
+    (runner.abandoned() && matches!(origin_kind(root), Ok(OriginKind::Standalone))).then(|| {
+        serde_json::json!({
+            "code": ABANDONED_STANDALONE_CODE,
+            "message": ABANDONED_STANDALONE,
+        })
+    })
 }
 
 /// Runs a runner operation on a prepared working copy: [`prepare_working_copy`]
@@ -1218,6 +1283,107 @@ source-set:
     /// Ответ называет живого агента команды из `provider.endpoint.live`
     /// раннера: взят ли он, остаётся ли и почему нет, сколько у него
     /// держателей и держит ли его Unica. Номера чужих держателей наружу не идут.
+    /// The runner that a cancel interrupted answered it itself. Its answer
+    /// goes to the adapter and is the outcome of the call, unless it is the
+    /// cancel; a run that was not interrupted, or killed, stays cancelled.
+    /// rule: INV.APP.ADMISSION-FAILURE-ISOLATION
+    #[test]
+    fn the_answer_of_an_interrupted_runner_is_the_outcome_of_the_call() {
+        use unica_work_control::cancellation::FactualOutcomeAuthority;
+        let answered = |stdout: serde_json::Value, interrupted: bool| {
+            let runner = PinnedRunner::default();
+            let cancellation = CancellationToken::new();
+            cancellation.cancel();
+            let command = ProcessCommand {
+                program: "v8-runner".into(),
+                args: Vec::new(),
+                cwd: std::env::temp_dir(),
+                env: Vec::new(),
+                env_remove: Vec::new(),
+                capture_limits: None,
+                timeout: None,
+                cancellation: cancellation.clone(),
+            };
+            let before = cancellation.interrupt_answers();
+            if interrupted {
+                cancellation.note_interrupt_answered();
+            }
+            let mut output = ProcessOutput {
+                status_success: false,
+                status: "exit code: 4".to_string(),
+                stdout: stdout.to_string(),
+                stderr: String::new(),
+                timed_out: false,
+                cancelled: true,
+                stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
+            };
+            runner.take_answer_to_interrupt(&command, before, &mut output);
+            (
+                output.cancelled,
+                cancellation.factual_outcome_authority(),
+                runner.abandoned(),
+            )
+        };
+        let abandoned = serde_json::json!({
+            "ok": false, "error": {"code": "agent_command_abandoned", "kind": "platform"}
+        });
+        assert_eq!(
+            answered(abandoned.clone(), true),
+            (false, FactualOutcomeAuthority::AnsweredInterrupt, true)
+        );
+        assert_eq!(
+            answered(serde_json::json!({"ok": true, "data": {}}), true),
+            (false, FactualOutcomeAuthority::AnsweredInterrupt, false)
+        );
+        let cancelled = serde_json::json!({"ok": false, "error": {"code": "cancelled"}});
+        assert_eq!(
+            answered(cancelled, true),
+            (true, FactualOutcomeAuthority::Cancellable, false)
+        );
+        assert_eq!(
+            answered(abandoned, false),
+            (true, FactualOutcomeAuthority::Cancellable, false)
+        );
+        assert_eq!(
+            answered(serde_json::json!("not an envelope"), true),
+            (true, FactualOutcomeAuthority::Cancellable, false)
+        );
+    }
+
+    /// After an abandoned command of the agent of a standalone server the
+    /// answer says how to release the infobase; elsewhere it says nothing.
+    #[test]
+    fn an_abandoned_command_on_a_standalone_server_names_the_restart() {
+        let standalone = tempfile::tempdir().unwrap();
+        std::fs::write(
+            standalone.path().join("v8project.yaml"),
+            "infobases: {origin: {connection: 'Srvr=srv:1541;Ref=demo', standalone: {}}}\n",
+        )
+        .unwrap();
+        let file = tempfile::tempdir().unwrap();
+        std::fs::write(
+            file.path().join("v8project.yaml"),
+            "infobases: {origin: {connection: 'File=ib'}}\n",
+        )
+        .unwrap();
+        let runner = PinnedRunner::default();
+        assert_eq!(abandoned_warning(standalone.path(), &runner), None);
+        runner
+            .abandoned
+            .store(true, std::sync::atomic::Ordering::Release);
+        assert_eq!(
+            abandoned_warning(standalone.path(), &runner),
+            Some(serde_json::json!({
+                "code": "agent_command_abandoned_standalone",
+                "message": ABANDONED_STANDALONE,
+            }))
+        );
+        assert_eq!(abandoned_warning(file.path(), &runner), None);
+    }
+
     #[test]
     fn the_answer_names_the_live_agent_of_the_command() {
         let envelope = |live: serde_json::Value| {
