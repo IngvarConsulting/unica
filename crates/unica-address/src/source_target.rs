@@ -388,6 +388,7 @@ const ADDRESS_KINDS: &[AddressKind] = &[
         &["РегламентноеЗадание"],
         &["ScheduledJobs", "РегламентныеЗадания"],
     ),
+    kind("Queue", &["Очередь"], &["Queues", "Очереди"]),
     kind(
         "SettingsStorage",
         &["ХранилищеНастроек"],

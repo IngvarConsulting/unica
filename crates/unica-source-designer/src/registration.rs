@@ -366,6 +366,9 @@ pub fn platform_child_object_order(owner_kind: &str) -> Option<&'static [&'stati
             "Template",
             "Command",
         ],
+        // Очередь пишет измерения перед реквизитами: выгрузка 8.5.4
+        // собирает их в этом порядке даже из источника с обратным.
+        "Queue" => &["Dimension", "Attribute"],
         "Enum" => &["EnumValue", "Form", "Template", "Command"],
         "DocumentJournal" => &["Column", "Form", "Template", "Command"],
         _ => return None,

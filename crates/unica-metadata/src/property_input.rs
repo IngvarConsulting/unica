@@ -63,6 +63,7 @@ pub enum PropertiesIntent {
     Configuration(ConfigurationPropertyChanges),
     StyleItem(StyleItemPropertyChanges),
     PaletteColor(PaletteColorPropertyChanges),
+    Queue(QueuePropertyChanges),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -80,6 +81,39 @@ pub const PALETTE_COLOR_PATTERN: &str = "^#[0-9A-Fa-f]{6}$";
 pub struct PaletteColorPropertyChanges {
     pub color: Option<String>,
     pub comment: Option<String>,
+}
+
+/// The processing properties and Comment of a queue; at least one is set.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct QueuePropertyChanges {
+    pub transactioned: Option<bool>,
+    pub auto_processing: Option<bool>,
+    pub processing_portion_size: Option<u32>,
+    pub comment: Option<String>,
+}
+
+impl QueuePropertyChanges {
+    /// The descriptor properties to write, in the order the export puts
+    /// them, with the text the platform writes for each.
+    pub fn descriptor_values(&self) -> Vec<(&'static str, String)> {
+        [
+            (
+                "Transactioned",
+                self.transactioned.map(|value| value.to_string()),
+            ),
+            (
+                "ProcessingPortionSize",
+                self.processing_portion_size.map(|value| value.to_string()),
+            ),
+            (
+                "AutoProcessing",
+                self.auto_processing.map(|value| value.to_string()),
+            ),
+        ]
+        .into_iter()
+        .filter_map(|(key, value)| value.map(|value| (key, value)))
+        .collect()
+    }
 }
 
 fn is_palette_color(raw: &str) -> bool {
@@ -371,6 +405,40 @@ fn decode_with_contract(
                             .and_then(Value::as_bool),
                         comment: values_reader.string(DescriptorProperty::Comment)?,
                     })
+                }
+                PropertiesSite::Queue => {
+                    let comment = values_reader.string(DescriptorProperty::Comment)?;
+                    let transactioned = values_reader
+                        .field("Transactioned", false)?
+                        .and_then(Value::as_bool);
+                    let auto_processing = values_reader
+                        .field("AutoProcessing", false)?
+                        .and_then(Value::as_bool);
+                    let processing_portion_size =
+                        match values_reader.field("ProcessingPortionSize", true)? {
+                            Some(value) => {
+                                Some(json_u32(value).filter(|size| *size > 0).ok_or_else(|| {
+                                    invalid(
+                                        format!("{values_path}.ProcessingPortionSize"),
+                                        "ProcessingPortionSize must be a whole number above zero",
+                                    )
+                                })?)
+                            }
+                            None => None,
+                        };
+                    let changes = QueuePropertyChanges {
+                        transactioned,
+                        auto_processing,
+                        processing_portion_size,
+                        comment,
+                    };
+                    if changes == QueuePropertyChanges::default() {
+                        return Err(invalid(
+                            &values_path,
+                            "Transactioned, AutoProcessing, ProcessingPortionSize or Comment is required",
+                        ));
+                    }
+                    PropertiesIntent::Queue(changes)
                 }
                 PropertiesSite::PaletteColor => {
                     let comment = values_reader.string(DescriptorProperty::Comment)?;
