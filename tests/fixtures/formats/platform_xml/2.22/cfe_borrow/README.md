@@ -16,6 +16,13 @@ and exported with `/DumpConfigToFiles ... -Extension`.
   `Наценка` and the borrowed tabular section `Представления` with its attribute
   `КодЯзыка`.
 - `extension-common-module.xml`: `CommonModule.EventHandlers`.
+- `extension-information-register.xml`, `extension-chart-of-calculation-types.xml`:
+  `InformationRegister.АдминистративнаяИерархия` and
+  `ChartOfCalculationTypes.ВидыРасчета`, loaded from the files Unica wrote for
+  `object.borrow`; the export is byte for byte the same.
+
+The read profile of `meta.info` takes these files as its 2.22 evidence for
+borrowed descriptors (`../../2.20/meta_info/manifest.json`).
 
 Every borrowed object and member, the enumeration value, attributes and the
 tabular section included, has
