@@ -628,8 +628,8 @@ pub fn form_set_in(kind: Option<&str>, line: Option<PlatformLine>) -> OperationC
             values["x-unica-later-lines"] = json!({
                 "line": line.map(|line| line.to_string()),
                 "format": line.map(format),
-                "items": later.iter().map(|(key, _, since)| json!({
-                    "property": key, "since": since.to_string(), "format": format(*since),
+                "items": later.iter().map(|(_, property, since)| json!({
+                    "property": property, "since": since.to_string(), "format": format(*since),
                 })).collect::<Vec<_>>(),
             });
         }
@@ -874,7 +874,7 @@ mod tests {
         assert!(old["properties"].get("auxiliaryVariantForm").is_none());
         assert_eq!(
             old["x-unica-later-lines"]["items"],
-            serde_json::json!([{"property":"auxiliaryVariantForm","since":"8.5.1","format":"2.21"}])
+            serde_json::json!([{"property":"AuxiliaryVariantForm","since":"8.5.1","format":"2.21"}])
         );
         for line in [PlatformLine::new(8, 5, 1), PlatformLine::new(8, 5, 4)] {
             let new = values(line);

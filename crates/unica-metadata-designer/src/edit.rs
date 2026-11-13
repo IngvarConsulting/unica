@@ -4636,7 +4636,13 @@ mod export_format_tests {
     fn a_new_report_has_the_properties_of_its_set_format() {
         // all_kinds 2.22 (Reports/АнализВерсийОбъектов.xml) writes the
         // analytics schema right after the data composition schema.
-        for (version, analytics) in [("2.20", false), ("2.21", false), ("2.22", true)] {
+        // all_kinds 2.21 adds the auxiliary variant form right after the
+        // default variant form.
+        for (version, analytics, variant) in [
+            ("2.20", false, false),
+            ("2.21", false, true),
+            ("2.22", true, true),
+        ] {
             let context = crate::template_catalog::MinimalTemplateContext::<()> {
                 chart_of_accounts: None,
                 chart_of_calculation_types: None,
@@ -4666,6 +4672,15 @@ mod export_format_tests {
             assert_eq!(
                 report.matches("MainAnalyticsSystemSchema").count(),
                 usize::from(analytics)
+            );
+            assert_eq!(
+                report.contains("<DefaultVariantForm/>\r\n\t\t\t<AuxiliaryVariantForm/>\r\n"),
+                variant,
+                "{version}: {report}"
+            );
+            assert_eq!(
+                report.matches("AuxiliaryVariantForm").count(),
+                usize::from(variant)
             );
         }
     }
