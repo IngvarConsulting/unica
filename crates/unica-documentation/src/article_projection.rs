@@ -172,10 +172,13 @@ fn variant(value: &ArticleVariant) -> Value {
         &mut unparsed,
         |text| json!(text),
     );
+    // Процедура не возвращает ничего, и это обычный случай, а не сбой
+    // разбора: пустое возвращаемое значение приходит той же формой
+    // с пустыми полями. `null` остаётся за неразобранным разделом.
     let returns = field(
         &value.returns,
         "returns",
-        Value::Null,
+        json!({ "types": [], "typeText": "", "description": "" }),
         &mut unparsed,
         |returns| {
             json!({

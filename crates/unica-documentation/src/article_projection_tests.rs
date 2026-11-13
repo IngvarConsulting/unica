@@ -80,6 +80,12 @@ fn a_concept_without_values_arrives_empty_not_null() {
 
     assert_eq!(value["variants"][0]["parameters"], json!([]));
     assert_eq!(value["variants"][0]["description"], json!(""));
+    // Процедура ничего не возвращает — это пустое значение своей формы,
+    // а не `null`: `null` оставлен неразобранному разделу.
+    assert_eq!(
+        value["variants"][0]["returns"],
+        json!({ "types": [], "typeText": "", "description": "" })
+    );
     assert_eq!(value["example"], json!(""));
     assert_eq!(value["availability"], json!([]));
     assert_eq!(value["unparsed"], json!({}));

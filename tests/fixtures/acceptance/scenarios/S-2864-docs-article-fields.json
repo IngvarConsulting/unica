@@ -176,6 +176,14 @@
           "eq": "Колонки перечисляются через запятую."
         },
         {
+          "pointer": "/data/document/article/variants/0/returns/types",
+          "eq": []
+        },
+        {
+          "pointer": "/data/document/article/variants/0/returns/typeText",
+          "eq": ""
+        },
+        {
           "pointer": "/data/document/article/variants/0/call",
           "eq": "Сортировать(<Колонки>)"
         },
