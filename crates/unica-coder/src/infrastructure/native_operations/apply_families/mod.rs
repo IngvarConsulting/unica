@@ -1976,7 +1976,7 @@ fn plan_apply(
                     &authority,
                     &operations,
                     &mut xdto_validation,
-                    unica_metadata_designer::support::parse_support_state_compat_bytes,
+                    crate::infrastructure::family_codecs::SUPPORT_MARKER_READER,
                 )?;
                 provisional.extend(planned);
             }
@@ -2067,7 +2067,7 @@ fn plan_apply(
                 ParsedApplyOperation::Xdto(operation) => Some(operation),
                 _ => None,
             }),
-            unica_metadata_designer::support::parse_support_state_compat_bytes,
+            crate::infrastructure::family_codecs::SUPPORT_MARKER_READER,
         )?;
     }
     let xdto_operations = parsed

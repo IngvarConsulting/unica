@@ -81,14 +81,15 @@ pub fn plan_xdto_batch(
         }
         package.get_or_insert_with(|| selected.clone());
 
-        let descriptor_namespace = prove_staged_xdto_owner(staged, authority, &selected, &at_path)?;
+        let owner = prove_staged_xdto_owner(staged, authority, &selected, &at_path)?;
         prove_staged_xdto_support(
             staged,
             authority.support_policy_mode(),
             read_support,
-            &selected,
+            &owner.support_key,
             &at_path,
         )?;
+        let descriptor_namespace = owner.namespace;
         let before = staged
             .read(&selected.resource_relative)
             .map_err(|error| ApplyPlanError::staging(error, &at_path))?
@@ -193,14 +194,15 @@ pub fn validate_final_xdto_resources<'a>(
     let mut first_conflict: Option<(usize, ApplyPlanError)> = None;
     for resource in ledger.resources.values() {
         let at_path = format!("ops[{}].args.at", resource.last_operation_index);
-        let namespace = prove_staged_xdto_owner(staged, authority, &resource.package, &at_path)?;
+        let owner = prove_staged_xdto_owner(staged, authority, &resource.package, &at_path)?;
         prove_staged_xdto_support(
             staged,
             authority.support_policy_mode(),
             read_support,
-            &resource.package,
+            &owner.support_key,
             &at_path,
         )?;
+        let namespace = owner.namespace;
         let after = staged
             .read(&resource.package.resource_relative)
             .map_err(|error| ApplyPlanError::staging(error, &at_path))?
@@ -347,7 +349,7 @@ fn prove_staged_xdto_owner(
     authority: &dyn ApplySourceAuthority,
     package: &StagedXdtoPackage,
     at_path: &str,
-) -> Result<String, ApplyPlanError> {
+) -> Result<StagedXdtoOwner, ApplyPlanError> {
     let root_relative = Path::new("Configuration.xml");
     let root = staged
         .read(root_relative)
@@ -381,15 +383,29 @@ fn prove_staged_xdto_owner(
         prove_already_read_metadata_owner(&package.descriptor_relative, &descriptor)
             .map_err(|_| invalid_staged_xdto(at_path))?;
     require_staged_xdto_format(&descriptor_evidence, authority.expected_format(), at_path)?;
-    if descriptor_evidence.artifact_kind() != "XDTOPackage"
-        || descriptor_evidence.artifact_name() != Some(package.package_name.as_str())
-        || descriptor_evidence.artifact_uuid().is_none()
-    {
-        return Err(invalid_staged_xdto(at_path));
-    }
-    descriptor_fields(&descriptor)
+    let support_key = match descriptor_evidence.artifact_uuid() {
+        Some(uuid)
+            if descriptor_evidence.artifact_kind() == "XDTOPackage"
+                && descriptor_evidence.artifact_name() == Some(package.package_name.as_str()) =>
+        {
+            uuid.to_owned()
+        }
+        _ => return Err(invalid_staged_xdto(at_path)),
+    };
+    let namespace = descriptor_fields(&descriptor)
         .map(|fields| fields.namespace)
-        .map_err(|_| invalid_staged_xdto(at_path))
+        .map_err(|_| invalid_staged_xdto(at_path))?;
+    Ok(StagedXdtoOwner {
+        namespace,
+        support_key,
+    })
+}
+
+/// What the proof of a staged package's descriptor yields: the namespace of
+/// the package and the key of its support rule (the descriptor's uuid).
+struct StagedXdtoOwner {
+    namespace: String,
+    support_key: String,
 }
 
 fn require_staged_xdto_format(
@@ -408,7 +424,7 @@ fn prove_staged_xdto_support(
     staged: &mut ApplyProposal<'_>,
     support_policy: unica_source_contract::proposal::SupportPolicyMode,
     read_support: SupportMarkerReader,
-    package: &StagedXdtoPackage,
+    support_key: &str,
     at_path: &str,
 ) -> Result<(), ApplyPlanError> {
     let marker = staged
@@ -430,16 +446,7 @@ fn prove_staged_xdto_support(
         )
         .at_path(at_path));
     }
-    let descriptor = staged
-        .read(&package.descriptor_relative)
-        .map_err(|error| ApplyPlanError::staging(error, at_path))?;
-    let support_key = descriptor.as_deref().and_then(|descriptor| {
-        prove_already_read_metadata_owner(&package.descriptor_relative, descriptor)
-            .ok()?
-            .artifact_uuid()
-            .map(str::to_owned)
-    });
-    if support_key.and_then(|uuid| state.object_rule(&uuid)) == Some(0) {
+    if state.object_rule(support_key) == Some(0) {
         return Err(ApplyPlanError::new(
             ApplyPlanErrorKind::InvalidState,
             "actor support policy denies editing this protected XDTO package",
