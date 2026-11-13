@@ -1292,17 +1292,6 @@ mod export_format_tests {
     use unica_metadata::validation_subject::MetadataTemplateType;
     use unica_metadata::MetadataKind;
 
-    macro_rules! corpus {
-        ($version:literal, $path:literal) => {
-            include_str!(concat!(
-                "../../../tests/fixtures/formats/platform_xml/",
-                $version,
-                "/all_kinds/src/",
-                $path
-            ))
-        };
-    }
-
     /// The first start tag named `element`, as written.
     fn start_tag<'a>(xml: &'a str, element: &str) -> &'a str {
         let start = xml.find(&format!("<{element} ")).unwrap();
@@ -1312,20 +1301,14 @@ mod export_format_tests {
     fn emitters() -> super::TemplateSeedEmitters {
         super::TemplateSeedEmitters {
             spreadsheet: crate::planner::TemplateSeedEmitter(|| {
-                corpus!(
-                    "2.20",
-                    "DataProcessors/Обработка/Templates/Макет/Ext/Template.xml"
-                )
+                include_str!("../../../tests/fixtures/formats/platform_xml/2.20/all_kinds/src/DataProcessors/Обработка/Templates/Макет/Ext/Template.xml")
                 .trim_start_matches('\u{feff}')
                 .to_owned()
             }),
             html_descriptor: |_| String::new(),
             html_page: || "",
             content_xml: |_, _| {
-                Ok(corpus!(
-                    "2.20",
-                    "DataProcessors/Обработка/Templates/СхемаКомпоновки/Ext/Template.xml"
-                )
+                Ok(include_str!("../../../tests/fixtures/formats/platform_xml/2.20/all_kinds/src/DataProcessors/Обработка/Templates/СхемаКомпоновки/Ext/Template.xml")
                 .trim_start_matches('\u{feff}')
                 .to_owned())
             },
@@ -1343,36 +1326,18 @@ mod export_format_tests {
         for (version, mxl, dcs) in [
             (
                 "2.20",
-                corpus!(
-                    "2.20",
-                    "DataProcessors/Обработка/Templates/Макет/Ext/Template.xml"
-                ),
-                corpus!(
-                    "2.20",
-                    "DataProcessors/Обработка/Templates/СхемаКомпоновки/Ext/Template.xml"
-                ),
+                include_str!("../../../tests/fixtures/formats/platform_xml/2.20/all_kinds/src/DataProcessors/Обработка/Templates/Макет/Ext/Template.xml"),
+                include_str!("../../../tests/fixtures/formats/platform_xml/2.20/all_kinds/src/DataProcessors/Обработка/Templates/СхемаКомпоновки/Ext/Template.xml"),
             ),
             (
                 "2.21",
-                corpus!(
-                    "2.21",
-                    "DataProcessors/Обработка/Templates/Макет/Ext/Template.xml"
-                ),
-                corpus!(
-                    "2.21",
-                    "DataProcessors/Обработка/Templates/СхемаКомпоновки/Ext/Template.xml"
-                ),
+                include_str!("../../../tests/fixtures/formats/platform_xml/2.21/all_kinds/src/DataProcessors/Обработка/Templates/Макет/Ext/Template.xml"),
+                include_str!("../../../tests/fixtures/formats/platform_xml/2.21/all_kinds/src/DataProcessors/Обработка/Templates/СхемаКомпоновки/Ext/Template.xml"),
             ),
             (
                 "2.22",
-                corpus!(
-                    "2.22",
-                    "DataProcessors/Обработка/Templates/Макет/Ext/Template.xml"
-                ),
-                corpus!(
-                    "2.22",
-                    "DataProcessors/Обработка/Templates/СхемаКомпоновки/Ext/Template.xml"
-                ),
+                include_str!("../../../tests/fixtures/formats/platform_xml/2.22/all_kinds/src/DataProcessors/Обработка/Templates/Макет/Ext/Template.xml"),
+                include_str!("../../../tests/fixtures/formats/platform_xml/2.22/all_kinds/src/DataProcessors/Обработка/Templates/СхемаКомпоновки/Ext/Template.xml"),
             ),
         ] {
             let spreadsheet = initial(MetadataTemplateType::SpreadsheetDocument, version);
@@ -1398,15 +1363,15 @@ mod export_format_tests {
         for (version, corpus) in [
             (
                 "2.20",
-                corpus!("2.20", "BusinessProcesses/Approval/Ext/Flowchart.xml"),
+                include_str!("../../../tests/fixtures/formats/platform_xml/2.20/all_kinds/src/BusinessProcesses/Approval/Ext/Flowchart.xml"),
             ),
             (
                 "2.21",
-                corpus!("2.21", "BusinessProcesses/Approval/Ext/Flowchart.xml"),
+                include_str!("../../../tests/fixtures/formats/platform_xml/2.21/all_kinds/src/BusinessProcesses/Approval/Ext/Flowchart.xml"),
             ),
             (
                 "2.22",
-                corpus!("2.22", "BusinessProcesses/Approval/Ext/Flowchart.xml"),
+                include_str!("../../../tests/fixtures/formats/platform_xml/2.22/all_kinds/src/BusinessProcesses/Approval/Ext/Flowchart.xml"),
             ),
         ] {
             let files = crate::template_catalog::minimal_auxiliary_files(
