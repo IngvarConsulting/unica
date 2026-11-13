@@ -341,6 +341,8 @@ fn declare_own_base(
                 "--infobase".to_string(),
                 format!("File={local_path}/db"),
             ],
+            // Only from the project root: started elsewhere, a refusal of the
+            // runner leaves a partial write (v8-runner-rust#718).
             cwd: root.clone(),
             env: Vec::new(),
             env_remove: Vec::new(),
@@ -1437,6 +1439,9 @@ mod tests {
             .ends_with("v8project.yaml --infobase File=.local/db"));
         assert!(!runner.joined_args(0).contains("--config"));
         assert!(runner.joined_args(0).contains("init --output "));
+        // `init` runs from the project root: started elsewhere, a refusal of the
+        // runner leaves a partial write (v8-runner-rust#718).
+        assert_eq!(runner.calls.lock().unwrap()[0].cwd, root.path());
         assert!(runner.joined_args(1).ends_with("infobase create --dry-run"));
         assert_eq!(
             result.summary,
