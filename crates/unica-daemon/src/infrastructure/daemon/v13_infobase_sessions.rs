@@ -31,7 +31,7 @@ const RESTART_KEY: &str = "infobase sessions: restart the standalone server of t
 
 const RUN_TOOL: &str = "unica.run";
 const TERMINATE: &str = "terminate";
-const RETRY: &str = "retry";
+const REPEAT: &str = "retry";
 const RESTART: &str = "restart";
 
 /// Сеансов в тексте вопроса не больше; остальные — «и ещё <K>», весь список —
@@ -237,7 +237,7 @@ fn sessions_active(sessions: &Value) -> HumanChoice {
         "terminable": terminable,
         "evidence": sessions["evidence"],
     });
-    let retry = option(RETRY, "Я закрыл сеансы, повторить", "");
+    let retry = option(REPEAT, "Я закрыл сеансы, повторить", "");
     if !terminable {
         let question = match count {
             Some(count) => format!(
@@ -279,7 +279,7 @@ fn designer_busy() -> HumanChoice {
         DESIGNER_BUSY_CODE,
         format!("Базу «{INFOBASE_NAME}» открыл Конфигуратор."),
         json!({"infobase": INFOBASE_NAME}),
-        vec![option(RETRY, "Я закрыл Конфигуратор, повторить", "")],
+        vec![option(REPEAT, "Я закрыл Конфигуратор, повторить", "")],
     )
 }
 
