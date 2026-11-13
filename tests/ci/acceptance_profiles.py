@@ -5,6 +5,7 @@ import importlib.util
 import json
 import os
 import platform
+import re
 import shutil
 import subprocess
 import time
@@ -62,14 +63,44 @@ def load_source_workspace_profiles(root: Path = ACCEPTANCE_ROOT) -> dict[str, di
             raise ValueError(f"{declaration}: expected a regular <workspace>.json declaration")
         profile = load_corpus(declaration)
         if (not isinstance(profile, dict) or profile.get("profile") != "source"
-                or set(profile) - {"profile", "git"}
+                or set(profile) - {"profile", "git", "formats"}
                 or ("git" in profile and type(profile["git"]) is not bool)):
             raise ValueError(f"{declaration}: expected a source profile with optional boolean git")
         workspace = root / declaration.stem
         if workspace.is_symlink() or not workspace.is_dir():
             raise ValueError(f"{declaration}: source fixture must be a regular sibling directory")
+        if "formats" in profile:
+            validate_format_axis(declaration, profile["formats"], root, workspace)
         workspaces[f"tests/fixtures/acceptance/{workspace.name}"] = profile
     return workspaces
+
+
+def platform_corpus(root: Path = ACCEPTANCE_ROOT) -> Path:
+    """The platform reference exports beside the acceptance corpus."""
+    return Path(root).parent / "formats/platform_xml"
+
+
+def reference_tree(root: Path, export_format: str) -> Path:
+    """The pristine `all_kinds` export a platform wrote in `export_format`."""
+    return platform_corpus(root) / export_format / "all_kinds"
+
+
+def validate_format_axis(declaration: Path, formats, root: Path, workspace: Path) -> None:
+    """A format axis names export formats with an `all_kinds` reference each.
+
+    The fixture holds the project file only: each run takes `src` from the
+    reference export of its format, so one wire meets every format as the
+    platform itself wrote it."""
+    if (not isinstance(formats, list) or not formats
+            or not all(isinstance(item, str) and re.fullmatch(r"2\.[0-9]+", item) for item in formats)
+            or len(set(formats)) != len(formats)):
+        raise ValueError(f"{declaration}: formats must be distinct export formats such as \"2.20\"")
+    for export_format in formats:
+        source = reference_tree(root, export_format) / "src"
+        if source.is_symlink() or not source.is_dir():
+            raise ValueError(f"{declaration}: format {export_format} has no all_kinds reference at {source}")
+    if (workspace / "src").exists():
+        raise ValueError(f"{declaration}: a format-axis fixture takes src from the reference export")
 
 
 def load_source_workspaces(root: Path = ACCEPTANCE_ROOT) -> set[str]:
@@ -78,6 +109,52 @@ def load_source_workspaces(root: Path = ACCEPTANCE_ROOT) -> set[str]:
 
 SOURCE_WORKSPACE_PROFILES = load_source_workspace_profiles()
 SOURCE_WORKSPACES = set(SOURCE_WORKSPACE_PROFILES)
+
+
+def materialize_format(workspace: Path, export_format: str | None, root: Path = ACCEPTANCE_ROOT) -> None:
+    """Give a format-axis copy the reference `src` of the format it runs in."""
+    if export_format is None:
+        return
+    shutil.copytree(reference_tree(root, export_format) / "src", workspace / "src")
+
+
+def expand_format_axis(scenarios, default_workspace, profiles=None):
+    """One run per declared format of every scenario on a format-axis fixture.
+
+    A run is the scenario with `@<format>` added to its id and `format` set;
+    `formats` of the scenario narrows the fixture's list. The runs of one
+    fixture stay together, format by format, where its first scenario stood,
+    so one server serves neighbouring scenarios of one format."""
+    profiles = SOURCE_WORKSPACE_PROFILES if profiles is None else profiles
+    expanded, groups = [], {}
+    for scenario in scenarios:
+        workspace = scenario.get("workspace", default_workspace)
+        axis = (profiles.get(workspace) or {}).get("formats")
+        if axis is None:
+            if "formats" in scenario:
+                raise ValueError(f"{scenario['id']}: formats need a format-axis fixture")
+            expanded.append(scenario)
+            continue
+        narrowed = scenario.get("formats", axis)
+        if (not isinstance(narrowed, list) or not narrowed or len(set(narrowed)) != len(narrowed)
+                or any(item not in axis for item in narrowed)):
+            raise ValueError(f"{scenario['id']}: formats must be distinct formats of {workspace}")
+        if workspace not in groups:
+            groups[workspace] = []
+            expanded.append(groups[workspace])
+        groups[workspace].append((scenario, narrowed))
+    result = []
+    for entry in expanded:
+        if isinstance(entry, dict):
+            result.append(entry)
+            continue
+        workspace = entry[0][0].get("workspace", default_workspace)
+        for export_format in profiles[workspace]["formats"]:
+            for scenario, narrowed in entry:
+                if export_format in narrowed:
+                    run = {key: value for key, value in scenario.items() if key != "formats"}
+                    result.append({**run, "id": f"{scenario['id']}@{export_format}", "format": export_format})
+    return result
 
 
 def prepare_source_workspace(workspace: Path, profile: dict) -> None:
@@ -193,6 +270,12 @@ def select_profile(corpus, profile):
             raise ValueError(f"{scenario['id']}: profile {current!r} has no executable driver")
         if current == profile:
             selected.append(scenario)
+    if profile == "source":
+        # The runs of a format axis exist only in a run of the corpus; the
+        # selection keeps the scenarios themselves, as the registry names them.
+        expand_format_axis(selected, corpus["workspace"])
+    elif any("formats" in scenario for scenario in selected):
+        raise ValueError(f"profile {profile!r} has no format axis")
     return {**corpus, "scenarios": selected}
 
 
