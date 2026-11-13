@@ -3728,7 +3728,7 @@ async fn an_existing_infobase_is_recreated_by_the_persons_choice() {
         .await;
     let answered = client.receive().await;
     let done = match answered["result"]["structuredContent"]["data"]["task"]["taskId"].as_str() {
-        Some(follower) => read_task_result(&mut client, &follower.to_owned(), 100).await,
+        Some(follower) => read_task_result(&mut client, follower, 100).await,
         None => answered,
     };
     assert_eq!(done["result"]["structuredContent"]["ok"], true, "{done}");
