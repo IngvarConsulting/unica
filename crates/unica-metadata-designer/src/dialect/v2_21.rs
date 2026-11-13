@@ -11,6 +11,7 @@ pub(crate) static DIALECT: MetadataDialect = MetadataDialect {
     line_compatibility_modes: &["Version8_5_1"],
     added_child_properties,
     added_object_properties: super::v2_20::added_object_properties,
+    adopted_properties: super::v2_20::adopted_properties,
 };
 
 /// The all_kinds corpus of 2.21 closes the properties of every enumeration

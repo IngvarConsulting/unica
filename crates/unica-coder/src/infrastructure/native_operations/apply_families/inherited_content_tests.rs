@@ -396,9 +396,23 @@ fn enum_value_properties(text: &str) -> Vec<String> {
 /// The files an `object.borrow` of `from` writes into the `empty_extension`
 /// corpus of 2.21 over the `all_kinds` corpus of the same format.
 fn borrow_in_2_21(from: &str) -> std::collections::BTreeMap<std::path::PathBuf, Vec<u8>> {
-    use unica_source_contract::format_identity::PlatformLine;
+    borrow_in(
+        "2.21",
+        unica_source_contract::format_identity::PlatformLine::new(8, 5, 1),
+        from,
+    )
+}
+
+/// The files an `object.borrow` of `from` writes into the `empty_extension`
+/// corpus of `format` over the `all_kinds` corpus of the same format.
+fn borrow_in(
+    format: &str,
+    line: unica_source_contract::format_identity::PlatformLine,
+    from: &str,
+) -> std::collections::BTreeMap<std::path::PathBuf, Vec<u8>> {
     let corpus = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tests/fixtures/formats/platform_xml/2.21");
+        .join("../../tests/fixtures/formats/platform_xml")
+        .join(format);
     let root = tempfile::tempdir().unwrap();
     let workspace_root = std::fs::canonicalize(root.path()).unwrap();
     let main = workspace_root.join("cf");
@@ -410,7 +424,7 @@ fn borrow_in_2_21(from: &str) -> std::collections::BTreeMap<std::path::PathBuf, 
         "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: cf\n  - name: ext\n    type: EXTENSION\n    path: ext\n",
     )
     .unwrap();
-    let profile = SourceProfile::platform_xml_of_line(PlatformLine::new(8, 5, 1)).unwrap();
+    let profile = SourceProfile::platform_xml_of_line(line).unwrap();
     let context = WorkspaceContext {
         cwd: workspace_root.clone(),
         workspace_root: workspace_root.clone(),
@@ -524,4 +538,121 @@ fn a_borrowed_form_of_format_2_21_is_what_the_platform_exports() {
             "{relative}"
         );
     }
+}
+
+/// What a borrowed object or member of 2.22 does when its configuration
+/// object is missing, as the platform writes it after the parent link.
+const ACTION_ON_MISSING: &str =
+    "<ActionOnConfigurationObjectMissing>Auto</ActionOnConfigurationObjectMissing>";
+
+/// The local names of the properties of the first descriptor object of
+/// `bytes`.
+fn property_names(bytes: &[u8]) -> Vec<String> {
+    let text = String::from_utf8(bytes.to_vec()).unwrap();
+    let document = roxmltree::Document::parse(text.trim_start_matches('\u{feff}')).unwrap();
+    let properties = document
+        .descendants()
+        .find(|node| node.has_tag_name("Properties"))
+        .unwrap();
+    properties
+        .children()
+        .filter(|node| node.is_element())
+        .map(|node| node.tag_name().name().to_string())
+        .collect()
+}
+
+/// A borrowed enumeration value of an extension 2.22 names what it does when
+/// its configuration value is missing, as 8.5.4 exports it.
+/// rule: INV.SOURCE.WRITABLE-PROFILE
+#[test]
+fn a_borrowed_enumeration_value_of_format_2_22_has_the_platform_shape() {
+    use unica_source_contract::format_identity::PlatformLine;
+    let corpus = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures/formats/platform_xml/2.22");
+    let files = borrow_in(
+        "2.22",
+        PlatformLine::new(8, 5, 4),
+        "main:Enum.СпособыУстановкиКурсаВалюты.EnumValue.ЗагрузкаИзИнтернета",
+    );
+    let written =
+        String::from_utf8(files[Path::new("Enums/СпособыУстановкиКурсаВалюты.xml")].clone())
+            .unwrap();
+    let platform =
+        std::fs::read_to_string(corpus.join("cfe_borrow/extension-enum-value.xml")).unwrap();
+    assert_eq!(
+        enum_value_properties(&written),
+        enum_value_properties(&platform)
+    );
+    assert!(enum_value_properties(&written).contains(&ACTION_ON_MISSING.to_string()));
+}
+
+/// A form borrowed into an extension 2.22 is the descriptor and Form.xml 8.5.4
+/// exports for it, with the actions on a missing object and on an extension
+/// change error.
+/// rule: INV.SOURCE.WRITABLE-PROFILE
+#[test]
+fn a_borrowed_form_of_format_2_22_is_what_the_platform_exports() {
+    use unica_source_contract::format_identity::PlatformLine;
+    let corpus = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures/formats/platform_xml/2.22/cfe_borrow");
+    let files = borrow_in(
+        "2.22",
+        PlatformLine::new(8, 5, 4),
+        "main:Catalog.Валюты.Form.ФормаЭлемента",
+    );
+    for (relative, platform) in [
+        (
+            "Catalogs/Валюты/Forms/ФормаЭлемента.xml",
+            "extension-form-borrowed.xml",
+        ),
+        (
+            "Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+            "extension-form-borrowed-Form.xml",
+        ),
+    ] {
+        // The form's own uuid is fresh for each borrow.
+        let fresh = |bytes: &[u8]| {
+            let text = String::from_utf8(bytes.to_vec()).unwrap();
+            match text.find("<Form uuid=\"") {
+                Some(start) => {
+                    let value = start + "<Form uuid=\"".len();
+                    format!("{}{}", &text[..value], &text[value + 36..])
+                }
+                None => text,
+            }
+        };
+        assert_eq!(
+            fresh(&files[Path::new(relative)]),
+            fresh(&std::fs::read(corpus.join(platform)).unwrap()),
+            "{relative}"
+        );
+    }
+}
+
+/// A borrowed object of an extension 2.22 names what it does when its
+/// configuration object is missing right after its parent link, as 8.5.4
+/// exports it.
+/// rule: INV.SOURCE.WRITABLE-PROFILE
+#[test]
+fn a_borrowed_object_of_format_2_22_names_its_action_on_a_missing_object() {
+    use unica_source_contract::format_identity::PlatformLine;
+    let corpus = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures/formats/platform_xml/2.22/cfe_borrow");
+    let catalog = borrow_in("2.22", PlatformLine::new(8, 5, 4), "main:Catalog.Валюты");
+    assert_eq!(
+        property_names(&catalog[Path::new("Catalogs/Валюты.xml")]),
+        property_names(&std::fs::read(corpus.join("extension-catalog-members.xml")).unwrap())
+    );
+    let document = borrow_in("2.22", PlatformLine::new(8, 5, 4), "main:Document.Приход");
+    let written = property_names(&document[Path::new("Documents/Приход.xml")]);
+    let platform = property_names(&std::fs::read(corpus.join("extension-document.xml")).unwrap());
+    assert_eq!(written[..5], platform[..5]);
+    assert_eq!(written[4], "ActionOnConfigurationObjectMissing");
+    // 8.5.1 writes no such property.
+    let earlier = borrow_in("2.21", PlatformLine::new(8, 5, 1), "main:Catalog.Валюты");
+    assert!(
+        !String::from_utf8(earlier[Path::new("Catalogs/Валюты.xml")].clone())
+            .unwrap()
+            .contains("ActionOnConfigurationObjectMissing")
+    );
 }

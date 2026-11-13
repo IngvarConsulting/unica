@@ -11,7 +11,24 @@ pub(crate) static DIALECT: MetadataDialect = MetadataDialect {
     line_compatibility_modes: &["Version8_5_1", "Version8_5_4"],
     added_child_properties: super::v2_21::added_child_properties,
     added_object_properties,
+    adopted_properties,
 };
+
+/// The 8.5.4 export of a borrowing extension writes after
+/// `ExtendedConfigurationObject` of every borrowed object and member what it
+/// does when the configuration object is missing, `Auto` by default; a
+/// borrowed form also names what it does on an extension change error,
+/// `Warning` (`tests/fixtures/formats/platform_xml/2.22/cfe_borrow/`).
+pub(crate) fn adopted_properties(node: super::AdoptedNode) -> &'static [&'static str] {
+    const MISSING: &str = "<ActionOnConfigurationObjectMissing>Auto</ActionOnConfigurationObjectMissing>";
+    match node {
+        super::AdoptedNode::Object => &[MISSING],
+        super::AdoptedNode::Form => &[
+            MISSING,
+            "<ActionOnConfigurationExtensionChangeError>Warning</ActionOnConfigurationExtensionChangeError>",
+        ],
+    }
+}
 
 /// The all_kinds corpus of 2.22 names the main analytics system schema of a
 /// report, empty by default, right after its main data composition schema.

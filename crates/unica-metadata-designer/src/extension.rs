@@ -408,6 +408,11 @@ pub fn cfe_borrow_object_xml(
         "\t\t\t<ExtendedConfigurationObject>{}</ExtendedConfigurationObject>",
         unica_xml_format::text::escape_xml(source_uuid)
     ));
+    for property in
+        crate::dialect::adopted_properties(format_version, crate::dialect::AdoptedNode::Object)
+    {
+        lines.push(format!("\t\t\t{property}"));
+    }
     if type_name == "CommonModule" {
         for prop_name in [
             "Global",
@@ -759,16 +764,25 @@ pub fn cfe_borrow_merge_resolved_into_object(
 ) -> Result<(), String> {
     let mut object_text = write_plan.read_utf8_sig(object_file)?;
     let existing_names = cfe_borrow_existing_names(&object_text);
+    let format_version = cfe_borrow_descriptor_version(&object_text)?;
     let mut child_xml = Vec::<String>::new();
     for attr in &resolved.attributes {
         if !existing_names.contains(&attr.name) {
-            child_xml.push(cfe_borrow_adopted_attribute_xml(attr, "\t\t\t", fresh_uuid));
+            child_xml.push(cfe_borrow_adopted_attribute_xml(
+                attr,
+                "\t\t\t",
+                &format_version,
+                fresh_uuid,
+            ));
         }
     }
     for section in &resolved.tabular_sections {
         if !existing_names.contains(&section.name) {
             child_xml.push(cfe_borrow_adopted_tabular_section_xml(
-                section, "\t\t\t", fresh_uuid,
+                section,
+                "\t\t\t",
+                &format_version,
+                fresh_uuid,
             ));
         }
     }
@@ -812,9 +826,30 @@ pub fn cfe_borrow_insert_child_objects(
     Err("Cannot merge attributes: <ChildObjects> not found".to_string())
 }
 
+/// The export format a borrowed descriptor records in its root.
+fn cfe_borrow_descriptor_version(text: &str) -> Result<String, String> {
+    let document = roxmltree::Document::parse(text.trim_start_matches('\u{feff}'))
+        .map_err(|error| format!("Borrowed descriptor is not well formed: {error}"))?;
+    document
+        .root_element()
+        .attribute("version")
+        .map(str::to_string)
+        .ok_or_else(|| "Borrowed descriptor has no version".to_string())
+}
+
+/// The properties a borrowed member of export `format_version` writes after
+/// its parent link, at `indent`.
+fn cfe_borrow_adopted_lines(format_version: &str, indent: &str) -> Vec<String> {
+    crate::dialect::adopted_properties(format_version, crate::dialect::AdoptedNode::Object)
+        .iter()
+        .map(|property| format!("{indent}{property}"))
+        .collect()
+}
+
 pub fn cfe_borrow_adopted_attribute_xml(
     attr: &CfeBorrowSourceAttribute,
     indent: &str,
+    format_version: &str,
     fresh_uuid: fn() -> String,
 ) -> String {
     let mut lines = vec![
@@ -832,6 +867,7 @@ pub fn cfe_borrow_adopted_attribute_xml(
             unica_xml_format::text::escape_xml(&attr.source_uuid)
         ),
     ];
+    lines.extend(cfe_borrow_adopted_lines(format_version, &format!("{indent}\t\t")));
     if !attr.type_xml.is_empty() {
         lines.push(format!("{indent}\t\t{}", attr.type_xml));
     }
@@ -843,6 +879,7 @@ pub fn cfe_borrow_adopted_attribute_xml(
 pub fn cfe_borrow_adopted_tabular_section_xml(
     section: &CfeBorrowSourceTabularSection,
     indent: &str,
+    format_version: &str,
     fresh_uuid: fn() -> String,
 ) -> String {
     let mut lines = vec![format!(
@@ -884,6 +921,7 @@ pub fn cfe_borrow_adopted_tabular_section_xml(
         "{indent}\t\t<ExtendedConfigurationObject>{}</ExtendedConfigurationObject>",
         unica_xml_format::text::escape_xml(&section.source_uuid)
     ));
+    lines.extend(cfe_borrow_adopted_lines(format_version, &format!("{indent}\t\t")));
     lines.push(format!("{indent}\t</Properties>"));
     if section.attributes.is_empty() {
         lines.push(format!("{indent}\t<ChildObjects/>"));
@@ -893,6 +931,7 @@ pub fn cfe_borrow_adopted_tabular_section_xml(
             lines.push(cfe_borrow_adopted_attribute_xml(
                 attr,
                 &format!("{indent}\t\t"),
+                format_version,
                 fresh_uuid,
             ));
         }
@@ -1290,12 +1329,16 @@ pub fn cfe_borrow_form_metadata_xml(
     format_version: &str,
 ) -> String {
     format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<MetaDataObject {} version=\"{}\">\n\t<Form uuid=\"{}\">\n\t\t<InternalInfo>\n\t\t\t<xr:PropertyState>\n\t\t\t\t<xr:Property>Form</xr:Property>\n\t\t\t\t<xr:State>Extended</xr:State>\n\t\t\t</xr:PropertyState>\n\t\t</InternalInfo>\n\t\t<Properties>\n\t\t\t<ObjectBelonging>Adopted</ObjectBelonging>\n\t\t\t<Name>{}</Name>\n\t\t\t<Comment/>\n\t\t\t<ExtendedConfigurationObject>{}</ExtendedConfigurationObject>\n\t\t\t<FormType>Managed</FormType>\n\t\t</Properties>\n\t</Form>\n</MetaDataObject>",
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<MetaDataObject {} version=\"{}\">\n\t<Form uuid=\"{}\">\n\t\t<InternalInfo>\n\t\t\t<xr:PropertyState>\n\t\t\t\t<xr:Property>Form</xr:Property>\n\t\t\t\t<xr:State>Extended</xr:State>\n\t\t\t</xr:PropertyState>\n\t\t</InternalInfo>\n\t\t<Properties>\n\t\t\t<ObjectBelonging>Adopted</ObjectBelonging>\n\t\t\t<Name>{}</Name>\n\t\t\t<Comment/>\n\t\t\t<ExtendedConfigurationObject>{}</ExtendedConfigurationObject>\n{}\t\t\t<FormType>Managed</FormType>\n\t\t</Properties>\n\t</Form>\n</MetaDataObject>",
         cfe_borrow_xmlns_decl(format_version),
         unica_xml_format::text::escape_xml(format_version),
         unica_xml_format::text::escape_xml(wrapper_uuid),
         unica_xml_format::text::escape_xml(form_name),
-        unica_xml_format::text::escape_xml(source_uuid)
+        unica_xml_format::text::escape_xml(source_uuid),
+        crate::dialect::adopted_properties(format_version, crate::dialect::AdoptedNode::Form)
+            .iter()
+            .map(|property| format!("\t\t\t{property}\n"))
+            .collect::<String>()
     )
 }
 
