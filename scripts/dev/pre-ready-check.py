@@ -37,10 +37,12 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from collections import Counter
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Dict, Iterable, List, Optional, Sequence, Set, Tuple
+from typing import Callable, Dict, Iterable, Iterator, List, Optional, Sequence, Set, Tuple
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -53,6 +55,11 @@ PYTHON_SUITES = ("tests/ci", "tests/dev")
 # Крейт вне рабочего пространства: его гоняет `scripts/dev/run-research.py`.
 OUTSIDE_WORKSPACE = {"unica-research"}
 SKIP_MARKER = "unica-host-capability-skip:"
+# Замок рабочих копий в общем `.git`: создание и удаление копии базы
+# правят `.git/worktrees`, и параллельные прогоны из разных копий
+# одного репозитория мешают друг другу.
+WORKTREE_LOCK = "pre-ready-check-worktrees.lock"
+LOCK_WAIT_SECONDS = 300.0
 
 
 class Refusal(Exception):
@@ -587,8 +594,99 @@ def git(root: Path, *args: str) -> str:
     completed = subprocess.run(["git", *args], cwd=root, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                text=True, encoding="utf-8", errors="replace")
     if completed.returncode != 0:
-        raise Refusal(f"git {' '.join(args)}: {completed.stderr.strip()}")
+        said = completed.stderr.strip() or completed.stdout.strip() or "git ничего не вывел"
+        raise Refusal(f"git {' '.join(args)}: код {completed.returncode}: {said}")
     return completed.stdout
+
+
+def try_lock(descriptor: int) -> bool:
+    """Блокировка ОС на первый байт файла; её снимает и смерть процесса."""
+    try:
+        if os.name == "nt":
+            import msvcrt
+
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return False
+    return True
+
+
+def unlock(descriptor: int) -> None:
+    if os.name == "nt":
+        import msvcrt
+
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+    else:
+        import fcntl
+
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+
+
+def lock_holder(path: Path) -> str:
+    """Кто держит замок: держатель пишет себя после первого, заблокированного байта."""
+    try:
+        with open(path, "rb") as handle:
+            handle.seek(1)
+            text = handle.read(512).decode("utf-8", errors="replace").strip("\0 \n")
+    except OSError:
+        text = ""
+    return text or "неизвестный прогон"
+
+
+@contextmanager
+def worktree_lock(root: Path, wait: float = LOCK_WAIT_SECONDS, poll: float = 0.5) -> Iterator[None]:
+    """Замок на создание и удаление рабочей копии базы в общем `.git` репозитория.
+
+    Файл замка не удаляется: держит блокировка ОС, и прерванный прогон
+    не оставляет её за собой.
+    """
+    common = Path(git(root, "rev-parse", "--git-common-dir").strip())
+    path = (common if common.is_absolute() else root / common) / WORKTREE_LOCK
+    descriptor = os.open(path, os.O_RDWR | os.O_CREAT, 0o666)
+    try:
+        deadline = time.monotonic() + wait
+        announced = False
+        while not try_lock(descriptor):
+            holder = lock_holder(path)
+            if time.monotonic() >= deadline:
+                raise Refusal(
+                    f"рабочие копии репозитория правит другой прогон pre-ready-check ({holder}); "
+                    f"ждал {wait:.0f} с. Дождитесь его конца и повторите; если он завис, остановите его")
+            if not announced:
+                print(f"  … жду замок рабочих копий: его держит {holder}", flush=True)
+                announced = True
+            time.sleep(poll)
+        try:
+            os.lseek(descriptor, 1, os.SEEK_SET)
+            os.write(descriptor, f"pid {os.getpid()}, копия {root}".encode("utf-8").ljust(512, b" "))
+            yield
+        finally:
+            unlock(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def add_base_tree(root: Path, tree: Path, base: str) -> None:
+    """Свежая рабочая копия базы на месте прежней."""
+    with worktree_lock(root):
+        if tree.exists() or tree.is_symlink():
+            subprocess.run(["git", "worktree", "remove", "--force", str(tree)], cwd=root,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            shutil.rmtree(tree, ignore_errors=True)
+        git(root, "worktree", "prune")
+        git(root, "worktree", "add", "--detach", str(tree), base)
+
+
+def remove_base_tree(root: Path, tree: Path) -> None:
+    with worktree_lock(root):
+        subprocess.run(["git", "worktree", "remove", "--force", str(tree)], cwd=root,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
 def workspace_packages(root: Path, env: Dict[str, str]) -> Dict[str, Tuple[str, bool]]:
@@ -651,11 +749,7 @@ def baseline(checks: Sequence[Check], base: str, cache_dir: Path, env: Dict[str,
         return cached
     tree = cache_dir / "base"
     print(f"База {base[:12]}: считаю {len(missing)} проверок в {tree}", flush=True)
-    if tree.exists():
-        subprocess.run(["git", "worktree", "remove", "--force", str(tree)], cwd=REPO_ROOT)
-        shutil.rmtree(tree, ignore_errors=True)
-        git(REPO_ROOT, "worktree", "prune")
-    git(REPO_ROOT, "worktree", "add", "--detach", str(tree), base)
+    add_base_tree(REPO_ROOT, tree, base)
     base_env = {**env, "CARGO_TARGET_DIR": str(cache_dir / "base-build")}
     try:
         for check in missing:
@@ -665,7 +759,11 @@ def baseline(checks: Sequence[Check], base: str, cache_dir: Path, env: Dict[str,
             cached[check.key] = run_check(check, tree, base_env, cache_dir / "logs-base").failures
             save_cache(cache_path, base, cached)
     finally:
-        subprocess.run(["git", "worktree", "remove", "--force", str(tree)], cwd=REPO_ROOT)
+        try:
+            remove_base_tree(REPO_ROOT, tree)
+        except Refusal as error:
+            # Не заслонять итог проверок: копию уберёт следующий прогон.
+            print(f"pre-ready-check: копия базы не убрана: {error}", file=sys.stderr)
     save_cache(cache_path, base, cached)
     return cached
 
