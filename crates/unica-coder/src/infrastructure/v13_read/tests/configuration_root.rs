@@ -88,7 +88,10 @@ fn configuration_root_shows_the_properties_of_its_line() {
             Some(["NavigationLeft", "Auto", "OpenDataInDialogs", "DontUse"]),
         ),
     ] {
-        let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(source);
+        // The secure source reader takes only normal path components.
+        let source =
+            std::fs::canonicalize(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(source))
+                .unwrap();
         let cancellation = CancellationToken::new();
         let source_root = Arc::new(unica_workspace::read::open_source_directory(&source).unwrap());
         let authority = LogicalViewReadAuthority::new(
