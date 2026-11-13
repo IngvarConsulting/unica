@@ -1022,6 +1022,12 @@ pub fn metadata_generated_types_8_3_27(
         "Sequence" => Some(&[("SequenceRecordSet", "RecordSet")]),
         "IntegrationService" => Some(&[("IntegrationServiceManager", "Manager")]),
         "DefinedType" => Some(&[("DefinedType", "DefinedType")]),
+        // The queue of 8.5.4: its message is a record, its manager a manager.
+        // The platform refuses to import a queue descriptor without them.
+        "Queue" => Some(&[
+            ("QueueMessage", "Record"),
+            ("QueueManager", "Manager"),
+        ]),
         "Language"
         | "Subsystem"
         | "StyleItem"
