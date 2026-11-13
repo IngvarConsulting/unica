@@ -2,11 +2,12 @@
 """Проверки ветки перед снятием PR с черновика.
 
 По `git diff` от базы ветки (merge-base с `origin/main`) скрипт находит
-затронутые крейты и гоняет:
+затронутые крейты и крейты рабочего пространства, которые от них зависят
+(обратные зависимости по `cargo metadata`, включая dev-зависимости), и гоняет:
 
-- `cargo test -p <крейт> --lib` целиком, а у крейта без библиотеки — его
-  тестовые цели (`--tests`);
-- `cargo clippy -p <крейт> --all-targets --locked -- -D warnings`;
+- `cargo test -p <крейт> --tests --no-fail-fast`: библиотеку, интеграционные
+  цели и бинари, сначала у затронутых крейтов, затем у зависимых;
+- `cargo clippy -p <крейт> --all-targets --locked -- -D warnings` затронутых;
 - `cargo fmt --all --check` и `scripts/ci/check-discovered-modules-format.py`;
 - полные наборы `tests/ci` и `tests/dev`.
 
@@ -16,6 +17,12 @@
 считается только для проверок, упавших на ветке, и хранится под
 `CARGO_TARGET_DIR` с ключом по sha базы; другая база заменяет кеш. Печатаются
 только новые падения; код выхода 0, когда их нет.
+
+Итог печатается только по досчитанным проверкам. Проверка досчитана, когда
+её прогон закончился сам: у `unittest` есть строка `Ran N tests`, у `cargo`
+код 0 или его собственная строка `error:`. Недосчитанная проверка ветки
+снимает итог: вместо «Новые падения» печатается, чего не хватает, код выхода 3.
+Недосчитанная база в кеш не попадает и считается заново.
 
 Отдельной строкой идут тесты из диффа, которые на этой ОС не исполняются:
 исключены `cfg` по ОС, помечены `ignore` по ОС, пропущены по возможности хоста
@@ -50,7 +57,9 @@ sys.path.insert(0, str(REPO_ROOT / "scripts" / "ci"))
 from cargo_target import cargo_target_dir  # noqa: E402
 
 CACHE_DIR_NAME = "pre-ready-check"
-CACHE_VERSION = 1
+# 2: в кеше только досчитанные проверки базы.
+CACHE_VERSION = 2
+INCOMPLETE_EXIT = 3
 PYTHON_SUITES = ("tests/ci", "tests/dev")
 # Крейт вне рабочего пространства: его гоняет `scripts/dev/run-research.py`.
 OUTSIDE_WORKSPACE = {"unica-research"}
@@ -76,12 +85,11 @@ class Check:
     key: str
     kind: str  # test | clippy | fmt | modules-fmt | python
     target: str = ""  # пакет, каталог крейта или набор Python
-    lib: bool = True
 
     def command(self, python: str) -> List[str]:
         if self.kind == "test":
-            targets = ["--lib"] if self.lib else ["--tests"]
-            return ["cargo", "test", "-p", self.target, *targets, "--", "--show-output"]
+            # `--no-fail-fast`: упавшая цель не отменяет прогон остальных.
+            return ["cargo", "test", "-p", self.target, "--tests", "--no-fail-fast", "--", "--show-output"]
         if self.kind == "clippy":
             return ["cargo", "clippy", "-p", self.target, "--all-targets", "--locked",
                     "--message-format=short", "--", "-D", "warnings"]
@@ -101,6 +109,8 @@ class Result:
     skipped: List[str] = field(default_factory=list)
     # Падения, причина которых — сбой сборки продукта, а не проверка.
     build: List[str] = field(default_factory=list)
+    # Прогон закончился сам, а не оборван: по неполному итогу не судят.
+    complete: bool = True
 
 
 LIBTEST_LINE = re.compile(r"^test (\S+) \.\.\. (ok|FAILED|ignored)\b", re.M)
@@ -117,6 +127,16 @@ CARGO_FAILED = re.compile(
     r"|^error: could not compile", re.M)
 UNITTEST_SEPARATOR = re.compile(r"^(?:=|-){70}$", re.M)
 UNITTEST_SKIPPED = re.compile(r"\(([\w.]+)\)(?:\n[^\n]*?)? \.\.\. skipped\b", re.M)
+UNITTEST_RAN = re.compile(r"^Ran \d+ tests? in ", re.M)
+
+
+def cargo_finished(output: str, returncode: int) -> bool:
+    """`cargo` закончил сам: успех или его собственная строка `error:`.
+
+    Убитый процесс не успевает её напечатать, и его код ничего не говорит:
+    на Windows снятая задача выходит с кодом 1, как обычный отказ.
+    """
+    return returncode == 0 or ERROR_LINE.search(output) is not None
 
 
 def build_errors(output: str, returncode: int) -> List[str]:
@@ -150,7 +170,8 @@ def parse_libtest(output: str, returncode: int) -> Result:
             # Бинарь упал посреди прогона или строку итога теста разорвал чужой
             # вывод: часть тестов не исполнена или не учтена.
             failures.append(f"прогон оборвался или итог неполон, код {returncode}")
-    return Result(failures, sorted(skipped), [key for key in failures if is_build_failure(key)])
+    return Result(failures, sorted(skipped), [key for key in failures if is_build_failure(key)],
+                  cargo_finished(output, returncode))
 
 
 def normalize_path(raw: str, root: Path) -> str:
@@ -171,14 +192,16 @@ def parse_clippy(output: str, returncode: int, root: Path) -> Result:
     if returncode != 0 and not failures:
         failures = build_errors(output, returncode)
     failures = failures if returncode != 0 else []
-    return Result(failures, build=[key for key in failures if is_build_failure(key)])
+    return Result(failures, build=[key for key in failures if is_build_failure(key)],
+                  complete=cargo_finished(output, returncode))
 
 
 def parse_fmt(output: str, returncode: int, root: Path) -> Result:
     failures = sorted({normalize_path(path, root) for path in FMT_LINE.findall(output)})
+    finished = returncode == 0 or bool(failures) or ERROR_LINE.search(output) is not None
     if returncode != 0 and not failures:
         failures = [f"форматирование: отказ без списка файлов, код {returncode}"]
-    return Result(failures)
+    return Result(failures, complete=finished)
 
 
 def parse_unittest(output: str, returncode: int) -> Result:
@@ -195,7 +218,8 @@ def parse_unittest(output: str, returncode: int) -> Result:
             build.add(header.group(1))
     if returncode != 0 and not failures:
         failures = [f"набор упал без списка тестов, код {returncode}"]
-    return Result(failures, sorted(set(UNITTEST_SKIPPED.findall(output))), sorted(build))
+    return Result(failures, sorted(set(UNITTEST_SKIPPED.findall(output))), sorted(build),
+                  UNITTEST_RAN.search(output) is not None)
 
 
 def parse(check: Check, output: str, returncode: int, root: Path) -> Result:
@@ -689,35 +713,65 @@ def remove_base_tree(root: Path, tree: Path) -> None:
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
-def workspace_packages(root: Path, env: Dict[str, str]) -> Dict[str, Tuple[str, bool]]:
-    """Каталог крейта → (пакет, есть ли библиотека)."""
+@dataclass(frozen=True)
+class Package:
+    name: str
+    # Пакеты рабочего пространства, от которых он зависит, с dev и build.
+    depends: Tuple[str, ...] = ()
+
+
+def workspace_packages(root: Path, env: Dict[str, str]) -> Dict[str, Package]:
+    """Каталог крейта → пакет и его зависимости внутри рабочего пространства."""
     completed = subprocess.run(["cargo", "metadata", "--no-deps", "--format-version", "1"], cwd=root, env=env,
                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8")
     if completed.returncode != 0:
         raise Refusal(f"cargo metadata: {completed.stderr.strip()}")
+    metadata = json.loads(completed.stdout)
+    members = {package["name"] for package in metadata["packages"]}
     packages = {}
-    for package in json.loads(completed.stdout)["packages"]:
+    for package in metadata["packages"]:
         directory = Path(package["manifest_path"]).resolve().parent
         try:
             relative = directory.relative_to(root.resolve()).as_posix()
         except ValueError:
             continue
-        lib = any(kind in ("lib", "rlib", "proc-macro") for target in package["targets"] for kind in target["kind"])
-        packages[relative] = (package["name"], lib)
+        depends = sorted({dependency["name"] for dependency in package["dependencies"]
+                          if dependency.get("path") and dependency["name"] in members})
+        packages[relative] = Package(package["name"], tuple(depends))
     return packages
 
 
-def plan(crates: Sequence[str], packages: Dict[str, Tuple[str, bool]]) -> Tuple[List[Check], List[str]]:
+def dependents(names: Iterable[str], packages: Dict[str, Package]) -> List[str]:
+    """Пакеты, которые зависят от `names` прямо или через другие, без самих `names`."""
+    reverse: Dict[str, Set[str]] = {}
+    for package in packages.values():
+        for dependency in package.depends:
+            reverse.setdefault(dependency, set()).add(package.name)
+    seen = set(names)
+    queue = list(seen)
+    while queue:
+        for user in sorted(reverse.get(queue.pop(), ())):
+            if user not in seen:
+                seen.add(user)
+                queue.append(user)
+    return sorted(seen - set(names))
+
+
+def plan(crates: Sequence[str], packages: Dict[str, Package]) -> Tuple[List[Check], List[str]]:
+    """Сначала тесты и clippy затронутых крейтов, затем тесты зависимых, затем общее."""
     checks: List[Check] = []
     notes: List[str] = []
+    touched: List[str] = []
     for crate in crates:
         if crate not in packages:
             if crate.split("/")[1] in OUTSIDE_WORKSPACE:
                 notes.append(f"{crate}: вне рабочего пространства, его гоняет scripts/dev/run-research.py")
             continue
-        name, lib = packages[crate]
-        checks.append(Check(f"test:{name}", "test", name, lib))
+        name = packages[crate].name
+        touched.append(name)
+        checks.append(Check(f"test:{name}", "test", name))
         checks.append(Check(f"clippy:{name}", "clippy", name))
+    checks.extend(Check(f"test:{name}", "test", name) for name in dependents(touched, packages))
     checks.append(Check("fmt", "fmt"))
     checks.append(Check("modules-fmt", "modules-fmt"))
     checks.extend(Check(f"python:{suite}", "python", suite) for suite in PYTHON_SUITES)
@@ -735,18 +789,26 @@ def load_cache(path: Path, base: str) -> Dict[str, List[str]]:
 
 
 def save_cache(path: Path, base: str, checks: Dict[str, List[str]]) -> None:
+    """Пишет кеш целиком или не пишет: оборванная запись не оставляет полкеша."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({"version": CACHE_VERSION, "base": base, "platform": sys.platform,
-                                "checks": checks}, ensure_ascii=False, indent=1), encoding="utf-8")
+    partial = path.with_name(path.name + ".partial")
+    partial.write_text(json.dumps({"version": CACHE_VERSION, "base": base, "platform": sys.platform,
+                                   "checks": checks}, ensure_ascii=False, indent=1), encoding="utf-8")
+    os.replace(partial, path)
 
 
-def baseline(checks: Sequence[Check], base: str, cache_dir: Path, env: Dict[str, str]) -> Dict[str, List[str]]:
-    """Падения тех же проверок на дереве базы; недостающие досчитываются и кешируются."""
+def baseline(checks: Sequence[Check], base: str, cache_dir: Path,
+             env: Dict[str, str]) -> Tuple[Dict[str, List[str]], List[str]]:
+    """Падения тех же проверок на дереве базы и проверки, которые база не досчитала.
+
+    Недостающие проверки досчитываются; в кеш попадает только досчитанная.
+    """
     cache_path = cache_dir / "baseline.json"
     cached = load_cache(cache_path, base)
     missing = [check for check in checks if check.key not in cached]
+    incomplete: List[str] = []
     if not missing:
-        return cached
+        return cached, incomplete
     tree = cache_dir / "base"
     print(f"База {base[:12]}: считаю {len(missing)} проверок в {tree}", flush=True)
     add_base_tree(REPO_ROOT, tree, base)
@@ -756,7 +818,11 @@ def baseline(checks: Sequence[Check], base: str, cache_dir: Path, env: Dict[str,
             if check.kind in ("test", "clippy") and not crate_exists_on_base(tree, check.target):
                 cached[check.key] = []
                 continue
-            cached[check.key] = run_check(check, tree, base_env, cache_dir / "logs-base").failures
+            result = run_check(check, tree, base_env, cache_dir / "logs-base")
+            if not result.complete:
+                incomplete.append(check.key)
+                continue
+            cached[check.key] = result.failures
             save_cache(cache_path, base, cached)
     finally:
         try:
@@ -765,7 +831,7 @@ def baseline(checks: Sequence[Check], base: str, cache_dir: Path, env: Dict[str,
             # Не заслонять итог проверок: копию уберёт следующий прогон.
             print(f"pre-ready-check: копия базы не убрана: {error}", file=sys.stderr)
     save_cache(cache_path, base, cached)
-    return cached
+    return cached, incomplete
 
 
 def crate_exists_on_base(tree: Path, package: str) -> bool:
@@ -829,7 +895,7 @@ def recheck(check: Check, fresh: List[str], root: Path, env: Dict[str, str],
     log_dir.mkdir(parents=True, exist_ok=True)
     (log_dir / (re.sub(r"[^\w.-]+", "_", check.key) + ".rerun.log")).write_text(completed.stdout, encoding="utf-8")
     repeated = parse(check, completed.stdout, completed.returncode, root)
-    if any(name.startswith(SYNTHETIC) for name in repeated.failures):
+    if not repeated.complete or any(name.startswith(SYNTHETIC) for name in repeated.failures):
         return Result(fresh), []  # повтор сам не прошёл: доверять нечему
     unstable = [name for name in names if not any(related(failure, name) for failure in repeated.failures)]
     still: List[str] = [name for name in fresh if name.startswith(SYNTHETIC)]
@@ -871,22 +937,36 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 2
 
     checks, notes = plan(touched_crates(lines), packages)
-    crate_names = sorted(key.split(":", 1)[1] for key in (c.key for c in checks) if key.startswith("test:"))
-    print(f"База {base[:12]} ({args.base}); крейты: {', '.join(crate_names) or 'нет'}")
+    touched = sorted(check.target for check in checks if check.kind == "clippy")
+    users = sorted(check.target for check in checks if check.kind == "test" and check.target not in touched)
+    print(f"База {base[:12]} ({args.base}); крейты: {', '.join(touched) or 'нет'}; "
+          f"зависимые: {', '.join(users) or 'нет'}")
     if dirty:
         print("Рабочее дерево с незакоммиченными правками: итог относится к дереву, а не к HEAD.")
     for note in notes:
         print(f"  {note}")
 
     current: Dict[str, Result] = {}
-    for check in checks:
-        current[check.key] = run_check(check, REPO_ROOT, env, cache_dir / "logs")
-    failed = [check for check in checks if current[check.key].failures]
     try:
-        base_failures = baseline(failed, base, cache_dir, env) if failed else {}
+        for check in checks:
+            current[check.key] = run_check(check, REPO_ROOT, env, cache_dir / "logs")
+    except KeyboardInterrupt:
+        unrun = [check.key for check in checks if check.key not in current]
+        print(f"\npre-ready-check: прогон прерван, итога нет. Не прогнаны: {', '.join(unrun)}", file=sys.stderr)
+        return 130
+    # Оборванную проверку ветки не с чем сверять: её итог неполон.
+    unfinished = [check.key for check in checks if not current[check.key].complete]
+    failed = [check for check in checks if current[check.key].failures and check.key not in unfinished]
+    try:
+        base_failures, base_unfinished = baseline(failed, base, cache_dir, env) if failed else ({}, [])
     except Refusal as error:
         print(f"pre-ready-check: база не посчитана: {error}", file=sys.stderr)
         return 2
+    except KeyboardInterrupt:
+        print("\npre-ready-check: прогон прерван на базе, итога нет", file=sys.stderr)
+        return 130
+    for key in unfinished + base_unfinished:
+        current.pop(key, None)
     fresh = new_failures(current, base_failures)
     unstable: Dict[str, List[str]] = {}
     build: Dict[str, Set[str]] = {key: set(result.build) for key, result in current.items()}
@@ -904,6 +984,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     print()
     for check in checks:
+        if check.key in unfinished or check.key in base_unfinished:
+            where = "" if check.key in unfinished else " на базе"
+            print(f"[не досчитано{where}] {check.key}")
+            continue
         known_on_base = base_failures.get(check.key, [])
         known = sum(1 for failure in set(current[check.key].failures)
                     if failure in known_on_base
@@ -916,7 +1000,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             print(f"    {'сбой сборки: ' if failure in build[check.key] else ''}{failure}")
         for failure in unstable.get(check.key, []):
             print(f"    нестабилен, прошёл при повторе: {failure}")
-    crate_packages = {crate: name for crate, (name, _) in packages.items()}
+    crate_packages = {crate: package.name for crate, package in packages.items()}
 
     def read(name: str) -> Optional[str]:
         try:
@@ -928,10 +1012,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     print()
     builds = sum(failure in build[key] for key, failures in fresh.items() for failure in failures)
     count = sum(map(len, fresh.values()))
-    print(f"Новые падения: {count if fresh else 'нет'}"
-          + (f" (из них сбой сборки: {builds} — сборка продукта, а не проверка)" if builds else ""))
+    missing = unfinished + [key for key in base_unfinished if key not in unfinished]
+    builds_note = f" (из них сбой сборки: {builds} — сборка продукта, а не проверка)" if builds else ""
+    if missing:
+        if fresh:
+            print(f"Новые падения в досчитанных проверках: {count}{builds_note}")
+        print(f"Итога нет: не досчитаны {', '.join(missing)}. Повторите прогон.")
+    else:
+        print(f"Новые падения: {count if fresh else 'нет'}{builds_note}")
     print(f"Не исполнены на этой ОС, разобрать по коду: {'; '.join(unrun) if unrun else 'нет'}")
     print(f"Журналы: {cache_dir / 'logs'}")
+    if missing:
+        return INCOMPLETE_EXIT
     return 1 if fresh else 0
 
 
