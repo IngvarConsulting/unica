@@ -13,6 +13,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
@@ -27,12 +28,15 @@ sys.modules["codex_review"] = REVIEW
 SPEC.loader.exec_module(REVIEW)
 
 FAKE_CODEX = """\
-import os, sys, time
+import os, pathlib, sys, time
 print("fake codex", *sys.argv[1:])
 print("cwd", os.getcwd())
 print("git", os.popen("git rev-parse --abbrev-ref HEAD").read().strip())
 sys.stdout.flush()
 time.sleep(float(os.environ.get("FAKE_CODEX_SLEEP", "0")))
+survived = os.environ.get("FAKE_CODEX_SURVIVED")
+if survived:
+    pathlib.Path(survived).write_text("alive", encoding="utf-8")
 sys.exit(int(os.environ.get("FAKE_CODEX_EXIT", "0")))
 """
 
@@ -191,6 +195,29 @@ class Run(unittest.TestCase):
             )
             self.assertEqual(code, 124)
             self.assertIn("пределу времени", destination.read_text(encoding="utf-8"))
+
+    def test_launcher_descendants_are_killed_too(self):
+        """В PATH может оказаться оболочка (`codex.cmd`): её смерть не конец Codex."""
+        with tempfile.TemporaryDirectory() as temp:
+            codex = fake_codex(Path(temp))
+            survived = Path(temp) / "survived.txt"
+            destination = Path(temp) / "review.md"
+            code = REVIEW.run(
+                [str(codex)],
+                Path(temp),
+                {
+                    **os.environ,
+                    "FAKE_CODEX_SLEEP": "12",
+                    "FAKE_CODEX_SURVIVED": str(survived),
+                },
+                destination,
+                lambda line: None,
+                1,
+            )
+            self.assertEqual(code, 124)
+            # Потомок пережил бы оболочку и дописал файл после возврата run().
+            time.sleep(4)
+            self.assertFalse(survived.exists(), "Codex под оболочкой пережил предел времени")
 
 
 class Worktree(unittest.TestCase):

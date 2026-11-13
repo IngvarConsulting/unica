@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -167,6 +168,33 @@ def out_path(root: Path, ref: str, now: float) -> Path:
     return root / OUT_DIR / f"{stamp}-{tag[:40]}.md"
 
 
+def group_options() -> dict:
+    """Запуск своей группой процессов, чтобы потом убить её целиком."""
+    if sys.platform == "win32":
+        return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+    return {"start_new_session": True}
+
+
+def kill_tree(process: "subprocess.Popen") -> None:
+    """Убить Codex вместе с потомками: оболочка PATH, его агент и shell."""
+    if sys.platform == "win32":
+        subprocess.run(
+            ["taskkill", "/T", "/F", "/PID", str(process.pid)],
+            capture_output=True,
+            check=False,
+        )
+    else:
+        try:
+            os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+    process.kill()
+    try:
+        process.wait(timeout=30)
+    except subprocess.TimeoutExpired:
+        pass
+
+
 def run(
     command: Sequence[str],
     cwd: Path,
@@ -178,7 +206,10 @@ def run(
     """Вывод Codex идёт в файл и на stderr; stdout остаётся под путь к файлу.
 
     Вывод читает отдельный поток: зависший Codex может не напечатать ни
-    строки, и предел времени должен сработать всё равно.
+    строки, и предел времени должен сработать всё равно. По пределу времени
+    убивается всё дерево процессов: `codex` может оказаться оболочкой
+    (`codex.cmd` в PATH) или сам держать потомков, и тогда смерть одного
+    процесса оставила бы ревью работать, а чтение — висеть на трубе.
     """
     destination.parent.mkdir(parents=True, exist_ok=True)
     process = subprocess.Popen(
@@ -192,6 +223,7 @@ def run(
         encoding="utf-8",
         errors="replace",
         bufsize=1,
+        **group_options(),
     )
     assert process.stdout is not None
     with destination.open("w", encoding="utf-8", newline="\n") as sink:
@@ -207,11 +239,12 @@ def run(
         try:
             code = process.wait(timeout=timeout or None)
         except subprocess.TimeoutExpired:
-            process.kill()
-            process.wait()
+            kill_tree(process)
             code = 124
         reader.join(timeout=30)
-        process.stdout.close()
+        # Закрывать трубу под ещё читающим потоком нельзя: закрытие повиснет.
+        if not reader.is_alive():
+            process.stdout.close()
         if code == 124:
             sink.write(f"\ncodex-review: Codex убит по пределу времени {timeout} с\n")
     return code
