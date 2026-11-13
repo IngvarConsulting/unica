@@ -85,10 +85,35 @@ class VersionLiteralTests(unittest.TestCase):
                 "let f = ACTIVE_FORMAT_PROFILE.export_format;",
                 "let g = Format2_20;",
                 'let h = "8.5.4";',
+                "let i = format_identity::PlatformLine::new(8, 5, 1);",
             ]
         )
         found = guard.source_literals("crates/sample/src/lib.rs", source)
-        self.assertEqual({item.line for item in found}, set(range(1, 9)))
+        self.assertEqual({item.line for item in found}, set(range(1, 10)))
+
+    def test_a_platform_line_value_counts_outside_its_owners_and_tests(self) -> None:
+        """rule: INV.SOURCE.PROFILE-CAPABILITIES"""
+        value = "pub fn since() -> PlatformLine { PlatformLine::new(8, 5, 1) }\n"
+        self.workspace.crate(
+            "sample",
+            {
+                "src/lib.rs": value
+                + "pub fn same(line: (u32, u32, u32)) -> PlatformLine {\n"
+                + "    PlatformLine::new(line.0, line.1, line.2)\n"
+                + "}\n"
+                + "#[cfg(test)]\nmod tests {\n    const L: PlatformLine = PlatformLine::new(8, 3, 27);\n}\n"
+            },
+        )
+        self.workspace.crate("unica-source-contract", {"src/format_identity.rs": value})
+        self.workspace.crate(
+            "unica-source-designer",
+            {"src/format_profile.rs": value, "src/dialect/v8_5_1.rs": value},
+        )
+        errors = guard.check(self.workspace.root)
+        self.assertEqual(len(errors), 1)
+        self.assertIn("sample: 1 version literals", errors[0])
+        found = guard.crate_literals(self.workspace.root, guard.load_crates(self.workspace.root)[0])
+        self.assertEqual([(item.path, item.line) for item in found], [("crates/sample/src/lib.rs", 1)])
 
     def test_a_lower_count_passes_and_write_baseline_lowers_it(self) -> None:
         source = 'fn writable(version: &str) -> bool { version == "2.20" }\n'
