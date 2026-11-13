@@ -1816,7 +1816,7 @@ pub(crate) mod tests {
     #[test]
     fn uncertain_post_spawn_failure_retains_active_lock_for_initial_attempt() {
         let cache = TestCache::new();
-        let runner = Arc::new(UncertainSpawnRunner::fail_on_attempt(0, None));
+        let runner = Arc::new(UncertainSpawnRunner::retaining());
         let service = RuntimeJobService::new(cache.path(), runner);
 
         service
@@ -1839,7 +1839,7 @@ pub(crate) mod tests {
         let scope = TestSupervisorScope::enter();
         {
             let cache = TestCache::new();
-            let runner = Arc::new(UncertainSpawnRunner::fail_on_attempt(0, None));
+            let runner = Arc::new(UncertainSpawnRunner::retaining());
             let service = RuntimeJobService::new(cache.path(), runner);
 
             service
@@ -1857,7 +1857,7 @@ pub(crate) mod tests {
         {
             let cache = TestCache::new();
             nested_root = cache.service_root("state");
-            let runner = Arc::new(UncertainSpawnRunner::fail_on_attempt(0, None));
+            let runner = Arc::new(UncertainSpawnRunner::retaining());
             let service = RuntimeJobService::new(nested_root.clone(), runner);
 
             service
@@ -2743,7 +2743,7 @@ pub(crate) mod tests {
         let request = fake_request(RuntimeJobOperation::Test);
         let queued = RuntimeJobService::enqueue(cache.path(), &request).expect("queue job");
         let handoff = worker_request(&cache, &queued.id, &request);
-        let runner = Arc::new(UncertainSpawnRunner::fail_on_attempt(0, None));
+        let runner = Arc::new(UncertainSpawnRunner::retaining());
         let worker_runner = Arc::clone(&runner);
         let (finished_tx, finished_rx) = mpsc::channel();
         let worker = thread::spawn(move || {
@@ -2782,8 +2782,6 @@ pub(crate) mod tests {
     }
 
     struct ActivationWriteFailureRunner {
-        attempts: AtomicU32,
-        first: Mutex<Option<FakeProcessState>>,
         retained: Arc<ObservationFailureState>,
     }
 
@@ -2837,15 +2835,6 @@ pub(crate) mod tests {
         }
 
         fn spawn(&self, _request: &RuntimeJobRequest) -> RuntimeJobSpawnResult {
-            let attempt = self.attempts.fetch_add(1, Ordering::SeqCst);
-            if attempt == 0 {
-                if let Some(first) = self.first.lock().expect("lock first state").take() {
-                    return Ok(Box::new(FakeProcess {
-                        id: 88_880,
-                        state: Arc::new(Mutex::new(first)),
-                    }));
-                }
-            }
             RECORD_WRITE_FAILURE.store(true, Ordering::Release);
             Ok(Box::new(ObservationFailureProcess {
                 state: Arc::clone(&self.retained),
@@ -3068,10 +3057,7 @@ pub(crate) mod tests {
         });
     }
 
-    fn assert_worker_supervises_post_spawn_record_failure(
-        request: RuntimeJobRequest,
-        first: Option<FakeProcessState>,
-    ) {
+    fn assert_worker_supervises_post_spawn_record_failure(request: RuntimeJobRequest) {
         let cache = TestCache::new();
         let queued = RuntimeJobService::enqueue(cache.path(), &request).expect("queue job");
         let handoff = worker_request(&cache, &queued.id, &request);
@@ -3082,8 +3068,6 @@ pub(crate) mod tests {
             dropped: AtomicBool::new(false),
         });
         let runner = Arc::new(ActivationWriteFailureRunner {
-            attempts: AtomicU32::new(0),
-            first: Mutex::new(first),
             retained: Arc::clone(&retained),
         });
         let (finished_tx, finished_rx) = mpsc::channel();
@@ -3110,10 +3094,7 @@ pub(crate) mod tests {
     /// rule: INV.APP.RUNTIME-RESOURCE-TREE
     #[test]
     fn worker_retains_initial_process_when_running_record_write_fails() {
-        assert_worker_supervises_post_spawn_record_failure(
-            fake_request(RuntimeJobOperation::Test),
-            None,
-        );
+        assert_worker_supervises_post_spawn_record_failure(fake_request(RuntimeJobOperation::Test));
     }
 
     #[test]
@@ -3142,7 +3123,7 @@ pub(crate) mod tests {
     #[test]
     fn proven_childless_spawn_failure_releases_initial_active_lock() {
         let cache = TestCache::new();
-        let runner = Arc::new(UncertainSpawnRunner::proven_childless_on_attempt(0, None));
+        let runner = Arc::new(UncertainSpawnRunner::proven_childless());
         let service = RuntimeJobService::new(cache.path(), runner);
 
         service
@@ -4767,10 +4748,7 @@ pub(crate) mod tests {
 
     struct UncertainSpawnRunner {
         next_id: AtomicU32,
-        attempt: AtomicU32,
-        fail_on: u32,
         retain_on_failure: bool,
-        first: Mutex<Option<FakeProcessState>>,
         processes: Arc<Mutex<HashMap<u32, Arc<Mutex<FakeProcessState>>>>>,
     }
 
@@ -4838,24 +4816,20 @@ pub(crate) mod tests {
     }
 
     impl UncertainSpawnRunner {
-        fn fail_on_attempt(fail_on: u32, first: Option<FakeProcessState>) -> Self {
-            Self {
-                next_id: AtomicU32::new(500),
-                attempt: AtomicU32::new(0),
-                fail_on,
-                retain_on_failure: true,
-                first: Mutex::new(first),
-                processes: Arc::new(Mutex::new(HashMap::new())),
-            }
+        /// Every spawn leaves a process whose ownership is uncertain.
+        fn retaining() -> Self {
+            Self::new(true)
         }
 
-        fn proven_childless_on_attempt(fail_on: u32, first: Option<FakeProcessState>) -> Self {
+        /// Every spawn fails with the process tree proven terminal.
+        fn proven_childless() -> Self {
+            Self::new(false)
+        }
+
+        fn new(retain_on_failure: bool) -> Self {
             Self {
                 next_id: AtomicU32::new(500),
-                attempt: AtomicU32::new(0),
-                fail_on,
-                retain_on_failure: false,
-                first: Mutex::new(first),
+                retain_on_failure,
                 processes: Arc::new(Mutex::new(HashMap::new())),
             }
         }
@@ -4876,50 +4850,31 @@ pub(crate) mod tests {
         }
 
         fn spawn(&self, _request: &RuntimeJobRequest) -> RuntimeJobSpawnResult {
-            let attempt = self.attempt.fetch_add(1, Ordering::SeqCst);
-            if attempt == self.fail_on {
-                if !self.retain_on_failure {
-                    return Err(RuntimeJobSpawnFailure::ProvenChildless(redacted_error(
-                        "post-spawn cleanup proved the process tree terminal",
-                    )));
-                }
-                let id = self.next_id.fetch_add(1, Ordering::SeqCst);
-                let state = Arc::new(Mutex::new(FakeProcessState {
-                    polls_until_exit: u32::MAX,
-                    result: FakeResult::Exit(143),
-                    stdout: String::new(),
-                    stderr: String::new(),
-                    cancel_calls: 0,
-                }));
-                self.processes
-                    .lock()
-                    .map_err(|error| {
-                        RuntimeJobSpawnFailure::ProvenChildless(redacted_error(&format!(
-                            "lock uncertain processes: {error}"
-                        )))
-                    })?
-                    .insert(id, Arc::clone(&state));
-                return Err(RuntimeJobSpawnFailure::OwnershipRetained {
-                    error: redacted_error("post-spawn process-tree ownership is uncertain"),
-                    process: Box::new(FakeProcess { id, state }),
-                });
+            if !self.retain_on_failure {
+                return Err(RuntimeJobSpawnFailure::ProvenChildless(redacted_error(
+                    "post-spawn cleanup proved the process tree terminal",
+                )));
             }
-            (|| -> JobResult<Box<dyn RuntimeJobProcess>> {
-                let id = self.next_id.fetch_add(1, Ordering::SeqCst);
-                let state = Arc::new(Mutex::new(
-                    self.first
-                        .lock()
-                        .map_err(|error| redacted_error(&format!("lock first process: {error}")))?
-                        .take()
-                        .ok_or_else(|| redacted_error("missing first process state"))?,
-                ));
-                self.processes
-                    .lock()
-                    .map_err(|error| redacted_error(&format!("lock uncertain processes: {error}")))?
-                    .insert(id, Arc::clone(&state));
-                Ok(Box::new(FakeProcess { id, state }))
-            })()
-            .map_err(RuntimeJobSpawnFailure::ProvenChildless)
+            let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+            let state = Arc::new(Mutex::new(FakeProcessState {
+                polls_until_exit: u32::MAX,
+                result: FakeResult::Exit(143),
+                stdout: String::new(),
+                stderr: String::new(),
+                cancel_calls: 0,
+            }));
+            self.processes
+                .lock()
+                .map_err(|error| {
+                    RuntimeJobSpawnFailure::ProvenChildless(redacted_error(&format!(
+                        "lock uncertain processes: {error}"
+                    )))
+                })?
+                .insert(id, Arc::clone(&state));
+            Err(RuntimeJobSpawnFailure::OwnershipRetained {
+                error: redacted_error("post-spawn process-tree ownership is uncertain"),
+                process: Box::new(FakeProcess { id, state }),
+            })
         }
 
         fn attach(&self, process_id: u32) -> JobResult<Box<dyn RuntimeJobProcess>> {

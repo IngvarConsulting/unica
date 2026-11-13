@@ -1,4 +1,4 @@
-//! The v8-runner protocol, prelaunch evidence, argv and one-full-rebuild policy.
+//! The v8-runner protocol, prelaunch evidence and argv.
 pub mod backend;
 pub mod preflight;
 pub mod request;
