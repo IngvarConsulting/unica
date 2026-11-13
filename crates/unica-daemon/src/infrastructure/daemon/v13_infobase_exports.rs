@@ -1506,7 +1506,8 @@ pub(super) const ANOTHER_COPY_WARNING_CODE: &str = "infobase_of_another_copy";
 /// another working copy: it is held by …»). Машинного кода у предупреждения
 /// нет: опознание по этой части — решение владельца, оно закреплено тестами на
 /// живых конвертах push, pull, extensions и infobase.restore. Сменит раннер
-/// прозу — тесты на конвертах упадут при следующем переходе.
+/// прозу — тесты на конвертах упадут при следующем переходе. Это единственное
+/// место опознания: код раннера (v8-runner-rust#460) заменит его одной правкой.
 const ANOTHER_COPY_RUNNER_FRAGMENT: &str = " of another working copy: it is held by ";
 
 /// Своё предупреждение Unica вместо прозы раннера: без путей чужой копии, без
