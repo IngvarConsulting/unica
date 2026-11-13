@@ -161,8 +161,6 @@ mod codec {
         pub timeout_reason: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub build_preflight: Option<RuntimeBuildPreflight>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub full_rebuild_fallback_argv: Option<Vec<String>>,
     }
 
     #[derive(Debug, Serialize, Deserialize)]
@@ -190,7 +188,6 @@ mod codec {
                 artifact_path: request.artifact_path.clone(),
                 timeout_reason: request.timeout_reason.clone(),
                 build_preflight: request.build_preflight.clone(),
-                full_rebuild_fallback_argv: request.full_rebuild_fallback_argv.clone(),
             }
         }
 
@@ -204,7 +201,6 @@ mod codec {
             );
             request.timeout_reason = self.timeout_reason.clone();
             request.build_preflight = self.build_preflight.clone();
-            request.full_rebuild_fallback_argv = self.full_rebuild_fallback_argv.clone();
             request.validate_build_preflight()?;
             Ok(request)
         }
