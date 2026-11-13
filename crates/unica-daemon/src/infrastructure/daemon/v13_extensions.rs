@@ -481,6 +481,18 @@ impl PreparedExtensions {
             ));
         }
 
+        if !self.dry_run
+            && !self.operation.reads()
+            && !super::v13_infobase_another_copy::consented(&self.call)
+        {
+            if let Some(refusal) = super::v13_infobase_another_copy::refusal_for(
+                self.operation.name(),
+                &preview,
+                &self.call,
+            ) {
+                return Err(refusal);
+            }
+        }
         let plan = json!({"op":self.operation.name(),"args":self.args,"target":target,"provider":receipt["selected"],"providerOrigin":receipt["origin"]["kind"],"requiresPlatform":true,"deletesExtensionData":self.operation == Operation::Delete});
         if self.dry_run {
             let mut result =
@@ -1135,7 +1147,18 @@ mod tests {
         );
         assert!(result.ok, "{result:?}");
         super::super::v13_source_import::tests::assert_another_copy_is_named(&result);
+        // Исполнение без согласия человека отменяется с вопросом: база не тронута.
         p.dry_run = false;
+        let refused = p.execute_with(
+            &SequenceRunner::new(vec![preview.clone()]),
+            &tool(root.path()),
+            super::super::runner::VERSION,
+            CancellationToken::new(),
+        );
+        assert_eq!(refused.diagnostics[0]["code"], "cancelled", "{refused:?}");
+        let choice = refused.human_choice.as_deref().expect("a question");
+        assert_eq!(choice.code, "infobase.another_copy");
+        p.call = choice.options[0].arguments.clone();
         let result = p.execute_with(
             &SequenceRunner::new(vec![preview, applied]),
             &tool(root.path()),
