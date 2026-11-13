@@ -1017,7 +1017,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if missing:
         if fresh:
             print(f"Новые падения в досчитанных проверках: {count}{builds_note}")
-        print(f"Итога нет: не досчитаны {', '.join(missing)}. Повторите прогон.")
+        print(f"Итога нет: не досчитаны {', '.join(missing)}, поэтому о новых падениях судить нельзя. "
+              "Повторите прогон.")
     else:
         print(f"Новые падения: {count if fresh else 'нет'}{builds_note}")
     print(f"Не исполнены на этой ОС, разобрать по коду: {'; '.join(unrun) if unrun else 'нет'}")

@@ -578,7 +578,8 @@ class MainTests(unittest.TestCase):
         self.assertEqual(code, CHECK.INCOMPLETE_EXIT)
         self.assertNotIn("Новые падения: нет", output)
         self.assertIn("[не досчитано] python:tests/dev", output)
-        self.assertIn("Итога нет: не досчитаны python:tests/dev", output)
+        self.assertIn("Итога нет: не досчитаны python:tests/dev, поэтому о новых падениях судить нельзя. "
+                      "Повторите прогон.", output)
 
     def test_an_interrupted_base_check_gives_no_verdict_and_new_failures_elsewhere_still_show(self):
         results = {"python:tests/ci": CHECK.Result(["m.A.fresh"]), "python:tests/dev": CHECK.Result(["m.B.x"])}
