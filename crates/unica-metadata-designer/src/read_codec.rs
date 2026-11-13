@@ -74,6 +74,10 @@ impl MetadataReadCodec for DesignerMetadataReadCodec {
         crate::style_item_read::enrich_style_item(descriptor, payload)
     }
 
+    fn palette_color(&self, descriptor: &[u8], payload: &mut Value) -> Result<(), String> {
+        crate::palette_color_read::enrich_palette_color(descriptor, payload)
+    }
+
     fn style_properties(
         &self,
         descriptor: &str,

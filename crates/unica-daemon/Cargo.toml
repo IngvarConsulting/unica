@@ -94,5 +94,5 @@ url.workspace = true
 version-literal-baseline = 2
 component = "product"
 file-io = "owned"
-inputs = ["crates/unica-coder/src/infrastructure/format_gate.rs", "crates/unica-coder/tests/fixtures/additional_indexes", "crates/unica-execution/src/receipt_runtime.rs", "plugins/unica/skills", "plugins/unica/third-party/tools.lock.json", "tests/fixtures/acceptance", "tests/fixtures/analyzer", "tests/fixtures/formats/platform_xml/2.20", "tests/fixtures/unica_mcp_script_parity"]
+inputs = ["crates/unica-coder/src/infrastructure/format_gate.rs", "crates/unica-coder/tests/fixtures/additional_indexes", "crates/unica-execution/src/receipt_runtime.rs", "plugins/unica/skills", "plugins/unica/third-party/tools.lock.json", "tests/fixtures/acceptance", "tests/fixtures/analyzer", "tests/fixtures/formats/platform_xml/2.20", "tests/fixtures/formats/platform_xml/2.22/all_kinds", "tests/fixtures/unica_mcp_script_parity"]
 read-outside-baseline = 0

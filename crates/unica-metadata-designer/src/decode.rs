@@ -101,6 +101,7 @@ pub enum DescriptorPropertyChanges {
     },
     DocumentNumerator(unica_metadata::document_numerator::DocumentNumeratorChanges),
     StyleItem(unica_metadata::property_input::StyleItemPropertyChanges),
+    PaletteColor(unica_metadata::property_input::PaletteColorPropertyChanges),
     FunctionalOption(unica_metadata::property_input::FunctionalOptionPropertyChanges),
     Role(unica_metadata::property_input::RolePropertyChanges),
     WSReference(unica_metadata::property_input::WsReferencePropertyChanges),
@@ -1183,6 +1184,10 @@ pub fn parse_properties(
         unica_metadata::property_input::PropertiesIntent::StyleItem(value) => {
             ("StyleItems", DescriptorPropertyChanges::StyleItem(value))
         }
+        unica_metadata::property_input::PropertiesIntent::PaletteColor(values) => (
+            "PaletteColors",
+            DescriptorPropertyChanges::PaletteColor(values),
+        ),
         unica_metadata::property_input::PropertiesIntent::Role(values) => {
             ("Roles", DescriptorPropertyChanges::Role(values))
         }

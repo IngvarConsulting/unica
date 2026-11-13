@@ -61,6 +61,7 @@ metadata_kind_registry! {
     "FunctionalOptionsParameter" => { directory: "FunctionalOptionsParameters", display_name_ru: "Параметры ФО", config_dump_prefix: None, config_dump_module_suffix: None },
     "DefinedType" => { directory: "DefinedTypes", display_name_ru: "Определяемые типы", config_dump_prefix: None, config_dump_module_suffix: None },
     "Bot" => { directory: "Bots", display_name_ru: "Боты", config_dump_prefix: Some("Bot"), config_dump_module_suffix: Some(".Module") },
+    "PaletteColor" => { directory: "PaletteColors", display_name_ru: "Цвета палитры", config_dump_prefix: None, config_dump_module_suffix: None },
     "CommonCommand" => { directory: "CommonCommands", display_name_ru: "Общие команды", config_dump_prefix: None, config_dump_module_suffix: None },
     "CommandGroup" => { directory: "CommandGroups", display_name_ru: "Группы команд", config_dump_prefix: None, config_dump_module_suffix: None },
     "Constant" => { directory: "Constants", display_name_ru: "Константы", config_dump_prefix: None, config_dump_module_suffix: None },
@@ -147,6 +148,7 @@ pub fn metadata_kind_requires_child_objects_8_3_27(tag: &str) -> Option<bool> {
         | "FunctionalOption"
         | "FunctionalOptionsParameter"
         | "DefinedType"
+        | "PaletteColor"
         | "CommonCommand"
         | "CommandGroup"
         | "Constant"
@@ -619,6 +621,7 @@ mod tests {
             "FunctionalOptionsParameter",
             "DefinedType",
             "Bot",
+            "PaletteColor",
             "CommonCommand",
             "CommandGroup",
             "Constant",
@@ -643,7 +646,7 @@ mod tests {
             "IntegrationService",
         ];
 
-        assert_eq!(METADATA_KINDS.len(), 45);
+        assert_eq!(METADATA_KINDS.len(), 46);
         assert_eq!(METADATA_KIND_TAGS, EXPECTED_TAGS);
         assert_eq!(METADATA_KIND_TAGS.len(), METADATA_KINDS.len());
         assert_eq!(
