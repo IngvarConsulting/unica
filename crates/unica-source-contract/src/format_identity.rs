@@ -292,6 +292,30 @@ const CONFIGURATION_ROOT_LINE_ADDITIONS: &[(&str, Option<&str>, PlatformLine)] =
         Some("Version8_5"),
         PlatformLine::new(8, 5, 1),
     ),
+    // The modes of the line itself: 8.5.1 refuses to load `Version8_5_4`
+    // ("необходима версия платформы не меньше, чем 8.5.4"). The Designer of
+    // 8.5.1 lists the modes up to 8.3.27, but the platform loads and exports
+    // `Version8_5_1` from a file.
+    (
+        "CompatibilityMode",
+        Some("Version8_5_1"),
+        PlatformLine::new(8, 5, 1),
+    ),
+    (
+        "CompatibilityMode",
+        Some("Version8_5_4"),
+        PlatformLine::new(8, 5, 4),
+    ),
+    (
+        "ConfigurationExtensionCompatibilityMode",
+        Some("Version8_5_1"),
+        PlatformLine::new(8, 5, 1),
+    ),
+    (
+        "ConfigurationExtensionCompatibilityMode",
+        Some("Version8_5_4"),
+        PlatformLine::new(8, 5, 4),
+    ),
 ];
 
 /// A configuration root property, or a value of one, that a later line than
@@ -337,6 +361,37 @@ pub fn member_property_since(member: &str, property: &str) -> Option<PlatformLin
 pub fn member_property_exists(line: Option<PlatformLine>, member: &str, property: &str) -> bool {
     member_property_since(member, property)
         .is_none_or(|since| line.is_some_and(|line| line >= since))
+}
+
+/// Root metadata kinds a later line than the first described one adds, with
+/// the line they exist from, by the all_kinds export of each line
+/// (INV.SOURCE.PROFILE-CAPABILITIES). A kind absent here exists in every
+/// described line.
+const METADATA_KIND_LINE_ADDITIONS: &[(&str, PlatformLine)] =
+    &[("PaletteColor", PlatformLine::new(8, 5, 1))];
+
+/// The line a root metadata `kind` exists from, when a later line than the
+/// first described one adds it.
+pub fn metadata_kind_since(kind: &str) -> Option<PlatformLine> {
+    METADATA_KIND_LINE_ADDITIONS
+        .iter()
+        .find(|(name, _)| *name == kind)
+        .map(|(_, since)| *since)
+}
+
+/// Whether a set of platform `line` has the root metadata `kind`; a set
+/// without a known line has only what every described line has.
+pub fn metadata_kind_exists(line: Option<PlatformLine>, kind: &str) -> bool {
+    metadata_kind_since(kind).is_none_or(|since| line.is_some_and(|line| line >= since))
+}
+
+/// The platform line of the Designer export format a root records: 8.3.27
+/// for 2.20, the release's line for a later format, `None` for any other.
+pub fn export_format_line(raw: &str) -> Option<PlatformLine> {
+    if raw == crate::ACTIVE_SERIALIZATION_FORMAT {
+        return Some(PlatformLine::new(8, 3, 27));
+    }
+    PlatformXmlRelease::for_export_format(raw).map(PlatformXmlRelease::platform_line)
 }
 
 /// The platform lines whose capabilities are described, with their text.

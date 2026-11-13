@@ -31,7 +31,7 @@ use uuid::Uuid;
 // unit: ms
 // scope: connection
 // value: 5000
-// resource: Срок подключения frontend к демону v5 с запуском при необходимости, ping и ожидания ответа на прочие запросы.
+// resource: Срок ping и ожидания ответа демона v5 на прочие запросы; подключение внутри вызова ограничено сроком вызова, подъём без вызова — daemon.startup-readiness-timeout.
 // status: unproven
 // origin: коммит 4ed8661c6 (feat(v13): wire hidden receipt ledger shell)
 // problem: неизвестно
@@ -63,28 +63,21 @@ const OBSERVATION_INTERRUPT_POLL: Duration = Duration::from_millis(25);
 // decision: закреплено правилом
 // decision-source: arch/rules/runtime/daemon-response-time.md
 const OWNER_RESPONSE_SAFETY_TIMEOUT: Duration = Duration::from_secs(10);
-// resource-limit: daemon.spawn-lock-timeout
-// class: deadline
-// unit: ms
-// scope: daemon
-// value: 5000
-// resource: Ожидание блокировки запуска демона в каталоге состояния.
-// status: unproven
-// origin: коммит 38512f013 (feat(daemon): add one versioned user executor)
-// problem: неизвестно
-// on-reach: ошибка «timed out waiting for daemon spawn ownership»
-const SPAWN_LOCK_TIMEOUT: Duration = Duration::from_secs(5);
-// resource-limit: daemon.existing-endpoint-probe-timeout
+/// How long a frontend that no call waits on (an editor client, the start of
+/// an MCP server) gives the daemon to come up: spawn included.
+// resource-limit: daemon.startup-readiness-timeout
 // class: deadline
 // unit: ms
 // scope: connection
-// value: 500
-// resource: Срок проверки уже записанной конечной точки демона перед запуском нового.
+// value: 30000
+// resource: Срок подъёма демона v5 frontend-ом без ожидающего вызова: поиск, блокировка запуска, запуск, готовность и рукопожатие.
 // status: unproven
-// origin: коммит f36431393 (fix(v13): preserve startup and receipt authority)
-// problem: неизвестно
-// on-reach: точка считается недоступной, frontend переходит к блокировке и запуску демона
-const EXISTING_ENDPOINT_PROBE_TIMEOUT: Duration = Duration::from_millis(500);
+// origin: #2969
+// problem: Под нагрузкой (две сборки на восьми ядрах) запуск отладочного демона не укладывался в 5 с срока подключения, и клиент дизайнера не поднимался вовсе.
+// on-reach: ошибка «the Unica daemon did not become ready within … s (<стадия>), most likely because the machine is busy; start again»
+// issue: #2969
+// evidence: Замер 13.11.2026, Windows 11, 8 логических ядер, от вызова connect_or_spawn до ответа ready (по 10 подъёмов, медиана / максимум): почти простой (загрузка ЦП 15–53 %) — отладочная сборка 0,73 / 0,86 с, сборка разработки d86dbe76 0,54 / 0,58 с; две проверки перед ready других сессий — 1,42 / 1,75 и 1,08 / 1,55 с; два прогона тестов unica-daemon — 1,63 / 2,11 и 1,72 / 2,69 с; сборка плюс прогон тестов — 3,56 / 4,87 и 1,71 / 2,57 с. Срок 30 с — около шести худших замеров: он сдерживает только зависший запуск, а упавший демон отвечает сразу.
+const STARTUP_READINESS_TIMEOUT: Duration = Duration::from_millis(30000);
 // resource-limit: daemon.startup-cleanup-timeout
 // class: deadline
 // unit: ms
@@ -162,13 +155,19 @@ pub enum V5TransportError {
         limit_bytes: usize,
     },
     ResponseLost(String),
+    /// No connection stood before the deadline of the call: the daemon may be
+    /// alive and busy. No frame was written, and the same call may be
+    /// repeated as is.
+    NotConnectedInTime(String),
 }
 
 impl fmt::Display for V5TransportError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::SessionPoisoned => formatter.write_str("protocol-v5 owner session is poisoned"),
-            Self::RequestNotSent(error) | Self::ResponseLost(error) => formatter.write_str(error),
+            Self::RequestNotSent(error)
+            | Self::ResponseLost(error)
+            | Self::NotConnectedInTime(error) => formatter.write_str(error),
             Self::RequestTooLarge {
                 frame_bytes,
                 limit_bytes,
@@ -306,26 +305,25 @@ fn finish_ready_startup<C: V5StartupChildControl>(
 enum ConnectionFailure {
     Unavailable(String),
     Rejected(String),
+    /// The deadline passed at this stage: the daemon may be alive and busy.
+    OutOfTime(&'static str),
 }
 
 impl ConnectionFailure {
-    fn io(stage: &str, error: io::Error) -> Self {
+    /// An I/O failure of `stage`. Every socket wait of a connection is bounded
+    /// by its deadline, so a timed-out wait is the deadline passing at
+    /// `deadline_stage`, not an unavailable daemon.
+    fn io(stage: &str, deadline_stage: &'static str, error: io::Error) -> Self {
         let message = format!("{stage}: {error}");
         match error.kind() {
+            io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock => Self::OutOfTime(deadline_stage),
             io::ErrorKind::ConnectionRefused
             | io::ErrorKind::ConnectionReset
             | io::ErrorKind::ConnectionAborted
             | io::ErrorKind::UnexpectedEof
-            | io::ErrorKind::TimedOut
-            | io::ErrorKind::WouldBlock
             | io::ErrorKind::BrokenPipe
             | io::ErrorKind::NotConnected => Self::Unavailable(message),
             _ => Self::Rejected(message),
-        }
-    }
-    fn message(self) -> String {
-        match self {
-            Self::Unavailable(message) | Self::Rejected(message) => message,
         }
     }
 }
@@ -334,6 +332,97 @@ impl From<String> for ConnectionFailure {
     fn from(message: String) -> Self {
         Self::Rejected(message)
     }
+}
+
+/// Why no connection to the daemon stood. Running out of time is not a
+/// refusal: the daemon may be alive and busy, and nothing of a call reached
+/// it, so the call may be repeated as is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum V5ConnectFailure {
+    /// The deadline passed at `stage`; `note` carries cleanup failures.
+    NotInTime { stage: &'static str, note: String },
+    /// The daemon, its state or its start refused the connection.
+    Refused(String),
+}
+
+impl V5ConnectFailure {
+    fn not_in_time(stage: &'static str) -> Self {
+        Self::NotInTime {
+            stage,
+            note: String::new(),
+        }
+    }
+
+    fn with_note(mut self, note: String) -> Self {
+        match &mut self {
+            Self::NotInTime { note: notes, .. } | Self::Refused(notes) => notes.push_str(&note),
+        }
+        self
+    }
+
+    /// The answer of a frontend that no call waits on and that gave the
+    /// daemon `budget` to come up.
+    pub fn startup_message(&self, budget: Duration) -> String {
+        match self {
+            Self::NotInTime { stage, note } => format!(
+                "the Unica daemon did not become ready within {} s ({stage}), most likely because \
+                 the machine is busy; start again{note}",
+                budget.as_secs()
+            ),
+            Self::Refused(message) => message.clone(),
+        }
+    }
+}
+
+impl fmt::Display for V5ConnectFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NotInTime { stage, note } => write!(
+                formatter,
+                "the Unica daemon did not answer in time ({stage}), most likely because the \
+                 machine is busy{note}"
+            ),
+            Self::Refused(message) => formatter.write_str(message),
+        }
+    }
+}
+
+impl From<String> for V5ConnectFailure {
+    fn from(message: String) -> Self {
+        Self::Refused(message)
+    }
+}
+
+impl From<&str> for V5ConnectFailure {
+    fn from(message: &str) -> Self {
+        Self::Refused(message.to_string())
+    }
+}
+
+impl From<ConnectionFailure> for V5ConnectFailure {
+    fn from(failure: ConnectionFailure) -> Self {
+        match failure {
+            ConnectionFailure::OutOfTime(stage) => Self::not_in_time(stage),
+            ConnectionFailure::Unavailable(message) | ConnectionFailure::Rejected(message) => {
+                Self::Refused(message)
+            }
+        }
+    }
+}
+
+fn in_time(deadline: Instant, stage: &'static str) -> Result<Duration, V5ConnectFailure> {
+    remaining(deadline, stage).map_err(|_| V5ConnectFailure::not_in_time(stage))
+}
+
+/// Whether a daemon of this build is alive: it holds the receipt authority of
+/// the state for its whole lifetime. Asked only under the spawn lock, as
+/// state collection does, so the probe never takes the authority from a
+/// daemon that is starting.
+fn daemon_alive(state: &DaemonStateDirectory) -> Result<bool, String> {
+    Ok(
+        unica_execution::receipt_runtime::authority::ReceiptAuthorityLock::try_acquire(state)?
+            .is_none(),
+    )
 }
 
 /// The exit of a spawned daemon before readiness, with the reason it
@@ -355,53 +444,65 @@ fn exited_before_readiness(
 
 impl V5DaemonProcessOwner {
     /// Connect to the exact production-v5 daemon under `state_root`, spawning
-    /// the same binary in `--daemon` mode when no live endpoint answers.
+    /// the same binary in `--daemon` mode when no live endpoint answers. No
+    /// call waits on this connection: the daemon gets
+    /// [`STARTUP_READINESS_TIMEOUT`] to come up.
     pub fn connect_or_spawn(
         state_root: &Path,
         core_identity: CoreIdentity,
         executable: PathBuf,
         idle_grace: Duration,
     ) -> Result<Self, String> {
-        let deadline = Instant::now() + CONNECT_TIMEOUT;
+        let deadline = Instant::now() + STARTUP_READINESS_TIMEOUT;
         Self::connect_or_spawn_before(state_root, core_identity, executable, idle_grace, deadline)
+            .map_err(|failure| failure.startup_message(STARTUP_READINESS_TIMEOUT))
     }
 
+    /// Discovery runs under the spawn lock of the state. A recorded endpoint
+    /// of a live daemon of this build answers in the whole remaining time: a
+    /// second daemon could not start beside it (the receipt authority is
+    /// exclusive), so a slow answer is waited for, and the deadline passing
+    /// is named as such. A daemon starts only when none of this build lives.
     pub fn connect_or_spawn_before(
         state_root: &Path,
         core_identity: CoreIdentity,
         executable: PathBuf,
         idle_grace: Duration,
         deadline: Instant,
-    ) -> Result<Self, String> {
-        remaining(deadline, "discovery")?;
+    ) -> Result<Self, V5ConnectFailure> {
+        in_time(deadline, "discovery")?;
         if core_identity != CoreIdentity::production_v5() {
-            return Err("protocol-v5 client requires the exact production-v5 identity".to_string());
+            return Err(
+                "protocol-v5 client requires the exact production-v5 identity"
+                    .to_string()
+                    .into(),
+            );
         }
         let state = DaemonStateDirectory::open(state_root, &core_identity)?;
+        in_time(deadline, "spawn lock")?;
+        // Another frontend may be starting the daemon: its start takes as long
+        // as ours would, so the lock is awaited for the whole deadline.
+        let _spawn_lock = match state.acquire_spawn_lock_before(deadline) {
+            Ok(lock) => lock,
+            Err(_) if Instant::now() >= deadline => {
+                return Err(V5ConnectFailure::not_in_time("spawn lock"))
+            }
+            Err(error) => return Err(error.into()),
+        };
         if let Some(record) = state.read_v5_endpoint_record()? {
             if record.core_identity() != &core_identity {
-                return Err("protocol-v5 endpoint belongs to a foreign core identity".to_string());
+                return Err("protocol-v5 endpoint belongs to a foreign core identity"
+                    .to_string()
+                    .into());
             }
-            let probe_deadline = existing_endpoint_probe_deadline(deadline)?;
-            match Self::connect_classified_before(record, probe_deadline) {
-                Ok(owner) => return Ok(owner),
-                Err(ConnectionFailure::Rejected(message)) => return Err(message),
-                Err(ConnectionFailure::Unavailable(_)) => {}
-            }
-        }
-
-        remaining(deadline, "spawn lock")?;
-        let lock_deadline = deadline.min(Instant::now() + SPAWN_LOCK_TIMEOUT);
-        let _spawn_lock = state.acquire_spawn_lock_before(lock_deadline)?;
-        if let Some(record) = state.read_v5_endpoint_record()? {
-            if record.core_identity() != &core_identity {
-                return Err("protocol-v5 endpoint belongs to a foreign core identity".to_string());
-            }
-            let probe_deadline = existing_endpoint_probe_deadline(deadline)?;
-            match Self::connect_classified_before(record, probe_deadline) {
-                Ok(owner) => return Ok(owner),
-                Err(ConnectionFailure::Rejected(message)) => return Err(message),
-                Err(ConnectionFailure::Unavailable(_)) => {}
+            if daemon_alive(&state)? {
+                match Self::connect_classified_before(record, deadline) {
+                    Ok(owner) => return Ok(owner),
+                    // The daemon is going away: its listener is closed while
+                    // the process still ends. A new one starts after it.
+                    Err(ConnectionFailure::Unavailable(_)) => {}
+                    Err(failure) => return Err(failure.into()),
+                }
             }
         }
 
@@ -410,7 +511,7 @@ impl V5DaemonProcessOwner {
         super::identity::verify_executable_build(&executable, &core_identity)?;
         // Readiness and failure cleanup share the caller's deadline. Reserve
         // part of even a short recovery window instead of adding a new grace.
-        let startup_budget = remaining(deadline, "spawn")?;
+        let startup_budget = in_time(deadline, "spawn")?;
         let cleanup_reserve = (startup_budget / 3).min(STARTUP_CLEANUP_TIMEOUT);
         let readiness_deadline = deadline - cleanup_reserve;
         // Under the spawn lock no other frontend starts a daemon here: a reason
@@ -439,49 +540,52 @@ impl V5DaemonProcessOwner {
         core_identity: &CoreIdentity,
         readiness_deadline: Instant,
         deadline: Instant,
-    ) -> Result<Self, String> {
+    ) -> Result<Self, V5ConnectFailure> {
         let expected_pid = child.id();
         let mut endpoint = StartupEndpointObservation::new(expected_pid);
 
-        let readiness = loop {
-            if let Err(error) = remaining(readiness_deadline, "spawn readiness") {
+        let readiness: Result<Self, V5ConnectFailure> = loop {
+            if let Err(error) = in_time(readiness_deadline, "spawn readiness") {
                 break Err(error);
             }
             let child_status = match child.try_wait_status() {
                 Ok(status) => status,
-                Err(error) => break Err(error),
+                Err(error) => break Err(error.into()),
             };
             if let Some(status) = child_status {
-                break Err(exited_before_readiness(state, expected_pid, status));
+                break Err(exited_before_readiness(state, expected_pid, status).into());
             }
             let record = match state.read_v5_endpoint_record() {
                 Ok(record) => record,
-                Err(error) => break Err(error),
+                Err(error) => break Err(error.into()),
             };
             if let Some(record) = record {
                 if record.core_identity() != core_identity {
-                    break Err(
-                        "protocol-v5 endpoint belongs to a foreign core identity".to_string()
-                    );
+                    break Err("protocol-v5 endpoint belongs to a foreign core identity"
+                        .to_string()
+                        .into());
                 }
                 if record.pid() == expected_pid {
                     let child_status = match child.try_wait_status() {
                         Ok(status) => status,
-                        Err(error) => break Err(error),
+                        Err(error) => break Err(error.into()),
                     };
                     if let Some(status) = child_status {
-                        break Err(exited_before_readiness(state, expected_pid, status));
+                        break Err(exited_before_readiness(state, expected_pid, status).into());
                     }
                     if endpoint.observe(&record) {
                         match Self::connect_classified_before(record, readiness_deadline) {
                             Ok(owner) => break Ok(owner),
-                            Err(ConnectionFailure::Rejected(message)) => break Err(message),
-                            Err(ConnectionFailure::Unavailable(_)) => {}
+                            Err(ConnectionFailure::Rejected(message)) => break Err(message.into()),
+                            // Not ready yet, or the readiness window ran out:
+                            // the next check names it.
+                            Err(ConnectionFailure::Unavailable(_))
+                            | Err(ConnectionFailure::OutOfTime(_)) => {}
                         }
                     }
                 }
             }
-            let retry_budget = match remaining(readiness_deadline, "spawn readiness") {
+            let retry_budget = match in_time(readiness_deadline, "spawn readiness") {
                 Ok(remaining) => remaining,
                 Err(error) => break Err(error),
             };
@@ -489,7 +593,9 @@ impl V5DaemonProcessOwner {
         };
 
         match readiness {
-            Ok(owner) => finish_ready_startup(owner, child, state, &endpoint, deadline),
+            Ok(owner) => {
+                finish_ready_startup(owner, child, state, &endpoint, deadline).map_err(Into::into)
+            }
             Err(error) => {
                 let cleanup = child.terminate_bounded(
                     deadline
@@ -497,17 +603,16 @@ impl V5DaemonProcessOwner {
                         .min(STARTUP_CLEANUP_TIMEOUT),
                 );
                 let endpoint_cleanup = endpoint.cleanup(state);
-                let mut diagnostic = error;
+                let mut note = String::new();
                 if let Err(cleanup) = cleanup {
-                    diagnostic.push_str(&format!(
+                    note.push_str(&format!(
                         "; protocol-v5 daemon startup cleanup failed: {cleanup}"
                     ));
                 }
                 if let Err(cleanup) = endpoint_cleanup {
-                    diagnostic
-                        .push_str(&format!("; protocol-v5 endpoint cleanup failed: {cleanup}"));
+                    note.push_str(&format!("; protocol-v5 endpoint cleanup failed: {cleanup}"));
                 }
-                Err(diagnostic)
+                Err(error.with_note(note))
             }
         }
     }
@@ -527,7 +632,8 @@ impl V5DaemonProcessOwner {
     }
 
     pub fn connect_before(record: V5EndpointRecord, deadline: Instant) -> Result<Self, String> {
-        Self::connect_classified_before(record, deadline).map_err(ConnectionFailure::message)
+        Self::connect_classified_before(record, deadline)
+            .map_err(|failure| V5ConnectFailure::from(failure).to_string())
     }
 
     fn connect_classified_before(
@@ -543,12 +649,14 @@ impl V5DaemonProcessOwner {
     ) -> Result<Self, ConnectionFailure> {
         let address = record.loopback_addr()?;
         let stream = match deadline {
-            Some(deadline) => {
-                TcpStream::connect_timeout(&address.into(), remaining(deadline, "connect")?)
-            }
+            Some(deadline) => TcpStream::connect_timeout(
+                &address.into(),
+                remaining(deadline, "connect")
+                    .map_err(|_| ConnectionFailure::OutOfTime("connect"))?,
+            ),
             None => TcpStream::connect(address),
         }
-        .map_err(|error| ConnectionFailure::io("connect protocol-v5 daemon", error))?;
+        .map_err(|error| ConnectionFailure::io("connect protocol-v5 daemon", "connect", error))?;
         stream
             .set_nonblocking(false)
             .map_err(|error| format!("configure protocol-v5 client stream: {error}"))?;
@@ -579,9 +687,12 @@ impl V5DaemonProcessOwner {
                 .map_err(|error| io::Error::new(io::ErrorKind::TimedOut, error))?;
             reader.get_ref().set_read_timeout(budget)
         })
-        .map_err(|error| ConnectionFailure::io("read protocol-v5 handshake", error))?;
+        .map_err(|error| {
+            ConnectionFailure::io("read protocol-v5 handshake", "handshake response", error)
+        })?;
         if let Some(deadline) = deadline {
-            remaining(deadline, "handshake response")?;
+            remaining(deadline, "handshake response")
+                .map_err(|_| ConnectionFailure::OutOfTime("handshake response"))?;
         }
         let ready: V5HandshakeServerResponse = serde_json::from_slice(&frame)
             .map_err(|_| "protocol-v5 handshake response is not strict JSON".to_string())?;
@@ -591,7 +702,8 @@ impl V5DaemonProcessOwner {
                 .into());
         }
         if let Some(deadline) = deadline {
-            remaining(deadline, "handshake decode")?;
+            remaining(deadline, "handshake decode")
+                .map_err(|_| ConnectionFailure::OutOfTime("handshake decode"))?;
         }
         Ok(owner)
     }
@@ -606,8 +718,9 @@ impl V5DaemonProcessOwner {
         record: V5EndpointRecord,
         receipt_key: ReceiptKey,
     ) -> Result<V5ServerResponse, V5TransportError> {
-        let mut owner = Self::connect_classified(record, None)
-            .map_err(|error| V5TransportError::RequestNotSent(error.message()))?;
+        let mut owner = Self::connect_classified(record, None).map_err(|error| {
+            V5TransportError::RequestNotSent(V5ConnectFailure::from(error).to_string())
+        })?;
         owner.exchange_typed_with_deadline(
             V5ClientRequest::CancelInvocation { receipt_key },
             "manual cancel invocation",
@@ -1235,16 +1348,6 @@ fn remaining_at(deadline: Instant, now: Instant, stage: &'static str) -> Result<
         .ok_or_else(|| format!("protocol-v5 deadline expired during {stage}"))
 }
 
-fn existing_endpoint_probe_deadline(outer_deadline: Instant) -> Result<Instant, String> {
-    let now = Instant::now();
-    let outer_budget = outer_deadline
-        .checked_duration_since(now)
-        .filter(|remaining| !remaining.is_zero())
-        .ok_or_else(|| "protocol-v5 deadline expired during existing endpoint probe".to_string())?;
-    now.checked_add(outer_budget.min(EXISTING_ENDPOINT_PROBE_TIMEOUT))
-        .ok_or_else(|| "protocol-v5 existing endpoint probe deadline overflow".to_string())
-}
-
 #[cfg(test)]
 mod medium_tests {
     use super::*;
@@ -1593,7 +1696,7 @@ mod medium_tests {
                 deadline,
             ) {
                 Ok(_) => panic!("an exiting child cannot become ready"),
-                Err(message) => message,
+                Err(failure) => failure.to_string(),
             };
             assert!(message.contains("exited before readiness"), "{message}");
             let state_path = state.path().display().to_string();
@@ -1621,7 +1724,13 @@ mod medium_tests {
             deadline,
         );
         assert!(
-            matches!(outcome, Err(message) if message.contains("deadline expired during spawn readiness")),
+            matches!(
+                outcome,
+                Err(V5ConnectFailure::NotInTime {
+                    stage: "spawn readiness",
+                    ..
+                })
+            ),
             "unexpected startup outcome"
         );
         assert!(

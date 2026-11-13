@@ -58,6 +58,8 @@ pub enum PropertiesSite {
     Subsystem,
     Language,
     StyleItem,
+    /// A palette colour (8.5.1 and later): its `#RRGGBB` Color and Comment.
+    PaletteColor,
     /// The root of a source set: the configuration's own `Configuration.xml`,
     /// or an extension's, which may change only its identity properties.
     /// `line` is the platform line of the set's format; it decides which
@@ -166,6 +168,15 @@ macro_rules! descriptor_properties {
                 match self { $(Self::$field => $configuration),+ }
             }
 
+            /// Whether a root of the given kind, of some line, has the property.
+            const fn on_root(self, extension: bool) -> bool {
+                if extension {
+                    match self { $(Self::$field => $extension),+ }
+                } else {
+                    self.on_configuration_root()
+                }
+            }
+
             pub const fn kind(self) -> DescriptorPropertyKind {
                 match self { $(Self::$field => DescriptorPropertyKind::$kind),+ }
             }
@@ -174,18 +185,14 @@ macro_rules! descriptor_properties {
                 match site {
                     PropertiesSite::Subsystem => match self { $(Self::$field => $subsystem),+ },
                     PropertiesSite::Role => match self { $(Self::$field => $role),+ },
-                    PropertiesSite::Configuration { extension: false, line } => {
-                        self.on_configuration_root()
-                            && !line_lacks(line, self.names()[0], None)
-                    }
-                    PropertiesSite::Configuration { extension: true, .. } => {
-                        match self { $(Self::$field => $extension),+ }
+                    PropertiesSite::Configuration { extension, line } => {
+                        self.on_root(extension) && !line_lacks(line, self.names()[0], None)
                     }
                     PropertiesSite::Metadata { .. } => false,
                     PropertiesSite::DocumentNumerator => self == Self::Comment,
                     PropertiesSite::CommentOnly(_) | PropertiesSite::Language => self == Self::Comment,
                     PropertiesSite::FunctionalOption => matches!(self, Self::Location | Self::PrivilegedGetMode | Self::Comment),
-                    PropertiesSite::StyleItem => self == Self::Comment,
+                    PropertiesSite::StyleItem | PropertiesSite::PaletteColor => self == Self::Comment,
                     PropertiesSite::WSReference => matches!(self, Self::LocationUrl | Self::Comment),
                 }
             }
@@ -338,19 +345,15 @@ impl PropertiesSite {
     /// its set does not have, each with the line it exists from
     /// (INV.SOURCE.PROFILE-CAPABILITIES).
     pub fn later_line_capabilities(self) -> Vec<LaterLineCapability> {
-        let Self::Configuration {
-            extension: false,
-            line,
-        } = self
-        else {
+        let Self::Configuration { extension, line } = self else {
             return Vec::new();
         };
         configuration_root_additions_after(line)
             .into_iter()
             .filter(|addition| {
-                DescriptorProperty::ALL.iter().any(|field| {
-                    field.on_configuration_root() && field.names()[0] == addition.property
-                })
+                DescriptorProperty::ALL
+                    .iter()
+                    .any(|field| field.on_root(extension) && field.names()[0] == addition.property)
             })
             .map(|addition| LaterLineCapability {
                 property: addition.property,
@@ -384,6 +387,7 @@ impl PropertiesSite {
         match owner.kind() {
             NodeKind::DocumentNumerator => Some(Self::DocumentNumerator),
             NodeKind::StyleItem => Some(Self::StyleItem),
+            NodeKind::PaletteColor => Some(Self::PaletteColor),
             NodeKind::FunctionalOption => Some(Self::FunctionalOption),
             NodeKind::Role => Some(Self::Role),
             NodeKind::Language => Some(Self::Language),
@@ -428,6 +432,12 @@ impl PropertiesSite {
                 crate::style_color::StyleItemColor::argument_schema(),
             );
         }
+        if self == Self::PaletteColor {
+            properties.insert(
+                "Color".into(),
+                json!({"type":"string", "pattern":crate::property_input::PALETTE_COLOR_PATTERN}),
+            );
+        }
         match self {
             Self::DocumentNumerator => {
                 // The numerator's closed scalar profile plus the descriptor
@@ -449,6 +459,7 @@ impl PropertiesSite {
                 }
             }
             Self::StyleItem
+            | Self::PaletteColor
             | Self::WSReference
             | Self::FunctionalOption
             | Self::Language
@@ -529,18 +540,16 @@ impl PropertiesSite {
         source_set: &str,
         values: &Map<String, Value>,
     ) -> Option<(String, String)> {
-        let Self::Configuration {
-            extension: false,
-            line,
-        } = self
-        else {
+        let Self::Configuration { extension, line } = self else {
             return None;
         };
         let later = self.later_line_capabilities();
         for (name, value) in values {
-            let Some(field) = DescriptorProperty::ALL.iter().copied().find(|field| {
-                field.on_configuration_root() && field.names().contains(&name.as_str())
-            }) else {
+            let Some(field) = DescriptorProperty::ALL
+                .iter()
+                .copied()
+                .find(|field| field.on_root(extension) && field.names().contains(&name.as_str()))
+            else {
                 continue;
             };
             let canonical = field.names()[0];
@@ -564,6 +573,7 @@ impl PropertiesOperation {
                 target: match site {
                     PropertiesSite::Language => "An existing registered Language of an ordinary configuration. Its Comment can change; LanguageCode changes only for an unused additional language.",
                     PropertiesSite::WSReference => "An existing registered WSReference in a configuration source set, platform XML 2.20. Its Comment and existing LocationURL properties can change.",
+                    PropertiesSite::PaletteColor => "The existing named PaletteColor of a configuration, platform 8.5.1 and later: `<set>:PaletteColor.<name>`.",
                     PropertiesSite::StyleItem => "The existing named StyleItem with observed Type=Color and a supported explicit Value: `<set>:StyleItem.<name>`.",
                     PropertiesSite::Configuration { extension: false, .. } => "The configuration root `<set>:Configuration`. The address selects the root property profile.",
                     PropertiesSite::Configuration { extension: true, .. } => "The extension root `<set>:Configuration`. An extension changes only its own identity properties.",
@@ -575,6 +585,7 @@ impl PropertiesOperation {
                 notes: match site {
                     PropertiesSite::Language => "Comment/comment is an exact string; an empty string clears it. LanguageCode is a nonempty string without the platform's reserved characters; custom codes are allowed. A LanguageCode change requires an unused additional language, no code collision, and no texts or embedded help bound to either the old or new code. XML and literal NStr/НСтр dependencies are checked in original and final sources; an unprovable dependency refuses the change. No translation migration is performed. An equivalent value preserves bytes. In an extension a language is adopted: its code is set in the main configuration and only Comment changes. Preview writes nothing; execute only the saved execution token.",
                     PropertiesSite::WSReference => "LocationURL and optional Comment/comment are exact strings; an empty string clears the supplied field. Comment-only edits do not validate LocationURL; mixed edits validate both fields before publication. Missing or damaged fields are refused. Editing preserves identity, registration and the local WSDL; it does not download WSDL/imports or generate a client. Preview writes nothing; publish only its execution token. Changes to the descriptor or configuration registration invalidate the saved plan.",
+                    PropertiesSite::PaletteColor => "Color and Comment/comment are accepted, at least one of them. Color is #RRGGBB; other color forms, an empty string and null are refused. An empty Comment clears the comment, and simultaneous Comment/comment aliases are refused. Name, synonym, identity and bytes outside the supplied Color/Comment stay. The same color in another letter case is a byte-preserving no-op. Arguments are checked before descriptor state. Preview writes nothing; execute only its saved executionToken.",
                     PropertiesSite::StyleItem => "Color Value and optional string Comment/comment are accepted: #RRGGBB or an enumerated web/builtin style color. Empty Value, null and arbitrary XML are refused; empty Comment clears the comment, and simultaneous Comment/comment aliases are refused. Type, identity and bytes outside supplied Value/Comment stay. Font/Border, missing/damaged Value and unmodelled colors have no color write capability. The same semantic color is a byte-preserving no-op, including prefix aliases and RGB case. Arguments are checked before descriptor state. Preview writes nothing; execute only its saved executionToken.",
                     _ => "values is a nonempty object. Use JSON booleans for flags. An empty string clears text where the property allows it; Location requires a nonempty storage reference. null is not omission. Use one spelling of each property, never both aliases. Argument errors are checked before descriptor state; valid arguments still require an existing readable descriptor. Preview writes nothing; execute only the saved execution token.",
                 },
@@ -584,11 +595,12 @@ impl PropertiesOperation {
                     PropertiesSite::FunctionalOption => json!({"values":{"Location":"Constant.UseGoods","PrivilegedGetMode":true}}),
                     PropertiesSite::Configuration { .. } => json!({"values":{"Version":"1.0.0.2"}}),
                     PropertiesSite::StyleItem => json!({"values":{"Value":"#F0F0F0"}}),
+                    PropertiesSite::PaletteColor => json!({"values":{"Color":"#1A2B3C"}}),
                     PropertiesSite::Language => json!({"values":{"LanguageCode":"de"}}),
                     _ => json!({"values":{"Comment":"Updated comment"}}),
                 },
                 help: match site {
-                    PropertiesSite::WSReference | PropertiesSite::Metadata { .. } | PropertiesSite::DocumentNumerator | PropertiesSite::CommentOnly(_) | PropertiesSite::FunctionalOption | PropertiesSite::StyleItem | PropertiesSite::Language => "skills/meta-edit/SKILL.md",
+                    PropertiesSite::WSReference | PropertiesSite::Metadata { .. } | PropertiesSite::DocumentNumerator | PropertiesSite::CommentOnly(_) | PropertiesSite::FunctionalOption | PropertiesSite::StyleItem | PropertiesSite::PaletteColor | PropertiesSite::Language => "skills/meta-edit/SKILL.md",
                     PropertiesSite::Role => "skills/role-edit/SKILL.md",
                     PropertiesSite::Subsystem => "skills/subsystem-edit/SKILL.md",
                     PropertiesSite::Configuration { .. } => "skills/cf-edit/SKILL.md",
@@ -734,7 +746,22 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .contains(&json!("Version8_5")));
-            assert!(values.get("x-unica-later-lines").is_none(), "{line}");
+            // 8.5.1 lacks only the modes of 8.5.4; 8.5.4 lacks nothing.
+            let later = values["x-unica-later-lines"]["items"]
+                .as_array()
+                .map(|items| {
+                    items
+                        .iter()
+                        .map(|item| item["value"].as_str().unwrap_or_default())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            let expected: &[&str] = if line == PlatformLine::new(8, 5, 1) {
+                &["Version8_5_4"]
+            } else {
+                &[]
+            };
+            assert_eq!(later, expected, "{line}");
             let oracle = jsonschema::validator_for(&new.schema).unwrap();
             assert!(oracle.is_valid(&json!({"values":{
                 "ClientApplicationTheme":"Dark","InterfaceCompatibilityMode":"Version8_5",
@@ -761,11 +788,76 @@ mod tests {
             site.later_line_refusal("main", values.as_object().unwrap()),
             None
         );
-        // An extension root has none of these properties in any line.
+        // An extension root has none of the 8.5 interface properties; of the
+        // later lines it has only its own compatibility modes.
         let extension =
             PropertiesSite::root_of(SourceSetKind::Extension, Some(PlatformLine::new(8, 3, 27)))
                 .unwrap();
-        assert!(extension.later_line_capabilities().is_empty());
+        assert_eq!(
+            extension
+                .later_line_capabilities()
+                .iter()
+                .map(|item| (item.property, item.value))
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    "ConfigurationExtensionCompatibilityMode",
+                    Some("Version8_5_1")
+                ),
+                (
+                    "ConfigurationExtensionCompatibilityMode",
+                    Some("Version8_5_4")
+                ),
+            ]
+        );
+    }
+
+    /// rule: INV.SOURCE.PROFILE-CAPABILITIES
+    #[test]
+    fn compatibility_modes_of_a_line_exist_from_that_line() {
+        for (extension, property) in [
+            (false, "CompatibilityMode"),
+            (true, "ConfigurationExtensionCompatibilityMode"),
+        ] {
+            let kind = if extension {
+                SourceSetKind::Extension
+            } else {
+                SourceSetKind::Configuration
+            };
+            let field = PropertiesSite::root_of(kind, None)
+                .unwrap()
+                .descriptor_fields()
+                .find(|field| field.names()[0] == property)
+                .unwrap();
+            for (line, offered) in [
+                (PlatformLine::new(8, 3, 27), &[][..]),
+                (PlatformLine::new(8, 5, 1), &["Version8_5_1"][..]),
+                (
+                    PlatformLine::new(8, 5, 4),
+                    &["Version8_5_1", "Version8_5_4"][..],
+                ),
+            ] {
+                let values = field.allowed_values_in(Some(line));
+                for mode in ["Version8_5_1", "Version8_5_4"] {
+                    assert_eq!(
+                        values.contains(&mode),
+                        offered.contains(&mode),
+                        "{property} {line} {mode}"
+                    );
+                }
+                assert!(values.contains(&"Version8_3_27"));
+                assert!(!values.contains(&"DontUse"));
+            }
+            let site = PropertiesSite::root_of(kind, Some(PlatformLine::new(8, 5, 1))).unwrap();
+            let values = json!({ property: "Version8_5_4" });
+            assert_eq!(
+                site.later_line_refusal("main", values.as_object().unwrap()),
+                Some((
+                    property.to_string(),
+                    format!("Value `Version8_5_4` of `{property}` exists from platform 8.5.4 (format 2.22); source set `main` is in format 2.21 (platform 8.5.1).")
+                ))
+            );
+        }
     }
 
     #[test]
