@@ -1888,17 +1888,50 @@ const FORM_ADDRESS_SHAPE: &str =
 const FORM_OWNER_MD_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
 
 /// The initial `Form.xml` of a new form in the export format `version` of
-/// its owner's set.
+/// its owner's set. The root declares the namespaces of that format, as
+/// every form the platform writes does.
 pub fn minimal_typed_form_content(_object_kind: &str, _object_name: &str, version: &str) -> String {
     format!(
         concat!(
             "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
-            "<Form xmlns=\"http://v8.1c.ru/8.3/xcf/logform\" version=\"{}\">\n",
+            "<Form {} version=\"{}\">\n",
             "\t<AutoCommandBar name=\"ФормаКоманднаяПанель\" id=\"-1\"/>\n",
             "</Form>"
         ),
-        version
+        crate::codec::form_root_namespaces(version),
+        unica_xml_format::text::escape_xml(version)
     )
+}
+
+#[cfg(test)]
+mod minimal_form_root_tests {
+    /// The start tag of the `Form` root, as written.
+    fn root(xml: &str) -> &str {
+        let start = xml.find("<Form ").unwrap();
+        &xml[start..start + xml[start..].find('>').unwrap()]
+    }
+
+    /// rule: INV.SOURCE.WRITABLE-PROFILE
+    #[test]
+    fn a_new_typed_form_declares_the_namespaces_of_its_set_format() {
+        for (version, corpus) in [
+            (
+                "2.20",
+                include_str!("../../../tests/fixtures/formats/platform_xml/2.20/all_kinds/src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml"),
+            ),
+            (
+                "2.21",
+                include_str!("../../../tests/fixtures/formats/platform_xml/2.21/all_kinds/src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml"),
+            ),
+            (
+                "2.22",
+                include_str!("../../../tests/fixtures/formats/platform_xml/2.22/all_kinds/src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml"),
+            ),
+        ] {
+            let seed = super::minimal_typed_form_content("Catalog", "Валюты", version);
+            assert_eq!(root(&seed), root(corpus), "{version}");
+        }
+    }
 }
 
 #[cfg(test)]
