@@ -59,7 +59,10 @@ pub(super) fn warnings(
                 if kind != SourceSetKind::Configuration {
                     continue;
                 }
-                let base = admission.read_apply_dependency(name, Path::new(CONFIGURATION))?;
+                // An unreadable root has no mode: a warning never refuses.
+                let base = admission
+                    .read_apply_dependency(name, Path::new(CONFIGURATION))
+                    .unwrap_or_default();
                 if let Some(base_mode) = mode(&base, MODE) {
                     if extension_mode_is_above_base(&extension_mode, &base_mode) {
                         warnings.push(warning(extension_mode_above_base_warning(
@@ -80,7 +83,9 @@ pub(super) fn warnings(
                 if kind != SourceSetKind::Extension {
                     continue;
                 }
-                let extension = admission.read_apply_dependency(name, Path::new(CONFIGURATION))?;
+                let extension = admission
+                    .read_apply_dependency(name, Path::new(CONFIGURATION))
+                    .unwrap_or_default();
                 if let Some(extension_mode) = mode(&extension, EXTENSION_MODE) {
                     if extension_mode_is_above_base(&extension_mode, &base_mode) {
                         warnings.push(warning(extension_mode_above_base_warning(
@@ -129,6 +134,15 @@ mod tests {
     /// the 2.21 corpora: `main` (all_kinds, mode 8.3.27) and `ext`
     /// (empty_extension, mode 8.3.27), the other set admitted to read.
     fn warnings(at_set: &str, values: serde_json::Value) -> Vec<serde_json::Value> {
+        warnings_with(at_set, values, &|_, _| {})
+    }
+
+    /// [`warnings`] after `prepare` has changed the admitted `cf` and `ext`.
+    fn warnings_with(
+        at_set: &str,
+        values: serde_json::Value,
+        prepare: &dyn Fn(&Path, &Path),
+    ) -> Vec<serde_json::Value> {
         let crate_root = Path::new(env!("CARGO_MANIFEST_DIR"));
         let root = tempfile::tempdir().unwrap();
         let workspace_root = std::fs::canonicalize(root.path()).unwrap();
@@ -193,6 +207,8 @@ mod tests {
                 &CancellationToken::new(),
             )
             .unwrap();
+        // After admission: a root that turns unreadable while the plan reads it.
+        prepare(&main, &ext);
         let at = format!("{at_set}:Configuration");
         let args =
             json!({"at": at, "dryRun": true, "ops": [{"op":"props.set","args":{"values":values}}]});
@@ -299,5 +315,20 @@ mod tests {
             error.to_string(),
             "from must name an object of a configuration source set"
         );
+    }
+
+    /// A peer whose root cannot be read has no mode: the edit plans without
+    /// a warning, never a refusal.
+    #[test]
+    fn an_unreadable_peer_root_leaves_the_edit_without_a_warning() {
+        let unreadable = |main: &Path, _: &Path| {
+            std::fs::remove_file(main.join("Configuration.xml")).unwrap();
+        };
+        assert!(warnings_with(
+            "ext",
+            json!({"ConfigurationExtensionCompatibilityMode":"Version8_5_1"}),
+            &unreadable
+        )
+        .is_empty());
     }
 }

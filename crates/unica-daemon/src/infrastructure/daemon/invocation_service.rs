@@ -716,7 +716,11 @@ impl ActorBoundExecution {
         if let (true, Some(compared)) = (compares_modes, compared) {
             for source in self.invocation.read_sources.iter() {
                 let name = source.binding.source_set_name();
+                // Only a set the admission takes: a peer it would refuse
+                // leaves the edit without that comparison, never refused.
                 if source.binding.source_kind() == compared
+                    && source.binding.source_format() == SourceFormat::PlatformXml
+                    && source.binding.source_profile().is_writable_platform_xml()
                     && name != binding.source_set_name()
                     && dependencies.iter().all(|dependency: &ProviderRootBinding| {
                         dependency.source_set_name() != name
