@@ -96,7 +96,8 @@ pub fn observe_form_property(property: roxmltree::Node<'_, '_>) -> Result<Option
             }
             json!(unica_xml_format::read::direct_text(property) == "true")
         }
-        "Name" | "Comment" | "FormType" => {
+        // `UseInInterfaceCompatibilityMode` exists from 8.5.1 (format 2.21).
+        "Name" | "Comment" | "FormType" | "UseInInterfaceCompatibilityMode" => {
             if !meta_info_property_value_is_valid(property, MetaInfoPropertyValueKind::String) {
                 return Err("value is not a scalar string".into());
             }
@@ -114,6 +115,22 @@ mod tests {
     use super::parse_form_metadata_properties;
     use serde_json::json;
     use unica_address::source_target::MetadataAddress;
+
+    /// A form of a later line reads its interface compatibility mode, without
+    /// a read limit (INV.SOURCE.PROFILE-CAPABILITIES).
+    #[test]
+    fn a_form_of_format_2_21_reads_its_interface_compatibility_mode() {
+        for descriptor in [
+            include_str!("../../../tests/fixtures/formats/platform_xml/2.21/all_kinds/src/Catalogs/Валюты/Forms/ФормаСписка.xml"),
+            include_str!("../../../tests/fixtures/formats/platform_xml/2.22/all_kinds/src/Catalogs/Валюты/Forms/ФормаСписка.xml"),
+        ] {
+            let target = MetadataAddress::parse_logical("Catalog.Валюты.Form.ФормаСписка").unwrap();
+            let (properties, limits) =
+                parse_form_metadata_properties(descriptor.as_bytes(), &target).unwrap();
+            assert_eq!(properties["UseInInterfaceCompatibilityMode"], json!("Any"));
+            assert!(limits.is_empty(), "{limits:?}");
+        }
+    }
 
     /// rule: INV.SOURCE.INCOMPLETE-METADATA-READ
     #[test]
