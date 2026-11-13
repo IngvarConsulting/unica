@@ -56,6 +56,9 @@ pub trait MetadataReadCodec: Send + Sync {
     /// Дополняет ответ чтения элемента стиля его видом и значением.
     fn style_item(&self, descriptor: &[u8], payload: &mut Value) -> Result<(), String>;
 
+    /// Дополняет ответ чтения цвета палитры его синонимом и цветом.
+    fn palette_color(&self, descriptor: &[u8], payload: &mut Value) -> Result<(), String>;
+
     /// Комментарий и цвет элемента стиля `name`. `relative` — путь
     /// дескриптора в источнике: по нему кодек узнаёт профиль записи.
     fn style_properties(

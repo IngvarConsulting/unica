@@ -4,14 +4,14 @@ use std::collections::HashSet;
 fn cf_consumers_share_the_canonical_metadata_kind_order() {
     let validate_kinds = cf_validate_child_object_types();
 
-    assert_eq!(validate_kinds.len(), 45);
+    assert_eq!(validate_kinds.len(), 46);
     assert_eq!(validate_kinds, cf_type_order());
     let bot_index = validate_kinds
         .iter()
         .position(|kind| *kind == "Bot")
         .expect("Bot must be a modeled metadata kind");
-    assert_eq!(validate_kinds[bot_index - 1], "CommonModule");
-    assert_eq!(validate_kinds[bot_index + 1], "CommonAttribute");
+    assert_eq!(validate_kinds[bot_index - 1], "DefinedType");
+    assert_eq!(validate_kinds[bot_index + 1], "PaletteColor");
     assert_eq!(cf_validate_child_type_dir("Bot"), Some("Bots"));
     assert_eq!(cf_type_ru_name("Bot"), "Боты");
     assert_eq!(cf_validate_child_type_dir("SyntheticMetadata"), None);
@@ -27,13 +27,48 @@ fn cf_consumers_share_the_canonical_metadata_kind_order() {
     }
 }
 
+/// The registry kinds of the 2.20 reference export stand in the order in
+/// which the platform writes its `ChildObjects`; kinds of later lines are
+/// checked against their own exports.
+/// rule: INV.SOURCE.CHILD-OBJECTS-PLATFORM-ORDER
+#[test]
+fn the_registry_follows_the_child_objects_order_of_the_platform_export() {
+    let export = include_str!(
+        "../../../../tests/fixtures/formats/platform_xml/2.20/all_kinds/src/Configuration.xml"
+    );
+    let child_objects = &export[export.find("<ChildObjects>").unwrap()..];
+    let child_objects = &child_objects[..child_objects.find("</ChildObjects>").unwrap()];
+    let mut exported = Vec::<&str>::new();
+    for line in child_objects.lines().skip(1) {
+        let Some(tag) = line.trim().strip_prefix('<') else {
+            continue;
+        };
+        let tag = &tag[..tag.find('>').unwrap()];
+        if !exported.contains(&tag) {
+            exported.push(tag);
+        }
+    }
+    let registry = cf_type_order();
+    let known = exported
+        .iter()
+        .copied()
+        .filter(|kind| registry.contains(kind))
+        .collect::<Vec<_>>();
+    let ordered = registry
+        .iter()
+        .copied()
+        .filter(|kind| exported.contains(kind))
+        .collect::<Vec<_>>();
+    assert_eq!(ordered, known);
+}
+
 /// rule: INV.SOURCE.CHILD-OBJECTS-PLATFORM-ORDER
 #[test]
 fn child_object_insertion_orders_bot_and_rejects_unknown_kinds() {
     let mut xml = concat!(
         "<MetaDataObject><Configuration><ChildObjects>\n",
-        "\t<CommonModule>Core</CommonModule>\n",
-        "\t<CommonAttribute>Shared</CommonAttribute>\n",
+        "\t<DefinedType>Money</DefinedType>\n",
+        "\t<CommonCommand>Open</CommonCommand>\n",
         "</ChildObjects></Configuration></MetaDataObject>"
     )
     .to_string();
@@ -42,14 +77,12 @@ fn child_object_insertion_orders_bot_and_rejects_unknown_kinds() {
         crate::registration::cf_edit_add_child_object_text(&mut xml, "Bot", "Assistant").unwrap()
     );
     assert!(
-        xml.find("<CommonModule>Core</CommonModule>").unwrap()
+        xml.find("<DefinedType>Money</DefinedType>").unwrap()
             < xml.find("<Bot>Assistant</Bot>").unwrap()
     );
     assert!(
         xml.find("<Bot>Assistant</Bot>").unwrap()
-            < xml
-                .find("<CommonAttribute>Shared</CommonAttribute>")
-                .unwrap()
+            < xml.find("<CommonCommand>Open</CommonCommand>").unwrap()
     );
     assert!(
         !crate::registration::cf_edit_add_child_object_text(&mut xml, "Bot", "Assistant").unwrap()
@@ -170,4 +203,36 @@ fn child_object_insertion_targets_only_the_root_metadata_child_objects() {
     )));
     assert_eq!(xml.matches("<Role>Reader</Role>").count(), 1);
     assert!(!xml.replace("\r\n", "").contains('\n'));
+}
+
+/// A palette colour, a kind of 8.5.1 and later, is registered where the
+/// platform export of each line puts it: adding it to the export without it
+/// gives the export byte for byte.
+/// rule: INV.SOURCE.CHILD-OBJECTS-PLATFORM-ORDER
+#[test]
+fn a_palette_color_is_registered_where_the_platform_export_puts_it() {
+    for export in [
+        include_str!(
+            "../../../../tests/fixtures/formats/platform_xml/2.21/all_kinds/src/Configuration.xml"
+        ),
+        include_str!(
+            "../../../../tests/fixtures/formats/platform_xml/2.22/all_kinds/src/Configuration.xml"
+        ),
+    ] {
+        let line = "\t\t\t<PaletteColor>Probe</PaletteColor>\r\n";
+        let line = if export.contains(line) {
+            line
+        } else {
+            &line[..line.len() - 2]
+        };
+        let mut without = export.replacen(line, "", 1);
+        assert_ne!(without, export, "the export registers its palette colour");
+        assert!(crate::registration::cf_edit_add_child_object_text(
+            &mut without,
+            "PaletteColor",
+            "Probe"
+        )
+        .unwrap());
+        assert_eq!(without, export);
+    }
 }

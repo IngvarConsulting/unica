@@ -6367,6 +6367,69 @@ enum FormEditElementDefinitionKind {
     AutoCommandBar,
 }
 
+/// Element kinds of the form description that the compiler does not emit.
+const FORM_COMPILE_UNSUPPORTED_ELEMENT_KINDS: [&str; 17] = [
+    "radio",
+    "picture",
+    "picField",
+    "calendar",
+    "columnGroup",
+    "spreadsheet",
+    "formattedDoc",
+    "progressBar",
+    "trackBar",
+    "chart",
+    "ganttChart",
+    "graphicalSchema",
+    "planner",
+    "periodField",
+    "dendrogram",
+    "popup",
+    "buttonGroup",
+];
+
+/// Top-level keys of the form description that the compiler writes.
+const FORM_COMPILE_ROOT_KEYS: [&str; 7] = [
+    "title",
+    "properties",
+    "events",
+    "elements",
+    "attributes",
+    "parameters",
+    "commands",
+];
+
+/// Top-level keys the form description documents but the compiler does not write.
+const FORM_COMPILE_UNSUPPORTED_ROOT_KEYS: [&str; 4] = [
+    "excludedCommands",
+    "mobileCommandBarContent",
+    "commandInterface",
+    "conditionalAppearance",
+];
+
+/// A top-level key the compiler would skip is refused: skipping `elements`
+/// under another name leaves an empty form behind a successful call.
+fn form_compile_validate_root_keys(defn: &Value) -> Result<(), String> {
+    let Some(root) = defn.as_object() else {
+        return Ok(());
+    };
+    for key in root.keys() {
+        if FORM_COMPILE_ROOT_KEYS.contains(&key.as_str()) {
+            continue;
+        }
+        if FORM_COMPILE_UNSUPPORTED_ROOT_KEYS.contains(&key.as_str()) {
+            return Err(format!(
+                "form description key `{key}` is not supported by the form compiler"
+            ));
+        }
+        return Err(format!(
+            "unknown form description key `{key}`; expected one of: {}",
+            FORM_COMPILE_ROOT_KEYS.join(", ")
+        ));
+    }
+    Ok(())
+}
+
 impl FormEditElementDefinitionKind {
     fn from_object(object: &Map<String, Value>) -> Result<Self, String> {
         // `commandBar` is also a nested Table property, and `group` is also a
@@ -6404,6 +6467,16 @@ impl FormEditElementDefinitionKind {
         match primary_candidates.as_slice() {
             [(kind, _label)] => Ok(*kind),
             [] => {
+                // A kind the compiler does not emit would otherwise fall back to an
+                // input field by its `name` and lose every key of its own.
+                if let Some(kind) = FORM_COMPILE_UNSUPPORTED_ELEMENT_KINDS
+                    .iter()
+                    .find(|kind| object.contains_key(**kind))
+                {
+                    return Err(format!(
+                        "form element kind `{kind}` is not supported by the form compiler"
+                    ));
+                }
                 let command_bar =
                     object.contains_key("cmdBar") || object.contains_key("commandBar");
                 let group = object.contains_key("group");
@@ -6588,6 +6661,7 @@ pub fn form_compile_xml(
     if contains_text_document_field(defn) {
         return Err("unknown element key `textDoc`".to_string());
     }
+    form_compile_validate_root_keys(defn)?;
     if let Some(attributes) = defn.get("attributes").and_then(Value::as_array) {
         form_edit_validate_attribute_columns(attributes)?;
     }

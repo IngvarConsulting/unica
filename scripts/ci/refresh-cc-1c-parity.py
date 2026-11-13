@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
-"""Prepare and atomically apply a reviewed cc-1c-skills parity refresh."""
+"""Prepare and atomically apply a reviewed cc-1c-skills donor snapshot refresh.
+
+`prepare` stages a candidate snapshot, baseline and provenance record and
+writes review.json with an informational case diff. `apply` publishes the
+candidate only after a person marks the whole candidate reviewed
+(reviewStatus "reviewed"). The snapshot is the archive of the accepted
+donor commit; Unica behaviour is not compared with it case by case.
+"""
 
 from __future__ import annotations
 
@@ -38,7 +45,6 @@ UPSTREAM_ID = "cc-1c-skills"
 FIXTURES_RELATIVE = Path("tests/fixtures/unica_mcp_script_parity")
 SNAPSHOT_NAME = "cc-1c-skills"
 BASELINE_NAME = "donor-baseline.json"
-RELATIONS_NAME = "donor-relations.json"
 PROVENANCE_RELATIVE = Path("docs/provenance/skill-upstreams.json")
 
 
@@ -48,7 +54,7 @@ class RefreshError(RuntimeError):
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Prepare or apply a reviewed cc-1c-skills parity refresh."
+        description="Prepare or apply a reviewed cc-1c-skills donor snapshot refresh."
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -210,22 +216,11 @@ def prepare_refresh(
             entry["parityBaselineCommit"] = target_commit
 
     old_baseline_path = repo_root / FIXTURES_RELATIVE / BASELINE_NAME
-    old_relations_path = repo_root / FIXTURES_RELATIVE / RELATIONS_NAME
     old_baseline = (
         contract.load_json(old_baseline_path)
         if old_baseline_path.is_file()
         else {}
     )
-    old_relations_registry = (
-        contract.load_json(old_relations_path)
-        if old_relations_path.is_file()
-        else {
-            "schemaVersion": 1,
-            "upstreamId": UPSTREAM_ID,
-            "relations": {},
-        }
-    )
-    old_relations = old_relations_registry.get("relations") or {}
     candidate_baseline = build_baseline(
         candidate_snapshot,
         candidate_upstream,
@@ -264,29 +259,6 @@ def prepare_refresh(
         for case_id in previous_cases & next_cases
         if old_case_digests.get(case_id) == new_case_digests.get(case_id)
     )
-    carried_relations = sorted(
-        case_id for case_id in unchanged_cases if case_id in old_relations
-    )
-    needs_review = sorted(
-        set(added_cases)
-        | set(removed_cases)
-        | set(changed_cases)
-        | (set(unchanged_cases) - set(carried_relations))
-    )
-    case_decisions: dict[str, dict[str, Any]] = {
-        case_id: {"status": "carried"} for case_id in carried_relations
-    }
-    for case_id in needs_review:
-        if case_id in removed_cases:
-            case_decisions[case_id] = {
-                "status": "needs-review",
-                "decision": None,
-            }
-        else:
-            case_decisions[case_id] = {
-                "status": "needs-review",
-                "relation": None,
-            }
 
     changed_paths = _changed_snapshot_paths(
         accepted_snapshot, candidate_snapshot
@@ -321,11 +293,7 @@ def prepare_refresh(
         "removedCases": removed_cases,
         "changedCases": changed_cases,
         "unchangedCases": unchanged_cases,
-        "carriedRelations": carried_relations,
-        "needsReview": needs_review,
-        "caseDecisions": case_decisions,
         "acceptedBaselineSha256": _optional_sha256(old_baseline_path),
-        "acceptedRelationsSha256": _optional_sha256(old_relations_path),
         "acceptedProvenanceSha256": contract.sha256_file(provenance_path),
         "candidateBaselineSha256": contract.sha256_file(
             candidate_root / BASELINE_NAME
@@ -347,27 +315,7 @@ def apply_refresh(*, repo_root: Path, review_path: Path) -> Path:
     if review.get("schemaVersion") != 1 or review.get("upstreamId") != UPSTREAM_ID:
         raise RefreshError("unsupported donor refresh review")
     if review.get("reviewStatus") != "reviewed":
-        raise RefreshError("unresolved donor relations: reviewStatus is not reviewed")
-
-    unresolved = []
-    removed = set(review.get("removedCases") or [])
-    decisions = review.get("caseDecisions")
-    if not isinstance(decisions, dict):
-        raise RefreshError("unresolved donor relations: caseDecisions is missing")
-    for case_id in review.get("needsReview") or []:
-        decision = decisions.get(case_id)
-        if not isinstance(decision, dict) or decision.get("status") != "reviewed":
-            unresolved.append(case_id)
-            continue
-        if case_id in removed:
-            if decision.get("decision") != "remove":
-                unresolved.append(case_id)
-        elif not isinstance(decision.get("relation"), dict):
-            unresolved.append(case_id)
-    if unresolved:
-        raise RefreshError(
-            "unresolved donor relations: " + ", ".join(sorted(unresolved))
-        )
+        raise RefreshError("unreviewed donor refresh: reviewStatus is not reviewed")
 
     candidate_relative = contract.safe_relative_path(review["candidatePath"])
     candidate_root = repo_root / candidate_relative
@@ -401,17 +349,11 @@ def apply_refresh(*, repo_root: Path, review_path: Path) -> Path:
     fixtures_root = repo_root / FIXTURES_RELATIVE
     accepted_snapshot = fixtures_root / SNAPSHOT_NAME
     baseline_path = fixtures_root / BASELINE_NAME
-    relations_path = fixtures_root / RELATIONS_NAME
     provenance_path = repo_root / PROVENANCE_RELATIVE
     _verify_optional_digest(
         baseline_path,
         review.get("acceptedBaselineSha256"),
         "accepted baseline",
-    )
-    _verify_optional_digest(
-        relations_path,
-        review.get("acceptedRelationsSha256"),
-        "accepted relations",
     )
     _verify_digest(
         provenance_path,
@@ -421,36 +363,12 @@ def apply_refresh(*, repo_root: Path, review_path: Path) -> Path:
 
     baseline = contract.load_json(candidate_baseline_path)
     provenance = contract.load_json(candidate_provenance_path)
-    current_registry = (
-        contract.load_json(relations_path)
-        if relations_path.is_file()
-        else {
-            "schemaVersion": 1,
-            "upstreamId": UPSTREAM_ID,
-            "relations": {},
-        }
-    )
-    relations = dict(current_registry.get("relations") or {})
-    for case_id in removed:
-        relations.pop(case_id, None)
-    for case_id in review.get("needsReview") or []:
-        if case_id not in removed:
-            relations[case_id] = decisions[case_id]["relation"]
-    registry = {
-        "schemaVersion": 1,
-        "upstreamId": UPSTREAM_ID,
-        "relations": dict(sorted(relations.items())),
-    }
     baseline_errors = contract.validate_baseline(
         candidate_snapshot, baseline, provenance
     )
-    relation_errors = contract.validate_relations(
-        repo_root, candidate_snapshot, registry
-    )
-    if baseline_errors or relation_errors:
+    if baseline_errors:
         raise RefreshError(
-            "reviewed candidate is invalid:\n"
-            + "\n".join([*baseline_errors, *relation_errors])
+            "reviewed candidate is invalid:\n" + "\n".join(baseline_errors)
         )
 
     review_id = review.get("reviewId")
@@ -467,7 +385,6 @@ def apply_refresh(*, repo_root: Path, review_path: Path) -> Path:
         candidate_snapshot=candidate_snapshot,
         files={
             baseline_path: baseline,
-            relations_path: registry,
             provenance_path: provenance,
             applied_review: published_review,
         },

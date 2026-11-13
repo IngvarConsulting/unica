@@ -1,0 +1,51 @@
+{
+  "id": "S-2730-format-axis-catalog",
+  "issue": 2730,
+  "area": "Форматы выгрузки",
+  "task": "Создать справочник в наборе каждого формата выгрузки: свойства нового объекта те же, что пишет платформа этого формата.",
+  "workspace": "tests/fixtures/acceptance/workspace-all-kinds",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "object.create",
+            "args": {
+              "values": {
+                "kind": "Catalog",
+                "name": "ОсьФормата"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/ОсьФормата.xml",
+          "kind": "xmlTags",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}Properties/*",
+          "eq": {
+            "$reference": {
+              "path": "src/Catalogs/Валюты.xml",
+              "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}Properties/*"
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
