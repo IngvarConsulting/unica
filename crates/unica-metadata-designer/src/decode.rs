@@ -21,6 +21,7 @@ pub struct MetadataDecodeContext<'a> {
     pub source_kind: unica_source_contract::SourceSetKind,
     /// The platform line of the set's format: which root properties and
     /// values exist (INV.SOURCE.PROFILE-CAPABILITIES).
+    pub source_profile: unica_source_contract::SourceProfile,
     pub source_line: Option<unica_source_contract::format_identity::PlatformLine>,
     pub registry: OperationRegistry,
 }
@@ -1460,6 +1461,23 @@ pub fn parse_addressed_member_change(
         ));
     }
     let mut values = required_object(args, "values", op_index)?.clone();
+    if collection == MetaCollection::TabularSections
+        && !unica_metadata::tabular_section_properties_supported(
+            binding.source_kind,
+            Some(binding.source_profile),
+        )
+    {
+        if let Some(field) = ["Use", "required"]
+            .into_iter()
+            .find(|field| values.contains_key(*field))
+        {
+            return Err(ApplyPlanError::new(
+                ApplyPlanErrorKind::BadValue,
+                "tabular section Use and required require a supported configuration profile",
+            )
+            .at_path(format!("ops[{op_index}].args.values.{field}")));
+        }
+    }
     if values.contains_key("name") {
         return Err(ApplyPlanError::new(
             ApplyPlanErrorKind::BadValue,

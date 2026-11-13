@@ -1067,6 +1067,7 @@ pub fn typed_operation_effect_value(
             scope.as_ref(),
             elements.iter().map(|element| element.name.as_str()),
             &target,
+            &[],
         )?,
         MetaEditOperation::Update {
             collection,
@@ -1086,6 +1087,17 @@ pub fn typed_operation_effect_value(
                     }
                 }),
                 &target,
+                &elements
+                    .iter()
+                    .filter(|element| element.tabular_section_use.is_some())
+                    .map(|element| {
+                        if after {
+                            element.new_name.as_deref().unwrap_or(&element.name)
+                        } else {
+                            &element.name
+                        }
+                    })
+                    .collect::<Vec<_>>(),
             )?;
             if elements
                 .iter()
@@ -1122,6 +1134,7 @@ pub fn typed_operation_effect_value(
             scope.as_ref(),
             names.iter().map(String::as_str),
             &target,
+            &[],
         )?,
         MetaEditOperation::Copy {
             collection,
@@ -1135,6 +1148,7 @@ pub fn typed_operation_effect_value(
             scope.as_ref(),
             std::iter::once(new_name.as_str()),
             &target,
+            &[],
         )?,
         MetaEditOperation::EditRelations { relation, .. } => {
             let mut diagnostics = Vec::new();
@@ -1182,6 +1196,7 @@ pub fn typed_collection_effect_value<'a>(
     scope: Option<&unica_metadata::MetaScope>,
     names: impl Iterator<Item = &'a str>,
     target: &MetadataAddress,
+    use_names: &[&str],
 ) -> Result<Value, MetaDiagnostic> {
     let top = unica_xml_format::read::child_element(object, "ChildObjects");
     let parent = if let Some(scope) = scope {
@@ -1221,7 +1236,7 @@ pub fn typed_collection_effect_value<'a>(
     {
         return Err(diagnostic);
     }
-    let selected = elements
+    let mut selected = elements
         .into_iter()
         .filter(|element| {
             requested
@@ -1235,6 +1250,32 @@ pub fn typed_collection_effect_value<'a>(
             "metadata element is unavailable for semantic effect",
             Some("elements"),
         ));
+    }
+    for element in &mut selected {
+        if use_names
+            .iter()
+            .any(|name| metadata_name_eq(name, &element.name))
+        {
+            let section =
+                meta_edit_find_tabular_section(object, &element.name).ok_or_else(|| {
+                    typed_diagnostic(
+                        MetaDiagnosticCode::TargetNotFound,
+                        "tabular section was not found",
+                        Some("Use"),
+                    )
+                })?;
+            let (_, value) = crate::dialect::tabular_section::value(
+                xml,
+                section,
+                "Use",
+                "Use",
+                TABULAR_SECTION_USES,
+            )?;
+            element.properties.push(MetaObservedProperty {
+                name: "Use".into(),
+                value: MetaObservedPropertyValue::Text { value },
+            });
+        }
     }
     serde_json::to_value(selected).map_err(|_| {
         typed_diagnostic(
@@ -2503,6 +2544,14 @@ pub fn update_typed_element(
             );
         }
     }
+    if collection == MetaCollection::TabularSections
+        && (update.tabular_section_use.is_some() || update.required.is_some())
+    {
+        let (properties, edits) =
+            crate::dialect::tabular_section::edits(xml_text, range.clone(), update)?;
+        flag_properties_range = Some(properties);
+        flag_edits.extend(edits);
+    }
     let properties_range = flag_properties_range
         .map(|properties| properties.start - range.start..properties.end - range.start)
         .or_else(|| typed_properties_text_range(&node_xml))
@@ -2662,7 +2711,10 @@ pub fn update_typed_element(
             )
         })?;
     }
-    if let Some(required) = update.required {
+    if let Some(required) = update
+        .required
+        .filter(|_| collection != MetaCollection::TabularSections)
+    {
         let replacement = format!(
             "{indent}<FillChecking>{}</FillChecking>",
             if required { "ShowError" } else { "DontCheck" }
@@ -4742,3 +4794,7 @@ mod export_format_tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/platform/edit_tabular_properties.rs"]
+mod tabular_properties_tests;

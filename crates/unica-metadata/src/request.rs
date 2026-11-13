@@ -832,6 +832,7 @@ pub fn parse_element_update(
         MetadataArgumentReader::new(object, metadata_element_input_schema(true, false), field);
     reader.reject_unknown()?;
     Ok(MetaElementUpdateInput {
+        tabular_section_use: reader.read("Use", optional_string_at)?,
         indexing: reader.read("indexing", optional_string_at)?,
         master: reader.read("master", optional_bool_at)?,
         main_filter: reader.read("mainFilter", optional_bool_at)?,

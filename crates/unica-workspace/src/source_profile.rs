@@ -31,16 +31,28 @@ pub fn platform_xml_source_profile(kind: SourceSetKind, root: &Path) -> SourcePr
         return fallback;
     }
     crate::read::open_source_directory(root)
-        .and_then(|directory| {
-            directory.read_relative_regular_prefix(
-                Path::new("Configuration.xml"),
-                ROOT_DESCRIPTOR_PREFIX_BYTES,
-            )
-        })
         .ok()
-        .and_then(|prefix| root_version_literal(&prefix))
-        .and_then(|version| SourceProfile::platform_xml_for_export_format(&version))
+        .and_then(|directory| exact_platform_xml_source_profile(&directory))
         .unwrap_or(fallback)
+}
+
+/// Read the exact profile from the retained source root, without the
+/// classification fallback used to keep read-only views available.
+pub fn exact_platform_xml_source_profile(
+    directory: &unica_source_contract::read::SourceDirectory,
+) -> Option<SourceProfile> {
+    exact_platform_xml_descriptor_profile(directory, Path::new("Configuration.xml"))
+}
+
+/// Profile proved by the literal root of a descriptor in the retained set.
+pub fn exact_platform_xml_descriptor_profile(
+    directory: &unica_source_contract::read::SourceDirectory,
+    relative: &Path,
+) -> Option<SourceProfile> {
+    let prefix = directory
+        .read_relative_regular_prefix(relative, ROOT_DESCRIPTOR_PREFIX_BYTES)
+        .ok()?;
+    SourceProfile::platform_xml_for_export_format(&root_version_literal(&prefix)?)
 }
 
 /// The `version` attribute of the root start tag as written, before entity

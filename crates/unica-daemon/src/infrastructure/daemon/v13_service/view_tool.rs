@@ -324,6 +324,34 @@ impl CanonicalV13ReadService {
             source.source_kind(),
             authority.platform_profile(),
         );
+        let can_context = if source.source_kind()
+            == unica_source_contract::SourceSetKind::Configuration
+            && address
+                .segments()
+                .last()
+                .is_some_and(|segment| segment.kind() == NodeKind::TabularSection)
+        {
+            let root = source.retained_root();
+            let exact = unica_workspace::source_profile::exact_platform_xml_source_profile(&root)
+                .filter(|profile| {
+                    super::metadata_layout_path(&address.prefix(1), source.source_kind())
+                        .and_then(|path| {
+                            unica_workspace::source_profile::exact_platform_xml_descriptor_profile(
+                                &root,
+                                std::path::Path::new(&path),
+                            )
+                        })
+                        .as_ref()
+                        == Some(profile)
+                });
+            unica_source_contract::context::SourceSetTraits::from_profiles(
+                source.source_kind(),
+                exact,
+                can_context.classification_profile(),
+            )
+        } else {
+            can_context
+        };
         let service = ViewService::with_shared_cursors(authority, Arc::clone(&self.cursors));
         let enrich_and_project = |data: &Value| -> Result<Value, ViewError> {
             let mut data = data.clone();

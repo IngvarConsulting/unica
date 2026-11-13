@@ -325,6 +325,21 @@ Font/Border, повреждённый или отсутствующий Value н
 }
 ```
 
+### Использование и проверка заполнения табличной части
+
+`tabularSection.set` на адресе самой существующей табличной части, например
+`main:Catalog.Items.TabularSection.Lines`, принимает `values: {"Use": "ForFolder"}`
+для справочника и плана видов характеристик. Допустимы `ForItem`, `ForFolder`
+и `ForFolderAndItem`; иерархия владельца не меняется.
+
+`values: {"required": true}` включает `FillChecking=ShowError`, `false` задаёт
+`DontCheck`. Это доступно для табличных частей Catalog, Document, BusinessProcess,
+ExchangePlan, Report и DataProcessor внутри конфигурации XML 2.20. Оба поля
+можно изменить вместе; UUID, колонки и остальные свойства сохраняются.
+Отсутствующее или повреждённое свойство отклоняется. Сначала прочитай `Can`
+табличной части, выполни preview, затем исполни сохранённый `executionToken`.
+Сценарий корпуса — `S-1689-tabular-section-properties`.
+
 ### Запрет пустых значений измерения
 
 `dimension.set` у измерения регистра накопления, бухгалтерии или расчёта
