@@ -183,6 +183,8 @@ pub fn parse_cf_info_xml(
         format: version.to_string(),
         name: cf_prop_text(props, "Name"),
         synonym: optional(cf_prop_ml(props, "Synonym")),
+        caption: optional(cf_prop_ml(props, "Caption")),
+        short_caption: optional(cf_prop_ml(props, "ShortCaption")),
         version: optional(cf_prop_text(props, "Version")),
         vendor: optional(cf_prop_text(props, "Vendor")),
         support,
@@ -212,6 +214,19 @@ pub fn parse_cf_info_xml(
                 "DatabaseTablespacesUseMode",
             )),
             main_window_mode: optional(cf_prop_text(props, "MainClientApplicationWindowMode")),
+            main_window_interface_variant: optional(cf_prop_text(
+                props,
+                "MainClientApplicationWindowInterfaceVariant",
+            )),
+            client_application_theme: optional(cf_prop_text(props, "ClientApplicationTheme")),
+            windows_open_variant: optional(cf_prop_text(
+                props,
+                "ClientApplicationWindowsOpenVariant",
+            )),
+            version85_interface_migration_mode: optional(cf_prop_text(
+                props,
+                "Version85InterfaceMigrationMode",
+            )),
             comment: optional(cf_prop_text(props, "Comment")),
             name_prefix: optional(cf_prop_text(props, "NamePrefix")),
             update_catalog_address: optional(cf_prop_text(props, "UpdateCatalogAddress")),
@@ -229,6 +244,21 @@ pub fn parse_cf_info_xml(
         data,
         registered_objects,
     })
+}
+
+/// Whether the line of a dialect has a configuration root `value` of
+/// `property` that a line after the first adds (INV.SOURCE.PROFILE-CAPABILITIES).
+fn line_adds_root_value(platform_line: &str, property: &str, value: &str) -> bool {
+    use unica_source_contract::format_identity::{
+        configuration_root_additions_after, PlatformLine,
+    };
+    let added = |addition: &unica_source_contract::format_identity::LineAddition| {
+        addition.property == property && addition.value == Some(value)
+    };
+    configuration_root_additions_after(None).iter().any(added)
+        && !configuration_root_additions_after(PlatformLine::parse(platform_line))
+            .iter()
+            .any(added)
 }
 
 pub fn cf_prop_text(props: roxmltree::Node<'_, '_>, local_name: &str) -> String {
@@ -2092,12 +2122,15 @@ pub fn validate_cf_source(
             let value = cf_validate_child_text(props_node, property, Some(MD_NS));
             if !value.is_empty() {
                 let allowed = cf_validate_enum_allowed(property);
+                let dialect = crate::dialect::for_version(version_literal.as_deref());
                 let line_mode = matches!(
                     *property,
                     "CompatibilityMode" | "ConfigurationExtensionCompatibilityMode"
-                ) && crate::dialect::for_version(version_literal.as_deref())
-                    .knows_line_compatibility_mode(&value);
-                if !allowed.contains(&value.as_str()) && !line_mode {
+                ) && dialect.knows_line_compatibility_mode(&value);
+                if !allowed.contains(&value.as_str())
+                    && !line_mode
+                    && !line_adds_root_value(dialect.platform_line, property, &value)
+                {
                     report.error(format!(
                         "4. Property '{property}' has invalid value '{value}'"
                     ));

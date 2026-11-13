@@ -207,7 +207,11 @@ impl<'a> PropertyArgumentReader<'a> {
             .transpose()
     }
 
-    fn enumerated(&mut self, field: DescriptorProperty) -> DecodeResult<Option<String>> {
+    fn enumerated(
+        &mut self,
+        field: DescriptorProperty,
+        allowed: &[&str],
+    ) -> DecodeResult<Option<String>> {
         if field.kind() != DescriptorPropertyKind::Enum {
             return Err(invalid(
                 &self.path,
@@ -219,7 +223,6 @@ impl<'a> PropertyArgumentReader<'a> {
                 let value = value
                     .as_str()
                     .ok_or_else(|| invalid(&path, "property value must be a string"))?;
-                let allowed = field.allowed_values();
                 if allowed.contains(&value) {
                     Ok(value.to_string())
                 } else {
@@ -479,7 +482,7 @@ fn decode_with_contract(
                             .boolean(DescriptorProperty::UseOneCommand)?,
                     })
                 }
-                PropertiesSite::Configuration { .. } => {
+                PropertiesSite::Configuration { line, .. } => {
                     let mut changes = Vec::new();
                     for field in site.descriptor_fields() {
                         let value = match field.kind() {
@@ -487,7 +490,7 @@ fn decode_with_contract(
                                 .string(field)?
                                 .map(DescriptorPropertyValue::Text),
                             DescriptorPropertyKind::Enum => values_reader
-                                .enumerated(field)?
+                                .enumerated(field, &field.allowed_values_in(line))?
                                 .map(DescriptorPropertyValue::Text),
                             DescriptorPropertyKind::Boolean => values_reader
                                 .boolean(field)?
@@ -732,8 +735,14 @@ mod tests {
         for site in [
             PropertiesSite::Role,
             PropertiesSite::Subsystem,
-            PropertiesSite::Configuration { extension: false },
-            PropertiesSite::Configuration { extension: true },
+            PropertiesSite::Configuration {
+                extension: false,
+                line: None,
+            },
+            PropertiesSite::Configuration {
+                extension: true,
+                line: None,
+            },
         ] {
             for field in site.descriptor_fields() {
                 for spelling in field.names() {
@@ -756,8 +765,14 @@ mod tests {
         for site in [
             PropertiesSite::Role,
             PropertiesSite::Subsystem,
-            PropertiesSite::Configuration { extension: false },
-            PropertiesSite::Configuration { extension: true },
+            PropertiesSite::Configuration {
+                extension: false,
+                line: None,
+            },
+            PropertiesSite::Configuration {
+                extension: true,
+                line: None,
+            },
         ] {
             for field in site.descriptor_fields() {
                 let names = field.names();
