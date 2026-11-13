@@ -1881,6 +1881,16 @@ fn plan_apply(
     let mut chosen_planned = Vec::new();
     for chosen in &chosen_support {
         let lock = chosen.lock;
+        if !locks_on_targets(request, binding, admission, &mut staged)?.contains(lock) {
+            // The answer does not lift a lock the gate shows: the gate's own
+            // refusal stands, and without one the support changed.
+            refuse_targets_on_locked_vendor_objects(request, binding, admission, &mut staged)?;
+            return Err(ApplyPlanError::new(
+                ApplyPlanErrorKind::InvalidState,
+                "the vendor support state changed after the person's answer; repeat the apply to be asked again",
+            )
+            .at_path(request.at().to_string()));
+        }
         let owner = format!("{}:{}", lock.source_set, lock.owner);
         let root = format!("{}:Configuration", lock.source_set);
         let mut support = Vec::with_capacity(chosen.operations.len());
@@ -1907,13 +1917,6 @@ fn plan_apply(
                     .at_path("ops"))
                 }
             }
-        }
-        if !locks_on_targets(request, binding, admission, &mut staged)?.contains(lock) {
-            return Err(ApplyPlanError::new(
-                ApplyPlanErrorKind::InvalidState,
-                "the vendor support state changed after the person's answer; repeat the apply to be asked again",
-            )
-            .at_path(request.at().to_string()));
         }
         let authority = admission.form_resource_planning_authority(binding)?;
         chosen_planned.extend(form_resource::plan_form_resource_batch(
