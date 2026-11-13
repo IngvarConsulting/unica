@@ -168,6 +168,71 @@ fn an_enumeration_value_shows_its_color_in_the_lines_that_have_it() {
     }
 }
 
+/// A palette colour is a kind of 8.5.1 and later: the root of an earlier
+/// line has no branch of it, and in the lines that have it the colour shows
+/// its synonym, comment and `#RRGGBB` colour.
+/// rule: INV.SOURCE.PROFILE-CAPABILITIES
+#[test]
+fn a_palette_color_is_shown_in_the_lines_that_have_it() {
+    use unica_source_contract::format_identity::PlatformLine;
+    for (source, line, has) in [
+        (
+            "../../tests/fixtures/formats/platform_xml/2.20/all_kinds/src",
+            PlatformLine::new(8, 3, 27),
+            false,
+        ),
+        (
+            "../../tests/fixtures/formats/platform_xml/2.21/all_kinds/src",
+            PlatformLine::new(8, 5, 1),
+            true,
+        ),
+        (
+            "../../tests/fixtures/formats/platform_xml/2.22/all_kinds/src",
+            PlatformLine::new(8, 5, 4),
+            true,
+        ),
+    ] {
+        // The secure source reader takes only normal path components.
+        let source =
+            std::fs::canonicalize(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(source))
+                .unwrap();
+        let cancellation = CancellationToken::new();
+        let source_root = Arc::new(unica_workspace::read::open_source_directory(&source).unwrap());
+        let authority = LogicalViewReadAuthority::new(
+            &cancellation,
+            "main",
+            "actor-fixture-main",
+            SourceSetKind::Configuration,
+            source_root,
+            PlatformProfile::for_line(line).unwrap(),
+        );
+        let service = ViewService::new(authority, ViewCursorStore::default());
+        let root = service.view(ViewRequest::new("main:Configuration").unwrap());
+        let branch = root.data.as_ref().unwrap()["branches"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|branch| branch["at"] == "main:PaletteColor")
+            .cloned();
+        if !has {
+            assert_eq!(branch, None, "{line}");
+            continue;
+        }
+        assert_eq!(branch.unwrap()["count"], 1, "{line}");
+        let color = service.view(ViewRequest::new("main:PaletteColor.Probe").unwrap());
+        assert!(
+            color.ok,
+            "{line}: {} {:?}",
+            color.summary, color.diagnostics
+        );
+        let props = &color.data.as_ref().unwrap()["props"];
+        assert_eq!(props["kind"], "PaletteColor", "{line}");
+        assert_eq!(props["Synonym"], "Проба", "{line}");
+        assert_eq!(props["Color"], "#1A2B3C", "{line}");
+        assert_eq!(props["Comment"], "all_kinds", "{line}");
+    }
+}
+
 /// rule: INV.SOURCE.LOGICAL-BRANCH-COUNT
 #[test]
 fn configuration_root_branch_counts_match_every_reachable_collection() {

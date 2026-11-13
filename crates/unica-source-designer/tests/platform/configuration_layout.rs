@@ -4,7 +4,7 @@ use std::collections::HashSet;
 fn cf_consumers_share_the_canonical_metadata_kind_order() {
     let validate_kinds = cf_validate_child_object_types();
 
-    assert_eq!(validate_kinds.len(), 45);
+    assert_eq!(validate_kinds.len(), 46);
     assert_eq!(validate_kinds, cf_type_order());
     let bot_index = validate_kinds
         .iter()
@@ -170,4 +170,36 @@ fn child_object_insertion_targets_only_the_root_metadata_child_objects() {
     )));
     assert_eq!(xml.matches("<Role>Reader</Role>").count(), 1);
     assert!(!xml.replace("\r\n", "").contains('\n'));
+}
+
+/// A palette colour, a kind of 8.5.1 and later, is registered where the
+/// platform export of each line puts it: adding it to the export without it
+/// gives the export byte for byte.
+/// rule: INV.SOURCE.CHILD-OBJECTS-PLATFORM-ORDER
+#[test]
+fn a_palette_color_is_registered_where_the_platform_export_puts_it() {
+    for export in [
+        include_str!(
+            "../../../../tests/fixtures/formats/platform_xml/2.21/all_kinds/src/Configuration.xml"
+        ),
+        include_str!(
+            "../../../../tests/fixtures/formats/platform_xml/2.22/all_kinds/src/Configuration.xml"
+        ),
+    ] {
+        let line = "\t\t\t<PaletteColor>Probe</PaletteColor>\r\n";
+        let line = if export.contains(line) {
+            line
+        } else {
+            &line[..line.len() - 2]
+        };
+        let mut without = export.replacen(line, "", 1);
+        assert_ne!(without, export, "the export registers its palette colour");
+        assert!(crate::registration::cf_edit_add_child_object_text(
+            &mut without,
+            "PaletteColor",
+            "Probe"
+        )
+        .unwrap());
+        assert_eq!(without, export);
+    }
 }
