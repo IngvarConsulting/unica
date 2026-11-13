@@ -18,7 +18,9 @@ const EXTENSION_MODE: &str = "ConfigurationExtensionCompatibilityMode";
 
 /// The mode `property` a `Configuration.xml` records.
 fn mode(bytes: &[u8], property: &str) -> Option<String> {
-    let text = std::str::from_utf8(bytes).ok()?.trim_start_matches('\u{feff}');
+    let text = std::str::from_utf8(bytes)
+        .ok()?
+        .trim_start_matches('\u{feff}');
     let document = roxmltree::Document::parse(text).ok()?;
     unica_xml_format::read::first_text(&document, property)
 }
@@ -31,19 +33,22 @@ pub(super) fn warnings(
     admission: &ApplyAdmission,
 ) -> Result<Vec<serde_json::Value>, ApplyPlanError> {
     let dependencies = admission.read_dependency_sets();
-    let changed_root = staged
-        .planned_changes()
-        .into_iter()
-        .any(|change| change.relative_path == Path::new(CONFIGURATION));
-    if dependencies.is_empty() || !changed_root {
+    if dependencies.is_empty() {
         return Ok(Vec::new());
     }
-    let Some(own) = staged.read(Path::new(CONFIGURATION)).ok().flatten() else {
+    // The root as the plan leaves it; a plan that keeps the root warns nothing.
+    let Some(own) = staged
+        .planned_changes()
+        .into_iter()
+        .find(|change| change.relative_path == Path::new(CONFIGURATION))
+        .and_then(|change| match change.current {
+            unica_source_contract::proposal::StagedFileState::Bytes(bytes) => Some(bytes),
+            unica_source_contract::proposal::StagedFileState::Absent => None,
+        })
+    else {
         return Ok(Vec::new());
     };
-    let warning = |message: String| {
-        serde_json::json!({"code": "extensionCompatibilityAboveBase", "message": message})
-    };
+    let warning = |message: String| serde_json::json!({"code": "extensionCompatibilityAboveBase", "message": message});
     let mut warnings = Vec::new();
     match binding.source_kind() {
         SourceSetKind::Extension => {
@@ -152,14 +157,30 @@ mod tests {
         let identity = WorkspaceIdentity::new(
             &context,
             [
-                WorkspaceSourceSetInput::new("main", &main, SourceSetKind::Configuration, SourceFormat::PlatformXml, profile),
-                WorkspaceSourceSetInput::new("ext", &ext, SourceSetKind::Extension, SourceFormat::PlatformXml, profile),
+                WorkspaceSourceSetInput::new(
+                    "main",
+                    &main,
+                    SourceSetKind::Configuration,
+                    SourceFormat::PlatformXml,
+                    profile,
+                ),
+                WorkspaceSourceSetInput::new(
+                    "ext",
+                    &ext,
+                    SourceSetKind::Extension,
+                    SourceFormat::PlatformXml,
+                    profile,
+                ),
             ],
             "compatibility-warnings",
         )
         .unwrap();
         let actor = crate::infrastructure::source_workspace::new_actor(identity, context).unwrap();
-        let (own, other) = if at_set == "ext" { (&ext, ("main", &main)) } else { (&main, ("ext", &ext)) };
+        let (own, other) = if at_set == "ext" {
+            (&ext, ("main", &main))
+        } else {
+            (&main, ("ext", &ext))
+        };
         let binding = actor.bind_provider_root(at_set, own).unwrap();
         let read = actor.bind_provider_root(other.0, other.1).unwrap();
         let admission = actor
@@ -173,7 +194,8 @@ mod tests {
             )
             .unwrap();
         let at = format!("{at_set}:Configuration");
-        let args = json!({"at": at, "dryRun": true, "ops": [{"op":"props.set","args":{"values":values}}]});
+        let args =
+            json!({"at": at, "dryRun": true, "ops": [{"op":"props.set","args":{"values":values}}]});
         let request = ApplyRequest::parse(args.as_object().unwrap(), &[at_set, other.0]).unwrap();
         let (_, effects) = plan_hidden_v13_apply(&request, &binding, &admission).unwrap();
         effects.warnings().to_vec()
@@ -183,11 +205,18 @@ mod tests {
     #[test]
     fn raising_an_extension_above_its_configuration_warns_and_still_plans() {
         assert_eq!(
-            warnings("ext", json!({"ConfigurationExtensionCompatibilityMode":"Version8_5_1"})),
+            warnings(
+                "ext",
+                json!({"ConfigurationExtensionCompatibilityMode":"Version8_5_1"})
+            ),
             vec![json!({"code":"extensionCompatibilityAboveBase","message":
                 "Extension compatibility mode `Version8_5_1` is above compatibility mode `Version8_3_27` of configuration `main`; the platform does not apply such an extension."})]
         );
-        assert!(warnings("ext", json!({"ConfigurationExtensionCompatibilityMode":"Version8_3_24"})).is_empty());
+        assert!(warnings(
+            "ext",
+            json!({"ConfigurationExtensionCompatibilityMode":"Version8_3_24"})
+        )
+        .is_empty());
     }
 
     /// rule: INV.SOURCE.WRITABLE-PROFILE
@@ -199,5 +228,76 @@ mod tests {
                 "Extension compatibility mode `Version8_3_27` of extension `ext` is above compatibility mode `Version8_3_24` of configuration `main`; the platform does not apply such an extension."})]
         );
         assert!(warnings("main", json!({"CompatibilityMode":"Version8_5_1"})).is_empty());
+    }
+
+    /// The admission reads an extension too, so a borrow names its own rule:
+    /// the parent is a configuration.
+    #[test]
+    fn a_borrow_from_an_extension_is_refused() {
+        let crate_root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let root = tempfile::tempdir().unwrap();
+        let workspace_root = std::fs::canonicalize(root.path()).unwrap();
+        let ext = workspace_root.join("ext");
+        let other = workspace_root.join("other");
+        for dir in [&ext, &other] {
+            copy_tree(
+                &crate_root
+                    .join("../../tests/fixtures/formats/platform_xml/2.21/empty_extension/ext"),
+                dir,
+            );
+        }
+        std::fs::write(
+            workspace_root.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: ext\n    type: EXTENSION\n    path: ext\n  - name: other\n    type: EXTENSION\n    path: other\n",
+        )
+        .unwrap();
+        let profile = SourceProfile::platform_xml_of_line(PlatformLine::new(8, 5, 1)).unwrap();
+        let context = WorkspaceContext {
+            cwd: workspace_root.clone(),
+            workspace_root: workspace_root.clone(),
+            cache_root: workspace_root.join(".build/unica"),
+            workspace_epoch: 1,
+        };
+        let identity = WorkspaceIdentity::new(
+            &context,
+            [
+                WorkspaceSourceSetInput::new(
+                    "ext",
+                    &ext,
+                    SourceSetKind::Extension,
+                    SourceFormat::PlatformXml,
+                    profile,
+                ),
+                WorkspaceSourceSetInput::new(
+                    "other",
+                    &other,
+                    SourceSetKind::Extension,
+                    SourceFormat::PlatformXml,
+                    profile,
+                ),
+            ],
+            "borrow-from-extension",
+        )
+        .unwrap();
+        let actor = crate::infrastructure::source_workspace::new_actor(identity, context).unwrap();
+        let binding = actor.bind_provider_root("ext", &ext).unwrap();
+        let parent = actor.bind_provider_root("other", &other).unwrap();
+        let admission = actor
+            .admit_apply_with_dependencies(
+                &binding,
+                &[parent],
+                None,
+                true,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let args = json!({"at":"ext:Configuration","dryRun":true,"ops":[{"op":"object.borrow","args":{"from":"other:Language.Русский"}}]});
+        let request = ApplyRequest::parse(args.as_object().unwrap(), &["ext", "other"]).unwrap();
+        let error = plan_hidden_v13_apply(&request, &binding, &admission).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "from must name an object of a configuration source set"
+        );
     }
 }

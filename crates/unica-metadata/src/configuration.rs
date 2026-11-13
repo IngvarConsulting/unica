@@ -401,10 +401,22 @@ mod compatibility_order_tests {
         assert_eq!(compatibility_mode_order("Version8_3_27"), Some([8, 3, 27]));
         assert_eq!(compatibility_mode_order("Version8_1"), Some([8, 1, 0]));
         assert_eq!(compatibility_mode_order("DontUse"), None);
-        assert!(extension_mode_is_above_base("Version8_5_1", "Version8_3_27"));
-        assert!(extension_mode_is_above_base("Version8_3_27", "Version8_3_24"));
-        assert!(!extension_mode_is_above_base("Version8_3_24", "Version8_3_27"));
-        assert!(!extension_mode_is_above_base("Version8_3_27", "Version8_3_27"));
+        assert!(extension_mode_is_above_base(
+            "Version8_5_1",
+            "Version8_3_27"
+        ));
+        assert!(extension_mode_is_above_base(
+            "Version8_3_27",
+            "Version8_3_24"
+        ));
+        assert!(!extension_mode_is_above_base(
+            "Version8_3_24",
+            "Version8_3_27"
+        ));
+        assert!(!extension_mode_is_above_base(
+            "Version8_3_27",
+            "Version8_3_27"
+        ));
         assert!(!extension_mode_is_above_base("Version8_5_1", "DontUse"));
         assert!(!extension_mode_is_above_base("DontUse", "Version8_3_24"));
         assert_eq!(

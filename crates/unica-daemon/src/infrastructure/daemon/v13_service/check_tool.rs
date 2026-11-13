@@ -367,10 +367,7 @@ impl CanonicalV13ReadService {
 const ROOT_PROPERTIES_PREFIX_BYTES: usize = 64 * 1024;
 
 /// The text of `<tag>` in the root prefix of a set, if it is there.
-fn root_mode(
-    root: &unica_source_contract::read::SourceDirectory,
-    tag: &str,
-) -> Option<String> {
+fn root_mode(root: &unica_source_contract::read::SourceDirectory, tag: &str) -> Option<String> {
     let bytes = root
         .read_relative_regular_prefix(
             std::path::Path::new("Configuration.xml"),
@@ -388,27 +385,39 @@ fn root_mode(
 /// above its configuration: the platform does not apply it. `DontUse` is
 /// not compared (INV.SOURCE.WRITABLE-PROFILE).
 fn compatibility_mode_warnings(invocation: &ActorBoundExecution, at: &str) -> Vec<Value> {
+    let Some((set, _)) = at.split_once(':') else {
+        return Vec::new();
+    };
+    compatibility_mode_warnings_of(set, &invocation.admitted_roots())
+}
+
+/// The warnings of the root of `set` against the other admitted `roots`.
+fn compatibility_mode_warnings_of(
+    set: &str,
+    roots: &[(
+        String,
+        unica_source_contract::SourceSetKind,
+        std::sync::Arc<unica_source_contract::read::SourceDirectory>,
+    )],
+) -> Vec<Value> {
     use unica_metadata::configuration::{
         extension_mode_above_base_warning, extension_mode_is_above_base,
     };
     use unica_source_contract::SourceSetKind;
     const MODE: &str = "CompatibilityMode";
     const EXTENSION_MODE: &str = "ConfigurationExtensionCompatibilityMode";
-    let Some((set, _)) = at.split_once(':') else {
-        return Vec::new();
-    };
-    let roots = invocation.admitted_roots();
     let Some((_, kind, own)) = roots.iter().find(|(name, _, _)| name == set) else {
         return Vec::new();
     };
-    let warning = |message: String| json!({"code": "extensionCompatibilityAboveBase", "message": message});
+    let warning =
+        |message: String| json!({"code": "extensionCompatibilityAboveBase", "message": message});
     let mut warnings = Vec::new();
     match kind {
         SourceSetKind::Extension => {
             let Some(extension_mode) = root_mode(own, EXTENSION_MODE) else {
                 return Vec::new();
             };
-            for (name, kind, root) in &roots {
+            for (name, kind, root) in roots {
                 if *kind != SourceSetKind::Configuration {
                     continue;
                 }
@@ -428,7 +437,7 @@ fn compatibility_mode_warnings(invocation: &ActorBoundExecution, at: &str) -> Ve
             let Some(base_mode) = root_mode(own, MODE) else {
                 return Vec::new();
             };
-            for (name, kind, root) in &roots {
+            for (name, kind, root) in roots {
                 if *kind != SourceSetKind::Extension {
                     continue;
                 }
@@ -447,4 +456,65 @@ fn compatibility_mode_warnings(invocation: &ActorBoundExecution, at: &str) -> Ve
         _ => {}
     }
     warnings
+}
+
+#[cfg(test)]
+mod compatibility_mode_check_tests {
+    use super::compatibility_mode_warnings_of;
+    use std::sync::Arc;
+    use unica_source_contract::SourceSetKind;
+
+    fn root(
+        dir: &std::path::Path,
+        properties: &str,
+    ) -> Arc<unica_source_contract::read::SourceDirectory> {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(
+            dir.join("Configuration.xml"),
+            format!("<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.21\"><Configuration><Properties>{properties}</Properties></Configuration></MetaDataObject>"),
+        )
+        .unwrap();
+        Arc::new(
+            unica_workspace::read::open_source_directory(&std::fs::canonicalize(dir).unwrap())
+                .unwrap(),
+        )
+    }
+
+    /// rule: INV.SOURCE.WRITABLE-PROFILE
+    #[test]
+    fn check_of_a_root_warns_when_an_extension_is_above_its_configuration() {
+        let temp = tempfile::tempdir().unwrap();
+        let roots = vec![
+            (
+                "main".to_string(),
+                SourceSetKind::Configuration,
+                root(&temp.path().join("cf"), "<ConfigurationExtensionCompatibilityMode>Version8_5_1</ConfigurationExtensionCompatibilityMode><CompatibilityMode>Version8_3_24</CompatibilityMode>"),
+            ),
+            (
+                "ext".to_string(),
+                SourceSetKind::Extension,
+                root(&temp.path().join("ext"), "<ConfigurationExtensionCompatibilityMode>Version8_3_27</ConfigurationExtensionCompatibilityMode>"),
+            ),
+            (
+                "same".to_string(),
+                SourceSetKind::Extension,
+                root(&temp.path().join("same"), "<ConfigurationExtensionCompatibilityMode>Version8_3_24</ConfigurationExtensionCompatibilityMode>"),
+            ),
+        ];
+        let messages = |set: &str| {
+            compatibility_mode_warnings_of(set, &roots)
+                .into_iter()
+                .map(|warning| warning["message"].as_str().unwrap().to_string())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            messages("ext"),
+            ["Extension compatibility mode `Version8_3_27` is above compatibility mode `Version8_3_24` of configuration `main`; the platform does not apply such an extension."]
+        );
+        assert_eq!(
+            messages("main"),
+            ["Extension compatibility mode `Version8_3_27` of extension `ext` is above compatibility mode `Version8_3_24` of configuration `main`; the platform does not apply such an extension."]
+        );
+        assert!(messages("same").is_empty());
+    }
 }

@@ -700,7 +700,9 @@ impl ActorBoundExecution {
                     .args()
                     .get("values")
                     .and_then(serde_json::Value::as_object)
-                    .is_some_and(|values| values.keys().any(|key| MODE_KEYS.contains(&key.as_str())))
+                    .is_some_and(|values| {
+                        values.keys().any(|key| MODE_KEYS.contains(&key.as_str()))
+                    })
         });
         let compared = match binding.source_kind() {
             unica_source_contract::SourceSetKind::Extension => {
@@ -712,13 +714,13 @@ impl ActorBoundExecution {
             _ => None,
         };
         if let (true, Some(compared)) = (compares_modes, compared) {
-            for source in &self.invocation.read_sources {
+            for source in self.invocation.read_sources.iter() {
                 let name = source.binding.source_set_name();
                 if source.binding.source_kind() == compared
                     && name != binding.source_set_name()
-                    && dependencies
-                        .iter()
-                        .all(|dependency: &ProviderRootBinding| dependency.source_set_name() != name)
+                    && dependencies.iter().all(|dependency: &ProviderRootBinding| {
+                        dependency.source_set_name() != name
+                    })
                 {
                     dependencies.push(source.binding.clone());
                 }
