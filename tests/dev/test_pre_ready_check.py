@@ -570,7 +570,8 @@ class UnrunTests(unittest.TestCase):
             "python:tests/ci": CHECK.Result([], ["test_mod.ATests.test_c", "test_mod.ATests.test_a",
                                                  "test_mod.BTests.test_d"]),
         }
-        report = CHECK.unrun_tests(lines, sources.get, results, {"crates/fs": "unica-fs"}, WINDOWS)
+        report, elsewhere = CHECK.unrun_tests(lines, sources.get, results, {"crates/fs": "unica-fs"}, WINDOWS)
+        self.assertEqual(elsewhere, [])
         self.assertEqual(report, [
             "crates/fs/src/lib.rs::unix_only — #[cfg(unix)]",
             'crates/fs/src/lib.rs::linux_only — #[cfg_attr(not(target_os = "linux"), '
@@ -579,6 +580,24 @@ class UnrunTests(unittest.TestCase):
             "tests/ci/test_mod.py::ATests.test_c — skipped",
             "tests/ci/test_mod.py::BTests.test_d — skipped",
         ])
+
+    def test_an_ignored_test_whose_reason_names_an_existing_runner_is_reported_apart(self):
+        source = (
+            '#[test]\n'
+            '#[ignore = "vendor help: needs the help; run scripts/dev/check-help.py"]\n'
+            'fn oracle() {}\n'
+            '\n'
+            '#[test]\n'
+            '#[ignore = "research: writes the fixture; run scripts/research/gone.sh"]\n'
+            'fn stale() {}\n'
+        )
+        sources = {"crates/docs/tests/oracle.rs": source, "scripts/dev/check-help.py": ""}
+        lines = {"crates/docs/tests/oracle.rs": {3, 7}}
+        results = {"test:unica-docs": CHECK.Result([], ["oracle", "stale"])}
+        report, elsewhere = CHECK.unrun_tests(lines, sources.get, results, {"crates/docs": "unica-docs"}, WINDOWS)
+        self.assertEqual(elsewhere, ["crates/docs/tests/oracle.rs::oracle — scripts/dev/check-help.py"])
+        # Скрипта по ссылке нет: тест не прячется и остаётся к разбору.
+        self.assertEqual(report, ["crates/docs/tests/oracle.rs::stale — пропущен на хосте"])
 
 
 class MainTests(unittest.TestCase):

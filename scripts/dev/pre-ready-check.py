@@ -371,6 +371,8 @@ class RustTest:
     end: int
     excluded_by: Optional[str] = None  # cfg, который исключает тест здесь
     ignored_by: Optional[str] = None  # cfg_attr(…, ignore), который срабатывает здесь
+    # Скрипт, который исполняет отключённый тест: его называет причина `ignore`.
+    runner: Optional[str] = None
 
 
 TEST_ATTRIBUTE = re.compile(r"^(?:test|tokio::test|rstest|test_case|\w+::test)\b")
@@ -378,6 +380,8 @@ FN_LINE = re.compile(r"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?(?:unsafe\s+)?f
 MOD_LINE = re.compile(r"^\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+\w+\s*\{")
 CFG_ATTRIBUTE = re.compile(r"^cfg\((.*)\)$", re.S)
 CFG_ATTR_IGNORE = re.compile(r"^cfg_attr\((.*),\s*ignore\b.*\)$", re.S)
+# Причина `#[ignore = "<вид>: …; run <скрипт>"]` называет исполнителя теста.
+IGNORE_RUNNER = re.compile(r'\bignore\s*=\s*"[^"]*?\brun ((?:scripts|tests)/[\w./-]+\.(?:py|sh|ps1))')
 
 
 BRACKETS = str.maketrans("", "", "{}[]")
@@ -513,6 +517,9 @@ def rust_tests(text: str, host: Dict[str, str]) -> List[RustTest]:
                     ignore = CFG_ATTR_IGNORE.match(attribute)
                     if ignore and eval_cfg(ignore.group(1), host) is True:
                         test.ignored_by = attribute
+                    runner = IGNORE_RUNNER.search(attribute)
+                    if runner and (attribute.startswith("ignore") or test.ignored_by == attribute):
+                        test.runner = runner.group(1)
                 tests.append(test)
                 if depth > before or "{" not in code:
                     open_test = (test, before)
@@ -581,9 +588,15 @@ def unrun_tests(
     results: Dict[str, Result],
     crate_packages: Dict[str, str],
     host: Dict[str, str],
-) -> List[str]:
-    """Тесты из диффа, которые здесь исключены, отключены или пропущены."""
+) -> Tuple[List[str], List[str]]:
+    """Тесты из диффа, которые здесь исключены, отключены или пропущены.
+
+    Второй список — отключённые тесты, которые исполняет другой инструмент:
+    его путь называет причина `#[ignore]`, и файл по этому пути есть.
+    Устаревшая ссылка тест не прячет: он остаётся в первом списке.
+    """
     report: List[str] = []
+    elsewhere: List[str] = []
     skipped_python = {name for key, result in results.items() if key.startswith("python:")
                       for name in result.skipped}
     for name in sorted(lines):
@@ -602,7 +615,9 @@ def unrun_tests(
                 test.excluded_by = test.excluded_by or declared
                 if not changed & set(range(test.start, test.end + 1)):
                     continue
-                if test.excluded_by:
+                if test.runner and not test.excluded_by and read(test.runner) is not None:
+                    elsewhere.append(f"{name}::{test.name} — {test.runner}")
+                elif test.excluded_by:
                     report.append(f"{name}::{test.name} — #[{test.excluded_by}]")
                 elif test.ignored_by:
                     report.append(f"{name}::{test.name} — #[{test.ignored_by}]")
@@ -626,7 +641,7 @@ def unrun_tests(
                     continue
                 if f"{module}.{test}" in skipped_python:
                     report.append(f"{name}::{test} — skipped")
-    return report
+    return report, elsewhere
 
 
 # --- Запуск ---------------------------------------------------------------------
@@ -1037,7 +1052,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         except OSError:
             return None
 
-    unrun = unrun_tests(lines, read, current, crate_packages, host_facts())
+    unrun, elsewhere = unrun_tests(lines, read, current, crate_packages, host_facts())
     print()
     builds = sum(failure in build[key] for key, failures in fresh.items() for failure in failures)
     count = sum(map(len, fresh.values()))
@@ -1051,6 +1066,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     else:
         print(f"Новые падения: {count if fresh else 'нет'}{builds_note}")
     print(f"Не исполнены на этой ОС, разобрать по коду: {'; '.join(unrun) if unrun else 'нет'}")
+    print(f"Исполняются другим инструментом: {'; '.join(elsewhere) if elsewhere else 'нет'}")
     print(f"Журналы: {cache_dir / 'logs'}")
     if missing:
         return INCOMPLETE_EXIT
