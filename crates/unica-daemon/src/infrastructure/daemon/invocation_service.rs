@@ -905,6 +905,24 @@ impl ActorBoundExecution {
         Ok(())
     }
 
+    /// The retained no-follow root of every admitted source set with its name
+    /// and kind: what a check compares a set with, outside its revision.
+    pub(in crate::infrastructure::daemon) fn admitted_roots(
+        &self,
+    ) -> Vec<(String, SourceSetKind, Arc<SourceDirectory>)> {
+        self.invocation
+            .read_sources
+            .iter()
+            .map(|source| {
+                (
+                    source.binding.source_set_name().to_string(),
+                    source.binding.source_kind(),
+                    source.binding.retained_root(),
+                )
+            })
+            .collect()
+    }
+
     /// Admitted roots for the `find` directory: the retained no-follow root of
     /// every admitted source set with its name and kind, without a revision
     /// lease.
