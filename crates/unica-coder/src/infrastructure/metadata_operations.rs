@@ -3358,13 +3358,11 @@ pub(crate) mod medium_tests {
         let prepared =
             MetadataOperations::prepare_mutation(&request, &fixture.context, &cancellation)
                 .unwrap();
-        let expected_content = concat!(
-            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
-            "<Form xmlns=\"http://v8.1c.ru/8.3/xcf/logform\" version=\"2.20\">\n",
-            "\t<AutoCommandBar name=\"ФормаКоманднаяПанель\" id=\"-1\"/>\n",
-            "</Form>"
-        )
-        .as_bytes();
+        // The seed of a new form, whose root the forms codec proves against
+        // the platform export.
+        let expected_content =
+            unica_forms_designer::planner::minimal_typed_form_content("", "", "2.20").into_bytes();
+        let expected_content = expected_content.as_slice();
         assert!(prepared
             .validation_subject()
             .resources
@@ -3564,13 +3562,7 @@ pub(crate) mod medium_tests {
         assert!(String::from_utf8_lossy(&descriptor_bytes).contains("replacement"));
         assert_eq!(
             fs::read(payload_root.join("Ext/Form.xml")).unwrap(),
-            concat!(
-                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
-                "<Form xmlns=\"http://v8.1c.ru/8.3/xcf/logform\" version=\"2.20\">\n",
-                "\t<AutoCommandBar name=\"ФормаКоманднаяПанель\" id=\"-1\"/>\n",
-                "</Form>"
-            )
-            .as_bytes()
+            unica_forms_designer::planner::minimal_typed_form_content("", "", "2.20").into_bytes()
         );
         assert!(!stale_module.exists());
     }

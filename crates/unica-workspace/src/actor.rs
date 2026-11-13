@@ -1930,9 +1930,11 @@ impl<R, C> WorkspaceActor<R, C> {
                     "borrow parent must be a separate non-overlapping source root".to_string(),
                 ));
             }
+            // Any writable format: the platform loads a parent and an
+            // extension of different formats of its line together.
             if parent.source_kind() != SourceSetKind::Configuration
                 || parent.source_format() != SourceFormat::PlatformXml
-                || parent.source_profile() != SourceProfile::platform_xml_8_3_27_format_2_20()
+                || !parent.source_profile().is_writable_platform_xml()
             {
                 return Err(ApplyAdmissionError::Other(
                     "borrow parent must provide the supported Platform XML configuration profile"

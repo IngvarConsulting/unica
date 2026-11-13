@@ -3146,7 +3146,7 @@ pub fn form_add_metadata_xml(
 }
 
 /// Namespace declarations of a `Form.xml` root in `format_version`.
-fn form_root_namespaces(format_version: &str) -> String {
+pub(crate) fn form_root_namespaces(format_version: &str) -> String {
     unica_source_designer::layout::format_namespace_declarations(
         FORM_ROOT_NAMESPACES,
         format_version,
