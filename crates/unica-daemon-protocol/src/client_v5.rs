@@ -61,7 +61,6 @@ const OBSERVATION_INTERRUPT_POLL: Duration = Duration::from_millis(25);
 // problem: неизвестно
 // on-reach: чтение ответа обрывается ошибкой срока, сессия владельца отравляется и больше не используется
 // decision: закреплено правилом
-// decision-date: 2026-09-22
 // decision-source: arch/rules/runtime/daemon-response-time.md
 const OWNER_RESPONSE_SAFETY_TIMEOUT: Duration = Duration::from_secs(10);
 // resource-limit: daemon.spawn-lock-timeout

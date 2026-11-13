@@ -15,7 +15,6 @@ use std::io::{self, Write};
 // issue: #1119
 // evidence: Замер 25.10.2026 (Apple M3 Max, 14 ядер, macOS, git 2.54, релизная сборка ветки поверх main 07306a173, scripts/dev/measure-capacity.py, два прохода подряд, наблюдение ёмкости демона (--capacity-report)): наибольший ответ прогона — 21 694 байта (строка JSON-RPC целиком, верхняя оценка результата; 0,26% предела) (корневой check на выгрузке УТ 11 (48 159 файлов в индексе Git, 12 290 модулей BSL на 508 МБ, 31 009 XML на 692 МБ)); у остальных вызовов 0,4–21 КБ. Операции без страниц (превью apply, check по всей конфигурации, diff) этим прогоном не нагружались.
 // decision: закреплено правилом
-// decision-date: 2026-09-22
 // decision-source: arch/rules/runtime/invocation-result-size.md
 // review: #1119 PR9
 pub const MAX_CANONICAL_RESULT_BYTES: usize = 8 * 1024 * 1024;
@@ -32,7 +31,6 @@ pub const MAX_CANONICAL_RESULT_BYTES: usize = 8 * 1024 * 1024;
 // on-reach: result_too_large при превышении суммы 8 МиБ + 64 КиБ
 // issue: #1119
 // decision: закреплено правилом
-// decision-date: 2026-09-22
 // decision-source: arch/rules/runtime/daemon-response-size.md
 // review: #1119 PR9
 pub const MAX_TASK_RECORD_ENVELOPE_BYTES: usize = 64 * 1024;
@@ -50,7 +48,6 @@ pub const MAX_TASK_RECORD_ENVELOPE_BYTES: usize = 64 * 1024;
 // on-reach: запись или доставка отвергаются как result_too_large; результат не сохраняется как успех
 // issue: #1119
 // decision: закреплено правилом INV.APP.DAEMON-TASK-PERSISTENCE
-// decision-date: 2026-09-22
 // decision-source: arch/rules/runtime/task-record-shape.md
 // review: #1119 PR9
 pub const MAX_TASK_RECORD_BYTES: usize =

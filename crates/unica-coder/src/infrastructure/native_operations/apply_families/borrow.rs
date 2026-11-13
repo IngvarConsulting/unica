@@ -668,15 +668,21 @@ fn plan_form(
             )?;
             let uuid =
                 identity.new_uuid("form", &from, crate::infrastructure::source_ids::fresh_uuid);
+            // The new files take the format of the extension set they join,
+            // not the parent's (INV.SOURCE.WRITABLE-PROFILE).
+            let set_format = binding
+                .source_profile()
+                .serialization_format()
+                .unwrap_or(parent_form.version.as_str())
+                .to_string();
             let mut content = b"\xef\xbb\xbf".to_vec();
             content.extend_from_slice(
-                unica_forms_designer::codec::borrowed_form_content_xml(&parent_form.version)
-                    .as_bytes(),
+                unica_forms_designer::codec::borrowed_form_content_xml(&set_format).as_bytes(),
             );
             for (relative, bytes) in [
                 (
                     &form_relative,
-                    borrowed_form::borrowed_form_descriptor(form, &uuid, &parent_form),
+                    borrowed_form::borrowed_form_descriptor(form, &uuid, &parent_form, &set_format),
                 ),
                 (&content_relative, content),
             ] {

@@ -101,7 +101,6 @@ const SESSION_READ_TIMEOUT: Duration = Duration::from_secs(2);
 // problem: Ни один frontend не ждёт дольше: весь бюджет вызова не больше 7 с (комментарий в transport.rs).
 // on-reach: недочитанный за срок кадр закрывает сессию ошибкой чтения
 // decision: закреплено правилом INV.WIRE.DAEMON-REQUEST-FRAMING
-// decision-date: 2026-10-18
 // decision-source: arch/rules/runtime/daemon-request-framing.md
 const SESSION_FRAME_READ_TIMEOUT: Duration =
     Duration::from_millis(unica_execution::receipt_ledger::MAX_ORIGINAL_RESPONSE_BUDGET_MS);

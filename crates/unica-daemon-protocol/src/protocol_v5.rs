@@ -58,7 +58,6 @@ pub const MAX_V5_ENDPOINT_RECORD_BYTES: usize = 16 * 1024;
 // problem: Число соединений не ограничено, поэтому неаутентифицированный пир может заставить демон держать не больше этого объёма.
 // on-reach: кадр отвергается ответом invalid_request, соединение закрывается
 // decision: закреплено правилом
-// decision-date: 2026-10-18
 // decision-source: arch/rules/runtime/daemon-request-framing.md
 pub const MAX_V5_HANDSHAKE_LINE_BYTES: usize = 16 * 1024;
 /// Bound of one authenticated request frame, `\n` included.
@@ -83,7 +82,6 @@ pub const MAX_V5_HANDSHAKE_LINE_BYTES: usize = 16 * 1024;
 // problem: Демон держит кадр, разобранные аргументы и их канонический хеш одновременно; предел делает этот расход конечным, а прежние 16 КиБ резали обычный apply.
 // on-reach: frontend отказывает до отправки: provider_limit_exceeded, исход fixCall, предел и фактический размер; демон отвергает больший кадр
 // decision: закреплено правилом
-// decision-date: 2026-10-18
 // decision-source: arch/rules/runtime/daemon-request-framing.md
 pub const MAX_V5_REQUEST_LINE_BYTES: usize = 64 * 1024 * 1024;
 // resource-limit: daemon.v5-response-line-bytes
@@ -98,7 +96,6 @@ pub const MAX_V5_REQUEST_LINE_BYTES: usize = 64 * 1024 * 1024;
 // on-reach: кадр отвергается ошибкой «v5 daemon response frame exceeds the byte limit»
 // issue: #1119
 // decision: закреплено правилом INV.WIRE.DAEMON-RESPONSE-SIZE
-// decision-date: 2026-09-22
 // decision-source: arch/rules/runtime/daemon-response-size.md
 // review: #1119 PR9
 pub const MAX_V5_RESPONSE_LINE_BYTES: usize =
@@ -114,7 +111,6 @@ pub const MAX_V5_RESPONSE_LINE_BYTES: usize =
 // problem: неизвестно
 // on-reach: запрос отвергается: «v5 invocation response budget exceeds 7000 ms» или «v5 task wait exceeds 7000 ms»
 // decision: закреплено правилом
-// decision-date: 2026-09-22
 // decision-source: arch/rules/runtime/daemon-protocol.md
 const MAX_V5_WAIT_MS: u64 = 7_000;
 

@@ -19,7 +19,6 @@ use std::ffi::OsString;
 // problem: неизвестно
 // on-reach: текст сверх бюджета отказывает result_too_large с подсказкой диапазона строк Body#L<a>-L<b>
 // decision: закреплено правилом
-// decision-date: 2026-10-21
 // decision-source: arch/rules/mcp/source-text-response-budget.md
 pub const DEFAULT_RESPONSE_BUDGET: usize = 16 * 1024;
 
@@ -107,7 +106,6 @@ const CLAUDE_RESULT_SIZE_CHARS: u64 = 100_000;
 // on-reach: текст больше не отдаётся никому (result_too_large); настройка вне 1024..73728 игнорируется с сообщением в stderr
 // evidence: Выводится из бюджетов host.claude-response-budget, host.codex-response-budget, host.zcode-response-budget
 // decision: правило закрепляет принцип «наибольший бюджет среди известных хостов», а не число 72 КиБ
-// decision-date: 2026-10-21
 // decision-source: arch/rules/mcp/source-text-response-budget.md
 pub const MAX_RESPONSE_BUDGET: usize = CLAUDE_RESPONSE_BUDGET;
 

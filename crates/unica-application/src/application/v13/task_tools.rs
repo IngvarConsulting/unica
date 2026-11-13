@@ -14,7 +14,6 @@ use unica_refusal::{RefusalCode, RefusalDetail};
 // problem: неизвестно
 // on-reach: waitMs больше 7000 отвергается; по истечении ожидания возвращается текущее состояние задания
 // decision: закреплено правилом CTR.WIRE.COMPATIBILITY-TASK-TOOLS
-// decision-date: 2026-09-22
 // decision-source: arch/rules/mcp/compatibility-task-observation.md
 pub(crate) const DEFAULT_TASK_RESULT_WAIT_MS: u64 = 7_000;
 

@@ -9,7 +9,6 @@
 // problem: неизвестно
 // on-reach: явный аргумент вне диапазона отклоняется OutOfRange «must be between 30 and 3600»; срок из настроек прижимается к границе
 // decision: закреплено правилом
-// decision-date: 2026-10-21
 // decision-source: arch/rules/analysis/diagnostics-timeout-overlay.md
 pub const DIAGNOSTICS_ANALYZE_TIMEOUT_MIN_SECONDS: u64 = 30;
 
@@ -24,6 +23,5 @@ pub const DIAGNOSTICS_ANALYZE_TIMEOUT_MIN_SECONDS: u64 = 30;
 // problem: неизвестно
 // on-reach: явный аргумент вне диапазона отклоняется OutOfRange «must be between 30 and 3600»; срок из настроек прижимается к границе
 // decision: закреплено правилом
-// decision-date: 2026-10-21
 // decision-source: arch/rules/analysis/diagnostics-timeout-overlay.md
 pub const DIAGNOSTICS_ANALYZE_TIMEOUT_MAX_SECONDS: u64 = 3600;
