@@ -2161,6 +2161,7 @@ fn plan_apply(
                     &authority,
                     &operations,
                     &mut xdto_validation,
+                    crate::infrastructure::family_codecs::SUPPORT_MARKER_READER,
                 )?;
                 provisional.extend(planned);
             }
@@ -2251,6 +2252,7 @@ fn plan_apply(
                 ParsedApplyOperation::Xdto(operation) => Some(operation),
                 _ => None,
             }),
+            crate::infrastructure::family_codecs::SUPPORT_MARKER_READER,
         )?;
     }
     let xdto_operations = parsed

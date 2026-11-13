@@ -1,0 +1,113 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:ns1="http://v8.1c.ru/8.1/data/core" xmlns:tns="http://v8.1c.ru/8.3/stt/core" xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="http://v8.1c.ru/8.3/stt/core" attributeFormDefault="unqualified" elementFormDefault="qualified">
+	<xs:import namespace="http://v8.1c.ru/8.1/data/core"/>
+	<xs:simpleType name="SpeechProcessingLocationUseVariant">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="ExternalOnly"/>
+			<xs:enumeration value="LocalOnly"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:complexType name="PhraseForSpeechToText">
+		<xs:sequence>
+			<xs:element name="phraseVariants" type="xs:string" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+		<xs:attribute name="key" type="xs:string"/>
+		<xs:attribute name="commandKey" type="xs:string"/>
+	</xs:complexType>
+	<xs:complexType name="RegistrationData">
+		<xs:sequence>
+			<xs:element name="value" type="xs:base64Binary"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="SpeechToTextDelayedID">
+		<xs:attribute name="uuid" type="ns1:UUID"/>
+	</xs:complexType>
+	<xs:complexType name="SpeechToTextInformationDelayed">
+		<xs:sequence>
+			<xs:element name="results" type="tns:SpeechToTextResult" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="key" type="tns:SpeechToTextDelayedID"/>
+		</xs:sequence>
+		<xs:attribute name="done" type="xs:boolean"/>
+		<xs:attribute name="successful" type="xs:boolean"/>
+		<xs:attribute name="error" type="xs:string"/>
+	</xs:complexType>
+	<xs:complexType name="SpeechToTextModelDescription">
+		<xs:sequence>
+			<xs:element name="modelIdentifier" type="tns:SpeechToTextModelID"/>
+			<xs:element name="modelParameters" type="tns:SpeechToTextModelParameters"/>
+			<xs:element name="modelParametersRu" type="tns:SpeechToTextModelParameters"/>
+			<xs:element name="acousticsRepresentation" type="ns1:FixedMap"/>
+			<xs:element name="grammarRepresentation" type="ns1:FixedMap"/>
+			<xs:element name="description" type="ns1:FixedMap"/>
+		</xs:sequence>
+		<xs:attribute name="availableLocally" type="xs:boolean"/>
+		<xs:attribute name="availableExternally" type="xs:boolean"/>
+		<xs:attribute name="downloadAvailable" type="xs:boolean"/>
+		<xs:attribute name="version" type="xs:string"/>
+		<xs:attribute name="availableForSpeechToPhrase" type="xs:boolean"/>
+	</xs:complexType>
+	<xs:complexType name="SpeechToTextModelID">
+		<xs:attribute name="uuid" type="ns1:UUID"/>
+	</xs:complexType>
+	<xs:complexType name="SpeechToTextModelParameters">
+		<xs:attribute name="languageCode" type="xs:string"/>
+		<xs:attribute name="acoustics" type="xs:string"/>
+		<xs:attribute name="grammar" type="xs:string"/>
+		<xs:attribute name="version" type="xs:string"/>
+	</xs:complexType>
+	<xs:complexType name="SpeechToTextPhraseData">
+		<xs:sequence>
+			<xs:element name="phraseWord" type="tns:SpeechToTextPhraseWord" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+		<xs:attribute name="phrase" type="xs:string"/>
+		<xs:attribute name="confidence" type="xs:float"/>
+		<xs:attribute name="startTime" type="xs:float"/>
+		<xs:attribute name="endTime" type="xs:float"/>
+	</xs:complexType>
+	<xs:complexType name="SpeechToTextPhraseWord">
+		<xs:attribute name="word" type="xs:string"/>
+		<xs:attribute name="confidence" type="xs:float"/>
+		<xs:attribute name="startTime" type="xs:float"/>
+		<xs:attribute name="endTime" type="xs:float"/>
+	</xs:complexType>
+	<xs:complexType name="SpeechToTextResult">
+		<xs:sequence>
+			<xs:element name="phrase" type="tns:SpeechToTextPhraseData" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+		<xs:attribute name="phraseRecognitionCompleted" type="xs:boolean"/>
+	</xs:complexType>
+	<xs:complexType name="TextToSpeechModelID">
+		<xs:attribute name="uuid" type="ns1:UUID"/>
+	</xs:complexType>
+	<xs:complexType name="TextToSpeechVoiceDescription">
+		<xs:sequence>
+			<xs:element name="modelIdentifier" type="tns:TextToSpeechModelID"/>
+			<xs:element name="voiceRepresentation" type="ns1:FixedMap"/>
+			<xs:element name="description" type="ns1:FixedMap"/>
+			<xs:element name="params" type="tns:TextToSpeechVoiceParameterDescription" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+		<xs:attribute name="voice" type="xs:string"/>
+		<xs:attribute name="voiceRu" type="xs:string"/>
+		<xs:attribute name="language" type="xs:string"/>
+		<xs:attribute name="availableLocally" type="xs:boolean"/>
+		<xs:attribute name="availableExternally" type="xs:boolean"/>
+		<xs:attribute name="downloadAvailable" type="xs:boolean"/>
+		<xs:attribute name="version" type="xs:string"/>
+	</xs:complexType>
+	<xs:complexType name="TextToSpeechVoiceParameterDescription">
+		<xs:sequence>
+			<xs:element name="representation" type="ns1:FixedMap"/>
+			<xs:element name="description" type="ns1:FixedMap"/>
+			<xs:element name="values" type="tns:TextToSpeechVoiceParameterValueDescription" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+		<xs:attribute name="name" type="xs:string"/>
+	</xs:complexType>
+	<xs:complexType name="TextToSpeechVoiceParameterValueDescription">
+		<xs:sequence>
+			<xs:element name="representation" type="ns1:FixedMap"/>
+			<xs:element name="description" type="ns1:FixedMap"/>
+		</xs:sequence>
+		<xs:attribute name="value" type="xs:string"/>
+	</xs:complexType>
+</xs:schema>

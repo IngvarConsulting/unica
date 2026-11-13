@@ -1,0 +1,43 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:ns1="http://v8.1c.ru/8.1/data/core" xmlns:tns="http://v8.1c.ru/8.3/goskey/core" xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="http://v8.1c.ru/8.3/goskey/core" attributeFormDefault="unqualified" elementFormDefault="qualified">
+	<xs:import namespace="http://v8.1c.ru/8.1/data/core"/>
+	<xs:simpleType name="GoskeyDocumentSigningStatus">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="success"/>
+			<xs:enumeration value="signingTimeLimitExceeded"/>
+			<xs:enumeration value="rejected"/>
+			<xs:enumeration value="waitForSigning"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="GoskeySigningType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="ANES"/>
+			<xs:enumeration value="AQES"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:complexType name="GoskeyDocumentUploadResultForSigning">
+		<xs:attribute name="externalScenarioId" type="xs:string"/>
+		<xs:attribute name="timeLimit" type="xs:dateTime"/>
+	</xs:complexType>
+	<xs:complexType name="GoskeySignedDocument">
+		<xs:sequence>
+			<xs:element name="data" type="xs:base64Binary"/>
+			<xs:element name="signature" type="xs:base64Binary"/>
+		</xs:sequence>
+		<xs:attribute name="name" type="xs:string"/>
+		<xs:attribute name="description" type="xs:string"/>
+	</xs:complexType>
+	<xs:complexType name="GoskeySignedDocumentReceiptRetrievalResult">
+		<xs:sequence>
+			<xs:element name="documents" type="tns:GoskeySignedDocument" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+		<xs:attribute name="status" type="tns:GoskeyDocumentSigningStatus"/>
+	</xs:complexType>
+	<xs:complexType name="GoskeySigningDocument">
+		<xs:sequence>
+			<xs:element name="data" type="xs:base64Binary"/>
+		</xs:sequence>
+		<xs:attribute name="name" type="xs:string"/>
+		<xs:attribute name="description" type="xs:string"/>
+	</xs:complexType>
+</xs:schema>

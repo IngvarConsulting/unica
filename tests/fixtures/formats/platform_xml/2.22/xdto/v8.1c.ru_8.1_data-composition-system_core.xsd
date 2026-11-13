@@ -1,0 +1,137 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:tns="http://v8.1c.ru/8.1/data-composition-system/core" xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="http://v8.1c.ru/8.1/data-composition-system/core" attributeFormDefault="unqualified" elementFormDefault="qualified">
+	<xs:simpleType name="DataCompositionFieldsTitleType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="Full"/>
+			<xs:enumeration value="Short"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="DataCompositionGroupType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Items"/>
+			<xs:enumeration value="Hierarchy"/>
+			<xs:enumeration value="HierarchyOnly"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="DataCompositionParameterUse">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Always"/>
+			<xs:enumeration value="Auto"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="DataCompositionPeriodAdditionType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="None"/>
+			<xs:enumeration value="Year"/>
+			<xs:enumeration value="HalfYear"/>
+			<xs:enumeration value="Quarter"/>
+			<xs:enumeration value="Month"/>
+			<xs:enumeration value="TenDays"/>
+			<xs:enumeration value="Week"/>
+			<xs:enumeration value="Day"/>
+			<xs:enumeration value="Hour"/>
+			<xs:enumeration value="Minute"/>
+			<xs:enumeration value="Second"/>
+			<xs:enumeration value="YearSinceBeginOfPeriod"/>
+			<xs:enumeration value="HalfYearSinceBeginOfPeriod"/>
+			<xs:enumeration value="QuarterSinceBeginOfPeriod"/>
+			<xs:enumeration value="MonthSinceBeginOfPeriod"/>
+			<xs:enumeration value="WeekSinceBeginOfPeriod"/>
+			<xs:enumeration value="DaySinceBeginOfPeriod"/>
+			<xs:enumeration value="HourSinceBeginOfPeriod"/>
+			<xs:enumeration value="MinuteSinceBeginOfPeriod"/>
+			<xs:enumeration value="YearSinceBeginOfPeriod445"/>
+			<xs:enumeration value="HalfYearSinceBeginOfPeriod445"/>
+			<xs:enumeration value="QuarterSinceBeginOfPeriod445"/>
+			<xs:enumeration value="MonthSinceBeginOfPeriod445"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="DataCompositionSortDirection">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Asc"/>
+			<xs:enumeration value="Desc"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="DataCompositionTextPlacementType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Block"/>
+			<xs:enumeration value="Cut"/>
+			<xs:enumeration value="Wrap"/>
+			<xs:enumeration value="Overflow"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="DataCompositionTotalPlacement">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Begin"/>
+			<xs:enumeration value="End"/>
+			<xs:enumeration value="BeginAndEnd"/>
+			<xs:enumeration value="None"/>
+			<xs:enumeration value="Auto"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="DesignTimeValue">
+		<xs:restriction base="xs:string"/>
+	</xs:simpleType>
+	<xs:simpleType name="Field">
+		<xs:restriction base="xs:string"/>
+	</xs:simpleType>
+	<xs:simpleType name="ID">
+		<xs:restriction base="xs:string"/>
+	</xs:simpleType>
+	<xs:simpleType name="Parameter">
+		<xs:restriction base="xs:string"/>
+	</xs:simpleType>
+	<xs:complexType name="Appearance">
+		<xs:complexContent>
+			<xs:extension base="tns:ParameterValues"/>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="ChoiceParameter">
+		<xs:sequence>
+			<xs:element name="choiceParameter" type="xs:string"/>
+			<xs:element name="value" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="ChoiceParameterLink">
+		<xs:sequence>
+			<xs:element name="choiceParameter" type="xs:string"/>
+			<xs:element name="value" type="tns:Field"/>
+			<xs:element name="mode" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="ChoiceParameterLinks">
+		<xs:sequence>
+			<xs:element name="item" type="tns:ChoiceParameterLink" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="ChoiceParameters">
+		<xs:sequence>
+			<xs:element name="item" type="tns:ChoiceParameter" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="InputParameters">
+		<xs:complexContent>
+			<xs:extension base="tns:ParameterValues"/>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="ParameterValue">
+		<xs:sequence>
+			<xs:element name="use" type="xs:boolean" minOccurs="0"/>
+			<xs:element name="parameter" type="tns:Parameter"/>
+			<xs:element name="value" nillable="true" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="item" type="tns:ParameterValue" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="ParameterValues" abstract="true">
+		<xs:sequence>
+			<xs:element name="item" type="tns:ParameterValue" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="TypeLink">
+		<xs:sequence>
+			<xs:element name="field" type="tns:Field" minOccurs="0"/>
+			<xs:element name="linkItem" type="xs:decimal" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+</xs:schema>

@@ -1,0 +1,392 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:ns1="http://v8.1c.ru/8.1/data/core" xmlns:tns="http://v8.1c.ru/8.3/data/ext" xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="http://v8.1c.ru/8.3/data/ext" attributeFormDefault="unqualified" elementFormDefault="qualified">
+	<xs:import namespace="http://v8.1c.ru/8.1/data/core"/>
+	<xs:simpleType name="AdministrationActionOnResourceConsumptionLimitExcess">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="None"/>
+			<xs:enumeration value="SetThreadLowPriority"/>
+			<xs:enumeration value="InterruptCurrentServerCall"/>
+			<xs:enumeration value="TerminateSession"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="AdministrationAssignmentRuleObjectVariant">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Connection"/>
+			<xs:enumeration value="Service"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="AdministrationAssignmentRuleType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Assign"/>
+			<xs:enumeration value="DontAssign"/>
+			<xs:enumeration value="Auto"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="AdministrationConnectionSecurityLevel">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Unsecure"/>
+			<xs:enumeration value="SecureOnConnect"/>
+			<xs:enumeration value="Secure"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="AdministrationInfoBaseDeletionMode">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="DeleteDatabase"/>
+			<xs:enumeration value="ClearDatabase"/>
+			<xs:enumeration value="DontPerformActionsWithDatabase"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="AdministrationProcessChoicePriority">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="ByPerformance"/>
+			<xs:enumeration value="ByMemory"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="AdministrationResourceConsumptionCounterFilterType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="AllSelected"/>
+			<xs:enumeration value="AllButSelected"/>
+			<xs:enumeration value="All"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="AdministrationResourceConsumptionCounterGroupType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Users"/>
+			<xs:enumeration value="DataSeparation"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="AdministrationServiceDataAccessSpeed">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="High"/>
+			<xs:enumeration value="Low"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="AdministrationServiceDataWriteServersPriority">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="FirstWithHighDataAccessSpeed"/>
+			<xs:enumeration value="FirstWithLowDataAccessSpeed"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="AdministrationServiceType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="LicenseService"/>
+			<xs:enumeration value="ClientNotificationService"/>
+			<xs:enumeration value="GetSessionsService"/>
+			<xs:enumeration value="ClientApplicationUpdateService"/>
+			<xs:enumeration value="SessionReuseService"/>
+			<xs:enumeration value="CounterService"/>
+			<xs:enumeration value="SessionDataService"/>
+			<xs:enumeration value="AIModelManagementService"/>
+			<xs:enumeration value="DebugService"/>
+			<xs:enumeration value="ClusterConfigService"/>
+			<xs:enumeration value="WebsocketService"/>
+			<xs:enumeration value="ClientTestingService"/>
+			<xs:enumeration value="ClusterStateService"/>
+			<xs:enumeration value="JobService"/>
+			<xs:enumeration value="DataAcceleratorService"/>
+			<xs:enumeration value="SpeechToTextService"/>
+			<xs:enumeration value="AuxiliaryService"/>
+			<xs:enumeration value="EventLogService"/>
+			<xs:enumeration value="BinaryDataStorageService"/>
+			<xs:enumeration value="FulltextSearchServiceV2"/>
+			<xs:enumeration value="OpenID2ProviderContextService"/>
+			<xs:enumeration value="DbCopiesService"/>
+			<xs:enumeration value="TimestampService"/>
+			<xs:enumeration value="IntegrationDataService"/>
+			<xs:enumeration value="ExternalSessionManagerService"/>
+			<xs:enumeration value="DbCopiesTimeService"/>
+			<xs:enumeration value="FulltextSearchService"/>
+			<xs:enumeration value="TransactionLockService"/>
+			<xs:enumeration value="FulltextChangesRegistrationServiceV2"/>
+			<xs:enumeration value="ExternalDataSourceXMLAService"/>
+			<xs:enumeration value="SettingsService"/>
+			<xs:enumeration value="ExternalDataSourceODBCService"/>
+			<xs:enumeration value="NumerationService"/>
+			<xs:enumeration value="DatabaseTableNumberingService"/>
+			<xs:enumeration value="DataEditLockService"/>
+			<xs:enumeration value="DataBaseConfigurationUpdateService"/>
+			<xs:enumeration value="RemoteConnectionToBinaryDataStorageService"/>
+			<xs:enumeration value="DocumentConvertService"/>
+			<xs:enumeration value="DatabaseConfigurationUpdateLockService"/>
+			<xs:enumeration value="QueueProcessingManagementService"/>
+			<xs:enumeration value="TextToSpeechService"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="AdministrationTest">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="NotUsed"/>
+			<xs:enumeration value="Used"/>
+			<xs:enumeration value="Backup"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="AdministrationWorkProcessStatus">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="NotUsed"/>
+			<xs:enumeration value="Used"/>
+			<xs:enumeration value="Reserve"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="DeliverableNotificationSendErrorType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="AuthenticationDataError"/>
+			<xs:enumeration value="NotificationBodyError"/>
+			<xs:enumeration value="NotificationsLimitExceeded"/>
+			<xs:enumeration value="DeliverableNotificationSubscriberIDError"/>
+			<xs:enumeration value="PushServiceProviderConnectionError"/>
+			<xs:enumeration value="PushServiceProviderError"/>
+			<xs:enumeration value="UnknownError"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="DeliverableNotificationSubscriberType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="APNS"/>
+			<xs:enumeration value="GCM"/>
+			<xs:enumeration value="WNS"/>
+			<xs:enumeration value="FCM"/>
+			<xs:enumeration value="HPK"/>
+			<xs:enumeration value="RMS"/>
+			<xs:enumeration value="AuroraCenter"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="InAppPurchaseService">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="GooglePlayInAppBilling"/>
+			<xs:enumeration value="AppleInAppPurchase"/>
+			<xs:enumeration value="WindowsInAppPurchase"/>
+			<xs:enumeration value="HuaweiInAppPurchase"/>
+			<xs:enumeration value="RuStoreInAppPurchase"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="LicenseMonitoringApplicationType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Designer"/>
+			<xs:enumeration value="RichClient"/>
+			<xs:enumeration value="ThinClient"/>
+			<xs:enumeration value="WebClient"/>
+			<xs:enumeration value="MobileClient"/>
+			<xs:enumeration value="AnalyticsClient"/>
+			<xs:enumeration value="COMConnector"/>
+			<xs:enumeration value="WebServerExtension"/>
+			<xs:enumeration value="StandAloneServer"/>
+			<xs:enumeration value="WorkingProcess"/>
+			<xs:enumeration value="ClusterManager"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="LicenseMonitoringLicenseRequestType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="LocalDesigner"/>
+			<xs:enumeration value="LocalApplication"/>
+			<xs:enumeration value="LocalExternalConnection32"/>
+			<xs:enumeration value="LocalExternalConnection64"/>
+			<xs:enumeration value="LocalServer32"/>
+			<xs:enumeration value="LocalServer64"/>
+			<xs:enumeration value="AnalyticsClient"/>
+			<xs:enumeration value="RemoteApplication"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="LicenseMonitoringLicenseType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Hardware"/>
+			<xs:enumeration value="Software"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="LicenseMonitoringLicensingSubjectType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Client"/>
+			<xs:enumeration value="Server32"/>
+			<xs:enumeration value="Server64"/>
+			<xs:enumeration value="Server5Users"/>
+			<xs:enumeration value="FullFunctionality"/>
+			<xs:enumeration value="UsersCountUnlimited"/>
+			<xs:enumeration value="UseAllServerResources"/>
+			<xs:enumeration value="LicenseUpgrade"/>
+			<xs:enumeration value="SelectedFunctionatityTesting"/>
+			<xs:enumeration value="AnalyticsClient"/>
+			<xs:enumeration value="ForDevelopers"/>
+			<xs:enumeration value="StatisticsCollectionEnabled"/>
+			<xs:enumeration value="RedundancySupport"/>
+			<xs:enumeration value="ByWorkplace"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="SoundAlert">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="None"/>
+			<xs:enumeration value="Default"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:complexType name="ClientNotification">
+		<xs:sequence>
+			<xs:element name="Value"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="DeliverableNotificationSubscriberID">
+		<xs:sequence>
+			<xs:element name="subscriberType" type="tns:DeliverableNotificationSubscriberType"/>
+			<xs:element name="deviceID" type="xs:string"/>
+			<xs:element name="applicationID" type="xs:string"/>
+			<xs:element name="databaseID" type="xs:string"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="DocumentScanningPage">
+		<xs:sequence>
+			<xs:element name="imageData" type="tns:MultimediaData"/>
+			<xs:element name="params" type="tns:DocumentScanningQualityParameters"/>
+		</xs:sequence>
+		<xs:attribute name="id" type="xs:double"/>
+		<xs:attribute name="docFound" type="xs:boolean"/>
+	</xs:complexType>
+	<xs:complexType name="DocumentScanningParameters">
+		<xs:attribute name="rect" type="xs:boolean"/>
+		<xs:attribute name="whiteBack" type="xs:boolean"/>
+		<xs:attribute name="checkingQuality" type="xs:anyURI"/>
+		<xs:attribute name="filters"/>
+		<xs:attribute name="scanSeries" type="xs:boolean"/>
+		<xs:attribute name="autoCapture" type="xs:boolean"/>
+		<xs:attribute name="orientMode" type="xs:anyURI"/>
+	</xs:complexType>
+	<xs:complexType name="DocumentScanningQualityParameters">
+		<xs:attribute name="generalizedQuality" type="xs:float"/>
+		<xs:attribute name="perspectiveDistortion" type="xs:float"/>
+		<xs:attribute name="whitePaperQuality" type="xs:float"/>
+		<xs:attribute name="textContrast" type="xs:float"/>
+		<xs:attribute name="borderQuality" type="xs:float"/>
+	</xs:complexType>
+	<xs:complexType name="GeographicCoordinates">
+		<xs:attribute name="latitude" type="xs:double" use="required"/>
+		<xs:attribute name="longitude" type="xs:double" use="required"/>
+		<xs:attribute name="altitude" type="xs:double" default="0"/>
+	</xs:complexType>
+	<xs:complexType name="InAppPurchaseReceipt">
+		<xs:sequence>
+			<xs:element name="service" type="tns:InAppPurchaseService" minOccurs="0"/>
+			<xs:element name="data" type="xs:base64Binary" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="LicenseAcquisitionComputerFingerprintParameters">
+		<xs:sequence>
+			<xs:element name="EquipmentList">
+				<xs:complexType>
+					<xs:sequence>
+						<xs:element name="Equipment" type="xs:string"/>
+					</xs:sequence>
+				</xs:complexType>
+			</xs:element>
+		</xs:sequence>
+		<xs:attribute name="ComputerName" type="xs:string"/>
+		<xs:attribute name="Processor" type="xs:string"/>
+		<xs:attribute name="RAM" type="xs:unsignedLong"/>
+		<xs:attribute name="OS" type="xs:string"/>
+		<xs:attribute name="Presentation" type="xs:string"/>
+	</xs:complexType>
+	<xs:complexType name="LicenseAcquisitionKeyFingerprintParameters">
+		<xs:attribute name="NetworkKey" type="xs:boolean"/>
+		<xs:attribute name="KeySeries" type="xs:string"/>
+		<xs:attribute name="MaxUsers" type="xs:nonNegativeInteger"/>
+		<xs:attribute name="KeyID" type="xs:nonNegativeInteger"/>
+		<xs:attribute name="Presentation" type="xs:string"/>
+		<xs:attribute name="KeyCompResource" type="xs:string"/>
+	</xs:complexType>
+	<xs:complexType name="LicenseManagerSearchParametersLicenseMonitoring">
+		<xs:sequence>
+			<xs:element name="Ports" nillable="true">
+				<xs:complexType>
+					<xs:sequence>
+						<xs:element name="Port" type="xs:unsignedShort" minOccurs="0" maxOccurs="unbounded"/>
+					</xs:sequence>
+				</xs:complexType>
+			</xs:element>
+			<xs:element name="Addresses" nillable="true">
+				<xs:complexType>
+					<xs:sequence>
+						<xs:element name="Address" type="xs:string" minOccurs="0" maxOccurs="unbounded"/>
+					</xs:sequence>
+				</xs:complexType>
+			</xs:element>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="LicenseMonitoringBusyLicense">
+		<xs:sequence>
+			<xs:element name="LicenseRecipients" type="tns:LicenseMonitoringLicenseRecipient" maxOccurs="unbounded"/>
+			<xs:element name="Product" type="tns:LicenseMonitoringInstalledProduct"/>
+		</xs:sequence>
+		<xs:attribute name="UUID" type="xs:string"/>
+		<xs:attribute name="LicenseRequestType" type="tns:LicenseMonitoringLicenseRequestType"/>
+		<xs:attribute name="ReceiptTime" type="xs:dateTime"/>
+		<xs:attribute name="ConfirmationTime" type="xs:dateTime"/>
+	</xs:complexType>
+	<xs:complexType name="LicenseMonitoringInstalledProduct">
+		<xs:sequence>
+			<xs:element name="ProductContent" type="tns:LicenseMonitoringLicensingSubjectType" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="LicenseManager" type="tns:LicenseMonitoringLicenseManager"/>
+			<xs:element name="RequestSrc" type="xs:string"/>
+		</xs:sequence>
+		<xs:attribute name="UUID" type="xs:string"/>
+		<xs:attribute name="LicenseType" type="tns:LicenseMonitoringLicenseType"/>
+		<xs:attribute name="RegistrationNumber" type="xs:string"/>
+		<xs:attribute name="LicensingSubjectCount" type="xs:nonNegativeInteger"/>
+		<xs:attribute name="UsePinCount" type="xs:nonNegativeInteger"/>
+		<xs:attribute name="LicenseFileName" type="xs:string"/>
+		<xs:attribute name="ProductionTime" type="xs:dateTime"/>
+		<xs:attribute name="RequestTime" type="xs:dateTime"/>
+		<xs:attribute name="ExpirationTime" type="xs:dateTime"/>
+		<xs:attribute name="Description" type="xs:string"/>
+		<xs:attribute name="LicenseDongleID" type="xs:string"/>
+		<xs:attribute name="Active" type="xs:boolean"/>
+		<xs:attribute name="ActivityChangeTime" type="xs:dateTime"/>
+		<xs:attribute name="FingerprintDifferences" type="xs:string"/>
+		<xs:attribute name="FingerprintExpirationTime" type="xs:dateTime"/>
+		<xs:attribute name="BusyLicensesCount" type="xs:nonNegativeInteger"/>
+		<xs:attribute name="MaxBusyLicensesCount" type="xs:nonNegativeInteger"/>
+		<xs:attribute name="PinCode" type="xs:string"/>
+	</xs:complexType>
+	<xs:complexType name="LicenseMonitoringLicenseManager">
+		<xs:sequence>
+			<xs:element name="FingerprintParameters">
+				<xs:complexType>
+					<xs:sequence>
+						<xs:element name="Comp" type="tns:LicenseAcquisitionComputerFingerprintParameters" minOccurs="0"/>
+						<xs:element name="Key" type="tns:LicenseAcquisitionKeyFingerprintParameters" minOccurs="0" maxOccurs="unbounded"/>
+					</xs:sequence>
+				</xs:complexType>
+			</xs:element>
+		</xs:sequence>
+		<xs:attribute name="UUID" type="xs:string"/>
+		<xs:attribute name="ApplicationVersion" type="xs:string"/>
+		<xs:attribute name="ProcessID" type="xs:string"/>
+		<xs:attribute name="Description" type="xs:string"/>
+		<xs:attribute name="ComputerName" type="xs:string"/>
+		<xs:attribute name="ComputerAddress" type="xs:string"/>
+		<xs:attribute name="Port" type="xs:unsignedShort"/>
+		<xs:attribute name="StartTime" type="xs:dateTime"/>
+	</xs:complexType>
+	<xs:complexType name="LicenseMonitoringLicenseRecipient">
+		<xs:attribute name="ApplicationType" type="tns:LicenseMonitoringApplicationType"/>
+		<xs:attribute name="ApplicationVersion" type="xs:string"/>
+		<xs:attribute name="FileName" type="xs:string"/>
+		<xs:attribute name="ProcessID" type="xs:string"/>
+		<xs:attribute name="ComputerName" type="xs:string"/>
+		<xs:attribute name="Description" type="xs:string"/>
+		<xs:attribute name="InfoBaseConnectionString" type="xs:string"/>
+		<xs:attribute name="InfoBaseURL" type="xs:string"/>
+		<xs:attribute name="ClientIPAddress" type="xs:string"/>
+		<xs:attribute name="DataZone" type="xs:string"/>
+		<xs:attribute name="UserName" type="xs:string"/>
+		<xs:attribute name="ReceiptTime" type="xs:dateTime"/>
+		<xs:attribute name="ConfirmationTime" type="xs:dateTime"/>
+	</xs:complexType>
+	<xs:complexType name="LocationData">
+		<xs:sequence>
+			<xs:element name="coordinates" type="tns:GeographicCoordinates"/>
+			<xs:element name="heading" type="xs:double"/>
+			<xs:element name="speed" type="xs:double"/>
+			<xs:element name="horizontalAccuracy" type="xs:double"/>
+			<xs:element name="verticalAccurcy" type="xs:double"/>
+		</xs:sequence>
+		<xs:attribute name="date" type="xs:dateTime"/>
+	</xs:complexType>
+	<xs:complexType name="MultimediaData">
+		<xs:attribute name="mime" type="xs:string"/>
+		<xs:attribute name="ext" type="xs:string"/>
+		<xs:attribute name="data" type="xs:base64Binary"/>
+	</xs:complexType>
+</xs:schema>
