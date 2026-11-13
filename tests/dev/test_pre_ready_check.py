@@ -559,7 +559,7 @@ class MainTests(unittest.TestCase):
             (Path(directory) / CHECK.TARGET_OWNER).write_text(str(Path(directory) / "other-copy"), encoding="utf-8")
             self.assertEqual(CHECK.main([]), 2)
         run_check.assert_not_called()
-        self.assertIn("собирал другую рабочую копию", err.getvalue())
+        self.assertIn("собирали другую рабочую копию", err.getvalue())
 
 
 if __name__ == "__main__":

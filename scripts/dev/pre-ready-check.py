@@ -626,8 +626,8 @@ def claim_target(target: Path, root: Path) -> None:
     others += [copy for copy in built_copies(target, root) if not any(same_path(copy, o) for o in others)]
     if others:
         raise Refusal(
-            f"каталог сборки {target} собирал другую рабочую копию: {', '.join(map(str, others))}. "
-            "Cargo может счесть её артефакты свежими и проверить её код вместо этого. "
+            f"в каталоге сборки {target} собирали другую рабочую копию: {', '.join(map(str, others))}. "
+            "Cargo может счесть её артефакты свежими, и проверка пройдёт по её коду, а не по вашему. "
             "Задайте этой копии свой CARGO_TARGET_DIR; если та копия закончена, удалите каталог сборки целиком."
         )
     target.mkdir(parents=True, exist_ok=True)
