@@ -2339,7 +2339,7 @@ pub(super) mod tests {
     /// правок ничего не грузит и честно называет состояние базы непроверенным,
     /// а `push` после правки грузит набор без отказа `untracked_base`. Записи
     /// поколения до этой загрузки нет, и ответ не выдаёт её за сверенную.
-    /// rule: INV.WIRE.INFOBASE-CREATE-ONLY-CREATES-AN-ABSENT-ONE
+    /// rule: INV.WIRE.INFOBASE-CREATE-RECREATES-BY-CHOICE
     #[test]
     fn captured_first_pushes_after_create_skip_the_assembled_set_and_load_an_edit() {
         let root = workspace();

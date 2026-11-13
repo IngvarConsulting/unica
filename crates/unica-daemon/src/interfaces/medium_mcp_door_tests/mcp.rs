@@ -3608,3 +3608,147 @@ async fn a_failed_retry_after_ending_sessions_restarts_the_server_by_the_persons
     client.shutdown().await;
     daemon.finish();
 }
+
+/// The pinned runner of a workspace whose file infobase already exists:
+/// `infobase create` refuses it, `--recreate` plans and recreates it. Every
+/// call is logged.
+const EXISTING_BASE_RUNNER: &str = r##"
+use std::{env, fs, io::Write};
+fn main() {
+    let args: Vec<String> = env::args().collect();
+    let cwd = env::current_dir().unwrap();
+    let mut log = fs::OpenOptions::new().create(true).append(true).open(cwd.join("probe-calls.log")).unwrap();
+    writeln!(log, "{}", args[1..].join(" ")).unwrap();
+    let recreate = args.iter().any(|arg| arg == "--recreate");
+    let preview = args.iter().any(|arg| arg == "--dry-run");
+    let answer = match (recreate, preview) {
+        (true, true) => "probe-recreate-preview.json",
+        (true, false) => "probe-recreate-apply.json",
+        _ => "probe-exists.json",
+    };
+    print!("{}", fs::read_to_string(cwd.join(answer)).unwrap());
+    if answer == "probe-exists.json" {
+        std::process::exit(2);
+    }
+}
+"##;
+
+/// A workspace whose file infobase exists: the runner of
+/// [`EXISTING_BASE_RUNNER`] and its answers, built on the captured envelopes of
+/// runner 0.15.
+fn existing_base_workspace(root: &std::path::Path) -> std::path::PathBuf {
+    crate::infrastructure::daemon::server::actor_capacity_tests::install_runner_probe(
+        root,
+        EXISTING_BASE_RUNNER,
+    );
+    let workspace = root.join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    std::fs::write(
+        workspace.join("v8project.yaml"),
+        "format: DESIGNER\ninfobase:\n  connection: 'File=build/ib'\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: main\n",
+    )
+    .unwrap();
+    let fixtures =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/v8_runner_015");
+    let captured = |name: &str| -> Value {
+        serde_json::from_slice(&std::fs::read(fixtures.join(name)).unwrap()).unwrap()
+    };
+    let recreating = |name: &str, status: &str| {
+        let mut envelope = captured(name);
+        envelope["data"]["steps"].as_array_mut().unwrap().insert(
+            0,
+            json!({"target": "infobase", "action": "recreate", "status": status,
+                   "message": "the base is this working copy's own", "duration_ms": 0}),
+        );
+        envelope.to_string()
+    };
+    std::fs::write(
+        workspace.join("probe-exists.json"),
+        captured("infobase-create-receipt-preview.json").to_string(),
+    )
+    .unwrap();
+    std::fs::write(
+        workspace.join("probe-recreate-preview.json"),
+        recreating("infobase-create-preview.json", "planned"),
+    )
+    .unwrap();
+    std::fs::write(
+        workspace.join("probe-recreate-apply.json"),
+        recreating("infobase-create-apply.json", "ok"),
+    )
+    .unwrap();
+    std::fs::canonicalize(workspace).unwrap()
+}
+
+/// `infobase.create` over an existing file infobase asks the person when its
+/// Task's result is read; «Пересоздать базу» repeats the same call, and the
+/// runner recreates the base.
+/// rule: INV.WIRE.INFOBASE-CREATE-RECREATES-BY-CHOICE
+/// rule: INV.MCP.HUMAN-CHOICE
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_existing_infobase_is_recreated_by_the_persons_choice() {
+    use crate::infrastructure::daemon::server::actor_capacity_tests::canonical_v13_service;
+
+    let root = tempfile::tempdir().unwrap();
+    let workspace = existing_base_workspace(root.path());
+    let daemon = LiveDaemon::start(canonical_v13_service());
+    let mut client = forms_client(&daemon, &workspace).await;
+
+    client
+        .send(json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "unica.run", "arguments": {
+                "op": "infobase.create", "args": {}, "dryRun": false
+            }}
+        }))
+        .await;
+    let submitted = client.receive().await;
+    let task_id = submitted["result"]["structuredContent"]["data"]["task"]["taskId"]
+        .as_str()
+        .unwrap_or_else(|| panic!("infobase.create continues as a Task: {submitted}"))
+        .to_owned();
+    let asked = read_task_result(&mut client, &task_id, 10).await;
+    assert_eq!(asked["method"], "elicitation/create", "{asked}");
+    let question = &asked["params"]["_meta"]["unica/question"];
+    assert_eq!(question["code"], "infobase.exists", "{asked}");
+    let message = asked["params"]["message"].as_str().unwrap();
+    assert!(
+        message.starts_with("База «origin» уже существует."),
+        "{message}"
+    );
+    assert!(
+        message.contains("Пересоздать базу: Данные и конфигурация базы пропадут"),
+        "{message}"
+    );
+    client
+        .send(json!({
+            "jsonrpc": "2.0", "id": asked["id"],
+            "result": {"action": "accept", "content": {"choice": "recreate"}}
+        }))
+        .await;
+    let answered = client.receive().await;
+    let done = match answered["result"]["structuredContent"]["data"]["task"]["taskId"].as_str() {
+        Some(follower) => read_task_result(&mut client, follower, 100).await,
+        None => answered,
+    };
+    assert_eq!(done["result"]["structuredContent"]["ok"], true, "{done}");
+    assert_eq!(
+        done["result"]["structuredContent"]["data"]["state"], "recreated",
+        "{done}"
+    );
+    let calls = runner_calls(&workspace);
+    assert_eq!(calls.len(), 4, "{calls:?}");
+    assert!(calls[0].ends_with("infobase create --dry-run"), "{calls:?}");
+    assert!(
+        calls[1].ends_with("infobase create --recreate --dry-run"),
+        "{calls:?}"
+    );
+    assert!(
+        calls[2].ends_with("infobase create --recreate"),
+        "{calls:?}"
+    );
+    assert!(calls[3].ends_with("infobase create --dry-run"), "{calls:?}");
+
+    client.shutdown().await;
+    daemon.finish();
+}

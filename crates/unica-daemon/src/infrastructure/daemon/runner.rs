@@ -1289,7 +1289,7 @@ source-set:
     /// Вид базы `origin` читается так же, как его читает раннер: секции обоих
     /// слоёв сливаются (местный побеждает), `standalone` — автономный сервер,
     /// строка с `File=` — файловая база, иначе кластер.
-    /// rule: INV.WIRE.INFOBASE-CREATE-ONLY-CREATES-AN-ABSENT-ONE
+    /// rule: INV.WIRE.INFOBASE-CREATE-RECREATES-BY-CHOICE
     #[test]
     fn the_origin_kind_follows_the_merged_infobase_section() {
         for (base, local, kind) in [
