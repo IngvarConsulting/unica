@@ -598,3 +598,87 @@ fn cfe_patch_method_8_3_27_grammar_matrix_has_exactly_51_roles() {
     }
     assert_eq!(accepted, 51, "8.3.27 cfe.patch_method grammar matrix");
 }
+
+/// The local names of the properties of `node`.
+fn member_property_names(node: roxmltree::Node<'_, '_>) -> Vec<String> {
+    unica_xml_format::read::child_element(node, "Properties")
+        .unwrap()
+        .children()
+        .filter(roxmltree::Node::is_element)
+        .map(|property| property.tag_name().name().to_string())
+        .collect()
+}
+
+/// The member of `document` named `name`.
+fn named_member<'a>(document: &'a Document<'a>, tag: &str, name: &str) -> roxmltree::Node<'a, 'a> {
+    document
+        .descendants()
+        .find(|node| {
+            node.has_tag_name((CFE_PATCH_MD_NAMESPACE, tag))
+                && !member_property_names(*node).is_empty()
+                && unica_xml_format::read::child_element(*node, "Properties")
+                    .and_then(|props| unica_xml_format::read::child_direct_text(props, "Name"))
+                    .as_deref()
+                    == Some(name)
+        })
+        .unwrap()
+}
+
+/// Borrowed attributes and tabular sections of 2.22 name what they do when
+/// their configuration member is missing, where 8.5.4 exports it; 2.20 does
+/// not have it.
+/// rule: INV.SOURCE.WRITABLE-PROFILE
+#[test]
+fn borrowed_members_of_format_2_22_have_the_platform_properties() {
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let read = |path: std::path::PathBuf| {
+        std::fs::read_to_string(path)
+            .unwrap()
+            .trim_start_matches('\u{feff}')
+            .to_string()
+    };
+    let parent_text =
+        read(manifest.join(
+            "../../tests/fixtures/formats/platform_xml/2.22/all_kinds/src/Catalogs/Валюты.xml",
+        ));
+    let parent = Document::parse(&parent_text).unwrap();
+    let platform_text = read(manifest.join(
+        "../../tests/fixtures/formats/platform_xml/2.22/cfe_borrow/extension-catalog-members.xml",
+    ));
+    let platform = Document::parse(&platform_text).unwrap();
+    let attribute = cfe_borrow_source_attribute(named_member(&parent, "Attribute", "Наценка"));
+    let section =
+        cfe_borrow_source_tabular_section(named_member(&parent, "TabularSection", "Представления"));
+    let wrap = |member: String| {
+        format!(
+            "<Catalog xmlns=\"{CFE_PATCH_MD_NAMESPACE}\" xmlns:v8=\"http://v8.1c.ru/8.1/data/core\" xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">{member}</Catalog>"
+        )
+    };
+    for (format, expected) in [("2.22", true), ("2.20", false)] {
+        let written = wrap(format!(
+            "{}{}",
+            cfe_borrow_adopted_attribute_xml(&attribute, "", format, fixture_uuid_v4),
+            cfe_borrow_adopted_tabular_section_xml(&section, "", format, fixture_uuid_v4)
+        ));
+        let written = Document::parse(&written).unwrap();
+        for (tag, name) in [
+            ("Attribute", "Наценка"),
+            ("TabularSection", "Представления"),
+            ("Attribute", "КодЯзыка"),
+        ] {
+            let names = member_property_names(named_member(&written, tag, name));
+            if expected {
+                assert_eq!(
+                    names,
+                    member_property_names(named_member(&platform, tag, name)),
+                    "{format} {name}"
+                );
+            } else {
+                assert!(
+                    !names.contains(&"ActionOnConfigurationObjectMissing".to_string()),
+                    "{format} {name}"
+                );
+            }
+        }
+    }
+}

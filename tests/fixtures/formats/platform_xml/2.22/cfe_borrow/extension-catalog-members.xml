@@ -1,0 +1,95 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:app="http://v8.1c.ru/8.2/managed-application/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:cmi="http://v8.1c.ru/8.2/managed-application/cmi" xmlns:ent="http://v8.1c.ru/8.1/data/enterprise" xmlns:lf="http://v8.1c.ru/8.2/managed-application/logform" xmlns:pal="http://v8.1c.ru/8.1/data/ui/colors/palette" xmlns:style="http://v8.1c.ru/8.1/data/ui/style" xmlns:sys="http://v8.1c.ru/8.1/data/ui/fonts/system" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:v8ui="http://v8.1c.ru/8.1/data/ui" xmlns:web="http://v8.1c.ru/8.1/data/ui/colors/web" xmlns:win="http://v8.1c.ru/8.1/data/ui/colors/windows" xmlns:xen="http://v8.1c.ru/8.3/xcf/enums" xmlns:xpr="http://v8.1c.ru/8.3/xcf/predef" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.22">
+	<Catalog uuid="70734cb1-cdbb-8ef0-b3dc-09f99f4d9bbc">
+		<InternalInfo>
+			<xr:GeneratedType name="CatalogObject.Валюты" category="Object">
+				<xr:TypeId>51de391b-0e29-8b9b-b5b3-9866f2d385c1</xr:TypeId>
+				<xr:ValueId>4ffba6ab-30f8-8c98-931c-ac49257c4026</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="CatalogRef.Валюты" category="Ref">
+				<xr:TypeId>37caa4fa-83a2-81bc-bb46-3546e63ac7f4</xr:TypeId>
+				<xr:ValueId>dbbc52c0-c58a-8cc5-8639-4444c3c7f20d</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="CatalogSelection.Валюты" category="Selection">
+				<xr:TypeId>e907b0ee-79da-8618-98b7-ddc861ed93db</xr:TypeId>
+				<xr:ValueId>22446aa1-18a1-87e3-be4b-f382e35fdd77</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="CatalogList.Валюты" category="List">
+				<xr:TypeId>cd97daf1-ce01-84f9-be89-3326e5a8436b</xr:TypeId>
+				<xr:ValueId>832e5600-7be7-86e9-9d54-998298489c6e</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="CatalogManager.Валюты" category="Manager">
+				<xr:TypeId>d439deef-5b56-8e44-a863-8c803301d750</xr:TypeId>
+				<xr:ValueId>2d441853-523d-884c-a2f0-f5f44c97d2ef</xr:ValueId>
+			</xr:GeneratedType>
+		</InternalInfo>
+		<Properties>
+			<ObjectBelonging>Adopted</ObjectBelonging>
+			<Name>Валюты</Name>
+			<Comment/>
+			<ExtendedConfigurationObject>1d6b8425-360c-4ab1-9bab-cc9a3b590bb2</ExtendedConfigurationObject>
+			<ActionOnConfigurationObjectMissing>Auto</ActionOnConfigurationObjectMissing>
+			<Hierarchical>false</Hierarchical>
+			<CodeLength>3</CodeLength>
+		</Properties>
+		<ChildObjects>
+			<Attribute uuid="ec2da8f6-2633-41d3-96e5-069b59fec410">
+				<InternalInfo/>
+				<Properties>
+					<ObjectBelonging>Adopted</ObjectBelonging>
+					<Name>Наценка</Name>
+					<Comment/>
+					<ExtendedConfigurationObject>87429f11-bf95-4013-bf13-da904570f88d</ExtendedConfigurationObject>
+					<ActionOnConfigurationObjectMissing>Auto</ActionOnConfigurationObjectMissing>
+					<Type>
+						<v8:Type>xs:decimal</v8:Type>
+						<v8:NumberQualifiers>
+							<v8:Digits>10</v8:Digits>
+							<v8:FractionDigits>2</v8:FractionDigits>
+							<v8:AllowedSign>Any</v8:AllowedSign>
+						</v8:NumberQualifiers>
+					</Type>
+				</Properties>
+			</Attribute>
+			<TabularSection uuid="18c73972-1014-4db3-a4cb-0aec7b6726ca">
+				<InternalInfo>
+					<xr:GeneratedType name="CatalogTabularSection.Валюты.Представления" category="TabularSection">
+						<xr:TypeId>94e30cf5-1c91-45b1-a601-770483eab995</xr:TypeId>
+						<xr:ValueId>0b53d2c7-d765-468c-9972-ee4e16f58684</xr:ValueId>
+					</xr:GeneratedType>
+					<xr:GeneratedType name="CatalogTabularSectionRow.Валюты.Представления" category="TabularSectionRow">
+						<xr:TypeId>f6ba54be-d96e-4c14-8d4f-edf5bda3e639</xr:TypeId>
+						<xr:ValueId>6a2ba517-e866-4c06-9689-1dce295a26c7</xr:ValueId>
+					</xr:GeneratedType>
+				</InternalInfo>
+				<Properties>
+					<ObjectBelonging>Adopted</ObjectBelonging>
+					<Name>Представления</Name>
+					<Comment/>
+					<ExtendedConfigurationObject>f3ae1a2c-e0ca-461b-ba5a-76a6423c6325</ExtendedConfigurationObject>
+					<ActionOnConfigurationObjectMissing>Auto</ActionOnConfigurationObjectMissing>
+				</Properties>
+				<ChildObjects>
+					<Attribute uuid="3dc1cdfe-3c24-4953-9165-a77531820f55">
+						<InternalInfo/>
+						<Properties>
+							<ObjectBelonging>Adopted</ObjectBelonging>
+							<Name>КодЯзыка</Name>
+							<Comment/>
+							<ExtendedConfigurationObject>b233d29c-3979-4ef6-b7f0-89ca88f65e82</ExtendedConfigurationObject>
+							<ActionOnConfigurationObjectMissing>Auto</ActionOnConfigurationObjectMissing>
+							<Type>
+								<v8:Type>xs:string</v8:Type>
+								<v8:StringQualifiers>
+									<v8:Length>10</v8:Length>
+									<v8:AllowedLength>Variable</v8:AllowedLength>
+								</v8:StringQualifiers>
+							</Type>
+						</Properties>
+					</Attribute>
+				</ChildObjects>
+			</TabularSection>
+			<Form>ФормаЭлемента</Form>
+		</ChildObjects>
+	</Catalog>
+</MetaDataObject>

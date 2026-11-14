@@ -3224,6 +3224,15 @@ pub fn form_add_content_xml_with_variant(
     if matches!(purpose, "List" | "Choice") {
         let list_name = names.select("Список", "List");
         let main_table = format!("{object_type}.{object_name}");
+        // A new dynamic list carries the settings the Designer writes for its
+        // own new list form, through the same emitter as a compiled one.
+        let mut settings = Vec::new();
+        emit_form_dynamic_list_attribute_settings(
+            &mut settings,
+            &Map::from_iter([("mainTable".to_string(), Value::String(main_table))]),
+            "\t\t\t",
+        );
+        let settings: String = settings.iter().map(|line| format!("{line}\r\n")).collect();
         return Ok(format!(
             concat!(
                 "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n",
@@ -3235,9 +3244,7 @@ pub fn form_add_content_xml_with_variant(
                 "\t\t\t\t<v8:Type>cfg:DynamicList</v8:Type>\r\n",
                 "\t\t\t</Type>\r\n",
                 "\t\t\t<MainAttribute>true</MainAttribute>\r\n",
-                "\t\t\t<Settings xsi:type=\"DynamicList\">\r\n",
-                "\t\t\t\t<MainTable>{main_table}</MainTable>\r\n",
-                "\t\t\t</Settings>\r\n",
+                "{settings}",
                 "\t\t</Attribute>\r\n",
                 "\t</Attributes>\r\n",
                 "</Form>"
@@ -3245,7 +3252,7 @@ pub fn form_add_content_xml_with_variant(
             ns = ns,
             command_bar = command_bar,
             format_version = unica_xml_format::text::escape_xml(format_version),
-            main_table = unica_xml_format::text::escape_xml(&main_table),
+            settings = settings,
             list_name = list_name,
         ));
     }
@@ -9385,10 +9392,11 @@ pub fn emit_form_dynamic_list_attribute_settings(
     } else {
         "false"
     };
+    // The Designer reads a new dynamic list dynamically: `true` unless set.
     let dynamic_data_read = if settings
         .get("dynamicDataRead")
         .and_then(Value::as_bool)
-        .unwrap_or(false)
+        .unwrap_or(true)
     {
         "true"
     } else {

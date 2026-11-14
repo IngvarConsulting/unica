@@ -1153,6 +1153,47 @@ mod predefined_code_type_tests {
 }
 
 #[cfg(test)]
+mod borrowed_2_22_tests {
+    use super::*;
+
+    /// A borrowed object of 8.5.4 names a closed action on a missing
+    /// configuration object; another value is malformed, not dropped.
+    /// rule: INV.SOURCE.INCOMPLETE-METADATA-READ
+    #[test]
+    fn a_borrowed_object_of_format_2_22_refuses_an_unknown_action() {
+        let text = include_str!(
+            "../../../tests/fixtures/formats/platform_xml/2.22/cfe_borrow/extension-document.xml"
+        )
+        .trim_start_matches('\u{feff}');
+        let errors = |text: &str| {
+            let document = roxmltree::Document::parse(text).unwrap();
+            let properties = document
+                .descendants()
+                .find(|node| node.has_tag_name("Properties"))
+                .unwrap();
+            crate::info_projection::meta_info_profile_errors(
+                MetadataKind::Document,
+                Some(properties),
+                None,
+            )
+            .into_iter()
+            .map(|error| error.field)
+            .collect::<Vec<_>>()
+        };
+        assert!(errors(text).is_empty());
+        let damaged = text.replacen(
+            "<ActionOnConfigurationObjectMissing>Auto<",
+            "<ActionOnConfigurationObjectMissing>Sometimes<",
+            1,
+        );
+        assert_eq!(
+            errors(&damaged),
+            vec!["properties.ActionOnConfigurationObjectMissing".to_string()]
+        );
+    }
+}
+
+#[cfg(test)]
 mod dimension_flag_tests {
     use super::*;
 
