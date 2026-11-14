@@ -1150,7 +1150,12 @@ fn reexport_step_result(command: &str, output: ProcessOutput) -> Result<Value, D
             .as_str()
             .map(redactor)
             .unwrap_or_else(|| "v8-runner failed without a typed message".to_string());
-        return Err(runner_rejection(Some(REEXPORT.to_string()), code, message));
+        return Err(runner_rejection(
+            Some(REEXPORT.to_string()),
+            code,
+            envelope["error"]["layer"].as_str(),
+            message,
+        ));
     }
     Ok(envelope)
 }
@@ -1619,7 +1624,12 @@ fn validate_runner_result(envelope: Value, status_success: bool) -> Result<Value
             .map(redactor)
             .unwrap_or_else(|| "v8-runner failed without a typed message".to_string());
         return Err(runner_envelope_refusal(
-            runner_rejection(Some(OPERATION.to_string()), code, message),
+            runner_rejection(
+                Some(OPERATION.to_string()),
+                code,
+                envelope["error"]["layer"].as_str(),
+                message,
+            ),
             &envelope,
         ));
     }

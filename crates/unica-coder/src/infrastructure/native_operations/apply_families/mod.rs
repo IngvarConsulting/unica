@@ -1,6 +1,7 @@
 use crate::domain::apply::SourceSetWriteSupport;
 
 mod borrow;
+mod compatibility_warnings;
 pub(crate) mod dcs_mxl;
 pub(crate) mod form_resource;
 #[cfg(any(test, feature = "test-support"))]
@@ -2305,6 +2306,9 @@ fn plan_apply(
         warning.append_if_changed(&staged.planned_changes(), &mut effects);
     }
     for warning in legacy_inline {
+        effects.push_warning(warning);
+    }
+    for warning in compatibility_warnings::warnings(&staged, binding, admission)? {
         effects.push_warning(warning);
     }
     let detail_error = |error: serde_json::Error| {

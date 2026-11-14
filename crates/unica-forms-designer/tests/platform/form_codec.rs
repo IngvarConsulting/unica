@@ -605,28 +605,30 @@ fn form_edit_namespace_repair_is_noop_without_emitted_prefixes() {
 }
 
 #[test]
-fn form_element_dispatcher_ignores_nested_table_and_page_properties() {
+fn form_element_dispatcher_keeps_the_primary_kind_over_nested_properties() {
     let definition = json!({
-        "elements": [
-            {
-                "table": "Rows",
-                "commandBar": {"autofill": false},
-                "columns": []
-            },
-            {
-                "pages": "Tabs",
-                "children": [
-                    {"page": "Main", "group": "horizontal"}
-                ]
-            }
-        ]
+        "elements": [{
+            "pages": "Tabs",
+            "children": [
+                {"page": "Main", "group": "horizontal"}
+            ]
+        }]
     });
 
     let (xml, _) = form_compile_xml(&definition, "2.20").unwrap();
 
-    assert!(xml.contains("<Table name=\"Rows\""), "{xml}");
     assert!(xml.contains("<Page name=\"Main\""), "{xml}");
     assert!(xml.contains("<Group>Horizontal</Group>"), "{xml}");
+
+    let error = form_compile_xml(
+        &json!({ "elements": [{ "table": "Rows", "commandBar": {"autofill": false}, "columns": [] }] }),
+        "2.20",
+    )
+    .unwrap_err();
+    assert_eq!(
+        error,
+        "key `commandBar` is not written for form element kind `table` (element `Rows`)"
+    );
 }
 
 #[test]

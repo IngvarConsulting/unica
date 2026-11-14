@@ -5503,7 +5503,6 @@ fn edit_form_emits_and_validates_new_table_and_column_events() {
                 "elements": [{
                     "table": "Rows",
                     "path": "Rows",
-                    "commandBar": {"autofill": false},
                     "on": [{"event": "Selection", "handler": "RowsSelection"}],
                     "columns": [{
                         "labelField": "Description",
