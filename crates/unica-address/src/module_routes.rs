@@ -180,6 +180,10 @@ pub fn has_direct_module_route(owner_kind: NodeKind, role: ModuleRole) -> bool {
                 | NodeKind::DocumentJournal
                 | NodeKind::FilterCriterion
                 | NodeKind::SettingsStorage
+                // Очередь держит только модуль менеджера: выгрузка 8.5.4
+                // кладёт его в `Queues/<Имя>/Ext/ManagerModule.bsl`,
+                // модуля объекта у неё нет — её сообщение запись, не ссылка.
+                | NodeKind::Queue
         ),
         ModuleRole::RecordSet => matches!(
             owner_kind,
@@ -348,6 +352,29 @@ mod tests {
     use super::module_route;
     use crate::address::QualifiedAddress;
     use serde::Deserialize;
+
+    /// Очередь держит один прямой модуль — менеджера. Модуля объекта у неё
+    /// нет: её сообщение запись, а не ссылка, и выгрузка 8.5.4 файла объекта
+    /// не кладёт. Грамматика адреса линию не знает: существует ли сам объект,
+    /// отвечает источник.
+    /// rule: INV.SOURCE.PLATFORM-CAPABILITY-EXISTENCE
+    #[test]
+    fn the_queue_owns_a_manager_module_and_no_object_module() {
+        let manager = QualifiedAddress::parse("main:Queue.Проба.Module.Manager").unwrap();
+        let route = module_route(&manager).expect("the queue owns a manager module");
+        assert_eq!(route.role().as_str(), "Manager");
+        assert_eq!(route.owner_kind().as_str(), "Queue");
+        assert_eq!(route.kind(), super::ModuleRouteKind::Direct);
+
+        for absent in [
+            "main:Queue.Проба.Module.Object",
+            "main:Queue.Проба.Module.RecordSet",
+            "main:Queue.Проба.Module.ValueManager",
+        ] {
+            let at = QualifiedAddress::parse(absent).unwrap();
+            assert_eq!(module_route(&at), None, "{absent}");
+        }
+    }
 
     #[derive(Deserialize)]
     #[serde(rename_all = "camelCase")]
