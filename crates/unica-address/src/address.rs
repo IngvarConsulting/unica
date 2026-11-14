@@ -64,6 +64,7 @@ pub enum NodeKind {
     ExternalReport,
     WebSocketClient,
     PaletteColor,
+    Queue,
     Attribute,
     AddressingAttribute,
     StandardAttribute,
@@ -184,6 +185,7 @@ const LEGACY_METADATA_KINDS: &[NodeKind] = &[
     NodeKind::ExternalDataProcessor,
     NodeKind::ExternalReport,
     NodeKind::PaletteColor,
+    NodeKind::Queue,
 ];
 
 #[derive(Clone, Copy)]
@@ -412,6 +414,7 @@ impl NodeKind {
             Self::ExternalReport => "ExternalReport",
             Self::WebSocketClient => "WebSocketClient",
             Self::PaletteColor => "PaletteColor",
+            Self::Queue => "Queue",
             Self::Attribute => "Attribute",
             Self::AddressingAttribute => "AddressingAttribute",
             Self::StandardAttribute => "StandardAttribute",

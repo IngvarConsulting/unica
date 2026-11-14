@@ -1401,6 +1401,35 @@ fn set_plain_property(text: &str, tag: &str, value: &str) -> Option<String> {
     })
 }
 
+/// Rewrites the named parts of the composite property `tag` of the first
+/// `<Properties>`, each in its own spelling; a part the file lacks gives
+/// `None`. The values are closed platform names and need no escaping.
+fn set_property_parts(text: &str, tag: &str, parts: &[(&str, String)]) -> Option<String> {
+    let document = roxmltree::Document::parse(text).ok()?;
+    let property = document
+        .descendants()
+        .find(|node| node.is_element() && node.tag_name().name() == "Properties")?
+        .children()
+        .find(|node| node.is_element() && node.tag_name().name() == tag)?;
+    let mut edits = Vec::new();
+    for (part, value) in parts {
+        let node = property
+            .children()
+            .find(|node| node.is_element() && node.tag_name().name() == *part)?;
+        let open = &text[node.range().start + 1..];
+        let name = &open[..open
+            .find(|ch: char| ch.is_whitespace() || ch == '>' || ch == '/')
+            .unwrap_or(open.len())];
+        edits.push((node.range(), format!("<{name}>{value}</{name}>")));
+    }
+    edits.sort_by_key(|(range, _)| std::cmp::Reverse(range.start));
+    let mut updated = text.to_string();
+    for (range, replacement) in edits {
+        updated.replace_range(range, &replacement);
+    }
+    Some(updated)
+}
+
 /// Rewrites the property `tag` of the first `<Properties>` of the document,
 /// which is the descriptor object's own; `replace` builds the new element
 /// from the source text and the property node.
@@ -1534,6 +1563,65 @@ fn stage_descriptor_properties(
             let text = crate::language_code::replace(base, name, code).map_err(invalid)?;
             (NodeKind::Language, text)
         }
+        DescriptorPropertyChanges::FormDescriptor(target) => {
+            let not_registered = |what: &str| {
+                ApplyPlanError::new(
+                    ApplyPlanErrorKind::NotFound,
+                    format!("{what} is not registered"),
+                )
+                .at_path(at_path.clone())
+            };
+            let read = |staged: &mut ApplyProposal<'_>, path: &Path, what: &str| {
+                staged
+                    .read(path)
+                    .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?
+                    .ok_or_else(|| {
+                        ApplyPlanError::new(
+                            ApplyPlanErrorKind::NotFound,
+                            format!("{what} was not found"),
+                        )
+                        .at_path(at_path.clone())
+                    })
+            };
+            if let Some((kind, owner)) = &target.registered {
+                let root_path = Path::new("Configuration.xml");
+                let root = read(staged, root_path, "configuration descriptor")?;
+                let root = unica_source_designer::owner::prove_already_read_source_set_owner(
+                    root_path,
+                    &root,
+                    source_kind,
+                )
+                .map_err(|error| {
+                    ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, error.message)
+                        .at_path(at_path.clone())
+                })?;
+                if !root.registers(kind, owner) {
+                    return Err(not_registered("metadata owner"));
+                }
+            }
+            if let Some(owner_relative) = &target.owner_relative {
+                let owner = read(staged, owner_relative, "form owner descriptor")?;
+                if !crate::form_descriptor::owner_registers_form(&owner, name) {
+                    return Err(not_registered("form"));
+                }
+            }
+            let kind = if target.values.common {
+                NodeKind::CommonForm
+            } else {
+                NodeKind::Form
+            };
+            let text = crate::form_descriptor::set_form_descriptor_properties(
+                &source,
+                kind,
+                name,
+                &target.values.changes,
+            )
+            .map_err(|message| {
+                ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)
+                    .at_path(at_path.clone())
+            })?;
+            (kind, text)
+        }
         DescriptorPropertyChanges::CommentOnly { kind, comment } => {
             let root_path = std::path::Path::new("Configuration.xml");
             let root = staged
@@ -1650,6 +1738,48 @@ fn stage_descriptor_properties(
                 text
             };
             (NodeKind::WsReference, text)
+        }
+        DescriptorPropertyChanges::Queue(values) => {
+            let invalid = |message: String| {
+                ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)
+                    .at_path(at_path.clone())
+            };
+            let root_path = std::path::Path::new("Configuration.xml");
+            let root = staged
+                .read(root_path)
+                .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?
+                .ok_or_else(|| invalid("configuration descriptor was not found".to_string()))?;
+            let root = unica_source_designer::owner::prove_already_read_source_set_owner(
+                root_path,
+                &root,
+                source_kind,
+            )
+            .map_err(|error| invalid(error.message))?;
+            let owner = unica_source_designer::owner::prove_already_read_metadata_owner(
+                relative, &preimage,
+            )
+            .map_err(|error| invalid(error.message))?;
+            if source_kind != SourceSetKind::Configuration
+                || !root.registers("Queue", name)
+                || owner.artifact_kind() != "Queue"
+                || owner.artifact_name() != Some(name)
+            {
+                return Err(invalid(
+                    "Queue must match an existing registered configuration descriptor".to_string(),
+                ));
+            }
+            let mut text = source.clone();
+            for (key, value) in values.descriptor_values() {
+                text = crate::queue_write::patch_property(&text, name, key, &value)
+                    .map_err(invalid)?;
+            }
+            let text = if let Some(comment) = &values.comment {
+                crate::descriptor_comment::set_comment(&text, NodeKind::Queue, name, comment)
+                    .map_err(invalid)?
+            } else {
+                text
+            };
+            (NodeKind::Queue, text)
         }
         DescriptorPropertyChanges::PaletteColor(values) => {
             let invalid = |message: String| {
@@ -1926,6 +2056,12 @@ fn stage_descriptor_properties(
                 let value = match value {
                     DescriptorPropertyValue::Text(value) => value.clone(),
                     DescriptorPropertyValue::Boolean(value) => value.to_string(),
+                    DescriptorPropertyValue::Parts(parts) => {
+                        text = set_property_parts(&text, tag, parts).ok_or_else(|| missing(tag))?;
+                        continue;
+                    }
+                    // The configuration root profile has no list property.
+                    DescriptorPropertyValue::List(_) => return Err(missing(tag)),
                 };
                 text = if property.localized() {
                     set_ml_property(
@@ -1947,8 +2083,10 @@ fn stage_descriptor_properties(
     let postimage = if matches!(
         changes,
         DescriptorPropertyChanges::CommentOnly { .. }
+            | DescriptorPropertyChanges::FormDescriptor(_)
             | DescriptorPropertyChanges::StyleItem(_)
             | DescriptorPropertyChanges::PaletteColor(_)
+            | DescriptorPropertyChanges::Queue(_)
             | DescriptorPropertyChanges::WSReference(_)
     ) || matches!(changes, DescriptorPropertyChanges::FunctionalOption(values) if values.comment.is_some())
     {
@@ -1977,10 +2115,10 @@ fn stage_descriptor_properties(
                 _ if source_kind == SourceSetKind::Extension => DomainEventKind::CfeChanged,
                 _ => DomainEventKind::ConfigXmlChanged,
             },
-            if kind == NodeKind::Configuration {
-                name.to_string()
-            } else {
-                format!("{}.{name}", kind.as_str())
+            match changes {
+                DescriptorPropertyChanges::FormDescriptor(target) => target.form.clone(),
+                _ if kind == NodeKind::Configuration => name.to_string(),
+                _ => format!("{}.{name}", kind.as_str()),
             },
         ),
         op_index,

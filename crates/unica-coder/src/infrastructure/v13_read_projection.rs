@@ -775,6 +775,9 @@ const CONFIGURATOR_ROOT_ORDER: &[NodeKind] = &[
     NodeKind::FilterCriterion,
     NodeKind::EventSubscription,
     NodeKind::ScheduledJob,
+    // Очереди: дерево Конфигуратора 8.5.4, между регламентными
+    // заданиями и ботами.
+    NodeKind::Queue,
     NodeKind::Bot,
     NodeKind::FunctionalOption,
     NodeKind::FunctionalOptionsParameter,
@@ -853,7 +856,7 @@ fn root_branches(
                 is_root_branch_kind(&branch)
                     && crate::infrastructure::logical_tree::route_logical_address(
                         &branch,
-                        unica_bsl::profile::PlatformProfile::v8_3_27(),
+                        unica_bsl::profile::PlatformProfile::for_line_or_base(line),
                     )
                     .is_ok()
             });

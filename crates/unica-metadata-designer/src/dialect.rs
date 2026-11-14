@@ -28,6 +28,19 @@ pub(crate) struct MetadataDialect {
     /// `Properties` of a new object of a kind, each right after the named
     /// property of 2.20.
     pub(crate) added_object_properties: fn(&str) -> &'static [(&'static str, &'static str)],
+    /// The properties, with the values the platform writes, that follow
+    /// `ExtendedConfigurationObject` of a borrowed object or member; a
+    /// borrowed form has more of them.
+    pub(crate) adopted_properties: fn(AdoptedNode) -> &'static [&'static str],
+}
+
+/// What a borrowed descriptor belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AdoptedNode {
+    /// A borrowed object or a borrowed member of one.
+    Object,
+    /// The descriptor of a borrowed form.
+    Form,
 }
 
 impl MetadataDialect {
@@ -46,6 +59,7 @@ static V2_20: MetadataDialect = MetadataDialect {
     line_compatibility_modes: &[],
     added_child_properties: v2_20::added_child_properties,
     added_object_properties: v2_20::added_object_properties,
+    adopted_properties: v2_20::adopted_properties,
 };
 
 /// The dialects the codec has, one per export format version.
@@ -71,6 +85,12 @@ pub(crate) fn for_version(version: Option<&str>) -> &'static MetadataDialect {
         .find(|dialect| matches!(key.parts(), [version] if version == dialect.version))
         .copied()
         .unwrap_or_else(writable)
+}
+
+/// What a borrowed descriptor of export `format` writes after its
+/// `ExtendedConfigurationObject`, each line an element with its value.
+pub(crate) fn adopted_properties(format: &str, node: AdoptedNode) -> &'static [&'static str] {
+    (for_version(Some(format)).adopted_properties)(node)
 }
 
 #[cfg(test)]

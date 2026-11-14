@@ -22,10 +22,8 @@ pub fn cf_edit_child_object_cmp(
     left: &(String, String),
     right: &(String, String),
 ) -> std::cmp::Ordering {
-    let left_idx =
-        crate::registration::cf_validate_child_object_type_index(&left.0).unwrap_or(usize::MAX);
-    let right_idx =
-        crate::registration::cf_validate_child_object_type_index(&right.0).unwrap_or(usize::MAX);
+    let left_idx = crate::layout::root_child_objects_order(&left.0).unwrap_or(usize::MAX);
+    let right_idx = crate::layout::root_child_objects_order(&right.0).unwrap_or(usize::MAX);
     left_idx.cmp(&right_idx).then_with(|| left.1.cmp(&right.1))
 }
 

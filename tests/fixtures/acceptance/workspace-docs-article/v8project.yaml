@@ -1,0 +1,4 @@
+tools:
+  platform:
+    version: "8.3.27"
+    path: "platform/8.3.27.2074"

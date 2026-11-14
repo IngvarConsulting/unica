@@ -6,16 +6,90 @@ use crate::operations::FormOperation;
 use serde_json::{json, Map, Value};
 use unica_metadata::event::FormCallType;
 use unica_operation_contract::{object, text, OperationContract};
+use unica_source_contract::format_identity::{
+    member_property_exists, member_property_since, PlatformLine,
+};
 
 const FORM_HELP: &str = "skills/form-edit/SKILL.md";
 
+/// Тип JSON, в котором писатель элемента (`emit_form_*`) читает ключ.
+/// Контракт `item.add` уточняет его схемой ключа, компиляция формы
+/// отвергает значение другого типа по имени ключа.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ElementKeyType {
+    /// Любое значение: различитель вида или ключ, который писатель проверяет
+    /// сам с более точным отказом (`width`, `height`).
+    Any,
+    Str,
+    Bool,
+    /// Целое число или строка с ним.
+    Integer,
+    /// Строка или словарь языков.
+    Text,
+    /// Строка или объект (ссылка на стиль или его части).
+    StrOrObject,
+    Array,
+    Object,
+}
+
+impl ElementKeyType {
+    pub fn accepts(self, value: &Value) -> bool {
+        match self {
+            Self::Any => true,
+            Self::Str => value.is_string(),
+            Self::Bool => value.is_boolean(),
+            Self::Integer => {
+                value.as_i64().is_some()
+                    || value
+                        .as_str()
+                        .is_some_and(|s| s.trim().parse::<i64>().is_ok())
+            }
+            Self::Text | Self::StrOrObject => value.is_string() || value.is_object(),
+            Self::Array => value.is_array(),
+            Self::Object => value.is_object(),
+        }
+    }
+
+    pub const fn describe(self) -> &'static str {
+        match self {
+            Self::Any => "any value",
+            Self::Str => "a string",
+            Self::Bool => "a boolean",
+            Self::Integer => "a number",
+            Self::Text => "a string or a language map",
+            Self::StrOrObject => "a string or an object",
+            Self::Array => "an array",
+            Self::Object => "an object",
+        }
+    }
+}
+
+/// Ключи писателя элемента с типом, в котором он их читает.
+pub type ElementKeys = &'static [(&'static str, ElementKeyType)];
+
 /// Вид элемента, который создаёт `item.add`: имя вида в `type`, его
-/// синонимы и ключи, которые генератор элемента (`form::emit_form_*`)
-/// записывает в XML этого вида.
+/// синонимы, различитель вида в описании формы и ключи, которые генератор
+/// элемента (`form::emit_form_*`) записывает в XML этого вида. Один список
+/// служит и контракту `item.add`, и компиляции формы.
 pub struct FormElementKind {
     pub kind: &'static str,
     pub aliases: &'static [&'static str],
-    pub keys: &'static [&'static str],
+    /// Различитель вида в описании формы (`input`, `table`, …).
+    pub description_key: &'static str,
+    pub keys: ElementKeys,
+}
+
+impl FormElementKind {
+    pub fn key_names(&self) -> impl Iterator<Item = &'static str> {
+        self.keys.iter().map(|(key, _)| *key)
+    }
+}
+
+/// Вид элемента по его различителю в описании формы.
+pub fn form_element_kind_by_description_key(key: &str) -> Option<&'static FormElementKind> {
+    FORM_ELEMENT_KINDS
+        .iter()
+        .find(|kind| kind.description_key == key)
 }
 
 /// Флаги, которые пишет `emit_form_common_flags` у каждого вида.
@@ -30,10 +104,15 @@ const COMMON_FLAGS: [&str; 6] = [
 ];
 
 macro_rules! with_common_flags {
-    ($($key:literal),* $(,)?) => {
+    ($(($key:literal, $type:ident)),* $(,)?) => {
         &[
-            "visible", "hidden", "userVisible", "enabled", "disabled", "readOnly",
-            $($key),*
+            ("visible", ElementKeyType::Bool),
+            ("hidden", ElementKeyType::Bool),
+            ("userVisible", ElementKeyType::Bool),
+            ("enabled", ElementKeyType::Bool),
+            ("disabled", ElementKeyType::Bool),
+            ("readOnly", ElementKeyType::Bool),
+            $(($key, ElementKeyType::$type)),*
         ]
     };
 }
@@ -55,171 +134,195 @@ pub const FORM_ELEMENT_KINDS: &[FormElementKind] = &[
     FormElementKind {
         kind: "InputField",
         aliases: &["InputField", "Input", "Field"],
+        description_key: "input",
         keys: with_common_flags![
-            "path",
-            "title",
-            "tooltip",
-            "tooltipRepresentation",
-            "titleLocation",
-            "multiLine",
-            "passwordMode",
-            "choiceButton",
-            "clearButton",
-            "spinButton",
-            "dropListButton",
-            "markIncomplete",
-            "skipOnInput",
-            "showInHeader",
-            "headerHorizontalAlign",
-            "autoMaxWidth",
-            "autoMaxHeight",
-            "footerDataPath",
-            "width",
-            "height",
-            "multipleValueDataPath",
-            "multipleValuePictureDataPath",
-            "multipleValuePresentDataPath",
-            "horizontalStretch",
-            "verticalStretch",
-            "horizontalAlign",
-            "inputHint",
+            ("path", Str),
+            ("title", Str),
+            ("tooltip", Text),
+            ("tooltipRepresentation", Str),
+            ("titleLocation", Str),
+            ("multiLine", Bool),
+            ("passwordMode", Bool),
+            ("choiceButton", Bool),
+            ("clearButton", Bool),
+            ("spinButton", Bool),
+            ("dropListButton", Bool),
+            ("markIncomplete", Bool),
+            ("skipOnInput", Bool),
+            ("showInHeader", Bool),
+            ("headerHorizontalAlign", Str),
+            ("autoMaxWidth", Bool),
+            ("autoMaxHeight", Bool),
+            ("footerDataPath", Str),
+            ("width", Any),
+            ("height", Any),
+            ("multipleValueDataPath", Str),
+            ("multipleValuePictureDataPath", Str),
+            ("multipleValuePresentDataPath", Str),
+            ("horizontalStretch", Bool),
+            ("verticalStretch", Bool),
+            ("horizontalAlign", Str),
+            ("inputHint", Str),
         ],
     },
     FormElementKind {
         kind: "CheckBox",
         aliases: &["CheckBox", "CheckBoxField"],
+        description_key: "check",
         keys: with_common_flags![
-            "path",
-            "title",
-            "tooltip",
-            "tooltipRepresentation",
-            "titleLocation",
-            "checkBoxType",
-            "footerDataPath",
+            ("path", Str),
+            ("title", Str),
+            ("tooltip", Text),
+            ("tooltipRepresentation", Str),
+            ("titleLocation", Str),
+            ("checkBoxType", Str),
+            ("footerDataPath", Str),
         ],
     },
     FormElementKind {
         kind: "LabelField",
         aliases: &["LabelField"],
-        keys: with_common_flags!["path", "tooltip", "tooltipRepresentation", "footerDataPath"],
+        description_key: "labelField",
+        keys: with_common_flags![
+            ("path", Str),
+            ("tooltip", Text),
+            ("tooltipRepresentation", Str),
+            ("footerDataPath", Str),
+        ],
     },
     FormElementKind {
         kind: "HTMLDocumentField",
         aliases: &["HTMLDocumentField"],
+        description_key: "html",
         keys: with_common_flags![
-            "path",
-            "title",
-            "tooltip",
-            "tooltipRepresentation",
-            "skipOnInput",
-            "titleLocation",
-            "width",
-            "height",
-            "autoMaxWidth",
-            "autoMaxHeight",
+            ("path", Str),
+            ("title", Str),
+            ("tooltip", Text),
+            ("tooltipRepresentation", Str),
+            ("skipOnInput", Bool),
+            ("titleLocation", Str),
+            ("width", Any),
+            ("height", Any),
+            ("autoMaxWidth", Bool),
+            ("autoMaxHeight", Bool),
         ],
     },
     FormElementKind {
         kind: "TextDocumentField",
         aliases: &["TextDocumentField"],
+        description_key: "textDoc",
         keys: with_common_flags![
-            "path",
-            "title",
-            "tooltip",
-            "tooltipRepresentation",
-            "titleLocation",
-            "width",
-            "height",
-            "autoMaxWidth",
-            "autoMaxHeight",
+            ("path", Str),
+            ("title", Str),
+            ("tooltip", Text),
+            ("tooltipRepresentation", Str),
+            ("titleLocation", Str),
+            ("width", Any),
+            ("height", Any),
+            ("autoMaxWidth", Bool),
+            ("autoMaxHeight", Bool),
         ],
     },
     FormElementKind {
         kind: "Label",
         aliases: &["Label", "LabelDecoration"],
+        description_key: "label",
         keys: with_common_flags![
-            "title",
-            "formatted",
-            "hyperlink",
-            "width",
-            "height",
-            "autoMaxWidth",
-            "autoMaxHeight",
-            "tooltipRepresentation",
+            ("title", Text),
+            ("formatted", Bool),
+            ("hyperlink", Bool),
+            ("width", Any),
+            ("height", Any),
+            ("autoMaxWidth", Bool),
+            ("autoMaxHeight", Bool),
+            ("tooltipRepresentation", Str),
         ],
     },
     FormElementKind {
         kind: "Button",
         aliases: &["Button"],
+        description_key: "button",
         keys: with_common_flags![
-            "representation",
-            "command",
-            "commandName",
-            "stdCommand",
-            "title",
-            "tooltip",
-            "tooltipRepresentation",
-            "defaultButton",
-            "picture",
-            "locationInCommandBar",
-            "backColor",
-            "font",
+            ("representation", Str),
+            ("command", Str),
+            ("commandName", Str),
+            ("stdCommand", Str),
+            ("title", Str),
+            ("tooltip", Text),
+            ("tooltipRepresentation", Str),
+            ("defaultButton", Bool),
+            ("picture", Str),
+            ("locationInCommandBar", Str),
+            ("backColor", Str),
+            ("font", StrOrObject),
         ],
     },
     FormElementKind {
         kind: "Group",
         aliases: &["Group", "UsualGroup"],
+        description_key: "group",
         keys: with_common_flags![
-            "title",
-            "orientation",
-            "behavior",
-            "collapsed",
-            "representation",
-            "titleDataPath",
-            "currentRowUse",
-            "showTitle",
-            "showLeftMargin",
+            ("title", Str),
+            ("behavior", Str),
+            ("collapsed", Bool),
+            ("representation", Str),
+            ("titleDataPath", Str),
+            ("currentRowUse", Str),
+            ("showTitle", Bool),
+            ("showLeftMargin", Bool),
         ],
     },
     FormElementKind {
         kind: "Pages",
         aliases: &["Pages"],
-        keys: with_common_flags!["title", "pagesRepresentation", "currentRowUse"],
+        description_key: "pages",
+        keys: with_common_flags![
+            ("title", Str),
+            ("pagesRepresentation", Str),
+            ("currentRowUse", Str),
+        ],
     },
     FormElementKind {
         kind: "Page",
         aliases: &["Page"],
-        keys: with_common_flags!["title", "orientation", "showTitle", "titleDataPath"],
+        description_key: "page",
+        keys: with_common_flags![("title", Str), ("showTitle", Bool), ("titleDataPath", Str)],
     },
     FormElementKind {
         kind: "Table",
         aliases: &["Table"],
+        description_key: "table",
         keys: with_common_flags![
-            "representation",
-            "autoInsertNewRow",
-            "path",
-            "commandBarLocation",
-            "initialTreeView",
-            "enableDrag",
-            "rowPictureDataPath",
-            "tableAutofill",
-            "_dynList",
-            "autoRefresh",
-            "autoRefreshPeriod",
-            "choiceFoldersAndItems",
-            "restoreCurrentRow",
-            "showRoot",
-            "allowRootChoice",
-            "updateOnDataChange",
-            "allowGettingCurrentRowURL",
+            ("representation", Str),
+            ("autoInsertNewRow", Bool),
+            ("path", Str),
+            ("commandBarLocation", Str),
+            ("initialTreeView", Str),
+            ("enableDrag", Bool),
+            ("rowPictureDataPath", Str),
+            ("tableAutofill", Bool),
+            ("_dynList", Bool),
+            ("autoRefresh", Bool),
+            ("autoRefreshPeriod", Integer),
+            ("choiceFoldersAndItems", Str),
+            ("restoreCurrentRow", Bool),
+            ("showRoot", Bool),
+            ("allowRootChoice", Bool),
+            ("updateOnDataChange", Str),
+            ("allowGettingCurrentRowURL", Bool),
         ],
     },
     FormElementKind {
         kind: "CommandBar",
         aliases: &["CommandBar"],
-        keys: with_common_flags!["commandSource", "autofill"],
+        description_key: "cmdBar",
+        keys: with_common_flags![("commandSource", Str), ("autofill", Bool)],
     },
 ];
+
+/// Виды, у которых `item.add` принимает `orientation`: описание формы пишет
+/// её значением различителя `group`, поэтому в ключи писателя она не входит.
+pub const FORM_ORIENTATION_KINDS: &[&str] = &["Group", "Page"];
 
 /// Ключи вложенного дерева, companion-содержимого и событий, которые
 /// `item.add` больше не принимает (Р2, #1447): элемент добавляется один,
@@ -400,11 +503,14 @@ fn element_item_schema(kinds: &[&str]) -> Value {
                         "description":"Sibling in the same container the element follows."}),
                 ),
             ];
-            fields.extend(
-                kind.keys
-                    .iter()
-                    .map(|key| (*key, element_key_schema(kind.kind, key))),
-            );
+            for key in kind.key_names() {
+                fields.push((key, element_key_schema(kind.kind, key)));
+                // Ориентация группы и страницы стоит за заголовком, как
+                // в справке вида; описание формы пишет её различителем.
+                if key == "title" && FORM_ORIENTATION_KINDS.contains(&kind.kind) {
+                    fields.push(("orientation", element_key_schema(kind.kind, "orientation")));
+                }
+            }
             // Без `type` элемент — поле ввода: другие виды требуют его явно,
             // и стандартный валидатор схемы выбирает тот же вариант.
             let required: &[&str] = match kind.kind {
@@ -465,7 +571,7 @@ fn attribute_item_schema() -> Value {
 
 /// Every form slot `form.set` writes: the contract key and its Platform XML
 /// element.
-pub const FORM_SLOTS: [(&str, &str); 21] = [
+pub const FORM_SLOTS: [(&str, &str); 40] = [
     ("defaultObjectForm", "DefaultObjectForm"),
     ("defaultFolderForm", "DefaultFolderForm"),
     ("defaultListForm", "DefaultListForm"),
@@ -487,6 +593,58 @@ pub const FORM_SLOTS: [(&str, &str); 21] = [
     ("auxiliarySettingsForm", "AuxiliarySettingsForm"),
     ("auxiliarySaveForm", "AuxiliarySaveForm"),
     ("auxiliaryLoadForm", "AuxiliaryLoadForm"),
+    // From 8.5.1 (format 2.21): the slot of a report kind a later line adds.
+    ("auxiliaryVariantForm", "AuxiliaryVariantForm"),
+    // The configuration root: its default forms, and from 8.5.1 its
+    // auxiliary ones, name common forms of the set.
+    ("defaultReportForm", "DefaultReportForm"),
+    ("defaultReportVariantForm", "DefaultReportVariantForm"),
+    ("defaultReportSettingsForm", "DefaultReportSettingsForm"),
+    (
+        "defaultDynamicListSettingsForm",
+        "DefaultDynamicListSettingsForm",
+    ),
+    ("defaultSearchForm", "DefaultSearchForm"),
+    (
+        "defaultDataHistoryChangeHistoryForm",
+        "DefaultDataHistoryChangeHistoryForm",
+    ),
+    (
+        "defaultDataHistoryVersionDataForm",
+        "DefaultDataHistoryVersionDataForm",
+    ),
+    (
+        "defaultDataHistoryVersionDifferencesForm",
+        "DefaultDataHistoryVersionDifferencesForm",
+    ),
+    (
+        "defaultCollaborationSystemUsersChoiceForm",
+        "DefaultCollaborationSystemUsersChoiceForm",
+    ),
+    ("defaultConstantsForm", "DefaultConstantsForm"),
+    ("auxiliaryReportForm", "AuxiliaryReportForm"),
+    ("auxiliaryReportVariantForm", "AuxiliaryReportVariantForm"),
+    ("auxiliaryReportSettingsForm", "AuxiliaryReportSettingsForm"),
+    (
+        "auxiliaryDynamicListSettingsForm",
+        "AuxiliaryDynamicListSettingsForm",
+    ),
+    (
+        "auxiliaryDataHistoryChangeHistoryForm",
+        "AuxiliaryDataHistoryChangeHistoryForm",
+    ),
+    (
+        "auxiliaryDataHistoryVersionDataForm",
+        "AuxiliaryDataHistoryVersionDataForm",
+    ),
+    (
+        "auxiliaryDataHistoryVersionDifferencesForm",
+        "AuxiliaryDataHistoryVersionDifferencesForm",
+    ),
+    (
+        "auxiliaryCollaborationSystemUsersChoiceForm",
+        "AuxiliaryCollaborationSystemUsersChoiceForm",
+    ),
 ];
 
 /// The form slots an owner kind has in the 8.3.27 export, by contract key;
@@ -552,25 +710,76 @@ pub fn form_slots_of(kind: &str) -> Option<&'static [&'static str]> {
             "auxiliarySaveForm",
             "auxiliaryLoadForm",
         ],
+        "Configuration" => &[
+            "defaultReportForm",
+            "defaultReportVariantForm",
+            "defaultReportSettingsForm",
+            "defaultDynamicListSettingsForm",
+            "defaultSearchForm",
+            "defaultDataHistoryChangeHistoryForm",
+            "defaultDataHistoryVersionDataForm",
+            "defaultDataHistoryVersionDifferencesForm",
+            "defaultCollaborationSystemUsersChoiceForm",
+            "defaultConstantsForm",
+        ],
         _ => return None,
     })
 }
 
+/// The form slots an owner kind has in a set of platform `line`: those of
+/// 8.3.27 and those a later line adds up to `line`
+/// (INV.SOURCE.PROFILE-CAPABILITIES).
+pub fn form_slots_in(kind: &str, line: Option<PlatformLine>) -> Option<Vec<&'static str>> {
+    let mut slots = form_slots_of(kind)?.to_vec();
+    slots.extend(
+        FORM_SLOTS
+            .iter()
+            .filter(|(_, property)| {
+                member_property_since(kind, property).is_some()
+                    && member_property_exists(line, kind, property)
+            })
+            .map(|(key, _)| *key),
+    );
+    Some(slots)
+}
+
+/// The form slots of `kind` a later line than `line` adds, with the line
+/// each exists from.
+pub fn later_form_slots(
+    kind: &str,
+    line: Option<PlatformLine>,
+) -> Vec<(&'static str, &'static str, PlatformLine)> {
+    FORM_SLOTS
+        .iter()
+        .filter_map(|(key, property)| {
+            let since = member_property_since(kind, property)?;
+            (!member_property_exists(line, kind, property)).then_some((*key, *property, since))
+        })
+        .collect()
+}
+
 /// The `form.set` contract for the owner kind, or for any owner.
 pub fn form_set(kind: Option<&str>) -> OperationContract {
+    form_set_in(kind, None)
+}
+
+/// The `form.set` contract for the owner kind in a set of platform `line`:
+/// it offers the slots of that line and names those a later line adds.
+pub fn form_set_in(kind: Option<&str>, line: Option<PlatformLine>) -> OperationContract {
     let at = || ("at", text(true));
     let slot = json!({"type":"string",
         "description":"A form name of this owner; an empty string clears the slot, as an export with no such form writes it."});
     let keys = kind
-        .and_then(form_slots_of)
-        .map(<[&str]>::to_vec)
+        .and_then(|kind| form_slots_in(kind, line))
         .unwrap_or_else(|| FORM_SLOTS.iter().map(|(key, _)| *key).collect());
     let mut values = object(
         &keys
             .iter()
             .map(|key| {
                 let mut field=slot.clone();
-                if kind.is_some_and(|kind| crate::default_forms::common_form_slot(kind, FORM_SLOTS.iter().find(|(name,_)|name == key).map_or("",|(_,property)|*property))) {
+                if kind == Some("Configuration") {
+                    field["description"]=json!("The name or logical address of a common form of this source set (`Name`, `CommonForm.Name`); an empty string clears the slot.");
+                } else if kind.is_some_and(|kind| crate::default_forms::common_form_slot(kind, FORM_SLOTS.iter().find(|(name,_)|name == key).map_or("",|(_,property)|*property))) {
                     field["description"]=json!("A form name or logical address of this owner, or the logical address of a compatible Managed CommonForm in the same source set. An empty string clears the slot. Report CommonForm requires a generic ReportObject main attribute and matching Main/Settings/Variant purpose (an absent ReportFormType means Main); Constant requires ConstantsSet.");
                 }
                 (*key,field)
@@ -579,12 +788,25 @@ pub fn form_set(kind: Option<&str>) -> OperationContract {
         &[],
     );
     values["minProperties"] = json!(1);
+    if let Some(kind) = kind {
+        let later = later_form_slots(kind, line);
+        if !later.is_empty() {
+            let format = unica_metadata::descriptor_operations::line_format;
+            values["x-unica-later-lines"] = json!({
+                "line": line.map(|line| line.to_string()),
+                "format": line.map(format),
+                "items": later.iter().map(|(_, property, since)| json!({
+                    "property": property, "since": since.to_string(), "format": format(*since),
+                })).collect::<Vec<_>>(),
+            });
+        }
+    }
     let mut example = serde_json::Map::new();
     example.insert(keys[0].to_string(), json!("Sample"));
     OperationContract {
         schema: object(&[at(), ("values", values)], &["values"]),
-        target: "The form owner: <source-set>:<Kind>.<Name>.",
-        effect: "Point the owner's default and auxiliary form slots at the named forms, or clear a slot with an empty string. Unlisted slots stay. Only the slots of the owner's kind are accepted. Report defaultForm/defaultSettingsForm/defaultVariantForm and Constant defaultForm also accept the logical address of a compatible Managed CommonForm in the same source set.",
+        target: "The form owner: <source-set>:<Kind>.<Name>, or the configuration root <source-set>:Configuration.",
+        effect: "Point the owner's default and auxiliary form slots at the named forms, or clear a slot with an empty string. Unlisted slots stay. Only the slots of the owner's kind are accepted. Report defaultForm/defaultSettingsForm/defaultVariantForm and Constant defaultForm also accept the logical address of a compatible Managed CommonForm in the same source set. The slots of the configuration root name common forms of the set.",
         notes: "Properties of a form itself (title, size, behaviour) are written by props.set at the form address.",
         example_args: json!({"values": example}),
         help: FORM_HELP,
@@ -808,6 +1030,67 @@ pub fn form_move() -> OperationContract {
 
 #[cfg(test)]
 mod tests {
+    /// rule: INV.SOURCE.PROFILE-CAPABILITIES
+    #[test]
+    fn a_report_is_offered_its_auxiliary_variant_form_in_the_lines_that_have_it() {
+        use unica_source_contract::format_identity::PlatformLine;
+        let values = |line| {
+            super::form_set_in(Some("Report"), Some(line)).schema["properties"]["values"].clone()
+        };
+        let old = values(PlatformLine::new(8, 3, 27));
+        assert!(old["properties"].get("auxiliaryVariantForm").is_none());
+        assert_eq!(
+            old["x-unica-later-lines"]["items"],
+            serde_json::json!([{"property":"AuxiliaryVariantForm","since":"8.5.1","format":"2.21"}])
+        );
+        for line in [PlatformLine::new(8, 5, 1), PlatformLine::new(8, 5, 4)] {
+            let new = values(line);
+            assert!(
+                new["properties"].get("auxiliaryVariantForm").is_some(),
+                "{line}"
+            );
+            assert!(new.get("x-unica-later-lines").is_none(), "{line}");
+        }
+        // Another kind has no such slot in any line.
+        let catalog = super::form_set_in(Some("Catalog"), Some(PlatformLine::new(8, 5, 4)));
+        assert!(catalog.schema["properties"]["values"]["properties"]
+            .get("auxiliaryVariantForm")
+            .is_none());
+    }
+
+    /// `can` of the configuration root offers its ten default forms, and the
+    /// eight auxiliary ones in the lines that have them.
+    /// rule: INV.SOURCE.PROFILE-CAPABILITIES
+    #[test]
+    fn a_configuration_root_is_offered_its_form_slots_by_line() {
+        use unica_source_contract::format_identity::PlatformLine;
+        let values = |line| {
+            super::form_set_in(Some("Configuration"), Some(line)).schema["properties"]["values"]
+                .clone()
+        };
+        let old = values(PlatformLine::new(8, 3, 27));
+        assert_eq!(old["properties"].as_object().unwrap().len(), 10);
+        assert_eq!(
+            old["x-unica-later-lines"]["items"]
+                .as_array()
+                .unwrap()
+                .len(),
+            8
+        );
+        assert!(old["properties"]["defaultSearchForm"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("common form"));
+        let new = values(PlatformLine::new(8, 5, 1));
+        assert_eq!(new["properties"].as_object().unwrap().len(), 18);
+        assert!(new.get("x-unica-later-lines").is_none());
+        // An object owner has none of the root slots.
+        let catalog = super::form_set_in(Some("Catalog"), Some(PlatformLine::new(8, 5, 4)));
+        assert!(catalog.schema["properties"]["values"]["properties"]
+            .get("defaultSearchForm")
+            .is_none());
+    }
+
     use super::*;
 
     #[test]
@@ -815,7 +1098,7 @@ mod tests {
         for kind in FORM_ELEMENT_KINDS {
             for flag in COMMON_FLAGS {
                 assert_eq!(
-                    kind.keys.iter().filter(|key| **key == flag).count(),
+                    kind.key_names().filter(|key| *key == flag).count(),
                     1,
                     "{} {flag}",
                     kind.kind

@@ -93,14 +93,16 @@ class CorpusError(RuntimeError):
 
 # Kinds a later line adds. The 2.20 seed cannot hold them: 8.3.27 does not load
 # them. The all_kinds case of a line that has the kind adds one object to the
-# seed copy before packaging; the platform writes its file and its place among
-# the ChildObjects of the configuration. Tag: (first line, directory, name, XML).
+# seed copy before packaging; the platform writes its files and its place among
+# the ChildObjects of the configuration. Tag: (first line, object name, files by
+# path relative to the source root). A module is among the files where the kind
+# has one: an empty module is not exported, so it would not reach the corpus.
 LINE_KIND_ADDITIONS: Dict[str, tuple] = {
     "PaletteColor": (
         "8.5.1",
-        "PaletteColors",
         "Probe",
-        """<?xml version="1.0" encoding="UTF-8"?>
+        {
+            "PaletteColors/Probe.xml": """<?xml version="1.0" encoding="UTF-8"?>
 <MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" version="2.20">
 \t<PaletteColor uuid="5c1f3b0e-6d2a-4e8b-9a71-2f4c8d1e7b30">
 \t\t<Properties>
@@ -117,6 +119,84 @@ LINE_KIND_ADDITIONS: Dict[str, tuple] = {
 \t</PaletteColor>
 </MetaDataObject>
 """,
+        },
+    ),
+    "Queue": (
+        "8.5.4",
+        "Probe",
+        {
+            "Queues/Probe.xml": """<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" version="2.20">
+\t<Queue uuid="7b6c2a14-9f03-4d58-8e21-c4a5d7f10b62">
+\t\t<InternalInfo>
+\t\t\t<xr:GeneratedType name="QueueMessage.Probe" category="Record">
+\t\t\t\t<xr:TypeId>0b5c8d42-7e31-4a96-8f05-61d3b2c7e48a</xr:TypeId>
+\t\t\t\t<xr:ValueId>9c73f1a6-4d28-4b50-ae17-5f2b6d0c93e4</xr:ValueId>
+\t\t\t</xr:GeneratedType>
+\t\t\t<xr:GeneratedType name="QueueManager.Probe" category="Manager">
+\t\t\t\t<xr:TypeId>4e82a0c9-16bd-4f73-9c48-2d7e5a1b60f3</xr:TypeId>
+\t\t\t\t<xr:ValueId>d16b9e35-8c70-4a21-b4df-73e0a5c82196</xr:ValueId>
+\t\t\t</xr:GeneratedType>
+\t\t</InternalInfo>
+\t\t<Properties>
+\t\t\t<Name>Probe</Name>
+\t\t\t<Synonym>
+\t\t\t\t<v8:item>
+\t\t\t\t\t<v8:lang>ru</v8:lang>
+\t\t\t\t\t<v8:content>Проба</v8:content>
+\t\t\t\t</v8:item>
+\t\t\t</Synonym>
+\t\t\t<Comment>all_kinds</Comment>
+\t\t\t<Transactioned>true</Transactioned>
+\t\t\t<ProcessingPortionSize>1000</ProcessingPortionSize>
+\t\t\t<AutoProcessing>true</AutoProcessing>
+\t\t</Properties>
+\t\t<ChildObjects>
+\t\t\t<Dimension uuid="1d4f8a70-25b6-4c39-9f82-6ae0c3b51d47">
+\t\t\t\t<Properties>
+\t\t\t\t\t<Name>Измерение</Name>
+\t\t\t\t\t<Synonym>
+\t\t\t\t\t\t<v8:item>
+\t\t\t\t\t\t\t<v8:lang>ru</v8:lang>
+\t\t\t\t\t\t\t<v8:content>Измерение</v8:content>
+\t\t\t\t\t\t</v8:item>
+\t\t\t\t\t</Synonym>
+\t\t\t\t\t<Comment/>
+\t\t\t\t\t<Type>
+\t\t\t\t\t\t<v8:Type>xs:string</v8:Type>
+\t\t\t\t\t\t<v8:StringQualifiers>
+\t\t\t\t\t\t\t<v8:Length>10</v8:Length>
+\t\t\t\t\t\t\t<v8:AllowedLength>Variable</v8:AllowedLength>
+\t\t\t\t\t\t</v8:StringQualifiers>
+\t\t\t\t\t</Type>
+\t\t\t\t</Properties>
+\t\t\t</Dimension>
+\t\t\t<Attribute uuid="3a9e1c55-0b27-4f6d-ae93-82d4f06c7b19">
+\t\t\t\t<Properties>
+\t\t\t\t\t<Name>Реквизит</Name>
+\t\t\t\t\t<Synonym>
+\t\t\t\t\t\t<v8:item>
+\t\t\t\t\t\t\t<v8:lang>ru</v8:lang>
+\t\t\t\t\t\t\t<v8:content>Реквизит</v8:content>
+\t\t\t\t\t\t</v8:item>
+\t\t\t\t\t</Synonym>
+\t\t\t\t\t<Comment/>
+\t\t\t\t\t<Type>
+\t\t\t\t\t\t<v8:Type>xs:decimal</v8:Type>
+\t\t\t\t\t\t<v8:NumberQualifiers>
+\t\t\t\t\t\t\t<v8:Digits>10</v8:Digits>
+\t\t\t\t\t\t\t<v8:FractionDigits>2</v8:FractionDigits>
+\t\t\t\t\t\t\t<v8:AllowedSign>Any</v8:AllowedSign>
+\t\t\t\t\t\t</v8:NumberQualifiers>
+\t\t\t\t\t</Type>
+\t\t\t\t</Properties>
+\t\t\t</Attribute>
+\t\t</ChildObjects>
+\t</Queue>
+</MetaDataObject>
+""",
+            "Queues/Probe/Ext/ManagerModule.bsl": "Процедура ПробаОчереди() Экспорт\nКонецПроцедуры\n",
+        },
     ),
 }
 CHILD_OBJECTS_START = re.compile(rb"(<Configuration\b.*?<ChildObjects>)", re.S)
@@ -125,11 +205,13 @@ CHILD_OBJECTS_START = re.compile(rb"(<Configuration\b.*?<ChildObjects>)", re.S)
 def add_line_kinds(root: Path, line: str) -> List[str]:
     """Add to the seed copy at ``root`` one object of each kind ``line`` adds."""
     added = []
-    for tag, (since, directory, name, xml) in LINE_KIND_ADDITIONS.items():
+    for tag, (since, name, files) in LINE_KIND_ADDITIONS.items():
         if build_key(line) < build_key(since):
             continue
-        (root / directory).mkdir(exist_ok=True)
-        (root / directory / f"{name}.xml").write_text(xml, encoding="utf-8")
+        for relative, text in files.items():
+            target = root / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(text, encoding="utf-8")
         path = root / "Configuration.xml"
         data, count = CHILD_OBJECTS_START.subn(
             rb"\g<1>\n\t\t\t<%s>%s</%s>" % (tag.encode(), name.encode(), tag.encode()),

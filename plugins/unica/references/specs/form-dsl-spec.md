@@ -133,7 +133,7 @@
 }
 ```
 
-Ключ — имя события, значение — имя процедуры-обработчика. **Тот же формат `events` используется и на элементах** (§4.1) — единый способ описания событий во всём DSL.
+Ключ — имя события, значение — имя процедуры-обработчика. Ключ `events` есть только у формы: события элемента задаются ключами `on`/`handlers` (§4.2), а `events` на элементе компиляция отвергает и называет `on`.
 
 ### Доступные события
 
@@ -159,25 +159,33 @@
 
 Массив объектов. Тип элемента определяется ключом-идентификатором.
 
+**Какие ключи пишет компиляция.** Для каждого вида элемента, а также для реквизита
+(с `settings` и `columns[]`), параметра и команды формы компиляция пишет только ключи
+из списка в `crates/unica-forms-designer/src/codec/description_keys.rs` и только
+с указанным там JSON-типом. Другой ключ и значение другого типа она отвергает и
+называет ключ в отказе; если известен ключ, который вид пишет вместо него, отказ
+называет и его. Таблицы этой спецификации описывают модель Form XML: ключ из
+таблицы компиляция пишет, только если он есть в этом списке.
+
 ### 4.1. Общие свойства всех элементов
 
 | Свойство | Тип | Описание |
 |----------|-----|----------|
 | `name` | string | Имя элемента (по умолчанию — из значения ключа типа) |
-| `title` | string/object | Заголовок. **Нет ключа** → авто-вывод из имени (для page/label и непривязанных полей/кнопок). **`""`** → подавить (заголовок не выводится). Строка → ru. Объект `{ "ru": "…", "en": "…" }` → мультиязычный (по `<v8:item>` на язык). Так же `tooltip`/`inputHint`/`title` команд/реквизитов/колонок |
+| `title` | string/object | Заголовок. **Нет ключа** → авто-вывод из имени (для page/label и непривязанных полей/кнопок). **`""`** → подавить (заголовок не выводится). Строка → ru. Объект `{ "ru": "…", "en": "…" }` → мультиязычный (по `<v8:item>` на язык). Так же `tooltip`/`inputHint`/`title` команд/реквизитов/колонок. Объект компиляция принимает в `title` только у `label`; у остальных видов, реквизитов, колонок и команд `title` — строка |
 | `titleDataPath` | string | Путь данных динамического заголовка (`<TitleDataPath>`) — у Page/UsualGroup (напр. `Объект.Товары.RowsCount` в заголовке страницы). Парный к `footerDataPath` (путь данных подвала поля) |
 | `hidden` | bool | `true` → `<Visible>false</Visible>` |
 | `disabled` | bool | `true` → `<Enabled>false</Enabled>` |
 | `readOnly` | bool | `true` → `<ReadOnly>true</ReadOnly>` |
-| `userVisible` | bool/object | Пользовательская видимость по ролям (`<UserVisible>`). См. §4.1c. Отсутствие = виден всем |
-| `commandBar` | object/array | Командная панель элемента (companion `<AutoCommandBar>`) с контентом. См. §4.1d |
-| `contextMenu` | object/array | Контекстное меню элемента (companion `<ContextMenu>`) с контентом. См. §4.1d |
-| `events` | object | Обработчики событий: `{ "ИмяСобытия": "ИмяОбработчика" }` — тот же формат, что у событий формы (§3). Значение `null` → имя по конвенции (§4.2). См. §4.2 |
-| `titleLocation` | string | Расположение заголовка: `none`/`left`/`right`/`top`/`bottom`/`auto`. Эмитится при наличии (input, labelField, picField, table, calendar). У `check`/`radio` — особая семантика с умным дефолтом (см. их разделы) |
-| `tooltip` | string/object | Всплывающая подсказка элемента (`<ToolTip>`). Строка → ru, объект `{ "ru": …, "en": … }` → мультиязычный (как `title`). Эмитится сразу после `title` |
-| `tooltipRepresentation` | string | Режим показа подсказки (`<ToolTipRepresentation>`): `None`, `Button`, `ShowBottom`, `ShowTop`, `ShowLeft`, `ShowRight`, `ShowAuto`, `Balloon`. Эмитится при наличии |
-| `displayImportance` | string | Важность отображения (атрибут открывающего тега `DisplayImportance`): `VeryHigh`, `High`, `Usual`, `Low`, `VeryLow`. Адаптивная раскладка (моб./узкие формы). Применимо к любому элементу |
-| `extendedTooltip` | string/object | Расширенная подсказка (companion `<ExtendedTooltip>`, по сути LabelDecoration). **Текст-форма**: строка / ML / `{text, formatted}`. **Own-content форма** (объект с layout/оформлением/флагами): `{ text?, formatted?, tooltip?, width?, autoMaxWidth?, maxWidth?, height?, horizontalStretch?, verticalAlign?, titleHeight?, hyperlink?, visible?, enabled?, textColor?, font?, … }` — own-content эмитится перед `Title`. `text` → `<Title>` (текст подсказки), `tooltip` → `<ToolTip>` самой расширенной подсказки (редкое; ML, эмитится после `Title`; ≠ элементного `tooltip` обычной подсказки — скоупится вложенностью). **События** компаньона — ключ `events` (та же грамматика, что у элемента; напр. `{ "URLProcessing": "Обработчик" }` у hyperlink-подсказки), эмитится после `Title`. Синоним: `extTooltip` |
+| `userVisible` | bool/object | Пользовательская видимость по ролям (`<UserVisible>`). См. §4.1c. Отсутствие = виден всем. Компиляция принимает только bool |
+| `commandBar` | object/array | Командная панель элемента (companion `<AutoCommandBar>`) с контентом. См. §4.1d. Компиляция этот ключ на элементе другого вида не пишет и отвергает (`commandBar` без другого ключа вида — сам элемент `cmdBar`) |
+| `contextMenu` | object/array | Контекстное меню элемента (companion `<ContextMenu>`) с контентом. См. §4.1d. Компиляция этот ключ не пишет и отвергает |
+| `events` | object | Обработчики событий: `{ "ИмяСобытия": "ИмяОбработчика" }` — тот же формат, что у событий формы (§3). Компиляция этот ключ на элементе отвергает и называет `on`; события элемента она пишет из `on`/`handlers` (§4.2) |
+| `titleLocation` | string | Расположение заголовка: `none`/`left`/`right`/`top`/`bottom`/`auto`. Компиляция пишет его у `input`, `check` и `html`. У `check`/`radio` — особая семантика с умным дефолтом (см. их разделы) |
+| `tooltip` | string/object | Всплывающая подсказка элемента (`<ToolTip>`). Строка → ru, объект `{ "ru": …, "en": … }` → мультиязычный (как `title`). Эмитится сразу после `title`. Компиляция пишет его у `input`, `check`, `labelField`, `button` и `html` |
+| `tooltipRepresentation` | string | Режим показа подсказки (`<ToolTipRepresentation>`): `None`, `Button`, `ShowBottom`, `ShowTop`, `ShowLeft`, `ShowRight`, `ShowAuto`, `Balloon`. Эмитится при наличии; компиляция пишет его у тех же видов и у `label` |
+| `displayImportance` | string | Важность отображения (атрибут открывающего тега `DisplayImportance`): `VeryHigh`, `High`, `Usual`, `Low`, `VeryLow`. Адаптивная раскладка (моб./узкие формы). Компиляция этот ключ не пишет и отвергает |
+| `extendedTooltip` | string/object | Расширенная подсказка (companion `<ExtendedTooltip>`, по сути LabelDecoration). **Текст-форма**: строка / ML / `{text, formatted}`. **Own-content форма** (объект с layout/оформлением/флагами): `{ text?, formatted?, tooltip?, width?, autoMaxWidth?, maxWidth?, height?, horizontalStretch?, verticalAlign?, titleHeight?, hyperlink?, visible?, enabled?, textColor?, font?, … }` — own-content эмитится перед `Title`. `text` → `<Title>` (текст подсказки), `tooltip` → `<ToolTip>` самой расширенной подсказки (редкое; ML, эмитится после `Title`; ≠ элементного `tooltip` обычной подсказки — скоупится вложенностью). **События** компаньона — ключ `events` (та же грамматика, что у элемента; напр. `{ "URLProcessing": "Обработчик" }` у hyperlink-подсказки), эмитится после `Title`. Синоним: `extTooltip`. Компиляция этот ключ и синоним не пишет и отвергает; расширенную подсказку она создаёт по имени элемента (§9) |
 
 #### Форма ML-текста и форматированные заголовки декораций
 
@@ -198,11 +206,13 @@
 когда авто-детект неверен (formatted-текст без разметки либо буквальные
 `<…>`-плейсхолдеры в неформатированном тексте).
 
-#### Русские синонимы ключей-свойств (прощающий ввод)
+#### Русские синонимы ключей-свойств
 
-Скалярные свойства элементов можно писать русскими именами 1С (как в Конфигураторе) — компилятор молча нормализует их в канонические англ. ключи. Сопоставление **регистро- и пробело-независимое** (`Пометка` = `пометка`, `Быстрый выбор` = `быстрыйВыбор`). Англ. ключ работает всегда; если заданы оба — побеждает англ. Поддержаны (в т.ч.): `Пометка`→`checked`, `Заголовок`→`title`, `Ширина`→`width`, `Высота`→`height`, `КнопкаВыбора`→`choiceButton`, `КнопкаОчистки`→`clearButton`, `КнопкаВыпадающегоСписка`→`dropListButton`, `КнопкаСписковогоВыбора`→`choiceListButton`, `БыстрыйВыбор`→`quickChoice`, `ФормаВыбора`→`choiceForm`, `ИсторияВыбораПриВводе`→`choiceHistoryOnInput`, `ВыборГруппИЭлементов`→`choiceFoldersAndItems`, `ФиксацияВТаблице`→`fixingInTable`, `ПутьКДаннымПодвала`→`footerDataPath`, `МногострочныйРежим`→`multiLine`, `РежимПароля`→`passwordMode`, `РасположениеЗаголовка`→`titleLocation`. (`Видимость`/`Доступность` НЕ синонимы — у нас `hidden`/`disabled` с обратной полярностью.) Оформление имеет свой набор рус. синонимов (§4.1e).
+Русские имена свойств 1С (как в Конфигураторе) компиляция как ключи элемента не принимает и отвергает. Если вид пишет соответствующий англ. ключ, отказ называет его (``; use `title` ``). Сопоставление имени **регистро- и пробело-независимое** (`Пометка` = `пометка`, `Быстрый выбор` = `быстрыйВыбор`). Сопоставления: `Пометка`→`checked`, `Заголовок`→`title`, `Ширина`→`width`, `Высота`→`height`, `КнопкаВыбора`→`choiceButton`, `КнопкаОчистки`→`clearButton`, `КнопкаВыпадающегоСписка`→`dropListButton`, `КнопкаСписковогоВыбора`→`choiceListButton`, `БыстрыйВыбор`→`quickChoice`, `ФормаВыбора`→`choiceForm`, `ИсторияВыбораПриВводе`→`choiceHistoryOnInput`, `ВыборГруппИЭлементов`→`choiceFoldersAndItems`, `ФиксацияВТаблице`→`fixingInTable`, `ПутьКДаннымПодвала`→`footerDataPath`, `МногострочныйРежим`→`multiLine`, `РежимПароля`→`passwordMode`, `РасположениеЗаголовка`→`titleLocation`. (`Видимость`/`Доступность` НЕ синонимы — у нас `hidden`/`disabled` с обратной полярностью.) Оформление имеет свой набор рус. синонимов (§4.1e).
 
 ### 4.1c. Доступ по ролям (`userVisible` / `view` / `edit` / `use`)
+
+Компиляция пишет из этих ключей только `userVisible` элемента со значением bool; объектную форму, `view`/`edit` реквизита и `use` команды она отвергает. Раздел описывает модель Form XML.
 
 Единый механизм платформы (role-adjustable boolean): «общее значение + исключения по ролям».
 Один и тот же грамматик-значения у разных ключей на разных владельцах:
@@ -232,6 +242,9 @@
 ```
 
 ### 4.1d. Companion-панели элемента (`commandBar` / `contextMenu`)
+
+Компиляция эти ключи и их синонимы на элементе не пишет и отвергает; companion-панели
+она создаёт по имени элемента (§9). Раздел описывает модель Form XML.
 
 Командная панель (`<AutoCommandBar>`) и контекстное меню (`<ContextMenu>`) элемента — это
 companion-панели с собственным контентом. Оба несут одну грамматику.
@@ -268,7 +281,9 @@ companion-панели с собственным контентом. Оба не
 
 ### 4.1e. Оформление элемента (цвета / шрифты / граница)
 
-Прямые свойства оформления элемента. Ключи — англ. camelCase 1:1 с тегами; **принимаются рус. синонимы** (forgiving). Применимо к полям (input/check/radio/labelField/picField/calendar), декорациям (label/picture), кнопкам (button), группам (group/columnGroup), **страницам (page/pages: `backColor`/`titleTextColor`/`titleFont`)** и таблицам (table); порядок тегов в XML — по базовому типу (профиль), компилятор расставляет сам (1С толерантна к порядку оформления внутри элемента).
+Компиляция пишет из этих ключей только `backColor` и `font` у `button`; остальные ключи и все рус. синонимы она отвергает (отказ на синоним называет англ. ключ, если вид его пишет). Раздел описывает модель Form XML.
+
+Прямые свойства оформления элемента. Ключи — англ. camelCase 1:1 с тегами; рус. синонимы — имена тех же свойств в Конфигураторе. Применимо к полям (input/check/radio/labelField/picField/calendar), декорациям (label/picture), кнопкам (button), группам (group/columnGroup), **страницам (page/pages: `backColor`/`titleTextColor`/`titleFont`)** и таблицам (table); порядок тегов в XML — по базовому типу (профиль), компилятор расставляет сам (1С толерантна к порядку оформления внутри элемента).
 
 | Ключ | Тег | Рус. синоним |
 |------|-----|--------------|
@@ -298,7 +313,7 @@ companion-панели с собственным контентом. Оба не
 
 ### 4.1a. Общие layout-свойства
 
-Применимы к любому элементу (размеры, растягивание, выравнивание внутри родителя). Эмитятся только при указании.
+Применимы к любому элементу модели Form XML (размеры, растягивание, выравнивание внутри родителя). Эмитятся только при указании; какие из них пишет компиляция — в примечании после таблицы.
 
 | Свойство | XML | Значения |
 |----------|-----|----------|
@@ -335,12 +350,14 @@ companion-панели с собственным контентом. Оба не
 | `cellHyperlink` | `<CellHyperlink>` | bool |
 | `mask` | `<Mask>` | строка маски ввода (input) |
 | `createButton` | `<CreateButton>` | bool (input) |
-| `viewMode` / `verticalScrollBar` / `rowInputMode` | `<ViewMode>`/… | свойства таблицы (pass-through) |
+| `viewMode` / `verticalScrollBar` / `rowInputMode` | `<ViewMode>`/… | свойства таблицы (компиляция не пишет) |
 
-> Эти простые скаляры — pass-through (captured/emitted «как есть»), применимы там, где платформа их пишет.
+> Generic pass-through скаляров у компиляции нет. Из этой таблицы она пишет `width`/`height` и `autoMaxWidth`/`autoMaxHeight` у `input`, `label` и `html`; `horizontalStretch`/`verticalStretch`, `showInHeader` и `headerHorizontalAlign` у `input`; `horizontalAlign` у `input` и `autoCmdBar`; `skipOnInput` у `input` и `html`; `showLeftMargin` у `group`. Остальные ключи таблицы она отвергает.
 > `defaultItem`/`enableStartDrag`/`fileDragMode`/`skipOnInput` + cell-свойства (`showInHeader`/`showInFooter`/`autoCellHeight`/`footerHorizontalAlign`/`headerHorizontalAlign`/`headerPicture`/`footerPicture`) — общие для любого поля-колонки (input, label, picField, check) и `columnGroup` (картинка заголовка группы колонок).
 
 #### Картинка-ссылка (`headerPicture`/`footerPicture`/`valuesPicture`/`rowsPicture`/Page `picture`)
+
+Компиляция эти ключи не пишет и отвергает; `picture` кнопки и команды она пишет только строкой. Раздел описывает модель Form XML.
 
 Картинка с флагом прозрачности. Два формата:
 
@@ -358,19 +375,24 @@ companion-панели с собственным контентом. Оба не
 
 ### 4.2. События элемента и автоименование обработчиков
 
-События элемента описываются мапой `events` (как у формы):
+События элемента описываются ключами `on` (массив имён событий либо объектов
+`{ event, handler?, callType? }`) и `handlers` (мапа «событие → имя обработчика»).
+Компиляция пишет события из `on`; ключ `events` на элементе она отвергает и называет `on`.
+У `button`, `cmdBar`, `autoCmdBar`, `page` и `group` событий нет: `on` и `handlers`
+у них компиляция отвергает.
 
 ```json
 { "input": "Контрагент", "path": "Объект.Контрагент",
-  "events": { "OnChange": "КонтрагентПриИзменении" } }
+  "on": ["OnChange"], "handlers": { "OnChange": "КонтрагентПриИзменении" } }
 ```
 
-Значение — имя процедуры-обработчика. Если вместо имени указать **`null`**, имя
-генерируется автоматически по конвенции 1С `<ИмяЭлемента><РусскийСуффикс>`:
+Значение в `handlers` — имя процедуры-обработчика. Если имя не указано (нет записи
+в `handlers` или значение **`null`**), оно генерируется автоматически по конвенции 1С
+`<ИмяЭлемента><РусскийСуффикс>`:
 
 ```json
 { "input": "Контрагент", "path": "Объект.Контрагент",
-  "events": { "OnChange": null } }   // → обработчик КонтрагентПриИзменении
+  "on": ["OnChange"] }   // → обработчик КонтрагентПриИзменении
 ```
 
 Суффиксы для авто-имени:
@@ -394,10 +416,9 @@ companion-панели с собственным контентом. Оба не
 | `OnCurrentPageChange` | `ПриСменеСтраницы` |
 | `TextEditEnd` | `ОкончаниеВводаТекста` |
 
-> **Legacy-формат (принимается, но устарел).** Ранее события элемента задавались парой
-> `on` (массив имён событий) + `handlers` (переопределение имён): `{ "on": ["OnChange"], "handlers": { … } }`.
-> Компилятор по-прежнему его принимает ради совместимости, но рекомендуемый и
-> единственный эмитируемый формат — мапа `events`. Новые формы пишите через `events`.
+> Компиляция пишет события элемента только из пары `on` (массив имён событий) +
+> `handlers` (переопределение имён): `{ "on": ["OnChange"], "handlers": { … } }`.
+> Мапу `events` она принимает только на уровне формы (§3).
 
 ### 4.3. Типы элементов
 
@@ -431,7 +452,7 @@ companion-панели с собственным контентом. Оба не
 #### input — InputField
 
 ```json
-{ "input": "Организация", "path": "Объект.Организация", "events": { "OnChange": "ОрганизацияПриИзменении" } }
+{ "input": "Организация", "path": "Объект.Организация", "on": ["OnChange"], "handlers": { "OnChange": "ОрганизацияПриИзменении" } }
 ```
 
 | Свойство | Тип | Описание |
@@ -447,7 +468,7 @@ companion-панели с собственным контентом. Оба не
 | `markIncomplete` | bool | Автопометка незаполненных (`<AutoMarkIncomplete>`, факт. значение true/false) |
 | `extendedEdit` | bool | Расширенное редактирование (`<ExtendedEdit>`) |
 | `editTextUpdate` | string | Обновление текста при редактировании: `Always`, `OnValueChange`, `DontUse` |
-| `warningOnEdit` | string/object | Предупреждение при редактировании (`<WarningOnEdit>`, мультиязычный текст). Доступно также на `check`/`radio`/`labelField` (не только `input`). Парный enum `warningOnEditRepresentation` (`Show`/`DontShow`) — generic-скаляр на любом поле |
+| `warningOnEdit` | string/object | Предупреждение при редактировании (`<WarningOnEdit>`, мультиязычный текст). Доступно также на `check`/`radio`/`labelField` (не только `input`). Парный enum `warningOnEditRepresentation` (`Show`/`DontShow`) — свойство любого поля модели; компиляция оба ключа не пишет и отвергает |
 | `footerText` | string/object | Текст подвала поля (`<FooterText>`, мультиязычный) |
 | `editMode` | string | Режим редактирования: `EnterOnInput`, `Directly` |
 | `skipOnInput` | bool | Пропускать при вводе |
@@ -487,6 +508,8 @@ companion-панели с собственным контентом. Оба не
 
 ##### Параметры выбора, связи параметров выбора, связь по типу
 
+Компиляция эти ключи не пишет и отвергает; раздел описывает модель Form XML.
+
 Свойства поля ввода, управляющие выбором значения и типом. Имена параметров (`"Отбор.Х"`) — строки 1С как есть.
 
 ```json
@@ -523,7 +546,7 @@ companion-панели с собственным контентом. Оба не
 #### check — CheckBoxField
 
 ```json
-{ "check": "ФлагАктивности", "path": "Активен", "events": { "OnChange": "ФлагАктивностиПриИзменении" } }
+{ "check": "ФлагАктивности", "path": "Активен", "on": ["OnChange"], "handlers": { "OnChange": "ФлагАктивностиПриИзменении" } }
 ```
 
 | Свойство | Тип | Описание |
@@ -590,8 +613,10 @@ companion-панели с собственным контентом. Оба не
 | Свойство | Тип | Описание |
 |----------|-----|----------|
 | `path` | string | DataPath |
-| `hyperlink` | bool | Режим гиперссылки (у LabelField платформенный тег `<Hiperlink>` — опечатка 1С, компилятор учитывает) |
+| `hyperlink` | bool | Режим гиперссылки (у LabelField платформенный тег `<Hiperlink>` — опечатка 1С). Компиляция у `labelField` этот ключ не пишет и отвергает |
 | `editMode` | string | Режим редактирования: `EnterOnInput`, `Directly` |
+
+Компиляция у `labelField` пишет `path`, `footerDataPath`, `tooltip`/`tooltipRepresentation`, общие флаги и события; `title`, `titleLocation`, `width`/`height` она отвергает.
 
 #### table — Table
 
@@ -625,25 +650,29 @@ companion-панели с собственным контентом. Оба не
 | `initialTreeView` | string | `ExpandTopLevel`, `ExpandAllLevels`, `NoExpand` |
 | `rowsPicture` | string \| object | Картинка строк (`<RowsPicture>`). Формат «картинка-ссылка» из §4.1 (скаляр-Ref/`abs:X` или объект `{ src, loadTransparent?, transparentPixel? }`, дефолт `loadTransparent=false`) |
 | `rowPictureDataPath` | string | Путь к данным картинки строки (`<RowPictureDataPath>`). Должен быть вложенным путём `path` этой же таблицы, например `Rows.Picture` при `path: "Rows"` |
-| `rowFilter` | null | Отбор строк. Для канонического формата 8.3.27 компилятор всегда эмитит nil-плейсхолдер `<RowFilter xsi:nil="true"/>`, в том числе когда ключ отсутствует. В XML он следует после `<RowPictureDataPath>` |
+| `rowFilter` | null | Отбор строк. Для канонического формата 8.3.27 компилятор всегда эмитит nil-плейсхолдер `<RowFilter xsi:nil="true"/>`, в том числе когда ключ отсутствует. В XML он следует после `<RowPictureDataPath>`. Сам ключ `rowFilter` в описании компиляция отвергает |
 | `height` | int | Высота элемента таблицы (`<Height>`, как у прочих элементов) |
 | `heightInTableRows` | int | Высота в строках (`<HeightInTableRows>`) — отдельное свойство от `height`; таблица может нести оба |
 | `header` | bool | Показывать шапку |
 | `footer` | bool | Показывать подвал |
-| `headerHeight` | int | Высота шапки в строках (`<HeaderHeight>`); pass-through (редкое, ~35 форм в корпусе) |
-| `footerHeight` | int | Высота подвала в строках (`<FooterHeight>`); pass-through (редкое, ~6 форм) |
-| `currentRowUse` | string | Использование текущей строки таблицы (`<CurrentRowUse>`): `DontUse`, `Use`, `SelectionPresentation`, `SelectionPresentationAndChoice`, `Choice`; pass-through (≠ одноимённое свойство команды) |
-| `refreshRequest` | string | Запрос обновления дин-списка (`<RefreshRequest>`): `PullFromTop` (потяни-обнови). Pass-through |
+| `headerHeight` | int | Высота шапки в строках (`<HeaderHeight>`); компиляция не пишет (редкое, ~35 форм в корпусе) |
+| `footerHeight` | int | Высота подвала в строках (`<FooterHeight>`); компиляция не пишет (редкое, ~6 форм) |
+| `currentRowUse` | string | Использование текущей строки таблицы (`<CurrentRowUse>`): `DontUse`, `Use`, `SelectionPresentation`, `SelectionPresentationAndChoice`, `Choice`; компиляция у `table` не пишет (≠ одноимённое свойство команды) |
+| `refreshRequest` | string | Запрос обновления дин-списка (`<RefreshRequest>`): `PullFromTop` (потяни-обнови). Компиляция не пишет |
 | `commandBarLocation` | string | `None`, `Top`, `Bottom`, `Auto` |
 | `searchStringLocation` | string | `None`, `Top`, `Bottom`, `CommandBar`, `Auto` |
 | `viewStatusLocation` | string | `None`, `Top`, `Bottom`, `Auto` |
 | `searchControlLocation` | string | `None`, `Top`, `Bottom`, `Auto` |
-| `excludedCommands` | string[] | Исключённые стандартные команды редактора → `<CommandSet><ExcludedCommand>X</ExcludedCommand>…`. **Общее свойство поля** — работает на любом поле (`input`/`label`/`check`/`spreadsheet`/`html`/`formattedDoc`/`picField`/таблица) и на форм-уровне. Значения зависят от типа поля: таблица — `Add`/`Delete`/`MoveUp`/`SortListAsc`; табличный документ — `AlignCenter`/`Bold`/`BorderAll`/`BackColor`… |
+| `excludedCommands` | string[] | Исключённые стандартные команды редактора → `<CommandSet><ExcludedCommand>X</ExcludedCommand>…`. **Общее свойство поля** модели Form XML (`input`/`label`/`check`/`spreadsheet`/`html`/`formattedDoc`/`picField`/таблица) и формы; компиляция этот ключ ни у элемента, ни у формы не пишет и отвергает. Значения зависят от типа поля: таблица — `Add`/`Delete`/`MoveUp`/`SortListAsc`; табличный документ — `AlignCenter`/`Bold`/`BorderAll`/`BackColor`… |
 | `additions` | object | Отклонения стандартных дополнений командной панели (см. ниже) |
+
+Компиляция у `table` пишет `path`, `columns`, `representation`, `autoInsertNewRow`, `enableDrag`, `initialTreeView`, `rowPictureDataPath`, `commandBarLocation`, `tableAutofill`, `_dynList`, ключи динамического списка (ниже), `name`, общие флаги и события; `title`, `tooltip`, `height` и остальные ключи этой таблицы она отвергает.
 
 > `commandBarLocation` у **дин-список-таблицы** компилятор авто-подставляет `None`. Чтобы оставить тег пустым (платформа не написала его) — задайте `commandBarLocation: ""` (суппресс-маркер); декомпилятор так и делает.
 
 ##### Дополнения командной панели (поиск / состояние / управление)
+
+Компиляция эти ключи (`additions`, элементы-дополнения в `commandBar` и их синонимы) не пишет и отвергает; стандартные дополнения она создаёт по имени таблицы (§9). Раздел описывает модель Form XML.
 
 Дополнения — «представления» встроенного поиска таблицы: `searchString` (отображение строки поиска), `viewStatus` (состояние просмотра), `searchControl` (управление поиском). Это полноценные элементы (полный набор свойств поля). Две позиции:
 
@@ -666,7 +695,7 @@ companion-панели с собственным контентом. Оба не
 
 ##### Таблица динамического списка
 
-Когда таблица привязана к реквизиту `type: "DynamicList"` (её `path` = имя такого реквизита), платформа эмитит блок специфичных свойств. Компилятор генерирует его автоматически с умолчаниями; в DSL указываются **только отличия** от умолчания (декомпилятор так и поступает). Чистые константы (`Period`, `TopLevelParent`) не настраиваются.
+Когда таблица привязана к реквизиту `type: "DynamicList"` (её `path` = имя такого реквизита), платформа эмитит блок специфичных свойств. Компилятор выпускает его с умолчаниями, когда у таблицы задано `_dynList: true` (одной привязки `path` к такому реквизиту для этого мало); в DSL указываются **только отличия** от умолчания (декомпилятор так и поступает). Чистые константы (`Period`, `TopLevelParent`) не настраиваются.
 
 | Свойство | Тип | Умолчание | Описание |
 |----------|-----|-----------|----------|
@@ -681,6 +710,11 @@ companion-панели с собственным контентом. Оба не
 | `allowGettingCurrentRowURL` | bool | `true` | Получение URL текущей строки |
 | `userSettingsGroup` | string | — | Группа пользовательских настроек |
 | `rowsPicture` | string | — | Картинка строк (`CommonPicture.X`) → `<RowsPicture>` |
+
+Ключи `autoRefresh`, `autoRefreshPeriod`, `choiceFoldersAndItems`, `restoreCurrentRow`,
+`showRoot`, `allowRootChoice`, `updateOnDataChange` и `allowGettingCurrentRowURL`
+компиляция принимает только у таблицы с `_dynList: true`; без него она их отвергает.
+`userSettingsGroup` и `rowsPicture` она не пишет и отвергает.
 
 #### columnGroup — ColumnGroup
 
@@ -726,8 +760,10 @@ companion-панели с собственным контентом. Оба не
 
 Page поддерживает `group` для задания ориентации содержимого и `children` для вложенных элементов.
 Также `picture` — картинка-иконка вкладки (формат «картинка-ссылка» из §4.1: скаляр-Ref/`abs:X` или объект `{src, loadTransparent?, transparentPixel?}`, дефолт `loadTransparent=false`).
+Компиляция у `page` пишет `title`, `group`, `showTitle`, `titleDataPath`, `children`, `name` и общие флаги; `picture` и события она отвергает.
 
 Pages поддерживает `pagesRepresentation`: `None`, `TabsOnTop`, `TabsOnBottom`, `TabsOnLeft`, `TabsOnRight`; `currentRowUse` (`Auto`/`DontUse`/…); оформление заголовка вкладок (`titleFont`/`titleTextColor`/`titleBackColor`/… — как у `page`).
+Компиляция у `pages` пишет `title`, `pagesRepresentation`, `currentRowUse`, `children`, `name`, общие флаги и события; оформление вкладок она отвергает.
 
 #### button — Button
 
@@ -749,6 +785,8 @@ Pages поддерживает `pagesRepresentation`: `None`, `TabsOnTop`, `Tabs
 | `path` | string | DataPath кнопки общей команды (`Объект.Ref`, `Items.X.CurrentData.Поле`) — привязка к контексту |
 | `representation` | string | `Auto`, `Picture`, `Text`, `PictureAndText` |
 | `locationInCommandBar` | string | `InCommandBar`, `InAdditionalSubmenu` |
+
+Компиляция у `button` отвергает `parameter` (и синоним `параметр`), `checked` (и `Пометка`), `loadTransparent`, `path` и объектную форму `picture`; `picture` она пишет только строкой. Событий у кнопки нет: `on`/`handlers` компиляция отвергает.
 
 `command`, `commandName` и `stdCommand` — альтернативные способы привязки.
 Если ошибочно заданы несколько, компилятор эмитит ровно один `<CommandName>` с
@@ -786,7 +824,7 @@ Pages поддерживает `pagesRepresentation`: `None`, `TabsOnTop`, `Tabs
 | `valuesPicture` | string \| object | Картинка значения. Формат картинки-ссылки — см. §4.1 «Картинка-ссылка» |
 | `editMode` | string | Режим редактирования колонки (`EnterOnInput` и т.п.) |
 | `hyperlink` | bool | Картинка-гиперссылка (`<Hyperlink>true</Hyperlink>`) — кликабельная картинка |
-| `shortcut` | string | Сочетание клавиш (`<Shortcut>`, напр. `Ctrl+S`). Общий generic-скаляр любого элемента (input/group/radio/page/picField/label/table/check), не только колонки-картинки |
+| `shortcut` | string | Сочетание клавиш (`<Shortcut>`, напр. `Ctrl+S`). Общее свойство любого элемента модели (input/group/radio/page/picField/label/table/check), не только колонки-картинки; компиляция у элементов этот ключ не пишет и отвергает |
 
 #### calendar — CalendarField
 
@@ -811,7 +849,7 @@ Pages поддерживает `pagesRepresentation`: `None`, `TabsOnTop`, `Tabs
 { "cmdBar": "КоманднаяПанель", "horizontalLocation": "right", "children": [ ... ] }
 ```
 
-Свойства: `commandSource`, `autofill`, `horizontalLocation` (`<HorizontalLocation>`: `auto` дефолт / `left` / `right` / `center`, + рус. синонимы), `title`, `children` + общие флаги/layout. Кнопка без явного `type` внутри панели получает `<Type>CommandBarButton</Type>`; `type: "hyperlink"` — `<Type>CommandBarHyperlink</Type>`.
+Свойства: `commandSource`, `autofill`, `horizontalLocation` (`<HorizontalLocation>`: `auto` дефолт / `left` / `right` / `center`, + рус. синонимы), `title`, `children` + общие флаги/layout. Компиляция у `cmdBar` пишет `commandSource`, `autofill`, `children`, `name` и общие флаги; `horizontalLocation`, `title`, layout-ключи и события она отвергает (пример выше с `horizontalLocation` она не примет). Кнопка без явного `type` внутри панели получает `<Type>CommandBarButton</Type>`; `type: "hyperlink"` — `<Type>CommandBarHyperlink</Type>`.
 
 #### popup / buttonGroup — зарезервированы
 
@@ -849,8 +887,8 @@ flags/layout/оформление/companions/события общий), плю�
 { "ganttChart": "Ганта", "path": "Ганта", "ganttTable": { "table": "ТаблицаГанта", "path": "Ганта", "height": 3 } }
 ```
 
-Forgiving-синонимы типа: XML-имя (`SpreadSheetDocumentField`) и рус. (`ПолеТабличногоДокумента`, `ПолеИндикатора`, `ПолеДиаграммы`, `ПолеДиаграммыГанта`, …).
-Скаляры `output`/`protection`/… — generic pass-through; bool как `true`/`false`, enum verbatim.
+Синонимы типа в модели: XML-имя (`SpreadSheetDocumentField`) и рус. (`ПолеТабличногоДокумента`, `ПолеИндикатора`, `ПолеДиаграммы`, `ПолеДиаграммыГанта`, …); компиляция такие ключи не принимает и отвергает.
+Скаляры `output`/`protection`/… в модели — bool как `true`/`false`, enum verbatim; generic pass-through у компиляции нет, кроме `html` эти виды она не выпускает (§4.3).
 
 Для HTML-поля публичный вызов — `unica.apply` → `item.add` с
 `items: [{"name": "ПолеHTML", "type": "HTMLDocumentField", "path": "АдресHTML"}]`.
@@ -860,13 +898,13 @@ Forgiving-синонимы типа: XML-имя (`SpreadSheetDocumentField`) и 
 
 > **Design-time конфигурация диаграмм/планировщика.** Реквизит chart-типа может нести
 > `<Settings xsi:type="d4p1:GanttChart"/"pl:Planner"/…>` — встроенный конфиг (серии/оси/цвета/планировщик).
-> **Planner** (`pl:Planner`) — поддержан, см. ключ `planner` ниже. **Chart/GanttChart** (`d4p1:Chart`/`GanttChart`)
+> **Planner** (`pl:Planner`) — описан в модели, см. ключ `planner` ниже (компиляция ключи `planner` и `chart` реквизита не пишет и отвергает). **Chart/GanttChart** (`d4p1:Chart`/`GanttChart`)
 > при design-time настройке — пока НЕ воспроизводятся → декомпилятор делает честный fail-ring3 (не теряет молча).
 > Поля без Settings (диаграмма, заполняемая в коде; график-схема; период; дендрограмма) роундтрипятся полностью.
 
 #### autoCmdBar — командная панель формы
 
-Командная панель самой формы (`<AutoCommandBar id="-1">`). Задаётся как элемент в `elements`; компилятор автоматически вынимает его из дерева. Нужен только если в панель помещаются **явные** кнопки/группы или меняется выравнивание/автозаполнение — иначе панель формируется автоматически.
+Командная панель самой формы (`<AutoCommandBar id="-1">`). Задаётся как элемент в `elements`; компилятор автоматически вынимает его из дерева. Нужен только если в панель помещаются **явные** кнопки/группы или меняется выравнивание/автозаполнение — иначе панель формируется автоматически. Компиляция у `autoCmdBar` пишет только `autoCmdBar`/`autoCommandBar`, `name`, `horizontalAlign` и `autofill`; `children`, общие флаги и события она отвергает (пример ниже с `children` она не примет).
 
 ```json
 { "autoCmdBar": "ФормаКоманднаяПанель", "horizontalAlign": "Right", "autofill": false, "children": [
@@ -880,11 +918,16 @@ Forgiving-синонимы типа: XML-имя (`SpreadSheetDocumentField`) и 
 | `autoCmdBar` | string | Имя панели (обычно `ФормаКоманднаяПанель`) |
 | `horizontalAlign` | string | `Right`, `Left`, `Center` |
 | `autofill` | bool | `false` — отключить автозаполнение стандартными командами |
-| `children` | array | Кнопки/группы кнопок панели |
+| `children` | array | Кнопки/группы кнопок панели. Компиляция этот ключ у `autoCmdBar` не пишет и отвергает |
 
 ---
 
 ## 5. Attributes — реквизиты формы
+
+Какие ключи реквизита, `settings` и `columns[]` пишет компиляция — по общему правилу §4.
+Это `name`, `title`, `type` (строки), `main`, `savedData` (bool), `fillChecking`
+(строка), `settings` (объект, только у `type: "DynamicList"`) и `columns` (массив);
+у колонки — `name`, `type`, `title` (строки).
 
 ```json
 "attributes": [
@@ -902,22 +945,24 @@ Forgiving-синонимы типа: XML-имя (`SpreadSheetDocumentField`) и 
 | `name` | string | Имя реквизита (обязательно) |
 | `type` | string | Тип (shorthand) |
 | `main` | bool | Основной реквизит формы (`<MainAttribute>`). **`true`** → пометить главным. **`false`** → суппресс: подавить авто-вывод компилятора (эвристика «нет явного main + ровно 1 реквизит объектного типа → пометить его»). Нет ключа → авто-вывод |
-| `title` | string/object | Заголовок. **Нет ключа** → авто-вывод из имени (как у элементов; кроме `main`). **`""`** → подавить (`<Title>` не эмитится — так платформа и хранит реквизит без синонима). Строка → ru; объект `{ru,en}` → мультиязычный. Декомпилятор опускает ключ, когда ru-заголовок совпадает с авто-выводом из имени |
-| `view` | bool/object | Просмотр по ролям (`<View>`). См. §4.1c |
-| `edit` | bool/object | Редактирование по ролям (`<Edit>`). См. §4.1c |
-| `functionalOptions` | array | Функциональные опции (`<FunctionalOptions><Item>FunctionalOption.X</Item>…`). Массив имён; forgiving: `"X"`/`"FunctionalOption.X"`. Также у колонок (`columns[*]`) и команд (§7) |
-| `useAlways` | array | Поля, всегда читаемые (`<UseAlways><Field>Имя.Поле</Field>…`). Массив коротких имён полей (forgiving: с/без префикса `Имя.`). **Маркер `~`** (query-поля дин-списка): `~Остановлен` → `<Field>~Список.Остановлен</Field>` (префикс ставится ПОСЛЕ `~`; полная форма `~Список.Остановлен` тоже принимается verbatim). **Две формы**: этот массив на реквизите ИЛИ `useAlways: true` на колонке (`columns[*]`) — компилятор сливает. Для дин-списка — только массив (колонки не эмитятся, но формируют `<UseAlways>`) |
-| `valueType` | string | Тип значений у реквизита типа `ValueList` (`<Settings xsi:type="v8:TypeDescription">`). Грамматика — как у `type`, включая составной `A \| B`. **Три состояния**: нет ключа → нет `<Settings>`; `""` → пустой `<Settings…/>` (список без ограничения типа); тип → с типом. Forgiving-синонимы: `typeDescription` (≈1С «ОписаниеТипов» / XML), `описаниеТипов`, `типЗначений`. Пример: `"valueType": "CatalogRef.Контрагенты"` |
+| `title` | string/object | Заголовок. **Нет ключа** → авто-вывод из имени (как у элементов; кроме `main`). **`""`** → подавить (`<Title>` не эмитится — так платформа и хранит реквизит без синонима). Строка → ru; объект `{ru,en}` → мультиязычный. Декомпилятор опускает ключ, когда ru-заголовок совпадает с авто-выводом из имени. Компиляция принимает только строку; объект она отвергает |
+| `view` | bool/object | Просмотр по ролям (`<View>`). См. §4.1c. Компиляция этот ключ не пишет и отвергает |
+| `edit` | bool/object | Редактирование по ролям (`<Edit>`). См. §4.1c. Компиляция этот ключ не пишет и отвергает |
+| `functionalOptions` | array | Функциональные опции (`<FunctionalOptions><Item>FunctionalOption.X</Item>…`). Массив имён; forgiving: `"X"`/`"FunctionalOption.X"`. Также у колонок (`columns[*]`) и команд (§7). Компиляция этот ключ не пишет и отвергает |
+| `useAlways` | array | Поля, всегда читаемые (`<UseAlways><Field>Имя.Поле</Field>…`). Массив коротких имён полей (forgiving: с/без префикса `Имя.`). **Маркер `~`** (query-поля дин-списка): `~Остановлен` → `<Field>~Список.Остановлен</Field>` (префикс ставится ПОСЛЕ `~`; полная форма `~Список.Остановлен` тоже принимается verbatim). **Две формы**: этот массив на реквизите ИЛИ `useAlways: true` на колонке (`columns[*]`) — компилятор сливает. Для дин-списка — только массив (колонки не эмитятся, но формируют `<UseAlways>`). Компиляция этот ключ не пишет и отвергает |
+| `valueType` | string | Тип значений у реквизита типа `ValueList` (`<Settings xsi:type="v8:TypeDescription">`). Грамматика — как у `type`, включая составной `A \| B`. **Три состояния**: нет ключа → нет `<Settings>`; `""` → пустой `<Settings…/>` (список без ограничения типа); тип → с типом. Синонимы в модели: `typeDescription` (≈1С «ОписаниеТипов» / XML), `описаниеТипов`, `типЗначений`. Пример: `"valueType": "CatalogRef.Контрагенты"`. Компиляция `valueType` и эти синонимы не пишет и отвергает |
 | `savedData` | bool | Сохраняемые данные (`<SavedData>`). **`false`** → суппресс авто-вывода компилятора (main-реквизит объектного типа Catalog/Document/ChartOf*/ExchangePlan/BusinessProcess/Task Object + RecordManager → `SavedData=true`). Нет ключа → авто-вывод |
-| `save` | bool/string/array | Сохранение значения в пользовательских настройках (`<Save><Field>…`). `true` → `<Field>имя</Field>`; строка/массив строк → под-поля с авто-префиксом `имя.` (путь с точкой / ссылка вида `N/M` или `N/M:…` / совпадающее с именем — берётся как есть). Нет ключа или `false` → не эмитится. Пример периода: `["Период","EndDate","StartDate","Variant"]`. **Многоуровневый путь** (напр. `КомпоновщикНастроек.Settings.Filter`) хранится ПОЛНЫМ (декомпилятор снимает префикс `имя.` только у простого под-поля без точки — иначе компилятор по dot-правилу не реинъектит префикс) |
-| `fillCheck` | bool/string | Проверка заполнения реквизита (`<FillCheck>`). `true` → `ShowError` (единственное значение в схеме); строка → verbatim. Синоним `fillChecking`. (`<FillChecking>` в схеме нет — был багом) |
-| `columns` | array | Колонки для ValueTable/ValueTree (`{ name, type, title?, fillCheck?, functionalOptions?, view?, edit?, useAlways? }`). `fillCheck` — проверка заполнения колонки (как у реквизита: `true`→`ShowError` / строка). `view`/`edit` — ролевой доступ колонки (`<View>`/`<Edit>` xr-флаг, тот же формат `bool \| {common, roles}`, что у реквизита, §4.1c; редкое) |
-| `additionalColumns` | array | Доп. колонки табличных частей объекта: `[{ table: "Объект.ТабЧасть", columns: [<col>] }]`. У главного реквизита-объекта; `<col>` — та же грамматика, что у `columns`. Эмитятся в `<Columns>` после прямых колонок |
+| `save` | bool/string/array | Сохранение значения в пользовательских настройках (`<Save><Field>…`). `true` → `<Field>имя</Field>`; строка/массив строк → под-поля с авто-префиксом `имя.` (путь с точкой / ссылка вида `N/M` или `N/M:…` / совпадающее с именем — берётся как есть). Нет ключа или `false` → не эмитится. Пример периода: `["Период","EndDate","StartDate","Variant"]`. **Многоуровневый путь** (напр. `КомпоновщикНастроек.Settings.Filter`) хранится ПОЛНЫМ (декомпилятор снимает префикс `имя.` только у простого под-поля без точки — иначе компилятор по dot-правилу не реинъектит префикс). Компиляция этот ключ не пишет и отвергает |
+| `fillCheck` | bool/string | Проверка заполнения реквизита (`<FillCheck>`). `true` → `ShowError` (единственное значение в схеме); строка → verbatim. (`<FillChecking>` в схеме нет — был багом.) Компиляция ключ `fillCheck` отвергает; `<FillCheck>` она пишет из ключа `fillChecking` со строковым значением (напр. `"ShowError"`) |
+| `columns` | array | Колонки для ValueTable/ValueTree (`{ name, type, title?, fillCheck?, functionalOptions?, view?, edit?, useAlways? }`). `fillCheck` — проверка заполнения колонки (как у реквизита: `true`→`ShowError` / строка). `view`/`edit` — ролевой доступ колонки (`<View>`/`<Edit>` xr-флаг, тот же формат `bool \| {common, roles}`, что у реквизита, §4.1c; редкое). Компиляция у колонки пишет только `name`, `type`, `title`; `fillCheck`, `functionalOptions`, `view`, `edit`, `useAlways` она отвергает |
+| `additionalColumns` | array | Доп. колонки табличных частей объекта: `[{ table: "Объект.ТабЧасть", columns: [<col>] }]`. У главного реквизита-объекта; `<col>` — та же грамматика, что у `columns`. Эмитятся в `<Columns>` после прямых колонок. Компиляция этот ключ не пишет и отвергает |
 | `settings` | object | Настройки динамического списка (только `type: "DynamicList"`) |
-| `planner` | object | Design-time конфигурация планировщика (только `type: "pl:Planner"`, `<Settings xsi:type="pl:Planner">`). См. ниже |
-| `chart` | object | Design-time конфигурация диаграммы (`<Settings xsi:type="d4p1:Chart">`). См. ниже |
+| `planner` | object | Design-time конфигурация планировщика (только `type: "pl:Planner"`, `<Settings xsi:type="pl:Planner">`). См. ниже. Компиляция этот ключ не пишет и отвергает |
+| `chart` | object | Design-time конфигурация диаграммы (`<Settings xsi:type="d4p1:Chart">`). См. ниже. Компиляция этот ключ не пишет и отвергает |
 
 ### chart — design-time конфигурация диаграммы
+
+Компиляция этот ключ не пишет и отвергает; раздел описывает модель Form XML.
 
 Объект `chart` описывает встроенный конфиг поля-диаграммы (~127 свойств: тип, серии, легенда, заголовок, шкалы, цвета/шрифты, оси). Движок **генерик** — ключи = локальные имена тегов `d4p1:`, порядок ключей = порядок эмиссии; типы значений распознаются по форме (скаляр/линия/граница/шрифт/ML/область/массив-серий). Раундтрип любой формы **бит-в-бит**.
 
@@ -944,6 +989,8 @@ Forgiving-синонимы типа: XML-имя (`SpreadSheetDocumentField`) и 
 > **Ограничение:** диаграммы (Chart/Gantt) с **точками/осями** (`realPointData`/`realDataItems`, заполненные `valuesAxis`/`pointsAxis`) несут типизированные значения (`xsi:type`), `xsi:nil` и ML с префиксом `d4p1:` — генерик-движок их не сохраняет → декомпилятор делает честный fail-ring3 на таких формах (редкий вариант). Частые дашборд-диаграммы и диаграммы Ганта (серии/легенда/оформление/шкалы) поддержаны полностью.
 
 ### planner — design-time конфигурация планировщика
+
+Компиляция этот ключ не пишет и отвергает; раздел описывает модель Form XML.
 
 Для реквизита `type: "pl:Planner"` объект `planner` описывает встроенный конфиг поля-планировщика (элементы расписания + оформление/поведение + шкала времени). Платформа эмитит блок **всегда** (даже дефолтный); компилятор подставляет умолчания для пропущенных ключей — авторинг может быть кратким (`{ "items": [{ "text": "Встреча", "begin": "...", "end": "..." }] }`), декомпилятор делает полный захват (раундтрип бит-в-бит). Цвета verbatim (`auto`/`style:X`/`web:Red`/`#hex`); шрифт `{ kind: "AutoFont" }` или ref-строка; граница `{ width, style }`; ML-форматы — строка или `{ "#": ..., "ru": ... }`.
 
@@ -979,6 +1026,8 @@ Forgiving-синонимы типа: XML-имя (`SpreadSheetDocumentField`) и 
 
 ### settings — динамический список
 
+Компиляция пишет из `settings` только `mainTable` (строка), `dynamicDataRead` и `manualQuery` (bool); остальные ключи этой таблицы и подразделов ниже (в том числе `query`) она не пишет и отвергает. Раздел описывает модель Form XML.
+
 Для реквизита `type: "DynamicList"` объект `settings` описывает источник данных и настройки компоновщика (`ListSettings`).
 
 ```json
@@ -1008,7 +1057,7 @@ Forgiving-синонимы типа: XML-имя (`SpreadSheetDocumentField`) и 
 | `filter` | array | Отбор списка (грамматика как в СКД) |
 | `dataParameters` | array | Значения параметров запроса в настройках (`<dcsset:dataParameters>`). **Грамматика как в СКД**: shorthand `"Имя = Значение @off @user"` или объект `{ parameter, value?, valueType?, use?, nilValue?, viewMode?, userSettingID?, userSettingPresentation? }`. В дин-списке частый паттерн — плейсхолдер отключённого параметра без значения: `"ИмяПараметра @off"` |
 | `conditionalAppearance` | array | Условное оформление списка (грамматика как в СКД) |
-| `grouping` | string \| array | Группировка строк списка (см. ниже). Forgiving-синонимы: `structure`, `группировка` |
+| `grouping` | string \| array | Группировка строк списка (см. ниже). Синонимы в модели: `structure`, `группировка`; компиляция ключ и синонимы отвергает |
 | `listSettings` | object | **Дескриптор формы скелета `<ListSettings>`** — только для НЕ-каноничных (частичных/минимальных) форм. Ordered-карта present top-level элементов: контейнеры `filter`/`order`/`conditionalAppearance` → блок-мета (`"vu"`=viewMode+userSettingID, `"u"`=только userSettingID, `"v"`, `""`); `itemsViewMode`/`itemsUserSettingID` → `true`; `itemsUserSettingPresentation` → подпись items-уровня (`"Текст"` \| `{ru,en}`, по форме значения как presentation). Если контейнер несёт собственный `userSettingPresentation` (кастомная подпись настройки), значение — объект `{ meta: "u", presentation: "Текст" \| {ru,en} }` (presentation по форме значения: строка → `xs:string`, объект → `LocalStringType`). Компилятор эмитит ТОЛЬКО указанные части (контент берёт из `filter`/`order`/`conditionalAppearance`). Нет ключа → полный каноничный скелет. Пустой объект `{}` → self-closing `<ListSettings/>` (оригинал без скелета). Декомпилятор пишет дескриптор только для отклонений от канона |
 
 `ManualQuery` выводится из наличия `query` (есть `query` → `true`). Редкое отклонение — список с `query`, но `ManualQuery=false` (корпус 16): ключ `manualQuery: false` побеждает эвристику (декомпилятор ставит его только при таком отклонении).
@@ -1016,6 +1065,8 @@ Forgiving-синонимы типа: XML-имя (`SpreadSheetDocumentField`) и 
 Пустой блок настроек компоновщика (`ListSettings`) генерируется автоматически (каноничный полный скелет платформы — filter+order+conditionalAppearance+itemsViewMode+itemsUserSettingID, ~93% форм); указывать ничего не нужно.
 
 #### parameters — параметры схемы дин-списка
+
+Компиляция этот ключ не пишет и отвергает; раздел описывает модель Form XML.
 
 Параметры запроса дин-списка используют платформенный тип `DataCompositionSchemaParameter` (`&Параметр` в тексте запроса; см. [XML-формат СКД](1c-dcs-spec.md#8-параметры-схемы-parameter)). В DSL формы доступны shorthand `"Имя [Заголовок]: Тип = Значение @valueList @hidden"` и объектная форма, описанные ниже. Эти аргументы относятся к форме; контракты операций над СКД запрашиваются через `can`.
 
@@ -1047,6 +1098,8 @@ Forgiving-синонимы типа: XML-имя (`SpreadSheetDocumentField`) и 
 
 #### grouping — группировка строк списка
 
+Компиляция этот ключ и его синонимы (`structure`, `группировка`) не пишет и отвергает; раздел описывает модель Form XML.
+
 Уровни группировки над детальными записями списка (XML: цепочка `<dcsset:item StructureItemGroup>` в `<ListSettings>`). Группировка списка — **линейная цепочка** (каждый уровень = одно поле; несколько уровней вкладываются друг в друга), поэтому DSL плоский:
 
 ```json
@@ -1076,6 +1129,8 @@ Forgiving-синонимы типа: XML-имя (`SpreadSheetDocumentField`) и 
 
 #### calculatedFields — вычисляемые поля набора
 
+Компиляция этот ключ не пишет и отвергает; раздел описывает модель Form XML.
+
 Поля, вычисляемые выражением (XML: `<CalculatedField>` в DataSet). В DSL формы используются следующие shorthand и объектная форма:
 
 Shorthand: `"Имя [Заголовок]: тип = Выражение #noField #noFilter #noGroup #noOrder"` — всё кроме имени опционально:
@@ -1097,6 +1152,8 @@ Shorthand: `"Имя [Заголовок]: тип = Выражение #noField #
 `useRestriction` — объект `{ field?, condition?, group?, order? }` (bool) или флаг-строка `"#noFilter #noGroup"`. `orderExpression` — массив `{ expression, orderType?, autoOrder? }`. Тип — `valueType` (синоним `type`).
 
 #### order / filter / conditionalAppearance
+
+Компиляция эти ключи не пишет и отвергает; раздел описывает модель Form XML.
 
 Настройки динамического списка используют платформенные типы отбора, сортировки и условного оформления СКД. Формы аргументов для DSL формы описаны ниже; XML-структура — в [спецификации СКД](1c-dcs-spec.md#11-варианты-настроек-settingsvariant).
 
@@ -1130,6 +1187,8 @@ Shorthand: `"Имя [Заголовок]: тип = Выражение #noField #
 
 ## 6. Parameters — параметры формы
 
+Какие ключи параметра пишет компиляция — по общему правилу §4: `name`, `type` (строки) и `key` (bool).
+
 ```json
 "parameters": [
   { "name": "Ключ", "type": "DocumentRef.Реализация", "key": true },
@@ -1147,6 +1206,8 @@ Shorthand: `"Имя [Заголовок]: тип = Выражение #noField #
 
 ## 7. Commands — команды формы
 
+Какие ключи команды пишет компиляция — по общему правилу §4.
+
 ```json
 "commands": [
   { "name": "Печать", "action": "ПечатьОбработка", "shortcut": "Ctrl+P" },
@@ -1157,17 +1218,19 @@ Shorthand: `"Имя [Заголовок]: тип = Выражение #noField #
 `command.add` принимает из этой таблицы только `name`, `title`, `tooltip`,
 `action`, `shortcut`, `picture` (строкой) и `representation`; остальные ключи
 отклоняются до записи. Контракт операции — `<форма>.Can.command.add`.
+Компиляция описания формы пишет тот же набор (`title` и `picture` — строкой,
+`tooltip` — строкой или мапой языков) и отвергает остальные ключи таблицы.
 
 | Свойство | Тип | Описание |
 |----------|-----|----------|
 | `name` | string | Имя команды (обязательно) |
 | `action` | string | Имя процедуры-обработчика |
-| `title` | string/object | Заголовок (`<Title>`, мультиязычный объект `{ru,en}` поддерживается). **Авто-вывод:** ключ отсутствует → компилятор додумывает заголовок из имени (`ЗаданияВыбрать` → «Задания выбрать»), помощь модели. Суппресс-маркер `title: ""` → заголовок не эмитить и не додумывать (для команд без `<Title>` в оригинале — редкие ~0.13%) |
+| `title` | string/object | Заголовок (`<Title>`; объект `{ru,en}` — в модели, компиляция принимает только строку). **Авто-вывод:** ключ отсутствует → компилятор додумывает заголовок из имени (`ЗаданияВыбрать` → «Задания выбрать»), помощь модели. Суппресс-маркер `title: ""` → заголовок не эмитить и не додумывать (для команд без `<Title>` в оригинале — редкие ~0.13%) |
 | `tooltip` | string/object | Всплывающая подсказка команды (`<ToolTip>`) |
 | `use` | bool/object | Доступность команды по ролям (`<Use>`). См. §4.1c |
 | `functionalOptions` | array | Функциональные опции команды (см. §5) |
 | `currentRowUse` | string | Использование текущей строки: `Auto`, `DontUse`, `Use` |
-| `table` | string | Используемая таблица — имя элемента-таблицы формы (`<AssociatedTableElementId xsi:type="xs:string">Имя</…>`). Команда работает в контексте этой таблицы (текущая строка). Forgiving-синонимы: `associatedTableElementId` (XML-тег), `ИспользуемаяТаблица` (рус., регистро-/пробело-независимо) |
+| `table` | string | Используемая таблица — имя элемента-таблицы формы (`<AssociatedTableElementId xsi:type="xs:string">Имя</…>`). Команда работает в контексте этой таблицы (текущая строка). Синонимы в модели: `associatedTableElementId` (XML-тег), `ИспользуемаяТаблица` (рус., регистро-/пробело-независимо). Компиляция этот ключ и синонимы не пишет и отвергает |
 | `modifiesSavedData` | bool | Команда изменяет сохраняемые данные (`<ModifiesSavedData>`); эмитится только `true` |
 | `shortcut` | string | Клавиатурное сочетание |
 | `picture` | string \| object | Ссылка на картинку (`StdPicture.Name`; `abs:X` → `<xr:Abs>`). Скаляр ИЛИ объект `{src, loadTransparent?, transparentPixel?}` (как у `button`, §«button») |

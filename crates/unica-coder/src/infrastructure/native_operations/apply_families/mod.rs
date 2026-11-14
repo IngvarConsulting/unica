@@ -1670,8 +1670,9 @@ pub fn staged_node_existence(
     }
     let route = crate::domain::logical_route::classify_route(
         at,
-        crate::domain::source_capabilities::bsl_profile_for_source(binding.source_profile())
-            .unwrap_or_else(unica_bsl::profile::PlatformProfile::v8_3_27),
+        unica_bsl::profile::PlatformProfile::for_line_or_base(
+            binding.source_profile().semantic_line(),
+        ),
     )?;
     // Запись прав роли и область макета живут в присоединённом файле: их
     // создаёт операция родителя (`right.add`, `area.add`, #1354).

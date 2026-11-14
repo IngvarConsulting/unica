@@ -1,14 +1,14 @@
 {
-  "profile": "8.3.27",
+  "profile": "8.5.1",
   "source": {
-    "installationVersion": "8.3.27.2074",
+    "installationVersion": "8.5.1.1529",
     "container": "shcntx_ru.hbk",
-    "sha256": "f793eba3f941551139e82e3fbc9c652c58900b2924960714fc4ca016cd9c272a",
+    "sha256": "6f5bdc6d401e07127c00951f01360a8abc836c66846264ec7a7b271d03f3f5a6",
     "englishContainer": "shcntx_root.hbk",
-    "englishSha256": "0113af559ef2001dedbbd9e6bbfcf8bc02e3241ca715f95c8a34c4f24c962421",
-    "eventMarkupPageCount": 693,
-    "signatureEventLeafCount": 689,
-    "eventPageIdsSha256": "19ad908ce8af0ba191dc642545d70ec163d402f129c34cd9f3c2d68318a09a31"
+    "englishSha256": "321a3ed2bc5a1f281096083460345faeb3faf2c427244db3a3cf2737495eb0cf",
+    "eventMarkupPageCount": 701,
+    "signatureEventLeafCount": 697,
+    "eventPageIdsSha256": "a77eb4af7d1e09d5140c22f2fe53c885e2332418e6781523e1670bb71cdab344"
   },
   "moduleCatalogs": [
     {
@@ -1348,6 +1348,22 @@
             "thickClientOrdinary"
           ],
           "sourcePageId": "platform-syntax-help:syntax-context:objects/catalog125/catalog279/object359/events/OnComposeResult411.html"
+        },
+        {
+          "eventId": "ResultCompositionProcessing",
+          "handlerRu": "ОбработкаКомпоновкиРезультата",
+          "handlerEn": "ResultCompositionProcessing",
+          "signatureRu": "Процедура ОбработкаКомпоновкиРезультата(ДокументРезультат, ДанныеРасшифровки, СтандартнаяОбработка)",
+          "signatureEn": "Procedure ResultCompositionProcessing(ResultDocument, DetailsData, StandardProcessing)",
+          "methodKind": "procedure",
+          "contexts": [
+            "server",
+            "externalConnection",
+            "thickClientOrdinary",
+            "mobileAppServer",
+            "mobileStandaloneServer"
+          ],
+          "sourcePageId": "platform-syntax-help:syntax-context:objects/catalog125/catalog279/object359/events/ResultCompositionProcessing755.html"
         }
       ],
       "exclusionReason": null
@@ -4935,6 +4951,34 @@
           "sourcePageId": "platform-syntax-help:syntax-context:objects/catalog1649/catalog1679/FormTable/events/OnEditEnd367.html"
         },
         {
+          "eventId": "OnHover",
+          "handlerRu": "ПриНаведении",
+          "handlerEn": "OnHover",
+          "signatureRu": "Процедура ПриНаведении(Строка, Поле)",
+          "signatureEn": "Procedure OnHover(Row, Field)",
+          "methodKind": "procedure",
+          "contexts": [
+            "thinClient",
+            "webClient",
+            "thickClientManaged"
+          ],
+          "sourcePageId": "platform-syntax-help:syntax-context:objects/catalog1649/catalog1679/FormTable/events/OnHover757.html"
+        },
+        {
+          "eventId": "OnSelectedRowsSetChange",
+          "handlerRu": "ПриИзмененииСоставаВыделенныхСтрок",
+          "handlerEn": "OnSelectedRowsSetChange",
+          "signatureRu": "Процедура ПриИзмененииСоставаВыделенныхСтрок()",
+          "signatureEn": "Procedure OnSelectedRowsSetChange()",
+          "methodKind": "procedure",
+          "contexts": [
+            "thinClient",
+            "webClient",
+            "thickClientManaged"
+          ],
+          "sourcePageId": "platform-syntax-help:syntax-context:objects/catalog1649/catalog1679/FormTable/events/OnSelectedRowsSetChange751.html"
+        },
+        {
           "eventId": "OnStartEdit",
           "handlerRu": "ПриНачалеРедактирования",
           "handlerEn": "OnStartEdit",
@@ -5033,6 +5077,45 @@
             "mobileAppClient"
           ],
           "sourcePageId": "platform-syntax-help:syntax-context:objects/catalog1649/catalog1677/Form group extension for pages/events/OnCurrentPageChange518.html"
+        }
+      ],
+      "exclusionReason": null
+    },
+    {
+      "ownerKinds": [
+        "Element.Group",
+        "Column.Group"
+      ],
+      "sourceOwner": "Form group extension for a usual group",
+      "inheritedSourceOwners": [],
+      "eventIdOverrides": {},
+      "baseContexts": [
+        "thinClient",
+        "webClient",
+        "thickClientManaged",
+        "mobileClient",
+        "mobileAppClient"
+      ],
+      "metadataOwnerKinds": [],
+      "mainAttributeKinds": [],
+      "mainAttributeTypePrefixes": [],
+      "dynamicListSource": false,
+      "events": [
+        {
+          "eventId": "Click",
+          "handlerRu": "Нажатие",
+          "handlerEn": "Click",
+          "signatureRu": "Процедура Нажатие()",
+          "signatureEn": "Procedure Click()",
+          "methodKind": "procedure",
+          "contexts": [
+            "thinClient",
+            "webClient",
+            "thickClientManaged",
+            "mobileClient",
+            "mobileAppClient"
+          ],
+          "sourcePageId": "platform-syntax-help:syntax-context:objects/catalog1649/catalog1677/Form group extension for a usual group/events/Click750.html"
         }
       ],
       "exclusionReason": null
@@ -5713,8 +5796,8 @@
           "eventId": "AdditionalDetailProcessing",
           "handlerRu": "ОбработкаДополнительнойРасшифровки",
           "handlerEn": "AdditionalDetailProcessing",
-          "signatureRu": "Процедура ОбработкаДополнительнойРасшифровки(Расшифровка, СтандартнаяОбработка, ДополнительныеПараметры)",
-          "signatureEn": "Procedure AdditionalDetailProcessing(Details, StandardProcessing, AdditionalParameters)",
+          "signatureRu": "Процедура ОбработкаДополнительнойРасшифровки(Расшифровка, СтандартнаяОбработка, ДополнительныеПараметры, ВсеРасшифровкиОбласти, ДляПанелиДействий)",
+          "signatureEn": "Procedure AdditionalDetailProcessing(Details, StandardProcessing, AdditionalParameters, AllAreaDetails, ForActionPanel)",
           "methodKind": "procedure",
           "contexts": [
             "thinClient",
@@ -5860,18 +5943,34 @@
           "sourcePageId": "platform-syntax-help:syntax-context:objects/catalog1649/catalog1676/Form field extension for a spreadsheet document field/events/OnActivate431.html"
         },
         {
-          "eventId": "OnChangeAreaContentEvent",
+          "eventId": "OnChangeAreaContent",
           "handlerRu": "ПриИзмененииСодержимогоОбласти",
-          "handlerEn": "OnChangeAreaContentEvent",
+          "handlerEn": "OnChangeAreaContent",
           "signatureRu": "Процедура ПриИзмененииСодержимогоОбласти(Область, ДополнительныеПараметры)",
-          "signatureEn": "Procedure OnChangeAreaContentEvent(Area, AdditionalParameters)",
+          "signatureEn": "Procedure OnChangeAreaContent(Area, AdditionalParameters)",
           "methodKind": "procedure",
           "contexts": [
             "thinClient",
             "webClient",
             "thickClientManaged"
           ],
-          "sourcePageId": "platform-syntax-help:syntax-context:objects/catalog1649/catalog1676/Form field extension for a spreadsheet document field/events/OnChangeAreaContentEvent410.html"
+          "sourcePageId": "platform-syntax-help:syntax-context:objects/catalog1649/catalog1676/Form field extension for a spreadsheet document field/events/OnChangeAreaContent410.html"
+        },
+        {
+          "eventId": "OnGenerateToolTipText",
+          "handlerRu": "ПриФормированииТекстаПодсказки",
+          "handlerEn": "OnGenerateToolTipText",
+          "signatureRu": "Процедура ПриФормированииТекстаПодсказки(Область, ТекстПодсказки, СтандартнаяОбработка)",
+          "signatureEn": "Procedure OnGenerateToolTipText(Area, ToolTipText, StandardProcessing)",
+          "methodKind": "procedure",
+          "contexts": [
+            "thinClient",
+            "webClient",
+            "thickClientManaged",
+            "mobileClient",
+            "mobileAppClient"
+          ],
+          "sourcePageId": "platform-syntax-help:syntax-context:objects/catalog1649/catalog1676/Form field extension for a spreadsheet document field/events/OnGenerateToolTipText756.html"
         },
         {
           "eventId": "Selection",
@@ -5956,9 +6055,7 @@
         "Element.Button",
         "Column.Button",
         "Element.CommandBar",
-        "Column.CommandBar",
-        "Element.Group",
-        "Column.Group"
+        "Column.CommandBar"
       ],
       "sourceOwner": null,
       "inheritedSourceOwners": [],
@@ -7105,6 +7202,18 @@
       "dynamicListSource": false,
       "events": [
         {
+          "eventId": "AfterComposeResult",
+          "handlerRu": "ПослеКомпоновкиРезультата",
+          "handlerEn": "AfterComposeResult",
+          "signatureRu": "Процедура ПослеКомпоновкиРезультата(Результат, СтандартнаяОбработка)",
+          "signatureEn": "Procedure AfterComposeResult(Result, StandardProcessing)",
+          "methodKind": "procedure",
+          "contexts": [
+            "thickClientManaged"
+          ],
+          "sourcePageId": "platform-syntax-help:syntax-context:objects/catalog1649/catalog1890/Client application form extension for reports/events/AfterComposeResult754.html"
+        },
+        {
           "eventId": "BeforeLoadUserSettingsAtServer",
           "handlerRu": "ПередЗагрузкойПользовательскихНастроекНаСервере",
           "handlerEn": "BeforeLoadUserSettingsAtServer",
@@ -7127,6 +7236,18 @@
             "server"
           ],
           "sourcePageId": "platform-syntax-help:syntax-context:objects/catalog1649/catalog1890/Client application form extension for reports/events/BeforeLoadVariantAtServer523.html"
+        },
+        {
+          "eventId": "OnComposeResult",
+          "handlerRu": "ПриКомпоновкеРезультата",
+          "handlerEn": "OnComposeResult",
+          "signatureRu": "Процедура ПриКомпоновкеРезультата(СтандартнаяОбработка)",
+          "signatureEn": "Procedure OnComposeResult(StandardProcessing)",
+          "methodKind": "procedure",
+          "contexts": [
+            "thickClientManaged"
+          ],
+          "sourcePageId": "platform-syntax-help:syntax-context:objects/catalog1649/catalog1890/Client application form extension for reports/events/OnComposeResult752.html"
         },
         {
           "eventId": "OnLoadUserSettingsAtServer",
@@ -7175,6 +7296,22 @@
             "server"
           ],
           "sourcePageId": "platform-syntax-help:syntax-context:objects/catalog1649/catalog1890/Client application form extension for reports/events/OnSaveVariantAtServer437.html"
+        },
+        {
+          "eventId": "OnSettingsChange",
+          "handlerRu": "ПриИзмененииНастроек",
+          "handlerEn": "OnSettingsChange",
+          "signatureRu": "Процедура ПриИзмененииНастроек(СтандартнаяОбработка)",
+          "signatureEn": "Procedure OnSettingsChange(StandardProcessing)",
+          "methodKind": "procedure",
+          "contexts": [
+            "thinClient",
+            "webClient",
+            "thickClientManaged",
+            "mobileClient",
+            "mobileAppClient"
+          ],
+          "sourcePageId": "platform-syntax-help:syntax-context:objects/catalog1649/catalog1890/Client application form extension for reports/events/OnSettingsChange753.html"
         },
         {
           "eventId": "OnUpdateUserSettingSetAtServer",

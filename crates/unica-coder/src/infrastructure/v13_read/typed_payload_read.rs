@@ -260,6 +260,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
                         "form route has no typed target",
                     )
                 })?,
+                Some(self.platform_profile().line()),
                 &mut || self.read_checkpoint(),
             );
         }

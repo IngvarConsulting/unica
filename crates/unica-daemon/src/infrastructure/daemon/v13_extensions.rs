@@ -368,6 +368,7 @@ impl PreparedExtensions {
                 runner_rejection(
                     Some(self.operation.name().into()),
                     code,
+                    envelope["error"]["layer"].as_str(),
                     envelope["error"]["message"]
                         .as_str()
                         .map(|message| published_runner_error(self.operation, code, message))

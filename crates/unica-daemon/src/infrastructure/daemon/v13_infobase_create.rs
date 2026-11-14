@@ -367,6 +367,7 @@ fn declare_own_base(
     Err(runner_rejection(
         Some(OPERATION.to_string()),
         code,
+        envelope["error"]["layer"].as_str(),
         if message.is_empty() {
             "v8-runner could not declare the infobase of this working copy".to_string()
         } else {
@@ -857,7 +858,12 @@ fn parse_runner_output(
             .map(redactor)
             .unwrap_or_else(|| "v8-runner failed without a typed message".to_string());
         return Err(runner_envelope_refusal(
-            runner_rejection(Some(OPERATION.to_string()), code, message),
+            runner_rejection(
+                Some(OPERATION.to_string()),
+                code,
+                envelope["error"]["layer"].as_str(),
+                message,
+            ),
             &envelope,
         ));
     }

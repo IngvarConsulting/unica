@@ -2775,6 +2775,7 @@ fn edit_form_refuses_exhausted_ui_ids_without_writing() {
             &form_path,
             root_start,
             Some("ru"),
+            None,
         )
         .unwrap();
         assert_eq!(unchanged, original, "a no-op does not allocate an ID");
@@ -5503,7 +5504,6 @@ fn edit_form_emits_and_validates_new_table_and_column_events() {
                 "elements": [{
                     "table": "Rows",
                     "path": "Rows",
-                    "commandBar": {"autofill": false},
                     "on": [{"event": "Selection", "handler": "RowsSelection"}],
                     "columns": [{
                         "labelField": "Description",

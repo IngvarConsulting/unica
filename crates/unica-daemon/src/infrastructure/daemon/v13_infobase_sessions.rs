@@ -155,7 +155,12 @@ pub(super) fn restart_server(
             "push cancelled while the standalone server restarted",
         ));
     }
-    Err(runner_rejection(Some(AT.to_string()), code, message))
+    Err(runner_rejection(
+        Some(AT.to_string()),
+        code,
+        envelope["error"]["layer"].as_str(),
+        message,
+    ))
 }
 
 /// The call without the consent to end sessions or restart the server: «I

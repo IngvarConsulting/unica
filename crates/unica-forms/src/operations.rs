@@ -49,7 +49,7 @@ macro_rules! form_operations {
 
 form_operations!(
     Add => ("form.add", MetadataForms, Items),
-    Set => ("form.set", MetadataForms, Values),
+    Set => ("form.set", FormSlots, Values),
     Remove => ("form.remove", Form, Target),
     ItemAdd => ("item.add", FormItemContainer, Items),
     ItemRemove => ("item.remove", FormItem, Target),
@@ -156,10 +156,11 @@ impl unica_operations::FamilyOperation for FormOperation {
         site: &unica_source_contract::context::OperationSite<'_>,
     ) -> Option<unica_operation_contract::OperationContract> {
         Some(match self {
-            Self::Set => crate::contracts::form_set(
+            Self::Set => crate::contracts::form_set_in(
                 site.segments()
                     .first()
                     .map(|segment| segment.kind().as_str()),
+                site.source().classification_profile().semantic_line(),
             ),
             _ => self.contract_for_address(site.at()),
         })
@@ -218,7 +219,7 @@ mod tests {
             (
                 FormOperation::Set,
                 "form.set",
-                OperationApplicability::MetadataForms,
+                OperationApplicability::FormSlots,
                 OperationSkeleton::Values,
             ),
             (

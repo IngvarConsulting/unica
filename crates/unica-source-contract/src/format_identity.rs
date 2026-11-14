@@ -292,6 +292,29 @@ const CONFIGURATION_ROOT_LINE_ADDITIONS: &[(&str, Option<&str>, PlatformLine)] =
         Some("Version8_5"),
         PlatformLine::new(8, 5, 1),
     ),
+    // The extension root of 8.5.4 (`2.22/empty_extension`): what the extension
+    // does when the configuration lacks one of its objects, how it checks the
+    // extended properties and reduces types.
+    (
+        "ActionOnConfigurationObjectMissing",
+        None,
+        PlatformLine::new(8, 5, 4),
+    ),
+    (
+        "DefaultExtensionPropertyCheckAction",
+        None,
+        PlatformLine::new(8, 5, 4),
+    ),
+    (
+        "TypeReductionByConfigurationExtensionMode",
+        None,
+        PlatformLine::new(8, 5, 4),
+    ),
+    (
+        "ActionOnExtendedConfigurationObjectsMissing",
+        None,
+        PlatformLine::new(8, 5, 4),
+    ),
     // The modes of the line itself: 8.5.1 refuses to load `Version8_5_4`
     // ("необходима версия платформы не меньше, чем 8.5.4"). The Designer of
     // 8.5.1 lists the modes up to 8.3.27, but the platform loads and exports
@@ -341,11 +364,71 @@ pub fn configuration_root_additions_after(line: Option<PlatformLine>) -> Vec<Lin
         .collect()
 }
 
-/// What a platform line adds to the members of metadata objects: the member
-/// kind, its property and the line it exists from, by the all_kinds export
-/// and the platform XDTO of each line (INV.SOURCE.PROFILE-CAPABILITIES).
-const MEMBER_LINE_ADDITIONS: &[(&str, &str, PlatformLine)] =
-    &[("EnumValue", "Color", PlatformLine::new(8, 5, 1))];
+/// What a platform line adds to metadata objects and their members: the
+/// object or member kind, its property and the line it exists from, by the
+/// all_kinds export, the empty external report and the platform XDTO of each
+/// line (INV.SOURCE.PROFILE-CAPABILITIES).
+const MEMBER_LINE_ADDITIONS: &[(&str, &str, PlatformLine)] = &[
+    ("EnumValue", "Color", PlatformLine::new(8, 5, 1)),
+    ("Report", "AuxiliaryVariantForm", PlatformLine::new(8, 5, 1)),
+    (
+        "ExternalReport",
+        "AuxiliaryVariantForm",
+        PlatformLine::new(8, 5, 1),
+    ),
+    (
+        "Form",
+        "UseInInterfaceCompatibilityMode",
+        PlatformLine::new(8, 5, 1),
+    ),
+    (
+        "CommonForm",
+        "UseInInterfaceCompatibilityMode",
+        PlatformLine::new(8, 5, 1),
+    ),
+    // The auxiliary forms of a configuration root (the all_kinds export of
+    // 2.21).
+    (
+        "Configuration",
+        "AuxiliaryReportForm",
+        PlatformLine::new(8, 5, 1),
+    ),
+    (
+        "Configuration",
+        "AuxiliaryReportVariantForm",
+        PlatformLine::new(8, 5, 1),
+    ),
+    (
+        "Configuration",
+        "AuxiliaryReportSettingsForm",
+        PlatformLine::new(8, 5, 1),
+    ),
+    (
+        "Configuration",
+        "AuxiliaryDynamicListSettingsForm",
+        PlatformLine::new(8, 5, 1),
+    ),
+    (
+        "Configuration",
+        "AuxiliaryDataHistoryChangeHistoryForm",
+        PlatformLine::new(8, 5, 1),
+    ),
+    (
+        "Configuration",
+        "AuxiliaryDataHistoryVersionDataForm",
+        PlatformLine::new(8, 5, 1),
+    ),
+    (
+        "Configuration",
+        "AuxiliaryDataHistoryVersionDifferencesForm",
+        PlatformLine::new(8, 5, 1),
+    ),
+    (
+        "Configuration",
+        "AuxiliaryCollaborationSystemUsersChoiceForm",
+        PlatformLine::new(8, 5, 1),
+    ),
+];
 
 /// The line a `member` kind's `property` exists from, when a later line than
 /// the first described one adds it.
@@ -367,8 +450,10 @@ pub fn member_property_exists(line: Option<PlatformLine>, member: &str, property
 /// the line they exist from, by the all_kinds export of each line
 /// (INV.SOURCE.PROFILE-CAPABILITIES). A kind absent here exists in every
 /// described line.
-const METADATA_KIND_LINE_ADDITIONS: &[(&str, PlatformLine)] =
-    &[("PaletteColor", PlatformLine::new(8, 5, 1))];
+const METADATA_KIND_LINE_ADDITIONS: &[(&str, PlatformLine)] = &[
+    ("PaletteColor", PlatformLine::new(8, 5, 1)),
+    ("Queue", PlatformLine::new(8, 5, 4)),
+];
 
 /// The line a root metadata `kind` exists from, when a later line than the
 /// first described one adds it.

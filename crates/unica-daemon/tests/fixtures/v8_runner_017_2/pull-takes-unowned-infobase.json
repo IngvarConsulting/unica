@@ -1,0 +1,27 @@
+{
+  "ok": true,
+  "command": "pull",
+  "duration_ms": 34219,
+  "data": {
+    "provider": {
+      "selected": "ibcmd",
+      "origin": {
+        "kind": "default"
+      },
+      "reason": "whole"
+    },
+    "ok": true,
+    "provider_dispatched": true,
+    "up_to_date": false,
+    "source_set": "main",
+    "requested_mode": "FULL",
+    "mode": "FULL",
+    "target_path": "C:\\workspace\\C\\src",
+    "duration_ms": 34219,
+    "message": "dump completed successfully"
+  },
+  "warnings": [
+    "the infobase 'C:\\workspace\\ib' had no owner and is now held by this working copy 'C:\\workspace\\C' (owner marker 'C:\\workspace\\.ib.v8-runner.owners.json')"
+  ],
+  "steps": []
+}

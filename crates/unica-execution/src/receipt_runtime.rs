@@ -6557,7 +6557,24 @@ impl<H: InvocationHost> V5ReceiptRuntime<H> {
         {
             return Ok(task_store_snapshot(&record));
         }
-        let state = self.receipt_ledger.resolve_task(task_id, deadline)?;
+        self.hooks
+            .pause(V5PausePoint::BeforeTaskLedgerRead, deadline)?;
+        let state = match self.receipt_ledger.resolve_task(task_id, deadline) {
+            // The receipt row leaves the ledger only once its Task link stands
+            // (`complete_bound_task_handoff`): a Task missed by both reads moved
+            // in between and is read once more, not answered as unknown (#2992).
+            Err(ReceiptLedgerError::ReceiptNotFound) => {
+                return match self
+                    .task_projection
+                    .read_bound_task(task_id, deadline)
+                    .map_err(|failure| self.project_task_failure(failure))?
+                {
+                    Some(record) => Ok(task_store_snapshot(&record)),
+                    None => Err(ReceiptLedgerError::ReceiptNotFound),
+                };
+            }
+            other => other?,
+        };
         let receipt = match state {
             ReceiptState::TaskPromisedUnbound(receipt) => {
                 return Ok(queued_receipt_task_snapshot(

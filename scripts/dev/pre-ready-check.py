@@ -10,6 +10,8 @@
 - Clippy всего workspace, как ворота PR, когда затронут хоть один крейт;
 - `cargo fmt --all --check` и `scripts/ci/check-discovered-modules-format.py`;
 - `scripts/ci/check-version-contract.py`;
+- `scripts/ci/open_marks.py pr`: пометки незакрытого называют открытые задачи
+  (нужен `gh`); с `--description-file` — и не те, что закрывает этот PR;
 - полные наборы `tests/ci` и `tests/dev`;
 - с `--description-file` — `scripts/ci/removed_tests.py` по описанию PR.
   Без описания исчезнувшие тесты печатаются напоминанием: эти строки
@@ -38,7 +40,11 @@
 или `unittest.skip`. Очередь гоняет их на Linux, поэтому их разбирают по коду.
 
 Без `CARGO_TARGET_DIR` скрипт отказывает: сборка в `target/` рабочей копии
-не годится для конвейера. Рабочая копия базы и её сборка лежат
+не годится для конвейера. Отказывает он и с каталогом сборки, который собирал
+другую рабочую копию: Cargo решает, что пересобрать, по времени файлов, и
+может проверить код той копии вместо этой. Копию-хозяина каталог помнит
+в файле `unica-worktree`; сборки обычным `cargo` из другой копии видны
+по `CARGO_MANIFEST_DIR` в файлах `.d` крейтов рабочего пространства. Рабочая копия базы и её сборка лежат
 в `$CARGO_TARGET_DIR/pre-ready-check/`, поэтому два прогона с одним каталогом
 сборки одновременно не запускают.
 """
@@ -78,6 +84,9 @@ SKIP_MARKER = "unica-host-capability-skip:"
 # одного репозитория мешают друг другу.
 WORKTREE_LOCK = "pre-ready-check-worktrees.lock"
 LOCK_WAIT_SECONDS = 300.0
+# Файл в каталоге сборки с корнем рабочей копии, которая им пользуется.
+TARGET_OWNER = "unica-worktree"
+MANIFEST_DIR_DEP = re.compile(r"^# env-dep:CARGO_MANIFEST_DIR=(.+)$", re.MULTILINE)
 
 
 class Refusal(Exception):
@@ -92,7 +101,7 @@ class Check:
     """Одна проверка. `key` одинаков на ветке и на базе."""
 
     key: str
-    kind: str  # test | clippy | fmt | modules-fmt | version-contract | removed-tests | python
+    kind: str  # test | clippy | fmt | modules-fmt | version-contract | open-marks | removed-tests | python
     target: str = ""  # пакет, каталог крейта, набор Python или файл описания PR
     base: str = ""  # для `removed-tests`: от какой ревизии считать исчезнувшее
 
@@ -106,6 +115,9 @@ class Check:
                     "--message-format=short", "--", "-D", "warnings"]
         if self.kind == "version-contract":
             return [python, "scripts/ci/check-version-contract.py"]
+        if self.kind == "open-marks":
+            description = Path(self.target).read_text(encoding="utf-8") if self.target else ""
+            return [python, "scripts/ci/open_marks.py", "pr", "--description", description]
         if self.kind == "removed-tests":
             return [python, "scripts/ci/removed_tests.py", "--base", self.base, "--description-file", self.target]
         if self.kind == "fmt":
@@ -269,11 +281,17 @@ def parse_unittest(output: str, returncode: int) -> Result:
 
 
 def parse_script(output: str, returncode: int) -> Result:
-    """Скрипт-страж: отказ — его непустые строки, без них — код выхода."""
+    """Скрипт-страж: отказ — его строки `::error::` или все непустые, без них — код выхода.
+
+    Трассировка Python — сбой самого стража (нет `gh`, сети), а не его отказ.
+    """
     if returncode == 0:
         return Result([])
-    lines = sorted({line.strip().removeprefix("::error::") for line in output.splitlines() if line.strip()})
-    return Result(lines or [f"отказ без пояснения, код {returncode}"])
+    if "Traceback (most recent call last)" in output:
+        return Result([f"страж не досчитал: {output.strip().splitlines()[-1]}"], complete=False)
+    lines = [line.strip() for line in output.splitlines() if line.strip()]
+    errors = [line.removeprefix("::error::") for line in lines if line.startswith("::error::")]
+    return Result(sorted(set(errors or lines)) or [f"отказ без пояснения, код {returncode}"])
 
 
 def parse_removed(output: str, returncode: int) -> Result:
@@ -291,7 +309,7 @@ def parse(check: Check, output: str, returncode: int, root: Path) -> Result:
         return parse_clippy(output, returncode, root)
     if check.kind in ("fmt", "modules-fmt"):
         return parse_fmt(output, returncode, root)
-    if check.kind == "version-contract":
+    if check.kind in ("version-contract", "open-marks"):
         return parse_script(output, returncode)
     if check.kind == "removed-tests":
         return parse_removed(output, returncode)
@@ -681,6 +699,59 @@ def unrun_tests(
     return report, elsewhere
 
 
+# --- Каталог сборки одной рабочей копии ----------------------------------------
+
+
+def same_path(first: Path, second: Path) -> bool:
+    return os.path.normcase(os.path.abspath(first)) == os.path.normcase(os.path.abspath(second))
+
+
+def built_copies(target: Path, root: Path) -> List[Path]:
+    """Корни других копий этого репозитория, чьи крейты собраны в `target`.
+
+    Видны крейты, которые читают `CARGO_MANIFEST_DIR`: rustc пишет его в `.d`.
+    Чужой корень — путь вида `<корень>/crates/<крейт>`, где `<крейт>` есть
+    и в этой копии; каталоги сторонних зависимостей так не выглядят.
+    Просматриваются `<профиль>/deps` и `<триплет>/<профиль>/deps`: с
+    `CARGO_BUILD_TARGET` Cargo кладёт сборку под каталог триплета.
+    """
+    crates = {path.parent.name for path in (root / "crates").glob("*/Cargo.toml")}
+    found: List[Path] = []
+    for pattern in ("*/deps/*.d", "*/*/deps/*.d"):
+        for dep_info in sorted(target.glob(pattern)):
+            try:
+                text = dep_info.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            for match in MANIFEST_DIR_DEP.finditer(text):
+                manifest = Path(match.group(1).strip().replace("\\\\", "\\"))
+                if manifest.parent.name != "crates" or manifest.name not in crates:
+                    continue
+                copy = manifest.parent.parent
+                if not same_path(copy, root) and not any(same_path(copy, known) for known in found):
+                    found.append(copy)
+    return found
+
+
+def claim_target(target: Path, root: Path) -> None:
+    """Закрепляет каталог сборки за копией `root` или отказывает, если он собирал другую."""
+    owner_file = target / TARGET_OWNER
+    try:
+        owner = Path(owner_file.read_text(encoding="utf-8").strip())
+    except OSError:
+        owner = None
+    others = [owner] if owner is not None and not same_path(owner, root) else []
+    others += [copy for copy in built_copies(target, root) if not any(same_path(copy, o) for o in others)]
+    if others:
+        raise Refusal(
+            f"в каталоге сборки {target} собирали другую рабочую копию: {', '.join(map(str, others))}. "
+            "Cargo может счесть её артефакты свежими, и проверка пройдёт по её коду, а не по вашему. "
+            "Задайте этой копии свой CARGO_TARGET_DIR; если та копия закончена, удалите каталог сборки целиком."
+        )
+    target.mkdir(parents=True, exist_ok=True)
+    owner_file.write_text(f"{root}\n", encoding="utf-8")
+
+
 # --- Запуск ---------------------------------------------------------------------
 
 
@@ -867,6 +938,7 @@ def plan(crates: Sequence[str], packages: Dict[str, Package], base: str = "",
     checks.append(Check("fmt", "fmt"))
     checks.append(Check("modules-fmt", "modules-fmt"))
     checks.append(Check("version-contract", "version-contract"))
+    checks.append(Check("open-marks", "open-marks", description or ""))
     if description is not None:
         checks.append(Check("removed-tests", "removed-tests", description, base))
     checks.extend(Check(f"python:{suite}", "python", suite) for suite in PYTHON_SUITES)
@@ -891,6 +963,7 @@ PR_GATES: Dict[str, Optional[str]] = {
     "Формат": "fmt",
     "Контракт версий": "version-contract",
     "Clippy": "clippy",
+    "Пометки незакрытого": "open-marks",
 }
 # Что из покрытого шага гейт на хосте не исполняет.
 PARTIAL: Dict[str, str] = {
@@ -946,6 +1019,10 @@ def parity(root: Path, described: bool) -> List[str]:
             if name in PARTIAL and PR_GATES.get(name) == "removed-tests":
                 reasons[name].insert(0, "описание PR не задано (`--description-file`), "
                                         "исчезнувшие тесты только напечатаны")
+            if PR_GATES.get(name) == "open-marks":
+                reasons.setdefault(name, []).append(
+                    "описание PR не задано (`--description-file`): пометки на задачи, "
+                    "которые закрывает этот PR, не сверены")
     unchecked = [f"{name} — {'; '.join(why)}" for name, why in reasons.items()]
     lines = [f"Ворота PR, которых гейт не знает: {'; '.join(unknown)} — сверьте PR_GATES "
              f"в scripts/dev/pre-ready-check.py с {CI_WORKFLOW}" if unknown
@@ -1124,6 +1201,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     cache_dir = cargo_target_dir(REPO_ROOT).resolve() / CACHE_DIR_NAME
     env = {**os.environ, "PYTHONUTF8": "1"}
     try:
+        claim_target(cache_dir.parent, REPO_ROOT)
         base = git(REPO_ROOT, "merge-base", args.base, "HEAD").strip()
         lines = changed_lines(git(REPO_ROOT, "-c", "core.quotePath=false", "diff", "-U0", "--no-color", "--no-renames", base))
         dirty = git(REPO_ROOT, "status", "--porcelain", "--untracked-files=no").strip()

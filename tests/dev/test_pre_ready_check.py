@@ -486,8 +486,9 @@ class DiffTests(unittest.TestCase):
         # Clippy as the PR gate runs it: the whole workspace, all targets and features.
         self.assertEqual(commands["clippy"][:6],
                          ["cargo", "clippy", "--workspace", "--all-targets", "--all-features", "--locked"])
-        self.assertEqual({"fmt", "modules-fmt", "version-contract", "python:tests/ci", "python:tests/dev"}
-                         - set(commands), set())
+        self.assertEqual({"fmt", "modules-fmt", "version-contract", "open-marks", "python:tests/ci",
+                          "python:tests/dev"} - set(commands), set())
+        self.assertEqual(commands["open-marks"], ["py", "scripts/ci/open_marks.py", "pr", "--description", ""])
         self.assertEqual(len(planned.notes), 1)
 
     def test_without_rust_changes_clippy_is_not_planned(self):
@@ -615,6 +616,74 @@ class UnrunTests(unittest.TestCase):
         self.assertEqual(report, ["crates/docs/tests/oracle.rs::stale — пропущен на хосте"])
 
 
+class TargetOwnerTests(unittest.TestCase):
+    """Каталог сборки собирает одну рабочую копию; чужой каталог — отказ."""
+
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.base = Path(directory.name)
+        self.target = self.base / "target"
+        self.copy = self.copy_root("this")
+        self.other = self.copy_root("other")
+
+    def copy_root(self, name):
+        root = self.base / name
+        (root / "crates" / "unica-core").mkdir(parents=True)
+        (root / "crates" / "unica-core" / "Cargo.toml").write_text("", encoding="utf-8")
+        return root
+
+    def dep_info(self, name, manifest, layout=("debug",)):
+        deps = self.target.joinpath(*layout, "deps")
+        deps.mkdir(parents=True, exist_ok=True)
+        escaped = str(manifest).replace("\\", "\\\\")
+        (deps / f"{name}.d").write_text(
+            f"{deps / name}.d: src/lib.rs\n\nsrc/lib.rs:\n\n# env-dep:CARGO_MANIFEST_DIR={escaped}\n",
+            encoding="utf-8")
+
+    def test_a_crate_built_from_another_copy_is_found(self):
+        self.dep_info("own", self.copy / "crates" / "unica-core")
+        self.dep_info("foreign", self.other / "crates" / "unica-core")
+        self.dep_info("registry", self.base / "registry" / "serde-1.0.0")
+        self.dep_info("unknown", self.base / "elsewhere" / "crates" / "not-ours")
+        found = CHECK.built_copies(self.target, self.copy)
+        self.assertEqual([os.path.normcase(path) for path in found], [os.path.normcase(self.other)])
+
+    def test_a_build_under_a_target_triple_or_another_profile_is_found(self):
+        for layout in (("x86_64-pc-windows-msvc", "debug"), ("test",)):
+            with self.subTest(layout=layout):
+                shutil.rmtree(self.target, ignore_errors=True)
+                self.dep_info("foreign", self.other / "crates" / "unica-core", layout)
+                found = CHECK.built_copies(self.target, self.copy)
+                self.assertEqual([os.path.normcase(path) for path in found], [os.path.normcase(self.other)])
+        shutil.rmtree(self.target, ignore_errors=True)
+        # The base tree of the check builds in its own directory inside.
+        self.dep_info("base", self.other / "crates" / "unica-core",
+                      (CHECK.CACHE_DIR_NAME, "base-build", "debug"))
+        self.assertEqual(CHECK.built_copies(self.target, self.copy), [])
+
+    def test_the_first_copy_claims_the_directory_and_may_use_it_again(self):
+        self.dep_info("own", self.copy / "crates" / "unica-core")
+        CHECK.claim_target(self.target, self.copy)
+        CHECK.claim_target(self.target, self.copy)
+        self.assertEqual((self.target / CHECK.TARGET_OWNER).read_text(encoding="utf-8").strip(), str(self.copy))
+
+    def test_a_directory_of_another_copy_is_refused(self):
+        CHECK.claim_target(self.target, self.other)
+        with self.assertRaises(CHECK.Refusal) as refused:
+            CHECK.claim_target(self.target, self.copy)
+        self.assertIn(str(self.other), str(refused.exception))
+        self.assertIn("свой CARGO_TARGET_DIR", str(refused.exception))
+        self.assertEqual((self.target / CHECK.TARGET_OWNER).read_text(encoding="utf-8").strip(), str(self.other))
+
+    def test_a_plain_cargo_build_from_another_copy_is_refused_without_the_owner_file(self):
+        self.dep_info("foreign", self.other / "crates" / "unica-core")
+        with self.assertRaises(CHECK.Refusal) as refused:
+            CHECK.claim_target(self.target, self.copy)
+        self.assertIn(str(self.other), str(refused.exception))
+        self.assertFalse((self.target / CHECK.TARGET_OWNER).exists())
+
+
 class GateParityTests(unittest.TestCase):
     WORKFLOW = {"jobs": {
         "admission": {"steps": [{"name": "Допуск", "if": "${{ github.event_name == 'pull_request' }}", "run": "x"}]},
@@ -649,6 +718,7 @@ class GateParityTests(unittest.TestCase):
         workflow = {"jobs": {"ci": {"steps": [
             {"name": "Новый страж", "if": "github.event_name == 'pull_request'", "run": "x"},
             {"name": "Удалённые тесты объявлены", "run": "y"},
+            {"name": "Пометки незакрытого", "run": "m"},
             {"name": "Тесты Rust", "if": "github.event_name == 'merge_group'", "run": "z"}]}}}
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / CHECK.CI_WORKFLOW
@@ -661,9 +731,12 @@ class GateParityTests(unittest.TestCase):
                                    "в scripts/dev/pre-ready-check.py с .github/workflows/ci.yml")
         nightly = ("сверка с ночным инвентарём не выполняется: ей нужны артефакты прогонов GitHub, "
                    "которых на этом хосте нет")
-        self.assertEqual(lines[1], "Не проверено гейтом: Удалённые тесты объявлены — описание PR не задано "
-                                   f"(`--description-file`), исчезнувшие тесты только напечатаны; {nightly}")
+        self.assertTrue(lines[1].startswith("Не проверено гейтом: Удалённые тесты объявлены — описание PR не "
+                                            "задано (`--description-file`), исчезнувшие тесты только напечатаны; "
+                                            f"{nightly}; "))
         self.assertEqual(described[1], f"Не проверено гейтом: Удалённые тесты объявлены — {nightly}")
+        self.assertTrue(lines[1].endswith("; Пометки незакрытого — описание PR не задано (`--description-file`): "
+                                          "пометки на задачи, которые закрывает этот PR, не сверены"))
         self.assertEqual(lines[2], "Только в очереди, гейт не гоняет: Тесты Rust")
 
     def test_a_removed_test_is_a_reminder_without_a_description(self):
@@ -685,6 +758,17 @@ class GateParityTests(unittest.TestCase):
         self.assertFalse(CHECK.parse_removed("git failed\n", 2).complete)
         self.assertEqual(CHECK.parse_script("version mismatch\n", 1).failures, ["version mismatch"])
         self.assertEqual(CHECK.parse_script("", 1).failures, ["отказ без пояснения, код 1"])
+        self.assertEqual(CHECK.parse_script("note\n::error::Пометка без номера\n", 1).failures,
+                         ["Пометка без номера"])
+        crashed = CHECK.parse_script("Traceback (most recent call last):\nRuntimeError: gh api: offline\n", 1)
+        self.assertFalse(crashed.complete)
+
+    def test_open_marks_read_the_description_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "pr.md"
+            path.write_text("Closes #7\n", encoding="utf-8")
+            [marks] = [check for check in CHECK.plan([], {}, "b", str(path)).checks if check.key == "open-marks"]
+            self.assertEqual(marks.command("py")[-2:], ["--description", "Closes #7\n"])
 
 
 class MainTests(unittest.TestCase):
@@ -700,6 +784,7 @@ class MainTests(unittest.TestCase):
                 mock.patch.object(CHECK, "baseline", return_value=(base, list(base_unfinished))), \
                 mock.patch.object(CHECK, "recheck", side_effect=lambda check, fresh, *rest: (CHECK.Result(fresh), [])), \
                 mock.patch.object(CHECK, "removed_reminder", return_value="Исчезнувшие тесты: нет"), \
+                mock.patch.object(CHECK, "parity", return_value=["Ворота PR: все шаги сверены с гейтом"]), \
                 redirect_stdout(out), redirect_stderr(err):
             code = CHECK.main([])
         return code, out.getvalue()
@@ -741,6 +826,14 @@ class MainTests(unittest.TestCase):
             os.environ.pop("CARGO_TARGET_DIR", None)
             self.assertEqual(CHECK.main([]), 2)
         self.assertIn("CARGO_TARGET_DIR", err.getvalue())
+
+    def test_a_build_directory_of_another_copy_refuses_before_any_check(self):
+        err = io.StringIO()
+        with tempfile.TemporaryDirectory() as directory,                 mock.patch.dict(os.environ, {"CARGO_TARGET_DIR": directory}),                 mock.patch.object(CHECK, "run_check") as run_check,                 redirect_stdout(io.StringIO()), redirect_stderr(err):
+            (Path(directory) / CHECK.TARGET_OWNER).write_text(str(Path(directory) / "other-copy"), encoding="utf-8")
+            self.assertEqual(CHECK.main([]), 2)
+        run_check.assert_not_called()
+        self.assertIn("собирали другую рабочую копию", err.getvalue())
 
 
 if __name__ == "__main__":

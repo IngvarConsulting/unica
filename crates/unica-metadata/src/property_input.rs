@@ -30,6 +30,19 @@ pub struct SubsystemPropertyChanges {
 pub enum DescriptorPropertyValue {
     Text(String),
     Boolean(bool),
+    /// The parts given, each by its platform name, in the platform order.
+    Parts(Vec<(&'static str, String)>),
+    /// Distinct values of a closed enumeration, in the order given.
+    List(Vec<String>),
+}
+
+/// Form descriptor property changes in profile order; each property appears
+/// once.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FormDescriptorPropertyChanges {
+    /// A common form, not a form of a metadata object.
+    pub common: bool,
+    pub changes: Vec<(DescriptorProperty, DescriptorPropertyValue)>,
 }
 
 /// Root property changes in profile order; each property appears once.
@@ -61,8 +74,10 @@ pub enum PropertiesIntent {
     WSReference(WsReferencePropertyChanges),
     Subsystem(SubsystemPropertyChanges),
     Configuration(ConfigurationPropertyChanges),
+    FormDescriptor(FormDescriptorPropertyChanges),
     StyleItem(StyleItemPropertyChanges),
     PaletteColor(PaletteColorPropertyChanges),
+    Queue(QueuePropertyChanges),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -80,6 +95,39 @@ pub const PALETTE_COLOR_PATTERN: &str = "^#[0-9A-Fa-f]{6}$";
 pub struct PaletteColorPropertyChanges {
     pub color: Option<String>,
     pub comment: Option<String>,
+}
+
+/// The processing properties and Comment of a queue; at least one is set.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct QueuePropertyChanges {
+    pub transactioned: Option<bool>,
+    pub auto_processing: Option<bool>,
+    pub processing_portion_size: Option<u32>,
+    pub comment: Option<String>,
+}
+
+impl QueuePropertyChanges {
+    /// The descriptor properties to write, in the order the export puts
+    /// them, with the text the platform writes for each.
+    pub fn descriptor_values(&self) -> Vec<(&'static str, String)> {
+        [
+            (
+                "Transactioned",
+                self.transactioned.map(|value| value.to_string()),
+            ),
+            (
+                "ProcessingPortionSize",
+                self.processing_portion_size.map(|value| value.to_string()),
+            ),
+            (
+                "AutoProcessing",
+                self.auto_processing.map(|value| value.to_string()),
+            ),
+        ]
+        .into_iter()
+        .filter_map(|(key, value)| value.map(|value| (key, value)))
+        .collect()
+    }
 }
 
 fn is_palette_color(raw: &str) -> bool {
@@ -255,6 +303,118 @@ impl<'a> PropertyArgumentReader<'a> {
             .transpose()
     }
 
+    fn parts(
+        &mut self,
+        field: DescriptorProperty,
+        allowed: &[&str],
+    ) -> DecodeResult<Option<Vec<(&'static str, String)>>> {
+        if field.kind() != DescriptorPropertyKind::Parts {
+            return Err(invalid(
+                &self.path,
+                "property kind disagrees with its parts decoder",
+            ));
+        }
+        let Some((value, path)) = self.alias(field)? else {
+            return Ok(None);
+        };
+        let object = value
+            .as_object()
+            .ok_or_else(|| invalid(&path, "property value must be an object"))?;
+        for name in object.keys() {
+            if !field.parts().iter().flatten().any(|part| part == name) {
+                return Err(invalid(
+                    format!("{path}.{name}"),
+                    format!("unknown part `{name}` of `{}`", field.names()[0]),
+                ));
+            }
+        }
+        let mut parts = Vec::new();
+        for names in field.parts() {
+            let given = names
+                .iter()
+                .filter_map(|name| object.get(*name).map(|value| (*name, value)))
+                .collect::<Vec<_>>();
+            match given.as_slice() {
+                [] => {}
+                [(name, value)] => {
+                    let part_path = format!("{path}.{name}");
+                    let value = value
+                        .as_str()
+                        .ok_or_else(|| invalid(&part_path, "part value must be a string"))?;
+                    if !allowed.contains(&value) {
+                        return Err(invalid(
+                            part_path,
+                            format!(
+                                "`{value}` is not a value of `{}.{}`; expected one of: {}",
+                                field.names()[0],
+                                names[0],
+                                allowed.join(", ")
+                            ),
+                        ));
+                    }
+                    parts.push((names[0], value.to_string()));
+                }
+                _ => {
+                    return Err(invalid(
+                        format!("{path}.{}", names[1]),
+                        format!(
+                            "part `{}` takes one spelling; choose either `{}` or `{}`",
+                            names[0], names[0], names[1]
+                        ),
+                    ))
+                }
+            }
+        }
+        if parts.is_empty() {
+            return Err(invalid(path, "name at least one part"));
+        }
+        Ok(Some(parts))
+    }
+
+    fn list(
+        &mut self,
+        field: DescriptorProperty,
+        allowed: &[&str],
+    ) -> DecodeResult<Option<Vec<String>>> {
+        if field.kind() != DescriptorPropertyKind::List {
+            return Err(invalid(
+                &self.path,
+                "property kind disagrees with its list decoder",
+            ));
+        }
+        let Some((value, path)) = self.alias(field)? else {
+            return Ok(None);
+        };
+        let items = value
+            .as_array()
+            .ok_or_else(|| invalid(&path, "property value must be an array"))?;
+        let mut values = Vec::new();
+        for (index, item) in items.iter().enumerate() {
+            let item_path = format!("{path}[{index}]");
+            let item = item
+                .as_str()
+                .ok_or_else(|| invalid(&item_path, "item must be a string"))?;
+            if !allowed.contains(&item) {
+                return Err(invalid(
+                    item_path,
+                    format!(
+                        "`{item}` is not a value of `{}`; expected one of: {}",
+                        field.names()[0],
+                        allowed.join(", ")
+                    ),
+                ));
+            }
+            if values.iter().any(|seen| seen == item) {
+                return Err(invalid(
+                    item_path,
+                    format!("`{item}` is listed twice in `{}`", field.names()[0]),
+                ));
+            }
+            values.push(item.to_string());
+        }
+        Ok(Some(values))
+    }
+
     fn finish<T>(self, decoded: T) -> DecodeResult<T> {
         for name in self.object.keys() {
             if self.shape.property(name).is_none() {
@@ -325,6 +485,12 @@ fn decode_with_contract(
             let values = reader
                 .field("values", false)?
                 .ok_or_else(|| invalid(&values_path, "values must be an object"))?;
+            if let Some((name, message)) = values
+                .as_object()
+                .and_then(|values| site.unwritten_refusal(values))
+            {
+                return Err(invalid(format!("{values_path}.{name}"), message));
+            }
             if site == PropertiesSite::CommentOnly(unica_address::address::NodeKind::Language)
                 && values.get("LanguageCode").is_some()
             {
@@ -371,6 +537,40 @@ fn decode_with_contract(
                             .and_then(Value::as_bool),
                         comment: values_reader.string(DescriptorProperty::Comment)?,
                     })
+                }
+                PropertiesSite::Queue => {
+                    let comment = values_reader.string(DescriptorProperty::Comment)?;
+                    let transactioned = values_reader
+                        .field("Transactioned", false)?
+                        .and_then(Value::as_bool);
+                    let auto_processing = values_reader
+                        .field("AutoProcessing", false)?
+                        .and_then(Value::as_bool);
+                    let processing_portion_size =
+                        match values_reader.field("ProcessingPortionSize", true)? {
+                            Some(value) => {
+                                Some(json_u32(value).filter(|size| *size > 0).ok_or_else(|| {
+                                    invalid(
+                                        format!("{values_path}.ProcessingPortionSize"),
+                                        "ProcessingPortionSize must be a whole number above zero",
+                                    )
+                                })?)
+                            }
+                            None => None,
+                        };
+                    let changes = QueuePropertyChanges {
+                        transactioned,
+                        auto_processing,
+                        processing_portion_size,
+                        comment,
+                    };
+                    if changes == QueuePropertyChanges::default() {
+                        return Err(invalid(
+                            &values_path,
+                            "Transactioned, AutoProcessing, ProcessingPortionSize or Comment is required",
+                        ));
+                    }
+                    PropertiesIntent::Queue(changes)
                 }
                 PropertiesSite::PaletteColor => {
                     let comment = values_reader.string(DescriptorProperty::Comment)?;
@@ -530,12 +730,50 @@ fn decode_with_contract(
                             DescriptorPropertyKind::Boolean => values_reader
                                 .boolean(field)?
                                 .map(DescriptorPropertyValue::Boolean),
+                            DescriptorPropertyKind::Parts => values_reader
+                                .parts(field, &field.allowed_values_in(line))?
+                                .map(DescriptorPropertyValue::Parts),
+                            DescriptorPropertyKind::List => values_reader
+                                .list(field, &field.allowed_values_in(line))?
+                                .map(DescriptorPropertyValue::List),
                         };
                         if let Some(value) = value {
                             changes.push((field, value));
                         }
                     }
                     PropertiesIntent::Configuration(ConfigurationPropertyChanges { changes })
+                }
+                PropertiesSite::FormDescriptor { common, .. } => {
+                    let mut changes = Vec::new();
+                    for field in site.descriptor_fields() {
+                        let value = match field.kind() {
+                            DescriptorPropertyKind::String => values_reader
+                                .string(field)?
+                                .map(DescriptorPropertyValue::Text),
+                            DescriptorPropertyKind::Enum => values_reader
+                                .enumerated(field, field.allowed_values())?
+                                .map(DescriptorPropertyValue::Text),
+                            DescriptorPropertyKind::Boolean => values_reader
+                                .boolean(field)?
+                                .map(DescriptorPropertyValue::Boolean),
+                            DescriptorPropertyKind::List => values_reader
+                                .list(field, field.allowed_values())?
+                                .map(DescriptorPropertyValue::List),
+                            DescriptorPropertyKind::Parts => {
+                                return Err(invalid(
+                                    &values_path,
+                                    "form descriptor has no composite property",
+                                ))
+                            }
+                        };
+                        if let Some(value) = value {
+                            changes.push((field, value));
+                        }
+                    }
+                    PropertiesIntent::FormDescriptor(FormDescriptorPropertyChanges {
+                        common,
+                        changes,
+                    })
                 }
             };
             reader.finish(values_reader.finish(intent)?)
@@ -778,6 +1016,23 @@ mod tests {
                 extension: true,
                 line: None,
             },
+            PropertiesSite::FormDescriptor {
+                common: false,
+                extension: false,
+                line: Some(unica_source_contract::format_identity::PlatformLine::new(
+                    8, 5, 1,
+                )),
+            },
+            PropertiesSite::FormDescriptor {
+                common: true,
+                extension: false,
+                line: None,
+            },
+            PropertiesSite::FormDescriptor {
+                common: true,
+                extension: true,
+                line: None,
+            },
         ] {
             for field in site.descriptor_fields() {
                 for spelling in field.names() {
@@ -785,6 +1040,10 @@ mod tests {
                         DescriptorPropertyKind::String => json!(""),
                         DescriptorPropertyKind::Boolean => json!(false),
                         DescriptorPropertyKind::Enum => json!(field.allowed_values()[0]),
+                        DescriptorPropertyKind::Parts => {
+                            json!({field.parts()[0][0]: field.allowed_values()[0]})
+                        }
+                        DescriptorPropertyKind::List => json!([field.allowed_values()[0]]),
                     };
                     assert!(
                         decode(site, json!({"values":{*spelling:value}})).is_ok(),
@@ -808,6 +1067,23 @@ mod tests {
                 extension: true,
                 line: None,
             },
+            PropertiesSite::FormDescriptor {
+                common: false,
+                extension: false,
+                line: Some(unica_source_contract::format_identity::PlatformLine::new(
+                    8, 5, 1,
+                )),
+            },
+            PropertiesSite::FormDescriptor {
+                common: true,
+                extension: false,
+                line: None,
+            },
+            PropertiesSite::FormDescriptor {
+                common: true,
+                extension: true,
+                line: None,
+            },
         ] {
             for field in site.descriptor_fields() {
                 let names = field.names();
@@ -816,6 +1092,10 @@ mod tests {
                         DescriptorPropertyKind::String => json!("value"),
                         DescriptorPropertyKind::Boolean => json!(true),
                         DescriptorPropertyKind::Enum => json!(field.allowed_values()[0]),
+                        DescriptorPropertyKind::Parts => {
+                            json!({field.parts()[0][0]: field.allowed_values()[0]})
+                        }
+                        DescriptorPropertyKind::List => json!([field.allowed_values()[0]]),
                     };
                     let other = if equal { value.clone() } else { json!(false) };
                     let error = decode(site, json!({"values":{names[0]:value,names[1]:other}}))
@@ -828,6 +1108,8 @@ mod tests {
                         DescriptorPropertyKind::String => json!(false),
                         DescriptorPropertyKind::Boolean => json!("false"),
                         DescriptorPropertyKind::Enum => json!("NotAPlatformValue"),
+                        DescriptorPropertyKind::Parts => json!("Error"),
+                        DescriptorPropertyKind::List => json!("PlatformApplication"),
                     };
                     assert_eq!(
                         decode(site, json!({"values":{*spelling:invalid}}))

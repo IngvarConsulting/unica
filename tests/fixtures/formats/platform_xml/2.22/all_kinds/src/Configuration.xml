@@ -285,6 +285,7 @@
 			<DefinedType>Inner</DefinedType>
 			<Bot>AllKindsBot</Bot>
 			<PaletteColor>Probe</PaletteColor>
+			<Queue>Probe</Queue>
 			<CommonCommand>Probe</CommonCommand>
 			<CommandGroup>Probe</CommandGroup>
 			<Constant>Enabled</Constant>

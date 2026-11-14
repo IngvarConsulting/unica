@@ -143,7 +143,10 @@ mod tests {
 
     fn form_context(xml: &str, owner_kind: NodeKind) -> unica_forms::events::FormEventContext {
         let document = roxmltree::Document::parse(xml).unwrap();
-        let mut context = context_from_root(document.root_element());
+        let mut context = context_from_root(
+            document.root_element(),
+            Some(PlatformProfile::v8_3_27().line()),
+        );
         context.metadata_owner = Some(owner_kind);
         context
     }
@@ -186,6 +189,7 @@ mod tests {
                 return_values_reuse: Some("DuringRequest".to_string()),
             });
         project_module(ModuleProjectionRequest {
+            platform: profile,
             at: &at,
             capability,
             title: format!("{} module", capability.role().as_str()),
@@ -1546,7 +1550,8 @@ mod tests {
             external_connection: Some(false),
         };
         let at = QualifiedAddress::parse("ext:CommonModule.Probe").unwrap();
-        let capability = PlatformProfile::v8_3_27().module_capability(&at).unwrap();
+        let profile = PlatformProfile::v8_3_27();
+        let capability = profile.module_capability(&at).unwrap();
         for missing in 0..5 {
             let mut props = known.clone();
             match missing {
@@ -1557,6 +1562,7 @@ mod tests {
                 _ => {}
             }
             let projection = project_module(ModuleProjectionRequest {
+                platform: profile,
                 at: &at, capability, title: "Probe".into(), rev: "fixture", source: Some("#Если Сервер Тогда\nПроцедура Test() Экспорт\nСообщить(1);\nКонецПроцедуры\n#КонецЕсли"),
                 common_module: Some(props), handles: &[], declarative_bindings: &[], extension_targets: &[], platform_event_write: PlatformEventWriteCapability::Unproved,
             }).unwrap();
@@ -1579,6 +1585,7 @@ mod tests {
         let at = QualifiedAddress::parse("main:CommonModule.ЗаказыСервер").unwrap();
         let profile = PlatformProfile::v8_3_27();
         let error = project_module(ModuleProjectionRequest {
+            platform: profile,
             at: &at,
             capability: profile.module_capability(&at).unwrap(),
             title: "Общий модуль".to_string(),
@@ -1617,6 +1624,7 @@ mod tests {
             QualifiedAddress::parse("main:Document.Заказ.Form.ФормаДокумента.Module.Form").unwrap();
         let profile = PlatformProfile::v8_3_27();
         let projection = project_module(ModuleProjectionRequest {
+            platform: profile,
             at: &at,
             capability: profile.module_capability(&at).unwrap(),
             title: "Модуль формы".to_string(),
@@ -1849,6 +1857,7 @@ mod tests {
         let at = QualifiedAddress::parse("sales:Document.Заказ.Module.Object").unwrap();
         let profile = PlatformProfile::v8_3_27();
         let projection = project_module(ModuleProjectionRequest {
+            platform: profile,
             at: &at,
             capability: profile.module_capability(&at).unwrap(),
             title: "Расширение".to_string(),

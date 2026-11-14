@@ -1990,6 +1990,27 @@ XML-элемент: `<WebService>`. Трёхуровневая вложенно�
 2. Режим совместимости расширений `Version8_5_4`, эталон
    `tests/fixtures/formats/platform_xml/2.22/all_kinds/src/Configuration.xml`.
 
+3. **Свойства корня расширения**, эталон
+   `tests/fixtures/formats/platform_xml/2.22/empty_extension/ext/Configuration.xml`:
+   `ActionOnConfigurationObjectMissing` и `DefaultExtensionPropertyCheckAction`
+   (`Error`, `Warning`, `Ignore`, `Auto`),
+   `TypeReductionByConfigurationExtensionMode` (`TransformValues`, `DeleteData`,
+   `Deny`) и составное `ActionOnExtendedConfigurationObjectsMissing` из частей
+   `xr:AdoptedObject`, `xr:NotifiedObject`, `xr:CheckedObject`,
+   `xr:ExtendedObject` с теми же значениями, что у первого:
+
+```xml
+<ActionOnConfigurationObjectMissing>Auto</ActionOnConfigurationObjectMissing>
+<DefaultExtensionPropertyCheckAction>Error</DefaultExtensionPropertyCheckAction>
+<TypeReductionByConfigurationExtensionMode>TransformValues</TypeReductionByConfigurationExtensionMode>
+<ActionOnExtendedConfigurationObjectsMissing>
+	<xr:AdoptedObject>Error</xr:AdoptedObject>
+	<xr:NotifiedObject>Error</xr:NotifiedObject>
+	<xr:CheckedObject>Error</xr:CheckedObject>
+	<xr:ExtendedObject>Error</xr:ExtendedObject>
+</ActionOnExtendedConfigurationObjectsMissing>
+```
+
 ---
 
 ## 27. Сводная таблица: свойства по типам объектов

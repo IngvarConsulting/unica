@@ -1159,7 +1159,12 @@ pub fn meta_info_profile_errors(
                         ))
                     }
                     Some(MetaInfoPropertyRoute::Identity)
-                        if matches!(name, "ObjectBelonging" | "ExtendedConfigurationObject") =>
+                        if matches!(
+                            name,
+                            "ObjectBelonging"
+                                | "ExtendedConfigurationObject"
+                                | "ActionOnConfigurationObjectMissing"
+                        ) =>
                     {
                         if let Err(error) = observe_meta_borrowing_property(properties, kind, name)
                         {
@@ -1468,6 +1473,10 @@ pub fn observe_meta_borrowing_property(
         && match name {
             "ObjectBelonging" => matches!(value.as_str(), "Own" | "Adopted"),
             "ExtendedConfigurationObject" => uuid::Uuid::parse_str(&value).is_ok(),
+            // From 8.5.4 (format 2.22).
+            "ActionOnConfigurationObjectMissing" => {
+                matches!(value.as_str(), "Error" | "Warning" | "Ignore" | "Auto")
+            }
             _ => false,
         };
     if !valid {
@@ -1777,6 +1786,11 @@ static META_INFO_PROPERTY_ROUTES: &[MetaInfoPropertyRouteSpec] = &[
     },
     MetaInfoPropertyRouteSpec {
         name: "ExtendedConfigurationObject",
+        route: MetaInfoPropertyRoute::Identity,
+        kinds: BORROWED_DESCRIPTOR_KINDS,
+    },
+    MetaInfoPropertyRouteSpec {
+        name: "ActionOnConfigurationObjectMissing",
         route: MetaInfoPropertyRoute::Identity,
         kinds: BORROWED_DESCRIPTOR_KINDS,
     },

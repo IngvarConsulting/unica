@@ -145,11 +145,20 @@ pub fn borrowed_form_descriptor(
             "\t\t\t<ExtendedConfigurationObject>{}</ExtendedConfigurationObject>",
             escape(&parent.uuid)
         ),
+    ]
+    .into_iter()
+    .chain(
+        crate::dialect::adopted_properties(set_format, crate::dialect::AdoptedNode::Form)
+            .iter()
+            .map(|property| format!("\t\t\t{property}")),
+    )
+    .chain([
         "\t\t\t<FormType>Managed</FormType>".to_string(),
         "\t\t</Properties>".to_string(),
         "\t</Form>".to_string(),
         "</MetaDataObject>".to_string(),
-    ]
+    ])
+    .collect::<Vec<_>>()
     .join("\r\n");
     text.into_bytes()
 }

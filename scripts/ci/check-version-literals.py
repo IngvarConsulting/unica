@@ -52,10 +52,12 @@ LITERAL = re.compile(
     r"|PlatformLine::new\(\s*8\s*,\s*\d+\s*,\s*\d+\s*\)"  # PlatformLine::new(8, 5, 1)
 )
 # The places that own versions: the format identity and the platform line,
-# the Designer format family's table, and format dialects.
+# the Designer format family's table, the per-line event catalog registry,
+# and format dialects.
 OWNERS = (
     "crates/unica-source-contract/src/format_identity.rs",
     "crates/unica-source-designer/src/format_profile.rs",
+    "crates/unica-metadata/src/event_catalog.rs",
 )
 OWNER_DIRECTORIES = ("/dialect/",)
 TEST_MODULE = re.compile(r"\n\s*#\[cfg\(test\)\]\s*\n\s*(?:pub(?:\([^)]*\))?\s+)?mod\s")

@@ -65,6 +65,9 @@ pub struct FormValidationInput {
     pub(crate) module: Option<String>,
     pub(crate) config_context: bool,
     pub(crate) metadata_owner: Option<NodeKind>,
+    /// Линия набора: она выбирает каталог возможных событий, с которым
+    /// проверка сверяет обработчики.
+    pub(crate) platform_line: Option<unica_source_contract::format_identity::PlatformLine>,
     pub(crate) format_guard: crate::application::ports::FormatGuardCheck,
 }
 

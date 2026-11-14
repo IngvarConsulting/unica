@@ -1,0 +1,31 @@
+{
+  "ok": false,
+  "command": "pull",
+  "duration_ms": 2987,
+  "data": {
+    "provider": {
+      "selected": "agent",
+      "origin": {
+        "kind": "override",
+        "file": "v8project.yaml"
+      }
+    },
+    "ok": false,
+    "provider_dispatched": false,
+    "up_to_date": false,
+    "source_set": "main",
+    "requested_mode": "FULL",
+    "mode": "FULL",
+    "target_path": "C:\\workspace\\endpoint\\src",
+    "duration_ms": 2987,
+    "message": "environment unavailable: agent at 127.0.0.1:61368 is unreachable: Подключение не установлено, т.к. конечный компьютер отверг запрос на подключение. (os error 10061)"
+  },
+  "warnings": [],
+  "steps": [],
+  "error": {
+    "code": "environment_unavailable",
+    "kind": "environment",
+    "message": "agent at 127.0.0.1:61368 is unreachable: Подключение не установлено, т.к. конечный компьютер отверг запрос на подключение. (os error 10061)",
+    "layer": "agent_endpoint"
+  }
+}
