@@ -747,6 +747,13 @@ fn every_borrowed_kind_has_the_platform_shape() {
         let kinds = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join(corpus)
             .join("cfe_borrow_kinds");
+        // The evidence is what its manifest pins: every file, its hash and
+        // size, and the platform build it was exported by.
+        let manifest: Value =
+            serde_json::from_str(&std::fs::read_to_string(kinds.join("manifest.json")).unwrap())
+                .unwrap();
+        let pinned = manifest["files"].as_object().unwrap();
+        let mut seen = std::collections::BTreeSet::new();
         let mut checked = 0;
         for dir in std::fs::read_dir(&kinds).unwrap() {
             let dir = dir.unwrap().path();
@@ -755,7 +762,24 @@ fn every_borrowed_kind_has_the_platform_shape() {
             }
             for file in std::fs::read_dir(&dir).unwrap() {
                 let file = file.unwrap().path();
-                let platform = std::fs::read_to_string(&file).unwrap();
+                let bytes = std::fs::read(&file).unwrap();
+                let key = file
+                    .strip_prefix(&kinds)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                let entry = &pinned[&key];
+                {
+                    use sha2::{Digest, Sha256};
+                    let digest = Sha256::digest(&bytes)
+                        .iter()
+                        .map(|byte| format!("{byte:02x}"))
+                        .collect::<String>();
+                    assert_eq!(entry["sha256"], digest.as_str(), "{corpus}: {key}");
+                    assert_eq!(entry["size"], bytes.len(), "{corpus}: {key}");
+                }
+                seen.insert(key);
+                let platform = String::from_utf8(bytes).unwrap();
                 let object = platform.split("\n\t<").nth(1).unwrap();
                 let kind = object.split([' ', '>']).next().unwrap();
                 let name = platform
@@ -777,5 +801,14 @@ fn every_borrowed_kind_has_the_platform_shape() {
             }
         }
         assert!(checked >= 44, "{corpus}: {checked} kinds");
+        assert_eq!(
+            seen,
+            pinned.keys().cloned().collect(),
+            "{corpus}: the manifest names exactly the files of the corpus"
+        );
+        assert_eq!(
+            manifest["formatVersion"],
+            corpus.rsplit('/').next().unwrap()
+        );
     }
 }

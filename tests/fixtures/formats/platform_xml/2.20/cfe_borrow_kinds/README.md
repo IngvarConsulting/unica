@@ -21,3 +21,8 @@ What the platform writes beyond the identity of a borrowed object:
   platform refuses either without them.
 
 `PaletteColor` and `Queue` are kinds of 8.5 and have no 2.20 descriptor.
+
+`manifest.json` pins every file by its `sha256` and size and names the
+platform build that exported them and the hash of its `1cv8.exe`; the
+table test `every_borrowed_kind_has_the_platform_shape` checks the corpus
+against it.

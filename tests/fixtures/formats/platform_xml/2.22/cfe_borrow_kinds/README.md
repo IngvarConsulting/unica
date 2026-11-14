@@ -25,3 +25,8 @@ In format 2.22 every borrowed object also has
 right after `ExtendedConfigurationObject`, and a common form and a common
 template close their properties with
 `<ActionOnConfigurationExtensionChangeError>Warning</ActionOnConfigurationExtensionChangeError>`.
+
+`manifest.json` pins every file by its `sha256` and size and names the
+platform build that exported them and the hash of its `1cv8.exe`; the
+table test `every_borrowed_kind_has_the_platform_shape` checks the corpus
+against it.
