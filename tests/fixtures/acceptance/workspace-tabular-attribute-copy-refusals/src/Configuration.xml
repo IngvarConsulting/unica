@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
+	<Configuration uuid="d29cb579-23c7-449c-bb08-17c50f766cb5">
+		<Properties><Name>CopyRefusals</Name></Properties>
+		<ChildObjects><Catalog>Валюты</Catalog></ChildObjects>
+	</Configuration>
+</MetaDataObject>
