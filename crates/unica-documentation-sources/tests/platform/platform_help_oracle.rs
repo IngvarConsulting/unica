@@ -1303,6 +1303,7 @@ fn a_damaged_russian_declaration_is_corrected_only_where_it_is_pinned() {
     let websocket =
         "objects/catalog63/catalog3024/WebSocket client module/events/OnMessage747.html";
     let page = |path: &str| CorpusPage {
+        header: unica_bsl_types::article::header(path, ""),
         path: path.to_string(),
         title: String::new(),
         text: String::new(),
