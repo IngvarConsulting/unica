@@ -467,6 +467,7 @@ fn mutation_property_is_observable(kind: MetadataKind, key: MetaPropertyKey) -> 
         | NumberPeriodicity
         | PostInPrivilegedMode
         | Posting
+        | SequenceFilling
         | RealTimePosting
         | RegisterRecordsDeletion
         | RegisterRecordsWritingOnPost

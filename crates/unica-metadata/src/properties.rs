@@ -461,6 +461,27 @@ mod tests {
     }
 
     #[test]
+    fn document_sequence_filling_has_a_closed_enum_and_owner() {
+        for value in ["AutoFill", "AutoFillOff"] {
+            assert_property_kind_matrix(
+                "SequenceFilling",
+                MetaPropertyValue::String(value.into()),
+                &[MetadataKind::Document],
+            );
+        }
+        for value in [
+            MetaPropertyValue::String("Automatic".into()),
+            MetaPropertyValue::Boolean(false),
+        ] {
+            assert!(MetaPropertyChanges::convert(
+                MetadataKind::Document,
+                vec![MetaPropertyInput::new("SequenceFilling", value)]
+            )
+            .is_err());
+        }
+    }
+
+    #[test]
     fn event_subscription_properties_are_owner_specific_canonical_strings() {
         let changes = MetaPropertyChanges::convert(
             MetadataKind::EventSubscription,
