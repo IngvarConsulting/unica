@@ -179,6 +179,9 @@ carries fixes, so a release without it ships defects that are already fixed.
 A new minor or major brings new behavior and is not taken before a release;
 it waits for the next minor of Unica.
 
+The raise is merged into `main` before the night that makes the alpha the RC
+button will take: a candidate carries exactly the dependencies of its alpha.
+
 Each raise goes through a pull request:
 
 - the lock pins the new version, tag, commit and the SHA-256 of every asset;
@@ -188,7 +191,14 @@ Each raise goes through a pull request:
   published binary of the new version;
 - for each change in the tool's release notes that may reach Unica, the pull
   request says what was checked and how — a test or a run, not the notes alone.
-  A dependency without a newer patch is named too.
+  A dependency without a newer patch is named too;
+- for a tool or library Unica calls, the call contract is compared between
+  the old and the new version, not taken from the release notes: the tool's
+  `--help` for the commands and flags Unica passes, the set of keys in its
+  output, and the list of tools it serves.
+  `scripts/ci/check-tool-contracts.py` checks the help Unica relies on.
+  Changed findings or diagnostics are the tool's own behavior and do not
+  block the raise; a changed call contract does.
 
 Crates are raised one at a time within their minor, never by a plain
 `cargo update`, which also takes new minors:
