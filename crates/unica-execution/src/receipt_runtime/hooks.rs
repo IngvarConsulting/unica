@@ -197,6 +197,13 @@ pub trait V5RuntimeHooks<H: InvocationHost>: Send + Sync {
 
     fn listener_ownership_observed(&self, no_active_work: bool) {}
 
+    /// Whether the listener may leave once nothing has owned it for the whole
+    /// idle grace. A test closes it so the daemon stays until the test has
+    /// read the decisions it checks, instead of racing the grace on the clock.
+    fn idle_exit_permitted(&self) -> bool {
+        true
+    }
+
     /// Whether the listener should read every owner for
     /// [`Self::listener_owners_observed`] in each idle iteration.
     fn observes_listener_owners(&self) -> bool {
