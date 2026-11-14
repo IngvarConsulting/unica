@@ -67,6 +67,41 @@ class AcceptanceProfileTests(unittest.TestCase):
             with self.assertRaisesRegex(AssertionError, "another process"):
                 assert_owned_legacy_broker(backend, cache, cache)
 
+    def test_legacy_backend_death_names_its_code_and_whether_it_logged_anything(self):
+        """Падение приходит только на занятом хосте, поэтому улику собирает оно само."""
+        from tests.ci.acceptance_diagnostics import (
+            assert_owned_legacy_broker,
+            legacy_backend_evidence,
+        )
+        with tempfile.TemporaryDirectory() as raw:
+            cache = Path(raw)
+            backend = Mock(pid=41978, returncode=0)
+            backend.poll.return_value = 0
+            silent = cache / "silent.stderr.log"
+            silent.write_bytes(b"")
+            spoken = cache / "spoken.stderr.log"
+            spoken.write_bytes(b"INFO graph build: published\n")
+
+            with self.assertRaisesRegex(AssertionError, "exit code 0.*wrote nothing at all"):
+                assert_owned_legacy_broker(
+                    backend, cache, cache,
+                    lambda: legacy_backend_evidence(backend, silent, None))
+
+            with self.assertRaisesRegex(AssertionError, "stderr tail: INFO graph build"):
+                assert_owned_legacy_broker(
+                    backend, cache, cache,
+                    lambda: legacy_backend_evidence(backend, spoken, None))
+
+            # Лог исчезает вместе с каталогом времени выполнения: это тоже улика.
+            with self.assertRaisesRegex(AssertionError, "stderr log is already gone"):
+                assert_owned_legacy_broker(
+                    backend, cache, cache,
+                    lambda: legacy_backend_evidence(backend, cache / "absent.log", None))
+
+            # Без улики отказ остаётся прежним: его текст заморожен приёмкой.
+            with self.assertRaisesRegex(AssertionError, "upgrade scenario$"):
+                assert_owned_legacy_broker(backend, cache, cache)
+
     def test_legacy_warm_fixture_distinguishes_a_pending_endpoint_from_ambiguous_ownership(self):
         from tests.ci.acceptance_diagnostics import assert_owned_legacy_broker
         with tempfile.TemporaryDirectory() as raw:
