@@ -33,8 +33,9 @@ def issue(number, milestone=True):
     return {"number": number, "milestone": {"number": 1} if milestone else None}
 
 
-def response(actor=OWNER, assignees=1, issues=()) -> dict:
+def response(actor=OWNER, assignees=1, issues=(), draft=False) -> dict:
     return {"data": {"repository": {"pullRequest": {
+        "isDraft": draft,
         "milestone": {"number": 1} if actor else None,
         "assignees": {"totalCount": assignees},
         "timelineItems": events(actor),
@@ -80,6 +81,14 @@ class WorkflowShapeTests(unittest.TestCase):
         self.assertEqual(check["env"]["MILESTONE_OWNER"], gate["env"]["MILESTONE_OWNER"])
         self.assertEqual(check["env"]["STRICT"], "true")
         self.assertEqual(gate["env"]["STRICT"], "false")
+
+    def test_the_gate_asks_github_whether_the_pr_is_a_draft(self) -> None:
+        # Сохранённое событие прогона знает черновиковость на момент события;
+        # выживший прогон и его перезапуск должны спрашивать, что истинно сейчас.
+        gate = next(step for step in self.gate["steps"] if step["id"] == "admission")
+        self.assertEqual(gate["if"], "${{ github.event_name == 'pull_request' }}")
+        self.assertNotIn("draft", gate["if"])
+        self.assertIn("isDraft", gate["run"])
 
     def test_tests_wait_for_the_gate_and_the_queue_is_always_admitted(self) -> None:
         self.assertEqual(self.tests["needs"], "admission")
@@ -180,6 +189,17 @@ class CheckStepTests(unittest.TestCase):
         self.assertIn("admitted=false", output)
         self.assertIn("::notice::", completed.stdout)
         self.assertNotIn("::error::", completed.stdout)
+
+    def test_a_draft_withholds_the_tests_without_reddening_the_check(self) -> None:
+        for strict in (False, True):
+            with self.subTest(strict=strict):
+                completed, _, output = self.run_step(response(draft=True), strict=strict)
+                self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+                self.assertIn("admitted=false", output)
+                self.assertIn("::notice::PR #7 — черновик", completed.stdout)
+                self.assertNotIn("::error::", completed.stdout)
+        completed, _, output = self.run_step(response(draft=False), strict=False)
+        self.assertIn("admitted=true", output)
 
     def test_the_queue_takes_the_number_from_the_ref_and_checks_again(self) -> None:
         ref = "refs/heads/gh-readonly-queue/main/pr-2494-b8d576dca6e9ffa40b9b10fe006472736fcc5a23"
