@@ -1036,6 +1036,123 @@ def make_handler(observer: Observer, page: bytes):
     return Handler
 
 
+TREE_RENDERING = r"""function markLeaf(row) {
+  const tog = row && row.querySelector(".tog");
+  if (!tog) return;
+  tog.textContent = "";
+  row.nextElementSibling.hidden = true;
+}
+
+function makeRow(label, at, meta, populate) {
+  const wrap = document.createElement("div");
+  const row = document.createElement("div");
+  row.className = "row";
+  const tog = document.createElement("span");
+  tog.className = "tog";
+  const expandable = at !== undefined || typeof populate === "function";
+  tog.textContent = expandable ? "▸" : "·";
+  row.appendChild(tog);
+  const name = document.createElement("span");
+  name.textContent = label;
+  row.appendChild(name);
+  if (meta) row.insertAdjacentHTML("beforeend", meta);
+  const kids = document.createElement("div");
+  kids.className = "kids";
+  kids.hidden = true;
+  wrap.append(row, kids);
+  if (expandable) {
+    let loaded = false;
+    let loading = false;
+    const toggle = async () => {
+      if (!tog.textContent || loading) return;
+      if (!loaded) {
+        loading = true;
+        try { await (populate ? populate(kids) : fill(kids, at)); }
+        catch (error) { kids.insertAdjacentHTML("beforeend", `<div class="err">ошибка страницы: ${esc(error.message)}</div>`); }
+        finally { loading = false; }
+        loaded = true;
+      }
+      if (!tog.textContent) return;
+      kids.hidden = !kids.hidden;
+      tog.textContent = kids.hidden ? "▸" : "▾";
+    };
+    tog.onclick = (event) => {
+      event.stopPropagation();
+      if (event.detail <= 1) toggle();
+    };
+    if (at !== undefined) row.onclick = (event) => { if (event.detail <= 1) select(at, row); };
+    row.ondblclick = (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.target !== tog) toggle();
+    };
+  }
+  return wrap;
+}
+
+function shortLabel(at, parent) {
+  if (parent && at.startsWith(parent + ".")) return at.slice(parent.length + 1);
+  return at;
+}
+
+async function fill(container, at, cursor) {
+  const loading = document.createElement("div");
+  loading.className = "cnt";
+  const stop = ticking(loading, "загрузка…");
+  container.appendChild(loading);
+  let answer;
+  try { answer = await view(at, cursor); } catch (error) { stop(); loading.className = "err"; loading.textContent = error.message; return; }
+  stop();
+  loading.remove();
+  const result = answer.result || {};
+  const data = result.data || {};
+  if (!result.ok) {
+    const div = document.createElement("div");
+    div.className = "err";
+    div.textContent = "отказ: " + (result.summary || "");
+    container.appendChild(div);
+    return;
+  }
+  const parent = data.at || at || "";
+  // Корень (`view {}`) — сведения о рабочей области, а не узел: ветвей у него
+  // нет, детьми служат корни наборов исходников `<имя>:Configuration`.
+  for (const set of (at ? [] : data.sourceSets || [])) {
+    const rootAt = `${set.name}:Configuration`;
+    container.appendChild(makeRow(rootAt, rootAt, ` <span class="badge">${esc(set.kind || "")}</span> <span class="cnt">${esc(set.sourceState || "")}</span>`));
+  }
+  for (const branch of data.branches || []) {
+    const badges = `<span class="cnt">${branch.count ?? ""}</span>` + (isGraph(branch.at) ? ' <span class="badge graph">граф вызовов</span>' : "");
+    container.appendChild(makeRow(shortLabel(branch.at, parent), branch.at, " " + badges));
+  }
+  for (const item of data.items || []) {
+    if (item && typeof item.at === "string") {
+      const meta = item.kind ? ` <span class="badge">${esc(item.kind)}</span>` : "";
+      container.appendChild(makeRow(shortLabel(item.at, parent), item.at, meta + (item.title && item.title !== item.at && item.title !== shortLabel(item.at, parent) ? ` <span class="cnt">${esc(item.title)}</span>` : "")));
+    } else if (data.kind === "Interface" && item && item.kind === "Interface" &&
+               item.addressable === false && ["Public", "Library", "Override"].includes(item.name) &&
+               Array.isArray(item.methods) && item.methods.every(method => typeof method === "string" && method.length)) {
+      const owner = parent.endsWith(".Interface") ? parent.slice(0, -".Interface".length) : parent;
+      const populate = item.methods.length ? (kids) => {
+        for (const method of item.methods) kids.appendChild(makeRow(shortLabel(method, owner), method));
+      } : undefined;
+      container.appendChild(makeRow(item.name, undefined, ` <span class="cnt">${item.methods.length}</span>`, populate));
+    } else {
+      // Строка данных без адреса (например, строка исходника): адреса у неё нет.
+      container.appendChild(makeRow(JSON.stringify(item).slice(0, 160)));
+    }
+  }
+  if (result.cursor) {
+    const more = document.createElement("div");
+    more.className = "row more";
+    const page = result.page ? " " + JSON.stringify(result.page) : "";
+    more.textContent = "ещё…" + page;
+    more.onclick = async () => { more.remove(); await fill(container, at, result.cursor); };
+    container.appendChild(more);
+  }
+  if (!container.childElementCount) markLeaf(container.previousElementSibling);
+}
+"""
+
 PAGE = r"""<!doctype html>
 <html lang="ru">
 <head>
@@ -1544,113 +1661,7 @@ function ticking(element, label) {
   return () => clearInterval(timer);
 }
 
-function markLeaf(row) {
-  const tog = row && row.querySelector(".tog");
-  if (!tog) return;
-  tog.textContent = "";
-  row.nextElementSibling.hidden = true;
-}
-
-function makeRow(label, at, meta) {
-  const wrap = document.createElement("div");
-  const row = document.createElement("div");
-  row.className = "row";
-  const tog = document.createElement("span");
-  tog.className = "tog";
-  tog.textContent = at !== undefined ? "▸" : "·";
-  row.appendChild(tog);
-  const name = document.createElement("span");
-  name.textContent = label;
-  row.appendChild(name);
-  if (meta) row.insertAdjacentHTML("beforeend", meta);
-  const kids = document.createElement("div");
-  kids.className = "kids";
-  kids.hidden = true;
-  wrap.append(row, kids);
-  if (at !== undefined) {
-    let loaded = false;
-    let loading = false;
-    const toggle = async () => {
-      if (!tog.textContent || loading) return;
-      if (!loaded) {
-        loading = true;
-        try { await fill(kids, at); }
-        catch (error) { kids.insertAdjacentHTML("beforeend", `<div class="err">ошибка страницы: ${esc(error.message)}</div>`); }
-        finally { loading = false; }
-        loaded = true;
-      }
-      if (!tog.textContent) return;
-      kids.hidden = !kids.hidden;
-      tog.textContent = kids.hidden ? "▸" : "▾";
-    };
-    tog.onclick = (event) => {
-      event.stopPropagation();
-      if (event.detail <= 1) toggle();
-    };
-    row.onclick = (event) => { if (event.detail <= 1) select(at, row); };
-    row.ondblclick = (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      if (event.target !== tog) toggle();
-    };
-  }
-  return wrap;
-}
-
-function shortLabel(at, parent) {
-  if (parent && at.startsWith(parent + ".")) return at.slice(parent.length + 1);
-  return at;
-}
-
-async function fill(container, at, cursor) {
-  const loading = document.createElement("div");
-  loading.className = "cnt";
-  const stop = ticking(loading, "загрузка…");
-  container.appendChild(loading);
-  let answer;
-  try { answer = await view(at, cursor); } catch (error) { stop(); loading.className = "err"; loading.textContent = error.message; return; }
-  stop();
-  loading.remove();
-  const result = answer.result || {};
-  const data = result.data || {};
-  if (!result.ok) {
-    const div = document.createElement("div");
-    div.className = "err";
-    div.textContent = "отказ: " + (result.summary || "");
-    container.appendChild(div);
-    return;
-  }
-  const parent = data.at || at || "";
-  // Корень (`view {}`) — сведения о рабочей области, а не узел: ветвей у него
-  // нет, детьми служат корни наборов исходников `<имя>:Configuration`.
-  for (const set of (at ? [] : data.sourceSets || [])) {
-    const rootAt = `${set.name}:Configuration`;
-    container.appendChild(makeRow(rootAt, rootAt, ` <span class="badge">${esc(set.kind || "")}</span> <span class="cnt">${esc(set.sourceState || "")}</span>`));
-  }
-  for (const branch of data.branches || []) {
-    const badges = `<span class="cnt">${branch.count ?? ""}</span>` + (isGraph(branch.at) ? ' <span class="badge graph">граф вызовов</span>' : "");
-    container.appendChild(makeRow(shortLabel(branch.at, parent), branch.at, " " + badges));
-  }
-  for (const item of data.items || []) {
-    if (item && typeof item.at === "string") {
-      const meta = item.kind ? ` <span class="badge">${esc(item.kind)}</span>` : "";
-      container.appendChild(makeRow(shortLabel(item.at, parent), item.at, meta + (item.title && item.title !== item.at && item.title !== shortLabel(item.at, parent) ? ` <span class="cnt">${esc(item.title)}</span>` : "")));
-    } else {
-      // Строка данных без адреса (например, строка исходника): адреса у неё нет.
-      container.appendChild(makeRow(JSON.stringify(item).slice(0, 160)));
-    }
-  }
-  if (result.cursor) {
-    const more = document.createElement("div");
-    more.className = "row more";
-    const page = result.page ? " " + JSON.stringify(result.page) : "";
-    more.textContent = "ещё…" + page;
-    more.onclick = async () => { more.remove(); await fill(container, at, result.cursor); };
-    container.appendChild(more);
-  }
-  if (!container.childElementCount) markLeaf(container.previousElementSibling);
-}
-
+""" + TREE_RENDERING + r"""
 function sourceTextHtml(answer) {
   return typeof answer.sourceText === "string"
     ? `<section><h3>текст</h3><pre class="source-text"><code>${esc(answer.sourceText)}</code></pre></section>` : "";
