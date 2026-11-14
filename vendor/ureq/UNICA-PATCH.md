@@ -35,3 +35,33 @@ cargo test --manifest-path vendor/ureq/Cargo.toml --locked --features json,serde
 
 The vendor source and tests are build inputs outside `plugins/unica`; the plugin
 carries the required license files and attribution.
+
+## Diagnostic credential redaction (#1792)
+
+A shared diagnostic URL renderer removes URL userinfo without changing the
+stored URL or authentication data. Unparseable or hostless diagnostic URLs
+use a neutral marker, matching the existing request URL validation. Request, RequestUrl, Response, status/transport errors and the active
+request/redirect/retry log paths use this rendering. Proxy Debug hides both
+credential fields, including when nested in AgentBuilder.
+
+Header Debug, invalid-header errors and the wire prelude logger share the
+case-insensitive Authorization, Proxy-Authorization and Cookie classification.
+Invalid header names or values use a neutral diagnostic instead of raw input.
+The real header bytes remain unchanged. The optional cookie-store feature and
+its cookie-value logging are outside this patch.
+
+The separate diagnostic_redaction integration target owns its logger. Real
+loopback tests compare sent authentication data and redirect policies while
+asserting that diagnostic output omits distinct synthetic credentials. A
+loopback proxy checks CONNECT authentication before an intentional 407, without
+claiming an end-to-end TLS connection. The reused-connection test observes the
+real read-failure retry; the early write-failure retry shares the same safe URL
+value but is not induced by this socket scenario.
+
+The existing ureq-recycling CI profile now includes this integration target
+alongside all ten completed-response fault tests. Its historical report path
+and zero-retry policy are retained. Run the same selected tests locally with:
+
+```sh
+cargo nextest run --manifest-path vendor/ureq/Cargo.toml --locked --lib --test diagnostic_redaction --features json,serde_json/preserve_order,serde_json/float_roundtrip --config-file vendor/ureq/.config/nextest.toml --target-dir target --profile ureq-recycling
+```

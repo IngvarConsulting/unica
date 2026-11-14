@@ -116,7 +116,13 @@ class RustLaneTests(unittest.TestCase):
         self.assertNotIn("--workspace", receipt)
         self.assertNotIn("-E", receipt)
         self.assertIn("-E", lanes.reuse_command("run", Path("/repo"), Path("a.tar.zst"), "receipt", "queue"))
-        self.assertEqual(lanes.archive_command("vendor", Path("a.tar.zst")).count("--locked"), 1)
+        vendor = lanes.archive_command("vendor", Path("a.tar.zst"))
+        self.assertEqual(vendor.count("--locked"), 1)
+        self.assertIn("--lib", vendor)
+        self.assertEqual(vendor[vendor.index("--test") + 1], "diagnostic_redaction")
+        self.assertEqual(lanes.filters("vendor"), [
+            "-E", "test(/^completed_response_recycling::/) | binary(=diagnostic_redaction)",
+        ])
 
     def test_archive_execution_does_not_accept_cargo_compile_selection(self):
         for lane in lanes.LANES:
