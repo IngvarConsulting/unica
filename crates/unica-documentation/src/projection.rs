@@ -215,7 +215,15 @@ pub fn get(
                 "title": document.title,
                 "signature": document.signature,
                 "applicableVersion": document.applicable_version,
+                // Сырой текст идёт рядом с полями и при разобранной статье:
+                // разбор не отменяет доступа к исходному.
                 "text": document.text,
+                // Версия схемы формата: по ней потребитель знает, какие
+                // поля вправе ждать.
+                "schemaVersion": crate::article_projection::ARTICLE_SCHEMA_VERSION,
+                // Статьи нет, когда поставщик её не разбирает: ключ
+                // отсутствует, а не стоит пустым.
+                "article": document.article.as_ref().map(crate::article_projection::article),
             }
         }));
     }
@@ -821,7 +829,78 @@ mod tests {
             signature: Some("Имя()".to_string()),
             applicable_version: "8.3.27.2074".to_string(),
             text: "Полный текст открытой страницы.".to_string(),
+            article: None,
         }
+    }
+
+    /// Разобранная статья доходит до ответа рядом с сырым текстом, и ответ
+    /// называет версию схемы: по ней потребитель знает, какие поля ждать.
+    /// rule: INV.APP.DOCUMENTATION-ARTICLE-STATES
+    #[test]
+    fn a_parsed_article_arrives_next_to_the_raw_text_and_the_schema_version() {
+        let mut owned = document("platform-help");
+        owned.article = Some(HelpArticle {
+            kind: ArticleKind::Method,
+            name: LocalizedName {
+                ru: "Скопировать".to_string(),
+                en: Some("Copy".to_string()),
+            },
+            owner: None,
+            owner_document_id: None,
+            variants: ArticleField::Empty,
+            value_types: ArticleField::Empty,
+            value_type_text: String::new(),
+            read_only: ArticleField::Empty,
+            availability: ArticleField::Empty,
+            availability_text: String::new(),
+            since_version: ArticleField::Empty,
+            description: ArticleField::Parsed("Создаёт копию.".to_string()),
+            note: ArticleField::Empty,
+            example: ArticleField::Empty,
+            collection_element: ArticleField::Empty,
+            member_lists: Vec::new(),
+            links: Vec::new(),
+            other_sections: Vec::new(),
+        });
+        let registry = DocumentationRegistry::new(vec![Arc::new(GetStub {
+            id: "platform-help",
+            answer: Some(Ok(owned)),
+        })])
+        .expect("реестр собран");
+
+        let result = get(
+            &registry,
+            "platform-syntax-help:syntax-context:page.html",
+            "ru",
+            &context(),
+        )
+        .expect("владелец ответил");
+        let document = &result["document"];
+        assert_eq!(document["article"]["kind"], json!("method"));
+        assert_eq!(document["article"]["description"], json!("Создаёт копию."));
+        // Сырой текст остаётся рядом: разбор не отменяет доступа к исходному.
+        assert_eq!(document["text"], json!("Полный текст открытой страницы."));
+        assert_eq!(
+            document["schemaVersion"],
+            json!(crate::article_projection::ARTICLE_SCHEMA_VERSION)
+        );
+    }
+
+    /// Поставщик, который статью не разбирает, статьи и не обещает: ключ
+    /// приходит пустым, а не выдуманной статьёй.
+    #[test]
+    fn a_provider_without_an_article_answers_without_one() {
+        let registry = DocumentationRegistry::new(vec![Arc::new(GetStub {
+            id: "v8std",
+            answer: Some(Ok(document("v8std"))),
+        })])
+        .expect("реестр собран");
+        let result = get(&registry, "v8std:std702", "ru", &context()).expect("владелец ответил");
+        assert_eq!(result["document"]["article"], Value::Null);
+        assert_eq!(
+            result["document"]["schemaVersion"],
+            json!(crate::article_projection::ARTICLE_SCHEMA_VERSION)
+        );
     }
 
     /// Владельца находит первый не-`None` в порядке реестра, и его документ

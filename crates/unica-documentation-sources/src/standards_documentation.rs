@@ -270,6 +270,8 @@ impl DocumentationProvider for V8StdDocumentationProvider {
             signature: None,
             applicable_version: UNVERSIONED.to_string(),
             text,
+            // Поставщик статью полями не разбирает.
+            article: None,
         }))
     }
 
