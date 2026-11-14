@@ -1,0 +1,31 @@
+{
+  "ok": false,
+  "command": "pull",
+  "duration_ms": 377,
+  "data": {
+    "provider": {
+      "selected": "agent",
+      "origin": {
+        "kind": "override",
+        "file": "v8project.yaml"
+      }
+    },
+    "ok": false,
+    "provider_dispatched": false,
+    "up_to_date": false,
+    "source_set": "main",
+    "requested_mode": "FULL",
+    "mode": "FULL",
+    "target_path": "C:\\workspace\\endpoint\\src",
+    "duration_ms": 377,
+    "message": "environment unavailable: SSH handshake with the agent at 127.0.0.1:53274 failed: Key exchange init failed"
+  },
+  "warnings": [],
+  "steps": [],
+  "error": {
+    "code": "environment_unavailable",
+    "kind": "environment",
+    "message": "SSH handshake with the agent at 127.0.0.1:53274 failed: Key exchange init failed",
+    "layer": "agent_endpoint"
+  }
+}
