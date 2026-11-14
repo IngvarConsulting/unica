@@ -1899,11 +1899,22 @@ pub(crate) mod tests {
         let root = temp_root("namespace-symlink-before-recursion");
         std::fs::create_dir_all(&root).unwrap();
         std::fs::create_dir(root.join("A-directory")).unwrap();
-        crate::platform::filesystem::create_test_directory_link(
-            &root.join("external"),
-            &root.join("Z-symlink-directory"),
+        // Предмет проверки — именно символическая ссылка: обход должен
+        // отвергнуть её прежде, чем спустится вглубь. Соединением каталогов
+        // её не заменить, поэтому без привилегии тест объявляет пропуск.
+        let link = crate::platform::testing::create_directory_link_fixture_for_test(
+            root.join("external"),
+            root.join("Z-symlink-directory"),
         )
         .unwrap();
+        if link != crate::platform::testing::FileLinkFixtureOutcome::Created {
+            std::fs::remove_dir_all(&root).unwrap();
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::Symlink,
+                "the subject of the test is a directory symbolic link",
+            );
+            return;
+        }
         let error = staged(&root)
             .enumerate_tree_with_limits(Path::new(""), 0, 8)
             .unwrap_err();
