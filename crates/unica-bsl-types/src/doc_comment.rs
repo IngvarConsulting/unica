@@ -200,11 +200,9 @@ fn is_identifier(text: &str) -> bool {
 /// Глубина ключа по звёздочкам: `*` — ключ записи, `**` — ключ ключа.
 fn key_depth(line: &str) -> Option<(usize, &str)> {
     let line = line.trim_start();
-    if !line.starts_with('*') {
-        return None;
-    }
-    let depth = line.chars().take_while(|ch| *ch == '*').count();
-    Some((depth, line[depth..].trim()))
+    let rest = line.trim_start_matches('*');
+    let depth = line.len() - rest.len();
+    (depth > 0).then(|| (depth, rest.trim()))
 }
 
 /// Записи раздела параметров: имя, типы, описание и ключи коллекций.
@@ -242,9 +240,9 @@ fn parameters(text: &str) -> Option<Vec<DocParameter>> {
             path.push(owner.keys.len() - 1);
             continue;
         }
-        if line.starts_with('-') {
+        if let Some(rest) = line.strip_prefix('-') {
             // Альтернативный тип предыдущей записи: `- Строка - описание`.
-            if let Some(types) = type_list(first_part(&line[1..])) {
+            if let Some(types) = type_list(first_part(rest)) {
                 if let Some(target) = owner_of(&mut found, &path) {
                     append_types(target, types);
                 }
@@ -343,11 +341,7 @@ fn returns(text: &str) -> Option<DocReturn> {
             continue;
         }
         let base = *base.get_or_insert(indent);
-        let head = if line.starts_with('-') {
-            line[1..].trim()
-        } else {
-            line
-        };
+        let head = line.strip_prefix('-').unwrap_or(line).trim();
         if indent <= base || line.starts_with('-') {
             let (types, type_text, description) = types_and_description(head);
             if !types.is_empty() {
