@@ -731,8 +731,15 @@ fn borrowed_shape(text: &str) -> String {
 }
 
 /// Every kind Unica borrows is written as 8.3.27 (format 2.20) and 8.5.4
-/// (format 2.22) export it after loading: the export of the platform is the
-/// corpus `cfe_borrow_kinds`, one object of each kind of `all_kinds`.
+/// (format 2.22) export it after loading; the corpus `cfe_borrow_kinds`
+/// holds one object of each kind of `all_kinds`.
+///
+/// The corpus is a round trip: Unica borrowed, the platform loaded and
+/// exported. It proves what the platform adds or rewrites on that trip —
+/// property states, `TemplateType`, an empty `Content`, the generated types
+/// it refuses a descriptor without. What the platform keeps as it was
+/// written it does not prove; of that it shows only that the platform
+/// accepts it.
 /// rule: INV.SOURCE.WRITABLE-PROFILE
 #[test]
 fn every_borrowed_kind_has_the_platform_shape() {
