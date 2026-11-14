@@ -894,7 +894,7 @@ PR_GATES: Dict[str, Optional[str]] = {
 }
 # Что из покрытого шага гейт на хосте не исполняет.
 PARTIAL: Dict[str, str] = {
-    "Удалённые тесты объявлены": "сверка с инвентарём прошлой ночи: она читает артефакты прогонов GitHub",
+    "Удалённые тесты объявлены": "сверка с ночным инвентарём не выполняется: ей нужны артефакты прогонов GitHub, которых на этом хосте нет",
 }
 EVENT = re.compile(r"github\.event_name\s*==\s*'(\w+)'")
 
@@ -946,7 +946,7 @@ def parity(root: Path, described: bool) -> List[str]:
             if name in PARTIAL and PR_GATES.get(name) == "removed-tests":
                 reasons[name].insert(0, "описание PR не задано (`--description-file`), "
                                         "исчезнувшие тесты только напечатаны")
-    unchecked = [f"{name} — {', '.join(why)}" for name, why in reasons.items()]
+    unchecked = [f"{name} — {'; '.join(why)}" for name, why in reasons.items()]
     lines = [f"Ворота PR, которых гейт не знает: {'; '.join(unknown)} — сверьте PR_GATES "
              f"в scripts/dev/pre-ready-check.py с {CI_WORKFLOW}" if unknown
              else "Ворота PR: все шаги сверены с гейтом"]

@@ -659,11 +659,11 @@ class GateParityTests(unittest.TestCase):
             described = CHECK.parity(Path(directory), described=True)
         self.assertEqual(lines[0], "Ворота PR, которых гейт не знает: Новый страж — сверьте PR_GATES "
                                    "в scripts/dev/pre-ready-check.py с .github/workflows/ci.yml")
+        nightly = ("сверка с ночным инвентарём не выполняется: ей нужны артефакты прогонов GitHub, "
+                   "которых на этом хосте нет")
         self.assertEqual(lines[1], "Не проверено гейтом: Удалённые тесты объявлены — описание PR не задано "
-                                   "(`--description-file`), исчезнувшие тесты только напечатаны, сверка с "
-                                   "инвентарём прошлой ночи: она читает артефакты прогонов GitHub")
-        self.assertEqual(described[1], "Не проверено гейтом: Удалённые тесты объявлены — сверка с инвентарём "
-                                       "прошлой ночи: она читает артефакты прогонов GitHub")
+                                   f"(`--description-file`), исчезнувшие тесты только напечатаны; {nightly}")
+        self.assertEqual(described[1], f"Не проверено гейтом: Удалённые тесты объявлены — {nightly}")
         self.assertEqual(lines[2], "Только в очереди, гейт не гоняет: Тесты Rust")
 
     def test_a_removed_test_is_a_reminder_without_a_description(self):
