@@ -7165,8 +7165,261 @@ fn batch_published_results_stay_on_disk_and_repeat_exactly() {
             assert_eq!(repeat.terminal().digest(), digest);
         }
     };
-    // Reopening a Completed Direct batch is a separate pre-existing defect of
-    // this test-support path; the standalone-row test above covers reopening.
     expect_exact(&store);
     assert_catalog_holds_no_result_body(&store);
+    drop(store);
+    let store = ReceiptLedgerStore::open(&receipts).expect("reopen Completed Direct batch");
+    expect_exact(&store);
+    for (key, digest) in &expected {
+        store
+            .acknowledge_direct(key, digest, 2_100, reserve_deadline())
+            .expect("acknowledge batch-backed Completed result");
+    }
+    drop(store);
+    let store = ReceiptLedgerStore::open(&receipts).expect("reopen acknowledged batch");
+    for (key, digest) in &expected {
+        let repeated = store
+            .acknowledge_direct(key, digest, 9_999, reserve_deadline())
+            .expect("repeat exact acknowledgement");
+        assert_eq!(repeated.acknowledged_at_epoch_ms(), 2_100);
+    }
+}
+
+#[test]
+fn equal_standalone_copies_recover_before_completed_batch_retry() {
+    for copies_left in 0..=2 {
+        let root = tempfile::tempdir().expect("temporary root");
+        let receipts = fs::canonicalize(root.path()).unwrap().join("receipts");
+        let store = ReceiptLedgerStore::open(&receipts).unwrap();
+        let cutoff = OriginalCutoffDescriptor::new(1_000, 7_000).unwrap();
+        let keys = [
+            receipt_key(INVOCATION_A, TASK_A, "checkpoint"),
+            receipt_key(INVOCATION_B, TASK_B, "checkpoint"),
+        ];
+        let reservations = store
+            .reserve_batch(
+                keys.iter().map(|key| (key.clone(), cutoff)).collect(),
+                reserve_deadline(),
+            )
+            .unwrap();
+        // These are the exact durable states at checkpoint publication and
+        // between its standalone unlinks. Materialization writes the same bytes.
+        {
+            let mut catalog = store.writer.lock().unwrap();
+            for key in keys.iter().take(copies_left) {
+                store
+                    .materialize_batch_backed_record(
+                        &mut catalog,
+                        &receipt_key_digest(key),
+                        reserve_deadline().into(),
+                    )
+                    .unwrap();
+            }
+        }
+        let generation = store.generation().unwrap();
+        drop(store);
+        let store = ReceiptLedgerStore::open(&receipts).expect("recover interrupted checkpoint");
+        assert_eq!(store.generation().unwrap(), generation);
+        for key in &keys {
+            assert!(!receipts
+                .join(ACTIVE_DIRECTORY_NAME)
+                .join(format!("{}.json", receipt_key_digest(key).as_str()))
+                .exists());
+            assert!(store
+                .writer
+                .lock()
+                .unwrap()
+                .batch_backing
+                .contains_key(&receipt_key_digest(key)));
+        }
+        let terminal = canonical_v5_terminal(
+            &ReceiptTerminalOutcome::Completed {
+                result: Box::new(DomainResult::success("checkpoint retry".to_owned())),
+            },
+            73_728,
+        )
+        .unwrap();
+        let requests = keys
+            .iter()
+            .zip(reservations)
+            .map(|(key, reserved)| {
+                (
+                    key.clone(),
+                    reserved.into_reservation().unwrap().record_version(),
+                    2_000,
+                    terminal.clone(),
+                )
+            })
+            .collect();
+        store
+            .publish_direct_terminal_batch(requests, reserve_deadline())
+            .expect("retry Completed batch");
+        // Crash after materializing a terminal, before ACK, has the same safe normalization.
+        {
+            let mut catalog = store.writer.lock().unwrap();
+            store
+                .materialize_batch_backed_record(
+                    &mut catalog,
+                    &receipt_key_digest(&keys[0]),
+                    reserve_deadline().into(),
+                )
+                .unwrap();
+        }
+        drop(store);
+        let store = ReceiptLedgerStore::open(&receipts).expect("recover materialized terminal");
+        for key in &keys {
+            store
+                .acknowledge_direct(key, terminal.digest(), 2_100, reserve_deadline())
+                .unwrap();
+        }
+        drop(store);
+        let store = ReceiptLedgerStore::open(&receipts).expect("recover real ACK successors");
+        for key in &keys {
+            assert_eq!(
+                store
+                    .acknowledge_direct(key, terminal.digest(), 9_999, reserve_deadline())
+                    .unwrap()
+                    .acknowledged_at_epoch_ms(),
+                2_100
+            );
+        }
+    }
+}
+
+#[test]
+fn standalone_copy_cleanup_checks_full_catalog_and_both_retained_files() {
+    for changed in ["catalog", "standalone", "batch"] {
+        let root = tempfile::tempdir().expect("temporary root");
+        let receipts = fs::canonicalize(root.path()).unwrap().join("receipts");
+        let store = ReceiptLedgerStore::open(&receipts).unwrap();
+        let key = receipt_key(INVOCATION_A, TASK_A, "copy-cleanup");
+        let digest = receipt_key_digest(&key);
+        store
+            .reserve_batch(
+                vec![(key, OriginalCutoffDescriptor::new(1_000, 7_000).unwrap())],
+                reserve_deadline(),
+            )
+            .unwrap();
+        {
+            let mut catalog = store.writer.lock().unwrap();
+            store
+                .materialize_batch_backed_record(&mut catalog, &digest, reserve_deadline().into())
+                .unwrap();
+        }
+        let standalone = receipts
+            .join(ACTIVE_DIRECTORY_NAME)
+            .join(format!("{}.json", digest.as_str()));
+        let original = fs::read(&standalone).unwrap();
+        if changed == "catalog" {
+            let corrupt = receipts
+                .join(ACTIVE_DIRECTORY_NAME)
+                .join("unsupported.json");
+            fs::write(&corrupt, b"corrupt committed row").unwrap();
+            drop(store);
+            assert!(ReceiptLedgerStore::open(&receipts).is_err());
+            assert_eq!(fs::read(&standalone).unwrap(), original);
+            continue;
+        }
+        let recovered = ReceiptLedgerStore::recover_existing_catalog(
+            &store.receipts,
+            &store.receipts_file,
+            &store.active,
+            &store.active_file,
+            None,
+        )
+        .unwrap();
+        assert_eq!(recovered.standalone_copies.len(), 1);
+        let changed_path = if changed == "standalone" {
+            standalone.clone()
+        } else {
+            receipts
+                .join(ACTIVE_DIRECTORY_NAME)
+                .join(&recovered.catalog.batch_backing[&digest].name)
+        };
+        let mut changed_bytes = fs::read(&changed_path).unwrap();
+        // Same inode and length: identity alone cannot authorize deletion.
+        changed_bytes[0] = b'!';
+        fs::write(&changed_path, &changed_bytes).unwrap();
+        assert!(store
+            .remove_standalone_copies(&recovered.catalog, &recovered.standalone_copies, None)
+            .is_err());
+        assert!(standalone.exists());
+        assert_eq!(fs::read(changed_path).unwrap(), changed_bytes);
+    }
+}
+
+#[test]
+fn completed_batch_checkpoints_mixed_reservations_without_extra_mutations() {
+    for standalone_count in [0, 16, 32] {
+        let root = tempfile::tempdir().unwrap();
+        let receipts = fs::canonicalize(root.path()).unwrap().join("receipts");
+        let store = ReceiptLedgerStore::open(&receipts).unwrap();
+        let cutoff = OriginalCutoffDescriptor::new(1_000, 7_000).unwrap();
+        let keys: Vec<_> = (1_u64..=32)
+            .map(|index| {
+                receipt_key(
+                    &format!("00000000-0000-4000-8000-{index:012x}"),
+                    &format!("10000000-0000-4000-8000-{index:012x}"),
+                    "mixed-checkpoint",
+                )
+            })
+            .collect();
+        for key in keys.iter().take(standalone_count) {
+            store
+                .reserve(key.clone(), cutoff, reserve_deadline())
+                .unwrap();
+        }
+        if standalone_count < keys.len() {
+            store
+                .reserve_batch(
+                    keys.iter()
+                        .skip(standalone_count)
+                        .map(|key| (key.clone(), cutoff))
+                        .collect(),
+                    reserve_deadline(),
+                )
+                .unwrap();
+        }
+        assert_eq!(store.generation().unwrap(), 32);
+        let terminal = canonical_v5_terminal(
+            &ReceiptTerminalOutcome::Completed {
+                result: Box::new(DomainResult::success("mixed checkpoint".to_owned())),
+            },
+            73_728,
+        )
+        .unwrap();
+        let started = Instant::now();
+        store
+            .publish_direct_terminal_batch(
+                keys.iter()
+                    .map(|key| {
+                        (
+                            key.clone(),
+                            ReceiptVersion::new(1).unwrap(),
+                            2_000,
+                            terminal.clone(),
+                        )
+                    })
+                    .collect(),
+                reserve_deadline(),
+            )
+            .unwrap();
+        eprintln!(
+            "Completed batch: {standalone_count}/32 standalone, {:?}",
+            started.elapsed()
+        );
+        assert_eq!(store.generation().unwrap(), 64);
+        drop(store);
+        let store = ReceiptLedgerStore::open(&receipts).expect("recover mixed checkpoint");
+        assert_eq!(store.generation().unwrap(), 64);
+        for key in &keys {
+            let ReceiptState::DirectTerminalUnacked(receipt) =
+                store.recover_exact(key, reserve_deadline()).unwrap()
+            else {
+                panic!("terminal expected");
+            };
+            assert_eq!(receipt.terminal().digest(), terminal.digest());
+            assert_eq!(receipt.record_version().get(), 2);
+        }
+    }
 }
