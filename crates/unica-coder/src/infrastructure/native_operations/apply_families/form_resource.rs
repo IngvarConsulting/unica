@@ -412,22 +412,29 @@ mod tests {
             let published = variant["properties"].as_object().unwrap();
             assert_eq!(
                 published.len(),
-                kind.keys.len() + 3,
-                "{}: name, type, after and the kind keys",
+                kind.keys.len()
+                    + 3
+                    + usize::from(
+                        unica_forms::contracts::FORM_ORIENTATION_KINDS.contains(&kind.kind)
+                    ),
+                "{}: name, type, after, the kind keys and an orientation",
                 kind.kind
             );
-            for key in kind.keys {
+            let orientation = unica_forms::contracts::FORM_ORIENTATION_KINDS
+                .contains(&kind.kind)
+                .then_some("orientation");
+            for key in kind.key_names().chain(orientation) {
                 let mut baseline = json!({"name": "Sample", "type": kind.kind});
                 if kind.kind == "TextDocumentField" {
                     baseline["path"] = json!("Protocol");
                 }
-                if unica_forms::contracts::FORM_DYNAMIC_LIST_KEYS.contains(key) {
+                if unica_forms::contracts::FORM_DYNAMIC_LIST_KEYS.contains(&key) {
                     baseline["_dynList"] = json!(true);
                 }
                 let before = emit(&baseline);
-                let written = sample_values(&published[*key]).into_iter().any(|value| {
+                let written = sample_values(&published[key]).into_iter().any(|value| {
                     let mut item = baseline.clone();
-                    item[*key] = value;
+                    item[key] = value;
                     parse_form_resource_plan_operation(
                         "item.add",
                         &json!({"at": "main:Document.First.Form.ФормаДокумента", "items": [item.clone()]}),
