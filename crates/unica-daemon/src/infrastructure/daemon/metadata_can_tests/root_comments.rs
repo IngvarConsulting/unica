@@ -222,6 +222,12 @@ fn medium_root_comments_preview_publish_read_and_repeat_preserve_native_companio
             } else if kind == "DocumentNumerator" {
                 // Five numerator scalars plus Comment and its alias.
                 7
+            } else if kind == "CommonForm" {
+                // The descriptor of a common form writes Comment,
+                // IncludeHelpInContents and UsePurposes, each with its alias
+                // (#2947); UseInInterfaceCompatibilityMode comes from 8.5.1,
+                // and this set is of 8.3.27.
+                6
             } else {
                 2
             },
