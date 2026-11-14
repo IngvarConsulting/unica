@@ -3,7 +3,7 @@
   "name": "borrowed-common-module-without-properties",
   "issue": 1304,
   "area": "Расширения конфигурации",
-  "task": "Прочитать заимствованный общий модуль, который платформа выгрузила без свойств: незаписанные свойства и контексты — null, методы доступны с неизвестными контекстами, вставка кода не трогает описание",
+  "task": "Прочитать заимствованный общий модуль без свойств: незаписанные свойства равны null, методы и исходник доступны, вычисленные контексты не публикуются; вставка кода не трогает описание.",
   "workspace": "tests/fixtures/acceptance/workspace-borrowed",
   "wire": [
     {
@@ -61,8 +61,8 @@
           "eq": true
         },
         {
-          "pointer": "/data/props/compile/contexts",
-          "eq": null
+          "pointer": "/data/props/compile",
+          "absent": true
         }
       ]
     },
@@ -76,8 +76,8 @@
       ],
       "assertions": [
         {
-          "pointer": "/data/items/0/props/compile/contexts",
-          "eq": null
+          "pointer": "/data/items/0/props/compile",
+          "absent": true
         }
       ]
     },
@@ -91,13 +91,8 @@
       ],
       "assertions": [
         {
-          "pointer": "/data/props/compile/contexts",
-          "eq": [
-            "server",
-            "mobileAppServer",
-            "mobileStandaloneServer",
-            "externalConnection"
-          ]
+          "pointer": "/data/props/compile",
+          "absent": true
         }
       ]
     },
@@ -188,8 +183,8 @@
       ],
       "assertions": [
         {
-          "pointer": "/data/props/compile/contexts",
-          "eq": null
+          "pointer": "/data/props/compile",
+          "absent": true
         }
       ]
     }

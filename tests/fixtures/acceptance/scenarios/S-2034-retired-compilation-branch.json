@@ -1,0 +1,238 @@
+{
+  "id": "S-2034-retired-compilation-branch",
+  "issue": 2034,
+  "area": "Чтение BSL",
+  "task": "Модуль и методы не публикуют вычисленные контексты; снятая ветвь отвергается, обычный метод Compilation читается, исходники не меняются.",
+  "workspace": "tests/fixtures/acceptance/workspace-compilation-retired",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule.Probe"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches",
+          "noneMatches": {
+            "at": "main:CommonModule.Probe.Compilation"
+          }
+        },
+        {
+          "pointer": "/data/can",
+          "noneMatches": {
+            "op": "Compilation"
+          }
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule.Probe.Method"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/props/compile",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/1/props/compile",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule.Probe.Method.Probe"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/compile",
+          "absent": true
+        },
+        {
+          "pointer": "/data/branches",
+          "noneMatches": {
+            "at": "main:CommonModule.Probe.Method.Probe.Compilation"
+          }
+        },
+        {
+          "pointer": "/data/props/line",
+          "eq": 2
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule.Probe.Method.Compilation"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/compile",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule.Probe.Compilation"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: invalid logical address; expected <sourceSet>:<Kind>[.<Name>...]: unknown logical node kind `Compilation`",
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonModules/Probe/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "53bf08511b12dbdacb410dd90af2fbce7901984c11802adfea67292ab2c7befc"
+        },
+        {
+          "path": "src/CommonModules/Probe.xml",
+          "kind": "sha256",
+          "eq": "ee443696b7ee6228facc4bb59deb7d5d25be943142a149135c5533dd04348484"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "9a948d13dfc4a499a560325d2d2d66e3cd25db0207bb6241357fedd6f54947b9"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule.Probe.Компиляция"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: invalid logical address; expected <sourceSet>:<Kind>[.<Name>...]: unknown logical node kind `Компиляция`",
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonModules/Probe/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "53bf08511b12dbdacb410dd90af2fbce7901984c11802adfea67292ab2c7befc"
+        },
+        {
+          "path": "src/CommonModules/Probe.xml",
+          "kind": "sha256",
+          "eq": "ee443696b7ee6228facc4bb59deb7d5d25be943142a149135c5533dd04348484"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "9a948d13dfc4a499a560325d2d2d66e3cd25db0207bb6241357fedd6f54947b9"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule.Probe.Method.Probe.Compilation"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: invalid logical address; expected <sourceSet>:<Kind>[.<Name>...]: unknown logical node kind `Compilation`",
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonModules/Probe/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "53bf08511b12dbdacb410dd90af2fbce7901984c11802adfea67292ab2c7befc"
+        },
+        {
+          "path": "src/CommonModules/Probe.xml",
+          "kind": "sha256",
+          "eq": "ee443696b7ee6228facc4bb59deb7d5d25be943142a149135c5533dd04348484"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "9a948d13dfc4a499a560325d2d2d66e3cd25db0207bb6241357fedd6f54947b9"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule.Probe.Method.Probe.Компиляция"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: invalid logical address; expected <sourceSet>:<Kind>[.<Name>...]: unknown logical node kind `Компиляция`",
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonModules/Probe/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "53bf08511b12dbdacb410dd90af2fbce7901984c11802adfea67292ab2c7befc"
+        },
+        {
+          "path": "src/CommonModules/Probe.xml",
+          "kind": "sha256",
+          "eq": "ee443696b7ee6228facc4bb59deb7d5d25be943142a149135c5533dd04348484"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "9a948d13dfc4a499a560325d2d2d66e3cd25db0207bb6241357fedd6f54947b9"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule.Probe.Body#L1-L5"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/sourceText",
+          "eq": "#Если Сервер Тогда\nПроцедура Probe() Экспорт\n    Значение = 1;\nКонецПроцедуры\n#КонецЕсли\n"
+        }
+      ]
+    }
+  ]
+}
