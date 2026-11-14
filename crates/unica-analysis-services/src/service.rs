@@ -2958,8 +2958,11 @@ impl<B: BslBackend> Drop for OperationGuard<B> {
             .ok()
             .and_then(|mut operations| operations.remove(&self.operation_id))
             .is_some();
+        // Drop never panics: a panic here during unwinding aborts the test
+        // binary. While unwinding the test has already failed, so its hook is
+        // not called; a hook's own assertion otherwise fails it as usual.
         #[cfg(any(test, feature = "test-support"))]
-        if removed {
+        if removed && !std::thread::panicking() {
             let hook = self
                 .runtime
                 .actor
@@ -2967,7 +2970,7 @@ impl<B: BslBackend> Drop for OperationGuard<B> {
                 .0
                 .operation_retired_hook
                 .lock()
-                .unwrap()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .clone();
             if let Some(hook) = hook {
                 hook(&self.operation_id);
