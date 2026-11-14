@@ -102,12 +102,31 @@ class ParsingTests(unittest.TestCase):
         self.assertEqual(result.failures, ["fs::tests::moves"])
         self.assertEqual(result.skipped, ["fs::tests::links", "fs::tests::slow"])
 
-    def test_a_build_failure_is_a_failure_without_line_numbers(self):
+    def test_a_build_that_did_not_happen_is_unverified_not_a_failure(self):
+        """Ни одной строки `Running` при ненулевом коде: ни один тест не исполнился."""
         output = ("error[E0425]: cannot find value `x` in this scope\n --> src/lib.rs:3:5\n"
                   "error: could not compile `unica-x` (lib test) due to 1 previous error\n")
         result = CHECK.parse_libtest(output, 101)
-        self.assertEqual(result.failures, ["сборка: cannot find value `x` in this scope"])
-        self.assertEqual(CHECK.parse_libtest("killed\n", 1).failures, ["сборка или запуск не прошли, код 1"])
+        self.assertEqual((result.failures, result.unverified, result.complete),
+                         ([], ["сборка: cannot find value `x` in this scope"], True))
+        killed = CHECK.parse_libtest("killed\n", 1)
+        self.assertEqual((killed.failures, killed.unverified, killed.complete), ([], [], False))
+
+    def test_a_compiler_panic_or_missing_artifacts_are_unverified(self):
+        # Улика — отсутствие запуска, а не текст: любые ошибки сборки дают одно.
+        for output in ("error: the compiler unexpectedly panicked. this is a bug.\n"
+                       "error: could not compile `unica-coder` (lib test)\n",
+                       "error[E0463]: can't find crate for `serde_spanned`\n"
+                       "error[E0461]: only metadata stub found for `rlib` dependency `core`\n"
+                       "error: could not compile `unica-daemon` (lib test) due to 2 previous errors\n"):
+            with self.subTest(output=output.splitlines()[0]):
+                result = CHECK.parse_libtest(output, 101)
+                self.assertEqual(result.failures, [])
+                self.assertTrue(result.unverified and result.complete)
+
+    def test_a_real_failure_after_running_is_still_a_failure(self):
+        result = CHECK.parse_libtest(LIBTEST, 101)
+        self.assertEqual((result.failures, result.unverified), (["fs::tests::moves"], []))
 
     def test_a_binary_that_dies_mid_run_is_a_failure_beyond_known_ones(self):
         output = "test a ... FAILED\nthread 'b' has overflowed its stack\n"
@@ -116,7 +135,7 @@ class ParsingTests(unittest.TestCase):
         split = "test a ... FAILED\ntest b ... child output\nFAILED\ntest result: FAILED. 0 passed; 2 failed\n"
         self.assertEqual(CHECK.parse_libtest(split, 101).failures, ["a", "прогон оборвался или итог неполон, код 101"])
 
-    def test_a_cargo_build_in_class_setup_is_a_build_failure(self):
+    def test_a_cargo_build_in_class_setup_is_unverified(self):
         output = (
             "ERROR: setUpClass (m.Corpus)\n" + "-" * 70 + "\n"
             "Traceback (most recent call last):\n"
@@ -125,10 +144,11 @@ class ParsingTests(unittest.TestCase):
             "FAIL: test_b (m.A.test_b)\nAssertionError: 1 != 2\n"
         )
         result = CHECK.parse_unittest(output, 1)
-        self.assertEqual(result.failures, ["m.A.test_b", "m.Corpus"])
-        self.assertEqual(result.build, ["m.Corpus"])
-        self.assertEqual(CHECK.parse_libtest("error[E0425]: x\n", 101).build, ["сборка: x"])
-        self.assertEqual(CHECK.parse_libtest("killed\n", 1).build, [])
+        # Набор, собирающий бинарь: упавшая сборка — «не проверено», остальное — падения.
+        self.assertEqual((result.failures, result.unverified), (["m.A.test_b"], ["m.Corpus"]))
+        only_build = output.split("=" * 70)[0]
+        self.assertEqual(CHECK.parse_unittest(only_build, 1).failures, [])
+        self.assertEqual(CHECK.parse_libtest("error[E0425]: x\n", 101).unverified, ["сборка: x"])
 
     def test_a_product_run_or_a_later_section_is_not_a_build_failure(self):
         output = (
@@ -296,6 +316,41 @@ class BaselineTests(unittest.TestCase):
             self.assertEqual(CHECK.load_cache(cache_dir / "baseline.json", "sha"), {"python:tests/ci": ["m.A.known"]})
             self.assertEqual(list(cache_dir.glob("*.partial")), [])
 
+    def test_a_build_crash_on_the_base_is_not_cached(self):
+        """Авария сборки на базе, закешированная полным итогом, спрятала бы те же ошибки ветки."""
+        with tempfile.TemporaryDirectory() as directory:
+            cache_dir = Path(directory)
+            checks = [CHECK.Check("test:unica-x", "test", "unica-x")]
+            crashed = CHECK.Result([], unverified=["сборка: can't find crate for `std`"])
+            with mock.patch.object(CHECK, "run_check", lambda *args: crashed), \
+                    mock.patch.object(CHECK, "crate_exists_on_base", return_value=True), \
+                    mock.patch.object(CHECK, "add_base_tree"), mock.patch.object(CHECK, "remove_base_tree"), \
+                    redirect_stdout(io.StringIO()):
+                result, unfinished = CHECK.baseline(checks, "sha", cache_dir, {})
+            self.assertEqual((result, unfinished), ({}, ["test:unica-x"]))
+            self.assertEqual(CHECK.load_cache(cache_dir / "baseline.json", "sha"), {})
+
+    def test_a_crash_is_repeated_once_and_both_attempts_are_named(self):
+        check = CHECK.Check("test:unica-x", "test", "unica-x")
+        with tempfile.TemporaryDirectory() as directory:
+            logs = Path(directory)
+            CHECK.log_path(logs, check.key).write_text("first attempt", encoding="utf-8")
+            fixed = CHECK.Result([])
+            with mock.patch.object(CHECK, "run_check", return_value=fixed) as run, redirect_stdout(io.StringIO()) as out:
+                result, first = CHECK.repeat_after_crash(check, REPO_ROOT, {}, logs)
+            self.assertIs(result, fixed)
+            run.assert_called_once()
+            self.assertEqual(first.read_text(encoding="utf-8"), "first attempt")
+            self.assertIn("сборка не состоялась, повтор test:unica-x", out.getvalue())
+        gone = CHECK.crash_report({}, {"test:unica-x": first}, logs)
+        self.assertEqual(gone, [f"Авария сборки ушла при повторе: test:unica-x — журнал первой попытки: {first}"])
+        stayed = CHECK.crash_report({"test:unica-x": ["сборка: boom"]}, {"test:unica-x": first}, logs)
+        self.assertEqual(len(stayed), 1)
+        self.assertTrue(stayed[0].startswith("Не проверено, сборка не состоялась: test:unica-x — тесты этих целей "
+                                             "не исполнялись; первая ошибка: сборка: boom;"))
+        self.assertIn("Повтор был, авария повторилась.", stayed[0])
+        self.assertIn("смотрите Clippy", stayed[0])
+
     def test_a_cache_of_the_previous_version_is_not_trusted(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "baseline.json"
@@ -360,7 +415,8 @@ class RecheckTests(unittest.TestCase):
         with mock.patch.object(CHECK.subprocess, "run", return_value=completed), redirect_stdout(io.StringIO()), \
                 tempfile.TemporaryDirectory() as directory:
             repeated, unstable = CHECK.recheck(check, ["m.C.test_a"], REPO_ROOT, {}, Path(directory))
-        self.assertEqual((repeated.failures, repeated.build, unstable), (["m.C.test_a"], ["m.C.test_a"], []))
+        # Повтор сам не собрался: доверять ему нечему, падение остаётся.
+        self.assertEqual((repeated.failures, unstable), (["m.C.test_a"], []))
         base = {"python:tests/ci": ["m.C.test_z"]}
         self.assertEqual(CHECK.new_failures({"python:tests/ci": repeated}, base), {"python:tests/ci": ["m.C.test_a"]})
 
