@@ -8415,6 +8415,7 @@ mod medium_tests {
         child.wait();
     }
 
+    #[cfg(windows)]
     fn sleeping_helper() -> Command {
         let mut command = Command::new(std::env::current_exe().unwrap());
         command
