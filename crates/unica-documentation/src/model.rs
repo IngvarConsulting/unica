@@ -564,3 +564,41 @@ pub struct HelpArticle {
     /// Разделы, которым разбор не знает места: заголовок и текст.
     pub other_sections: Vec<(String, String)>,
 }
+
+/// Параметр метода конфигурации, как его описывает документирующий
+/// комментарий. Типы названы текстом: что текст означает, решает
+/// прикладная модель конфигурации, а не справка по коду.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MethodDocParameter {
+    pub name: String,
+    pub types: Vec<String>,
+    pub type_text: String,
+    pub description: String,
+    /// Ключи коллекции, описанные в комментарии звёздочками.
+    pub keys: Vec<MethodDocParameter>,
+}
+
+/// Возвращаемое значение метода конфигурации по его комментарию.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MethodDocReturn {
+    pub types: Vec<String>,
+    pub type_text: String,
+    pub description: String,
+    pub keys: Vec<MethodDocParameter>,
+}
+
+/// Документирующий комментарий метода конфигурации полями. Сырой текст
+/// комментария остаётся рядом: нестандартный комментарий доходит до
+/// потребителя без потерь, даже когда полей из него не вышло.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MethodDoc {
+    pub text: String,
+    pub description: ArticleField<String>,
+    pub parameters: ArticleField<Vec<MethodDocParameter>>,
+    pub returns: ArticleField<MethodDocReturn>,
+    pub example: ArticleField<String>,
+    pub call_options: ArticleField<Vec<String>>,
+    pub see_also: ArticleField<Vec<String>>,
+    /// Разделы, которых стандарт не называет: заголовок и текст.
+    pub other_sections: Vec<(String, String)>,
+}

@@ -15,6 +15,9 @@
 //! следует из [`ArticleKind`] и решается потребителем формата: здесь оно
 //! неотличимо от пустого, потому что отсутствие раздела выглядит одинаково.
 
+/// Состояние поля и причины — общие с комментарием метода конфигурации:
+/// у разборов один набор состояний, а не два похожих.
+pub use crate::doc_field::{Field, UnparsedReason};
 use crate::model::{Context, TypeName, TypeRef};
 
 /// Вид статьи: что она описывает.
@@ -48,84 +51,6 @@ impl ArticleKind {
 pub struct ArticleName {
     pub ru: String,
     pub en: Option<String>,
-}
-
-/// Почему раздел остался неразобранным. Причина называет, чего в разделе не
-/// нашлось, а не что потребителю делать: решение — за ним.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum UnparsedReason {
-    /// В разделе «Параметры» нет ни одной рубрики параметра.
-    NoParameterRubric,
-    /// В разделе нет строки «Тип: …», которой он типизируется.
-    NoTypeLine,
-    /// В разделе «Пример» нет блока кода.
-    NoCodeBlock,
-    /// В разделе «Доступность» не распознано ни одного контекста.
-    NoContext,
-    /// В разделе «Использование в версии» нет версии появления.
-    NoVersion,
-    /// Раздел «Использование» говорит не о доступе на чтение и запись.
-    UnknownUse,
-    /// В разделе «Синтаксис» нет строки вызова.
-    NoCallLine,
-}
-
-impl UnparsedReason {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            UnparsedReason::NoParameterRubric => "no-parameter-rubric",
-            UnparsedReason::NoTypeLine => "no-type-line",
-            UnparsedReason::NoCodeBlock => "no-code-block",
-            UnparsedReason::NoContext => "no-context",
-            UnparsedReason::NoVersion => "no-version",
-            UnparsedReason::UnknownUse => "unknown-use",
-            UnparsedReason::NoCallLine => "no-call-line",
-        }
-    }
-}
-
-/// Значение раздела статьи.
-///
-/// `Empty` и `Parsed` различают «раздела в статье нет» и «раздел разобран»;
-/// `Unparsed` держит причину и сырой текст раздела, чтобы потребитель мог
-/// показать исходное вместо выдуманного. Пустое значение и неразобранный
-/// раздел никогда не совпадают: иначе «параметров нет» стало бы неотличимо
-/// от «параметры не разобрались».
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub enum Field<T> {
-    #[default]
-    Empty,
-    Parsed(T),
-    Unparsed {
-        reason: UnparsedReason,
-        text: String,
-    },
-}
-
-impl<T> Field<T> {
-    pub fn parsed(&self) -> Option<&T> {
-        match self {
-            Field::Parsed(value) => Some(value),
-            _ => None,
-        }
-    }
-
-    pub fn is_empty(&self) -> bool {
-        matches!(self, Field::Empty)
-    }
-
-    /// Разобранное значение либо названная причина: раздел с текстом, из
-    /// которого значения не вышло, остаётся неразобранным, а не пустым.
-    fn from(value: Option<T>, reason: UnparsedReason, text: &str) -> Self {
-        match value {
-            Some(value) => Field::Parsed(value),
-            None if text.trim().is_empty() => Field::Empty,
-            None => Field::Unparsed {
-                reason,
-                text: text.to_owned(),
-            },
-        }
-    }
 }
 
 /// Один параметр варианта синтаксиса.
