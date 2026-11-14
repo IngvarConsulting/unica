@@ -3046,7 +3046,6 @@ pub fn narrow_observed_metadata_type(
     observed: unica_metadata::ObservedMetadataType,
 ) -> Result<MetadataType, MetaDiagnostic> {
     MetadataType::try_from(observed).map_err(|mut diagnostic| {
-        diagnostic.code = MetaDiagnosticCode::ValidationFailed;
         diagnostic.message =
             "existing metadata type is outside the public mutation algebra".to_string();
         diagnostic.field = Some("type".to_string());

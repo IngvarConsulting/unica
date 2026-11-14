@@ -1,6 +1,5 @@
 ---
 id: INV.SOURCE.RETAINED-UNEDITABLE-TYPE
-gap: https://github.com/IngvarConsulting/unica/issues/965
 ---
 
 # Правка другого свойства сохраняет неизменяемый тип

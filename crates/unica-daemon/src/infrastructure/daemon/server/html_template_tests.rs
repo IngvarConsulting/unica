@@ -94,6 +94,7 @@ fn assert_comment(source: &Path, relative: &str, expected: &str) {
         .any(|node| node.has_tag_name("Comment") && node.text() == Some(expected)));
 }
 
+/// rule: INV.SOURCE.HTML-TEMPLATE-VALIDATION
 #[test]
 fn canonical_html_property_edits_preserve_authored_page_bytes_with_and_without_bom() {
     let authored = "<!DOCTYPE HTML PUBLIC \"-//W3C//DTD HTML 4.0 Transitional//EN\">\r\n<html><head><title>Справка&nbsp;1С</title></head>\n<body><p>Текст<br></body></html>";
