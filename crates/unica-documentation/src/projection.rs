@@ -128,15 +128,31 @@ pub fn search(
                 .hits
                 .iter()
                 .map(|hit| {
-                    json!({
+                    // Подпись, вид и владелец есть не у всякой находки:
+                    // статья стандарта разработки их не знает, у страницы
+                    // типа нет владельца. Ключа нет там, где источник о нём
+                    // молчит: пустое поле за каждую находку — это вес
+                    // выдачи без сведений.
+                    let mut value = json!({
                         "rank": hit.rank,
                         "providerScore": hit.provider_score,
                         "documentId": hit.document_id,
                         "title": hit.title,
-                        "signature": hit.signature,
                         "snippet": hit.snippet,
                         "applicableVersion": hit.applicable_version,
-                    })
+                    });
+                    if let Some(object) = value.as_object_mut() {
+                        for (key, named) in [
+                            ("signature", hit.signature.as_ref()),
+                            ("kind", hit.kind.as_ref()),
+                            ("owner", hit.owner.as_ref()),
+                        ] {
+                            if let Some(named) = named {
+                                object.insert(key.to_string(), json!(named));
+                            }
+                        }
+                    }
+                    value
                 })
                 .collect();
             // Exactness is conservative: a full window may have more matches
@@ -286,8 +302,49 @@ mod tests {
                 signature: Some("Имя()".to_string()),
                 snippet: "текст".to_string(),
                 applicable_version: "8.3.27.2074".to_string(),
+                kind: Some("method".to_string()),
+                owner: Some("ТаблицаЗначений".to_string()),
             }],
         }
+    }
+
+    /// Находка называет, что открыть: вид статьи, владелец и подпись
+    /// рядом с заголовком. Чего источник не различает, того нет ключом:
+    /// пустое поле за каждую находку — вес выдачи без сведений.
+    /// rule: INV.APP.DOCUMENTATION-SEARCH-HIT
+    #[test]
+    fn a_hit_names_what_to_open_and_omits_what_its_source_does_not_know() {
+        let mut section = ok_section("platform-syntax-help");
+        let registry = DocumentationRegistry::new(vec![Arc::new(Stub {
+            id: "platform-syntax-help",
+            section: section.clone(),
+        })])
+        .expect("реестр");
+        let answer = search(&registry, &request(), &context()).expect("выдача");
+        let hit = &answer["sections"][0]["hits"][0];
+        assert_eq!(hit["kind"], json!("method"));
+        assert_eq!(hit["owner"], json!("ТаблицаЗначений"));
+        assert_eq!(hit["signature"], json!("Имя()"));
+
+        // Источник, который вида, владельца и подписи не знает.
+        section.hits[0].kind = None;
+        section.hits[0].owner = None;
+        section.hits[0].signature = None;
+        let registry = DocumentationRegistry::new(vec![Arc::new(Stub {
+            id: "platform-syntax-help",
+            section,
+        })])
+        .expect("реестр");
+        let answer = search(&registry, &request(), &context()).expect("выдача");
+        let hit = &answer["sections"][0]["hits"][0];
+        assert!(
+            hit.get("kind").is_none() && hit.get("owner").is_none(),
+            "чего источник не различает, того нет ключом: {hit}"
+        );
+        assert!(hit.get("signature").is_none(), "{hit}");
+        // Заголовок и строка о находке остаются всегда.
+        assert_eq!(hit["title"], json!("Заголовок"));
+        assert_eq!(hit["snippet"], json!("текст"));
     }
 
     fn failed_section(id: &str) -> DocumentationSection {

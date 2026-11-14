@@ -14,6 +14,10 @@ pub struct CorpusPage {
     pub title: String,
     pub text: String,
     pub signature: Option<Signature>,
+    /// Заголовок статьи: вид, имя, владелец и одна строка описания.
+    /// Читается при чтении страницы, пока её разметка под рукой: в индексе
+    /// остаётся заголовок, а не кусок плоского текста.
+    pub header: unica_bsl_types::ArticleHeader,
 }
 
 #[derive(Debug)]
@@ -171,6 +175,7 @@ pub fn read_page_from_container(
         });
     Ok(Some((
         CorpusPage {
+            header: unica_bsl_types::article::header(path, &raw),
             path: path.to_string(),
             title,
             text,
@@ -261,6 +266,7 @@ pub fn read_corpus_from_archive(archive: &[u8]) -> Result<Vec<CorpusPage>, Corpu
             .map(|(head, _)| head)
             .unwrap_or(name.as_str());
         pages.push(CorpusPage {
+            header: unica_bsl_types::article::header(name, &raw),
             path: name.clone(),
             title,
             text,

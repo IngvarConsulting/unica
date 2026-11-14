@@ -110,8 +110,16 @@ pub struct DocumentationHit {
     pub document_id: String,
     pub title: String,
     pub signature: Option<String>,
+    /// Одна строка о находке: первое предложение описания. Не кусок текста
+    /// документа: находка называет, что открыть, а не пересказывает его.
     pub snippet: String,
     pub applicable_version: String,
+    /// Вид статьи, если источник его различает: `method`, `property`,
+    /// `type`, `event`, `constructor`, `concept`.
+    pub kind: Option<String>,
+    /// Владелец члена, как его называет источник: тип, которому
+    /// принадлежит метод или свойство.
+    pub owner: Option<String>,
 }
 
 #[derive(Debug, Clone)]

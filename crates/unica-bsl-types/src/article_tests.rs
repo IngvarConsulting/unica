@@ -456,3 +456,46 @@ fn a_call_section_on_a_property_page_stays_among_the_other_sections() {
         )]
     );
 }
+
+/// Заголовок статьи читается тем же устройством страницы, что и полная
+/// статья: вид, имя, владелец, строка вызова и одно предложение описания.
+/// Выдача строится по всему корпусу, и платить полным разбором за страницу
+/// незачем — но и читать её вторым способом нельзя.
+/// rule: INV.APP.DOCUMENTATION-SEARCH-HIT
+#[test]
+fn the_header_of_an_article_names_its_kind_owner_and_one_sentence() {
+    let html = "\u{feff}<html><body>\
+        <h1 class=\"V8SH_pagetitle\">ТаблицаЗначений.Скопировать</h1>\
+        <p class=\"V8SH_title\">ТаблицаЗначений (ValueTable)</p>\
+        <p class=\"V8SH_heading\">Скопировать (Copy)</p>\
+        <p class=\"V8SH_chapter\">Синтаксис:</p>Скопировать(&lt;Строки&gt;)\
+        <p class=\"V8SH_chapter\">Описание:</p>\
+        <p>Создаёт копию таблицы. Второе предложение в строку находки не идёт.</p>\
+        <p class=\"V8SH_chapter\">Доступность:</p><p>Сервер.</p>\
+        </body></html>";
+    let member = super::header("objects/ValueTable/methods/Copy649.html", html);
+
+    assert_eq!(member.kind, ArticleKind::Method);
+    assert_eq!(member.name.ru, "Скопировать");
+    assert_eq!(
+        member.owner.as_ref().map(|owner| owner.ru.as_str()),
+        Some("ТаблицаЗначений")
+    );
+    assert_eq!(member.call.as_deref(), Some("Скопировать(<Строки>)"));
+    assert_eq!(
+        member.summary, "Создаёт копию таблицы.",
+        "строка находки — первое предложение описания, без соседних разделов"
+    );
+
+    // У страницы типа владельца нет, а описание берётся так же.
+    let type_page = "<html><body>\
+        <h1 class=\"V8SH_pagetitle\">ТаблицаЗначений (ValueTable)</h1>\
+        <p class=\"V8SH_title\">ТаблицаЗначений (ValueTable)</p>\
+        <p class=\"V8SH_chapter\">Описание:</p><p>Таблица значений.</p>\
+        </body></html>";
+    let whole = super::header("objects/ValueTable.html", type_page);
+    assert_eq!(whole.kind, ArticleKind::Type);
+    assert!(whole.owner.is_none(), "{:?}", whole.owner);
+    assert_eq!(whole.summary, "Таблица значений.");
+    assert!(whole.call.is_none());
+}

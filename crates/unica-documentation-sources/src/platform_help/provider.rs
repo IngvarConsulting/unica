@@ -10,7 +10,6 @@ use super::installation::{discover, CorpusContainers, InstallationCorpora, Insta
 
 /// Длина фрагмента выдачи. Вырезается один раз при индексировании: фрагмент
 /// не зависит от запроса, и держать ради него полный текст страницы незачем.
-const SNIPPET_CHARS: usize = 400;
 
 /// Единственное объявление корпусов поставщика. И `corpora()`, и `search()`
 /// читают эту таблицу, поэтому разойтись молча они не могут, а имена корпусов
@@ -41,7 +40,10 @@ const CORPUS_SPECS: [CorpusSpec; 2] = [
 struct IndexedPage {
     path: String,
     title: String,
-    snippet: String,
+    /// Заголовок статьи: вид, владелец и одна строка описания. Прежде здесь
+    /// лежали первые 400 символов плоского текста страницы — выдача из них
+    /// не говорила, что открыть, и весила килобайты на десять находок.
+    header: unica_bsl_types::ArticleHeader,
     signature: Option<Signature>,
 }
 
@@ -88,7 +90,7 @@ fn corpus_from_pages(
     let pages = pages
         .into_iter()
         .map(|page| IndexedPage {
-            snippet: page.text.chars().take(SNIPPET_CHARS).collect(),
+            header: page.header,
             path: page.path,
             title: page.title,
             signature: page.signature,
@@ -307,7 +309,7 @@ pub fn global_context_members(root: &Path) -> Result<Vec<GlobalContextMember>, S
                 return None;
             };
             let (name_ru, name_en) = global_context_names(&page.title)?;
-            let parameters = syntax_parameters(&page.snippet, &name_ru);
+            let parameters = syntax_parameters(page.header.call.as_deref(), &name_ru);
             Some(GlobalContextMember {
                 parameters,
                 kind,
@@ -323,15 +325,14 @@ pub fn global_context_members(root: &Path) -> Result<Vec<GlobalContextMember>, S
     Ok(members)
 }
 
-/// Параметры из `Синтаксис: Сообщить(<ТекстСообщения>, <Статус>)` начала
-/// страницы. Угловые скобки в тексте страницы экранированы.
-fn syntax_parameters(text: &str, name: &str) -> Vec<String> {
-    let text = text.replace("&lt;", "<").replace("&gt;", ">");
-    let Some(syntax) = text
-        .split_once("Синтаксис:")
-        .map(|(_, rest)| rest.trim_start())
-        .and_then(|rest| rest.strip_prefix(name))
-        .and_then(|rest| rest.strip_prefix('('))
+/// Имена параметров из строки вызова: `СтрНайти(<Строка>, <Что>)`.
+/// Строку даёт разбор страницы, а не вычитка из плоского текста: иначе
+/// устройство раздела «Синтаксис» читалось бы двумя способами.
+fn syntax_parameters(call: Option<&str>, name: &str) -> Vec<String> {
+    let Some(syntax) = call
+        .map(str::trim)
+        .and_then(|call| call.strip_prefix(name))
+        .and_then(|rest| rest.trim_start().strip_prefix('('))
         .and_then(|rest| rest.split_once(')'))
         .map(|(arguments, _)| arguments.to_owned())
     else {
@@ -420,8 +421,17 @@ fn rank_pages(
                     .signature
                     .as_ref()
                     .and_then(|value| signature_in(value, language)),
-                snippet: page.snippet.clone(),
+                snippet: page.header.summary.clone(),
                 applicable_version: version.to_string(),
+                kind: Some(page.header.kind.as_str().to_string()),
+                // Владелец есть у члена типа; у страницы типа и у понятия
+                // его нет, и ключа в находке тоже нет.
+                owner: page
+                    .header
+                    .owner
+                    .as_ref()
+                    .map(|owner| owner.ru.clone())
+                    .filter(|name| !name.is_empty()),
             }
         })
         .collect()
@@ -790,6 +800,117 @@ mod tests {
         )
     }
 
+    /// Страница статьи той формы, что у справки установленной платформы:
+    /// шапка владельца, имя члена, разделы `V8SH_chapter`. Описание
+    /// длинное — настоящая статья короткой не бывает, и выдача не должна
+    /// расти вместе с ним.
+    fn article_markup(owner: &str, member: &str) -> String {
+        format!(
+            "\u{feff}<html><body>\
+             <h1 class=\"V8SH_pagetitle\">{owner}.{member}</h1>\
+             <p class=\"V8SH_title\">{owner} ({owner}En)</p>\
+             <p class=\"V8SH_heading\">{member} ({member}En)</p>\
+             <p class=\"V8SH_chapter\">Синтаксис:</p>{member}(&lt;Строки&gt;)\
+             <p class=\"V8SH_chapter\">Описание:</p>\
+             <p>Копирует строки таблицы образца в новую таблицу. \
+             Дальше следует подробное изложение поведения, которое в статье \
+             занимает ещё несколько предложений и не помещается в одну \
+             строку выдачи. Оно перечисляет частные случаи, оговорки о \
+             совместимости и ссылки на соседние разделы, и именно из-за него \
+             плоский кусок текста страницы весил килобайты на каждую \
+             находку.</p>\
+             <p class=\"V8SH_chapter\">Доступность:</p><p>Сервер, толстый клиент.</p>\
+             </body></html>"
+        )
+    }
+
+    /// Выдача поиска называет, что открыть, и остаётся в своём размере.
+    ///
+    /// Прежде находка несла первые 400 символов плоского текста страницы:
+    /// десять находок давали килобайты склеенных заголовков, из которых не
+    /// было видно ни вида статьи, ни владельца. Предел проверяется, а не
+    /// обещается: ответ на запрос из трёх слов с `limit` 10 обязан остаться
+    /// в единицах килобайт.
+    /// rule: INV.APP.DOCUMENTATION-SEARCH-HIT
+    #[test]
+    fn ten_hits_name_what_to_open_and_stay_within_their_size() {
+        let _serial = index_test_lock();
+        let dir = tempfile::tempdir().expect("каталог");
+        let root = dir.path().join("8.3.27.2074");
+        std::fs::create_dir_all(&root).expect("каталог версии");
+        // Пути страниц — латиницей, как в контейнерах вендора; имена
+        // и описания — по-русски, как на русских страницах.
+        let owners = [
+            ("SampleTable", "ТаблицаОбразца"),
+            ("SampleList", "СписокОбразца"),
+            ("SampleArray", "МассивОбразца"),
+            ("SampleMap", "СоответствиеОбразца"),
+            ("SampleStructure", "СтруктураОбразца"),
+            ("SampleSet", "НаборОбразца"),
+        ];
+        let pages: Vec<(String, String)> = owners
+            .iter()
+            .flat_map(|(path_owner, owner)| {
+                [("Copy", "Скопировать"), ("Sort", "Сортировать")]
+                    .into_iter()
+                    .map(move |(path_member, member)| {
+                        (
+                            format!("objects/{path_owner}/methods/{path_member}1.html"),
+                            article_markup(owner, member),
+                        )
+                    })
+            })
+            .collect();
+        let borrowed: Vec<(&str, &str)> = pages
+            .iter()
+            .map(|(path, html)| (path.as_str(), html.as_str()))
+            .collect();
+        std::fs::write(root.join("shcntx_ru.hbk"), hbk_bytes(&borrowed)).expect("контейнер");
+
+        let context = DocumentationContext {
+            platform_version: Some("8.3.27.2074".to_string()),
+            installation_root: Some(root),
+        };
+        let registry =
+            unica_documentation::model::DocumentationRegistry::new(vec![std::sync::Arc::new(
+                PlatformSyntaxHelpProvider::new(),
+            )])
+            .expect("реестр");
+        let mut ask = request("скопировать строки таблицы");
+        ask.limit = 10;
+        let answer = unica_documentation::projection::search(&registry, &ask, &context)
+            .expect("выдача построена");
+        let bytes = serde_json::to_vec(&answer)
+            .expect("ответ сериализуем")
+            .len();
+
+        let hits = answer["sections"][0]["hits"]
+            .as_array()
+            .expect("находки списком");
+        assert_eq!(hits.len(), 10, "десять находок: {answer}");
+        // Заголовок находки говорит, что открыть: вид статьи, владелец,
+        // подпись и одна строка описания.
+        assert_eq!(hits[0]["kind"], serde_json::json!("method"));
+        assert_eq!(hits[0]["owner"], serde_json::json!("ТаблицаОбразца"));
+        let snippet = hits[0]["snippet"].as_str().expect("строка описания");
+        assert!(
+            snippet.starts_with("Копирует строки таблицы образца в новую таблицу."),
+            "описание — одно предложение: {snippet}"
+        );
+        assert!(
+            !snippet.contains("Доступность"),
+            "в строку описания не попадают соседние разделы: {snippet}"
+        );
+        // Предел — 5 КБ на весь ответ: это единицы килобайт, как и
+        // требовалось, при замеренных 13–15 КБ до правки. Сегодня выходит
+        // около 4,5 КБ, и запас оставлен под локаторы длиннее образцовых,
+        // а не под возврат куска текста страницы.
+        assert!(
+            bytes <= 5 * 1024,
+            "десять находок обязаны уместиться в 5 КБ, вышло {bytes} байт: {answer}"
+        );
+    }
+
     #[test]
     fn missing_installation_is_unavailable_not_failed() {
         let provider = PlatformSyntaxHelpProvider::new();
@@ -868,6 +989,9 @@ mod tests {
         text: &str,
     ) -> crate::platform_help::corpus::CorpusPage {
         crate::platform_help::corpus::CorpusPage {
+            // У синтетической страницы разметки нет: заголовок читается
+            // из пути, как и у настоящей.
+            header: unica_bsl_types::article::header(path, ""),
             path: path.to_string(),
             title: title.to_string(),
             text: text.to_string(),
@@ -1026,6 +1150,7 @@ mod tests {
     fn the_corpus_locale_picks_the_signature_locale() {
         let corpus = corpus_from_pages(
             vec![crate::platform_help::corpus::CorpusPage {
+                header: unica_bsl_types::article::header("objects/GetURL.html", ""),
                 path: "objects/GetURL.html".to_string(),
                 title: "ПолучитьНавигационнуюСсылку (GetURL)".to_string(),
                 text: "текст".to_string(),
@@ -2041,13 +2166,16 @@ mod global_context_tests {
 
     #[test]
     fn parameters_come_from_the_syntax_line() {
-        let text = "Глобальный контекст.Сообщить Доступен, начиная с версии 8.0. Синтаксис: Сообщить(&lt;ТекстСообщения&gt;, &lt;Статус&gt;) Параметры: &lt;ТекстСообщения&gt;";
+        // Строку вызова даёт разбор страницы: сущности в ней уже раскрыты,
+        // а разделы разобраны, поэтому «Синтаксис:» здесь не вычитывается.
         assert_eq!(
-            super::syntax_parameters(text, "Сообщить"),
+            super::syntax_parameters(Some("Сообщить(<ТекстСообщения>, <Статус>)"), "Сообщить"),
             ["ТекстСообщения", "Статус"]
         );
-        assert!(super::syntax_parameters("Синтаксис: ТекущаяДата()", "ТекущаяДата").is_empty());
-        assert!(super::syntax_parameters("без синтаксиса", "Ф").is_empty());
+        assert!(super::syntax_parameters(Some("ТекущаяДата()"), "ТекущаяДата").is_empty());
+        assert!(super::syntax_parameters(Some("ДругойМетод(<А>)"), "Ф").is_empty());
+        // Раздела «Синтаксис» на странице нет — параметров нет.
+        assert!(super::syntax_parameters(None, "Ф").is_empty());
     }
 }
 
