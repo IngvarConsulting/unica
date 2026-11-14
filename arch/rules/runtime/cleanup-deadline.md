@@ -1,6 +1,5 @@
 ---
 id: INV.APP.RUNTIME-CLEANUP-DEADLINE
-gap: https://github.com/IngvarConsulting/unica/issues/947
 ---
 
 # Очистка процесса использует общий срок ожидания

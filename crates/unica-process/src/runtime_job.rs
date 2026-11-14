@@ -61,6 +61,11 @@ const RUNTIME_STARTUP_CLEANUP_TIMEOUT: Duration = Duration::from_millis(500);
 #[cfg(any(test, feature = "test-support"))]
 thread_local! { static STREAM_FINISH_ATTEMPTS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) }; }
 
+#[cfg(test)]
+thread_local! {
+    static STREAM_FINISH_DEADLINES: std::cell::RefCell<Vec<Instant>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
 fn redacted_error(message: &str) -> String {
     redaction::redactor(message)
 }
@@ -468,6 +473,8 @@ impl StreamTail {
     pub fn finish_until(&mut self, deadline: Instant) -> JobResult<bool> {
         #[cfg(any(test, feature = "test-support"))]
         STREAM_FINISH_ATTEMPTS.with(|slot| slot.set(slot.get().saturating_add(1)));
+        #[cfg(test)]
+        STREAM_FINISH_DEADLINES.with(|slot| slot.borrow_mut().push(deadline));
         self.finish_within(deadline.saturating_duration_since(Instant::now()))
     }
 
@@ -646,6 +653,165 @@ mod medium_tests {
             Ok(0)
         }
     }
+    struct HeldReader {
+        release: mpsc::Receiver<()>,
+        _finished: mpsc::Sender<()>,
+    }
+    impl Read for HeldReader {
+        fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+            let _ = self.release.recv();
+            Ok(0)
+        }
+    }
+
+    struct CleanupFixture {
+        process: Option<SystemRuntimeJobProcess>,
+        releases: Vec<mpsc::Sender<()>>,
+        finished: Vec<mpsc::Receiver<()>>,
+    }
+    impl CleanupFixture {
+        fn new() -> Self {
+            let (mut process, _) = system_process_for_authority_failure("exec sleep 30");
+            let mut releases = Vec::new();
+            let mut finished = Vec::new();
+            for stream in [&mut process.stdout, &mut process.stderr] {
+                let (release, gate) = mpsc::channel();
+                let (done, completed) = mpsc::channel();
+                *stream = Some(StreamTail::spawn(HeldReader {
+                    release: gate,
+                    _finished: done,
+                }));
+                releases.push(release);
+                finished.push(completed);
+            }
+            STREAM_FINISH_DEADLINES.with(|slot| slot.borrow_mut().clear());
+            Self {
+                process: Some(process),
+                releases,
+                finished,
+            }
+        }
+        fn drop_process(&mut self) {
+            // Retain the child handle until the real tree is proven terminal.
+            let process = self.process.as_mut().unwrap();
+            if !process.exited {
+                process.child.kill().unwrap();
+                process.child.wait().unwrap();
+                process.exited = true;
+            }
+            drop(self.process.take());
+        }
+    }
+    impl Drop for CleanupFixture {
+        fn drop(&mut self) {
+            crate::platform::process::set_runtime_tree_deadline_probe(None);
+            self.releases.clear();
+            if let Some(process) = self.process.as_mut() {
+                if !process.exited {
+                    let _ = process.child.kill();
+                    let _ = process.child.wait();
+                    process.exited = true;
+                }
+            }
+            // A disconnected completion channel proves the held reader exited;
+            // a timeout would leave a test-owned reader running after the test.
+            for finished in &self.finished {
+                assert!(matches!(
+                    finished.recv_timeout(Duration::from_secs(5)),
+                    Err(mpsc::RecvTimeoutError::Disconnected)
+                ));
+            }
+            drop(self.process.take());
+            STREAM_FINISH_DEADLINES.with(|slot| slot.borrow_mut().clear());
+        }
+    }
+
+    /// rule: INV.APP.RUNTIME-CLEANUP-DEADLINE
+    #[test]
+    fn system_cleanup_passes_one_exact_deadline_to_delayed_tree_and_both_readers() {
+        if !crate::test_support::unix_runtime_authority_tests_supported() {
+            crate::test_support::skip_without_host_capability(
+                crate::test_support::HostCapability::UnixProcessGroups,
+                "real child fixture uses Unix process groups",
+            );
+            return;
+        }
+        for tree_error in [false, true] {
+            let mut fixture = CleanupFixture::new();
+            crate::test_support::reset_runtime_tree_cleanup_calls_for_test();
+            let deadline = Instant::now() + Duration::from_secs(1);
+            let observed_tree = Arc::new(Mutex::new(None));
+            let observed = Arc::clone(&observed_tree);
+            crate::platform::process::set_runtime_tree_deadline_probe(Some(Box::new(
+                move |received| {
+                    *observed.lock().unwrap() = Some(received);
+                    let (_held_sender, gate) = mpsc::channel::<()>();
+                    assert!(matches!(
+                        gate.recv_timeout(Duration::from_millis(25)),
+                        Err(mpsc::RecvTimeoutError::Timeout)
+                    ));
+                },
+            )));
+            if tree_error {
+                crate::test_support::inject_runtime_tree_cleanup_timeout_for_test();
+            }
+            let process = fixture.process.as_mut().unwrap();
+            process.bind_cleanup_deadline(deadline);
+            let error = process.cleanup_until(deadline).unwrap_err();
+            assert_eq!(*observed_tree.lock().unwrap(), Some(deadline));
+            assert_eq!(
+                STREAM_FINISH_DEADLINES.with(|slot| slot.borrow().clone()),
+                vec![deadline, deadline]
+            );
+            if tree_error {
+                assert!(
+                    error.contains("injected runtime process tree cleanup timeout"),
+                    "{error}"
+                );
+            } else {
+                assert!(process.exited, "the real process tree was not terminated");
+                assert!(process.child.try_wait().unwrap().is_some());
+                assert!(error.contains("both readers"), "{error}");
+            }
+            fixture.drop_process();
+            assert_eq!(
+                crate::test_support::runtime_tree_cleanup_calls_for_test(),
+                1,
+                "Drop repeated tree cleanup"
+            );
+            assert_eq!(
+                STREAM_FINISH_DEADLINES.with(|slot| slot.borrow().clone()),
+                vec![deadline, deadline],
+                "Drop opened a fresh reader window"
+            );
+        }
+    }
+
+    /// rule: INV.APP.RUNTIME-CLEANUP-DEADLINE
+    #[test]
+    fn external_cancel_passes_its_bound_deadline_to_both_real_readers() {
+        if !crate::test_support::unix_runtime_authority_tests_supported() {
+            crate::test_support::skip_without_host_capability(
+                crate::test_support::HostCapability::UnixProcessGroups,
+                "real child fixture uses Unix process groups",
+            );
+            return;
+        }
+        let mut fixture = CleanupFixture::new();
+        let process = fixture.process.as_mut().unwrap();
+        cancel_and_reap_with_budget(process, Duration::from_millis(100)).unwrap_err();
+        let deadline = process.cleanup_deadline.unwrap();
+        assert_eq!(
+            STREAM_FINISH_DEADLINES.with(|slot| slot.borrow().clone()),
+            vec![deadline, deadline]
+        );
+        fixture.drop_process();
+        assert_eq!(
+            STREAM_FINISH_DEADLINES.with(|slot| slot.borrow().clone()),
+            vec![deadline, deadline]
+        );
+    }
+
     /// rule: INV.APP.PROCESS-CLEANUP-ONCE
     #[test]
     fn system_process_drop_uses_no_second_window_after_cleanup_deadline_is_consumed() {
