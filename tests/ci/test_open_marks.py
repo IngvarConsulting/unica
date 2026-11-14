@@ -44,14 +44,16 @@ class FormTests(unittest.TestCase):
 
     def test_the_bare_word_is_not_a_mark(self) -> None:
         # Templates of 1C code, the BSL diagnostic help and fixtures write the word alone.
-        for text in ("// TODO", "// TODO: заполнить", "TODO — запрещённый тег", "NOTODO(#1)"):
+        for text in ("// TODO", "// TODO: заполнить", "TODO — запрещённый тег", "NO" + TODO + "#1)"):
             with self.subTest(text=text):
                 self.assertEqual(self.module.parse("a.rs", 1, text), [])
 
     def test_closing_keywords_of_the_description_name_the_tasks_it_closes(self) -> None:
-        description = "Closes #12\nfixes: #3\nResolved #4\nсм. #5\nprefix#6 closes #7"
-        self.assertEqual(self.module.closing_numbers(description), {12, 3, 4, 7})
-        self.assertEqual(self.module.closing_numbers(""), set())
+        description = ("Closes #12\nfixes: #3\nResolved #4\nсм. #5\nprefix#6 closes #7\n"
+                       "Closes https://github.com/O/R/issues/8\nfixes o/r#9\n"
+                       "closes https://github.com/other/r/issues/10\ncloses other/r#11")
+        self.assertEqual(self.module.closing_numbers(description, "o/r"), {12, 3, 4, 7, 8, 9})
+        self.assertEqual(self.module.closing_numbers("", "o/r"), set())
 
 
 class SearchTests(unittest.TestCase):

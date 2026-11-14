@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
-"""Пометки незакрытого `TODO(#N)`: номер открытой задачи на PR, ни одной на выпуске.
+"""Пометки незакрытого с номером задачи: открытой на PR, ни одной на выпуске.
 
 Пометка ставится, когда изменение оставляет работу на следующее: суженную
 проверку, временное значение, обход. Номер задачи делает её находимой поиском,
 а не памятью; без номера пометка — забытое, а не отложенное.
 
-Пометкой считается `TODO(` в исходниках: файлы с расширениями из `CODE_SUFFIXES`.
+Пометка — слово `TODO` и сразу за ним скобка с номером задачи `#N`; пример — в
+скилле `unica-development`. Здесь форма не пишется целиком, чтобы этот файл сам
+не стал пометкой. Пометки ищутся в исходниках: файлы с расширениями из
+`CODE_SUFFIXES`.
 Голое слово `TODO` пометкой не является: так пишутся заготовки кода 1С, которые
 Unica сама кладёт в модули, справка по диагностике BSL и фикстуры. Документация
 (`.md`) не код, поэтому пример пометки в ней проверку не задевает.
@@ -40,8 +43,13 @@ OPENER = "TODO" + "("
 GREP_PATTERN = r"\bTODO\("
 MARK = re.compile(r"\bTODO\(([^)\n]*)\)?")
 NUMBER = re.compile(r"#([1-9]\d*)")
-# Ключевые слова GitHub, закрывающие задачу при влитии PR.
-CLOSING = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s+#([1-9]\d*)\b", re.I)
+# Ключевые слова GitHub, закрывающие задачу при влитии PR: ссылка `#N`,
+# `владелец/репозиторий#N` или адрес задачи. Чужой репозиторий не в счёт.
+CLOSING = re.compile(
+    r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s+"
+    r"(?:https://github\.com/(?P<url>[\w.-]+/[\w.-]+)/issues/|(?P<ref>[\w.-]+/[\w.-]+)?#)(?P<number>[1-9]\d*)\b",
+    re.I,
+)
 FORM = f"`{OPENER}#<номер задачи>): <что снять и при каком условии>`"
 
 OPEN, CLOSED, PULL, MISSING = "open", "closed", "pull", "missing"
@@ -68,7 +76,7 @@ def parse(path: str, line: int, text: str) -> list[Mark]:
 
 
 def grep(root: Path, rev: Optional[str]) -> str:
-    """Строки с `TODO(` в исходниках ревизии `rev` (или рабочего дерева) в виде `путь:строка:текст`."""
+    """Строки с пометками в исходниках ревизии `rev` (или рабочего дерева) в виде `путь:строка:текст`."""
     command = ["git", "grep", "-n", "-I", "--no-color", "-E", GREP_PATTERN]
     if rev:
         command.append(rev)
@@ -90,8 +98,13 @@ def marks(root: Path, rev: Optional[str] = None) -> list[Mark]:
     return found
 
 
-def closing_numbers(description: str) -> set[int]:
-    return {int(number) for number in CLOSING.findall(description or "")}
+def closing_numbers(description: str, repository: str) -> set[int]:
+    numbers = set()
+    for match in CLOSING.finditer(description or ""):
+        named = match.group("url") or match.group("ref")
+        if named is None or named.lower() == repository.lower():
+            numbers.add(int(match.group("number")))
+    return numbers
 
 
 def pr_problems(found: Iterable[Mark], state: Callable[[int], str], closing: set[int]) -> list[str]:
@@ -172,7 +185,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         return 0
     found = marks(args.root)
     description = args.description if args.description is not None else event_description(args.repo)
-    problems = pr_problems(found, lambda number: issue_state(args.repo, number), closing_numbers(description))
+    problems = pr_problems(found, lambda number: issue_state(args.repo, number), closing_numbers(description, args.repo))
     for problem in problems:
         print(f"::error::{problem}", file=sys.stderr)
     if problems:
