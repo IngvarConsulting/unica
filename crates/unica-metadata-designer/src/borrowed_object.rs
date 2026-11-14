@@ -576,22 +576,28 @@ fn complete_internal_info(
         return Ok(None);
     }
     let identity = identity.with_existing(text, kind)?;
-    let rebuilt = crate::extension::cfe_borrow_internal_info_xml(
-        kind, name, indent, &identity, fresh_uuid,
-    )?;
+    let rebuilt =
+        crate::extension::cfe_borrow_internal_info_xml(kind, name, indent, &identity, fresh_uuid)?;
     let mut lines = rebuilt.lines().map(str::to_string).collect::<Vec<_>>();
     // The states of overridden properties stay as they are.
     let kept = internal
         .children()
         .filter(|n| n.has_tag_name((XR, "PropertyState")))
         .filter(|n| {
-            optional(*n, XR, "Property").ok().flatten().and_then(|p| p.text()) != extended
+            optional(*n, XR, "Property")
+                .ok()
+                .flatten()
+                .and_then(|p| p.text())
+                != extended
         })
         .map(|n| format!("{indent}\t{}", &text[n.range()]))
         .collect::<Vec<_>>();
     if !kept.is_empty() {
         if lines.len() == 1 {
-            lines = vec![format!("{indent}<InternalInfo>"), format!("{indent}</InternalInfo>")];
+            lines = vec![
+                format!("{indent}<InternalInfo>"),
+                format!("{indent}</InternalInfo>"),
+            ];
         }
         let close = lines.len() - 1;
         lines.splice(close..close, kept);
@@ -686,7 +692,7 @@ fn insertion(
         .next_siblings()
         .filter(|n| n.is_element())
         .find_map(|n| optional(props, MD, n.tag_name().name()).ok().flatten());
-    let last = props.children().filter(|n| n.is_element()).last();
+    let last = props.children().rev().find(|n| n.is_element());
     // The neighbour opens its own line only when nothing but indentation
     // precedes it; otherwise the property joins the neighbour's line.
     let own_line = |node: Node<'_, '_>| {

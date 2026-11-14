@@ -738,7 +738,11 @@ fn small_parent(kind: &str, version: &str, own: &str) -> String {
 fn without_lines(text: &str, from: &str, to: &str) -> String {
     let lines = text.split('\n').collect::<Vec<_>>();
     let start = lines.iter().position(|line| line.contains(from)).unwrap();
-    let end = start + lines[start..].iter().position(|line| line.contains(to)).unwrap();
+    let end = start
+        + lines[start..]
+            .iter()
+            .position(|line| line.contains(to))
+            .unwrap();
     [&lines[..start], &lines[end + 1..]].concat().join("\n")
 }
 
@@ -774,7 +778,11 @@ fn repeated_borrowing_completes_the_internal_info_of_an_earlier_borrowing() {
             1,
         );
         assert!(legacy.contains("<InternalInfo/>"), "{kind}: {legacy}");
-        assert_eq!(seeded_borrow(&parent, Some(&legacy)).unwrap(), full, "{kind}");
+        assert_eq!(
+            seeded_borrow(&parent, Some(&legacy)).unwrap(),
+            full,
+            "{kind}"
+        );
     }
 }
 
