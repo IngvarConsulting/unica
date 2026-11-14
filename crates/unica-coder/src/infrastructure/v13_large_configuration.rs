@@ -994,6 +994,9 @@ pub(super) fn read_configuration_root(
             "comment": optional("Comment"),
             "namePrefix": optional("NamePrefix"),
             "updateCatalogAddress": optional("UpdateCatalogAddress"),
+            "forms": unica_metadata::configuration::root_form_slots(|name| {
+                properties.get(name).map(String::as_str)
+            }),
         },
         "totalObjects": total_objects,
         "homePage": home_page,
@@ -1598,7 +1601,7 @@ fn is_root_property(name: &str) -> bool {
             | "Comment"
             | "NamePrefix"
             | "UpdateCatalogAddress"
-    )
+    ) || unica_metadata::configuration::ROOT_FORM_SLOTS.contains(&name)
 }
 
 #[cfg(test)]
