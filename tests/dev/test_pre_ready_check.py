@@ -163,6 +163,67 @@ class ParsingTests(unittest.TestCase):
         self.assertEqual(CHECK.parse_unittest("ImportError\n", 1).failures, ["набор упал без списка тестов, код 1"])
 
 
+# Сокращённый вывод `cargo test --tests --no-fail-fast` на Windows: упавший
+# тест в библиотеке, аварийно вышедшая цель без строки итога, проходящая цель.
+CARGO_TARGETS = """\
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.76s
+     Running unittests src\\lib.rs (target\\debug\\deps\\probe-9abf6b1a8c694067.exe)
+
+running 2 tests
+test tests::bad ... FAILED
+test tests::good ... ok
+
+test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+
+error: test failed, to rerun pass `--lib`
+     Running tests\\crash.rs (target\\debug\\deps\\crash-de074afcf8420d8f.exe)
+
+running 1 test
+error: test failed, to rerun pass `--test crash`
+
+Caused by:
+  process didn't exit successfully: `crash-de074afcf8420d8f.exe --show-output` (exit code: 0xc0000409)
+     Running tests\\zfine.rs (target\\debug\\deps\\zfine-e3f98eda0f0883c0.exe)
+
+running 1 test
+test fine ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+error: 2 targets failed:
+    `--lib`
+    `--test crash`
+"""
+
+
+class CompletenessTests(unittest.TestCase):
+    """Проверка досчитана, когда её прогон закончился сам, а не оборван."""
+
+    def test_a_unittest_run_without_its_closing_line_is_unfinished(self):
+        killed = "test_a (test_mod.ATests.test_a) ... ok\ntest_b (test_mod.ATests.test_b) ... FAIL\n"
+        result = CHECK.parse_unittest(killed, 1)
+        self.assertFalse(result.complete)
+        finished = killed + "\n" + "-" * 70 + "\nRan 2 tests in 0.1s\n\nFAILED (failures=1)\n"
+        self.assertTrue(CHECK.parse_unittest(finished, 1).complete)
+
+    def test_a_cargo_test_run_is_finished_only_by_its_closing_line(self):
+        # Вывод `cargo test --tests --no-fail-fast`: после одной упавшей цели
+        # прогон идёт дальше, досчитан он только строкой `error: N targets failed:`.
+        killed = CARGO_TARGETS.split("     Running tests\\zfine.rs")[0]
+        result = CHECK.parse_libtest(killed, 1)
+        self.assertFalse(result.complete)
+        result = CHECK.parse_libtest(CARGO_TARGETS, 101)
+        self.assertTrue(result.complete)
+        self.assertEqual(result.failures, ["tests::bad", "цель --test crash упала без итога"])
+        passing = CARGO_TARGETS.split("     Running tests\\crash.rs")[0].replace("FAILED", "ok")
+        self.assertTrue(CHECK.parse_libtest(passing, 0).complete)
+        self.assertTrue(CHECK.parse_libtest("error: could not compile `unica-x`\n", 101).complete)
+        self.assertFalse(CHECK.parse_clippy("    Checking unica-x\n", 1, REPO_ROOT).complete)
+        self.assertTrue(CHECK.parse_clippy("error: could not compile `unica-x`\n", 101, REPO_ROOT).complete)
+        self.assertFalse(CHECK.parse_fmt("", 1, REPO_ROOT).complete)
+        self.assertTrue(CHECK.parse_fmt("Diff in a.rs:3:\n", 1, REPO_ROOT).complete)
+
+
 class BaselineTests(unittest.TestCase):
     def test_only_failures_absent_on_the_base_are_new(self):
         current = {
@@ -214,14 +275,44 @@ class BaselineTests(unittest.TestCase):
             checks = [CHECK.Check("fmt", "fmt"), CHECK.Check("python:tests/ci", "python", "tests/ci")]
             with mock.patch.object(CHECK, "run_check", fake_run), mock.patch.object(CHECK, "add_base_tree"), \
                     mock.patch.object(CHECK, "remove_base_tree"), redirect_stdout(io.StringIO()):
-                result = CHECK.baseline(checks, "sha", cache_dir, {})
+                result, unfinished = CHECK.baseline(checks, "sha", cache_dir, {})
             self.assertEqual(ran, ["python:tests/ci"])
-            self.assertEqual(result, {"fmt": [], "python:tests/ci": ["base failure"]})
+            self.assertEqual((result, unfinished), ({"fmt": [], "python:tests/ci": ["base failure"]}, []))
             self.assertEqual(CHECK.load_cache(cache_dir / "baseline.json", "sha"), result)
+
+    def test_an_interrupted_base_check_is_not_cached_and_is_counted_again(self):
+        """Прогон, оборванный на базе, не оставляет кеша, которому верит следующий."""
+        with tempfile.TemporaryDirectory() as directory:
+            cache_dir = Path(directory)
+            checks = [CHECK.Check("python:tests/ci", "python", "tests/ci"),
+                      CHECK.Check("python:tests/dev", "python", "tests/dev")]
+            outcomes = {"python:tests/ci": CHECK.Result(["m.A.known"]),
+                        "python:tests/dev": CHECK.Result(["набор упал без списка тестов, код 1"], complete=False)}
+            with mock.patch.object(CHECK, "run_check", lambda check, *rest: outcomes[check.key]), \
+                    mock.patch.object(CHECK, "add_base_tree"), mock.patch.object(CHECK, "remove_base_tree"), \
+                    redirect_stdout(io.StringIO()):
+                result, unfinished = CHECK.baseline(checks, "sha", cache_dir, {})
+            self.assertEqual((result, unfinished), ({"python:tests/ci": ["m.A.known"]}, ["python:tests/dev"]))
+            self.assertEqual(CHECK.load_cache(cache_dir / "baseline.json", "sha"), {"python:tests/ci": ["m.A.known"]})
+            self.assertEqual(list(cache_dir.glob("*.partial")), [])
+
+    def test_a_cache_of_the_previous_version_is_not_trusted(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "baseline.json"
+            path.write_text(__import__("json").dumps({"version": 1, "base": "sha", "platform": sys.platform,
+                                                      "checks": {"python:tests/dev": ["набор упал"]}}),
+                            encoding="utf-8")
+            self.assertEqual(CHECK.load_cache(path, "sha"), {})
+
+
+# Последние строки законченного прогона `unittest`: без них прогон оборван.
+UNITTEST_CLOSING = "\n" + "-" * 70 + "\nRan 2 tests in 0.1s\n\nFAILED (failures=1)\n"
 
 
 class RecheckTests(unittest.TestCase):
     def recheck(self, check, fresh, output, returncode):
+        if check.kind == "python":
+            output += UNITTEST_CLOSING
         completed = mock.Mock(stdout=output, returncode=returncode)
         with tempfile.TemporaryDirectory() as directory, \
                 mock.patch.object(CHECK.subprocess, "run", return_value=completed) as run, \
@@ -263,7 +354,8 @@ class RecheckTests(unittest.TestCase):
         # новым своим ключом, падение соседа на базе его не прячет.
         check = CHECK.Check("python:tests/ci", "python", "tests/ci")
         output = ("ERROR: setUpClass (m.C)\n" + "-" * 70 + "\n"
-                  "CalledProcessError: Command '['cargo', 'build']' returned non-zero exit status 101.\n")
+                  "CalledProcessError: Command '['cargo', 'build']' returned non-zero exit status 101.\n"
+                  + UNITTEST_CLOSING)
         completed = mock.Mock(stdout=output, returncode=1)
         with mock.patch.object(CHECK.subprocess, "run", return_value=completed), redirect_stdout(io.StringIO()), \
                 tempfile.TemporaryDirectory() as directory:
@@ -375,15 +467,40 @@ class DiffTests(unittest.TestCase):
         self.assertEqual(CHECK.touched_crates([*lines, "Cargo.toml", "crates/README.md"]),
                          ["crates/x", "crates/y"])
 
-    def test_plan_tests_libraries_and_test_targets_of_crates_without_one(self):
-        packages = {"crates/a": ("unica-a", True), "crates/b-tests": ("unica-b-tests", False)}
-        checks, notes = CHECK.plan(["crates/a", "crates/b-tests", "crates/unica-research"], packages)
+    def test_plan_runs_every_test_target_of_touched_crates_and_then_of_their_dependents(self):
+        packages = {
+            "crates/a": CHECK.Package("unica-a"),
+            "crates/b-tests": CHECK.Package("unica-b-tests", ("unica-a",)),
+            "crates/c": CHECK.Package("unica-c", ("unica-b-tests",)),
+            "crates/d": CHECK.Package("unica-d"),
+        }
+        checks, notes = CHECK.plan(["crates/a", "crates/unica-research"], packages)
+        keys = [check.key for check in checks]
+        self.assertEqual(keys[:4], ["test:unica-a", "clippy:unica-a", "test:unica-b-tests", "test:unica-c"])
+        self.assertNotIn("test:unica-d", keys)
+        self.assertNotIn("clippy:unica-c", keys)
         commands = {check.key: check.command("py") for check in checks}
-        self.assertEqual(commands["test:unica-a"][:5], ["cargo", "test", "-p", "unica-a", "--lib"])
-        self.assertEqual(commands["test:unica-b-tests"][:5], ["cargo", "test", "-p", "unica-b-tests", "--tests"])
+        self.assertEqual(commands["test:unica-c"][:6],
+                         ["cargo", "test", "-p", "unica-c", "--tests", "--no-fail-fast"])
         self.assertIn("-D", commands["clippy:unica-a"])
         self.assertEqual({"fmt", "modules-fmt", "python:tests/ci", "python:tests/dev"} - set(commands), set())
         self.assertEqual(len(notes), 1)
+
+    def test_dependents_follow_path_dependencies_of_every_kind_transitively(self):
+        metadata = {"packages": [
+            {"name": "unica-a", "manifest_path": str(REPO_ROOT / "crates/a/Cargo.toml"), "dependencies": [
+                {"name": "serde"}]},
+            {"name": "unica-b", "manifest_path": str(REPO_ROOT / "crates/b/Cargo.toml"), "dependencies": [
+                {"name": "unica-a", "path": "../a", "kind": "dev"}]},
+            {"name": "unica-c", "manifest_path": str(REPO_ROOT / "crates/c/Cargo.toml"), "dependencies": [
+                {"name": "unica-b", "path": "../b", "kind": None}, {"name": "serde"}]},
+        ]}
+        completed = mock.Mock(returncode=0, stdout=__import__("json").dumps(metadata))
+        with mock.patch.object(CHECK.subprocess, "run", return_value=completed):
+            packages = CHECK.workspace_packages(REPO_ROOT, {})
+        self.assertEqual(packages["crates/c"], CHECK.Package("unica-c", ("unica-b",)))
+        self.assertEqual(CHECK.dependents(["unica-a"], packages), ["unica-b", "unica-c"])
+        self.assertEqual(CHECK.dependents(["unica-c"], packages), [])
 
 
 class CfgTests(unittest.TestCase):
@@ -453,7 +570,8 @@ class UnrunTests(unittest.TestCase):
             "python:tests/ci": CHECK.Result([], ["test_mod.ATests.test_c", "test_mod.ATests.test_a",
                                                  "test_mod.BTests.test_d"]),
         }
-        report = CHECK.unrun_tests(lines, sources.get, results, {"crates/fs": "unica-fs"}, WINDOWS)
+        report, elsewhere = CHECK.unrun_tests(lines, sources.get, results, {"crates/fs": "unica-fs"}, WINDOWS)
+        self.assertEqual(elsewhere, [])
         self.assertEqual(report, [
             "crates/fs/src/lib.rs::unix_only — #[cfg(unix)]",
             'crates/fs/src/lib.rs::linux_only — #[cfg_attr(not(target_os = "linux"), '
@@ -462,6 +580,24 @@ class UnrunTests(unittest.TestCase):
             "tests/ci/test_mod.py::ATests.test_c — skipped",
             "tests/ci/test_mod.py::BTests.test_d — skipped",
         ])
+
+    def test_an_ignored_test_whose_reason_names_an_existing_runner_is_reported_apart(self):
+        source = (
+            '#[test]\n'
+            '#[ignore = "vendor help: needs the help; run scripts/dev/check-help.py"]\n'
+            'fn oracle() {}\n'
+            '\n'
+            '#[test]\n'
+            '#[ignore = "research: writes the fixture; run scripts/research/gone.sh"]\n'
+            'fn stale() {}\n'
+        )
+        sources = {"crates/docs/tests/oracle.rs": source, "scripts/dev/check-help.py": ""}
+        lines = {"crates/docs/tests/oracle.rs": {3, 7}}
+        results = {"test:unica-docs": CHECK.Result([], ["oracle", "stale"])}
+        report, elsewhere = CHECK.unrun_tests(lines, sources.get, results, {"crates/docs": "unica-docs"}, WINDOWS)
+        self.assertEqual(elsewhere, ["crates/docs/tests/oracle.rs::oracle — scripts/dev/check-help.py"])
+        # Скрипта по ссылке нет: тест не прячется и остаётся к разбору.
+        self.assertEqual(report, ["crates/docs/tests/oracle.rs::stale — пропущен на хосте"])
 
 
 class TargetOwnerTests(unittest.TestCase):
@@ -533,7 +669,7 @@ class TargetOwnerTests(unittest.TestCase):
 
 
 class MainTests(unittest.TestCase):
-    def run_main(self, results, base):
+    def run_main(self, results, base, base_unfinished=()):
         out, err = io.StringIO(), io.StringIO()
         with tempfile.TemporaryDirectory() as directory, \
                 mock.patch.dict(os.environ, {"CARGO_TARGET_DIR": directory}), \
@@ -542,7 +678,7 @@ class MainTests(unittest.TestCase):
                 mock.patch.object(CHECK, "workspace_packages", return_value={}), \
                 mock.patch.object(CHECK, "run_check", side_effect=lambda check, *rest: results.get(
                     check.key, CHECK.Result([]))), \
-                mock.patch.object(CHECK, "baseline", return_value=base), \
+                mock.patch.object(CHECK, "baseline", return_value=(base, list(base_unfinished))), \
                 mock.patch.object(CHECK, "recheck", side_effect=lambda check, fresh, *rest: (CHECK.Result(fresh), [])), \
                 redirect_stdout(out), redirect_stderr(err):
             code = CHECK.main([])
@@ -558,6 +694,24 @@ class MainTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("m.A.fresh", output)
         self.assertIn("Новые падения: 1", output)
+
+    def test_an_interrupted_branch_check_gives_no_verdict(self):
+        """Прогон, оборванный на ветке, не печатает «Новые падения: нет»."""
+        results = {"python:tests/dev": CHECK.Result(["набор упал без списка тестов, код 1"], complete=False)}
+        code, output = self.run_main(results, {})
+        self.assertEqual(code, CHECK.INCOMPLETE_EXIT)
+        self.assertNotIn("Новые падения: нет", output)
+        self.assertIn("[не досчитано] python:tests/dev", output)
+        self.assertIn("Итога нет: не досчитаны python:tests/dev, поэтому о новых падениях судить нельзя. "
+                      "Повторите прогон.", output)
+
+    def test_an_interrupted_base_check_gives_no_verdict_and_new_failures_elsewhere_still_show(self):
+        results = {"python:tests/ci": CHECK.Result(["m.A.fresh"]), "python:tests/dev": CHECK.Result(["m.B.x"])}
+        code, output = self.run_main(results, {"python:tests/ci": []}, ["python:tests/dev"])
+        self.assertEqual(code, CHECK.INCOMPLETE_EXIT)
+        self.assertIn("[не досчитано на базе] python:tests/dev", output)
+        self.assertIn("Новые падения в досчитанных проверках: 1", output)
+        self.assertNotIn("Новые падения: ", output)
 
     def test_without_the_build_directory_the_check_refuses(self):
         err = io.StringIO()
