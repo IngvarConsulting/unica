@@ -1815,7 +1815,15 @@ mod medium_tests {
         assert!(note.contains(&state.path().display().to_string()), "{note}");
 
         drop(holder);
-        assert!(state.path().join(".daemon-spawn.lock").is_file());
+        // Windows locks this file and leaves it behind; elsewhere the lock is
+        // on the directory, so a left file is placed here to the same effect.
+        let left = state.path().join(".daemon-spawn.lock");
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&left)
+            .unwrap();
+        assert!(left.is_file());
         assert!(state
             .acquire_spawn_lock_before(Instant::now() + Duration::from_millis(50))
             .is_ok());

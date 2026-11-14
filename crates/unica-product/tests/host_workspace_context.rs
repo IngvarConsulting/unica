@@ -646,7 +646,15 @@ fn a_build_starts_beside_another_builds_daemon_and_a_left_spawn_lock() {
     drop(first);
     daemon_b.stop();
     let state_b = state.join(format!("daemon-p5-{identity_b}"));
-    assert!(state_b.join(".daemon-spawn.lock").is_file());
+    // Windows locks this file and leaves it behind; elsewhere the lock is on
+    // the directory, so a left file is placed here to the same effect.
+    let left = state_b.join(".daemon-spawn.lock");
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&left)
+        .unwrap();
+    assert!(left.is_file());
     let _ = std::fs::remove_file(state_b.join("endpoint.json"));
 
     let mut next = start();
