@@ -49,6 +49,13 @@ pub struct CfInfoProperties {
     pub client_application_theme: Option<String>,
     pub windows_open_variant: Option<String>,
     pub version85_interface_migration_mode: Option<String>,
+    /// The extension root actions, from 8.5.4; `null` in a set of an
+    /// earlier line and in a configuration. The composite one is an object
+    /// of its parts.
+    pub action_on_configuration_object_missing: Option<String>,
+    pub default_extension_property_check_action: Option<String>,
+    pub type_reduction_by_configuration_extension_mode: Option<String>,
+    pub action_on_extended_configuration_objects_missing: Option<serde_json::Value>,
     pub comment: Option<String>,
     pub name_prefix: Option<String>,
     pub update_catalog_address: Option<String>,

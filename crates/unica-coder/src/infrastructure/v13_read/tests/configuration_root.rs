@@ -742,3 +742,77 @@ pub(crate) fn production_authorities_reach_all_profile_module_capabilities_from_
         );
     }
 }
+
+/// An extension root of 8.5.4 shows its actions with the file's values, a
+/// composite one by its parts; an earlier line has none of them.
+/// rule: INV.SOURCE.PROFILE-CAPABILITIES
+#[test]
+fn an_extension_root_shows_the_actions_of_its_line() {
+    use unica_source_contract::format_identity::PlatformLine;
+    for (source, line, expected) in [
+        (
+            "../../tests/fixtures/formats/platform_xml/2.21/empty_extension/ext",
+            PlatformLine::new(8, 5, 1),
+            false,
+        ),
+        (
+            "../../tests/fixtures/formats/platform_xml/2.22/empty_extension/ext",
+            PlatformLine::new(8, 5, 4),
+            true,
+        ),
+    ] {
+        // The secure source reader takes only normal path components.
+        let source =
+            std::fs::canonicalize(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(source))
+                .unwrap();
+        let cancellation = CancellationToken::new();
+        let source_root = Arc::new(unica_workspace::read::open_source_directory(&source).unwrap());
+        let authority = LogicalViewReadAuthority::new(
+            &cancellation,
+            "ext",
+            "actor-fixture-ext",
+            SourceSetKind::Extension,
+            source_root,
+            PlatformProfile::for_line(line).unwrap(),
+        );
+        let service = ViewService::new(authority, ViewCursorStore::default());
+        let root = service.view(ViewRequest::new("ext:Configuration").unwrap());
+        let properties = &root.data.as_ref().unwrap()["props"]["properties"];
+        let observed = [
+            &properties["actionOnConfigurationObjectMissing"],
+            &properties["defaultExtensionPropertyCheckAction"],
+            &properties["typeReductionByConfigurationExtensionMode"],
+            &properties["actionOnExtendedConfigurationObjectsMissing"],
+        ];
+        if expected {
+            // The parts keep the order the platform writes them.
+            assert_eq!(
+                properties["actionOnExtendedConfigurationObjectsMissing"]
+                    .as_object()
+                    .unwrap()
+                    .keys()
+                    .collect::<Vec<_>>(),
+                [
+                    "adoptedObject",
+                    "notifiedObject",
+                    "checkedObject",
+                    "extendedObject"
+                ]
+            );
+            assert_eq!(
+                observed,
+                [
+                    &serde_json::json!("Auto"),
+                    &serde_json::json!("Error"),
+                    &serde_json::json!("TransformValues"),
+                    &serde_json::json!({
+                        "adoptedObject":"Error","notifiedObject":"Error",
+                        "checkedObject":"Error","extendedObject":"Error"
+                    }),
+                ]
+            );
+        } else {
+            assert!(observed.iter().all(|value| value.is_null()), "{observed:?}");
+        }
+    }
+}

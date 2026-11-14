@@ -1401,6 +1401,35 @@ fn set_plain_property(text: &str, tag: &str, value: &str) -> Option<String> {
     })
 }
 
+/// Rewrites the named parts of the composite property `tag` of the first
+/// `<Properties>`, each in its own spelling; a part the file lacks gives
+/// `None`. The values are closed platform names and need no escaping.
+fn set_property_parts(text: &str, tag: &str, parts: &[(&str, String)]) -> Option<String> {
+    let document = roxmltree::Document::parse(text).ok()?;
+    let property = document
+        .descendants()
+        .find(|node| node.is_element() && node.tag_name().name() == "Properties")?
+        .children()
+        .find(|node| node.is_element() && node.tag_name().name() == tag)?;
+    let mut edits = Vec::new();
+    for (part, value) in parts {
+        let node = property
+            .children()
+            .find(|node| node.is_element() && node.tag_name().name() == *part)?;
+        let open = &text[node.range().start + 1..];
+        let name = &open[..open
+            .find(|ch: char| ch.is_whitespace() || ch == '>' || ch == '/')
+            .unwrap_or(open.len())];
+        edits.push((node.range(), format!("<{name}>{value}</{name}>")));
+    }
+    edits.sort_by_key(|(range, _)| std::cmp::Reverse(range.start));
+    let mut updated = text.to_string();
+    for (range, replacement) in edits {
+        updated.replace_range(range, &replacement);
+    }
+    Some(updated)
+}
+
 /// Rewrites the property `tag` of the first `<Properties>` of the document,
 /// which is the descriptor object's own; `replace` builds the new element
 /// from the source text and the property node.
@@ -1926,6 +1955,10 @@ fn stage_descriptor_properties(
                 let value = match value {
                     DescriptorPropertyValue::Text(value) => value.clone(),
                     DescriptorPropertyValue::Boolean(value) => value.to_string(),
+                    DescriptorPropertyValue::Parts(parts) => {
+                        text = set_property_parts(&text, tag, parts).ok_or_else(|| missing(tag))?;
+                        continue;
+                    }
                 };
                 text = if property.localized() {
                     set_ml_property(

@@ -147,6 +147,9 @@ pub enum DescriptorPropertyKind {
     /// A closed platform enumeration; its values are the 8.3.27 set of
     /// `crate::configuration::cf_validate_enum_allowed`.
     Enum,
+    /// Named parts of one element, each a value of the property's closed
+    /// enumeration (`DescriptorProperty::parts`).
+    Parts,
 }
 
 macro_rules! descriptor_properties {
@@ -201,7 +204,8 @@ macro_rules! descriptor_properties {
 }
 
 // Columns: subsystem, role, configuration root, extension root. The root
-// profile names scalar properties with a published 8.3.27 value set; names,
+// profile names scalar properties, and the parts of one composite property,
+// with a published value set; names,
 // languages, roles, storages, forms and the script variant stay outside it.
 // An extension root changes only its own identity (#1644). The platform
 // re-export of 8.3.27 resets a configuration's own
@@ -241,6 +245,10 @@ descriptor_properties!(
     ClientApplicationTheme => ("ClientApplicationTheme", "clientApplicationTheme", Enum, false, false, true, false),
     ClientApplicationWindowsOpenVariant => ("ClientApplicationWindowsOpenVariant", "clientApplicationWindowsOpenVariant", Enum, false, false, true, false),
     Version85InterfaceMigrationMode => ("Version85InterfaceMigrationMode", "version85InterfaceMigrationMode", Enum, false, false, true, false),
+    ActionOnConfigurationObjectMissing => ("ActionOnConfigurationObjectMissing", "actionOnConfigurationObjectMissing", Enum, false, false, false, true),
+    DefaultExtensionPropertyCheckAction => ("DefaultExtensionPropertyCheckAction", "defaultExtensionPropertyCheckAction", Enum, false, false, false, true),
+    TypeReductionByConfigurationExtensionMode => ("TypeReductionByConfigurationExtensionMode", "typeReductionByConfigurationExtensionMode", Enum, false, false, false, true),
+    ActionOnExtendedConfigurationObjectsMissing => ("ActionOnExtendedConfigurationObjectsMissing", "actionOnExtendedConfigurationObjectsMissing", Parts, false, false, false, true),
 );
 
 impl DescriptorProperty {
@@ -272,6 +280,17 @@ impl DescriptorProperty {
             Self::ClientApplicationTheme => &["Auto", "Light", "Dark"],
             Self::ClientApplicationWindowsOpenVariant => &["OpenDataInTabs", "OpenDataInDialogs"],
             Self::Version85InterfaceMigrationMode => &["Use", "DontUse"],
+            // The 8.5.4 extension root: the values 8.5.4 loads and exports
+            // back unchanged (`ActionOnExtensionCheckFailure` and
+            // `TypeReductionMode` of its XDTO).
+            Self::ActionOnConfigurationObjectMissing
+            | Self::DefaultExtensionPropertyCheckAction
+            | Self::ActionOnExtendedConfigurationObjectsMissing => {
+                &["Error", "Warning", "Ignore", "Auto"]
+            }
+            Self::TypeReductionByConfigurationExtensionMode => {
+                &["TransformValues", "DeleteData", "Deny"]
+            }
             _ => crate::configuration::cf_validate_enum_allowed(self.names()[0]),
         };
         match (self, values.split_first()) {
@@ -280,6 +299,21 @@ impl DescriptorProperty {
                 Some((&"DontUse", modes)),
             ) => modes,
             _ => values,
+        }
+    }
+
+    /// The parts of a composite property, each with its two spellings, in
+    /// the order the platform writes them; every part takes the values of
+    /// the property.
+    pub const fn parts(self) -> &'static [[&'static str; 2]] {
+        match self {
+            Self::ActionOnExtendedConfigurationObjectsMissing => &[
+                ["AdoptedObject", "adoptedObject"],
+                ["NotifiedObject", "notifiedObject"],
+                ["CheckedObject", "checkedObject"],
+                ["ExtendedObject", "extendedObject"],
+            ],
+            _ => &[],
         }
     }
 
@@ -476,6 +510,17 @@ impl PropertiesSite {
                         DescriptorPropertyKind::Boolean => json!({"type":"boolean"}),
                         DescriptorPropertyKind::Enum => {
                             json!({"type":"string", "enum":self.enum_values(field)})
+                        }
+                        DescriptorPropertyKind::Parts => {
+                            let part = json!({"type":"string", "enum":self.enum_values(field)});
+                            let parts = field
+                                .parts()
+                                .iter()
+                                .flatten()
+                                .map(|name| ((*name).to_string(), part.clone()))
+                                .collect::<Map<_, _>>();
+                            json!({"type":"object", "additionalProperties":false,
+                                "minProperties":1, "properties":parts})
                         }
                     };
                     let schema = if field == DescriptorProperty::Location {
@@ -789,8 +834,8 @@ mod tests {
             None
         );
         // An extension root has of the later lines its captions (the
-        // empty_extension export of 2.21) and its own compatibility modes,
-        // none of the 8.5 interface properties.
+        // empty_extension export of 2.21), the actions of 8.5.4 and its own
+        // compatibility modes, none of the 8.5 interface properties.
         let extension =
             PropertiesSite::root_of(SourceSetKind::Extension, Some(PlatformLine::new(8, 3, 27)))
                 .unwrap();
@@ -803,6 +848,10 @@ mod tests {
             vec![
                 ("Caption", None),
                 ("ShortCaption", None),
+                ("ActionOnConfigurationObjectMissing", None),
+                ("DefaultExtensionPropertyCheckAction", None),
+                ("TypeReductionByConfigurationExtensionMode", None),
+                ("ActionOnExtendedConfigurationObjectsMissing", None),
                 (
                     "ConfigurationExtensionCompatibilityMode",
                     Some("Version8_5_1")
@@ -813,6 +862,39 @@ mod tests {
                 ),
             ]
         );
+    }
+
+    /// `can` of an extension root of 8.5.4 offers its actions; the composite
+    /// one takes the named parts, each a value of the property.
+    /// rule: INV.SOURCE.PROFILE-CAPABILITIES
+    #[test]
+    fn can_offers_the_extension_root_actions_of_8_5_4() {
+        let site =
+            PropertiesSite::root_of(SourceSetKind::Extension, Some(PlatformLine::new(8, 5, 4)))
+                .unwrap();
+        assert!(site.later_line_capabilities().is_empty());
+        let contract = PropertiesOperation::Set.contract(site);
+        let oracle = jsonschema::validator_for(&contract.schema).unwrap();
+        assert!(oracle.is_valid(&json!({"values":{
+            "TypeReductionByConfigurationExtensionMode":"DeleteData",
+            "actionOnExtendedConfigurationObjectsMissing":{"AdoptedObject":"Ignore","checkedObject":"Auto"}
+        }})));
+        for values in [
+            json!({"ActionOnExtendedConfigurationObjectsMissing":{"ExtendDataObject":"Error"}}),
+            json!({"ActionOnExtendedConfigurationObjectsMissing":{"AdoptedObject":"Deny"}}),
+            json!({"ActionOnExtendedConfigurationObjectsMissing":{}}),
+            json!({"ActionOnConfigurationObjectMissing":"DeleteData"}),
+        ] {
+            assert!(!oracle.is_valid(&json!({"values":values})), "{values}");
+        }
+        let configuration = PropertiesSite::root_of(
+            SourceSetKind::Configuration,
+            Some(PlatformLine::new(8, 5, 4)),
+        )
+        .unwrap();
+        assert!(configuration
+            .descriptor_fields()
+            .all(|field| field.names()[0] != "ActionOnConfigurationObjectMissing"));
     }
 
     /// rule: INV.SOURCE.PROFILE-CAPABILITIES

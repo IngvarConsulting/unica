@@ -227,6 +227,22 @@ pub fn parse_cf_info_xml(
                 props,
                 "Version85InterfaceMigrationMode",
             )),
+            action_on_configuration_object_missing: optional(cf_prop_text(
+                props,
+                "ActionOnConfigurationObjectMissing",
+            )),
+            default_extension_property_check_action: optional(cf_prop_text(
+                props,
+                "DefaultExtensionPropertyCheckAction",
+            )),
+            type_reduction_by_configuration_extension_mode: optional(cf_prop_text(
+                props,
+                "TypeReductionByConfigurationExtensionMode",
+            )),
+            action_on_extended_configuration_objects_missing: cf_prop_parts(
+                props,
+                "ActionOnExtendedConfigurationObjectsMissing",
+            ),
             comment: optional(cf_prop_text(props, "Comment")),
             name_prefix: optional(cf_prop_text(props, "NamePrefix")),
             update_catalog_address: optional(cf_prop_text(props, "UpdateCatalogAddress")),
@@ -259,6 +275,33 @@ fn line_adds_root_value(platform_line: &str, property: &str, value: &str) -> boo
         && !configuration_root_additions_after(PlatformLine::parse(platform_line))
             .iter()
             .any(added)
+}
+
+/// The parts of the first composite root property `local_name` by their
+/// camel-case names, each with its first text; `None` without the property
+/// or its parts.
+pub fn cf_prop_parts(
+    props: roxmltree::Node<'_, '_>,
+    local_name: &str,
+) -> Option<serde_json::Value> {
+    let property = props.children().find(|node| {
+        unica_xml_format::names::element_has_name(
+            *node,
+            local_name,
+            Some("http://v8.1c.ru/8.3/MDClasses"),
+        )
+    })?;
+    let mut parts = serde_json::Map::new();
+    for part in property.children().filter(roxmltree::Node::is_element) {
+        let mut chars = part.tag_name().name().chars();
+        let Some(first) = chars.next() else {
+            continue;
+        };
+        parts
+            .entry(format!("{}{}", first.to_lowercase(), chars.as_str()))
+            .or_insert_with(|| serde_json::json!(part.text().unwrap_or_default()));
+    }
+    (!parts.is_empty()).then_some(serde_json::Value::Object(parts))
 }
 
 pub fn cf_prop_text(props: roxmltree::Node<'_, '_>, local_name: &str) -> String {
