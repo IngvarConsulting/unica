@@ -12,13 +12,84 @@ use unica_source_contract::format_identity::{
 
 const FORM_HELP: &str = "skills/form-edit/SKILL.md";
 
+/// Тип JSON, в котором писатель элемента (`emit_form_*`) читает ключ.
+/// Контракт `item.add` уточняет его схемой ключа, компиляция формы
+/// отвергает значение другого типа по имени ключа.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ElementKeyType {
+    /// Любое значение: различитель вида или ключ, который писатель проверяет
+    /// сам с более точным отказом (`width`, `height`).
+    Any,
+    Str,
+    Bool,
+    /// Целое число или строка с ним.
+    Integer,
+    /// Строка или словарь языков.
+    Text,
+    /// Строка или объект (ссылка на стиль или его части).
+    StrOrObject,
+    Array,
+    Object,
+}
+
+impl ElementKeyType {
+    pub fn accepts(self, value: &Value) -> bool {
+        match self {
+            Self::Any => true,
+            Self::Str => value.is_string(),
+            Self::Bool => value.is_boolean(),
+            Self::Integer => {
+                value.as_i64().is_some()
+                    || value
+                        .as_str()
+                        .is_some_and(|s| s.trim().parse::<i64>().is_ok())
+            }
+            Self::Text | Self::StrOrObject => value.is_string() || value.is_object(),
+            Self::Array => value.is_array(),
+            Self::Object => value.is_object(),
+        }
+    }
+
+    pub const fn describe(self) -> &'static str {
+        match self {
+            Self::Any => "any value",
+            Self::Str => "a string",
+            Self::Bool => "a boolean",
+            Self::Integer => "a number",
+            Self::Text => "a string or a language map",
+            Self::StrOrObject => "a string or an object",
+            Self::Array => "an array",
+            Self::Object => "an object",
+        }
+    }
+}
+
+/// Ключи писателя элемента с типом, в котором он их читает.
+pub type ElementKeys = &'static [(&'static str, ElementKeyType)];
+
 /// Вид элемента, который создаёт `item.add`: имя вида в `type`, его
-/// синонимы и ключи, которые генератор элемента (`form::emit_form_*`)
-/// записывает в XML этого вида.
+/// синонимы, различитель вида в описании формы и ключи, которые генератор
+/// элемента (`form::emit_form_*`) записывает в XML этого вида. Один список
+/// служит и контракту `item.add`, и компиляции формы.
 pub struct FormElementKind {
     pub kind: &'static str,
     pub aliases: &'static [&'static str],
-    pub keys: &'static [&'static str],
+    /// Различитель вида в описании формы (`input`, `table`, …).
+    pub description_key: &'static str,
+    pub keys: ElementKeys,
+}
+
+impl FormElementKind {
+    pub fn key_names(&self) -> impl Iterator<Item = &'static str> {
+        self.keys.iter().map(|(key, _)| *key)
+    }
+}
+
+/// Вид элемента по его различителю в описании формы.
+pub fn form_element_kind_by_description_key(key: &str) -> Option<&'static FormElementKind> {
+    FORM_ELEMENT_KINDS
+        .iter()
+        .find(|kind| kind.description_key == key)
 }
 
 /// Флаги, которые пишет `emit_form_common_flags` у каждого вида.
@@ -33,10 +104,15 @@ const COMMON_FLAGS: [&str; 6] = [
 ];
 
 macro_rules! with_common_flags {
-    ($($key:literal),* $(,)?) => {
+    ($(($key:literal, $type:ident)),* $(,)?) => {
         &[
-            "visible", "hidden", "userVisible", "enabled", "disabled", "readOnly",
-            $($key),*
+            ("visible", ElementKeyType::Bool),
+            ("hidden", ElementKeyType::Bool),
+            ("userVisible", ElementKeyType::Bool),
+            ("enabled", ElementKeyType::Bool),
+            ("disabled", ElementKeyType::Bool),
+            ("readOnly", ElementKeyType::Bool),
+            $(($key, ElementKeyType::$type)),*
         ]
     };
 }
@@ -58,171 +134,195 @@ pub const FORM_ELEMENT_KINDS: &[FormElementKind] = &[
     FormElementKind {
         kind: "InputField",
         aliases: &["InputField", "Input", "Field"],
+        description_key: "input",
         keys: with_common_flags![
-            "path",
-            "title",
-            "tooltip",
-            "tooltipRepresentation",
-            "titleLocation",
-            "multiLine",
-            "passwordMode",
-            "choiceButton",
-            "clearButton",
-            "spinButton",
-            "dropListButton",
-            "markIncomplete",
-            "skipOnInput",
-            "showInHeader",
-            "headerHorizontalAlign",
-            "autoMaxWidth",
-            "autoMaxHeight",
-            "footerDataPath",
-            "width",
-            "height",
-            "multipleValueDataPath",
-            "multipleValuePictureDataPath",
-            "multipleValuePresentDataPath",
-            "horizontalStretch",
-            "verticalStretch",
-            "horizontalAlign",
-            "inputHint",
+            ("path", Str),
+            ("title", Str),
+            ("tooltip", Text),
+            ("tooltipRepresentation", Str),
+            ("titleLocation", Str),
+            ("multiLine", Bool),
+            ("passwordMode", Bool),
+            ("choiceButton", Bool),
+            ("clearButton", Bool),
+            ("spinButton", Bool),
+            ("dropListButton", Bool),
+            ("markIncomplete", Bool),
+            ("skipOnInput", Bool),
+            ("showInHeader", Bool),
+            ("headerHorizontalAlign", Str),
+            ("autoMaxWidth", Bool),
+            ("autoMaxHeight", Bool),
+            ("footerDataPath", Str),
+            ("width", Any),
+            ("height", Any),
+            ("multipleValueDataPath", Str),
+            ("multipleValuePictureDataPath", Str),
+            ("multipleValuePresentDataPath", Str),
+            ("horizontalStretch", Bool),
+            ("verticalStretch", Bool),
+            ("horizontalAlign", Str),
+            ("inputHint", Str),
         ],
     },
     FormElementKind {
         kind: "CheckBox",
         aliases: &["CheckBox", "CheckBoxField"],
+        description_key: "check",
         keys: with_common_flags![
-            "path",
-            "title",
-            "tooltip",
-            "tooltipRepresentation",
-            "titleLocation",
-            "checkBoxType",
-            "footerDataPath",
+            ("path", Str),
+            ("title", Str),
+            ("tooltip", Text),
+            ("tooltipRepresentation", Str),
+            ("titleLocation", Str),
+            ("checkBoxType", Str),
+            ("footerDataPath", Str),
         ],
     },
     FormElementKind {
         kind: "LabelField",
         aliases: &["LabelField"],
-        keys: with_common_flags!["path", "tooltip", "tooltipRepresentation", "footerDataPath"],
+        description_key: "labelField",
+        keys: with_common_flags![
+            ("path", Str),
+            ("tooltip", Text),
+            ("tooltipRepresentation", Str),
+            ("footerDataPath", Str),
+        ],
     },
     FormElementKind {
         kind: "HTMLDocumentField",
         aliases: &["HTMLDocumentField"],
+        description_key: "html",
         keys: with_common_flags![
-            "path",
-            "title",
-            "tooltip",
-            "tooltipRepresentation",
-            "skipOnInput",
-            "titleLocation",
-            "width",
-            "height",
-            "autoMaxWidth",
-            "autoMaxHeight",
+            ("path", Str),
+            ("title", Str),
+            ("tooltip", Text),
+            ("tooltipRepresentation", Str),
+            ("skipOnInput", Bool),
+            ("titleLocation", Str),
+            ("width", Any),
+            ("height", Any),
+            ("autoMaxWidth", Bool),
+            ("autoMaxHeight", Bool),
         ],
     },
     FormElementKind {
         kind: "TextDocumentField",
         aliases: &["TextDocumentField"],
+        description_key: "textDoc",
         keys: with_common_flags![
-            "path",
-            "title",
-            "tooltip",
-            "tooltipRepresentation",
-            "titleLocation",
-            "width",
-            "height",
-            "autoMaxWidth",
-            "autoMaxHeight",
+            ("path", Str),
+            ("title", Str),
+            ("tooltip", Text),
+            ("tooltipRepresentation", Str),
+            ("titleLocation", Str),
+            ("width", Any),
+            ("height", Any),
+            ("autoMaxWidth", Bool),
+            ("autoMaxHeight", Bool),
         ],
     },
     FormElementKind {
         kind: "Label",
         aliases: &["Label", "LabelDecoration"],
+        description_key: "label",
         keys: with_common_flags![
-            "title",
-            "formatted",
-            "hyperlink",
-            "width",
-            "height",
-            "autoMaxWidth",
-            "autoMaxHeight",
-            "tooltipRepresentation",
+            ("title", Text),
+            ("formatted", Bool),
+            ("hyperlink", Bool),
+            ("width", Any),
+            ("height", Any),
+            ("autoMaxWidth", Bool),
+            ("autoMaxHeight", Bool),
+            ("tooltipRepresentation", Str),
         ],
     },
     FormElementKind {
         kind: "Button",
         aliases: &["Button"],
+        description_key: "button",
         keys: with_common_flags![
-            "representation",
-            "command",
-            "commandName",
-            "stdCommand",
-            "title",
-            "tooltip",
-            "tooltipRepresentation",
-            "defaultButton",
-            "picture",
-            "locationInCommandBar",
-            "backColor",
-            "font",
+            ("representation", Str),
+            ("command", Str),
+            ("commandName", Str),
+            ("stdCommand", Str),
+            ("title", Str),
+            ("tooltip", Text),
+            ("tooltipRepresentation", Str),
+            ("defaultButton", Bool),
+            ("picture", Str),
+            ("locationInCommandBar", Str),
+            ("backColor", Str),
+            ("font", StrOrObject),
         ],
     },
     FormElementKind {
         kind: "Group",
         aliases: &["Group", "UsualGroup"],
+        description_key: "group",
         keys: with_common_flags![
-            "title",
-            "orientation",
-            "behavior",
-            "collapsed",
-            "representation",
-            "titleDataPath",
-            "currentRowUse",
-            "showTitle",
-            "showLeftMargin",
+            ("title", Str),
+            ("behavior", Str),
+            ("collapsed", Bool),
+            ("representation", Str),
+            ("titleDataPath", Str),
+            ("currentRowUse", Str),
+            ("showTitle", Bool),
+            ("showLeftMargin", Bool),
         ],
     },
     FormElementKind {
         kind: "Pages",
         aliases: &["Pages"],
-        keys: with_common_flags!["title", "pagesRepresentation", "currentRowUse"],
+        description_key: "pages",
+        keys: with_common_flags![
+            ("title", Str),
+            ("pagesRepresentation", Str),
+            ("currentRowUse", Str),
+        ],
     },
     FormElementKind {
         kind: "Page",
         aliases: &["Page"],
-        keys: with_common_flags!["title", "orientation", "showTitle", "titleDataPath"],
+        description_key: "page",
+        keys: with_common_flags![("title", Str), ("showTitle", Bool), ("titleDataPath", Str)],
     },
     FormElementKind {
         kind: "Table",
         aliases: &["Table"],
+        description_key: "table",
         keys: with_common_flags![
-            "representation",
-            "autoInsertNewRow",
-            "path",
-            "commandBarLocation",
-            "initialTreeView",
-            "enableDrag",
-            "rowPictureDataPath",
-            "tableAutofill",
-            "_dynList",
-            "autoRefresh",
-            "autoRefreshPeriod",
-            "choiceFoldersAndItems",
-            "restoreCurrentRow",
-            "showRoot",
-            "allowRootChoice",
-            "updateOnDataChange",
-            "allowGettingCurrentRowURL",
+            ("representation", Str),
+            ("autoInsertNewRow", Bool),
+            ("path", Str),
+            ("commandBarLocation", Str),
+            ("initialTreeView", Str),
+            ("enableDrag", Bool),
+            ("rowPictureDataPath", Str),
+            ("tableAutofill", Bool),
+            ("_dynList", Bool),
+            ("autoRefresh", Bool),
+            ("autoRefreshPeriod", Integer),
+            ("choiceFoldersAndItems", Str),
+            ("restoreCurrentRow", Bool),
+            ("showRoot", Bool),
+            ("allowRootChoice", Bool),
+            ("updateOnDataChange", Str),
+            ("allowGettingCurrentRowURL", Bool),
         ],
     },
     FormElementKind {
         kind: "CommandBar",
         aliases: &["CommandBar"],
-        keys: with_common_flags!["commandSource", "autofill"],
+        description_key: "cmdBar",
+        keys: with_common_flags![("commandSource", Str), ("autofill", Bool)],
     },
 ];
+
+/// Виды, у которых `item.add` принимает `orientation`: описание формы пишет
+/// её значением различителя `group`, поэтому в ключи писателя она не входит.
+pub const FORM_ORIENTATION_KINDS: &[&str] = &["Group", "Page"];
 
 /// Ключи вложенного дерева, companion-содержимого и событий, которые
 /// `item.add` больше не принимает (Р2, #1447): элемент добавляется один,
@@ -403,11 +503,14 @@ fn element_item_schema(kinds: &[&str]) -> Value {
                         "description":"Sibling in the same container the element follows."}),
                 ),
             ];
-            fields.extend(
-                kind.keys
-                    .iter()
-                    .map(|key| (*key, element_key_schema(kind.kind, key))),
-            );
+            for key in kind.key_names() {
+                fields.push((key, element_key_schema(kind.kind, key)));
+                // Ориентация группы и страницы стоит за заголовком, как
+                // в справке вида; описание формы пишет её различителем.
+                if key == "title" && FORM_ORIENTATION_KINDS.contains(&kind.kind) {
+                    fields.push(("orientation", element_key_schema(kind.kind, "orientation")));
+                }
+            }
             // Без `type` элемент — поле ввода: другие виды требуют его явно,
             // и стандартный валидатор схемы выбирает тот же вариант.
             let required: &[&str] = match kind.kind {
@@ -995,7 +1098,7 @@ mod tests {
         for kind in FORM_ELEMENT_KINDS {
             for flag in COMMON_FLAGS {
                 assert_eq!(
-                    kind.keys.iter().filter(|key| **key == flag).count(),
+                    kind.key_names().filter(|key| *key == flag).count(),
                     1,
                     "{} {flag}",
                     kind.kind

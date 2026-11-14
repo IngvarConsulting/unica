@@ -3,251 +3,73 @@
 //! The compiler reads a description key by key; a key it does not read, or a
 //! value of a JSON type it does not read, used to vanish behind a successful
 //! call. Every owner here lists exactly the keys its emitter writes, with the
-//! JSON type it reads, and anything else is refused by name.
+//! JSON type it reads, and anything else is refused by name. The keys an
+//! element writer writes are one list with the `item.add` contract
+//! (`unica_forms::contracts::FORM_ELEMENT_KINDS`); this module adds only the
+//! keys of the description itself.
 
 use serde_json::{Map, Value};
+use unica_forms::contracts::{
+    form_element_kind_by_description_key, ElementKeyType, ElementKeys, FORM_DYNAMIC_LIST_KEYS,
+};
 
-/// The JSON shape a description key is read as.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum KeyType {
-    /// Any value: a kind discriminator, or a key its emitter validates itself
-    /// with a more specific refusal (`width`, `height`).
-    Any,
-    Str,
-    Bool,
-    /// An integer or a string holding one.
-    Integer,
-    /// A string or a language map.
-    Text,
-    /// A string or an object (a style reference or its parts).
-    StrOrObject,
-    Array,
-    Object,
-}
+/// The JSON shape a description key is read as: the element keys share it
+/// with the `item.add` contract (`unica_forms::contracts`).
+pub(super) type KeyType = ElementKeyType;
 
-impl KeyType {
-    fn accepts(self, value: &Value) -> bool {
-        match self {
-            Self::Any => true,
-            Self::Str => value.is_string(),
-            Self::Bool => value.is_boolean(),
-            Self::Integer => {
-                value.as_i64().is_some()
-                    || value
-                        .as_str()
-                        .is_some_and(|s| s.trim().parse::<i64>().is_ok())
-            }
-            Self::Text | Self::StrOrObject => value.is_string() || value.is_object(),
-            Self::Array => value.is_array(),
-            Self::Object => value.is_object(),
-        }
-    }
+type Keys = ElementKeys;
 
-    const fn describe(self) -> &'static str {
-        match self {
-            Self::Any => "any value",
-            Self::Str => "a string",
-            Self::Bool => "a boolean",
-            Self::Integer => "a number",
-            Self::Text => "a string or a language map",
-            Self::StrOrObject => "a string or an object",
-            Self::Array => "an array",
-            Self::Object => "an object",
-        }
-    }
-}
-
-type Keys = &'static [(&'static str, KeyType)];
-
-use KeyType::{Any, Array, Bool, Integer, Object, Str, StrOrObject, Text};
+use ElementKeyType::{Any, Array, Bool, Object, Str, Text};
 
 const NAME: Keys = &[("name", Str)];
-const FLAGS: Keys = &[
-    ("visible", Bool),
-    ("hidden", Bool),
-    ("userVisible", Bool),
-    ("enabled", Bool),
-    ("disabled", Bool),
-    ("readOnly", Bool),
-];
 const EVENTS: Keys = &[("on", Array), ("handlers", Object)];
-const TOOLTIP: Keys = &[("tooltip", Text), ("tooltipRepresentation", Str)];
 const CHILDREN: Keys = &[("children", Array)];
 
-const TABLE: Keys = &[
-    ("table", Any),
-    ("representation", Str),
-    ("autoInsertNewRow", Bool),
-    ("path", Str),
-    ("commandBarLocation", Str),
-    ("initialTreeView", Str),
-    ("enableDrag", Bool),
-    ("rowPictureDataPath", Str),
-    ("_dynList", Bool),
-    ("autoRefresh", Bool),
-    ("autoRefreshPeriod", Integer),
-    ("choiceFoldersAndItems", Str),
-    ("restoreCurrentRow", Bool),
-    ("showRoot", Bool),
-    ("allowRootChoice", Bool),
-    ("updateOnDataChange", Str),
-    ("allowGettingCurrentRowURL", Bool),
-    ("tableAutofill", Bool),
-    ("columns", Array),
-];
 /// Table keys the compiler writes only for a dynamic list (`_dynList: true`).
-pub(super) const TABLE_DYNAMIC_LIST_KEYS: [&str; 8] = [
-    "autoRefresh",
-    "autoRefreshPeriod",
-    "choiceFoldersAndItems",
-    "restoreCurrentRow",
-    "showRoot",
-    "allowRootChoice",
-    "updateOnDataChange",
-    "allowGettingCurrentRowURL",
-];
-const LABEL: Keys = &[
-    ("label", Any),
-    ("hyperlink", Bool),
-    ("width", Any),
-    ("height", Any),
-    ("autoMaxWidth", Bool),
-    ("autoMaxHeight", Bool),
-    ("tooltipRepresentation", Str),
-    ("title", Text),
-    ("formatted", Bool),
-];
-const LABEL_FIELD: Keys = &[("labelField", Any), ("path", Str), ("footerDataPath", Str)];
-const BUTTON: Keys = &[
-    ("button", Any),
-    ("type", Str),
-    ("representation", Str),
-    ("command", Str),
-    ("commandName", Str),
-    ("stdCommand", Str),
-    ("title", Str),
-    ("defaultButton", Bool),
-    ("picture", Str),
-    ("locationInCommandBar", Str),
-    ("backColor", Str),
-    ("font", StrOrObject),
-];
-const COMMAND_BAR: Keys = &[
-    ("cmdBar", Any),
-    ("commandBar", Any),
-    ("commandSource", Str),
-    ("autofill", Bool),
-];
+pub(super) const TABLE_DYNAMIC_LIST_KEYS: &[&str] = FORM_DYNAMIC_LIST_KEYS;
+
+/// The automatic command bar of the form is a description key only:
+/// `item.add` adds no such element.
 const AUTO_COMMAND_BAR: Keys = &[
     ("autoCmdBar", Any),
     ("autoCommandBar", Any),
     ("horizontalAlign", Str),
     ("autofill", Bool),
 ];
-const PAGES: Keys = &[
-    ("pages", Any),
-    ("title", Str),
-    ("pagesRepresentation", Str),
-    ("currentRowUse", Str),
-];
-const PAGE: Keys = &[
-    ("page", Any),
-    ("title", Str),
-    ("group", Str),
-    ("showTitle", Bool),
-    ("titleDataPath", Str),
-];
-const GROUP: Keys = &[
-    ("group", Any),
-    ("title", Str),
-    ("behavior", Str),
-    ("collapsed", Bool),
-    ("representation", Str),
-    ("titleDataPath", Str),
-    ("currentRowUse", Str),
-    ("showTitle", Bool),
-    ("showLeftMargin", Bool),
-];
-const CHECK: Keys = &[
-    ("check", Any),
-    ("path", Str),
-    ("title", Str),
-    ("titleLocation", Str),
-    ("checkBoxType", Str),
-    ("footerDataPath", Str),
-];
-const INPUT: Keys = &[
-    ("input", Any),
-    ("path", Str),
-    ("title", Str),
-    ("titleLocation", Str),
-    ("multiLine", Bool),
-    ("passwordMode", Bool),
-    ("choiceButton", Bool),
-    ("clearButton", Bool),
-    ("spinButton", Bool),
-    ("dropListButton", Bool),
-    ("markIncomplete", Bool),
-    ("skipOnInput", Bool),
-    ("showInHeader", Bool),
-    ("headerHorizontalAlign", Str),
-    ("autoMaxWidth", Bool),
-    ("autoMaxHeight", Bool),
-    ("footerDataPath", Str),
-    ("width", Any),
-    ("height", Any),
-    ("multipleValueDataPath", Str),
-    ("multipleValuePictureDataPath", Str),
-    ("multipleValuePresentDataPath", Str),
-    ("horizontalStretch", Bool),
-    ("verticalStretch", Bool),
-    ("horizontalAlign", Str),
-    ("inputHint", Str),
-];
-const DOCUMENT_FIELD: Keys = &[
-    ("path", Str),
-    ("skipOnInput", Bool),
-    ("title", Str),
-    ("titleLocation", Str),
-    ("width", Any),
-    ("height", Any),
-    ("autoMaxWidth", Bool),
-    ("autoMaxHeight", Bool),
-];
 
-/// The key groups a compiled element kind writes, by its description key.
-/// A kind without events (button, command bars, page, group) takes no `on`/`handlers`.
-pub(super) fn element_keys(kind: &str) -> &'static [Keys] {
+/// The keys of the form description, not of the element, that a kind
+/// takes besides the keys its writer writes (`FORM_ELEMENT_KINDS`): its
+/// discriminator, nested elements, events, and the button type and page
+/// orientation the description names its own way.
+fn description_only_keys(kind: &str) -> &'static [Keys] {
     match kind {
-        "table" => &[TABLE, NAME, FLAGS, EVENTS],
-        "label" => &[LABEL, NAME, FLAGS, EVENTS],
-        "labelField" => &[LABEL_FIELD, NAME, FLAGS, TOOLTIP, EVENTS],
-        "button" => &[BUTTON, NAME, FLAGS, TOOLTIP],
-        "cmdBar" => &[COMMAND_BAR, NAME, FLAGS, CHILDREN],
-        "autoCmdBar" => &[AUTO_COMMAND_BAR, NAME],
-        "pages" => &[PAGES, NAME, FLAGS, CHILDREN, EVENTS],
-        "page" => &[PAGE, NAME, FLAGS, CHILDREN],
-        "group" => &[GROUP, NAME, FLAGS, CHILDREN],
-        "check" => &[CHECK, NAME, FLAGS, TOOLTIP, EVENTS],
-        "input" => &[INPUT, NAME, FLAGS, TOOLTIP, EVENTS],
-        "html" => &[
-            &[("html", Any)],
-            DOCUMENT_FIELD,
-            NAME,
-            FLAGS,
-            TOOLTIP,
-            EVENTS,
-        ],
-        "textDoc" => &[
-            &[("textDoc", Any)],
-            DOCUMENT_FIELD,
-            NAME,
-            FLAGS,
-            TOOLTIP,
-            EVENTS,
-        ],
+        "table" => &[&[("table", Any), ("columns", Array)], NAME, EVENTS],
+        "label" => &[&[("label", Any)], NAME, EVENTS],
+        "labelField" => &[&[("labelField", Any)], NAME, EVENTS],
+        "button" => &[&[("button", Any), ("type", Str)], NAME],
+        "cmdBar" => &[&[("cmdBar", Any), ("commandBar", Any)], NAME, CHILDREN],
+        "pages" => &[&[("pages", Any)], NAME, CHILDREN, EVENTS],
+        "page" => &[&[("page", Any), ("group", Str)], NAME, CHILDREN],
+        "group" => &[&[("group", Any)], NAME, CHILDREN],
+        "check" => &[&[("check", Any)], NAME, EVENTS],
+        "input" => &[&[("input", Any)], NAME, EVENTS],
+        "html" => &[&[("html", Any)], NAME, EVENTS],
+        "textDoc" => &[&[("textDoc", Any)], NAME, EVENTS],
         _ => &[],
     }
+}
+
+/// The key groups a compiled element kind accepts, by its description key:
+/// the keys its writer writes, one list with the `item.add` contract, and
+/// the keys of the description only. A kind without events (button,
+/// command bars, page, group) takes no `on`/`handlers`.
+pub(super) fn element_keys(kind: &str) -> Vec<Keys> {
+    if kind == "autoCmdBar" {
+        return vec![AUTO_COMMAND_BAR, NAME];
+    }
+    let mut groups = description_only_keys(kind).to_vec();
+    groups.extend(form_element_kind_by_description_key(kind).map(|element| element.keys));
+    groups
 }
 
 /// Keys the description used to take under another name, with the key the
@@ -317,8 +139,8 @@ pub(super) fn check_element_keys(
 ) -> Result<(), String> {
     let groups = element_keys(kind);
     for (key, value) in object {
-        let Some(key_type) = key_type(groups, key) else {
-            let hint = replacement(groups, key)
+        let Some(key_type) = key_type(&groups, key) else {
+            let hint = replacement(&groups, key)
                 .map(|to| format!("; use `{to}`"))
                 .unwrap_or_default();
             return Err(format!(
