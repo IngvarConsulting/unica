@@ -1012,12 +1012,20 @@ mod tests {
         }
     }
 
+    /// Каждая линия покрывает матрицу «владелец × прямая роль» своим
+    /// каталогом, и считается она по видам, которые есть **в этой линии**.
+    /// Вид, который завела старшая линия, не ждут от младшего каталога
+    /// и не исключают из матрицы: `Очередь` существует с 8.5.4, там её
+    /// менеджер и покрыт.
     /// rule: INV.PLATFORM.MODULE-EVENT-CATALOG
     #[test]
-    fn module_catalog_covers_the_task12_direct_owner_role_matrix_exactly() {
+    fn every_line_catalog_covers_the_direct_owner_role_matrix_of_its_own_line() {
         use unica_address::address::NodeKind;
         use unica_address::module_routes::ModuleRole;
         use unica_bsl::profile::PlatformProfile;
+        use unica_source_contract::format_identity::{
+            metadata_kind_exists, DESCRIBED_PLATFORM_LINES,
+        };
 
         let direct_roles = [
             ModuleRole::Object,
@@ -1025,24 +1033,29 @@ mod tests {
             ModuleRole::RecordSet,
             ModuleRole::ValueManager,
         ];
-        let profile = PlatformProfile::v8_3_27();
-        let expected = NodeKind::metadata_kinds()
-            .iter()
-            .flat_map(|owner| direct_roles.iter().map(move |role| (*owner, *role)))
-            .filter(|(owner, role)| profile.supports_direct_module_role(*owner, *role))
-            .map(|(owner, role)| (owner.as_str(), role.as_str()))
-            .collect::<std::collections::BTreeSet<_>>();
-        let actual = catalog_of_line(8, 3, 27)
-            .module_catalogs
-            .iter()
-            .filter(|catalog| {
-                direct_roles
-                    .iter()
-                    .any(|role| role.as_str() == catalog.module_role)
-            })
-            .map(|catalog| (catalog.owner_kind.as_str(), catalog.module_role.as_str()))
-            .collect::<std::collections::BTreeSet<_>>();
-        assert_eq!(actual, expected);
+        for (line, id) in DESCRIBED_PLATFORM_LINES {
+            let profile = PlatformProfile::for_line(*line)
+                .unwrap_or_else(|| panic!("described line {id} has no profile"));
+            let expected = NodeKind::metadata_kinds()
+                .iter()
+                .filter(|owner| metadata_kind_exists(Some(*line), owner.as_str()))
+                .flat_map(|owner| direct_roles.iter().map(move |role| (*owner, *role)))
+                .filter(|(owner, role)| profile.supports_direct_module_role(*owner, *role))
+                .map(|(owner, role)| (owner.as_str(), role.as_str()))
+                .collect::<std::collections::BTreeSet<_>>();
+            let actual = platform_event_catalog_fixture_for_line(Some(*line))
+                .unwrap_or_else(|| panic!("described line {id} has no catalog"))
+                .module_catalogs
+                .iter()
+                .filter(|catalog| {
+                    direct_roles
+                        .iter()
+                        .any(|role| role.as_str() == catalog.module_role)
+                })
+                .map(|catalog| (catalog.owner_kind.as_str(), catalog.module_role.as_str()))
+                .collect::<std::collections::BTreeSet<_>>();
+            assert_eq!(actual, expected, "line {id}");
+        }
     }
 
     /// rule: INV.PLATFORM.MODULE-EVENT-CATALOG
