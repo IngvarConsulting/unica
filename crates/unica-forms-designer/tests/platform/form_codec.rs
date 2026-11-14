@@ -3549,3 +3549,43 @@ fn english_table_companions_match_the_platform_dump_in_both_command_bar_modes() 
         }
     }
 }
+
+/// A new list or choice form carries the dynamic list settings the Designer
+/// writes for its own new list form: `ManualQuery`, `DynamicDataRead`,
+/// `MainTable` and the `ListSettings` skeleton, in the platform's order.
+#[test]
+fn a_new_list_form_carries_the_designer_dynamic_list_settings() {
+    fn settings_block(xml: &str) -> String {
+        let xml = xml.replace("\r\n", "\n");
+        let start = xml.find("<Settings xsi:type=\"DynamicList\">").unwrap();
+        let end = xml[start..].find("</Settings>").unwrap() + start + "</Settings>".len();
+        xml[start..end].to_string()
+    }
+    let designer = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/fixtures/formats/platform_xml/2.20/all_kinds/src/Catalogs/Валюты/Forms/ФормаСписка/Ext/Form.xml"
+    ));
+    for purpose in ["List", "Choice"] {
+        let xml = form_add_content_xml("Catalog", "Валюты", purpose, "2.20").unwrap();
+        assert_eq!(settings_block(&xml), settings_block(designer), "{purpose}");
+    }
+}
+
+/// A compiled dynamic list without `dynamicDataRead` reads its data
+/// dynamically, as a new list form of the Designer does.
+#[test]
+fn a_compiled_dynamic_list_reads_dynamically_unless_told_otherwise() {
+    let definition = json!({
+        "attributes": [{
+            "name": "Список",
+            "type": "DynamicList",
+            "main": true,
+            "settings": { "mainTable": "Catalog.Валюты" }
+        }]
+    });
+    let (xml, _) = form_compile_xml(&definition, "2.20").unwrap();
+    assert!(
+        xml.contains("<DynamicDataRead>true</DynamicDataRead>"),
+        "{xml}"
+    );
+}
