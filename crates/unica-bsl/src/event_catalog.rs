@@ -1,11 +1,22 @@
-//! Module capability selects its records from the same immutable catalogue.
-use crate::profile::ModuleCapability;
-use unica_metadata::event_catalog::{platform_event_catalog_fixture, PlatformEventSpec};
+//! Module capability selects its records from the catalogue of its line.
+use crate::profile::{ModuleCapability, PlatformProfile};
+use unica_metadata::event_catalog::{platform_event_catalog_fixture_for_line, PlatformEventSpec};
 
-pub fn module_event_catalog_8_3_27(capability: ModuleCapability) -> &'static [PlatformEventSpec] {
+/// Возможные события роли модуля у её владельца в наборе линии `platform`.
+/// Каталог выбирает линия: таблицы событий разных линий не совпадают, и
+/// обработчик, верный для своей линии, не сверяется с чужой подписью.
+pub fn module_event_catalog(
+    platform: PlatformProfile,
+    capability: ModuleCapability,
+) -> &'static [PlatformEventSpec] {
     let owner_kind = capability.owner_kind().as_str();
     let role = capability.role().as_str();
-    platform_event_catalog_fixture()
+    // У линии без закреплённого каталога событий нет вовсе: пустой ответ
+    // виден, а чужой состав притворился бы своим.
+    let Some(fixture) = platform_event_catalog_fixture_for_line(Some(platform.line())) else {
+        return &[];
+    };
+    fixture
         .module_catalogs
         .iter()
         .find(|catalog| {

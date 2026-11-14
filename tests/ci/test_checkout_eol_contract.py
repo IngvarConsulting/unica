@@ -61,10 +61,17 @@ def unpinned_line_endings(root: Path, prefixes: tuple[str, ...]) -> list[str]:
 
 class CheckoutEolContractTests(unittest.TestCase):
     def test_source_scanned_and_hashed_inputs_are_lf_on_every_checkout(self) -> None:
+        catalogs = sorted(
+            path.relative_to(REPO_ROOT).as_posix()
+            for path in (REPO_ROOT / "crates/unica-metadata/src").glob(
+                "platform-event-catalog-*.json"
+            )
+        )
+        self.assertTrue(catalogs, "the checked event catalogs must be in the tree")
         for path in [
             "crates/unica-daemon/src/infrastructure/daemon/server.rs",
             "crates/unica-bindings-integration-tests/tests/fixtures/modules/syntax-boundaries.bsl",
-            "crates/unica-metadata/src/platform-event-catalog-8.3.27.json",
+            *catalogs,
         ]:
             self.assertEqual(attributes(path), {"text": "set", "eol": "lf"}, path)
 

@@ -59,6 +59,7 @@ fn shape(
 fn form_source() -> PropertyEventSource {
     let form_at = QualifiedAddress::parse("main:CommonForm.Main").unwrap();
     PropertyEventSource {
+        platform: unica_bsl::profile::PlatformProfile::v8_3_27(),
         event_at: QualifiedAddress::parse("main:CommonForm.Main.Event.OnOpen").unwrap(),
         form_at: form_at.clone(),
         form_target: MetadataAddress::parse_logical("CommonForm.Main").unwrap(),
