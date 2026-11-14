@@ -619,6 +619,10 @@ impl DocumentationProvider for V8StdDocumentationProvider {
 }
 
 #[cfg(test)]
+#[path = "standards_documentation_error_tests.rs"]
+mod medium_error_redaction_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
