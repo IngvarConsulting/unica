@@ -374,7 +374,17 @@ fn cfe_borrow_generated_type_profiles_cover_8_3_27_dynamic_families() {
             ],
         ),
         ("SettingsStorage", &[("SettingsStorageManager", "Manager")]),
-        ("Sequence", &[("SequenceRecordSet", "RecordSet")]),
+        // 8.3.27 and 8.5.4 refuse a sequence without its record and
+        // manager, and a WS reference without its manager.
+        (
+            "Sequence",
+            &[
+                ("SequenceRecord", "Record"),
+                ("SequenceManager", "Manager"),
+                ("SequenceRecordSet", "RecordSet"),
+            ],
+        ),
+        ("WSReference", &[("WSReferenceManager", "Manager")]),
         (
             "IntegrationService",
             &[("IntegrationServiceManager", "Manager")],

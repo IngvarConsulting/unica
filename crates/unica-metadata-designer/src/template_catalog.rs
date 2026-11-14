@@ -1019,7 +1019,15 @@ pub fn metadata_generated_types_8_3_27(
             ("FilterCriterionList", "List"),
         ]),
         "SettingsStorage" => Some(&[("SettingsStorageManager", "Manager")]),
-        "Sequence" => Some(&[("SequenceRecordSet", "RecordSet")]),
+        // The platform refuses a sequence without its record and manager
+        // (all_kinds of 2.20 and 2.22).
+        "Sequence" => Some(&[
+            ("SequenceRecord", "Record"),
+            ("SequenceManager", "Manager"),
+            ("SequenceRecordSet", "RecordSet"),
+        ]),
+        // The platform refuses a WS reference without its manager.
+        "WSReference" => Some(&[("WSReferenceManager", "Manager")]),
         "IntegrationService" => Some(&[("IntegrationServiceManager", "Manager")]),
         "DefinedType" => Some(&[("DefinedType", "DefinedType")]),
         // The queue of 8.5.4: its message is a record, its manager a manager.
@@ -1039,7 +1047,6 @@ pub fn metadata_generated_types_8_3_27(
         | "XDTOPackage"
         | "WebService"
         | "HTTPService"
-        | "WSReference"
         | "EventSubscription"
         | "ScheduledJob"
         | "FunctionalOption"

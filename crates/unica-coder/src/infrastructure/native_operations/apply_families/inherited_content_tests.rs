@@ -692,3 +692,90 @@ fn a_borrowed_document_of_format_2_20_has_empty_register_records() {
         .unwrap()
         .contains("<RegisterRecords/>"));
 }
+
+/// `text` with its line endings and byte order mark set aside and every UUID
+/// but the parent reference masked: what a borrowed descriptor says, not the
+/// identities a borrowing draws fresh.
+fn borrowed_shape(text: &str) -> String {
+    fn is_uuid(token: &[u8]) -> bool {
+        token.len() == 36
+            && token.iter().enumerate().all(|(at, byte)| match at {
+                8 | 13 | 18 | 23 => *byte == b'-',
+                _ => byte.is_ascii_hexdigit(),
+            })
+    }
+    text.trim_start_matches('\u{feff}')
+        .replace("\r\n", "\n")
+        .lines()
+        .map(|line| {
+            if line.contains("<ExtendedConfigurationObject>") {
+                return line.to_string();
+            }
+            let bytes = line.as_bytes();
+            let mut masked = String::new();
+            let mut at = 0;
+            while at < bytes.len() {
+                if at + 36 <= bytes.len() && is_uuid(&bytes[at..at + 36]) {
+                    masked.push_str("<uuid>");
+                    at += 36;
+                } else {
+                    let ch = line[at..].chars().next().unwrap();
+                    masked.push(ch);
+                    at += ch.len_utf8();
+                }
+            }
+            masked
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Every kind Unica borrows is written as 8.3.27 (format 2.20) and 8.5.4
+/// (format 2.22) export it after loading: the export of the platform is the
+/// corpus `cfe_borrow_kinds`, one object of each kind of `all_kinds`.
+/// rule: INV.SOURCE.WRITABLE-PROFILE
+#[test]
+fn every_borrowed_kind_has_the_platform_shape() {
+    use unica_source_contract::format_identity::PlatformLine;
+    for (corpus, line) in [
+        (
+            "../../tests/fixtures/formats/platform_xml/2.20",
+            PlatformLine::new(8, 3, 27),
+        ),
+        (CORPUS_2_22, PlatformLine::new(8, 5, 4)),
+    ] {
+        let kinds = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join(corpus)
+            .join("cfe_borrow_kinds");
+        let mut checked = 0;
+        for dir in std::fs::read_dir(&kinds).unwrap() {
+            let dir = dir.unwrap().path();
+            if !dir.is_dir() {
+                continue;
+            }
+            for file in std::fs::read_dir(&dir).unwrap() {
+                let file = file.unwrap().path();
+                let platform = std::fs::read_to_string(&file).unwrap();
+                let object = platform.split("\n\t<").nth(1).unwrap();
+                let kind = object.split([' ', '>']).next().unwrap();
+                let name = platform
+                    .split("<Name>")
+                    .nth(1)
+                    .unwrap()
+                    .split("</Name>")
+                    .next()
+                    .unwrap();
+                let relative = file.strip_prefix(&kinds).unwrap();
+                let written = borrow_in(corpus, line, &format!("main:{kind}.{name}"));
+                let written = String::from_utf8(written[relative].clone()).unwrap();
+                assert_eq!(
+                    borrowed_shape(&written),
+                    borrowed_shape(&platform),
+                    "{corpus}: {kind}.{name}"
+                );
+                checked += 1;
+            }
+        }
+        assert!(checked >= 44, "{corpus}: {checked} kinds");
+    }
+}

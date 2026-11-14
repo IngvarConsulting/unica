@@ -41,6 +41,9 @@ pub(crate) enum AdoptedNode {
     Object,
     /// The descriptor of a borrowed form.
     Form,
+    /// What a borrowed common form or common template, whose content the
+    /// extension may change, writes after its own properties.
+    Content,
 }
 
 impl MetadataDialect {

@@ -443,6 +443,27 @@ pub fn cfe_borrow_object_xml(
             unica_xml_format::text::escape_xml(&return_values_reuse)
         ));
     }
+    if type_name == "CommonTemplate" {
+        // The kind of the template is the parent's; 8.3.27 and 8.5.4 export it.
+        let template_type = source_props
+            .and_then(|props| unica_xml_format::read::child_direct_text(props, "TemplateType"))
+            .ok_or("Borrowed common template has no TemplateType in its parent")?;
+        lines.push(format!(
+            "\t\t\t<TemplateType>{}</TemplateType>",
+            unica_xml_format::text::escape_xml(&template_type)
+        ));
+    }
+    if type_name == "Subsystem" {
+        // A borrowed subsystem starts with no content of its own.
+        lines.push("\t\t\t<Content/>".to_string());
+    }
+    if matches!(type_name, "CommonForm" | "CommonTemplate") {
+        for property in
+            crate::dialect::adopted_properties(format_version, crate::dialect::AdoptedNode::Content)
+        {
+            lines.push(format!("\t\t\t{property}"));
+        }
+    }
     if type_name == "DefinedType" {
         if let Some(type_xml) = source_props
             .and_then(|props| unica_xml_format::read::child_element(props, "Type"))
@@ -472,10 +493,17 @@ pub fn cfe_borrow_internal_info_xml(
             "Type '{type_name}' has no proven cfe.borrow InternalInfo profile for platform 1C 8.3.27"
         )
     })?;
-    if types.is_empty() {
+    let extended = cfe_borrow_extended_property(type_name);
+    if types.is_empty() && extended.is_none() {
         return Ok(format!("{indent}<InternalInfo/>"));
     }
     let mut lines = vec![format!("{indent}<InternalInfo>")];
+    if let Some(property) = extended {
+        lines.push(format!("{indent}\t<xr:PropertyState>"));
+        lines.push(format!("{indent}\t\t<xr:Property>{property}</xr:Property>"));
+        lines.push(format!("{indent}\t\t<xr:State>Extended</xr:State>"));
+        lines.push(format!("{indent}\t</xr:PropertyState>"));
+    }
     if type_name == "ExchangePlan" {
         lines.push(format!(
             "{indent}\t<xr:ThisNode>{}</xr:ThisNode>",
@@ -496,6 +524,19 @@ pub fn cfe_borrow_internal_info_xml(
     }
     lines.push(format!("{indent}</InternalInfo>"));
     Ok(lines.join("\n"))
+}
+
+/// The property a borrowed object of `type_name` extends from the moment it
+/// is borrowed: 8.3.27 and 8.5.4 export it as `Extended` in `InternalInfo`
+/// of a borrowed common form, role and subsystem
+/// (`tests/fixtures/formats/platform_xml/*/cfe_borrow_kinds/`).
+fn cfe_borrow_extended_property(type_name: &str) -> Option<&'static str> {
+    match type_name {
+        "CommonForm" => Some("Form"),
+        "Role" => Some("Rights"),
+        "Subsystem" => Some("CommandInterface"),
+        _ => None,
+    }
 }
 
 pub fn cfe_borrow_generated_types(
