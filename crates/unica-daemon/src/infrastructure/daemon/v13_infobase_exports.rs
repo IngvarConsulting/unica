@@ -2851,21 +2851,21 @@ mod tests {
         serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
     }
 
-    fn captured_017_2(name: &str) -> Value {
+    fn captured_017_3(name: &str) -> Value {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures/v8_runner_017_2")
+            .join("tests/fixtures/v8_runner_017_3")
             .join(name);
         serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
     }
 
-    /// Живые конверты раннера 0.17.2: недоступная точка входа агента и чужой
+    /// Живые конверты раннера 0.17.3: недоступная точка входа агента и чужой
     /// SSH-сервер на его порту — слой `agent_endpoint` из поля, а не
     /// несовместимость и не прочая среда раннера.
     /// rule: INV.RUNTIME.RUNNER-ENVIRONMENT-LAYER
     #[test]
     fn captured_endpoint_refusals_of_the_runner_name_the_agent_endpoint() {
         for name in ["attach-unreachable.json", "attach-foreign-ssh-server.json"] {
-            let envelope = captured_017_2(name);
+            let envelope = captured_017_3(name);
             let error = &envelope["error"];
             let rejection = runner_envelope_refusal(
                 runner_rejection(
@@ -2888,13 +2888,13 @@ mod tests {
         }
     }
 
-    /// Живые конверты раннера 0.17.2: запись в базу другой копии несёт код в
+    /// Живые конверты раннера 0.17.3: запись в базу другой копии несёт код в
     /// `warning_details`, и ответ Unica называет её своим предупреждением даже
     /// без прозы раннера; взятие базы без владельца предупреждения не даёт.
     /// rule: INV.RUNTIME.RUNNER-BASE-REFUSALS
     #[test]
     fn captured_warning_codes_of_the_runner_name_the_infobase_of_another_copy() {
-        let mut preview = captured_017_2("push-other-copy-force-preview.json");
+        let mut preview = captured_017_3("push-other-copy-force-preview.json");
         assert!(another_copy_warning(&preview).is_some());
         // The code alone decides: the prose may change.
         preview["warnings"] = json!(["reworded by a later runner"]);
@@ -2903,7 +2903,7 @@ mod tests {
         assert_eq!(warning["code"], ANOTHER_COPY_WARNING_CODE);
         assert!(!warning["message"].as_str().unwrap().contains("workspace"));
 
-        let taken = captured_017_2("pull-takes-unowned-infobase.json");
+        let taken = captured_017_3("pull-takes-unowned-infobase.json");
         assert!(another_copy_warning(&taken).is_none());
     }
 
