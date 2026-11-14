@@ -293,6 +293,15 @@ fn parse_root_form_set(
     source_line: Option<unica_source_contract::format_identity::PlatformLine>,
 ) -> Result<FormPlan, ApplyPlanError> {
     const ROOT: &str = "Configuration";
+    // An argument the contract does not name is an error of the call and is
+    // refused at its own key before any slot is looked at
+    // (INV.WIRE.V13-CAN-DICTIONARY).
+    if let Some(key) = args
+        .keys()
+        .find(|key| !matches!(key.as_str(), "at" | "values"))
+    {
+        return Err(bad(op_index, key, "unknown argument"));
+    }
     let values = args
         .get("values")
         .and_then(Value::as_object)
