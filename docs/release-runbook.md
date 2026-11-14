@@ -169,6 +169,34 @@ Patches for a minor that already shipped are cut from its line. A fix reaches
 the line's queue run is the green CI the patch button asks for. `main` keeps its
 own version and never takes the patch numbers.
 
+## Raise pinned dependencies to their latest patch first
+
+Before a candidate is cut, every pinned dependency is raised to the latest
+patch of the minor it is on: the tools in `plugins/unica/third-party/tools.lock.json`
+(the runner, the BSL analyzer), the `bsl-analyzer` crates in `Cargo.toml`, the
+crates of `Cargo.lock` and the pins of `tests/ci/requirements.txt`. A patch
+carries fixes, so a release without it ships defects that are already fixed.
+A new minor or major brings new behavior and is not taken before a release;
+it waits for the next minor of Unica.
+
+Each raise goes through a pull request:
+
+- the lock pins the new version, tag, commit and the SHA-256 of every asset;
+  a tool built in `unica-toolchain` gets its release there first, and the pull
+  request names that release;
+- fixtures captured from a tool's binary are captured again from the
+  published binary of the new version;
+- for each change in the tool's release notes that may reach Unica, the pull
+  request says what was checked and how — a test or a run, not the notes alone.
+  A dependency without a newer patch is named too.
+
+Crates are raised one at a time within their minor, never by a plain
+`cargo update`, which also takes new minors:
+
+```bash
+cargo update -p <name>@<current> --precise <latest patch of that minor>
+```
+
 ## Raising the version of `main`
 
 After a final release the night publishes no alpha of that version and says so
