@@ -106,8 +106,17 @@ class PullRequestLevelTests(unittest.TestCase):
         self.assertNotIn("BASE_SHA", started["env"])
         # The description is read fresh through the API: the job may read pull requests.
         # Reading actions is for the queue's nightly path, which finds the last night's inventory.
+        # Reading issues is for open marks: each names an open task.
         job = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"))["jobs"]["unica-ci"]
-        self.assertEqual(job["permissions"], {"contents": "read", "pull-requests": "read", "actions": "read"})
+        self.assertEqual(job["permissions"], {"contents": "read", "pull-requests": "read", "issues": "read",
+                                              "actions": "read"})
+
+    def test_the_pull_request_checks_open_marks_against_open_issues(self) -> None:
+        # Issues are read to tell an open task from a closed one or a pull request.
+        marks = self.step("Пометки незакрытого")
+        self.assertEqual(marks["if"], "${{ github.event_name == 'pull_request' && env.KEPT != 'true' }}")
+        self.assertEqual(marks["run"], "python scripts/ci/open_marks.py pr")
+        self.assertEqual(marks["env"]["GH_TOKEN"], "${{ github.token }}")
 
 
 if __name__ == "__main__":

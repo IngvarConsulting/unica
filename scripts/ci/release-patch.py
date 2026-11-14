@@ -10,7 +10,8 @@
 - голова линии ещё не выпущена: она не коммит тега `vX.Y.*` и не срез под его
   служебным коммитом;
 - на голове есть зелёный прогон CI: очередь линии (`ci.yml`) или проверка линии
-  кнопкой `release.yml`.
+  кнопкой `release.yml`;
+- в голове линии нет пометок незакрытого (`open_marks.py`).
 
 Номер `Z` — следующий после существующих `vX.Y.*`. Ключ развёртывания из
 окружения `alpha` (`tag_push`) ставит тег, и его push запускает обычный выпуск
@@ -39,6 +40,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import open_marks  # noqa: E402
 import tag_push  # noqa: E402
 
 _SPEC = importlib.util.spec_from_file_location("release_rc", Path(__file__).with_name("release-rc.py"))
@@ -118,11 +120,15 @@ def rc_pages(answer) -> list[dict]:
     return [item for page in answer or [] for item in page.get("workflow_runs", [])]
 
 
-def publish(root: Path, repo: str, line: str, *, dry_run: bool, gh=alpha.gh_api, runner=alpha.run) -> str:
+def publish(root: Path, repo: str, line: str, *, dry_run: bool, gh=alpha.gh_api, runner=alpha.run,
+            marks=open_marks.marks) -> str:
     def git(arguments: list[str]) -> str:
         return runner(["git", *arguments], cwd=root)
 
     proof = prove(repo, line, gh, git)
+    refusal = open_marks.release_refusal(marks(root, proof.head), proof.head, open_marks.PATCH)
+    if refusal:
+        raise PatchError(refusal)
     tag = proof.tag
     version = tag.removeprefix("v")
     print(f"{tag}: голова {line} {proof.head[:7]}, CI {proof.run_url}")
