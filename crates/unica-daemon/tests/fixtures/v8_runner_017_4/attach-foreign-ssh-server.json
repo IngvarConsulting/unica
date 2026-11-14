@@ -1,7 +1,7 @@
 {
   "ok": false,
   "command": "pull",
-  "duration_ms": 2218,
+  "duration_ms": 124,
   "data": {
     "provider": {
       "selected": "agent",
@@ -17,15 +17,15 @@
     "requested_mode": "FULL",
     "mode": "FULL",
     "target_path": "C:\\workspace\\endpoint\\src",
-    "duration_ms": 2218,
-    "message": "environment unavailable: agent at 127.0.0.1:52812 is unreachable: Подключение не установлено, т.к. конечный компьютер отверг запрос на подключение. (os error 10061)"
+    "duration_ms": 124,
+    "message": "environment unavailable: SSH handshake with the agent at 127.0.0.1:56933 failed: Inconsistent state of the protocol"
   },
   "warnings": [],
   "steps": [],
   "error": {
     "code": "environment_unavailable",
     "kind": "environment",
-    "message": "agent at 127.0.0.1:52812 is unreachable: Подключение не установлено, т.к. конечный компьютер отверг запрос на подключение. (os error 10061)",
+    "message": "SSH handshake with the agent at 127.0.0.1:56933 failed: Inconsistent state of the protocol",
     "layer": "agent_endpoint"
   }
 }

@@ -1,7 +1,7 @@
 {
   "ok": true,
   "command": "push",
-  "duration_ms": 4,
+  "duration_ms": 3,
   "data": {
     "provider": {
       "selected": "ibcmd",
@@ -22,7 +22,7 @@
         "duration_ms": 0
       }
     ],
-    "duration_ms": 4
+    "duration_ms": 3
   },
   "warnings": [
     "push writes the infobase 'C:\\workspace\\ib' of another working copy: it is held by the working copy 'C:\\workspace\\C' on this machine. The command changes that working copy's infobase, and its owner stays as it is in the owner marker 'C:\\workspace\\.ib.v8-runner.owners.json'. To free the infobase: remove the infobase from v8project.local.yaml of 'C:\\workspace\\C' or remove that working copy. Ways to an infobase of this working copy's own (`init --infobase` keeps the previous section as upstream): its own clean infobase built from the sources — `v8-runner init --infobase <connection string>`, then `v8-runner infobase create`; a copy of an infobase with its data — `v8-runner init --infobase <connection string>`, then `v8-runner infobase create --from upstream`; an infobase deployed from a reference image — `v8-runner init --infobase <connection string>`, then `v8-runner infobase restore --input <reference>.dt --create`"
@@ -37,7 +37,7 @@
         {
           "project": "C:\\workspace\\C",
           "host": "workstation",
-          "since": "2026-11-14T13:42:12.668103600Z",
+          "since": "2026-11-14T20:59:18.519175500Z",
           "this_copy": false,
           "this_machine": true
         }
