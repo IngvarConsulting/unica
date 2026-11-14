@@ -648,7 +648,12 @@ impl TestSupervisorScope {
 impl Drop for TestSupervisorScope {
     fn drop(&mut self) {
         TEST_SUPERVISOR_SCOPES.with(|scopes| {
-            let popped = scopes.borrow_mut().pop().expect("test supervisor scope");
+            let popped = scopes.borrow_mut().pop();
+            // A second panic while a test already panics aborts the binary (#3065).
+            if std::thread::panicking() {
+                return;
+            }
+            let popped = popped.expect("test supervisor scope");
             assert!(Arc::ptr_eq(&popped, &self.owners));
         });
     }

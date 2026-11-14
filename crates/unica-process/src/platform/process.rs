@@ -146,7 +146,10 @@ impl JobAttachGateForTest {
 
     pub fn release(&self) {
         let (state, ready) = &*self.signal;
-        state.lock().expect("job attach gate state").released = true;
+        state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .released = true;
         ready.notify_all();
     }
 }
@@ -179,7 +182,7 @@ impl Drop for JobAttachGateForTest {
         self.release();
         job_attach_gates()
             .lock()
-            .expect("job attach gate registry")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(&self.program);
     }
 }
