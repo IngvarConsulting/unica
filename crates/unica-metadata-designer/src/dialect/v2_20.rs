@@ -16,6 +16,11 @@ pub(crate) fn added_child_properties(_child_type: &str) -> &'static [&'static st
 }
 
 /// 2.20 is the base the other dialects add object properties to.
+/// A borrowed descriptor of 2.20 names only its identity.
+pub(crate) fn adopted_properties(_node: super::AdoptedNode) -> &'static [&'static str] {
+    &[]
+}
+
 pub(crate) fn added_object_properties(_kind: &str) -> &'static [(&'static str, &'static str)] {
     &[]
 }
