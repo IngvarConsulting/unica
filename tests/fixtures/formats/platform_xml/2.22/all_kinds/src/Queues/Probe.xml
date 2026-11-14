@@ -1,0 +1,69 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:app="http://v8.1c.ru/8.2/managed-application/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:cmi="http://v8.1c.ru/8.2/managed-application/cmi" xmlns:ent="http://v8.1c.ru/8.1/data/enterprise" xmlns:lf="http://v8.1c.ru/8.2/managed-application/logform" xmlns:pal="http://v8.1c.ru/8.1/data/ui/colors/palette" xmlns:style="http://v8.1c.ru/8.1/data/ui/style" xmlns:sys="http://v8.1c.ru/8.1/data/ui/fonts/system" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:v8ui="http://v8.1c.ru/8.1/data/ui" xmlns:web="http://v8.1c.ru/8.1/data/ui/colors/web" xmlns:win="http://v8.1c.ru/8.1/data/ui/colors/windows" xmlns:xen="http://v8.1c.ru/8.3/xcf/enums" xmlns:xpr="http://v8.1c.ru/8.3/xcf/predef" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.22">
+	<Queue uuid="7b6c2a14-9f03-4d58-8e21-c4a5d7f10b62">
+		<InternalInfo>
+			<xr:GeneratedType name="QueueMessage.Probe" category="Record">
+				<xr:TypeId>0b5c8d42-7e31-4a96-8f05-61d3b2c7e48a</xr:TypeId>
+				<xr:ValueId>9c73f1a6-4d28-4b50-ae17-5f2b6d0c93e4</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="QueueManager.Probe" category="Manager">
+				<xr:TypeId>4e82a0c9-16bd-4f73-9c48-2d7e5a1b60f3</xr:TypeId>
+				<xr:ValueId>d16b9e35-8c70-4a21-b4df-73e0a5c82196</xr:ValueId>
+			</xr:GeneratedType>
+		</InternalInfo>
+		<Properties>
+			<Name>Probe</Name>
+			<Synonym>
+				<v8:item>
+					<v8:lang>ru</v8:lang>
+					<v8:content>Проба</v8:content>
+				</v8:item>
+			</Synonym>
+			<Comment>all_kinds</Comment>
+			<Transactioned>true</Transactioned>
+			<ProcessingPortionSize>1000</ProcessingPortionSize>
+			<AutoProcessing>true</AutoProcessing>
+		</Properties>
+		<ChildObjects>
+			<Dimension uuid="1d4f8a70-25b6-4c39-9f82-6ae0c3b51d47">
+				<Properties>
+					<Name>Измерение</Name>
+					<Synonym>
+						<v8:item>
+							<v8:lang>ru</v8:lang>
+							<v8:content>Измерение</v8:content>
+						</v8:item>
+					</Synonym>
+					<Comment/>
+					<Type>
+						<v8:Type>xs:string</v8:Type>
+						<v8:StringQualifiers>
+							<v8:Length>10</v8:Length>
+							<v8:AllowedLength>Variable</v8:AllowedLength>
+						</v8:StringQualifiers>
+					</Type>
+				</Properties>
+			</Dimension>
+			<Attribute uuid="3a9e1c55-0b27-4f6d-ae93-82d4f06c7b19">
+				<Properties>
+					<Name>Реквизит</Name>
+					<Synonym>
+						<v8:item>
+							<v8:lang>ru</v8:lang>
+							<v8:content>Реквизит</v8:content>
+						</v8:item>
+					</Synonym>
+					<Comment/>
+					<Type>
+						<v8:Type>xs:decimal</v8:Type>
+						<v8:NumberQualifiers>
+							<v8:Digits>10</v8:Digits>
+							<v8:FractionDigits>2</v8:FractionDigits>
+							<v8:AllowedSign>Any</v8:AllowedSign>
+						</v8:NumberQualifiers>
+					</Type>
+				</Properties>
+			</Attribute>
+		</ChildObjects>
+	</Queue>
+</MetaDataObject>

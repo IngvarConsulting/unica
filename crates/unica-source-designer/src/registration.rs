@@ -156,12 +156,14 @@ pub fn cf_edit_add_child_object_text(
         return Ok(false);
     }
 
+    // A kind the registry does not know (WebSocketClient) has no place in the
+    // order and does not decide where the new entry goes.
     let target = entries.iter().find(|entry| {
-        let entry_type_index =
-            cf_validate_child_object_type_index(&entry.type_name).unwrap_or(usize::MAX);
-        entry_type_index > new_type_index
-            || (entry_type_index == new_type_index
-                && cf_edit_child_name_cmp(object_name, &entry.object_name).is_lt())
+        cf_validate_child_object_type_index(&entry.type_name).is_some_and(|entry_type_index| {
+            entry_type_index > new_type_index
+                || (entry_type_index == new_type_index
+                    && cf_edit_child_name_cmp(object_name, &entry.object_name).is_lt())
+        })
     });
 
     if let Some(target) = target {
@@ -364,6 +366,9 @@ pub fn platform_child_object_order(owner_kind: &str) -> Option<&'static [&'stati
             "Template",
             "Command",
         ],
+        // Очередь пишет измерения перед реквизитами: выгрузка 8.5.4
+        // собирает их в этом порядке даже из источника с обратным.
+        "Queue" => &["Dimension", "Attribute"],
         "Enum" => &["EnumValue", "Form", "Template", "Command"],
         "DocumentJournal" => &["Column", "Form", "Template", "Command"],
         _ => return None,

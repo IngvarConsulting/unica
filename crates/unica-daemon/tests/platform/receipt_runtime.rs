@@ -4490,11 +4490,18 @@ type ListenerOwnersLog = Arc<Mutex<Vec<(Instant, V5ListenerOwners)>>>;
 struct PromisedWorkIdleHooks {
     observations: mpsc::Sender<(Instant, bool)>,
     owners: ListenerOwnersLog,
+    /// Closed until the test lets the daemon retire: the listener keeps
+    /// deciding, but cannot leave before the test has read its decisions.
+    idle_exit: Arc<AtomicBool>,
 }
 
 impl V5RuntimeHooks<CanonicalInvocationHost> for PromisedWorkIdleHooks {
     fn as_any(&self) -> &dyn std::any::Any {
         self
+    }
+
+    fn idle_exit_permitted(&self) -> bool {
+        self.idle_exit.load(Ordering::SeqCst)
     }
 
     fn after_idle_owner_leases_read(&self, empty: bool) {
@@ -4533,7 +4540,13 @@ struct PromisedWorkIdleDaemon {
     observations: mpsc::Receiver<(Instant, bool)>,
     exited: mpsc::Receiver<()>,
     owners: ListenerOwnersLog,
+    idle_exit: Arc<AtomicBool>,
 }
+
+/// How many listener decisions without a client a test reads before it says
+/// what held the daemon. A count of decisions, not a span of time: the idle
+/// exit stays closed meanwhile, so a loaded machine only slows them down.
+const HELD_DECISIONS: usize = 3;
 
 impl PromisedWorkIdleDaemon {
     fn start(idle_grace: Duration) -> Self {
@@ -4549,13 +4562,17 @@ impl PromisedWorkIdleDaemon {
     ) -> Self {
         let owners = ListenerOwnersLog::default();
         let recorded = Arc::clone(&owners);
+        let idle_exit = Arc::new(AtomicBool::new(false));
+        let gate = Arc::clone(&idle_exit);
         let mut daemon = Self::with_service_and_hooks(idle_grace, service, |observations| {
             Arc::new(PromisedWorkIdleHooks {
                 observations,
                 owners: recorded,
+                idle_exit: gate,
             })
         });
         daemon.owners = owners;
+        daemon.idle_exit = idle_exit;
         daemon
     }
 
@@ -4568,6 +4585,8 @@ impl PromisedWorkIdleDaemon {
     ) -> Self {
         let owners = ListenerOwnersLog::default();
         let recorded = Arc::clone(&owners);
+        let idle_exit = Arc::new(AtomicBool::new(false));
+        let gate = Arc::clone(&idle_exit);
         let mut daemon = Self::start_configured(
             idle_grace,
             service,
@@ -4575,11 +4594,13 @@ impl PromisedWorkIdleDaemon {
                 Arc::new(PromisedWorkIdleHooks {
                     observations,
                     owners: recorded,
+                    idle_exit: gate,
                 })
             },
             Some(clock),
         );
         daemon.owners = owners;
+        daemon.idle_exit = idle_exit;
         daemon
     }
 
@@ -4639,6 +4660,8 @@ impl PromisedWorkIdleDaemon {
             observations: observed,
             exited,
             owners: ListenerOwnersLog::default(),
+            // Hooks other than the promised-work ones do not read it.
+            idle_exit: Arc::new(AtomicBool::new(true)),
         }
     }
 
@@ -4653,33 +4676,44 @@ impl PromisedWorkIdleDaemon {
             .collect()
     }
 
-    /// Observe the listener until it reads an owner set without a client
-    /// lease after `since`, so a slow handler that still holds its lease
-    /// does not leave the check empty.
-    fn observe_without_clients_since(&self, since: Instant) -> Vec<V5ListenerOwners> {
+    /// The owner sets of the listener decisions after `since` that `counts`
+    /// accepts, read until there are [`HELD_DECISIONS`] of them. The idle exit
+    /// is closed, so the listener keeps deciding however slowly the machine
+    /// runs; a daemon that leaves anyway was stopped or failed.
+    fn decisions_since(
+        &self,
+        since: Instant,
+        counts: impl Fn(&V5ListenerOwners) -> bool,
+    ) -> Vec<V5ListenerOwners> {
         let watchdog = Instant::now() + TEST_STEP;
         loop {
-            let observed = self.owners_without_clients_since(since);
-            if !observed.is_empty() || Instant::now() >= watchdog {
-                return observed;
+            let read: Vec<_> = self
+                .owners_since(since)
+                .into_iter()
+                .filter(|owners| counts(owners))
+                .collect();
+            if read.len() >= HELD_DECISIONS {
+                return read;
             }
-            assert!(
-                self.observe_until(Instant::now() + Duration::from_millis(20)),
-                "the daemon exited while its work was still owned"
-            );
+            match self
+                .observations
+                .recv_timeout(watchdog.saturating_duration_since(Instant::now()))
+            {
+                Ok(_) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    panic!("the daemon left while its idle exit was closed")
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    panic!("the listener did not decide {HELD_DECISIONS} times")
+                }
+            }
         }
     }
 
-    /// The owner sets the listener read after `since` with no client lease:
-    /// what kept the daemon once every client had left.
-    fn owners_without_clients_since(&self, since: Instant) -> Vec<V5ListenerOwners> {
-        self.owners
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|(observed, owners)| *observed >= since && !owners.client_leases)
-            .map(|(_, owners)| *owners)
-            .collect()
+    /// What held the daemon once every client had left: the listener's own
+    /// decisions without a client lease after `since`.
+    fn held_without_clients_since(&self, since: Instant) -> Vec<V5ListenerOwners> {
+        self.decisions_since(since, |owners| !owners.client_leases)
     }
 
     fn owner(&mut self) -> (TcpStream, BufReader<TcpStream>) {
@@ -4697,25 +4731,6 @@ impl PromisedWorkIdleDaemon {
             .unwrap()
             .read_v5_endpoint_record()
             .unwrap()
-    }
-
-    /// Observe the actual listener past the requested interval. Its exit drops
-    /// the sole sender, so an early idle exit is also observed without sleeping.
-    fn observe_until(&self, threshold: Instant) -> bool {
-        let watchdog = Instant::now() + TEST_STEP;
-        loop {
-            match self
-                .observations
-                .recv_timeout(watchdog.saturating_duration_since(Instant::now()))
-            {
-                Ok((observed, _)) if observed >= threshold => return true,
-                Ok(_) => {}
-                Err(mpsc::RecvTimeoutError::Disconnected) => return false,
-                Err(mpsc::RecvTimeoutError::Timeout) => {
-                    panic!("listener did not reach the idle observation or exit")
-                }
-            }
-        }
     }
 
     /// Begin the interval only at a fresh observation of the actual empty
@@ -4755,6 +4770,8 @@ impl PromisedWorkIdleDaemon {
     /// Lease observations precede the idle decision, and visible terminal
     /// results can precede the last Task guard drop. Await the runtime itself.
     fn await_idle_exit_before(&self, watchdog: Instant) {
+        // The test has read what it checks: let the daemon retire.
+        self.idle_exit.store(true, Ordering::SeqCst);
         self.exited
             .recv_timeout(watchdog.saturating_duration_since(Instant::now()))
             .expect("promised-work daemon did not return within the idle watchdog");
@@ -9521,6 +9538,207 @@ fn the_deadline_fixed_at_frame_receipt_governs_the_whole_call() {
 
     stop.store(true, Ordering::SeqCst);
     drop(owner);
+    server
+        .join()
+        .expect("daemon thread did not panic")
+        .expect("daemon exits cleanly");
+}
+
+/// A daemon on a busy machine: its own work before it reads the hello of
+/// each connection (`delay`) on top of threads that keep every core busy.
+struct SlowOwnerHandshakes {
+    delay: Duration,
+}
+
+impl V5RuntimeHooks<CanonicalInvocationHost> for SlowOwnerHandshakes {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn before_owner_handshake(&self, _peer_port: u16) {
+        thread::sleep(self.delay);
+    }
+}
+
+/// Frontends connect to a live daemon on a busy machine. The daemon's own
+/// delay before it reads a hello outlasts the 2 s it gives a silent client,
+/// and every core is busy. Every connection still stands in the time of a
+/// call, none is answered as an incompatible daemon, and no second daemon is
+/// started beside the live one: the executable the client would start is
+/// absent (#2969).
+/// rule: INV.WIRE.LOST-SUBMIT-TASK-ID
+#[test]
+fn connections_to_a_live_daemon_stand_on_a_busy_machine() {
+    use unica_daemon_protocol::client_v5::{V5DaemonClient, V5TransportError};
+    let root = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(root.path()).unwrap();
+    let identity = CoreIdentity::production_v5();
+    let config = DaemonServerConfig::new(
+        state_root.clone(),
+        identity.clone(),
+        Duration::from_secs(30),
+    )
+    .with_runtime_hooks_for_test(Arc::new(SlowOwnerHandshakes {
+        delay: Duration::from_millis(2_500),
+    }));
+    let stop = Arc::new(AtomicBool::new(false));
+    let server_stop = stop.clone();
+    let server = thread::spawn(move || {
+        run_daemon_configured_until(
+            (config).into_transport_config(),
+            |runtime| runtime,
+            || server_stop.load(Ordering::SeqCst),
+        )
+    });
+    wait_for_v5_record(&state_root, &identity);
+
+    // Two busy threads per core: the load of two parallel test runs.
+    let busy = Arc::new(AtomicBool::new(true));
+    let cores = thread::available_parallelism().map_or(8, usize::from);
+    let burners: Vec<_> = (0..cores * 2)
+        .map(|_| {
+            let busy = Arc::clone(&busy);
+            thread::spawn(move || {
+                let mut spin = 0u64;
+                while busy.load(Ordering::Relaxed) {
+                    spin = std::hint::black_box(spin.wrapping_mul(31).wrapping_add(7));
+                }
+            })
+        })
+        .collect();
+
+    let client = V5DaemonClient::connect(
+        state_root.clone(),
+        identity,
+        root.path().join("absent-daemon-executable"),
+        Duration::from_secs(30),
+    );
+    let peers: Vec<Result<(), V5TransportError>> = match &client {
+        Ok(client) => thread::scope(|scope| {
+            let peers: Vec<_> = (0..8)
+                .map(|_| {
+                    scope.spawn(move || {
+                        client
+                            .connect_peer_before(Instant::now() + Duration::from_secs(7))
+                            .map(|_| ())
+                    })
+                })
+                .collect();
+            peers.into_iter().map(|peer| peer.join().unwrap()).collect()
+        }),
+        Err(_) => Vec::new(),
+    };
+
+    busy.store(false, Ordering::Relaxed);
+    for burner in burners {
+        burner.join().unwrap();
+    }
+    let client = client.expect("the live daemon answers the frontend's start");
+    drop(client);
+    stop.store(true, Ordering::SeqCst);
+    server.join().unwrap().unwrap();
+    for outcome in peers {
+        assert!(outcome.is_ok(), "{outcome:?}");
+    }
+}
+
+/// A Task read that found no bound Task yet and reads the receipt ledger
+/// only after the handoff completed — the link stood and the receipt row left
+/// the ledger in between — still reads the one Task: the Task did not vanish,
+/// it moved (#2992).
+/// rule: INV.APP.DAEMON-INVOCATION-OWNERSHIP
+#[test]
+fn a_task_read_racing_the_handoff_completion_reads_the_task() {
+    let state = tempfile::tempdir().expect("temporary daemon state");
+    let state_root = std::fs::canonicalize(state.path()).expect("physical state root");
+    let (_workspace, root) = catalog_workspace();
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let service = Arc::new(CountedKnownLongService {
+        prepares: AtomicUsize::new(0),
+        executions: AtomicUsize::new(0),
+        entered: Mutex::new(entered_tx),
+        release: Mutex::new(release_rx),
+    });
+    let (held_tx, held_rx) = mpsc::channel();
+    let (read_tx, read_rx) = mpsc::channel();
+    let hooks = Arc::new(ExactRepeatRaceHooks {
+        race_point: V5PausePoint::BeforeTaskLedgerRead,
+        race_pass: 0,
+        handoff_held: Mutex::new(held_tx),
+        handoff_gate: (Mutex::new(false), std::sync::Condvar::new()),
+        reservations: AtomicUsize::new(0),
+        repeat_at_reservation: Mutex::new(read_tx),
+        bound: (Mutex::new(false), std::sync::Condvar::new()),
+    });
+    let identity = CoreIdentity::production_v5();
+    let config = DaemonServerConfig::new(
+        state_root.clone(),
+        identity.clone(),
+        Duration::from_secs(60),
+    )
+    .with_invocation_service(service.clone())
+    .with_runtime_hooks_for_test(hooks.clone());
+    let stop = Arc::new(AtomicBool::new(false));
+    let server_stop = stop.clone();
+    let server = thread::spawn(move || {
+        run_daemon_configured_until(
+            (config).into_transport_config(),
+            |runtime| runtime,
+            || server_stop.load(Ordering::SeqCst),
+        )
+    });
+    wait_for_v5_record(&state_root, &identity);
+    let mut owner = V5DaemonProcessOwner::connect_or_spawn(
+        &state_root,
+        identity,
+        std::path::PathBuf::from("unused-existing-v5-endpoint"),
+        Duration::from_secs(2),
+    )
+    .expect("connect v5 owner");
+    let task_id = TaskId::new();
+    let call = view_catalog_request(task_id, &root);
+
+    let mut submit_session = owner
+        .connect_peer_before(Instant::now() + TEST_STEP)
+        .expect("connect the submitting session");
+    let submit_call = call.clone();
+    let submitted = thread::spawn(move || submit_session.submit_invocation(submit_call));
+    held_rx
+        .recv_timeout(TEST_STEP)
+        .expect("the handoff stops before its Task exists");
+    let mut read_session = owner
+        .connect_peer_before(Instant::now() + TEST_STEP)
+        .expect("connect the reading session");
+    let read = thread::spawn(move || read_session.get_task(task_id));
+    read_rx
+        .recv_timeout(TEST_STEP)
+        .expect("the read found no bound Task and stands before the ledger");
+    {
+        let (lock, changed) = &hooks.handoff_gate;
+        *lock.lock().unwrap() = true;
+        changed.notify_all();
+    }
+
+    let response = read.join().expect("read thread").expect("read answered");
+    let V5ServerResponse::Task { snapshot } = response else {
+        panic!("the Task moved, it did not vanish: {response:?}");
+    };
+    assert_eq!(snapshot.task_id(), task_id);
+    assert_eq!(snapshot.invocation_id(), call.invocation_id());
+    let answered = submitted_task_snapshot(submitted.join().expect("submit thread"));
+    assert_eq!(answered.task_id(), task_id);
+    entered_rx
+        .recv_timeout(TEST_STEP)
+        .expect("the single attempt executes");
+    release_tx.send(()).expect("release the execution");
+    let terminal = wait_task_terminal(&mut owner, task_id, Duration::from_secs(30));
+    assert!(
+        matches!(&terminal, V5DaemonTaskSnapshot::Completed { result, .. } if result.ok),
+        "{terminal:?}"
+    );
+    drop(owner);
+    stop.store(true, Ordering::SeqCst);
     server
         .join()
         .expect("daemon thread did not panic")

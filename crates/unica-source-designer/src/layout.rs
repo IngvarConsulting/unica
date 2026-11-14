@@ -48,7 +48,6 @@ metadata_kind_registry! {
     "CommonTemplate" => { directory: "CommonTemplates", display_name_ru: "Общие макеты", config_dump_prefix: None, config_dump_module_suffix: None },
     "FilterCriterion" => { directory: "FilterCriteria", display_name_ru: "Критерии отбора", config_dump_prefix: None, config_dump_module_suffix: None },
     "CommonModule" => { directory: "CommonModules", display_name_ru: "Общие модули", config_dump_prefix: None, config_dump_module_suffix: None },
-    "Bot" => { directory: "Bots", display_name_ru: "Боты", config_dump_prefix: Some("Bot"), config_dump_module_suffix: Some(".Module") },
     "CommonAttribute" => { directory: "CommonAttributes", display_name_ru: "Общие реквизиты", config_dump_prefix: None, config_dump_module_suffix: None },
     "ExchangePlan" => { directory: "ExchangePlans", display_name_ru: "Планы обмена", config_dump_prefix: None, config_dump_module_suffix: None },
     "XDTOPackage" => { directory: "XDTOPackages", display_name_ru: "XDTO-пакеты", config_dump_prefix: None, config_dump_module_suffix: None },
@@ -61,6 +60,9 @@ metadata_kind_registry! {
     "FunctionalOption" => { directory: "FunctionalOptions", display_name_ru: "Функциональные опции", config_dump_prefix: None, config_dump_module_suffix: None },
     "FunctionalOptionsParameter" => { directory: "FunctionalOptionsParameters", display_name_ru: "Параметры ФО", config_dump_prefix: None, config_dump_module_suffix: None },
     "DefinedType" => { directory: "DefinedTypes", display_name_ru: "Определяемые типы", config_dump_prefix: None, config_dump_module_suffix: None },
+    "Bot" => { directory: "Bots", display_name_ru: "Боты", config_dump_prefix: Some("Bot"), config_dump_module_suffix: Some(".Module") },
+    "PaletteColor" => { directory: "PaletteColors", display_name_ru: "Цвета палитры", config_dump_prefix: None, config_dump_module_suffix: None },
+    "Queue" => { directory: "Queues", display_name_ru: "Очереди", config_dump_prefix: None, config_dump_module_suffix: None },
     "CommonCommand" => { directory: "CommonCommands", display_name_ru: "Общие команды", config_dump_prefix: None, config_dump_module_suffix: None },
     "CommandGroup" => { directory: "CommandGroups", display_name_ru: "Группы команд", config_dump_prefix: None, config_dump_module_suffix: None },
     "Constant" => { directory: "Constants", display_name_ru: "Константы", config_dump_prefix: None, config_dump_module_suffix: None },
@@ -129,7 +131,8 @@ pub fn metadata_kind_requires_child_objects_8_3_27(tag: &str) -> Option<bool> {
         | "CalculationRegister"
         | "BusinessProcess"
         | "Task"
-        | "IntegrationService" => Some(true),
+        | "IntegrationService"
+        | "Queue" => Some(true),
         "Language"
         | "StyleItem"
         | "Style"
@@ -147,6 +150,7 @@ pub fn metadata_kind_requires_child_objects_8_3_27(tag: &str) -> Option<bool> {
         | "FunctionalOption"
         | "FunctionalOptionsParameter"
         | "DefinedType"
+        | "PaletteColor"
         | "CommonCommand"
         | "CommandGroup"
         | "Constant"
@@ -606,7 +610,6 @@ mod tests {
             "CommonTemplate",
             "FilterCriterion",
             "CommonModule",
-            "Bot",
             "CommonAttribute",
             "ExchangePlan",
             "XDTOPackage",
@@ -619,6 +622,9 @@ mod tests {
             "FunctionalOption",
             "FunctionalOptionsParameter",
             "DefinedType",
+            "Bot",
+            "PaletteColor",
+            "Queue",
             "CommonCommand",
             "CommandGroup",
             "Constant",
@@ -643,7 +649,7 @@ mod tests {
             "IntegrationService",
         ];
 
-        assert_eq!(METADATA_KINDS.len(), 45);
+        assert_eq!(METADATA_KINDS.len(), 47);
         assert_eq!(METADATA_KIND_TAGS, EXPECTED_TAGS);
         assert_eq!(METADATA_KIND_TAGS.len(), METADATA_KINDS.len());
         assert_eq!(
@@ -691,7 +697,7 @@ mod tests {
         assert_eq!(bot.config_dump_module_suffix, Some(".Module"));
         assert_eq!(
             metadata_kind_index("Bot"),
-            metadata_kind_index("CommonModule").map(|index| index + 1)
+            metadata_kind_index("DefinedType").map(|index| index + 1)
         );
         assert_eq!(metadata_kind("SyntheticMetadata"), None);
     }

@@ -129,8 +129,8 @@ struct Root {
     held: bool,
     last_used: Option<Instant>,
     editor_sessions: usize,
-    /// The runner refused a hold for another reason than the limit: it is not
-    /// repeated until the daemon restarts.
+    /// The runner refused a hold for good ([`gives_up`]): it is not repeated
+    /// until the daemon restarts.
     gave_up: bool,
     /// Notes this working copy has already had.
     noted: HashSet<&'static str>,
@@ -233,9 +233,9 @@ impl LiveAgents {
                 let entry = roots.entry(root.clone()).or_default();
                 match result {
                     Ok(()) => entry.held = true,
-                    // A refusal other than the limit is not repeated; the limit
-                    // or a hold that did not finish may find room later.
-                    Err(Some(code)) if code != "agent_limit" => entry.gave_up = true,
+                    // A refusal for good is not repeated; the limit, a busy
+                    // agent or a hold that did not finish may pass later.
+                    Err(Some(error)) if gives_up(&error) => entry.gave_up = true,
                     Err(_) => {}
                 }
             }
@@ -325,13 +325,13 @@ impl LiveAgents {
     }
 
     /// Runs `agent hold` or `agent release` of this holder for `root`. A
-    /// refusal returns the runner's code.
+    /// refusal returns the runner's `error`.
     fn mark(
         &self,
         runner: &dyn ProcessRunner,
         root: &Path,
         mark: Mark,
-    ) -> Result<(), Option<String>> {
+    ) -> Result<(), Option<serde_json::Value>> {
         let Some(program) = self.roots().get(root).and_then(|root| root.program.clone()) else {
             return Err(None);
         };
@@ -378,9 +378,23 @@ impl LiveAgents {
         if done {
             Ok(())
         } else {
-            Err(envelope
-                .and_then(|envelope| envelope["error"]["code"].as_str().map(str::to_string)))
+            Err(envelope.map(|mut envelope| envelope["error"].take()))
         }
+    }
+}
+
+/// Whether a refused `agent hold` is final until the daemon restarts. The
+/// limit may free a place, and an agent busy with another command answers
+/// `environment_unavailable` without a layer (v8-runner 0.17.2): both pass
+/// later. An agent whose keeper did not start (`agent_start`) and any other
+/// refusal do not.
+fn gives_up(error: &serde_json::Value) -> bool {
+    match error["code"].as_str() {
+        Some("agent_limit") => false,
+        Some("environment_unavailable") => error.get("layer").is_some(),
+        // An answer without a code says nothing final.
+        None => false,
+        Some(_) => true,
     }
 }
 
@@ -658,17 +672,20 @@ mod tests {
         let (_dir, root) = root();
         let agents = agents();
         let now = Instant::now();
-        let refused = |code: &str| serde_json::json!({"ok": false, "error": {"code": code}});
+        let refused = |error: serde_json::Value| serde_json::json!({"ok": false, "error": error});
+        // The limit, an unfinished hold and an agent busy with another command
+        // (no layer) are retried; a keeper that did not start is not.
         let runner = Runner::answering(vec![
-            refused("agent_limit"),
+            refused(serde_json::json!({"code": "agent_limit"})),
             serde_json::json!({"ok": false}),
-            refused("environment_unavailable"),
+            refused(serde_json::json!({"code": "environment_unavailable"})),
+            refused(serde_json::json!({"code": "environment_unavailable", "layer": "agent_start"})),
         ]);
-        for _ in 0..4 {
+        for _ in 0..5 {
             command(&agents, &runner, &root, kept(false), now);
             assert!(!held(&agents, &root));
         }
-        assert_eq!(runner.calls().len(), 3);
+        assert_eq!(runner.calls().len(), 4);
     }
 
     /// Простой без команд и без редактора отпускает агента; открытый редактор

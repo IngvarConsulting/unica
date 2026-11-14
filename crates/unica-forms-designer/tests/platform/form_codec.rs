@@ -605,28 +605,30 @@ fn form_edit_namespace_repair_is_noop_without_emitted_prefixes() {
 }
 
 #[test]
-fn form_element_dispatcher_ignores_nested_table_and_page_properties() {
+fn form_element_dispatcher_keeps_the_primary_kind_over_nested_properties() {
     let definition = json!({
-        "elements": [
-            {
-                "table": "Rows",
-                "commandBar": {"autofill": false},
-                "columns": []
-            },
-            {
-                "pages": "Tabs",
-                "children": [
-                    {"page": "Main", "group": "horizontal"}
-                ]
-            }
-        ]
+        "elements": [{
+            "pages": "Tabs",
+            "children": [
+                {"page": "Main", "group": "horizontal"}
+            ]
+        }]
     });
 
     let (xml, _) = form_compile_xml(&definition, "2.20").unwrap();
 
-    assert!(xml.contains("<Table name=\"Rows\""), "{xml}");
     assert!(xml.contains("<Page name=\"Main\""), "{xml}");
     assert!(xml.contains("<Group>Horizontal</Group>"), "{xml}");
+
+    let error = form_compile_xml(
+        &json!({ "elements": [{ "table": "Rows", "commandBar": {"autofill": false}, "columns": [] }] }),
+        "2.20",
+    )
+    .unwrap_err();
+    assert_eq!(
+        error,
+        "key `commandBar` is not written for form element kind `table` (element `Rows`)"
+    );
 }
 
 #[test]
@@ -839,6 +841,80 @@ fn form_compile_refuses_button_representation_on_command() {
             "{invalid}: {error}"
         );
     }
+}
+
+/// A kind the compiler does not emit is refused by name, at the top level and
+/// inside a group, instead of being written as an input field.
+#[test]
+fn form_compile_refuses_an_element_kind_it_does_not_emit() {
+    for kind in [
+        "radio",
+        "picture",
+        "picField",
+        "calendar",
+        "columnGroup",
+        "spreadsheet",
+        "formattedDoc",
+        "progressBar",
+        "trackBar",
+        "chart",
+        "ganttChart",
+        "graphicalSchema",
+        "planner",
+        "periodField",
+        "dendrogram",
+        "popup",
+        "buttonGroup",
+    ] {
+        let element = json!({ kind: "Поле", "name": "Поле", "path": "Объект" });
+        for definition in [
+            json!({ "elements": [element.clone()] }),
+            json!({ "elements": [{ "group": "vertical", "name": "Группа", "children": [element] }] }),
+        ] {
+            let error = form_compile_xml(&definition, "2.20").unwrap_err();
+            assert_eq!(
+                error,
+                format!("form element kind `{kind}` is not supported by the form compiler")
+            );
+        }
+    }
+}
+
+/// A top-level key the compiler skips is refused: elements under another
+/// name would otherwise leave an empty form behind a successful call.
+#[test]
+fn form_compile_refuses_a_top_level_key_it_does_not_write() {
+    let error = form_compile_xml(
+        &json!({ "children": [{ "input": "Поле", "path": "Объект" }] }),
+        "2.20",
+    )
+    .unwrap_err();
+    assert_eq!(
+        error,
+        "unknown form description key `children`; expected one of: title, properties, events, elements, attributes, parameters, commands"
+    );
+    for key in [
+        "excludedCommands",
+        "mobileCommandBarContent",
+        "commandInterface",
+        "conditionalAppearance",
+    ] {
+        let error = form_compile_xml(&json!({ key: [] }), "2.20").unwrap_err();
+        assert_eq!(
+            error,
+            format!("form description key `{key}` is not supported by the form compiler")
+        );
+    }
+    let (xml, _) = form_compile_xml(
+        &json!({
+            "title": "Форма",
+            "attributes": [{ "name": "Объект", "type": "string" }],
+            "elements": [{ "input": "Поле", "path": "Объект" }]
+        }),
+        "2.20",
+    )
+    .unwrap();
+    assert!(xml.contains("<InputField name=\"Поле\""), "{xml}");
 }
 
 #[test]
@@ -3472,4 +3548,44 @@ fn english_table_companions_match_the_platform_dump_in_both_command_bar_modes() 
             );
         }
     }
+}
+
+/// A new list or choice form carries the dynamic list settings the Designer
+/// writes for its own new list form: `ManualQuery`, `DynamicDataRead`,
+/// `MainTable` and the `ListSettings` skeleton, in the platform's order.
+#[test]
+fn a_new_list_form_carries_the_designer_dynamic_list_settings() {
+    fn settings_block(xml: &str) -> String {
+        let xml = xml.replace("\r\n", "\n");
+        let start = xml.find("<Settings xsi:type=\"DynamicList\">").unwrap();
+        let end = xml[start..].find("</Settings>").unwrap() + start + "</Settings>".len();
+        xml[start..end].to_string()
+    }
+    let designer = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/fixtures/formats/platform_xml/2.20/all_kinds/src/Catalogs/Валюты/Forms/ФормаСписка/Ext/Form.xml"
+    ));
+    for purpose in ["List", "Choice"] {
+        let xml = form_add_content_xml("Catalog", "Валюты", purpose, "2.20").unwrap();
+        assert_eq!(settings_block(&xml), settings_block(designer), "{purpose}");
+    }
+}
+
+/// A compiled dynamic list without `dynamicDataRead` reads its data
+/// dynamically, as a new list form of the Designer does.
+#[test]
+fn a_compiled_dynamic_list_reads_dynamically_unless_told_otherwise() {
+    let definition = json!({
+        "attributes": [{
+            "name": "Список",
+            "type": "DynamicList",
+            "main": true,
+            "settings": { "mainTable": "Catalog.Валюты" }
+        }]
+    });
+    let (xml, _) = form_compile_xml(&definition, "2.20").unwrap();
+    assert!(
+        xml.contains("<DynamicDataRead>true</DynamicDataRead>"),
+        "{xml}"
+    );
 }

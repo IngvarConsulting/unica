@@ -124,6 +124,9 @@ pub enum V5PausePoint {
     /// A cancel holds its key's lock, has found no Task link for the key and
     /// has not written its ledger cancel yet.
     BeforeCancelReservation,
+    /// A Task read has found no bound Task for its id and has not read the
+    /// receipt ledger yet.
+    BeforeTaskLedgerRead,
     /// A cancel has read the bound Task it is about to mark and has not
     /// written the mark yet.
     BeforeTaskCancelWrite,
@@ -196,6 +199,13 @@ pub trait V5RuntimeHooks<H: InvocationHost>: Send + Sync {
     fn after_idle_owner_leases_read(&self, empty: bool) {}
 
     fn listener_ownership_observed(&self, no_active_work: bool) {}
+
+    /// Whether the listener may leave once nothing has owned it for the whole
+    /// idle grace. A test closes it so the daemon stays until the test has
+    /// read the decisions it checks, instead of racing the grace on the clock.
+    fn idle_exit_permitted(&self) -> bool {
+        true
+    }
 
     /// Whether the listener should read every owner for
     /// [`Self::listener_owners_observed`] in each idle iteration.

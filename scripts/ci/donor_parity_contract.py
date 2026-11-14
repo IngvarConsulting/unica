@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Offline integrity contract for the reviewed cc-1c-skills parity snapshot."""
+"""Offline integrity contract for the accepted cc-1c-skills donor snapshot.
+
+The snapshot is the archive of the accepted donor commit kept for provenance.
+Unica behaviour is not compared with it case by case; this module only checks
+that the snapshot bytes, the baseline manifest and the provenance record agree.
+"""
 
 from __future__ import annotations
 
@@ -11,29 +16,8 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
 
 
-ALLOWED_RELATIONS = {
-    "exact",
-    "compatible",
-    "unica_extension",
-    "platform_override",
-    "donor_ahead",
-    "intentional_divergence",
-}
 HEX_40 = re.compile(r"^[0-9a-f]{40}$")
 HEX_64 = re.compile(r"^[0-9a-f]{64}$")
-OBSERVATION_KEYS = {
-    "donorOk",
-    "unicaOk",
-    "mismatchKind",
-    "donorStdoutSha256",
-    "unicaStdoutSha256",
-    "donorStderrSha256",
-    "unicaStderrSha256",
-    "donorWorkspaceSha256",
-    "unicaWorkspaceSha256",
-    "donorExpectedFiles",
-    "unicaExpectedFiles",
-}
 CASE_EXECUTION_PROFILE = {
     "schemaVersion": 1,
     "platformVersion": "8.3.27",
@@ -78,10 +62,6 @@ def sha256_json(value: object) -> str:
         separators=(",", ":"),
     ).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
-
-
-def observation_fingerprint(observation: dict[str, Any]) -> str:
-    return sha256_json(observation)
 
 
 def case_execution_profile(case_id: str) -> dict[str, Any]:
@@ -331,158 +311,20 @@ def validate_baseline(
     return errors
 
 
-def validate_relations(
-    repo_root: Path,
-    snapshot_root: Path,
-    registry: dict[str, Any],
-) -> list[str]:
-    errors: list[str] = []
-    if registry.get("schemaVersion") != 1:
-        errors.append("donor relations schemaVersion must be 1")
-    relations = registry.get("relations")
-    if not isinstance(relations, dict):
-        return [*errors, "donor relations must be an object"]
-
-    # A tool that answers with typed data has no prose left to
-    # compare against the donor script, so its cases carry a retirement reason
-    # instead of a relation. The donor snapshot itself is never edited.
-    retired = registry.get("retired", {})
-    if not isinstance(retired, dict):
-        return [*errors, "donor retired cases must be an object"]
-
-    discovered = set(discover_case_ids(snapshot_root))
-    recorded = set(relations)
-    retired_ids = set(retired)
-    for case_id in sorted(retired_ids & recorded):
-        errors.append(f"case {case_id} is both recorded and retired")
-    for case_id in sorted(retired_ids - discovered):
-        errors.append(f"retired case {case_id} is not in the donor snapshot")
-    for case_id in sorted(retired):
-        if not isinstance(retired[case_id], str) or not retired[case_id].strip():
-            errors.append(f"retired case {case_id} must carry a reason")
-    for case_id in sorted(discovered - recorded - retired_ids):
-        errors.append(f"missing relation for {case_id}")
-    for case_id in sorted(recorded - discovered):
-        errors.append(f"relation for unknown case {case_id}")
-
-    for case_id in sorted(discovered & recorded):
-        relation = relations.get(case_id)
-        if not isinstance(relation, dict):
-            errors.append(f"relation {case_id} must be an object")
-            continue
-        if relation.get("caseId") != case_id:
-            errors.append(f"relation {case_id} caseId mismatch")
-        kind = relation.get("relation")
-        if kind not in ALLOWED_RELATIONS:
-            errors.append(f"relation {case_id} has invalid kind: {kind!r}")
-            continue
-        try:
-            digest = case_content_digest(snapshot_root, case_id)
-        except (FileNotFoundError, ValueError) as error:
-            errors.append(f"cannot digest relation case {case_id}: {error}")
-            continue
-        if relation.get("contentDigest") != digest:
-            errors.append(f"relation {case_id} content digest changed")
-
-        if kind == "exact":
-            continue
-        reason = relation.get("reason")
-        if not isinstance(reason, str) or not reason.strip():
-            errors.append(f"relation {case_id} reason is required")
-        evidence = relation.get("evidence")
-        if not isinstance(evidence, list) or not evidence:
-            errors.append(f"relation {case_id} evidence is required")
-        else:
-            for raw in evidence:
-                evidence_path = _validated_path(
-                    raw, f"relation {case_id}", "evidence", errors
-                )
-                if evidence_path is not None and not (
-                    repo_root / evidence_path
-                ).is_file():
-                    errors.append(
-                        f"relation {case_id} evidence path does not exist: {raw}"
-                    )
-        observation = relation.get("observation")
-        observation_errors = _validate_observation(observation)
-        errors.extend(
-            f"relation {case_id} {error}" for error in observation_errors
-        )
-        if isinstance(observation, dict):
-            expected = observation_fingerprint(observation)
-            if relation.get("observationFingerprint") != expected:
-                errors.append(
-                    f"relation {case_id} stored observation fingerprint mismatch"
-                )
-        if kind == "donor_ahead":
-            owner = relation.get("owner")
-            if not isinstance(owner, str) or not owner.strip():
-                errors.append(f"relation {case_id} owner is required")
-            if relation.get("decision") not in {"adopt", "defer"}:
-                errors.append(
-                    f"relation {case_id} decision must be adopt or defer"
-                )
-
-    return errors
-
-
-def validate_relation_observation(
-    *,
-    relation: dict[str, Any],
-    content_digest: str,
-    observation: dict[str, Any],
-) -> list[str]:
-    errors = _validate_observation(observation)
-    if relation.get("contentDigest") != content_digest:
-        errors.append("donor content digest changed")
-    kind = relation.get("relation")
-    if kind not in ALLOWED_RELATIONS:
-        errors.append(f"invalid relation kind: {kind!r}")
-        return errors
-    if kind == "exact":
-        if not observation_is_exact(observation):
-            errors.append("exact relation observed a difference")
-        return errors
-
-    fingerprint = observation_fingerprint(observation)
-    if relation.get("observationFingerprint") != fingerprint:
-        errors.append("observation fingerprint changed")
-    return errors
-
-
-def observation_is_exact(observation: dict[str, Any]) -> bool:
-    if observation.get("donorOk") != observation.get("unicaOk"):
-        return False
-    if observation.get("mismatchKind") not in (None, "exact"):
-        return False
-    pairs = (
-        ("donorStdoutSha256", "unicaStdoutSha256"),
-        ("donorStderrSha256", "unicaStderrSha256"),
-        ("donorWorkspaceSha256", "unicaWorkspaceSha256"),
-        ("donorExpectedFiles", "unicaExpectedFiles"),
-    )
-    return all(observation.get(left) == observation.get(right) for left, right in pairs)
-
-
 def validate_repository_contract(repo_root: Path) -> list[str]:
     fixtures_root = repo_root / "tests" / "fixtures" / "unica_mcp_script_parity"
     snapshot_root = fixtures_root / "cc-1c-skills"
     baseline_path = fixtures_root / "donor-baseline.json"
-    relations_path = fixtures_root / "donor-relations.json"
     provenance_path = repo_root / "docs" / "provenance" / "skill-upstreams.json"
     errors = []
-    for path in (baseline_path, relations_path, provenance_path):
+    for path in (baseline_path, provenance_path):
         if not path.is_file():
             errors.append(f"required donor parity contract file is missing: {path}")
     if errors:
         return errors
     baseline = load_json(baseline_path)
-    relations = load_json(relations_path)
     provenance = load_json(provenance_path)
     errors.extend(validate_baseline(snapshot_root, baseline, provenance))
-    if relations.get("upstreamId") != baseline.get("upstreamId"):
-        errors.append("donor relation upstreamId differs from baseline")
-    errors.extend(validate_relations(repo_root, snapshot_root, relations))
     return errors
 
 
@@ -571,39 +413,3 @@ def _snapshot_symlinks(root: Path) -> list[Path]:
 def _require_regular_file(path: Path) -> None:
     if path.is_symlink() or not path.is_file():
         raise ValueError(f"dependency is not a regular file: {path}")
-
-
-def _validate_observation(observation: object) -> list[str]:
-    if not isinstance(observation, dict):
-        return ["observation must be an object"]
-    errors = []
-    missing = OBSERVATION_KEYS - set(observation)
-    extra = set(observation) - OBSERVATION_KEYS
-    if missing:
-        errors.append(f"observation is missing fields: {sorted(missing)}")
-    if extra:
-        errors.append(f"observation has unknown fields: {sorted(extra)}")
-    for field in ("donorOk", "unicaOk"):
-        if not isinstance(observation.get(field), bool):
-            errors.append(f"{field} must be boolean")
-    mismatch = observation.get("mismatchKind")
-    if mismatch is not None and not isinstance(mismatch, str):
-        errors.append("mismatchKind must be a string or null")
-    for field in (
-        "donorStdoutSha256",
-        "unicaStdoutSha256",
-        "donorStderrSha256",
-        "unicaStderrSha256",
-        "donorWorkspaceSha256",
-        "unicaWorkspaceSha256",
-    ):
-        if not HEX_64.fullmatch(str(observation.get(field) or "")):
-            errors.append(f"{field} must be a lowercase 64-hex digest")
-    for field in ("donorExpectedFiles", "unicaExpectedFiles"):
-        value = observation.get(field)
-        if not isinstance(value, dict) or not all(
-            isinstance(path, str) and isinstance(present, bool)
-            for path, present in value.items()
-        ):
-            errors.append(f"{field} must map paths to booleans")
-    return errors

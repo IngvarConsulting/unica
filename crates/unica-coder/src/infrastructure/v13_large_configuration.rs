@@ -932,6 +932,32 @@ pub(super) fn read_configuration_root(
     })?;
     let property = |name: &str| properties.get(name).cloned();
     let optional = |name: &str| property(name).filter(|value| !value.is_empty());
+    // The parts of a composite property by their camel-case names, in the
+    // order the platform writes them, as the bounded reader keeps them; a
+    // set whose line lacks the property has `null`.
+    let parts = |name: &str| {
+        let mut parts = properties
+            .iter()
+            .filter_map(|(key, value)| Some((key.strip_prefix(name)?.strip_prefix('.')?, value)))
+            .collect::<Vec<_>>();
+        let order = |part: &str| {
+            unica_metadata::descriptor_operations::DescriptorProperty::ActionOnExtendedConfigurationObjectsMissing
+                .parts()
+                .iter()
+                .position(|names| names[0] == part)
+                .unwrap_or(usize::MAX)
+        };
+        parts.sort_by_key(|(part, _)| order(part));
+        let parts = parts
+            .into_iter()
+            .filter_map(|(part, value)| {
+                let mut chars = part.chars();
+                let first = chars.next()?.to_lowercase().collect::<String>();
+                Some((format!("{first}{}", chars.as_str()), json!(value)))
+            })
+            .collect::<serde_json::Map<_, _>>();
+        (!parts.is_empty()).then_some(Value::Object(parts))
+    };
     let payload = json!({
         "format": version,
         "name": property("Name").unwrap_or_default(),
@@ -959,9 +985,18 @@ pub(super) fn read_configuration_root(
             "clientApplicationTheme": optional("ClientApplicationTheme"),
             "windowsOpenVariant": optional("ClientApplicationWindowsOpenVariant"),
             "version85InterfaceMigrationMode": optional("Version85InterfaceMigrationMode"),
+            "actionOnConfigurationObjectMissing": optional("ActionOnConfigurationObjectMissing"),
+            "defaultExtensionPropertyCheckAction": optional("DefaultExtensionPropertyCheckAction"),
+            "typeReductionByConfigurationExtensionMode":
+                optional("TypeReductionByConfigurationExtensionMode"),
+            "actionOnExtendedConfigurationObjectsMissing":
+                parts("ActionOnExtendedConfigurationObjectsMissing"),
             "comment": optional("Comment"),
             "namePrefix": optional("NamePrefix"),
             "updateCatalogAddress": optional("UpdateCatalogAddress"),
+            "forms": unica_metadata::configuration::root_form_slots(|name| {
+                properties.get(name).map(String::as_str)
+            }),
         },
         "totalObjects": total_objects,
         "homePage": home_page,
@@ -1275,6 +1310,21 @@ impl RootState {
                     && !self.properties.contains_key(&name.local_name)
                 {
                     role = FrameRole::Property(name.local_name);
+                } else if COMPOSITE_ROOT_PROPERTIES.contains(&name.local_name.as_str()) {
+                    // The first such property counts, like a scalar one, even
+                    // when it has no parts.
+                    if !self.properties.contains_key(&name.local_name) {
+                        self.properties
+                            .insert(name.local_name.clone(), String::new());
+                        role = FrameRole::Parts(name.local_name);
+                    }
+                }
+            }
+            // A part is read under `Property.Part`.
+            Some(FrameRole::Parts(property)) => {
+                let key = format!("{property}.{}", name.local_name);
+                if !self.properties.contains_key(&key) {
+                    role = FrameRole::Property(key);
                 }
             }
             Some(FrameRole::ChildObjects { primary }) => {
@@ -1481,6 +1531,8 @@ enum FrameRole {
     Configuration,
     Properties,
     Property(String),
+    /// A root property of named parts.
+    Parts(String),
     ChildObjects {
         primary: bool,
     },
@@ -1517,6 +1569,9 @@ fn localized_root_property(name: &str) -> Option<&'static str> {
         .find(|property| *property == name)
 }
 
+/// The root properties of named parts the view reads, from 8.5.4.
+const COMPOSITE_ROOT_PROPERTIES: &[&str] = &["ActionOnExtendedConfigurationObjectsMissing"];
+
 fn is_root_property(name: &str) -> bool {
     matches!(
         name,
@@ -1540,10 +1595,13 @@ fn is_root_property(name: &str) -> bool {
             | "ClientApplicationTheme"
             | "ClientApplicationWindowsOpenVariant"
             | "Version85InterfaceMigrationMode"
+            | "ActionOnConfigurationObjectMissing"
+            | "DefaultExtensionPropertyCheckAction"
+            | "TypeReductionByConfigurationExtensionMode"
             | "Comment"
             | "NamePrefix"
             | "UpdateCatalogAddress"
-    )
+    ) || unica_metadata::configuration::ROOT_FORM_SLOTS.contains(&name)
 }
 
 #[cfg(test)]

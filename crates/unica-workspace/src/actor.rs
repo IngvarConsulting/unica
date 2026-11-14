@@ -886,6 +886,19 @@ impl ApplyAdmission {
         Ok(format!("unica-apply-plan-v2:{:x}", hash.finalize()))
     }
 
+    /// The other source sets this apply was admitted to read, with their kind.
+    pub fn read_dependency_sets(&self) -> Vec<(&str, SourceSetKind)> {
+        self.read_dependencies
+            .iter()
+            .map(|dependency| {
+                (
+                    dependency.binding.source_set_name(),
+                    dependency.binding.source_kind(),
+                )
+            })
+            .collect()
+    }
+
     pub fn read_apply_dependency(
         &self,
         source_name: &str,
@@ -1931,13 +1944,17 @@ impl<R, C> WorkspaceActor<R, C> {
                 ));
             }
             // Any writable format: the platform loads a parent and an
-            // extension of different formats of its line together.
-            if parent.source_kind() != SourceSetKind::Configuration
-                || parent.source_format() != SourceFormat::PlatformXml
+            // extension of different formats of its line together. Besides a
+            // borrow parent, an apply reads the sets whose compatibility mode
+            // its own is compared with: a configuration or its extensions.
+            if !matches!(
+                parent.source_kind(),
+                SourceSetKind::Configuration | SourceSetKind::Extension
+            ) || parent.source_format() != SourceFormat::PlatformXml
                 || !parent.source_profile().is_writable_platform_xml()
             {
                 return Err(ApplyAdmissionError::Other(
-                    "borrow parent must provide the supported Platform XML configuration profile"
+                    "an apply reads only a configuration or extension source set of a writable Platform XML profile"
                         .to_string(),
                 ));
             }

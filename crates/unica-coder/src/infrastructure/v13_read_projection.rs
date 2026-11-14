@@ -732,7 +732,12 @@ pub(super) fn project_configuration_with_counts(
             _ => {}
         }
     }
-    let branches = root_branches(address, counts);
+    // Вид, которого нет в линии платформы набора, пустой ветви не получает.
+    let line = payload
+        .get("format")
+        .and_then(Value::as_str)
+        .and_then(unica_source_contract::format_identity::export_format_line);
+    let branches = root_branches(address, counts, line);
     Ok(NodeViewData::Node(
         NodeView::new(
             address.to_string(),
@@ -770,6 +775,9 @@ const CONFIGURATOR_ROOT_ORDER: &[NodeKind] = &[
     NodeKind::FilterCriterion,
     NodeKind::EventSubscription,
     NodeKind::ScheduledJob,
+    // Очереди: дерево Конфигуратора 8.5.4, между регламентными
+    // заданиями и ботами.
+    NodeKind::Queue,
     NodeKind::Bot,
     NodeKind::FunctionalOption,
     NodeKind::FunctionalOptionsParameter,
@@ -786,6 +794,9 @@ const CONFIGURATOR_ROOT_ORDER: &[NodeKind] = &[
     NodeKind::WsReference,
     NodeKind::WebSocketClient,
     NodeKind::IntegrationService,
+    // Цвета палитры: дерево Конфигуратора 8.5.4, между сервисами интеграции
+    // и элементами стиля.
+    NodeKind::PaletteColor,
     NodeKind::StyleItem,
     NodeKind::Style,
     NodeKind::Language,
@@ -813,9 +824,12 @@ const CONFIGURATOR_ROOT_ORDER: &[NodeKind] = &[
 /// в корне, в порядке дерева Конфигуратора, в том числе пустой (`count: 0`),
 /// чтобы «пусто» отличалось от «вид не поддержан» (#2153). Вид вне этого
 /// порядка идёт следом; зарегистрированный вне профиля сохраняет ветвь.
+/// Вид, который добавляет более поздняя линия, чем `line` набора, пустым
+/// не выдаётся.
 fn root_branches(
     address: &QualifiedAddress,
     mut counts: std::collections::BTreeMap<String, usize>,
+    line: Option<unica_source_contract::format_identity::PlatformLine>,
 ) -> Vec<BranchRef> {
     let source_set = address.source_set();
     // Корень внешней обработки или отчёта — опись своих владельцев: видов
@@ -837,14 +851,15 @@ fn root_branches(
         let kind = kind.as_str();
         let count = counts.remove(kind).unwrap_or(0);
         let at = format!("{source_set}:{kind}");
-        let admitted = QualifiedAddress::parse(&at).is_ok_and(|branch| {
-            is_root_branch_kind(&branch)
-                && crate::infrastructure::logical_tree::route_logical_address(
-                    &branch,
-                    unica_bsl::profile::PlatformProfile::v8_3_27(),
-                )
-                .is_ok()
-        });
+        let admitted = unica_source_contract::format_identity::metadata_kind_exists(line, kind)
+            && QualifiedAddress::parse(&at).is_ok_and(|branch| {
+                is_root_branch_kind(&branch)
+                    && crate::infrastructure::logical_tree::route_logical_address(
+                        &branch,
+                        unica_bsl::profile::PlatformProfile::v8_3_27(),
+                    )
+                    .is_ok()
+            });
         if count > 0 || admitted {
             branches.push(BranchRef::new(at, count));
         }

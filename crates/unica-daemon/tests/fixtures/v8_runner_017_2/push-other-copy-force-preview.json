@@ -1,0 +1,48 @@
+{
+  "ok": true,
+  "command": "push",
+  "duration_ms": 4,
+  "data": {
+    "provider": {
+      "selected": "ibcmd",
+      "origin": {
+        "kind": "default"
+      },
+      "reason": "whole"
+    },
+    "ok": true,
+    "provider_dispatched": false,
+    "steps": [
+      {
+        "source_set": "main",
+        "mode": "full",
+        "ok": true,
+        "applied": false,
+        "message": "forced full rebuild; planned, ibcmd not dispatched",
+        "duration_ms": 0
+      }
+    ],
+    "duration_ms": 4
+  },
+  "warnings": [
+    "push writes the infobase 'C:\\workspace\\ib' of another working copy: it is held by the working copy 'C:\\workspace\\C' on this machine. The command changes that working copy's infobase, and its owner stays as it is in the owner marker 'C:\\workspace\\.ib.v8-runner.owners.json'. To free the infobase: remove the infobase from v8project.local.yaml of 'C:\\workspace\\C' or remove that working copy. Ways to an infobase of this working copy's own (`init --infobase` keeps the previous section as upstream): its own clean infobase built from the sources — `v8-runner init --infobase <connection string>`, then `v8-runner infobase create`; a copy of an infobase with its data — `v8-runner init --infobase <connection string>`, then `v8-runner infobase create --from upstream`; an infobase deployed from a reference image — `v8-runner init --infobase <connection string>`, then `v8-runner infobase restore --input <reference>.dt --create`"
+  ],
+  "warning_details": [
+    {
+      "code": "infobase_of_another_copy",
+      "message": "push writes the infobase 'C:\\workspace\\ib' of another working copy: it is held by the working copy 'C:\\workspace\\C' on this machine. The command changes that working copy's infobase, and its owner stays as it is in the owner marker 'C:\\workspace\\.ib.v8-runner.owners.json'. To free the infobase: remove the infobase from v8project.local.yaml of 'C:\\workspace\\C' or remove that working copy. Ways to an infobase of this working copy's own (`init --infobase` keeps the previous section as upstream): its own clean infobase built from the sources — `v8-runner init --infobase <connection string>`, then `v8-runner infobase create`; a copy of an infobase with its data — `v8-runner init --infobase <connection string>`, then `v8-runner infobase create --from upstream`; an infobase deployed from a reference image — `v8-runner init --infobase <connection string>`, then `v8-runner infobase restore --input <reference>.dt --create`",
+      "name": "origin",
+      "address": "file:C:\\workspace\\ib",
+      "owners": [
+        {
+          "project": "C:\\workspace\\C",
+          "host": "workstation",
+          "since": "2026-11-13T20:06:07.124432900Z",
+          "this_copy": false,
+          "this_machine": true
+        }
+      ]
+    }
+  ],
+  "steps": []
+}

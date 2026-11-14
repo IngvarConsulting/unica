@@ -104,7 +104,7 @@ pub struct PlatformEventCatalogFixture {
 pub fn platform_event_catalog_fixture() -> &'static PlatformEventCatalogFixture {
     static FIXTURE: OnceLock<PlatformEventCatalogFixture> = OnceLock::new();
     FIXTURE.get_or_init(|| {
-        serde_json::from_str(include_str!("platform-event-catalog-8.3.27.2074.json"))
+        serde_json::from_str(include_str!("platform-event-catalog-8.3.27.json"))
             .expect("the checked 8.3.27.2074 platform event catalog must be valid")
     })
 }

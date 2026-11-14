@@ -58,6 +58,10 @@ pub enum PropertiesSite {
     Subsystem,
     Language,
     StyleItem,
+    /// A palette colour (8.5.1 and later): its `#RRGGBB` Color and Comment.
+    PaletteColor,
+    /// A queue (8.5.4 and later): its processing properties and Comment.
+    Queue,
     /// The root of a source set: the configuration's own `Configuration.xml`,
     /// or an extension's, which may change only its identity properties.
     /// `line` is the platform line of the set's format; it decides which
@@ -132,7 +136,7 @@ pub fn later_line_reason(
 }
 
 /// The Designer export format platform `line` writes.
-pub(crate) fn line_format(line: PlatformLine) -> &'static str {
+pub fn line_format(line: PlatformLine) -> &'static str {
     unica_source_contract::SourceProfile::platform_xml_of_line(line)
         .and_then(unica_source_contract::SourceProfile::serialization_format)
         .unwrap_or("unknown")
@@ -145,6 +149,9 @@ pub enum DescriptorPropertyKind {
     /// A closed platform enumeration; its values are the 8.3.27 set of
     /// `crate::configuration::cf_validate_enum_allowed`.
     Enum,
+    /// Named parts of one element, each a value of the property's closed
+    /// enumeration (`DescriptorProperty::parts`).
+    Parts,
 }
 
 macro_rules! descriptor_properties {
@@ -190,7 +197,7 @@ macro_rules! descriptor_properties {
                     PropertiesSite::DocumentNumerator => self == Self::Comment,
                     PropertiesSite::CommentOnly(_) | PropertiesSite::Language => self == Self::Comment,
                     PropertiesSite::FunctionalOption => matches!(self, Self::Location | Self::PrivilegedGetMode | Self::Comment),
-                    PropertiesSite::StyleItem => self == Self::Comment,
+                    PropertiesSite::StyleItem | PropertiesSite::PaletteColor | PropertiesSite::Queue => self == Self::Comment,
                     PropertiesSite::WSReference => matches!(self, Self::LocationUrl | Self::Comment),
                 }
             }
@@ -199,7 +206,8 @@ macro_rules! descriptor_properties {
 }
 
 // Columns: subsystem, role, configuration root, extension root. The root
-// profile names scalar properties with a published 8.3.27 value set; names,
+// profile names scalar properties, and the parts of one composite property,
+// with a published value set; names,
 // languages, roles, storages, forms and the script variant stay outside it.
 // An extension root changes only its own identity (#1644). The platform
 // re-export of 8.3.27 resets a configuration's own
@@ -233,12 +241,16 @@ descriptor_properties!(
     ModalityUseMode => ("ModalityUseMode", "modalityUseMode", Enum, false, false, true, false),
     SynchronousPlatformExtensionAndAddInCallUseMode => ("SynchronousPlatformExtensionAndAddInCallUseMode", "synchronousPlatformExtensionAndAddInCallUseMode", Enum, false, false, true, false),
     MainClientApplicationWindowMode => ("MainClientApplicationWindowMode", "mainClientApplicationWindowMode", Enum, false, false, true, false),
-    Caption => ("Caption", "caption", String, false, false, true, false),
-    ShortCaption => ("ShortCaption", "shortCaption", String, false, false, true, false),
+    Caption => ("Caption", "caption", String, false, false, true, true),
+    ShortCaption => ("ShortCaption", "shortCaption", String, false, false, true, true),
     MainClientApplicationWindowInterfaceVariant => ("MainClientApplicationWindowInterfaceVariant", "mainClientApplicationWindowInterfaceVariant", Enum, false, false, true, false),
     ClientApplicationTheme => ("ClientApplicationTheme", "clientApplicationTheme", Enum, false, false, true, false),
     ClientApplicationWindowsOpenVariant => ("ClientApplicationWindowsOpenVariant", "clientApplicationWindowsOpenVariant", Enum, false, false, true, false),
     Version85InterfaceMigrationMode => ("Version85InterfaceMigrationMode", "version85InterfaceMigrationMode", Enum, false, false, true, false),
+    ActionOnConfigurationObjectMissing => ("ActionOnConfigurationObjectMissing", "actionOnConfigurationObjectMissing", Enum, false, false, false, true),
+    DefaultExtensionPropertyCheckAction => ("DefaultExtensionPropertyCheckAction", "defaultExtensionPropertyCheckAction", Enum, false, false, false, true),
+    TypeReductionByConfigurationExtensionMode => ("TypeReductionByConfigurationExtensionMode", "typeReductionByConfigurationExtensionMode", Enum, false, false, false, true),
+    ActionOnExtendedConfigurationObjectsMissing => ("ActionOnExtendedConfigurationObjectsMissing", "actionOnExtendedConfigurationObjectsMissing", Parts, false, false, false, true),
 );
 
 impl DescriptorProperty {
@@ -270,6 +282,17 @@ impl DescriptorProperty {
             Self::ClientApplicationTheme => &["Auto", "Light", "Dark"],
             Self::ClientApplicationWindowsOpenVariant => &["OpenDataInTabs", "OpenDataInDialogs"],
             Self::Version85InterfaceMigrationMode => &["Use", "DontUse"],
+            // The 8.5.4 extension root: the values 8.5.4 loads and exports
+            // back unchanged (`ActionOnExtensionCheckFailure` and
+            // `TypeReductionMode` of its XDTO).
+            Self::ActionOnConfigurationObjectMissing
+            | Self::DefaultExtensionPropertyCheckAction
+            | Self::ActionOnExtendedConfigurationObjectsMissing => {
+                &["Error", "Warning", "Ignore", "Auto"]
+            }
+            Self::TypeReductionByConfigurationExtensionMode => {
+                &["TransformValues", "DeleteData", "Deny"]
+            }
             _ => crate::configuration::cf_validate_enum_allowed(self.names()[0]),
         };
         match (self, values.split_first()) {
@@ -278,6 +301,21 @@ impl DescriptorProperty {
                 Some((&"DontUse", modes)),
             ) => modes,
             _ => values,
+        }
+    }
+
+    /// The parts of a composite property, each with its two spellings, in
+    /// the order the platform writes them; every part takes the values of
+    /// the property.
+    pub const fn parts(self) -> &'static [[&'static str; 2]] {
+        match self {
+            Self::ActionOnExtendedConfigurationObjectsMissing => &[
+                ["AdoptedObject", "adoptedObject"],
+                ["NotifiedObject", "notifiedObject"],
+                ["CheckedObject", "checkedObject"],
+                ["ExtendedObject", "extendedObject"],
+            ],
+            _ => &[],
         }
     }
 
@@ -385,6 +423,8 @@ impl PropertiesSite {
         match owner.kind() {
             NodeKind::DocumentNumerator => Some(Self::DocumentNumerator),
             NodeKind::StyleItem => Some(Self::StyleItem),
+            NodeKind::PaletteColor => Some(Self::PaletteColor),
+            NodeKind::Queue => Some(Self::Queue),
             NodeKind::FunctionalOption => Some(Self::FunctionalOption),
             NodeKind::Role => Some(Self::Role),
             NodeKind::Language => Some(Self::Language),
@@ -429,6 +469,20 @@ impl PropertiesSite {
                 crate::style_color::StyleItemColor::argument_schema(),
             );
         }
+        if self == Self::PaletteColor {
+            properties.insert(
+                "Color".into(),
+                json!({"type":"string", "pattern":crate::property_input::PALETTE_COLOR_PATTERN}),
+            );
+        }
+        if self == Self::Queue {
+            properties.insert("Transactioned".into(), json!({"type":"boolean"}));
+            properties.insert("AutoProcessing".into(), json!({"type":"boolean"}));
+            properties.insert(
+                "ProcessingPortionSize".into(),
+                json!({"type":"integer", "minimum":1}),
+            );
+        }
         match self {
             Self::DocumentNumerator => {
                 // The numerator's closed scalar profile plus the descriptor
@@ -450,6 +504,8 @@ impl PropertiesSite {
                 }
             }
             Self::StyleItem
+            | Self::PaletteColor
+            | Self::Queue
             | Self::WSReference
             | Self::FunctionalOption
             | Self::Language
@@ -466,6 +522,17 @@ impl PropertiesSite {
                         DescriptorPropertyKind::Boolean => json!({"type":"boolean"}),
                         DescriptorPropertyKind::Enum => {
                             json!({"type":"string", "enum":self.enum_values(field)})
+                        }
+                        DescriptorPropertyKind::Parts => {
+                            let part = json!({"type":"string", "enum":self.enum_values(field)});
+                            let parts = field
+                                .parts()
+                                .iter()
+                                .flatten()
+                                .map(|name| ((*name).to_string(), part.clone()))
+                                .collect::<Map<_, _>>();
+                            json!({"type":"object", "additionalProperties":false,
+                                "minProperties":1, "properties":parts})
                         }
                     };
                     let schema = if field == DescriptorProperty::Location {
@@ -563,6 +630,8 @@ impl PropertiesOperation {
                 target: match site {
                     PropertiesSite::Language => "An existing registered Language of an ordinary configuration. Its Comment can change; LanguageCode changes only for an unused additional language.",
                     PropertiesSite::WSReference => "An existing registered WSReference in a configuration source set, platform XML 2.20. Its Comment and existing LocationURL properties can change.",
+                    PropertiesSite::PaletteColor => "The existing named PaletteColor of a configuration, platform 8.5.1 and later: `<set>:PaletteColor.<name>`.",
+                    PropertiesSite::Queue => "The existing named Queue of a configuration, platform 8.5.4 and later: `<set>:Queue.<name>`.",
                     PropertiesSite::StyleItem => "The existing named StyleItem with observed Type=Color and a supported explicit Value: `<set>:StyleItem.<name>`.",
                     PropertiesSite::Configuration { extension: false, .. } => "The configuration root `<set>:Configuration`. The address selects the root property profile.",
                     PropertiesSite::Configuration { extension: true, .. } => "The extension root `<set>:Configuration`. An extension changes only its own identity properties.",
@@ -574,6 +643,8 @@ impl PropertiesOperation {
                 notes: match site {
                     PropertiesSite::Language => "Comment/comment is an exact string; an empty string clears it. LanguageCode is a nonempty string without the platform's reserved characters; custom codes are allowed. A LanguageCode change requires an unused additional language, no code collision, and no texts or embedded help bound to either the old or new code. XML and literal NStr/НСтр dependencies are checked in original and final sources; an unprovable dependency refuses the change. No translation migration is performed. An equivalent value preserves bytes. In an extension a language is adopted: its code is set in the main configuration and only Comment changes. Preview writes nothing; execute only the saved execution token.",
                     PropertiesSite::WSReference => "LocationURL and optional Comment/comment are exact strings; an empty string clears the supplied field. Comment-only edits do not validate LocationURL; mixed edits validate both fields before publication. Missing or damaged fields are refused. Editing preserves identity, registration and the local WSDL; it does not download WSDL/imports or generate a client. Preview writes nothing; publish only its execution token. Changes to the descriptor or configuration registration invalidate the saved plan.",
+                    PropertiesSite::Queue => "Transactioned, AutoProcessing, ProcessingPortionSize and Comment/comment are accepted, at least one of them. Transactioned and AutoProcessing are JSON booleans; ProcessingPortionSize is a whole number above zero. An empty Comment clears the comment, and simultaneous Comment/comment aliases are refused. Name, synonym, dimensions, attributes, identity and bytes outside the supplied properties stay. The same value is a byte-preserving no-op. Arguments are checked before descriptor state. Preview writes nothing; execute only its saved executionToken.",
+                    PropertiesSite::PaletteColor => "Color and Comment/comment are accepted, at least one of them. Color is #RRGGBB; other color forms, an empty string and null are refused. An empty Comment clears the comment, and simultaneous Comment/comment aliases are refused. Name, synonym, identity and bytes outside the supplied Color/Comment stay. The same color in another letter case is a byte-preserving no-op. Arguments are checked before descriptor state. Preview writes nothing; execute only its saved executionToken.",
                     PropertiesSite::StyleItem => "Color Value and optional string Comment/comment are accepted: #RRGGBB or an enumerated web/builtin style color. Empty Value, null and arbitrary XML are refused; empty Comment clears the comment, and simultaneous Comment/comment aliases are refused. Type, identity and bytes outside supplied Value/Comment stay. Font/Border, missing/damaged Value and unmodelled colors have no color write capability. The same semantic color is a byte-preserving no-op, including prefix aliases and RGB case. Arguments are checked before descriptor state. Preview writes nothing; execute only its saved executionToken.",
                     _ => "values is a nonempty object. Use JSON booleans for flags. An empty string clears text where the property allows it; Location requires a nonempty storage reference. null is not omission. Use one spelling of each property, never both aliases. Argument errors are checked before descriptor state; valid arguments still require an existing readable descriptor. Preview writes nothing; execute only the saved execution token.",
                 },
@@ -583,11 +654,13 @@ impl PropertiesOperation {
                     PropertiesSite::FunctionalOption => json!({"values":{"Location":"Constant.UseGoods","PrivilegedGetMode":true}}),
                     PropertiesSite::Configuration { .. } => json!({"values":{"Version":"1.0.0.2"}}),
                     PropertiesSite::StyleItem => json!({"values":{"Value":"#F0F0F0"}}),
+                    PropertiesSite::PaletteColor => json!({"values":{"Color":"#1A2B3C"}}),
+                    PropertiesSite::Queue => json!({"values":{"ProcessingPortionSize":500}}),
                     PropertiesSite::Language => json!({"values":{"LanguageCode":"de"}}),
                     _ => json!({"values":{"Comment":"Updated comment"}}),
                 },
                 help: match site {
-                    PropertiesSite::WSReference | PropertiesSite::Metadata { .. } | PropertiesSite::DocumentNumerator | PropertiesSite::CommentOnly(_) | PropertiesSite::FunctionalOption | PropertiesSite::StyleItem | PropertiesSite::Language => "skills/meta-edit/SKILL.md",
+                    PropertiesSite::WSReference | PropertiesSite::Metadata { .. } | PropertiesSite::DocumentNumerator | PropertiesSite::CommentOnly(_) | PropertiesSite::FunctionalOption | PropertiesSite::StyleItem | PropertiesSite::PaletteColor | PropertiesSite::Queue | PropertiesSite::Language => "skills/meta-edit/SKILL.md",
                     PropertiesSite::Role => "skills/role-edit/SKILL.md",
                     PropertiesSite::Subsystem => "skills/subsystem-edit/SKILL.md",
                     PropertiesSite::Configuration { .. } => "skills/cf-edit/SKILL.md",
@@ -775,8 +848,9 @@ mod tests {
             site.later_line_refusal("main", values.as_object().unwrap()),
             None
         );
-        // An extension root has none of the 8.5 interface properties; of the
-        // later lines it has only its own compatibility modes.
+        // An extension root has of the later lines its captions (the
+        // empty_extension export of 2.21), the actions of 8.5.4 and its own
+        // compatibility modes, none of the 8.5 interface properties.
         let extension =
             PropertiesSite::root_of(SourceSetKind::Extension, Some(PlatformLine::new(8, 3, 27)))
                 .unwrap();
@@ -787,6 +861,12 @@ mod tests {
                 .map(|item| (item.property, item.value))
                 .collect::<Vec<_>>(),
             vec![
+                ("Caption", None),
+                ("ShortCaption", None),
+                ("ActionOnConfigurationObjectMissing", None),
+                ("DefaultExtensionPropertyCheckAction", None),
+                ("TypeReductionByConfigurationExtensionMode", None),
+                ("ActionOnExtendedConfigurationObjectsMissing", None),
                 (
                     "ConfigurationExtensionCompatibilityMode",
                     Some("Version8_5_1")
@@ -797,6 +877,39 @@ mod tests {
                 ),
             ]
         );
+    }
+
+    /// `can` of an extension root of 8.5.4 offers its actions; the composite
+    /// one takes the named parts, each a value of the property.
+    /// rule: INV.SOURCE.PROFILE-CAPABILITIES
+    #[test]
+    fn can_offers_the_extension_root_actions_of_8_5_4() {
+        let site =
+            PropertiesSite::root_of(SourceSetKind::Extension, Some(PlatformLine::new(8, 5, 4)))
+                .unwrap();
+        assert!(site.later_line_capabilities().is_empty());
+        let contract = PropertiesOperation::Set.contract(site);
+        let oracle = jsonschema::validator_for(&contract.schema).unwrap();
+        assert!(oracle.is_valid(&json!({"values":{
+            "TypeReductionByConfigurationExtensionMode":"DeleteData",
+            "actionOnExtendedConfigurationObjectsMissing":{"AdoptedObject":"Ignore","checkedObject":"Auto"}
+        }})));
+        for values in [
+            json!({"ActionOnExtendedConfigurationObjectsMissing":{"ExtendDataObject":"Error"}}),
+            json!({"ActionOnExtendedConfigurationObjectsMissing":{"AdoptedObject":"Deny"}}),
+            json!({"ActionOnExtendedConfigurationObjectsMissing":{}}),
+            json!({"ActionOnConfigurationObjectMissing":"DeleteData"}),
+        ] {
+            assert!(!oracle.is_valid(&json!({"values":values})), "{values}");
+        }
+        let configuration = PropertiesSite::root_of(
+            SourceSetKind::Configuration,
+            Some(PlatformLine::new(8, 5, 4)),
+        )
+        .unwrap();
+        assert!(configuration
+            .descriptor_fields()
+            .all(|field| field.names()[0] != "ActionOnConfigurationObjectMissing"));
     }
 
     /// rule: INV.SOURCE.PROFILE-CAPABILITIES

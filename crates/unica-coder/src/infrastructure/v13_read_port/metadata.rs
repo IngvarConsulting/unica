@@ -270,6 +270,16 @@ impl ProviderReadAuthority {
                 .style_item(&descriptor, &mut payload)
                 .map_err(|message| ViewError::detailed(RefusalDetail::SourceUnreadable, message))?;
         }
+        if evidence.artifact_kind() == "PaletteColor" {
+            crate::infrastructure::family_codecs::metadata_read_codec()
+                .palette_color(&descriptor, &mut payload)
+                .map_err(|message| ViewError::detailed(RefusalDetail::SourceUnreadable, message))?;
+        }
+        if evidence.artifact_kind() == "Queue" {
+            crate::infrastructure::family_codecs::metadata_read_codec()
+                .queue(&descriptor, &mut payload)
+                .map_err(|message| ViewError::detailed(RefusalDetail::SourceUnreadable, message))?;
+        }
         {
             match crate::infrastructure::family_codecs::metadata_read_codec()
                 .descriptor_comment(&descriptor, evidence.artifact_kind())

@@ -284,6 +284,96 @@ pub fn form_purpose(
         }
     })
 }
+/// `form.set` at the configuration root: its default forms, and from 8.5.1
+/// its auxiliary ones, name common forms of the set.
+fn parse_root_form_set(
+    args: &Map<String, Value>,
+    op_index: usize,
+    source_set_name: &str,
+    source_line: Option<unica_source_contract::format_identity::PlatformLine>,
+) -> Result<FormPlan, ApplyPlanError> {
+    const ROOT: &str = "Configuration";
+    let values = args
+        .get("values")
+        .and_then(Value::as_object)
+        .ok_or_else(|| bad(op_index, "values", "`values` must be an object"))?;
+    let slots = unica_forms::contracts::form_slots_in(ROOT, source_line).unwrap_or_default();
+    let mut defaults = Vec::new();
+    for (key, value) in values {
+        let path = format!("values.{key}");
+        // A slot a later line adds is refused with the reason `can` marks it
+        // with (INV.SOURCE.PROFILE-CAPABILITIES).
+        if let Some((_, property, since)) =
+            unica_forms::contracts::later_form_slots(ROOT, source_line)
+                .into_iter()
+                .find(|(slot, _, _)| slot == key)
+        {
+            return Err(bad(
+                op_index,
+                &path,
+                unica_metadata::descriptor_operations::later_line_reason(
+                    &format!("Property `{property}`"),
+                    since,
+                    source_set_name,
+                    source_line,
+                ),
+            ));
+        }
+        let property = default_form_property(key)
+            .filter(|_| slots.contains(&key.as_str()))
+            .ok_or_else(|| {
+                bad(
+                    op_index,
+                    &path,
+                    format!(
+                        "unknown form slot `{key}` for this owner; use {}",
+                        slots.join(", ")
+                    ),
+                )
+            })?;
+        let raw = value.as_str().ok_or_else(|| {
+            bad(
+                op_index,
+                &path,
+                "the form slot takes a common form name, or an empty string to clear it",
+            )
+        })?;
+        let form = root_common_form(raw.trim(), source_set_name)
+            .map_err(|message| bad(op_index, &path, message))?;
+        defaults.push((property.to_string(), form));
+    }
+    if defaults.is_empty() {
+        return Err(bad(
+            op_index,
+            "values",
+            "form.set needs at least one form slot",
+        ));
+    }
+    Ok(FormPlan::RootFormSet { defaults })
+}
+
+/// The common form a slot of the configuration root names: `Name`,
+/// `CommonForm.Name` or `<set>:CommonForm.Name`; `None` clears the slot.
+fn root_common_form(raw: &str, source_set_name: &str) -> Result<Option<String>, String> {
+    if raw.is_empty() {
+        return Ok(None);
+    }
+    let local = raw
+        .strip_prefix(source_set_name)
+        .and_then(|rest| rest.strip_prefix(':'))
+        .unwrap_or(raw);
+    let name = match local.split('.').collect::<Vec<_>>().as_slice() {
+        [name] | ["CommonForm", name] => *name,
+        _ => "",
+    };
+    if name.is_empty() || name.contains(':') {
+        return Err(format!(
+            "`{raw}` is not a common form of source set `{source_set_name}`; name it `CommonForm.Name` or `Name`"
+        ));
+    }
+    Ok(Some(name.to_string()))
+}
+
 pub fn default_form_property(key: &str) -> Option<&'static str> {
     unica_forms::contracts::FORM_SLOTS
         .iter()
@@ -555,10 +645,16 @@ pub fn parse_form_operation(
     args: &Map<String, Value>,
     op_index: usize,
     source_set_name: &str,
+    source_line: Option<unica_source_contract::format_identity::PlatformLine>,
 ) -> Result<FormPlan, ApplyPlanError> {
     let operation_name = operation.name();
     let address =
         unica_source_contract::proposal::input::qualified_target(args, op_index, source_set_name)?;
+    if operation == FormOperation::Set
+        && matches!(address.segments(), [root] if root.kind() == NodeKind::Configuration)
+    {
+        return parse_root_form_set(args, op_index, source_set_name, source_line);
+    }
     let target = form_target(&address, op_index)?;
     if target.attribute.is_some()
         && !unica_forms::applicability::is_form_attribute(address.segments())
@@ -826,12 +922,35 @@ pub fn parse_form_operation(
                 .ok_or_else(|| bad(op_index, "values", "`values` must be an object"))?;
             let mut defaults = Vec::new();
             let owner_kind = target.owner.segments().next();
-            let kind_slots = owner_kind.and_then(unica_forms::contracts::form_slots_of);
+            let kind_slots = owner_kind
+                .and_then(|kind| unica_forms::contracts::form_slots_in(kind, source_line));
             for (key, value) in values {
+                // A slot a later line adds is refused with the reason `can`
+                // marks it with (INV.SOURCE.PROFILE-CAPABILITIES).
+                if let Some((_, property, since)) = owner_kind
+                    .into_iter()
+                    .flat_map(|kind| unica_forms::contracts::later_form_slots(kind, source_line))
+                    .find(|(slot, _, _)| slot == key)
+                {
+                    return Err(bad(
+                        op_index,
+                        &format!("values.{key}"),
+                        unica_metadata::descriptor_operations::later_line_reason(
+                            &format!("Property `{property}`"),
+                            since,
+                            source_set_name,
+                            source_line,
+                        ),
+                    ));
+                }
                 let property = default_form_property(key)
-                    .filter(|_| kind_slots.is_none_or(|slots| slots.contains(&key.as_str())))
+                    .filter(|_| {
+                        kind_slots
+                            .as_ref()
+                            .is_none_or(|slots| slots.contains(&key.as_str()))
+                    })
                     .ok_or_else(|| {
-                        let slots = kind_slots.map_or_else(
+                        let slots = kind_slots.as_ref().map_or_else(
                             || {
                                 unica_forms::contracts::FORM_SLOTS
                                     .iter()
@@ -1527,6 +1646,65 @@ pub fn stage_form_set(
     ));
     Ok(())
 }
+/// Writes the form slots of the configuration root; each named common form
+/// must be registered in it.
+pub fn stage_root_form_set(
+    staged: &mut ApplyProposal<'_>,
+    defaults: &[(String, Option<String>)],
+    op_index: usize,
+    provisional: &mut Vec<ProvisionalApplyEffect>,
+) -> Result<(), ApplyPlanError> {
+    let at_path = format!("ops[{op_index}].args.at");
+    let relative = std::path::PathBuf::from("Configuration.xml");
+    let preimage = read_required(staged, &relative, "the configuration root", &at_path)?;
+    let source = utf8_body(&preimage, "the configuration root", &at_path)?;
+    let mut text = source.clone();
+    for (property, form) in defaults {
+        if !text.contains(&format!("<{property}>")) && !text.contains(&format!("<{property}/>")) {
+            return Err(bad(
+                op_index,
+                "values",
+                format!("`Configuration` has no `{property}` slot"),
+            ));
+        }
+        let Some(form) = form else {
+            text = clear_form_default_property(&text, property);
+            continue;
+        };
+        if !text.contains(&format!("<CommonForm>{form}</CommonForm>")) {
+            return Err(ApplyPlanError::new(
+                ApplyPlanErrorKind::NotFound,
+                format!("common form `{form}` is not registered in the configuration"),
+            )
+            .at_path(format!("ops[{op_index}].args.values")));
+        }
+        let (updated, _) = crate::codec::replace_form_default_property(
+            &text,
+            property,
+            &format!("CommonForm.{form}"),
+            true,
+        );
+        text = updated;
+    }
+    let postimage =
+        unica_source_designer::registration::preserve_descriptor_image(&preimage, &source, &text);
+    if postimage == preimage {
+        return Ok(());
+    }
+    staged
+        .replace(&relative, &preimage, postimage)
+        .map_err(|error| ApplyPlanError::staging(error, at_path))?;
+    provisional.push(ProvisionalApplyEffect::single(
+        relative,
+        DomainEvent::new(
+            DomainEventKind::ConfigXmlChanged,
+            "Configuration".to_string(),
+        ),
+        op_index,
+    ));
+    Ok(())
+}
+
 pub fn stage_form_remove(
     staged: &mut ApplyProposal<'_>,
     authority: &dyn ApplySourceAuthority,
@@ -1824,6 +2002,11 @@ pub enum FormPlan {
         owner: MetadataAddress,
         forms: Vec<(String, String)>,
     },
+    /// `form.set` at the configuration root: its slots and the common form
+    /// each names, `None` to clear it.
+    RootFormSet {
+        defaults: Vec<(String, Option<String>)>,
+    },
     /// `form.set`: default-form slots of the owner.
     FormSet {
         owner: MetadataAddress,
@@ -1856,6 +2039,9 @@ pub fn stage_form_plan(
         }
         FormPlan::FormSet { owner, defaults } => {
             stage_form_set(staged, authority, owner, defaults, op_index, provisional)?;
+        }
+        FormPlan::RootFormSet { defaults } => {
+            stage_root_form_set(staged, defaults, op_index, provisional)?;
         }
         FormPlan::FormRemove { owner, form } => {
             stage_form_remove(staged, authority, owner, form, op_index, provisional)?;
@@ -2022,6 +2208,7 @@ mod column_type_tests {
             args.as_object().unwrap(),
             0,
             "main",
+            None,
         );
         assert!(result.is_ok(), "{result:?}");
     }
@@ -2041,7 +2228,8 @@ mod column_type_tests {
                     FormOperation::PropsSet,
                     args.as_object().unwrap(),
                     0,
-                    "main"
+                    "main",
+                    None
                 )
                 .is_err(),
                 "{args}"
@@ -2054,14 +2242,15 @@ mod column_type_tests {
             FormOperation::EventBind,
         ] {
             let args = json!({"at":at,"values":{"type":"Boolean"}});
-            assert!(parse_form_operation(op, args.as_object().unwrap(), 0, "main").is_err());
+            assert!(parse_form_operation(op, args.as_object().unwrap(), 0, "main", None).is_err());
         }
         let invalid_owner = json!({"at":"main:DefinedType.Existing.Form.Main.Attribute.Rows.Column.Value","values":{"Title":"wrong profile"}});
         assert!(parse_form_operation(
             FormOperation::PropsSet,
             invalid_owner.as_object().unwrap(),
             0,
-            "main"
+            "main",
+            None
         )
         .is_err());
         for at in [
@@ -2074,7 +2263,8 @@ mod column_type_tests {
                 FormOperation::PropsSet,
                 args.as_object().unwrap(),
                 0,
-                "main"
+                "main",
+                None
             )
             .is_err());
         }
@@ -2095,6 +2285,7 @@ mod column_add_tests {
             args.as_object().unwrap(),
             0,
             "main",
+            None,
         )
         .unwrap();
         let FormPlan::FormEdit {
@@ -2123,7 +2314,8 @@ mod column_add_tests {
                     FormOperation::ColumnAdd,
                     args.as_object().unwrap(),
                     0,
-                    "main"
+                    "main",
+                    None
                 )
                 .is_err(),
                 "{at}"
@@ -2134,7 +2326,8 @@ mod column_add_tests {
             FormOperation::PropsSet,
             args.as_object().unwrap(),
             0,
-            "main"
+            "main",
+            None
         )
         .is_err());
         let args = json!({"at":at,"items":[{"name":"Added","type":"Boolean","id":42}]});
@@ -2142,7 +2335,8 @@ mod column_add_tests {
             FormOperation::ColumnAdd,
             args.as_object().unwrap(),
             0,
-            "main"
+            "main",
+            None
         )
         .is_err());
     }

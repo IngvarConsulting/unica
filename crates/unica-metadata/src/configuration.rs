@@ -49,9 +49,64 @@ pub struct CfInfoProperties {
     pub client_application_theme: Option<String>,
     pub windows_open_variant: Option<String>,
     pub version85_interface_migration_mode: Option<String>,
+    /// The extension root actions, from 8.5.4; `null` in a set of an
+    /// earlier line and in a configuration. The composite one is an object
+    /// of its parts.
+    pub action_on_configuration_object_missing: Option<String>,
+    pub default_extension_property_check_action: Option<String>,
+    pub type_reduction_by_configuration_extension_mode: Option<String>,
+    pub action_on_extended_configuration_objects_missing: Option<serde_json::Value>,
     pub comment: Option<String>,
     pub name_prefix: Option<String>,
     pub update_catalog_address: Option<String>,
+    /// The form slots of the root its line has, by camel-case name: the
+    /// common form each names, `null` when empty (`ROOT_FORM_SLOTS`).
+    pub forms: serde_json::Map<String, serde_json::Value>,
+}
+
+/// The form slots of a configuration root in the order the platform writes
+/// them; the auxiliary ones exist from 8.5.1.
+pub const ROOT_FORM_SLOTS: &[&str] = &[
+    "DefaultReportForm",
+    "DefaultReportVariantForm",
+    "DefaultReportSettingsForm",
+    "DefaultDynamicListSettingsForm",
+    "DefaultSearchForm",
+    "DefaultDataHistoryChangeHistoryForm",
+    "DefaultDataHistoryVersionDataForm",
+    "DefaultDataHistoryVersionDifferencesForm",
+    "DefaultCollaborationSystemUsersChoiceForm",
+    "AuxiliaryReportForm",
+    "AuxiliaryReportVariantForm",
+    "AuxiliaryReportSettingsForm",
+    "AuxiliaryDynamicListSettingsForm",
+    "AuxiliaryDataHistoryChangeHistoryForm",
+    "AuxiliaryDataHistoryVersionDataForm",
+    "AuxiliaryDataHistoryVersionDifferencesForm",
+    "AuxiliaryCollaborationSystemUsersChoiceForm",
+    "DefaultConstantsForm",
+];
+
+/// The form slots of a configuration root by camel-case name, from the
+/// first text of each `slot` the root has.
+pub fn root_form_slots<'a>(
+    slot: impl Fn(&str) -> Option<&'a str>,
+) -> serde_json::Map<String, serde_json::Value> {
+    ROOT_FORM_SLOTS
+        .iter()
+        .filter_map(|name| {
+            let value = slot(name)?;
+            let key = format!("{}{}", name[..1].to_lowercase(), &name[1..]);
+            Some((
+                key,
+                if value.is_empty() {
+                    serde_json::Value::Null
+                } else {
+                    serde_json::Value::String(value.to_string())
+                },
+            ))
+        })
+        .collect()
 }
 
 #[derive(serde::Serialize)]
@@ -347,4 +402,85 @@ pub fn cf_edit_uuid_like(value: &str) -> bool {
             .iter()
             .zip([8usize, 4, 4, 4, 12])
             .all(|(part, len)| part.len() == len && part.chars().all(|ch| ch.is_ascii_hexdigit()))
+}
+
+/// The order of a compatibility mode `VersionA_B[_C]`. `DontUse` — the mode
+/// of the running platform — and unknown values have none and are not
+/// compared.
+pub fn compatibility_mode_order(mode: &str) -> Option<[u32; 3]> {
+    let mut parts = mode.strip_prefix("Version")?.split('_');
+    let mut order = [0; 3];
+    for slot in &mut order {
+        match parts.next() {
+            Some(part) => *slot = part.parse().ok()?,
+            None => break,
+        }
+    }
+    parts.next().is_none().then_some(order)
+}
+
+/// Whether an extension of `extension_mode` is above a configuration of
+/// `base_mode`: the platform does not apply such an extension.
+pub fn extension_mode_is_above_base(extension_mode: &str, base_mode: &str) -> bool {
+    match (
+        compatibility_mode_order(extension_mode),
+        compatibility_mode_order(base_mode),
+    ) {
+        (Some(extension), Some(base)) => extension > base,
+        _ => false,
+    }
+}
+
+/// The warning of an edit after which the extension, named unless it is the
+/// edited set, has a mode above its configuration's.
+pub fn extension_mode_above_base_warning(
+    extension_mode: &str,
+    extension: Option<&str>,
+    base_mode: &str,
+    configuration: &str,
+) -> String {
+    let of_extension = extension
+        .map(|name| format!(" of extension `{name}`"))
+        .unwrap_or_default();
+    format!(
+        "Extension compatibility mode `{extension_mode}`{of_extension} is above compatibility mode `{base_mode}` of configuration `{configuration}`; the platform does not apply such an extension."
+    )
+}
+
+#[cfg(test)]
+mod compatibility_order_tests {
+    use super::*;
+
+    #[test]
+    fn modes_compare_by_their_numbers_and_dont_use_is_not_compared() {
+        assert_eq!(compatibility_mode_order("Version8_3_27"), Some([8, 3, 27]));
+        assert_eq!(compatibility_mode_order("Version8_1"), Some([8, 1, 0]));
+        assert_eq!(compatibility_mode_order("DontUse"), None);
+        assert!(extension_mode_is_above_base(
+            "Version8_5_1",
+            "Version8_3_27"
+        ));
+        assert!(extension_mode_is_above_base(
+            "Version8_3_27",
+            "Version8_3_24"
+        ));
+        assert!(!extension_mode_is_above_base(
+            "Version8_3_24",
+            "Version8_3_27"
+        ));
+        assert!(!extension_mode_is_above_base(
+            "Version8_3_27",
+            "Version8_3_27"
+        ));
+        assert!(!extension_mode_is_above_base("Version8_5_1", "DontUse"));
+        assert!(!extension_mode_is_above_base("DontUse", "Version8_3_24"));
+        assert_eq!(
+            extension_mode_above_base_warning("Version8_5_1", None, "Version8_3_27", "main"),
+            "Extension compatibility mode `Version8_5_1` is above compatibility mode `Version8_3_27` of configuration `main`; the platform does not apply such an extension."
+        );
+        assert_eq!(
+            extension_mode_above_base_warning("Version8_3_27", Some("ext"), "Version8_3_24", "main"),
+            "Extension compatibility mode `Version8_3_27` of extension `ext` is above compatibility mode `Version8_3_24` of configuration `main`; the platform does not apply such an extension."
+        );
+    }
 }

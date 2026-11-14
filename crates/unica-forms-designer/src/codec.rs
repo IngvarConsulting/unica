@@ -22,6 +22,7 @@ use unica_xml_format::text::{form_edit_line_indent, form_edit_line_indent_at};
 pub(crate) mod attribute_remove;
 mod command_properties;
 mod conditional_appearance;
+mod description_keys;
 mod dynamic_list;
 
 pub const FORM_V8_NS: &str = "http://v8.1c.ru/8.1/data/core";
@@ -2714,7 +2715,6 @@ pub fn form_compile_catalog_list_definition(meta: &FormCompileObjectMeta) -> Val
     if meta.hierarchical {
         if let Some(object) = table.as_object_mut() {
             object.insert("initialTreeView".to_string(), json!("ExpandTopLevel"));
-            object.insert("enableStartDrag".to_string(), json!(true));
             object.insert("enableDrag".to_string(), json!(true));
         }
     }
@@ -3224,6 +3224,15 @@ pub fn form_add_content_xml_with_variant(
     if matches!(purpose, "List" | "Choice") {
         let list_name = names.select("Список", "List");
         let main_table = format!("{object_type}.{object_name}");
+        // A new dynamic list carries the settings the Designer writes for its
+        // own new list form, through the same emitter as a compiled one.
+        let mut settings = Vec::new();
+        emit_form_dynamic_list_attribute_settings(
+            &mut settings,
+            &Map::from_iter([("mainTable".to_string(), Value::String(main_table))]),
+            "\t\t\t",
+        );
+        let settings: String = settings.iter().map(|line| format!("{line}\r\n")).collect();
         return Ok(format!(
             concat!(
                 "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n",
@@ -3235,9 +3244,7 @@ pub fn form_add_content_xml_with_variant(
                 "\t\t\t\t<v8:Type>cfg:DynamicList</v8:Type>\r\n",
                 "\t\t\t</Type>\r\n",
                 "\t\t\t<MainAttribute>true</MainAttribute>\r\n",
-                "\t\t\t<Settings xsi:type=\"DynamicList\">\r\n",
-                "\t\t\t\t<MainTable>{main_table}</MainTable>\r\n",
-                "\t\t\t</Settings>\r\n",
+                "{settings}",
                 "\t\t</Attribute>\r\n",
                 "\t</Attributes>\r\n",
                 "</Form>"
@@ -3245,7 +3252,7 @@ pub fn form_add_content_xml_with_variant(
             ns = ns,
             command_bar = command_bar,
             format_version = unica_xml_format::text::escape_xml(format_version),
-            main_table = unica_xml_format::text::escape_xml(&main_table),
+            settings = settings,
             list_name = list_name,
         ));
     }
@@ -6367,7 +6374,89 @@ enum FormEditElementDefinitionKind {
     AutoCommandBar,
 }
 
+/// Element kinds of the form description that the compiler does not emit.
+const FORM_COMPILE_UNSUPPORTED_ELEMENT_KINDS: [&str; 17] = [
+    "radio",
+    "picture",
+    "picField",
+    "calendar",
+    "columnGroup",
+    "spreadsheet",
+    "formattedDoc",
+    "progressBar",
+    "trackBar",
+    "chart",
+    "ganttChart",
+    "graphicalSchema",
+    "planner",
+    "periodField",
+    "dendrogram",
+    "popup",
+    "buttonGroup",
+];
+
+/// Top-level keys of the form description that the compiler writes.
+const FORM_COMPILE_ROOT_KEYS: [&str; 7] = [
+    "title",
+    "properties",
+    "events",
+    "elements",
+    "attributes",
+    "parameters",
+    "commands",
+];
+
+/// Top-level keys the form description documents but the compiler does not write.
+const FORM_COMPILE_UNSUPPORTED_ROOT_KEYS: [&str; 4] = [
+    "excludedCommands",
+    "mobileCommandBarContent",
+    "commandInterface",
+    "conditionalAppearance",
+];
+
+/// A top-level key the compiler would skip is refused: skipping `elements`
+/// under another name leaves an empty form behind a successful call.
+fn form_compile_validate_root_keys(defn: &Value) -> Result<(), String> {
+    let Some(root) = defn.as_object() else {
+        return Ok(());
+    };
+    for key in root.keys() {
+        if FORM_COMPILE_ROOT_KEYS.contains(&key.as_str()) {
+            continue;
+        }
+        if FORM_COMPILE_UNSUPPORTED_ROOT_KEYS.contains(&key.as_str()) {
+            return Err(format!(
+                "form description key `{key}` is not supported by the form compiler"
+            ));
+        }
+        return Err(format!(
+            "unknown form description key `{key}`; expected one of: {}",
+            FORM_COMPILE_ROOT_KEYS.join(", ")
+        ));
+    }
+    Ok(())
+}
+
 impl FormEditElementDefinitionKind {
+    /// The description key that names the kind.
+    const fn dsl_key(self) -> &'static str {
+        match self {
+            Self::Table => "table",
+            Self::Label => "label",
+            Self::LabelField => "labelField",
+            Self::Button => "button",
+            Self::CommandBar => "cmdBar",
+            Self::Pages => "pages",
+            Self::Page => "page",
+            Self::Group => "group",
+            Self::CheckBox => "check",
+            Self::InputField => "input",
+            Self::HtmlDocumentField => "html",
+            Self::TextDocumentField => "textDoc",
+            Self::AutoCommandBar => "autoCmdBar",
+        }
+    }
+
     fn from_object(object: &Map<String, Value>) -> Result<Self, String> {
         // `commandBar` is also a nested Table property, and `group` is also a
         // Page layout property. Prefer unambiguous primary discriminators before
@@ -6404,6 +6493,16 @@ impl FormEditElementDefinitionKind {
         match primary_candidates.as_slice() {
             [(kind, _label)] => Ok(*kind),
             [] => {
+                // A kind the compiler does not emit would otherwise fall back to an
+                // input field by its `name` and lose every key of its own.
+                if let Some(kind) = FORM_COMPILE_UNSUPPORTED_ELEMENT_KINDS
+                    .iter()
+                    .find(|kind| object.contains_key(**kind))
+                {
+                    return Err(format!(
+                        "form element kind `{kind}` is not supported by the form compiler"
+                    ));
+                }
                 let command_bar =
                     object.contains_key("cmdBar") || object.contains_key("commandBar");
                 let group = object.contains_key("group");
@@ -6588,6 +6687,8 @@ pub fn form_compile_xml(
     if contains_text_document_field(defn) {
         return Err("unknown element key `textDoc`".to_string());
     }
+    form_compile_validate_root_keys(defn)?;
+    description_keys::check_root_item_keys(defn)?;
     if let Some(attributes) = defn.get("attributes").and_then(Value::as_array) {
         form_edit_validate_attribute_columns(attributes)?;
     }
@@ -7705,9 +7806,10 @@ fn emit_form_element_with_context(
     lang: Option<&str>,
 ) -> Result<(), String> {
     let Some(object) = element.as_object() else {
-        return Ok(());
+        return Err("a form element must be an object".to_string());
     };
     let kind = FormEditElementDefinitionKind::from_object(object)?;
+    description_keys::check_element_keys(kind.dsl_key(), kind.name(object)?, object)?;
     form_edit_validate_element_event_payload_types(object, kind, kind.name(object)?)?;
     match kind {
         FormEditElementDefinitionKind::Table => {
@@ -9290,10 +9392,11 @@ pub fn emit_form_dynamic_list_attribute_settings(
     } else {
         "false"
     };
+    // The Designer reads a new dynamic list dynamically: `true` unless set.
     let dynamic_data_read = if settings
         .get("dynamicDataRead")
         .and_then(Value::as_bool)
-        .unwrap_or(false)
+        .unwrap_or(true)
     {
         "true"
     } else {

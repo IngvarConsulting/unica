@@ -1427,19 +1427,18 @@ mod tests {
     fn checked_event_catalog_is_a_closed_immutable_8_3_27_set() {
         use sha2::{Digest, Sha256};
 
-        let bytes =
-            include_bytes!("../../unica-metadata/src/platform-event-catalog-8.3.27.2074.json");
+        let bytes = include_bytes!("../../unica-metadata/src/platform-event-catalog-8.3.27.json");
         let digest = Sha256::digest(bytes)
             .iter()
             .map(|byte| format!("{byte:02x}"))
             .collect::<String>();
         assert_eq!(
             digest,
-            "4f3b22f55276e7146f77db717e56684f950df11cadccbce2df66da39aa33bf74"
+            "6136934c1b315bd10ce06c8ee5228cd17bd7fa705711e6ad3d05cb68f1d65871"
         );
         let fixture = platform_event_catalog_fixture();
         assert_eq!(fixture.profile, "8.3.27");
-        assert_eq!(fixture.source.installation_version, "8.3.27.2074");
+        assert_eq!(fixture.source.installation_version, "8.3.27.2342");
         assert_eq!(fixture.module_catalogs.len(), 48);
         assert_eq!(fixture.form_catalogs.len(), 31);
         assert_eq!(
@@ -1465,7 +1464,7 @@ mod tests {
         assert_eq!(fixture.source.english_container, "shcntx_root.hbk");
         assert_eq!(
             fixture.source.english_sha256,
-            "0113af559ef2001dedbbd9e6bbfcf8bc02e3241ca715f95c8a34c4f24c962421"
+            "800e7044715d2bf822b08e17e89c2571606fdb81f87216f06197a25de0a84b34"
         );
     }
 
@@ -1540,7 +1539,7 @@ mod tests {
         assert_eq!(fixture.excluded_out_of_profile_pages.len(), 269);
         assert_eq!(
             fixture.source.event_page_ids_sha256,
-            "19ad908ce8af0ba191dc642545d70ec163d402f129c34cd9f3c2d68318a09a31"
+            "0448eaeabd75b71dd72799cc9729b8b304d93687106eb799fab1059160106ec2"
         );
         assert_eq!(selected_records.len(), 402, "unique selected vendor pages");
         assert_eq!(

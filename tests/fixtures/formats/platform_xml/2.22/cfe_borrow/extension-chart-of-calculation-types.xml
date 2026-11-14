@@ -1,0 +1,59 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:app="http://v8.1c.ru/8.2/managed-application/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:cmi="http://v8.1c.ru/8.2/managed-application/cmi" xmlns:ent="http://v8.1c.ru/8.1/data/enterprise" xmlns:lf="http://v8.1c.ru/8.2/managed-application/logform" xmlns:pal="http://v8.1c.ru/8.1/data/ui/colors/palette" xmlns:style="http://v8.1c.ru/8.1/data/ui/style" xmlns:sys="http://v8.1c.ru/8.1/data/ui/fonts/system" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:v8ui="http://v8.1c.ru/8.1/data/ui" xmlns:web="http://v8.1c.ru/8.1/data/ui/colors/web" xmlns:win="http://v8.1c.ru/8.1/data/ui/colors/windows" xmlns:xen="http://v8.1c.ru/8.3/xcf/enums" xmlns:xpr="http://v8.1c.ru/8.3/xcf/predef" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.22">
+	<ChartOfCalculationTypes uuid="e5c794a8-45ea-886d-bf41-7300210200d3">
+		<InternalInfo>
+			<xr:GeneratedType name="ChartOfCalculationTypesObject.ВидыРасчета" category="Object">
+				<xr:TypeId>74dfdd68-3920-8c5c-b5fe-2f909c2aff5b</xr:TypeId>
+				<xr:ValueId>f760a092-8617-87d1-a9ee-9d377971379c</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="ChartOfCalculationTypesRef.ВидыРасчета" category="Ref">
+				<xr:TypeId>e2bf164e-ea96-8c77-8e77-497df04602dc</xr:TypeId>
+				<xr:ValueId>b97f35db-a1b4-808c-92a1-54f00c29989f</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="ChartOfCalculationTypesSelection.ВидыРасчета" category="Selection">
+				<xr:TypeId>28d7de0b-66a1-8000-9ef8-f61d60fe4132</xr:TypeId>
+				<xr:ValueId>76f2fc4c-d1bb-8ea7-af2f-5c548b5cf1d0</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="ChartOfCalculationTypesList.ВидыРасчета" category="List">
+				<xr:TypeId>e07c5f71-3ce8-8bfb-91a1-a9d35f6e44ba</xr:TypeId>
+				<xr:ValueId>3aab5fcc-3158-83e1-b1e3-1beb55f510dd</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="ChartOfCalculationTypesManager.ВидыРасчета" category="Manager">
+				<xr:TypeId>14d93b4e-2533-89a2-8a8e-55e41269798c</xr:TypeId>
+				<xr:ValueId>4ebccc8b-d444-82dd-8958-a430d040f924</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="DisplacingCalculationTypes.ВидыРасчета" category="DisplacingCalculationTypes">
+				<xr:TypeId>ed53dce7-6ffa-83f3-9970-eaa05951c345</xr:TypeId>
+				<xr:ValueId>507a17b5-622a-8cf8-be6f-fb68010817ce</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="DisplacingCalculationTypesRow.ВидыРасчета" category="DisplacingCalculationTypesRow">
+				<xr:TypeId>738e57ca-4e85-8367-b71d-64daf75b754e</xr:TypeId>
+				<xr:ValueId>e45a37c1-5ef8-87f3-b2e7-78dcea8dc68c</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="BaseCalculationTypes.ВидыРасчета" category="BaseCalculationTypes">
+				<xr:TypeId>4f3a3869-db5b-8588-b921-d62d646f8f12</xr:TypeId>
+				<xr:ValueId>5b7506d4-b8d8-86ba-8fda-ec282b47d115</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="BaseCalculationTypesRow.ВидыРасчета" category="BaseCalculationTypesRow">
+				<xr:TypeId>02a4acf0-d979-8566-9283-f29a5fe75fec</xr:TypeId>
+				<xr:ValueId>3a74b760-87d2-8fb3-9d2d-87523b77d06b</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="LeadingCalculationTypes.ВидыРасчета" category="LeadingCalculationTypes">
+				<xr:TypeId>4ff03245-b235-85ea-bb23-e3d44a543e09</xr:TypeId>
+				<xr:ValueId>e1f645f4-edc4-85ba-8420-f59b8c446eaa</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="LeadingCalculationTypesRow.ВидыРасчета" category="LeadingCalculationTypesRow">
+				<xr:TypeId>71dcd081-5616-8720-bcb2-50930310457f</xr:TypeId>
+				<xr:ValueId>2a9721eb-7854-854b-8bd3-374226389b6b</xr:ValueId>
+			</xr:GeneratedType>
+		</InternalInfo>
+		<Properties>
+			<ObjectBelonging>Adopted</ObjectBelonging>
+			<Name>ВидыРасчета</Name>
+			<Comment/>
+			<ExtendedConfigurationObject>6a48f32a-b124-57aa-b962-51cc40da3aa0</ExtendedConfigurationObject>
+			<ActionOnConfigurationObjectMissing>Auto</ActionOnConfigurationObjectMissing>
+		</Properties>
+		<ChildObjects/>
+	</ChartOfCalculationTypes>
+</MetaDataObject>

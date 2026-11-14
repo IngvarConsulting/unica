@@ -69,11 +69,11 @@ const ACCEPT_POLL_INTERVAL: Duration = Duration::from_millis(10);
 // unit: ms
 // scope: connection
 // value: 2000
-// resource: Срок чтения рукопожатия с момента принятия соединения.
+// resource: Срок, в который клиент присылает рукопожатие: от принятия соединения, но не меньше 2 с с момента, когда демон готов его читать.
 // status: unproven
 // origin: коммит 38512f013 (feat(daemon): add one versioned user executor)
-// problem: неизвестно
-// on-reach: соединение закрывается без ответа ready
+// problem: Соединение на loopback, которое не присылает рукопожатие, держит слот приёма соединений (сверх их числа демон отвечает overloaded) и не даёт демону уйти по простою. Клиент Unica пишет рукопожатие сразу после connect; собственная задержка демона (запуск потока соединения, проверка хранилища) в срок молчания клиента не входит (#2969).
+// on-reach: соединение закрывается без ответа ready; клиент видит обрыв, а не несовместимость
 const HANDSHAKE_READ_TIMEOUT: Duration = Duration::from_secs(2);
 
 // resource-limit: daemon.session-read-poll
@@ -429,7 +429,7 @@ fn run_daemon_configured_until<
         }
         runtime.hooks().listener_ownership_observed(no_active_work);
         if no_active_work {
-            if idle_since.elapsed() >= config.idle_grace {
+            if idle_since.elapsed() >= config.idle_grace && runtime.hooks().idle_exit_permitted() {
                 break;
             }
         } else {
@@ -617,6 +617,10 @@ fn handle_probe_connection<H: InvocationHost<Request = V5InvocationRequest>>(
             .port(),
     );
     runtime.ensure_named_authority_before(handshake_deadline)?;
+    // The limit is the client's silence: on a busy machine the handler's own
+    // start and the authority probe may outlast it, and a hello that already
+    // arrived must not be refused for the daemon's delay (#2969).
+    let handshake_deadline = handshake_deadline.max(Instant::now() + HANDSHAKE_READ_TIMEOUT);
     stream
         .set_nonblocking(false)
         .map_err(|error| state_io_error("configure protocol-v5 client stream", error))?;
