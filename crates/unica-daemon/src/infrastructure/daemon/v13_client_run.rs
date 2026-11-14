@@ -834,7 +834,12 @@ fn parse_runner_output(
         // The typed code supplies the continuation; raw provider text is private.
         let message = "v8-runner refused the launch".to_string();
         return Err(runner_envelope_refusal(
-            runner_rejection(Some(OPERATION.to_string()), code, message),
+            runner_rejection(
+                Some(OPERATION.to_string()),
+                code,
+                envelope["error"]["layer"].as_str(),
+                message,
+            ),
             &envelope,
         ));
     }

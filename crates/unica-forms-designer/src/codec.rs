@@ -22,6 +22,7 @@ use unica_xml_format::text::{form_edit_line_indent, form_edit_line_indent_at};
 pub(crate) mod attribute_remove;
 mod command_properties;
 mod conditional_appearance;
+mod description_keys;
 mod dynamic_list;
 
 pub const FORM_V8_NS: &str = "http://v8.1c.ru/8.1/data/core";
@@ -2714,7 +2715,6 @@ pub fn form_compile_catalog_list_definition(meta: &FormCompileObjectMeta) -> Val
     if meta.hierarchical {
         if let Some(object) = table.as_object_mut() {
             object.insert("initialTreeView".to_string(), json!("ExpandTopLevel"));
-            object.insert("enableStartDrag".to_string(), json!(true));
             object.insert("enableDrag".to_string(), json!(true));
         }
     }
@@ -6431,6 +6431,25 @@ fn form_compile_validate_root_keys(defn: &Value) -> Result<(), String> {
 }
 
 impl FormEditElementDefinitionKind {
+    /// The description key that names the kind.
+    const fn dsl_key(self) -> &'static str {
+        match self {
+            Self::Table => "table",
+            Self::Label => "label",
+            Self::LabelField => "labelField",
+            Self::Button => "button",
+            Self::CommandBar => "cmdBar",
+            Self::Pages => "pages",
+            Self::Page => "page",
+            Self::Group => "group",
+            Self::CheckBox => "check",
+            Self::InputField => "input",
+            Self::HtmlDocumentField => "html",
+            Self::TextDocumentField => "textDoc",
+            Self::AutoCommandBar => "autoCmdBar",
+        }
+    }
+
     fn from_object(object: &Map<String, Value>) -> Result<Self, String> {
         // `commandBar` is also a nested Table property, and `group` is also a
         // Page layout property. Prefer unambiguous primary discriminators before
@@ -6662,6 +6681,7 @@ pub fn form_compile_xml(
         return Err("unknown element key `textDoc`".to_string());
     }
     form_compile_validate_root_keys(defn)?;
+    description_keys::check_root_item_keys(defn)?;
     if let Some(attributes) = defn.get("attributes").and_then(Value::as_array) {
         form_edit_validate_attribute_columns(attributes)?;
     }
@@ -7779,9 +7799,10 @@ fn emit_form_element_with_context(
     lang: Option<&str>,
 ) -> Result<(), String> {
     let Some(object) = element.as_object() else {
-        return Ok(());
+        return Err("a form element must be an object".to_string());
     };
     let kind = FormEditElementDefinitionKind::from_object(object)?;
+    description_keys::check_element_keys(kind.dsl_key(), kind.name(object)?, object)?;
     form_edit_validate_element_event_payload_types(object, kind, kind.name(object)?)?;
     match kind {
         FormEditElementDefinitionKind::Table => {

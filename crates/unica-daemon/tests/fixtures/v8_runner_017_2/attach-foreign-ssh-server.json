@@ -1,0 +1,31 @@
+{
+  "ok": false,
+  "command": "pull",
+  "duration_ms": 1508,
+  "data": {
+    "provider": {
+      "selected": "agent",
+      "origin": {
+        "kind": "override",
+        "file": "v8project.yaml"
+      }
+    },
+    "ok": false,
+    "provider_dispatched": false,
+    "up_to_date": false,
+    "source_set": "main",
+    "requested_mode": "FULL",
+    "mode": "FULL",
+    "target_path": "C:\\workspace\\endpoint\\src",
+    "duration_ms": 1508,
+    "message": "environment unavailable: SSH handshake with the agent at 127.0.0.1:61382 failed: Inconsistent state of the protocol"
+  },
+  "warnings": [],
+  "steps": [],
+  "error": {
+    "code": "environment_unavailable",
+    "kind": "environment",
+    "message": "SSH handshake with the agent at 127.0.0.1:61382 failed: Inconsistent state of the protocol",
+    "layer": "agent_endpoint"
+  }
+}
