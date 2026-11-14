@@ -86,6 +86,12 @@ impl SourceLayoutInspector {
         let mut roots = Vec::new();
         let mut source_targets_complete = true;
         let mut repository_targets_complete = true;
+        if let Some(conflict) = source_map.autodetected_main_conflict {
+            facts.push(ProjectHealthFact::AutodetectedMainConflict {
+                selected_path: conflict.selected_path,
+                skipped_paths: conflict.skipped_paths,
+            });
+        }
         if source_map.source_sets.is_empty() {
             facts.push(ProjectHealthFact::NoSourceSets);
             source_targets_complete = false;

@@ -33,6 +33,15 @@ pub struct ProjectSourceMap {
     pub source_selection_error: Option<String>,
     #[serde(skip_serializing)]
     pub configured_format_raw: Option<String>,
+    /// Autodetection retained the selected `main`; these roots are not addressable.
+    #[serde(skip_serializing)]
+    pub autodetected_main_conflict: Option<AutodetectedMainConflict>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AutodetectedMainConflict {
+    pub selected_path: String,
+    pub skipped_paths: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -259,6 +268,10 @@ mod tests {
             effective_source_root: Some("/workspace/src/cf".into()),
             source_selection_error: None,
             configured_format_raw: Some("private configured spelling".into()),
+            autodetected_main_conflict: Some(AutodetectedMainConflict {
+                selected_path: "src/cf".into(),
+                skipped_paths: vec!["src/cfe/main".into()],
+            }),
         };
         assert_eq!(
             serde_json::to_value(map).unwrap(),

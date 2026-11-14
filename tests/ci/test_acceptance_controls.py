@@ -80,6 +80,28 @@ class ContentAssertionTests(unittest.TestCase):
             validate_controls({"tool": "unica.check", "args": {}, "expect": ["ok"],
                                "assertions": [{"pointer": "/data/value", "noneMatches": "E"}]})
 
+    def test_some_matches_finds_a_complete_diagnostic_at_any_position(self):
+        pattern = {"code": "conflict", "severity": "warning", "count": 2,
+                   "paths": ["selected", "skipped"], "evidence": ["selected: root"]}
+        hit = {**pattern, "message": "additional presentation"}
+        unrelated = {"code": "other", "severity": "error"}
+        assertion = {"pointer": "/data/value", "someMatches": pattern}
+        for values in [[hit], [unrelated, hit], [hit, unrelated], [unrelated, unrelated, hit]]:
+            self.assertEqual(self.check(assertion, {"value": values}), [])
+        for field, wrong in [("code", "other"), ("severity", "error"), ("count", True),
+                             ("paths", ["selected"]), ("evidence", [])]:
+            with self.subTest(field=field):
+                self.assertTrue(self.check(assertion, {"value": [{**hit, field: wrong}]}))
+                self.assertTrue(self.check(assertion, {"value": [
+                    {key: value for key, value in hit.items() if key != field}
+                ]}))
+        for value in [[], "conflict", None]:
+            self.assertTrue(self.check(assertion, {"value": value}))
+        self.assertTrue(self.check(assertion, {}))
+        with self.assertRaises(ValueError):
+            validate_controls({"tool": "unica.check", "args": {}, "expect": ["ok"],
+                               "assertions": [{"pointer": "/data/value", "someMatches": "conflict"}]})
+
     def test_contains_is_substring_or_exact_array_element(self):
         self.assertEqual(self.check({"pointer": "/data/value", "contains": "слово"}, {"value": "два слова и слово"}), [])
         self.assertEqual(self.check({"pointer": "/data/value", "contains": {"at": "main:X"}}, {"value": [{"at": "main:X"}]}), [])
