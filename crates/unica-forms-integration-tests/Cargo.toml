@@ -32,6 +32,6 @@ serde_json.workspace = true
 component = "integration-tests"
 file-io = "owned"
 inputs = [
-    "crates/unica-metadata/src/platform-event-catalog-8.3.27.2074.json",
+    "crates/unica-metadata/src/platform-event-catalog-8.3.27.json",
     "plugins/unica/skills/form-compile/SKILL.md",
 ]

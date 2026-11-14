@@ -1115,7 +1115,12 @@ fn parse_runner_output(
             .map(redactor)
             .unwrap_or_else(|| "v8-runner failed without a typed message".to_string());
         return Err(runner_envelope_refusal(
-            runner_rejection(Some(operation.name().to_string()), code, message),
+            runner_rejection(
+                Some(operation.name().to_string()),
+                code,
+                envelope["error"]["layer"].as_str(),
+                message,
+            ),
             &envelope,
         ));
     }
@@ -1198,16 +1203,23 @@ const RUNNER_WIRE_CODES: [&str; 25] = [
 /// ни один из трёх не решается ни повтором, ни правкой вызова — нужен человек.
 /// Поэтому прав мы заранее не проверяем: факта отказа платформы достаточно.
 ///
-/// `environment_unavailable` раннер 0.14 отдаёт за любой отказ среды: агент
+/// `environment_unavailable` раннер отдаёт за любой отказ среды: агент
 /// конфигуратора не принял пользователя ИБ, точка входа агента не ответила,
-/// платформа или агент не стартовали. Кода у этих слоёв раннер не различает,
-/// поэтому слой опознаётся по устойчивой части собственного текста раннера
-/// (`AgentError` 0.14), как и предупреждение о базе другой копии. Нераспознанный
-/// текст остаётся средой раннера: «поставщик не готов», а не отказ учётных
-/// данных (#1333).
-pub(super) fn map_runner_detail(code: &str, message: &str) -> Option<RunnerLayer> {
+/// платформа или агент не стартовали. Слой раннер 0.17.2 называет полем
+/// `error.layer` (`layer`); поля нет у отказа неопределённого слоя, и тогда
+/// это среда раннера: «поставщик не готов», а не отказ учётных данных (#1333).
+/// Раннер без поля слоя опознаётся по устойчивой части его текста
+/// ([`RunnerLayer::of_environment_message`]).
+pub(super) fn map_runner_detail(
+    code: &str,
+    layer: Option<&str>,
+    message: &str,
+) -> Option<RunnerLayer> {
     match code {
-        "environment_unavailable" => Some(RunnerLayer::of_environment_message(message)),
+        "environment_unavailable" => Some(match layer {
+            Some(layer) => RunnerLayer::of_runner_layer(layer),
+            None => RunnerLayer::of_environment_message(message),
+        }),
         _ => None,
     }
 }
@@ -1220,24 +1232,41 @@ pub(super) enum RunnerLayer {
     InfobaseUser,
     /// Точка входа агента не ответила или назвалась чужим ключом хоста.
     AgentEndpoint,
-    /// Прочая среда раннера: платформа, запуск агента, порт.
+    /// Управляемый агент не запустился или его хранитель недоступен.
+    AgentStart,
+    /// Прочая среда раннера: платформа, порт, слой не определён.
     RunnerEnvironment,
 }
 
 /// Устойчивые части текста `AgentError` раннера 0.14 — по одной на слой.
 ///
-/// Временная мера: слой опознаётся по тексту, пока раннер не отдаёт его
-/// полем. Типизированное поле слоя запрошено в
-/// IngvarConsulting/v8-runner-rust#485; когда оно появится, эти маркеры
-/// заменяются чтением поля, а не дополняются.
+/// Запасной путь на один цикл выпуска для раннера без поля `error.layer`
+/// (до 0.17.2, IngvarConsulting/v8-runner-rust#485). Удалить вместе с
+/// [`RunnerLayer::of_environment_message`] в следующем цикле.
 const RUNNER_CREDENTIALS_REJECTED: &str = " rejected the credentials of user ";
-const RUNNER_ENDPOINT_FAILURES: [&str; 3] = [
+const RUNNER_ENDPOINT_FAILURES: [&str; 5] = [
     " is unreachable: ",
     "SSH handshake with the agent at ",
     " as its host key, but ",
+    // Another SSH server on the port of the managed agent.
+    ": another SSH server holds the port",
+    " did not open a shell channel: ",
 ];
 
 impl RunnerLayer {
+    /// Слой по полю `error.layer` раннера. Значение вне закрытого набора —
+    /// среда раннера, как и отказ без поля.
+    fn of_runner_layer(layer: &str) -> Self {
+        match layer {
+            "infobase_user" => Self::InfobaseUser,
+            "agent_endpoint" => Self::AgentEndpoint,
+            "agent_start" => Self::AgentStart,
+            _ => Self::RunnerEnvironment,
+        }
+    }
+
+    /// Слой по тексту раннера без поля `error.layer`. Удалить в следующем
+    /// цикле выпуска вместе с маркерами.
     fn of_environment_message(message: &str) -> Self {
         if message.contains(RUNNER_CREDENTIALS_REJECTED) {
             Self::InfobaseUser
@@ -1255,7 +1284,7 @@ impl RunnerLayer {
         match self {
             Self::InfobaseUser => "infobase_user",
             Self::AgentEndpoint => "agent_endpoint",
-            Self::RunnerEnvironment => "runner_environment",
+            Self::AgentStart | Self::RunnerEnvironment => "runner_environment",
         }
     }
 
@@ -1263,7 +1292,7 @@ impl RunnerLayer {
         match self {
             Self::InfobaseUser => RefusalDetail::CredentialsRejected,
             Self::AgentEndpoint => RefusalDetail::EndpointUnreachable,
-            Self::RunnerEnvironment => RefusalDetail::ProviderAbsent,
+            Self::AgentStart | Self::RunnerEnvironment => RefusalDetail::ProviderAbsent,
         }
     }
 
@@ -1271,7 +1300,10 @@ impl RunnerLayer {
     const fn advice(self) -> &'static str {
         match self {
             Self::InfobaseUser => {
-                "the designer agent rejected the infobase user: set the infobase user and password in the project's infobase connection settings; an infobase without users takes an empty user"
+                "the designer agent did not accept the infobase user or password, or found no 1C license: check the infobase user and password in the project's infobase connection settings (an infobase without users takes an empty user) and that a 1C license is available on this machine"
+            }
+            Self::AgentStart => {
+                "the designer agent did not start or its keeper is unavailable: check that the 1C platform can start its designer agent on this machine"
             }
             Self::AgentEndpoint => {
                 "the designer agent endpoint did not answer or presented another host key: check that the 1C platform can start its designer agent on this machine and that local ports are not blocked"
@@ -1388,13 +1420,16 @@ fn runner_failure_cause(error: &str, program: &Path) -> String {
 ///
 /// Отказ среды называет слой в `data.layer` вместе с кодом раннера и шаг
 /// исправления настройки; текст раннера остаётся уликой после него.
+///
+/// `layer` — поле `error.layer` конверта раннера, если оно есть.
 pub(super) fn runner_rejection(
     at: Option<String>,
     code: &str,
+    layer: Option<&str>,
     message: impl Into<String>,
 ) -> DomainResult {
     let message = message.into();
-    match map_runner_detail(code, &message) {
+    match map_runner_detail(code, layer, &message) {
         Some(layer) => {
             let mut result = DomainResult::canonical_rejection_detailed(
                 at,
@@ -1498,28 +1533,40 @@ pub(super) fn with_platform_release(mut result: DomainResult, error: &Value) -> 
     result
 }
 
-/// Код предупреждения Unica о записи в файловую базу другой рабочей копии.
+/// Код предупреждения Unica о записи в файловую базу другой рабочей копии. Тем
+/// же кодом раннер 0.17.2 называет своё предупреждение в `warning_details`.
 pub(super) const ANOTHER_COPY_WARNING_CODE: &str = "infobase_of_another_copy";
 
 /// Устойчивая часть предупреждения раннера о базе другой рабочей копии
 /// (`use_cases::infobase_owner`: «<команда> writes the infobase '<путь>' of
-/// another working copy: it is held by …»). Машинного кода у предупреждения
-/// пока нет (v8-runner-rust#460), поэтому опознание идёт по этой части; его
-/// держат тесты на живых конвертах push, pull, extensions и infobase.restore.
-/// Сменит раннер прозу — эти тесты упадут при следующем переходе. Это
-/// единственное место опознания: код раннера заменит его одной правкой.
+/// another working copy: it is held by …»).
+///
+/// Запасной путь на один цикл выпуска для раннера без поля `warning_details`
+/// (до 0.17.2, IngvarConsulting/v8-runner-rust#460): его держат тесты на
+/// живых конвертах 0.14 и 0.15. Удалить в следующем цикле.
 const ANOTHER_COPY_RUNNER_FRAGMENT: &str = " of another working copy: it is held by ";
+
+/// Раннер предупредил о записи в базу другой рабочей копии: кодом в
+/// `warning_details`, а раннер без этого поля — прозой в `warnings`.
+fn runner_warns_of_another_copy(envelope: &Value) -> bool {
+    match envelope["warning_details"].as_array() {
+        Some(details) => details
+            .iter()
+            .any(|detail| detail["code"] == ANOTHER_COPY_WARNING_CODE),
+        None => envelope["warnings"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .any(|text| text.contains(ANOTHER_COPY_RUNNER_FRAGMENT)),
+    }
+}
 
 /// Своё предупреждение Unica вместо прозы раннера: без путей чужой копии, без
 /// метки владельца и без команд раннера. Наружу идут ещё только предупреждения
 /// о прежних ключах конфигурации ([`note_config_warnings`]).
 pub(super) fn another_copy_warning(envelope: &Value) -> Option<Value> {
-    envelope["warnings"]
-        .as_array()?
-        .iter()
-        .filter_map(Value::as_str)
-        .any(|text| text.contains(ANOTHER_COPY_RUNNER_FRAGMENT))
-        .then(|| {
+    runner_warns_of_another_copy(envelope).then(|| {
             json!({
                 "code": ANOTHER_COPY_WARNING_CODE,
                 "message": "this command writes a file infobase that another working copy holds: it changes that copy's infobase, and when it changes the configuration, that copy's next load into it may be refused as moved ahead. Give this working copy an infobase of its own: declare infobases.origin with its own connection in v8project.local.yaml, then create it with infobase.create",
@@ -2047,7 +2094,7 @@ mod tests {
             "live_agent_off",
             "live_agent_job",
         ] {
-            let refused = runner_rejection(None, code, "m");
+            let refused = runner_rejection(None, code, None, "m");
             assert_eq!(
                 refused.diagnostics[0]["code"], "provider_unavailable",
                 "{code}"
@@ -2082,7 +2129,7 @@ mod tests {
             plugin.join("third-party/tools.lock.json"),
             r#"{"schemaVersion":1,
   "targets":{"darwin-arm64":{"exe":""},"linux-x64":{"exe":""},"win-x64":{"exe":".exe"}},
-  "tools":[{"name":"v8-runner","version":"0.17.1","binaryName":"v8-runner"}]}"#,
+  "tools":[{"name":"v8-runner","version":"0.17.2","binaryName":"v8-runner"}]}"#,
         )
         .unwrap();
 
@@ -2098,7 +2145,7 @@ mod tests {
         assert_eq!(diagnostic["outcome"], "needsHuman");
         let data = rejection.data.as_ref().expect("поля движка в data");
         assert_eq!(data["tool"], "v8-runner");
-        assert_eq!(data["pinnedVersion"], "0.17.1");
+        assert_eq!(data["pinnedVersion"], "0.17.2");
         assert_eq!(data["stage"], "manifest");
         assert_eq!(data["retryable"], false);
         assert_eq!(
@@ -2130,7 +2177,7 @@ mod tests {
     /// rule: INV.RUNTIME.RUNNER-ENVIRONMENT-LAYER
     #[test]
     fn runner_environment_refusals_name_the_layer_that_refused() {
-        // Тексты — `AgentError` раннера 0.14 дословно, с контекстом, который
+        // Тексты — `AgentError` раннеров 0.14–0.17 дословно, с контекстом, который
         // раннер дописывает перед ним.
         for (message, detail, layer) in [
             (
@@ -2159,6 +2206,16 @@ mod tests {
                 "agent_endpoint",
             ),
             (
+                "127.0.0.1:56018 answered with host key SHA256:a, not with the key the runner handed to the agent it launched (SHA256:b): another SSH server holds the port, and the runner does not talk to it",
+                "endpoint_unreachable",
+                "agent_endpoint",
+            ),
+            (
+                "agent at 127.0.0.1:56018 did not open a shell channel: Disconnect",
+                "endpoint_unreachable",
+                "agent_endpoint",
+            ),
+            (
                 "no 1C platform 8.3.27 is installed on this machine",
                 "provider_absent",
                 "runner_environment",
@@ -2167,6 +2224,7 @@ mod tests {
             let rejection = runner_rejection(
                 Some("push".to_string()),
                 "environment_unavailable",
+                None,
                 message,
             );
             let diagnostic = &rejection.diagnostics[0];
@@ -2210,7 +2268,7 @@ mod tests {
             let redacted = redactor(message);
             assert!(!redacted.contains("secret-1333"), "{redacted}");
             assert_eq!(
-                map_runner_detail("environment_unavailable", &redacted),
+                map_runner_detail("environment_unavailable", None, &redacted),
                 Some(layer),
                 "{redacted}"
             );
@@ -2220,10 +2278,82 @@ mod tests {
         let platform = runner_rejection(
             Some("push".to_string()),
             "platform_failure",
+            None,
             "agent at 127.0.0.1:1 rejected the credentials of user ''",
         );
         assert!(platform.diagnostics[0].get("detailCode").is_none());
         assert!(platform.data.is_none());
+    }
+
+    /// Раннер 0.17.2 называет слой полем `error.layer`, и поле решает слой
+    /// прежде текста: текст другого слоя его не переспорит, а текст без
+    /// маркеров не нужен. Запуск агента и утилита платформы — среда раннера,
+    /// у запуска агента свой шаг исправления. Значение вне набора — среда
+    /// раннера, как и отказ без поля.
+    /// rule: INV.RUNTIME.RUNNER-ENVIRONMENT-LAYER
+    #[test]
+    fn the_layer_field_of_the_runner_decides_the_layer() {
+        let endpoint_text = "agent at 127.0.0.1:56018 is unreachable: Connection refused";
+        for (field, message, detail, layer, advice) in [
+            (
+                "infobase_user",
+                endpoint_text,
+                "credentials_rejected",
+                "infobase_user",
+                "or found no 1C license",
+            ),
+            (
+                "agent_endpoint",
+                "m",
+                "endpoint_unreachable",
+                "agent_endpoint",
+                "endpoint did not answer",
+            ),
+            (
+                "agent_start",
+                "m",
+                "provider_absent",
+                "runner_environment",
+                "its keeper is unavailable",
+            ),
+            (
+                "platform",
+                endpoint_text,
+                "provider_absent",
+                "runner_environment",
+                "installed 1C platform version",
+            ),
+            (
+                "unknown_layer",
+                endpoint_text,
+                "provider_absent",
+                "runner_environment",
+                "installed 1C platform version",
+            ),
+        ] {
+            let rejection = runner_rejection(
+                Some("push".to_string()),
+                "environment_unavailable",
+                Some(field),
+                message,
+            );
+            let diagnostic = &rejection.diagnostics[0];
+            assert_eq!(diagnostic["code"], "provider_unavailable", "{field}");
+            assert_eq!(diagnostic["detailCode"], detail, "{field}");
+            assert_eq!(diagnostic["outcome"], "needsHuman", "{field}");
+            assert_eq!(
+                rejection.data,
+                Some(json!({"layer": layer, "runnerCode": "environment_unavailable"})),
+                "{field}"
+            );
+            let text = diagnostic["message"].as_str().unwrap();
+            assert!(text.contains(advice), "{field}: {text}");
+            assert!(text.ends_with(message), "{field}: {text}");
+        }
+
+        // Поле слоя у другого кода раннера слоя не выбирает.
+        let busy = runner_rejection(None, "agent_busy", Some("agent_start"), "m");
+        assert!(busy.data.is_none());
     }
 
     /// rule: INV.RUNTIME.PLATFORM-LINE
@@ -2254,6 +2384,7 @@ mod tests {
             runner_rejection(
                 Some("source.export".to_string()),
                 error["code"].as_str().unwrap(),
+                error["layer"].as_str(),
                 error["message"].as_str().unwrap(),
             ),
             &error,
@@ -2293,7 +2424,7 @@ mod tests {
             }
         });
         let result = with_platform_release(
-            runner_rejection(None, "platform_release_missing", "m"),
+            runner_rejection(None, "platform_release_missing", None, "m"),
             &unknown,
         );
         assert_eq!(
@@ -2305,10 +2436,10 @@ mod tests {
         // Прочие отказы проходят как есть.
         let other = json!({"code": "environment_unavailable", "message": "m"});
         let untouched = with_platform_release(
-            runner_rejection(None, "environment_unavailable", "m"),
+            runner_rejection(None, "environment_unavailable", None, "m"),
             &other,
         );
-        let plain = runner_rejection(None, "environment_unavailable", "m");
+        let plain = runner_rejection(None, "environment_unavailable", None, "m");
         assert_eq!(untouched.summary, plain.summary);
         assert_eq!(untouched.data, plain.data);
     }
@@ -2336,7 +2467,7 @@ mod tests {
         let mut refused = envelope.clone();
         refused["error"] = json!({"code": "invalid_config", "message": "m"});
         let refusal = runner_envelope_refusal(
-            runner_rejection(None, "invalid_config", "m".to_string()),
+            runner_rejection(None, "invalid_config", None, "m".to_string()),
             &refused,
         );
         assert_eq!(
@@ -2718,6 +2849,94 @@ mod tests {
             .join("tests/fixtures/v8_runner_014")
             .join(name);
         serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
+    }
+
+    fn captured_017_2(name: &str) -> Value {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/v8_runner_017_2")
+            .join(name);
+        serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
+    }
+
+    /// Живые конверты раннера 0.17.2: недоступная точка входа агента и чужой
+    /// SSH-сервер на его порту — слой `agent_endpoint` из поля, а не
+    /// несовместимость и не прочая среда раннера.
+    /// rule: INV.RUNTIME.RUNNER-ENVIRONMENT-LAYER
+    #[test]
+    fn captured_endpoint_refusals_of_the_runner_name_the_agent_endpoint() {
+        for name in ["attach-unreachable.json", "attach-foreign-ssh-server.json"] {
+            let envelope = captured_017_2(name);
+            let error = &envelope["error"];
+            let rejection = runner_envelope_refusal(
+                runner_rejection(
+                    Some("pull".to_string()),
+                    error["code"].as_str().unwrap(),
+                    error["layer"].as_str(),
+                    redactor(error["message"].as_str().unwrap()),
+                ),
+                &envelope,
+            );
+            let diagnostic = &rejection.diagnostics[0];
+            assert_eq!(diagnostic["code"], "provider_unavailable", "{name}");
+            assert_eq!(diagnostic["detailCode"], "endpoint_unreachable", "{name}");
+            assert_eq!(diagnostic["outcome"], "needsHuman", "{name}");
+            assert_eq!(
+                rejection.data.as_ref().unwrap()["layer"],
+                "agent_endpoint",
+                "{name}"
+            );
+        }
+    }
+
+    /// Живые конверты раннера 0.17.2: запись в базу другой копии несёт код в
+    /// `warning_details`, и ответ Unica называет её своим предупреждением даже
+    /// без прозы раннера; взятие базы без владельца предупреждения не даёт.
+    /// rule: INV.RUNTIME.RUNNER-BASE-REFUSALS
+    #[test]
+    fn captured_warning_codes_of_the_runner_name_the_infobase_of_another_copy() {
+        let mut preview = captured_017_2("push-other-copy-force-preview.json");
+        assert!(another_copy_warning(&preview).is_some());
+        // The code alone decides: the prose may change.
+        preview["warnings"] = json!(["reworded by a later runner"]);
+        preview["warning_details"][0]["message"] = json!("reworded by a later runner");
+        let warning = another_copy_warning(&preview).expect("the code names it");
+        assert_eq!(warning["code"], ANOTHER_COPY_WARNING_CODE);
+        assert!(!warning["message"].as_str().unwrap().contains("workspace"));
+
+        let taken = captured_017_2("pull-takes-unowned-infobase.json");
+        assert!(another_copy_warning(&taken).is_none());
+    }
+
+    /// Раннер 0.17.2 называет базу другой копии кодом в `warning_details`, и
+    /// код решает прежде текста: проза без кода предупреждения не даёт, а код
+    /// не требует прозы. Раннер без поля опознаётся по тексту.
+    /// rule: INV.RUNTIME.RUNNER-BASE-REFUSALS
+    #[test]
+    fn the_warning_code_of_the_runner_names_the_infobase_of_another_copy() {
+        let prose = "push writes the infobase '/x/ib' of another working copy: it is held by /y";
+        let coded = json!({
+            "warnings": ["reworded by the runner"],
+            "warning_details": [{
+                "code": "infobase_of_another_copy",
+                "message": "reworded by the runner",
+                "name": "origin",
+                "address": "file:/x/ib",
+                "owners": [{"project": "/y", "host": "h", "since": "2026-11-13T00:00:00Z",
+                            "this_copy": false, "this_machine": true}]
+            }]
+        });
+        let warning = another_copy_warning(&coded).expect("код назвал базу другой копии");
+        assert_eq!(warning["code"], ANOTHER_COPY_WARNING_CODE);
+        assert!(!warning["message"].as_str().unwrap().contains("/y"));
+
+        let uncoded = json!({"warnings": [prose], "warning_details": [
+            {"code": "some_other_code", "message": prose}
+        ]});
+        assert!(another_copy_warning(&uncoded).is_none());
+
+        let older = json!({"warnings": [prose]});
+        assert!(another_copy_warning(&older).is_some());
+        assert!(another_copy_warning(&json!({"warnings": []})).is_none());
     }
 
     /// Живые конверты раннера 0.14.0: загрузка `.dt` в базу другой рабочей
@@ -3598,7 +3817,7 @@ infobase:
                 &runner,
                 CancellationToken::new(),
                 &tool,
-                "0.17.1",
+                "0.17.2",
             );
             assert!(!result.ok, "{result:?}");
             let choice = result.human_choice.as_deref().expect("a question");
@@ -3645,7 +3864,7 @@ infobase:
             &SequenceRunner::new(vec![failed_process(restore_target_exists_envelope(true))]),
             CancellationToken::new(),
             &tool,
-            "0.17.1",
+            "0.17.2",
         );
         assert!(!preview.ok);
         assert!(preview.human_choice.is_none(), "{preview:?}");
@@ -3660,7 +3879,7 @@ infobase:
             &runner,
             CancellationToken::new(),
             &tool,
-            "0.17.1",
+            "0.17.2",
         );
         assert!(!result.ok);
         assert!(result.human_choice.is_none(), "{result:?}");
