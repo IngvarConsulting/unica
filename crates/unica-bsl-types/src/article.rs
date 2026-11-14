@@ -266,7 +266,7 @@ pub fn header(path: &str, html: &str) -> ArticleHeader {
             };
             first_sentence(&body)
         })
-        .unwrap_or_default();
+        .unwrap_or_else(|| body_summary(html));
     ArticleHeader {
         kind,
         name,
@@ -274,6 +274,25 @@ pub fn header(path: &str, html: &str) -> ArticleHeader {
         summary,
         call,
     }
+}
+
+/// Начало текста страницы без её заголовка.
+///
+/// У страницы руководства разделов `V8SH_chapter` нет — описанием служит её
+/// собственный текст. Без этого находка по руководству осталась бы без
+/// строки о себе: раздела «Описание» там не бывает.
+fn body_summary(html: &str) -> String {
+    let after_heading = after_closing_heading(html).unwrap_or(html);
+    first_sentence(&text(after_heading))
+}
+
+/// Разметка после закрытия первого заголовка `<h1>`: его текст — заголовок
+/// страницы, а не строка о ней. Регистр тега у вендора разный.
+fn after_closing_heading(html: &str) -> Option<&str> {
+    let lower = html.to_ascii_lowercase();
+    let close = lower.find("</h1")?;
+    let end = html[close..].find('>')? + close + 1;
+    Some(&html[end..])
 }
 
 // resource-limit: documentation.article-summary-chars

@@ -499,3 +499,23 @@ fn the_header_of_an_article_names_its_kind_owner_and_one_sentence() {
     assert_eq!(whole.summary, "Таблица значений.");
     assert!(whole.call.is_none());
 }
+
+/// Страница руководства разделов `V8SH_chapter` не имеет: заголовок `<H1>`
+/// в любом регистре, дальше проза, путь без расширения. Строка о такой
+/// находке — начало её текста без заголовка: иначе руководство в выдаче
+/// осталось бы без строки о себе.
+/// rule: INV.APP.DOCUMENTATION-SEARCH-HIT
+#[test]
+fn a_guide_page_without_chapters_still_names_itself_in_one_line() {
+    let guide = "<HTML><BODY><H1>Работа с запросами</H1>\
+        <P>Запрос получает данные из таблиц базы. Второе предложение \
+        в строку находки не идёт.</P></BODY></HTML>";
+    let header = super::header("1cv8_ru/content/chapter3/page7", guide);
+
+    assert_eq!(header.kind, ArticleKind::Concept);
+    assert_eq!(
+        header.summary, "Запрос получает данные из таблиц базы.",
+        "строка о находке — начало текста без заголовка"
+    );
+    assert!(header.call.is_none());
+}
