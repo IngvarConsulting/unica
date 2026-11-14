@@ -3345,12 +3345,9 @@ impl ProcessTree {
         allows_breakaway: bool,
         console_group: bool,
     ) -> io::Result<Self> {
-        use std::mem::{size_of, zeroed};
         use std::os::windows::process::CommandExt;
         use windows_sys::Win32::System::JobObjects::{
-            CreateJobObjectW, JobObjectExtendedLimitInformation, SetInformationJobObject,
-            JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_BREAKAWAY_OK,
-            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+            CreateJobObjectW, JOB_OBJECT_LIMIT_BREAKAWAY_OK, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
         };
         use windows_sys::Win32::System::Threading::{CREATE_NEW_PROCESS_GROUP, CREATE_SUSPENDED};
 
@@ -3563,8 +3560,9 @@ impl ProcessTree {
         if self.job.is_null() {
             return Ok(());
         }
-        // The startup Job was created without KILL_ON_JOB_CLOSE; a verified
-        // client handoff clears it above. Closing releases either ready process.
+        // The startup Job dropped KILL_ON_JOB_CLOSE when its child resumed; a
+        // verified client handoff clears it above. Closing releases either
+        // ready process.
         // SAFETY: `self.job` is owned here and nulled only after a successful close.
         if unsafe { windows_sys::Win32::Foundation::CloseHandle(self.job) } == 0 {
             return Err(io::Error::last_os_error());
