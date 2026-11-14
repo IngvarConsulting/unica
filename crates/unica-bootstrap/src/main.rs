@@ -45,7 +45,7 @@ fn run(args: Vec<String>) -> Result<i32> {
             // Читаем до установки: сколько получила убитая попытка, видно лишь
             // пока её недокачка на диске, а удачная установка её забирает.
             let killed = KilledStartups::read(&artifact_cache);
-            let installed = install_runtime(&plugin_root)?;
+            let installed = install_runtime(&plugin_root, &artifact_cache)?;
             // Убитый прошлый запуск своего провода не имел. Провод есть у
             // рантайма — он и расскажет, если рассказывать есть о чём.
             let notice = killed.notice();
@@ -161,27 +161,39 @@ impl KilledStartups {
     }
 }
 
-fn install_runtime(plugin_root: &Path) -> Result<unica_artifact_delivery::RuntimeInstallation> {
+fn install_runtime(
+    plugin_root: &Path,
+    cache_root: &Path,
+) -> Result<unica_artifact_delivery::RuntimeInstallation> {
     let manifest = RuntimeManifest::load(&plugin_root.join("runtime-manifest.json"))?;
     let host = HostTarget::current()?;
-    let cache_root = runtime_cache_root()?;
-    let installer = RuntimeInstaller::new(cache_root, VERSION, Arc::new(HttpDownloader::default()));
+    let installer = RuntimeInstaller::new(
+        cache_root.to_path_buf(),
+        VERSION,
+        Arc::new(HttpDownloader::default()),
+    );
     installer.ensure(&manifest, host)
 }
 
 fn install_and_verify_runtime(plugin_root: &Path, provider_state_root: &Path) -> Result<()> {
     verify_installed_skill_package(plugin_root, VERSION)?;
-    let installed = install_runtime(plugin_root)?;
+    let artifact_cache = runtime_cache_root()?;
+    let installed = install_runtime(plugin_root, &artifact_cache)?;
     verify_mcp_runtime(
         &installed.entrypoint,
         &installed.root,
-        Some(&plugin_root.join("runtime-manifest.json")),
+        &RuntimeHandoff {
+            provider_state_root,
+            artifact_cache: &artifact_cache,
+            runtime_manifest: &plugin_root.join("runtime-manifest.json"),
+            startup_notice: None,
+        },
         // resource-limit: bootstrap.runtime-verify-timeout
         // class: deadline
         // unit: ms
         // scope: process
         // value: 20000
-        // literal: provider_state_root, Duration::from_secs(20)
+        // literal: Duration::from_secs(20)
         // count: 1
         // expr: Duration::from_secs(20)
         // resource: Срок проверки установленного runtime и инструментов MCP при установке пакета bootstrap.
@@ -189,7 +201,6 @@ fn install_and_verify_runtime(plugin_root: &Path, provider_state_root: &Path) ->
         // origin: неизвестно
         // problem: неизвестно
         // on-reach: установка завершается ошибкой проверки runtime
-        provider_state_root,
         Duration::from_secs(20),
     )?;
     eprintln!(
