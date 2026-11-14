@@ -8,9 +8,6 @@ use super::container::ContainerError;
 use super::corpus::{read_corpus, CorpusError, CorpusPage, Signature};
 use super::installation::{discover, CorpusContainers, InstallationCorpora, InstallationError};
 
-/// Длина фрагмента выдачи. Вырезается один раз при индексировании: фрагмент
-/// не зависит от запроса, и держать ради него полный текст страницы незачем.
-
 /// Единственное объявление корпусов поставщика. И `corpora()`, и `search()`
 /// читают эту таблицу, поэтому разойтись молча они не могут, а имена корпусов
 /// не повторяются литералом в каждой ветке.

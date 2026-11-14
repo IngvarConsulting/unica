@@ -276,19 +276,33 @@ pub fn header(path: &str, html: &str) -> ArticleHeader {
     }
 }
 
+// resource-limit: documentation.article-summary-chars
+// class: result
+// unit: chars
+// scope: record
+// value: 200
+// resource: Длина строки о статье в заголовке находки поиска.
+// status: justified
+// origin: #2864
+// problem: выдача из десяти находок разрасталась до 13–15 КБ склеенного текста страниц и вытесняла из разговора то, ради чего её спрашивали
+// on-reach: предложение обрезается по границе слова и заканчивается многоточием; полный текст статьи остаётся доступен по её локатору
+// evidence: crates/unica-documentation-sources/src/platform_help/provider.rs::tests::ten_hits_name_what_to_open_and_stay_within_their_size
+// decision: выдача остаётся в единицах килобайт, предел проверяется тестом
+// decision-source: arch/rules/analysis/documentation/search-hit.md
+const SUMMARY_CHARS: usize = 200;
+
 /// Первое предложение текста. Длинное предложение обрезается по слову:
 /// находка называет, что открыть, а не пересказывает статью.
 fn first_sentence(body: &str) -> String {
-    const LIMIT: usize = 200;
     let body = body.trim();
     let end = body.find(". ").map_or(body.len(), |at| at + 1);
     let sentence = body[..end].trim();
-    if sentence.chars().count() <= LIMIT {
+    if sentence.chars().count() <= SUMMARY_CHARS {
         return sentence.to_owned();
     }
     let mut cut = sentence
         .char_indices()
-        .nth(LIMIT)
+        .nth(SUMMARY_CHARS)
         .map_or(sentence.len(), |(at, _)| at);
     if let Some(space) = sentence[..cut].rfind(' ') {
         cut = space;
