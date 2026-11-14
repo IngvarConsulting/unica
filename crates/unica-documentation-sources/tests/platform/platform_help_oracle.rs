@@ -1086,6 +1086,10 @@ fn every_unreviewed_out_of_profile_owner_is_named_at_once() {
     let pages = ["FirstUnknown", "SecondUnknown"]
         .into_iter()
         .map(|owner| CorpusPage {
+            header: unica_bsl_types::article::header(
+                &format!("objects/future/{owner}/events/Click1.html"),
+                "",
+            ),
             path: format!("objects/future/{owner}/events/Click1.html"),
             title: format!("Нажатие ({owner}.Click)"),
             text: String::new(),
@@ -1113,6 +1117,7 @@ fn normalized_breaks_leave_a_single_line_declaration_as_it_is() {
 #[test]
 fn an_unknown_vendor_owner_cannot_enter_the_reviewed_out_of_profile_category() {
     let page = CorpusPage {
+        header: unica_bsl_types::article::header("objects/future/events/Changed1.html", ""),
         path: "objects/future/events/Changed1.html".to_string(),
         title: "Изменилось (FutureOwner.Changed)".to_string(),
         text: String::new(),
@@ -1298,6 +1303,7 @@ fn a_damaged_russian_declaration_is_corrected_only_where_it_is_pinned() {
     let websocket =
         "objects/catalog63/catalog3024/WebSocket client module/events/OnMessage747.html";
     let page = |path: &str| CorpusPage {
+        header: unica_bsl_types::article::header(path, ""),
         path: path.to_string(),
         title: String::new(),
         text: String::new(),

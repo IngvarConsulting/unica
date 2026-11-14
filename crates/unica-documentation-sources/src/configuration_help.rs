@@ -279,6 +279,11 @@ impl DocumentationProvider for ConfigurationHelpProvider {
                         .cloned()
                         .flatten()
                         .unwrap_or_else(|| "unversioned".to_string()),
+                    // Вид статьи и владельца различает справка платформы:
+                    // её страница знает, метод это, свойство или тип.
+                    // Страница справки конфигурации — нет.
+                    kind: None,
+                    owner: None,
                 }
             })
             .collect();

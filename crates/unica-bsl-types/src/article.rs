@@ -200,6 +200,135 @@ pub(crate) fn classify(path: &str) -> Option<(String, ArticleKind, Option<String
     }
 }
 
+/// Заголовок статьи для выдачи поиска: вид статьи, её имя, владелец и одна
+/// строка описания.
+///
+/// Читается тем же устройством страницы, что и полная статья, но без
+/// разбора разделов, которых находке не нужно: выдача строится по всему
+/// корпусу, и платить полным разбором за каждую страницу незачем.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArticleHeader {
+    pub kind: ArticleKind,
+    pub name: ArticleName,
+    /// Владелец члена: у страницы типа и у понятия владельца нет.
+    pub owner: Option<ArticleName>,
+    /// Первое предложение описания. У свойства — без строки типа перед ним:
+    /// тип приходит своим полем, а не началом описания.
+    pub summary: String,
+    /// Строка вызова из раздела «Синтаксис», как её пишет справка:
+    /// `СтрНайти(<Строка>, <ПодстрокаПоиска>)`. У страницы без этого
+    /// раздела вызова нет.
+    pub call: Option<String>,
+}
+
+/// Заголовок статьи по пути страницы и её разметке.
+pub fn header(path: &str, html: &str) -> ArticleHeader {
+    let kind = classify(path)
+        .map(|(_, kind, _)| kind)
+        .unwrap_or(ArticleKind::Concept);
+    let title = element_text(html, "V8SH_pagetitle").unwrap_or_default();
+    let owner_heading = paragraph(html, "V8SH_title");
+    let heading = match kind {
+        ArticleKind::Type => owner_heading.clone(),
+        ArticleKind::Concept => paragraph(html, "V8SH_heading")
+            .or_else(|| owner_heading.clone())
+            .or_else(|| Some(title.clone())),
+        _ => paragraph(html, "V8SH_heading"),
+    };
+    let name = heading.as_deref().map(split_name).unwrap_or(ArticleName {
+        ru: String::new(),
+        en: None,
+    });
+    let owner = match kind {
+        ArticleKind::Type | ArticleKind::Concept => None,
+        _ => owner_heading.as_deref().map(split_name),
+    };
+    let sections = chapters(html);
+    let named = |wanted: [&str; 2]| {
+        sections
+            .iter()
+            .find(|(raw_title, _)| {
+                let title = raw_title.trim().trim_end_matches(':').trim();
+                wanted.contains(&title)
+            })
+            .map(|(_, content)| *content)
+    };
+    let call = named(["Синтаксис", "Syntax"])
+        .map(text)
+        .filter(|call| !call.is_empty());
+    let summary = named(["Описание", "Description"])
+        .map(|content| {
+            let body = text(content);
+            let body = if kind == ArticleKind::Property {
+                without_type_line(&body)
+            } else {
+                body
+            };
+            first_sentence(&body)
+        })
+        .unwrap_or_else(|| body_summary(html));
+    ArticleHeader {
+        kind,
+        name,
+        owner,
+        summary,
+        call,
+    }
+}
+
+/// Начало текста страницы без её заголовка.
+///
+/// У страницы руководства разделов `V8SH_chapter` нет — описанием служит её
+/// собственный текст. Без этого находка по руководству осталась бы без
+/// строки о себе: раздела «Описание» там не бывает.
+fn body_summary(html: &str) -> String {
+    let after_heading = after_closing_heading(html).unwrap_or(html);
+    first_sentence(&text(after_heading))
+}
+
+/// Разметка после закрытия первого заголовка `<h1>`: его текст — заголовок
+/// страницы, а не строка о ней. Регистр тега у вендора разный.
+fn after_closing_heading(html: &str) -> Option<&str> {
+    let lower = html.to_ascii_lowercase();
+    let close = lower.find("</h1")?;
+    let end = html[close..].find('>')? + close + 1;
+    Some(&html[end..])
+}
+
+// resource-limit: documentation.article-summary-chars
+// class: result
+// unit: chars
+// scope: record
+// value: 200
+// resource: Длина строки о статье в заголовке находки поиска.
+// status: justified
+// origin: #2864
+// problem: выдача из десяти находок разрасталась до 13–15 КБ склеенного текста страниц и вытесняла из разговора то, ради чего её спрашивали
+// on-reach: предложение обрезается по границе слова и заканчивается многоточием; полный текст статьи остаётся доступен по её локатору
+// evidence: crates/unica-documentation-sources/src/platform_help/provider.rs::tests::ten_hits_name_what_to_open_and_stay_within_their_size
+// decision: выдача остаётся в единицах килобайт, предел проверяется тестом
+// decision-source: arch/rules/analysis/documentation/search-hit.md
+const SUMMARY_CHARS: usize = 200;
+
+/// Первое предложение текста. Длинное предложение обрезается по слову:
+/// находка называет, что открыть, а не пересказывает статью.
+fn first_sentence(body: &str) -> String {
+    let body = body.trim();
+    let end = body.find(". ").map_or(body.len(), |at| at + 1);
+    let sentence = body[..end].trim();
+    if sentence.chars().count() <= SUMMARY_CHARS {
+        return sentence.to_owned();
+    }
+    let mut cut = sentence
+        .char_indices()
+        .nth(SUMMARY_CHARS)
+        .map_or(sentence.len(), |(at, _)| at);
+    if let Some(space) = sentence[..cut].rfind(' ') {
+        cut = space;
+    }
+    format!("{}…", sentence[..cut].trim_end())
+}
+
 /// Статья по пути страницы и её разметке. Разбирается любая страница:
 /// у страницы, не описывающей тип или его член, вид — [`ArticleKind::Concept`],
 /// и статья несёт заголовок, текст разделов и ссылки.

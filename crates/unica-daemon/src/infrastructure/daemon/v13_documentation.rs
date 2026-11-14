@@ -1016,6 +1016,9 @@ mod tests {
                                 "found".into()
                             },
                             applicable_version: "8.3".into(),
+                            // Стенд вида статьи и владельца не различает.
+                            kind: None,
+                            owner: None,
                         })
                         .collect(),
                 })

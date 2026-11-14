@@ -17,8 +17,8 @@ pub use applied::{
     NoAppliedTypes,
 };
 pub use article::{
-    Article, ArticleKind, ArticleLink, ArticleName, MemberList, Parameter, ReturnValue,
-    SyntaxVariant,
+    Article, ArticleHeader, ArticleKind, ArticleLink, ArticleName, MemberList, Parameter,
+    ReturnValue, SyntaxVariant,
 };
 pub use doc_comment::{DocComment, DocParameter, DocReturn};
 pub use doc_field::{Field, UnparsedReason};
