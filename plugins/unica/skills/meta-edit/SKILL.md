@@ -57,14 +57,25 @@ allowed-tools:
 `props.set` изменяет только строковый `Comment` у существующих
 `CommonAttribute`, `FunctionalOptionsParameter`,
 `SessionParameter`, `FilterCriterion`, `SettingsStorage`, `CommonCommand`,
-`CommandGroup`, `CommonForm`, `CommonTemplate`, `CommonPicture`,
+`CommandGroup`, `CommonTemplate`, `CommonPicture`,
 `IntegrationService`, `XDTOPackage`,
-`Sequence` и `Style`. Для общей формы адресуй дескриптор
-`main:CommonForm.<Имя>.Metadata`; остальные владельцы адресуются как
+`Sequence` и `Style`. Эти владельцы адресуются как
 `main:<Вид>.<Имя>`. Например, `{"values":{"Comment":"Назначение параметра"}}`;
 пустая строка очищает комментарий. Имя `comment` — допустимый псевдоним,
 одновременно оба написания не передаются. Отсутствующий, неоднозначный
 или составной `Comment` требует исправления исходного дескриптора.
+
+Дескриптор формы адресуется как `main:CommonForm.<Имя>.Metadata` или
+`main:<Вид>.<Имя>.Form.<Форма>.Metadata`, в том числе у формы внешней
+обработки или отчёта. `props.set` меняет у него `Comment`, булев
+`IncludeHelpInContents`, `UsePurposes` — весь набор различных назначений
+(`PlatformApplication`, `MobilePlatformApplication`; пустой массив очищает) —
+и с платформы 8.5.1 `UseInInterfaceCompatibilityMode` (`Any`, `Taxi`,
+`Version85`). В наборе 8.3.27 режима совместимости нет: `can` называет его
+в `x-unica-later-lines`, а запись отвергается. `FormType` только читается:
+тип формы меняется вместе с её содержимым. У формы расширения меняется только
+`Comment`. Отсутствующее свойство пишется на то место, где его пишет
+платформа; то же значение не меняет ни байта.
 
 У `FunctionalOption` тот же `props.set` поддерживает строковый `Comment`,
 строковый `Location` и булев `PrivilegedGetMode`, в том числе в одном `values`.

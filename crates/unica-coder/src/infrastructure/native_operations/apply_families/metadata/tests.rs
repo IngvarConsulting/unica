@@ -81,6 +81,7 @@ impl MetadataFixture {
         let project_kind = match kind {
             SourceSetKind::Configuration => "CONFIGURATION",
             SourceSetKind::Extension => "EXTENSION",
+            SourceSetKind::ExternalProcessor => "EXTERNAL_DATA_PROCESSORS",
             other => panic!("unsupported fixture kind {other:?}"),
         };
         std::fs::write(

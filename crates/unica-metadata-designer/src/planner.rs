@@ -1563,6 +1563,65 @@ fn stage_descriptor_properties(
             let text = crate::language_code::replace(base, name, code).map_err(invalid)?;
             (NodeKind::Language, text)
         }
+        DescriptorPropertyChanges::FormDescriptor(target) => {
+            let not_registered = |what: &str| {
+                ApplyPlanError::new(
+                    ApplyPlanErrorKind::NotFound,
+                    format!("{what} is not registered"),
+                )
+                .at_path(at_path.clone())
+            };
+            let read = |staged: &mut ApplyProposal<'_>, path: &Path, what: &str| {
+                staged
+                    .read(path)
+                    .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?
+                    .ok_or_else(|| {
+                        ApplyPlanError::new(
+                            ApplyPlanErrorKind::NotFound,
+                            format!("{what} was not found"),
+                        )
+                        .at_path(at_path.clone())
+                    })
+            };
+            if let Some((kind, owner)) = &target.registered {
+                let root_path = Path::new("Configuration.xml");
+                let root = read(staged, root_path, "configuration descriptor")?;
+                let root = unica_source_designer::owner::prove_already_read_source_set_owner(
+                    root_path,
+                    &root,
+                    source_kind,
+                )
+                .map_err(|error| {
+                    ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, error.message)
+                        .at_path(at_path.clone())
+                })?;
+                if !root.registers(kind, owner) {
+                    return Err(not_registered("metadata owner"));
+                }
+            }
+            if let Some(owner_relative) = &target.owner_relative {
+                let owner = read(staged, owner_relative, "form owner descriptor")?;
+                if !crate::form_descriptor::owner_registers_form(&owner, name) {
+                    return Err(not_registered("form"));
+                }
+            }
+            let kind = if target.values.common {
+                NodeKind::CommonForm
+            } else {
+                NodeKind::Form
+            };
+            let text = crate::form_descriptor::set_form_descriptor_properties(
+                &source,
+                kind,
+                name,
+                &target.values.changes,
+            )
+            .map_err(|message| {
+                ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)
+                    .at_path(at_path.clone())
+            })?;
+            (kind, text)
+        }
         DescriptorPropertyChanges::CommentOnly { kind, comment } => {
             let root_path = std::path::Path::new("Configuration.xml");
             let root = staged
@@ -2001,6 +2060,8 @@ fn stage_descriptor_properties(
                         text = set_property_parts(&text, tag, parts).ok_or_else(|| missing(tag))?;
                         continue;
                     }
+                    // The configuration root profile has no list property.
+                    DescriptorPropertyValue::List(_) => return Err(missing(tag)),
                 };
                 text = if property.localized() {
                     set_ml_property(
@@ -2022,6 +2083,7 @@ fn stage_descriptor_properties(
     let postimage = if matches!(
         changes,
         DescriptorPropertyChanges::CommentOnly { .. }
+            | DescriptorPropertyChanges::FormDescriptor(_)
             | DescriptorPropertyChanges::StyleItem(_)
             | DescriptorPropertyChanges::PaletteColor(_)
             | DescriptorPropertyChanges::Queue(_)
@@ -2053,10 +2115,10 @@ fn stage_descriptor_properties(
                 _ if source_kind == SourceSetKind::Extension => DomainEventKind::CfeChanged,
                 _ => DomainEventKind::ConfigXmlChanged,
             },
-            if kind == NodeKind::Configuration {
-                name.to_string()
-            } else {
-                format!("{}.{name}", kind.as_str())
+            match changes {
+                DescriptorPropertyChanges::FormDescriptor(target) => target.form.clone(),
+                _ if kind == NodeKind::Configuration => name.to_string(),
+                _ => format!("{}.{name}", kind.as_str()),
             },
         ),
         op_index,

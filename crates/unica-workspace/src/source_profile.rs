@@ -21,7 +21,9 @@ const ROOT_DESCRIPTOR_PREFIX_BYTES: usize = 64 * 1024;
 /// Профиль набора по версии корня `Configuration.xml`: 2.20 или выпуск со
 /// своими диалектами (2.21, 2.22). Набор, чей корень не прочитан или записан
 /// в другой версии, получает профиль 2.20: чтение сообщает о версии само, а
-/// правку отклоняет охрана формата.
+/// правку отклоняет охрана формата. Версия читается только из
+/// `Configuration.xml`, поэтому внешняя обработка или отчёт получает профиль
+/// 2.20 независимо от формата своей выгрузки.
 pub fn platform_xml_source_profile(kind: SourceSetKind, root: &Path) -> SourceProfile {
     let fallback = SourceProfile::platform_xml_8_3_27_format_2_20();
     if !matches!(

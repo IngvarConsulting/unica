@@ -376,6 +376,16 @@ const MEMBER_LINE_ADDITIONS: &[(&str, &str, PlatformLine)] = &[
         "AuxiliaryVariantForm",
         PlatformLine::new(8, 5, 1),
     ),
+    (
+        "Form",
+        "UseInInterfaceCompatibilityMode",
+        PlatformLine::new(8, 5, 1),
+    ),
+    (
+        "CommonForm",
+        "UseInInterfaceCompatibilityMode",
+        PlatformLine::new(8, 5, 1),
+    ),
     // The auxiliary forms of a configuration root (the all_kinds export of
     // 2.21).
     (
