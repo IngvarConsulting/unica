@@ -457,9 +457,18 @@ fn a_configuration_root_refuses_slots_and_forms_it_does_not_have() {
     assert!(texts[Path::new("Configuration.xml")]
         .contains("<DefaultReportForm>CommonForm.MainA</DefaultReportForm>"));
     for (values, kind) in [
-        (json!({"defaultReportForm":"Missing"}), ApplyPlanErrorKind::NotFound),
-        (json!({"defaultReportForm":"Catalog.Валюты"}), ApplyPlanErrorKind::BadValue),
-        (json!({"defaultObjectForm":"MainA"}), ApplyPlanErrorKind::BadValue),
+        (
+            json!({"defaultReportForm":"Missing"}),
+            ApplyPlanErrorKind::NotFound,
+        ),
+        (
+            json!({"defaultReportForm":"Catalog.Валюты"}),
+            ApplyPlanErrorKind::BadValue,
+        ),
+        (
+            json!({"defaultObjectForm":"MainA"}),
+            ApplyPlanErrorKind::BadValue,
+        ),
     ] {
         let error = set_root_forms(source, line, values.clone()).unwrap_err();
         assert_eq!(error.kind(), kind, "{values}");

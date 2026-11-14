@@ -748,18 +748,29 @@ pub(crate) fn production_authorities_reach_all_profile_module_capabilities_from_
 #[test]
 fn configuration_root_shows_the_form_slots_of_its_line() {
     use unica_source_contract::format_identity::PlatformLine;
-    for (format, line, count) in [
-        ("2.20", PlatformLine::new(8, 3, 27), 10),
-        ("2.21", PlatformLine::new(8, 5, 1), 18),
-        ("2.22", PlatformLine::new(8, 5, 4), 18),
+    for (format, fixture, line, count) in [
+        (
+            "2.20",
+            "../../tests/fixtures/formats/platform_xml/2.20/all_kinds/src",
+            PlatformLine::new(8, 3, 27),
+            10,
+        ),
+        (
+            "2.21",
+            "../../tests/fixtures/formats/platform_xml/2.21/all_kinds/src",
+            PlatformLine::new(8, 5, 1),
+            18,
+        ),
+        (
+            "2.22",
+            "../../tests/fixtures/formats/platform_xml/2.22/all_kinds/src",
+            PlatformLine::new(8, 5, 4),
+            18,
+        ),
     ] {
-        let fixture = std::fs::canonicalize(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../tests/fixtures/formats/platform_xml")
-                .join(format)
-                .join("all_kinds/src"),
-        )
-        .unwrap();
+        let fixture =
+            std::fs::canonicalize(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(fixture))
+                .unwrap();
         let copy = tempfile::tempdir().unwrap();
         let source = std::fs::canonicalize(copy.path()).unwrap();
         let text = std::fs::read_to_string(fixture.join("Configuration.xml"))
