@@ -547,6 +547,52 @@ class DiffTests(unittest.TestCase):
         self.assertEqual(commands["open-marks"], ["py", "scripts/ci/open_marks.py", "pr", "--description", ""])
         self.assertEqual(len(planned.notes), 1)
 
+    def test_a_dependency_change_selects_the_whole_workspace_as_the_queue_does(self):
+        """Признак берётся у очереди: внешние зависимости, корневой манифест, тулчейн."""
+        queue = CHECK.load_queue_tests()
+        members = {"unica-a"}
+        cases = (
+            (["Cargo.lock"], False, "Cargo.lock"),        # поднята внешняя зависимость
+            (["Cargo.lock", "crates/a/Cargo.toml"], True, None),  # только записи крейтов рабочей области
+            (["Cargo.toml"], True, "Cargo.toml"),
+            ([".cargo/config.toml", "crates/a/src/lib.rs"], True, ".cargo/config.toml"),
+            (["crates/a/src/lib.rs", "docs/x.md"], True, None),   # зависимостей не трогает
+        )
+        for files, keeps, expected in cases:
+            with self.subTest(files=files), mock.patch.object(queue, "lock_keeps_external", return_value=keeps), \
+                    mock.patch.object(CHECK, "load_queue_tests", return_value=queue):
+                self.assertEqual(CHECK.whole_build_reason(files, "base", members), expected)
+
+    def test_a_lock_that_cannot_be_read_selects_the_whole_workspace(self):
+        queue = CHECK.load_queue_tests()
+        failure = mock.Mock(side_effect=CHECK.subprocess.CalledProcessError(128, "git"))
+        with mock.patch.object(queue, "lock_keeps_external", failure), \
+                mock.patch.object(CHECK, "load_queue_tests", return_value=queue):
+            self.assertEqual(CHECK.whole_build_reason(["Cargo.lock"], "base", set()), "Cargo.lock")
+
+    def test_the_gate_loads_the_queue_rule_in_a_clean_interpreter(self):
+        """Как при обычном запуске: без модуля очереди, уже загруженного соседним набором."""
+        script = ("import importlib.util, sys\n"
+                  "spec = importlib.util.spec_from_file_location('gate', sys.argv[1])\n"
+                  "gate = importlib.util.module_from_spec(spec)\n"
+                  "sys.modules['gate'] = gate\n"
+                  "spec.loader.exec_module(gate)\n"
+                  "assert 'queue_tests' not in sys.modules or sys.argv[2] == 'loaded'\n"
+                  "print(gate.whole_build_reason(['Cargo.toml'], 'HEAD', set()),"
+                  " gate.whole_build_reason(['docs/x.md'], 'HEAD', set()))\n")
+        completed = subprocess.run([sys.executable, "-I", "-c", script,
+                                    str(REPO_ROOT / "scripts" / "dev" / "pre-ready-check.py"), "fresh"],
+                                   cwd=REPO_ROOT, capture_output=True, text=True, encoding="utf-8")
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(completed.stdout.strip(), "Cargo.toml None")
+
+    def test_the_gate_and_the_queue_share_one_whole_build_rule(self):
+        queue = CHECK.load_queue_tests()
+        source = (REPO_ROOT / "scripts" / "dev" / "pre-ready-check.py").read_text(encoding="utf-8")
+        self.assertNotIn("WHOLE_BUILD", source)
+        self.assertIn("whole_build(", source)
+        self.assertEqual(queue.whole_build(["Cargo.lock"], lock_is_internal=True), None)
+
     def test_without_rust_changes_clippy_is_not_planned(self):
         keys = [check.key for check in CHECK.plan(["crates/unica-research"], {}).checks]
         self.assertNotIn("clippy", keys)

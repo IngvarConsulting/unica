@@ -357,6 +357,36 @@ def changed_lines(diff: str) -> Dict[str, Set[int]]:
     return result
 
 
+def load_queue_tests():
+    """`scripts/ci/queue-tests.py`: признак «правка задевает всю сборку» живёт там."""
+    import importlib.util  # noqa: PLC0415
+    spec = importlib.util.spec_from_file_location("queue_tests", REPO_ROOT / "scripts" / "ci" / "queue-tests.py")
+    if "queue_tests" in sys.modules:
+        return sys.modules["queue_tests"]
+    module = importlib.util.module_from_spec(spec)
+    # `dataclass` ищет модуль класса в `sys.modules`.
+    sys.modules["queue_tests"] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def whole_build_reason(files: Sequence[str], base: str, members: Set[str], root: Path = REPO_ROOT) -> Optional[str]:
+    """Почему правка задевает всю сборку, как решает очередь, или `None`.
+
+    Признак спрашивается у очереди, а не описывается здесь второй раз: правка
+    `Cargo.lock` только в записях крейтов рабочей области всей сборки не задевает.
+    Не прочитав `Cargo.lock` ревизий, считаем, что задевает: как очередь при сбое.
+    """
+    queue = load_queue_tests()
+    internal = False
+    if "Cargo.lock" in files:
+        try:
+            internal = queue.lock_keeps_external(base, "HEAD", members, root)
+        except (OSError, subprocess.CalledProcessError, ValueError):
+            internal = False
+    return queue.whole_build(list(files), lock_is_internal=internal)
+
+
 def touched_crates(files: Iterable[str]) -> List[str]:
     """Каталоги крейтов (`crates/<имя>`) затронутых файлов."""
     return sorted({"/".join(name.split("/")[:2]) for name in files
@@ -1263,10 +1293,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 2
 
     description = str(args.description_file.resolve()) if args.description_file else None
-    planned = plan(touched_crates(lines), packages, base, description)
+    whole = whole_build_reason(sorted(lines), base, {package.name for package in packages.values()})
+    crates = sorted(packages) if whole else touched_crates(lines)
+    planned = plan(crates, packages, base, description)
     checks = planned.checks
-    print(f"База {base[:12]} ({args.base}); крейты: {', '.join(sorted(planned.touched)) or 'нет'}; "
-          f"зависимые: {', '.join(sorted(planned.users)) or 'нет'}")
+    if whole:
+        # Выбор не по затронутым файлам: иначе длинный список стоял бы без объяснения.
+        print(f"База {base[:12]} ({args.base}); крейты: весь workspace ({len(planned.touched)}) — "
+              f"выбор по зависимостям, как у очереди: общая сборка: {whole}")
+    else:
+        print(f"База {base[:12]} ({args.base}); крейты: {', '.join(sorted(planned.touched)) or 'нет'}; "
+              f"зависимые: {', '.join(sorted(planned.users)) or 'нет'}")
     if dirty:
         print("Рабочее дерево с незакоммиченными правками: итог относится к дереву, а не к HEAD.")
     for note in planned.notes:

@@ -66,6 +66,14 @@ class ChoiceTests(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertTrue(choose([path, "crates/a/src/lib.rs"]).full)
 
+    def test_the_whole_build_rule_is_one_function(self) -> None:
+        # Его же спрашивает гейт готовности (`scripts/dev/pre-ready-check.py`).
+        self.assertEqual(queue.whole_build(["crates/a/src/lib.rs", "Cargo.lock"]), "Cargo.lock")
+        self.assertIsNone(queue.whole_build(["Cargo.lock"], lock_is_internal=True))
+        self.assertEqual(queue.whole_build(["Cargo.lock", "rust-toolchain.toml"], lock_is_internal=True),
+                         "rust-toolchain.toml")
+        self.assertIsNone(queue.whole_build(["crates/a/Cargo.toml", "docs/x.md"]))
+
     def test_a_lock_changed_only_for_workspace_crates_selects_by_crate(self) -> None:
         choice = choose(["Cargo.lock", "crates/a/Cargo.toml", "crates/a/src/lib.rs"], lock_is_internal=True)
         self.assertFalse(choice.full)
