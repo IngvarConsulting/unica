@@ -2115,7 +2115,7 @@ pub struct WorkspaceServicesState<B: BslBackend> {
     /// let a late `cancel` for the finished read kill the scheduled update.
     session_teardowns: SessionTeardownLifecycle,
     analyzer_invalidated: AtomicBool,
-    operations: Mutex<HashMap<String, Arc<OperationControl>>>,
+    operations: Mutex<HashMap<String, OperationRegistration>>,
     shutting_down: AtomicBool,
     #[cfg(any(test, feature = "test-support"))]
     handler_started_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
@@ -2299,7 +2299,7 @@ impl<B: BslBackend> WorkspaceServices<B> {
         &self.actor.runtime_projection().0.analyzer_invalidated
     }
 
-    fn operations(&self) -> &Mutex<HashMap<String, Arc<OperationControl>>> {
+    fn operations(&self) -> &Mutex<HashMap<String, OperationRegistration>> {
         &self.actor.runtime_projection().0.operations
     }
 
@@ -2467,13 +2467,25 @@ impl<B: BslBackend> WorkspaceServices<B> {
         if self.shutting_down().load(Ordering::Acquire) {
             return Err("workspace service is shutting down".to_string());
         }
-        if operations.contains_key(&operation_id) {
+        if matches!(
+            operations.get(&operation_id),
+            Some(OperationRegistration::Active(_))
+        ) {
             return Err(format!(
                 "workspace service operation id is already active: {operation_id}"
             ));
         }
         let cancellation = Arc::new(OperationControl::new());
-        operations.insert(operation_id.clone(), cancellation.clone());
+        if matches!(
+            operations.get(&operation_id),
+            Some(OperationRegistration::PendingCancel)
+        ) {
+            cancellation.cancel();
+        }
+        operations.insert(
+            operation_id.clone(),
+            OperationRegistration::Active(cancellation.clone()),
+        );
         Ok((
             cancellation,
             OperationGuard {
@@ -2484,13 +2496,19 @@ impl<B: BslBackend> WorkspaceServices<B> {
     }
 
     fn cancel_operation(&self, operation_id: &str) -> ServiceResponse {
-        let cancellation = self
-            .operations()
-            .lock()
-            .ok()
-            .and_then(|operations| operations.get(operation_id).cloned());
-        if let Some(cancellation) = cancellation {
-            cancellation.cancel();
+        let Ok(mut operations) = self.operations().lock() else {
+            return ServiceResponse::error("workspace service operation registry is unavailable");
+        };
+        // The authenticated control and data connections may arrive in either
+        // order. Acknowledge only after the exact intent is owned by the same
+        // registry that will admit the data. Pending intent has no time limit;
+        // it lives until admission or until this service instance is dropped.
+        match operations
+            .entry(operation_id.to_owned())
+            .or_insert(OperationRegistration::PendingCancel)
+        {
+            OperationRegistration::Active(control) => control.cancel(),
+            OperationRegistration::PendingCancel => {}
         }
         ServiceResponse {
             ok: true,
@@ -2500,11 +2518,12 @@ impl<B: BslBackend> WorkspaceServices<B> {
     }
 
     fn expire_operation(&self, operation_id: &str) -> ServiceResponse {
-        let control = self
-            .operations()
-            .lock()
-            .ok()
-            .and_then(|operations| operations.get(operation_id).cloned());
+        let control = self.operations().lock().ok().and_then(|operations| {
+            operations
+                .get(operation_id)
+                .and_then(OperationRegistration::active)
+                .cloned()
+        });
         let Some(control) = control else {
             return ServiceResponse::error(
                 "workspace service expiry target is not observed; termination is unconfirmed",
@@ -2524,7 +2543,13 @@ impl<B: BslBackend> WorkspaceServices<B> {
         let cancellations = self
             .operations()
             .lock()
-            .map(|operations| operations.values().cloned().collect::<Vec<_>>())
+            .map(|operations| {
+                operations
+                    .values()
+                    .filter_map(OperationRegistration::active)
+                    .cloned()
+                    .collect::<Vec<_>>()
+            })
             .unwrap_or_default();
         for cancellation in cancellations {
             cancellation.cancel();
@@ -2901,6 +2926,22 @@ pub fn update_service_record_last_access_with_hook<B: BslBackend>(
         record.last_access_at = last_access_at;
         write_record_unlocked(runtime.identity(), &record)
     });
+}
+
+/// UUIDs identify unique attempts; a pending explicit cancel is not active work.
+/// Admission consumes it into the operation's existing guard-owned lifecycle.
+enum OperationRegistration {
+    PendingCancel,
+    Active(Arc<OperationControl>),
+}
+
+impl OperationRegistration {
+    fn active(&self) -> Option<&Arc<OperationControl>> {
+        match self {
+            Self::Active(control) => Some(control),
+            Self::PendingCancel => None,
+        }
+    }
 }
 
 /// A registered operation has one cancellation authority and one stop cause.
@@ -3765,14 +3806,17 @@ fn run_registered_workspace_operation<B: BslBackend>(
                     hook();
                 }
             }
-            let mut response = match &control {
-                Some(prepared) => executor.execute_prepared(
-                    &worker_runtime,
-                    kind,
-                    &worker_cancellation,
-                    prepared.deadline.as_ref(),
-                ),
-                None => executor.execute(&worker_runtime, kind, &worker_cancellation),
+            let mut response = match cancellation_error(&worker_cancellation) {
+                Err(error) => ServiceResponse::error(error),
+                Ok(()) => match &control {
+                    Some(prepared) => executor.execute_prepared(
+                        &worker_runtime,
+                        kind,
+                        &worker_cancellation,
+                        prepared.deadline.as_ref(),
+                    ),
+                    None => executor.execute(&worker_runtime, kind, &worker_cancellation),
+                },
             };
             if response
                 .error
@@ -4362,13 +4406,19 @@ impl<B: BslBackend> WorkspaceServices<B> {
         self.analyzer_invalidated()
     }
     pub fn test_operation_ids(&self) -> Vec<String> {
-        self.operations().lock().unwrap().keys().cloned().collect()
+        self.operations()
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|(id, entry)| entry.active().map(|_| id.clone()))
+            .collect()
     }
     pub fn test_operation_cancellation(&self, id: &str) -> Option<CancellationToken> {
         self.operations()
             .lock()
             .unwrap()
             .get(id)
+            .and_then(OperationRegistration::active)
             .map(|control| control.cancellation.clone())
     }
     pub fn test_shutting_down(&self) -> &AtomicBool {

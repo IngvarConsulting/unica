@@ -3002,6 +3002,147 @@ fn main() {
         }
     }
 
+    /// rule: INV.RUNTIME.SERVICE-OPERATION-CANCELLATION
+    #[test]
+    fn workspace_service_cancel_before_admission_never_dispatches_late_data() {
+        let mut server = WorkspaceAdmissionTestServer::start("cancel-before-admission");
+        // The executor would immediately succeed if the service dispatched it.
+        let target = format!("success-{}", uuid::Uuid::new_v4());
+        let gate = Arc::new((Mutex::new(false), Condvar::new()));
+        server.gates.push(gate.clone());
+        let (entered, observed) = mpsc::channel();
+        server.runtime.test_set_authenticated_request_hook(Some(Arc::new({
+            let target = target.clone();
+            let gate = gate.clone();
+            move |_, kind| {
+                if matches!(kind, ServiceRequestKind::BslMcp { operation_id, .. } if operation_id == &target) {
+                    let _ = entered.send(());
+                    wait_admission_test_gate(&gate);
+                }
+            }
+        })));
+        let mut late = server.work(&target);
+        observed
+            .recv_timeout(Duration::from_secs(3))
+            .expect("authenticated data waits before registration");
+        assert!(server.runtime.test_operation_ids().is_empty());
+        for _ in 0..2 {
+            let cancel = send_test_request(
+                &server.record,
+                ServiceRequestKind::Cancel {
+                    operation_id: target.clone(),
+                },
+            );
+            assert!(cancel.ok);
+            assert_eq!(cancel.status.as_deref(), Some("cancel-requested"));
+        }
+        // A different UUID is admitted while the exact cancelled request is held.
+        let neighbor = uuid::Uuid::new_v4().to_string();
+        let mut other = server.work(&neighbor);
+        server.executor.wait_started(1);
+        let other_token = server.token(&neighbor);
+        assert!(!other_token.is_cancelled());
+        {
+            let (released, changed) = &*gate;
+            *released.lock().unwrap() = true;
+            changed.notify_all();
+        }
+        let response = read_test_response(&mut late);
+        assert!(!response.ok);
+        assert!(
+            response
+                .error
+                .as_deref()
+                .is_some_and(|error| error.starts_with("cancelled:")),
+            "late data must observe explicit cancellation"
+        );
+        assert_eq!(
+            *server.executor.started.lock().unwrap(),
+            vec![neighbor.clone()],
+            "cancelled data must not enter the executor"
+        );
+        assert!(!other_token.is_cancelled());
+        assert!(
+            send_test_request(
+                &server.record,
+                ServiceRequestKind::Cancel {
+                    operation_id: neighbor
+                }
+            )
+            .ok
+        );
+        assert!(!read_test_response(&mut other).ok);
+        let mut fresh = server.work("success-fresh-after-early-cancel");
+        assert!(read_test_response(&mut fresh).ok);
+    }
+
+    /// rule: INV.RUNTIME.SERVICE-OPERATION-CANCELLATION
+    #[test]
+    fn workspace_service_cancel_before_prepared_admission_preserves_framing() {
+        let mut server = WorkspaceAdmissionTestServer::start("cancel-before-prepared");
+        let id = uuid::Uuid::new_v4().to_string();
+        let gate = Arc::new((Mutex::new(false), Condvar::new()));
+        server.gates.push(gate.clone());
+        let (entered, observed) = mpsc::channel();
+        server
+            .runtime
+            .test_set_authenticated_request_hook(Some(Arc::new({
+                let gate = gate.clone();
+                move |_, kind| {
+                    if matches!(kind, ServiceRequestKind::BslMcpBegin { .. }) {
+                        let _ = entered.send(());
+                        wait_admission_test_gate(&gate);
+                    }
+                }
+            })));
+        let mut work = open_test_request(&server.record, prepared_begin(&id));
+        server.retain(work.get_ref());
+        observed.recv_timeout(Duration::from_secs(3)).unwrap();
+        assert!(
+            send_test_request(
+                &server.record,
+                ServiceRequestKind::Cancel {
+                    operation_id: id.clone()
+                }
+            )
+            .ok
+        );
+        *gate.0.lock().unwrap() = true;
+        gate.1.notify_all();
+        assert!(
+            matches!(read_prepared_reply(&mut work), PreparedBslReply::Admitted { operation_id } if operation_id == id)
+        );
+        let PreparedBslReply::Finished { response } = read_prepared_reply(&mut work) else {
+            panic!("cancelled admission must finish without Start");
+        };
+        assert!(!response.ok);
+        assert!(response.error.unwrap().starts_with("cancelled:"));
+        assert!(server.executor.started.lock().unwrap().is_empty());
+    }
+
+    /// rule: INV.RUNTIME.SERVICE-OPERATION-CANCELLATION
+    #[test]
+    fn workspace_service_pending_cancel_without_data_does_not_hold_shutdown() {
+        let mut server = WorkspaceAdmissionTestServer::start("pending-cancel-shutdown");
+        assert!(
+            send_test_request(
+                &server.record,
+                ServiceRequestKind::Cancel {
+                    operation_id: uuid::Uuid::new_v4().to_string()
+                }
+            )
+            .ok
+        );
+        assert!(
+            server.runtime.test_operation_ids().is_empty(),
+            "an intent is not active work"
+        );
+        assert!(send_test_request(&server.record, ServiceRequestKind::Ping).ok);
+        assert!(send_test_request(&server.record, ServiceRequestKind::Shutdown).ok);
+        server.server.take().unwrap().join().unwrap().unwrap();
+        assert!(server.executor.started.lock().unwrap().is_empty());
+    }
+
     /// rule: INV.RUNTIME.SERVICE-CONTROL-CAPACITY
     #[test]
     fn workspace_service_admission_ninth_work_runs_with_exact_cancel_ping_and_shutdown() {
