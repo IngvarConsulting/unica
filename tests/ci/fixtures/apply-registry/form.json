@@ -10,7 +10,7 @@
     {
       "variant": "Set",
       "operation": "form.set",
-      "applicability": "MetadataForms",
+      "applicability": "FormSlots",
       "skeleton": "Values"
     },
     {
