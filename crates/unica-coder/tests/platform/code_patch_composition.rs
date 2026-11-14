@@ -793,6 +793,54 @@ fn object_and_manager_modules_report_owner_and_role() {
     fs::remove_dir_all(&context.workspace_root).unwrap();
 }
 
+/// Модуль менеджера очереди правится по общему маршруту прямых модулей,
+/// а модуля объекта у очереди нет: отсутствующий файл не считается
+/// пропущенным пустым и остаётся неадресуемым.
+/// rule: INV.SOURCE.PLATFORM-CAPABILITY-EXISTENCE
+#[test]
+fn the_queue_manager_module_is_patched_and_its_object_module_is_unaddressable() {
+    let context = temp_context("queue-module-roles");
+    let src = context.workspace_root.join("src");
+    fs::write(
+            src.join("Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.22"><Configuration/></MetaDataObject>"#,
+        )
+        .unwrap();
+    fs::create_dir_all(src.join("Queues/Probe/Ext")).unwrap();
+    fs::write(
+            src.join("Queues/Probe.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.22"><Queue><Properties><Name>Probe</Name></Properties></Queue></MetaDataObject>"#,
+        )
+        .unwrap();
+    let module = src.join("Queues/Probe/Ext/ManagerModule.bsl");
+    fs::write(&module, "Procedure Run()\nEndProcedure\n").unwrap();
+
+    let args = patch_args(
+        "main",
+        "Queue.Probe.ManagerModule",
+        "Run",
+        "Procedure Added()\nEndProcedure",
+    );
+    let preview = patch_inner(&args, &context, PatchMode::Preview);
+    assert!(preview.outcome.ok, "{:?}", preview.outcome.errors);
+    let target = preview.data.unwrap().affected_target;
+    assert_eq!(target.owner, "Queue.Probe");
+    assert_eq!(target.module_role, "ManagerModule");
+
+    let refused = patch_inner(
+        &tail_args(
+            "main",
+            "Queue.Probe.ObjectModule",
+            "Procedure Run()\nEndProcedure",
+        ),
+        &context,
+        PatchMode::Apply,
+    );
+    assert!(!refused.outcome.ok);
+    assert!(!src.join("Queues/Probe/Ext/ObjectModule.bsl").exists());
+    fs::remove_dir_all(&context.workspace_root).unwrap();
+}
+
 #[test]
 fn nested_form_and_command_modules_report_the_metadata_owner_and_role() {
     let context = temp_context("nested-module-roles");
