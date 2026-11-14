@@ -376,6 +376,16 @@ const MEMBER_LINE_ADDITIONS: &[(&str, &str, PlatformLine)] = &[
         "AuxiliaryVariantForm",
         PlatformLine::new(8, 5, 1),
     ),
+    (
+        "Form",
+        "UseInInterfaceCompatibilityMode",
+        PlatformLine::new(8, 5, 1),
+    ),
+    (
+        "CommonForm",
+        "UseInInterfaceCompatibilityMode",
+        PlatformLine::new(8, 5, 1),
+    ),
 ];
 
 /// The line a `member` kind's `property` exists from, when a later line than

@@ -758,28 +758,24 @@ mod tests {
     }
 
     #[test]
-    fn form_metadata_does_not_advertise_or_accept_owner_and_content_writers() {
+    fn form_metadata_advertises_only_its_descriptor_properties() {
         let registry = crate::apply::operation_registry();
         let traits =
             source_set_traits_for_read(SourceSetKind::Configuration, PlatformProfile::v8_3_27());
+        // Both a common form and a form of an object describe themselves in
+        // a descriptor; only `props.set` writes it, never the owner or the
+        // form content writers.
         for raw in [
             "main:CommonForm.Main.Metadata",
             "main:Document.Order.Form.Main.Metadata",
         ] {
             let at = address(raw);
             let site = operation_site(&at, traits).unwrap();
-            let comment_descriptor = raw == "main:CommonForm.Main.Metadata";
-            assert_eq!(
-                registry.copyable_skeletons(&site).len(),
-                usize::from(comment_descriptor),
-                "{raw}"
-            );
+            assert_eq!(registry.copyable_skeletons(&site).len(), 1, "{raw}");
             for operation in registry.descriptors() {
                 assert_eq!(
                     operation.applies_at(&site),
-                    comment_descriptor
-                        && operation.operation::<PropertiesOperation>()
-                            == Some(PropertiesOperation::Set),
+                    operation.operation::<PropertiesOperation>() == Some(PropertiesOperation::Set),
                     "{} applicability at {raw}",
                     operation.name()
                 );

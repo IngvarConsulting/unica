@@ -6,7 +6,9 @@ use serde_json::{json, Map, Value};
 use unica_address::address::{NodeKind, QualifiedAddress};
 use unica_operation_contract::OperationSkeleton;
 use unica_operation_contract::{object, OperationContract};
-use unica_source_contract::format_identity::{configuration_root_additions_after, PlatformLine};
+use unica_source_contract::format_identity::{
+    configuration_root_additions_after, member_property_exists, member_property_since, PlatformLine,
+};
 use unica_source_contract::SourceSetKind;
 
 macro_rules! properties_operations {
@@ -71,7 +73,21 @@ pub enum PropertiesSite {
         extension: bool,
         line: Option<PlatformLine>,
     },
+    /// The descriptor of a form: a common form (`common`) or a form of a
+    /// metadata object of a configuration or extension. An extension writes
+    /// only Comment of its forms. `line` is the platform line of the set's
+    /// format; it decides whether the form has an interface compatibility
+    /// mode (INV.SOURCE.PROFILE-CAPABILITIES).
+    FormDescriptor {
+        common: bool,
+        extension: bool,
+        line: Option<PlatformLine>,
+    },
 }
+
+/// The descriptor property a form type change would need: it changes
+/// together with the form content, so `props.set` only reads it.
+pub const FORM_TYPE_NAMES: [&str; 2] = ["FormType", "formType"];
 
 /// A root property, or a value of one, that a later platform line than the
 /// set's adds: `can` leaves it out and an edit is refused with this reason.
@@ -152,6 +168,8 @@ pub enum DescriptorPropertyKind {
     /// Named parts of one element, each a value of the property's closed
     /// enumeration (`DescriptorProperty::parts`).
     Parts,
+    /// A set of distinct values of the property's closed enumeration.
+    List,
 }
 
 macro_rules! descriptor_properties {
@@ -194,6 +212,15 @@ macro_rules! descriptor_properties {
                         self.on_root(extension) && !line_lacks(line, self.names()[0], None)
                     }
                     PropertiesSite::Metadata { .. } => false,
+                    PropertiesSite::FormDescriptor { common, extension, line } => {
+                        if extension {
+                            self == Self::Comment
+                        } else {
+                            matches!(self, Self::Comment | Self::IncludeHelpInContents | Self::UsePurposes)
+                                || (self == Self::UseInInterfaceCompatibilityMode
+                                    && member_property_exists(line, form_member(common), self.names()[0]))
+                        }
+                    }
                     PropertiesSite::DocumentNumerator => self == Self::Comment,
                     PropertiesSite::CommentOnly(_) | PropertiesSite::Language => self == Self::Comment,
                     PropertiesSite::FunctionalOption => matches!(self, Self::Location | Self::PrivilegedGetMode | Self::Comment),
@@ -251,7 +278,19 @@ descriptor_properties!(
     DefaultExtensionPropertyCheckAction => ("DefaultExtensionPropertyCheckAction", "defaultExtensionPropertyCheckAction", Enum, false, false, false, true),
     TypeReductionByConfigurationExtensionMode => ("TypeReductionByConfigurationExtensionMode", "typeReductionByConfigurationExtensionMode", Enum, false, false, false, true),
     ActionOnExtendedConfigurationObjectsMissing => ("ActionOnExtendedConfigurationObjectsMissing", "actionOnExtendedConfigurationObjectsMissing", Parts, false, false, false, true),
+    // Form descriptor properties (`PropertiesSite::FormDescriptor`).
+    UsePurposes => ("UsePurposes", "usePurposes", List, false, false, false, false),
+    UseInInterfaceCompatibilityMode => ("UseInInterfaceCompatibilityMode", "useInInterfaceCompatibilityMode", Enum, false, false, false, false),
 );
+
+/// The member kind of a form descriptor in the line tables.
+const fn form_member(common: bool) -> &'static str {
+    if common {
+        "CommonForm"
+    } else {
+        "Form"
+    }
+}
 
 impl DescriptorProperty {
     /// Localized properties keep one value per language; the others are
@@ -293,6 +332,10 @@ impl DescriptorProperty {
             Self::TypeReductionByConfigurationExtensionMode => {
                 &["TransformValues", "DeleteData", "Deny"]
             }
+            // `ApplicationUsePurpose` and `UseInInterfaceCompatibilityMode`
+            // of the platform XDTO.
+            Self::UsePurposes => &["PlatformApplication", "MobilePlatformApplication"],
+            Self::UseInInterfaceCompatibilityMode => &["Any", "Taxi", "Version85"],
             _ => crate::configuration::cf_validate_enum_allowed(self.names()[0]),
         };
         match (self, values.split_first()) {
@@ -345,7 +388,8 @@ impl PropertiesSite {
                 source.classification_profile().semantic_line(),
             );
         }
-        let profile = Self::from_address(site.at(), site.source().kind())?;
+        let profile = Self::from_address(site.at(), site.source().kind())?
+            .at_line(site.source().classification_profile().semantic_line());
         if site.source().kind() != unica_source_contract::SourceSetKind::Configuration {
             // An extension adopts WS references and languages; only their own
             // Comment belongs to the extension.
@@ -381,6 +425,23 @@ impl PropertiesSite {
     /// its set does not have, each with the line it exists from
     /// (INV.SOURCE.PROFILE-CAPABILITIES).
     pub fn later_line_capabilities(self) -> Vec<LaterLineCapability> {
+        if let Self::FormDescriptor {
+            common,
+            extension: false,
+            line,
+        } = self
+        {
+            let property = DescriptorProperty::UseInInterfaceCompatibilityMode.names()[0];
+            return member_property_since(form_member(common), property)
+                .filter(|_| !member_property_exists(line, form_member(common), property))
+                .map(|since| LaterLineCapability {
+                    property,
+                    value: None,
+                    since,
+                })
+                .into_iter()
+                .collect();
+        }
         let Self::Configuration { extension, line } = self else {
             return Vec::new();
         };
@@ -405,8 +466,19 @@ impl PropertiesSite {
     /// own and the subsystem profile with it.
     pub fn from_address(at: &QualifiedAddress, source_kind: SourceSetKind) -> Option<Self> {
         if let Some(owner) = at.form_metadata_owner() {
-            return (owner.segments().len() == 1)
-                .then_some(Self::CommentOnly(NodeKind::CommonForm));
+            // The workspace plans no metadata write in an external processor
+            // or report, so their forms offer no property edit.
+            if !matches!(
+                source_kind,
+                SourceSetKind::Configuration | SourceSetKind::Extension
+            ) {
+                return None;
+            }
+            return Some(Self::FormDescriptor {
+                common: owner.segments().len() == 1,
+                extension: source_kind == SourceSetKind::Extension,
+                line: None,
+            });
         }
         if at.segments().len() > 1
             && at
@@ -446,6 +518,21 @@ impl PropertiesSite {
             kind => MetadataKind::parse(kind.as_str())
                 .ok()
                 .map(|kind| Self::Metadata { kind, source_kind }),
+        }
+    }
+
+    /// The profile in a set of platform `line`: a form descriptor takes the
+    /// line of its set; other address profiles do not depend on it.
+    pub fn at_line(self, line: Option<PlatformLine>) -> Self {
+        match self {
+            Self::FormDescriptor {
+                common, extension, ..
+            } => Self::FormDescriptor {
+                common,
+                extension,
+                line,
+            },
+            site => site,
         }
     }
 
@@ -512,6 +599,7 @@ impl PropertiesSite {
             | Self::Role
             | Self::Subsystem
             | Self::Configuration { .. }
+            | Self::FormDescriptor { .. }
             | Self::CommentOnly(_) => {
                 for field in self.descriptor_fields() {
                     if self == Self::StyleItem && field == DescriptorProperty::Comment && !comment {
@@ -534,6 +622,8 @@ impl PropertiesSite {
                             json!({"type":"object", "additionalProperties":false,
                                 "minProperties":1, "properties":parts})
                         }
+                        DescriptorPropertyKind::List => json!({"type":"array", "uniqueItems":true,
+                            "items":{"type":"string", "enum":self.enum_values(field)}}),
                     };
                     let schema = if field == DescriptorProperty::Location {
                         let mut schema = schema;
@@ -569,7 +659,9 @@ impl PropertiesSite {
             values["x-unica-alias-groups"] = json!(groups);
         }
         let later = self.later_line_capabilities();
-        if let (Self::Configuration { line, .. }, false) = (self, later.is_empty()) {
+        if let (Self::Configuration { line, .. } | Self::FormDescriptor { line, .. }, false) =
+            (self, later.is_empty())
+        {
             // `can` names what a later line adds, with the reason the edit
             // is refused for (INV.SOURCE.PROFILE-CAPABILITIES).
             values["x-unica-later-lines"] = json!({
@@ -589,6 +681,34 @@ impl PropertiesSite {
         }
     }
 
+    /// The refusal of a form descriptor edit that names a property this site
+    /// reads but does not write: the form type, which changes together with
+    /// the form content, or any property but Comment of a form of an
+    /// extension. It precedes the argument schema, which leaves them out.
+    pub fn unwritten_refusal(self, values: &Map<String, Value>) -> Option<(String, String)> {
+        let Self::FormDescriptor { extension, .. } = self else {
+            return None;
+        };
+        if let Some(name) = values
+            .keys()
+            .find(|name| FORM_TYPE_NAMES.contains(&name.as_str()))
+        {
+            return Some((
+                name.clone(),
+                "property `FormType` is read only here: a form's type changes together with its content".into(),
+            ));
+        }
+        let name = values.keys().find(|name| {
+            extension && !DescriptorProperty::Comment.names().contains(&name.as_str())
+        })?;
+        Some((
+            name.clone(),
+            format!(
+                "property `{name}` is not written for a form of an extension; only `Comment` is"
+            ),
+        ))
+    }
+
     /// The refusal of a configuration root edit that names a property or
     /// value the line of `source_set` does not have; it is the reason `can`
     /// marks the same property or value with.
@@ -597,6 +717,15 @@ impl PropertiesSite {
         source_set: &str,
         values: &Map<String, Value>,
     ) -> Option<(String, String)> {
+        if let Self::FormDescriptor { line, .. } = self {
+            let item = self.later_line_capabilities().into_iter().next()?;
+            let name = values.keys().find(|name| {
+                DescriptorProperty::UseInInterfaceCompatibilityMode
+                    .names()
+                    .contains(&name.as_str())
+            })?;
+            return Some((name.clone(), item.reason(source_set, line)));
+        }
         let Self::Configuration { extension, line } = self else {
             return None;
         };
@@ -635,7 +764,9 @@ impl PropertiesOperation {
                     PropertiesSite::StyleItem => "The existing named StyleItem with observed Type=Color and a supported explicit Value: `<set>:StyleItem.<name>`.",
                     PropertiesSite::Configuration { extension: false, .. } => "The configuration root `<set>:Configuration`. The address selects the root property profile.",
                     PropertiesSite::Configuration { extension: true, .. } => "The extension root `<set>:Configuration`. An extension changes only its own identity properties.",
-                    PropertiesSite::CommentOnly(NodeKind::CommonForm) => "The existing common form descriptor at `<set>:CommonForm.Name.Metadata`.",
+                    PropertiesSite::FormDescriptor { extension: true, .. } => "The existing descriptor of a form in an extension: `<set>:CommonForm.Name.Metadata` or `<set>:Kind.Name.Form.Name.Metadata`. An extension changes only Comment of its forms.",
+                    PropertiesSite::FormDescriptor { common: true, .. } => "The existing common form descriptor at `<set>:CommonForm.Name.Metadata`.",
+                    PropertiesSite::FormDescriptor { .. } => "The existing descriptor of a form of a metadata object at `<set>:Kind.Name.Form.Name.Metadata`.",
                     PropertiesSite::CommentOnly(_) => "The existing named root metadata descriptor at `<set>:Kind.Name`. This profile changes only Comment.",
                     _ => "The existing named top-level metadata object, role or subsystem, or a nested subsystem, at its full address. The address selects the property profile.",
                 },
@@ -646,6 +777,8 @@ impl PropertiesOperation {
                     PropertiesSite::Queue => "Transactioned, AutoProcessing, ProcessingPortionSize and Comment/comment are accepted, at least one of them. Transactioned and AutoProcessing are JSON booleans; ProcessingPortionSize is a whole number above zero. An empty Comment clears the comment, and simultaneous Comment/comment aliases are refused. Name, synonym, dimensions, attributes, identity and bytes outside the supplied properties stay. The same value is a byte-preserving no-op. Arguments are checked before descriptor state. Preview writes nothing; execute only its saved executionToken.",
                     PropertiesSite::PaletteColor => "Color and Comment/comment are accepted, at least one of them. Color is #RRGGBB; other color forms, an empty string and null are refused. An empty Comment clears the comment, and simultaneous Comment/comment aliases are refused. Name, synonym, identity and bytes outside the supplied Color/Comment stay. The same color in another letter case is a byte-preserving no-op. Arguments are checked before descriptor state. Preview writes nothing; execute only its saved executionToken.",
                     PropertiesSite::StyleItem => "Color Value and optional string Comment/comment are accepted: #RRGGBB or an enumerated web/builtin style color. Empty Value, null and arbitrary XML are refused; empty Comment clears the comment, and simultaneous Comment/comment aliases are refused. Type, identity and bytes outside supplied Value/Comment stay. Font/Border, missing/damaged Value and unmodelled colors have no color write capability. The same semantic color is a byte-preserving no-op, including prefix aliases and RGB case. Arguments are checked before descriptor state. Preview writes nothing; execute only its saved executionToken.",
+                    PropertiesSite::FormDescriptor { extension: false, .. } => "values is a nonempty object of Comment, IncludeHelpInContents, UsePurposes and, from platform 8.5.1, UseInInterfaceCompatibilityMode; use one spelling of each. Comment is an exact string, an empty one clears it. IncludeHelpInContents is a JSON boolean. UsePurposes is the whole set of distinct application purposes; an empty array clears it. FormType is read only: a form's type changes together with its content. An absent property is written in the place the platform writes it. The same value is a byte-preserving no-op. Name, synonym, identity, content and module stay. Preview writes nothing; execute only its saved executionToken.",
+                    PropertiesSite::FormDescriptor { extension: true, .. } => "Comment/comment is an exact string; an empty string clears it. An extension changes no other property of its forms. Preview writes nothing; execute only its saved executionToken.",
                     _ => "values is a nonempty object. Use JSON booleans for flags. An empty string clears text where the property allows it; Location requires a nonempty storage reference. null is not omission. Use one spelling of each property, never both aliases. Argument errors are checked before descriptor state; valid arguments still require an existing readable descriptor. Preview writes nothing; execute only the saved execution token.",
                 },
                 example_args: match site {
@@ -657,10 +790,11 @@ impl PropertiesOperation {
                     PropertiesSite::PaletteColor => json!({"values":{"Color":"#1A2B3C"}}),
                     PropertiesSite::Queue => json!({"values":{"ProcessingPortionSize":500}}),
                     PropertiesSite::Language => json!({"values":{"LanguageCode":"de"}}),
+                    PropertiesSite::FormDescriptor { extension: false, .. } => json!({"values":{"IncludeHelpInContents":true,"UsePurposes":["PlatformApplication"]}}),
                     _ => json!({"values":{"Comment":"Updated comment"}}),
                 },
                 help: match site {
-                    PropertiesSite::WSReference | PropertiesSite::Metadata { .. } | PropertiesSite::DocumentNumerator | PropertiesSite::CommentOnly(_) | PropertiesSite::FunctionalOption | PropertiesSite::StyleItem | PropertiesSite::PaletteColor | PropertiesSite::Queue | PropertiesSite::Language => "skills/meta-edit/SKILL.md",
+                    PropertiesSite::WSReference | PropertiesSite::Metadata { .. } | PropertiesSite::DocumentNumerator | PropertiesSite::CommentOnly(_) | PropertiesSite::FormDescriptor { .. } | PropertiesSite::FunctionalOption | PropertiesSite::StyleItem | PropertiesSite::PaletteColor | PropertiesSite::Queue | PropertiesSite::Language => "skills/meta-edit/SKILL.md",
                     PropertiesSite::Role => "skills/role-edit/SKILL.md",
                     PropertiesSite::Subsystem => "skills/subsystem-edit/SKILL.md",
                     PropertiesSite::Configuration { .. } => "skills/cf-edit/SKILL.md",
@@ -1148,6 +1282,158 @@ mod tests {
         );
     }
 
+    /// rule: INV.SOURCE.PROFILE-CAPABILITIES
+    #[test]
+    fn can_offers_the_form_descriptor_properties_of_the_set_line() {
+        use unica_source_contract::context::{OperationSite, SourceSetTraits};
+        use unica_source_contract::route::RouteClass;
+        use unica_source_contract::SourceProfile;
+        let contract = |at: &str, kind: SourceSetKind, line: PlatformLine| {
+            let at = QualifiedAddress::parse(at).unwrap();
+            let profile = SourceProfile::platform_xml_of_line(line).unwrap();
+            let source = SourceSetTraits::from_profiles(kind, Some(profile), profile);
+            let site = OperationSite::from_route(&at, source, RouteClass::Metadata);
+            PropertiesOperation::Set
+                .descriptor()
+                .argument_contract_at(&site)
+                .unwrap()
+        };
+        let mode = [
+            "UseInInterfaceCompatibilityMode",
+            "useInInterfaceCompatibilityMode",
+        ];
+        for at in [
+            "main:CommonForm.MainA.Metadata",
+            "main:Catalog.Валюты.Form.ФормаСписка.Metadata",
+        ] {
+            let old = contract(
+                at,
+                SourceSetKind::Configuration,
+                PlatformLine::new(8, 3, 27),
+            );
+            let values = &old.schema["properties"]["values"];
+            for name in mode.iter().chain(FORM_TYPE_NAMES.iter()) {
+                assert!(values["properties"].get(*name).is_none(), "{at}: {name}");
+            }
+            assert_eq!(
+                values["properties"]["UsePurposes"],
+                json!({"type":"array", "uniqueItems":true, "items":{"type":"string",
+                    "enum":["PlatformApplication", "MobilePlatformApplication"]}})
+            );
+            assert_eq!(
+                values["properties"]["IncludeHelpInContents"],
+                json!({"type":"boolean"})
+            );
+            assert_eq!(
+                values["x-unica-later-lines"],
+                json!({"line":"8.3.27", "format":"2.20", "items":[
+                    {"property":"UseInInterfaceCompatibilityMode", "since":"8.5.1", "format":"2.21"}
+                ]})
+            );
+            let oracle = jsonschema::validator_for(&old.schema).unwrap();
+            assert!(oracle.is_valid(&json!({"values":{"UsePurposes":[]}})));
+            assert!(!oracle.is_valid(&json!({"values":{"UsePurposes":
+                ["PlatformApplication", "PlatformApplication"]}})));
+            assert!(!oracle.is_valid(&json!({"values":{"UseInInterfaceCompatibilityMode":"Any"}})));
+
+            for line in [PlatformLine::new(8, 5, 1), PlatformLine::new(8, 5, 4)] {
+                let new = contract(at, SourceSetKind::Configuration, line);
+                let values = &new.schema["properties"]["values"];
+                for name in mode {
+                    assert_eq!(
+                        values["properties"][name],
+                        json!({"type":"string", "enum":["Any", "Taxi", "Version85"]}),
+                        "{at} {line}: {name}"
+                    );
+                }
+                assert!(values.get("x-unica-later-lines").is_none(), "{at} {line}");
+            }
+
+            // An extension writes only Comment of its forms, in every line.
+            let extension = contract(at, SourceSetKind::Extension, PlatformLine::new(8, 5, 1));
+            let names = extension.schema["properties"]["values"]["properties"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>();
+            assert_eq!(names, ["Comment", "comment"], "{at}");
+        }
+    }
+
+    #[test]
+    fn a_form_of_an_external_processor_or_report_offers_no_property_edit() {
+        for (kind, at) in [
+            (
+                SourceSetKind::ExternalProcessor,
+                "epf:ExternalDataProcessor.Probe.Form.Main.Metadata",
+            ),
+            (
+                SourceSetKind::ExternalReport,
+                "erf:ExternalReport.Probe.Form.Main.Metadata",
+            ),
+        ] {
+            let at = QualifiedAddress::parse(at).unwrap();
+            assert!(at.form_metadata_owner().is_some(), "{at}");
+            assert_eq!(PropertiesSite::from_address(&at, kind), None, "{at}");
+        }
+    }
+
+    /// rule: INV.SOURCE.PROFILE-CAPABILITIES
+    #[test]
+    fn a_form_descriptor_refuses_its_type_a_later_line_mode_and_extension_properties() {
+        let values = |value: Value| value.as_object().unwrap().clone();
+        let site = |extension: bool, line: Option<PlatformLine>| PropertiesSite::FormDescriptor {
+            common: false,
+            extension,
+            line,
+        };
+        let old = Some(PlatformLine::new(8, 3, 27));
+        let new = Some(PlatformLine::new(8, 5, 1));
+        for name in FORM_TYPE_NAMES {
+            for extension in [false, true] {
+                assert_eq!(
+                    site(extension, new).unwritten_refusal(&values(json!({name:"Ordinary"}))),
+                    Some((
+                        name.to_string(),
+                        "property `FormType` is read only here: a form's type changes together with its content".to_string()
+                    ))
+                );
+            }
+        }
+        assert_eq!(
+            site(true, new).unwritten_refusal(&values(json!({"usePurposes":[]}))),
+            Some((
+                "usePurposes".to_string(),
+                "property `usePurposes` is not written for a form of an extension; only `Comment` is".to_string()
+            ))
+        );
+        assert_eq!(
+            site(true, new).unwritten_refusal(&values(json!({"comment":""}))),
+            None
+        );
+        assert_eq!(
+            site(false, new).unwritten_refusal(&values(json!({"UsePurposes":[]}))),
+            None
+        );
+        for name in [
+            "UseInInterfaceCompatibilityMode",
+            "useInInterfaceCompatibilityMode",
+        ] {
+            assert_eq!(
+                site(false, old).later_line_refusal("main", &values(json!({name:"Any"}))),
+                Some((
+                    name.to_string(),
+                    "Property `UseInInterfaceCompatibilityMode` exists from platform 8.5.1 (format 2.21); source set `main` is in format 2.20 (platform 8.3.27).".to_string()
+                ))
+            );
+            assert_eq!(
+                site(false, new).later_line_refusal("main", &values(json!({name:"Any"}))),
+                None
+            );
+        }
+    }
+
     #[test]
     fn additional_root_comments_have_a_closed_string_only_profile() {
         for kind in [
@@ -1172,11 +1458,15 @@ mod tests {
             } else {
                 format!("main:{kind}.Probe")
             };
-            let site = PropertiesSite::from_address(
-                &QualifiedAddress::parse(&at).unwrap(),
-                SourceSetKind::Configuration,
-            )
-            .unwrap_or_else(|| panic!("missing comment profile for {at}"));
+            // A form of an extension writes only its Comment; a
+            // configuration's form has a profile of its own.
+            let source = if kind == "CommonForm" {
+                SourceSetKind::Extension
+            } else {
+                SourceSetKind::Configuration
+            };
+            let site = PropertiesSite::from_address(&QualifiedAddress::parse(&at).unwrap(), source)
+                .unwrap_or_else(|| panic!("missing comment profile for {at}"));
             // A configuration's own language also changes LanguageCode; an
             // extension's adopted language keeps the Comment-only profile.
             let site = if site == PropertiesSite::Language {
@@ -1328,7 +1618,19 @@ mod tests {
             ("main:Catalog", None),
             (
                 "main:CommonForm.Card.Metadata",
-                Some(PropertiesSite::CommentOnly(NodeKind::CommonForm)),
+                Some(PropertiesSite::FormDescriptor {
+                    common: true,
+                    extension: false,
+                    line: None,
+                }),
+            ),
+            (
+                "main:Catalog.Items.Form.List.Metadata",
+                Some(PropertiesSite::FormDescriptor {
+                    common: false,
+                    extension: false,
+                    line: None,
+                }),
             ),
             ("main:Catalog.Items.Attribute.Code", None),
             (
