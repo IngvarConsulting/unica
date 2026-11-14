@@ -1680,6 +1680,48 @@ fn stage_descriptor_properties(
             };
             (NodeKind::WsReference, text)
         }
+        DescriptorPropertyChanges::Queue(values) => {
+            let invalid = |message: String| {
+                ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)
+                    .at_path(at_path.clone())
+            };
+            let root_path = std::path::Path::new("Configuration.xml");
+            let root = staged
+                .read(root_path)
+                .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?
+                .ok_or_else(|| invalid("configuration descriptor was not found".to_string()))?;
+            let root = unica_source_designer::owner::prove_already_read_source_set_owner(
+                root_path,
+                &root,
+                source_kind,
+            )
+            .map_err(|error| invalid(error.message))?;
+            let owner = unica_source_designer::owner::prove_already_read_metadata_owner(
+                relative, &preimage,
+            )
+            .map_err(|error| invalid(error.message))?;
+            if source_kind != SourceSetKind::Configuration
+                || !root.registers("Queue", name)
+                || owner.artifact_kind() != "Queue"
+                || owner.artifact_name() != Some(name)
+            {
+                return Err(invalid(
+                    "Queue must match an existing registered configuration descriptor".to_string(),
+                ));
+            }
+            let mut text = source.clone();
+            for (key, value) in values.descriptor_values() {
+                text = crate::queue_write::patch_property(&text, name, key, &value)
+                    .map_err(invalid)?;
+            }
+            let text = if let Some(comment) = &values.comment {
+                crate::descriptor_comment::set_comment(&text, NodeKind::Queue, name, comment)
+                    .map_err(invalid)?
+            } else {
+                text
+            };
+            (NodeKind::Queue, text)
+        }
         DescriptorPropertyChanges::PaletteColor(values) => {
             let invalid = |message: String| {
                 ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)
@@ -1982,6 +2024,7 @@ fn stage_descriptor_properties(
         DescriptorPropertyChanges::CommentOnly { .. }
             | DescriptorPropertyChanges::StyleItem(_)
             | DescriptorPropertyChanges::PaletteColor(_)
+            | DescriptorPropertyChanges::Queue(_)
             | DescriptorPropertyChanges::WSReference(_)
     ) || matches!(changes, DescriptorPropertyChanges::FunctionalOption(values) if values.comment.is_some())
     {

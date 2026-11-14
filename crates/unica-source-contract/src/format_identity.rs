@@ -398,8 +398,10 @@ pub fn member_property_exists(line: Option<PlatformLine>, member: &str, property
 /// the line they exist from, by the all_kinds export of each line
 /// (INV.SOURCE.PROFILE-CAPABILITIES). A kind absent here exists in every
 /// described line.
-const METADATA_KIND_LINE_ADDITIONS: &[(&str, PlatformLine)] =
-    &[("PaletteColor", PlatformLine::new(8, 5, 1))];
+const METADATA_KIND_LINE_ADDITIONS: &[(&str, PlatformLine)] = &[
+    ("PaletteColor", PlatformLine::new(8, 5, 1)),
+    ("Queue", PlatformLine::new(8, 5, 4)),
+];
 
 /// The line a root metadata `kind` exists from, when a later line than the
 /// first described one adds it.

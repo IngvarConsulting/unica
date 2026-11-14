@@ -1,51 +1,8 @@
 //! Чтение цвета палитры (`PaletteColor`, линия 8.5.1 и позже): синоним
 //! и цвет `#RRGGBB`. Комментарий читает общий путь дескриптора.
+use crate::descriptor_fields::{single, synonym, MD};
 use roxmltree::{Document, Node};
 use serde_json::{json, Value};
-
-const MD: &str = "http://v8.1c.ru/8.3/MDClasses";
-const CORE: &str = "http://v8.1c.ru/8.1/data/core";
-
-fn single<'a, 'input>(
-    node: Node<'a, 'input>,
-    ns: &str,
-    name: &str,
-) -> Result<Option<Node<'a, 'input>>, String> {
-    let mut found = node
-        .children()
-        .filter(|child| child.has_tag_name((ns, name)));
-    let first = found.next();
-    if found.next().is_some() {
-        return Err(format!("duplicate {name}"));
-    }
-    Ok(first)
-}
-
-/// Текст синонима на русском, а без него — на первом языке с текстом.
-fn synonym(node: Node<'_, '_>) -> Result<String, String> {
-    let entries = node
-        .children()
-        .filter(|child| child.has_tag_name((CORE, "item")))
-        .filter_map(|item| {
-            let text = |name| {
-                item.children()
-                    .find(|child| child.has_tag_name((CORE, name)))
-                    .and_then(|child| child.text())
-            };
-            Some((text("lang"), text("content")?))
-        })
-        .filter(|(_, content)| !content.is_empty())
-        .collect::<Vec<_>>();
-    if entries.is_empty() && node.children().any(|child| child.is_element()) {
-        return Err("invalid localized synonym".into());
-    }
-    Ok(entries
-        .iter()
-        .find(|(lang, _)| *lang == Some("ru"))
-        .or(entries.first())
-        .map(|(_, content)| content.to_string())
-        .unwrap_or_default())
-}
 
 /// Цвет палитры записан `#RRGGBB`.
 fn color(node: Node<'_, '_>) -> Result<String, String> {

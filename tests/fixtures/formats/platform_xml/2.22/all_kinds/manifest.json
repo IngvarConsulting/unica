@@ -28,6 +28,7 @@
   "compatibilityLowered": null,
   "excludedFiles": [],
   "lineKinds": [
-    "PaletteColor"
+    "PaletteColor",
+    "Queue"
   ]
 }

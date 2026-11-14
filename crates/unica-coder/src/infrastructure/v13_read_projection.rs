@@ -775,6 +775,9 @@ const CONFIGURATOR_ROOT_ORDER: &[NodeKind] = &[
     NodeKind::FilterCriterion,
     NodeKind::EventSubscription,
     NodeKind::ScheduledJob,
+    // Очереди: дерево Конфигуратора 8.5.4, между регламентными
+    // заданиями и ботами.
+    NodeKind::Queue,
     NodeKind::Bot,
     NodeKind::FunctionalOption,
     NodeKind::FunctionalOptionsParameter,
