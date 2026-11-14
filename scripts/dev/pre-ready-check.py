@@ -7,9 +7,18 @@
 
 - `cargo test -p <крейт> --tests --no-fail-fast`: библиотеку, интеграционные
   цели и бинари, сначала у затронутых крейтов, затем у зависимых;
-- `cargo clippy -p <крейт> --all-targets --locked -- -D warnings` затронутых;
+- Clippy всего workspace, как ворота PR, когда затронут хоть один крейт;
 - `cargo fmt --all --check` и `scripts/ci/check-discovered-modules-format.py`;
-- полные наборы `tests/ci` и `tests/dev`.
+- `scripts/ci/check-version-contract.py`;
+- полные наборы `tests/ci` и `tests/dev`;
+- с `--description-file` — `scripts/ci/removed_tests.py` по описанию PR.
+  Без описания исчезнувшие тесты печатаются напоминанием: эти строки
+  `Removes-test:` нужны в описании PR.
+
+Состав сверяется с воротами PR в `.github/workflows/ci.yml`: у каждого их шага
+в `PR_GATES` записано, какая проверка гейта его покрывает. Шаг, которого там
+нет, печатается как неизвестный гейту; то, чего гейт не исполняет на хосте,
+и шаги только очереди названы отдельно от выполненного.
 
 Часть проверок красная и на чистом `main` этого хоста (пути Windows, права
 на ссылки, бит исполнения). Поэтому падения сверяются с базой: те же проверки
@@ -83,16 +92,22 @@ class Check:
     """Одна проверка. `key` одинаков на ветке и на базе."""
 
     key: str
-    kind: str  # test | clippy | fmt | modules-fmt | python
-    target: str = ""  # пакет, каталог крейта или набор Python
+    kind: str  # test | clippy | fmt | modules-fmt | version-contract | removed-tests | python
+    target: str = ""  # пакет, каталог крейта, набор Python или файл описания PR
+    base: str = ""  # для `removed-tests`: от какой ревизии считать исчезнувшее
 
     def command(self, python: str) -> List[str]:
         if self.kind == "test":
             # `--no-fail-fast`: упавшая цель не отменяет прогон остальных.
             return ["cargo", "test", "-p", self.target, "--tests", "--no-fail-fast", "--", "--show-output"]
         if self.kind == "clippy":
-            return ["cargo", "clippy", "-p", self.target, "--all-targets", "--locked",
+            # Как ворота PR: весь workspace, все цели и возможности.
+            return ["cargo", "clippy", "--workspace", "--all-targets", "--all-features", "--locked",
                     "--message-format=short", "--", "-D", "warnings"]
+        if self.kind == "version-contract":
+            return [python, "scripts/ci/check-version-contract.py"]
+        if self.kind == "removed-tests":
+            return [python, "scripts/ci/removed_tests.py", "--base", self.base, "--description-file", self.target]
         if self.kind == "fmt":
             return ["cargo", "fmt", "--all", "--check"]
         if self.kind == "modules-fmt":
@@ -131,6 +146,8 @@ UNITTEST_RAN = re.compile(r"^Ran \d+ tests? in ", re.M)
 CARGO_RUNNING = re.compile(r"^[ \t]+Running ", re.M)
 CARGO_RERUN = re.compile(r"^error: test failed, to rerun pass `([^`]+)`", re.M)
 CARGO_TARGETS_FAILED = re.compile(r"^error: \d+ targets? failed:$", re.M)
+REMOVED_NONE = "no undeclared removed tests"
+REMOVED_DECLARE = re.compile(r"declare '([^']+)'")
 
 
 def cargo_finished(output: str, returncode: int) -> bool:
@@ -251,6 +268,22 @@ def parse_unittest(output: str, returncode: int) -> Result:
                   UNITTEST_RAN.search(output) is not None)
 
 
+def parse_script(output: str, returncode: int) -> Result:
+    """Скрипт-страж: отказ — его непустые строки, без них — код выхода."""
+    if returncode == 0:
+        return Result([])
+    lines = sorted({line.strip().removeprefix("::error::") for line in output.splitlines() if line.strip()})
+    return Result(lines or [f"отказ без пояснения, код {returncode}"])
+
+
+def parse_removed(output: str, returncode: int) -> Result:
+    """`removed_tests.py`: каждая строка — исчезнувший необъявленный тест; код 2 — git не прочитал ревизии."""
+    if returncode == 2:
+        return Result([f"сверка не проведена: {output.strip()}"], complete=False)
+    return Result(sorted({line.strip().removeprefix("::error::") for line in output.splitlines()
+                          if line.strip() and line.strip() != REMOVED_NONE}) if returncode else [])
+
+
 def parse(check: Check, output: str, returncode: int, root: Path) -> Result:
     if check.kind == "test":
         return parse_libtest(output, returncode)
@@ -258,6 +291,10 @@ def parse(check: Check, output: str, returncode: int, root: Path) -> Result:
         return parse_clippy(output, returncode, root)
     if check.kind in ("fmt", "modules-fmt"):
         return parse_fmt(output, returncode, root)
+    if check.kind == "version-contract":
+        return parse_script(output, returncode)
+    if check.kind == "removed-tests":
+        return parse_removed(output, returncode)
     return parse_unittest(output, returncode)
 
 
@@ -801,8 +838,17 @@ def dependents(names: Iterable[str], packages: Dict[str, Package]) -> List[str]:
     return sorted(seen - set(names))
 
 
-def plan(crates: Sequence[str], packages: Dict[str, Package]) -> Tuple[List[Check], List[str]]:
-    """Сначала тесты и clippy затронутых крейтов, затем тесты зависимых, затем общее."""
+@dataclass
+class Plan:
+    checks: List[Check]
+    notes: List[str]
+    touched: List[str]
+    users: List[str]
+
+
+def plan(crates: Sequence[str], packages: Dict[str, Package], base: str = "",
+         description: Optional[str] = None) -> Plan:
+    """Сначала тесты затронутых крейтов, затем тесты зависимых, Clippy workspace, затем общее."""
     checks: List[Check] = []
     notes: List[str] = []
     touched: List[str] = []
@@ -814,12 +860,114 @@ def plan(crates: Sequence[str], packages: Dict[str, Package]) -> Tuple[List[Chec
         name = packages[crate].name
         touched.append(name)
         checks.append(Check(f"test:{name}", "test", name))
-        checks.append(Check(f"clippy:{name}", "clippy", name))
-    checks.extend(Check(f"test:{name}", "test", name) for name in dependents(touched, packages))
+    users = dependents(touched, packages)
+    checks.extend(Check(f"test:{name}", "test", name) for name in users)
+    if touched:
+        checks.append(Check("clippy", "clippy"))
     checks.append(Check("fmt", "fmt"))
     checks.append(Check("modules-fmt", "modules-fmt"))
+    checks.append(Check("version-contract", "version-contract"))
+    if description is not None:
+        checks.append(Check("removed-tests", "removed-tests", description, base))
     checks.extend(Check(f"python:{suite}", "python", suite) for suite in PYTHON_SUITES)
-    return checks, notes
+    return Plan(checks, notes, touched, users)
+
+
+# --- Ворота PR ------------------------------------------------------------------
+
+CI_WORKFLOW = ".github/workflows/ci.yml"
+# Каждый шаг ворот PR и проверка гейта, которая его покрывает; `None` — служебный
+# шаг, а не проверка. Шаг без имени записан первой строкой своей команды.
+PR_GATES: Dict[str, Optional[str]] = {
+    "Сохранить локальную сборку перед очисткой": None,
+    "Вернуть локальную сборку в checkout": None,
+    "python -m pip install -r tests/ci/requirements.txt": None,
+    "Веха от владельца": None,
+    "Зелёный итог этой вершины": None,
+    "Статические проверки Python (запуск)": "python",
+    "Статические проверки Python": "python",
+    "Удалённые тесты (запуск)": "removed-tests",
+    "Удалённые тесты объявлены": "removed-tests",
+    "Формат": "fmt",
+    "Контракт версий": "version-contract",
+    "Clippy": "clippy",
+}
+# Что из покрытого шага гейт на хосте не исполняет.
+PARTIAL: Dict[str, str] = {
+    "Удалённые тесты объявлены": "сверка с инвентарём прошлой ночи: она читает артефакты прогонов GitHub",
+}
+EVENT = re.compile(r"github\.event_name\s*==\s*'(\w+)'")
+
+
+def events(condition: object) -> Set[str]:
+    """События, при которых условие может пройти; без названного события — оба."""
+    named = set(EVENT.findall(str(condition or "")))
+    return named or {"pull_request", "merge_group"}
+
+
+def step_name(step: Dict[str, object]) -> Optional[str]:
+    if step.get("name"):
+        return str(step["name"]).split(" #")[0].strip()
+    run = str(step.get("run") or "").strip()
+    return run.splitlines()[0].strip() if run else None
+
+
+def gates(workflow: Dict[str, object]) -> Tuple[List[str], List[str]]:
+    """Шаги с командой: (ворот PR, только очереди). Шаги `uses` — установка, не проверка."""
+    pull: List[str] = []
+    queue: List[str] = []
+    for job in (workflow.get("jobs") or {}).values():
+        job_events = events(job.get("if"))
+        for step in job.get("steps") or []:
+            name = step_name(step) if step.get("run") else None
+            if not name:
+                continue
+            on = job_events & events(step.get("if"))
+            if "pull_request" in on:
+                pull.append(name)
+            elif "merge_group" in on:
+                queue.append(name)
+    unique = lambda names: list(dict.fromkeys(names))  # noqa: E731
+    return unique(pull), [name for name in unique(queue) if name not in pull]
+
+
+def parity(root: Path, described: bool) -> List[str]:
+    """Строки отчёта о сверке с воротами PR."""
+    try:
+        import yaml  # noqa: PLC0415 — нужен только для сверки
+        workflow = yaml.safe_load((root / CI_WORKFLOW).read_text(encoding="utf-8"))
+    except (ImportError, OSError, ValueError) as error:
+        return [f"Ворота PR не сверены: {CI_WORKFLOW} не прочитан ({error})"]
+    pull, queue = gates(workflow)
+    unknown = [name for name in pull if name not in PR_GATES]
+    reasons: Dict[str, List[str]] = {name: [PARTIAL[name]] for name in pull if name in PARTIAL}
+    if not described:
+        for name in pull:
+            if name in PARTIAL and PR_GATES.get(name) == "removed-tests":
+                reasons[name].insert(0, "описание PR не задано (`--description-file`), "
+                                        "исчезнувшие тесты только напечатаны")
+    unchecked = [f"{name} — {', '.join(why)}" for name, why in reasons.items()]
+    lines = [f"Ворота PR, которых гейт не знает: {'; '.join(unknown)} — сверьте PR_GATES "
+             f"в scripts/dev/pre-ready-check.py с {CI_WORKFLOW}" if unknown
+             else "Ворота PR: все шаги сверены с гейтом"]
+    lines.append(f"Не проверено гейтом: {'; '.join(unchecked) if unchecked else 'нет'}")
+    lines.append(f"Только в очереди, гейт не гоняет: {'; '.join(queue) if queue else 'нет'}")
+    return lines
+
+
+def removed_reminder(root: Path, base: str, env: Dict[str, str]) -> str:
+    """Без описания PR исчезнувшие тесты — напоминание, а не отказ."""
+    completed = subprocess.run(
+        [sys.executable, "scripts/ci/removed_tests.py", "--base", base, "--description", ""],
+        cwd=root, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        encoding="utf-8", errors="replace")
+    if completed.returncode not in (0, 1):
+        detail = completed.stdout.strip().splitlines()
+        return f"Исчезнувшие тесты не сверены: {detail[-1] if detail else f'код {completed.returncode}'}"
+    lines = list(dict.fromkeys(REMOVED_DECLARE.findall(completed.stdout)))
+    if not lines:
+        return "Исчезнувшие тесты: нет"
+    return "Исчезнувшие тесты — добавьте эти строки в описание PR:\n" + "\n".join(f"    {line}" for line in lines)
 
 
 def load_cache(path: Path, base: str) -> Dict[str, List[str]]:
@@ -859,7 +1007,9 @@ def baseline(checks: Sequence[Check], base: str, cache_dir: Path,
     base_env = {**env, "CARGO_TARGET_DIR": str(cache_dir / "base-build")}
     try:
         for check in missing:
-            if check.kind in ("test", "clippy") and not crate_exists_on_base(tree, check.target):
+            # Исчезнувшее считается от базы: на самой базе сверять нечего.
+            if check.kind == "removed-tests" or (
+                    check.kind == "test" and not crate_exists_on_base(tree, check.target)):
                 cached[check.key] = []
                 continue
             result = run_check(check, tree, base_env, cache_dir / "logs-base")
@@ -963,6 +1113,8 @@ def recheck(check: Check, fresh: List[str], root: Path, env: Dict[str, str],
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--base", default="origin/main", help="ветка базы, по умолчанию origin/main")
+    parser.add_argument("--description-file", type=Path,
+                        help="описание PR: исчезнувшие тесты сверяются с его строками Removes-test")
     args = parser.parse_args(argv)
 
     target = os.environ.get("CARGO_TARGET_DIR")
@@ -980,14 +1132,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print(f"pre-ready-check: {error}", file=sys.stderr)
         return 2
 
-    checks, notes = plan(touched_crates(lines), packages)
-    touched = sorted(check.target for check in checks if check.kind == "clippy")
-    users = sorted(check.target for check in checks if check.kind == "test" and check.target not in touched)
-    print(f"База {base[:12]} ({args.base}); крейты: {', '.join(touched) or 'нет'}; "
-          f"зависимые: {', '.join(users) or 'нет'}")
+    description = str(args.description_file.resolve()) if args.description_file else None
+    planned = plan(touched_crates(lines), packages, base, description)
+    checks = planned.checks
+    print(f"База {base[:12]} ({args.base}); крейты: {', '.join(sorted(planned.touched)) or 'нет'}; "
+          f"зависимые: {', '.join(sorted(planned.users)) or 'нет'}")
     if dirty:
         print("Рабочее дерево с незакоммиченными правками: итог относится к дереву, а не к HEAD.")
-    for note in notes:
+    for note in planned.notes:
         print(f"  {note}")
 
     current: Dict[str, Result] = {}
@@ -1067,6 +1219,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print(f"Новые падения: {count if fresh else 'нет'}{builds_note}")
     print(f"Не исполнены на этой ОС, разобрать по коду: {'; '.join(unrun) if unrun else 'нет'}")
     print(f"Исполняются другим инструментом: {'; '.join(elsewhere) if elsewhere else 'нет'}")
+    if description is None:
+        print(removed_reminder(REPO_ROOT, base, env))
+    for line in parity(REPO_ROOT, description is not None):
+        print(line)
     print(f"Журналы: {cache_dir / 'logs'}")
     if missing:
         return INCOMPLETE_EXIT
