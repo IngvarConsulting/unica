@@ -160,6 +160,7 @@ struct OwnerEdgeCacheKey {
 mod diagnostic_scope;
 mod editability_view;
 mod form_payload;
+mod method_doc;
 mod module_body_read;
 mod typed_payload_read;
 mod validation_input;
@@ -1763,6 +1764,9 @@ fn method_node(method: &MethodProjection) -> NodeView {
     ]);
     if let Some(doc) = &method.doc {
         props.insert("doc".to_string(), json!(doc));
+        // Поля комментария идут рядом с его текстом, а не вместо него:
+        // нестандартный комментарий доходит без потерь.
+        props.insert("docFields".to_string(), method_doc::doc_fields(doc));
     }
     if !method.handles.is_empty() {
         props.insert("handles".to_string(), json!(method.handles));
