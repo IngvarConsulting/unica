@@ -8,9 +8,12 @@ const LIST_FORM_AT: &str = "main:Catalog.Валюты.Form.ФормаСписк�
 const COMMON_FORM_AT: &str = "main:CommonForm.MainA.Metadata";
 
 fn export(format: &str) -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join(format!(
-        "../../tests/fixtures/formats/platform_xml/{format}/all_kinds/src"
-    ))
+    let root = match format {
+        "2.20" => "../../tests/fixtures/formats/platform_xml/2.20/all_kinds/src",
+        "2.21" => "../../tests/fixtures/formats/platform_xml/2.21/all_kinds/src",
+        other => panic!("no all_kinds export of format {other}"),
+    };
+    Path::new(env!("CARGO_MANIFEST_DIR")).join(root)
 }
 
 fn read(format: &str, relative: &str) -> String {
