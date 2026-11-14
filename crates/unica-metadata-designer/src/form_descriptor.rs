@@ -294,21 +294,28 @@ pub(crate) fn owner_registers_form(owner: &[u8], name: &str) -> bool {
 
 /// The form descriptor `text` with `IncludeHelpInContents` set to `false`
 /// after `FormType`, the place the platform writes it; `None` when the
-/// descriptor already has it or is not a form descriptor with a type.
+/// descriptor already has it. A descriptor this writer cannot read comes back
+/// unchanged, so the caller's validation reports it instead of skipping it.
 pub(crate) fn with_include_help(text: &str) -> Option<String> {
-    let document = Document::parse(text).ok()?;
-    let properties = properties(&document, NodeKind::Form).ok()?;
+    let Ok(document) = Document::parse(text) else {
+        return Some(text.to_string());
+    };
+    let Ok(properties) = properties(&document, NodeKind::Form) else {
+        return Some(text.to_string());
+    };
     if property(properties, "IncludeHelpInContents").is_some() {
         return None;
     }
-    set_scalar(
-        text,
-        NodeKind::Form,
-        "IncludeHelpInContents",
-        "false",
-        &["FormType"],
+    Some(
+        set_scalar(
+            text,
+            NodeKind::Form,
+            "IncludeHelpInContents",
+            "false",
+            &["FormType"],
+        )
+        .unwrap_or_else(|_| text.to_string()),
     )
-    .ok()
 }
 
 #[cfg(test)]
@@ -353,6 +360,16 @@ mod tests {
             // Both restore the platform export byte for byte.
             assert_eq!(by_props, full);
             assert_eq!(crate::help::form_with_include_help(&full), None);
+        }
+    }
+
+    #[test]
+    fn help_add_hands_an_unreadable_form_to_its_validation() {
+        for broken in ["<MetaDataObject", "<x/>"] {
+            assert_eq!(
+                crate::help::form_with_include_help(broken).as_deref(),
+                Some(broken)
+            );
         }
     }
 

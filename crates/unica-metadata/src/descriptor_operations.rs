@@ -698,8 +698,17 @@ impl PropertiesSite {
                 "property `FormType` is read only here: a form's type changes together with its content".into(),
             ));
         }
+        // A property of a configuration's form; another name is an unknown
+        // field of the argument schema.
         let name = values.keys().find(|name| {
-            extension && !DescriptorProperty::Comment.names().contains(&name.as_str())
+            extension
+                && [
+                    DescriptorProperty::IncludeHelpInContents,
+                    DescriptorProperty::UsePurposes,
+                    DescriptorProperty::UseInInterfaceCompatibilityMode,
+                ]
+                .iter()
+                .any(|field| field.names().contains(&name.as_str()))
         })?;
         Some((
             name.clone(),
@@ -1408,10 +1417,13 @@ mod tests {
                 "property `usePurposes` is not written for a form of an extension; only `Comment` is".to_string()
             ))
         );
-        assert_eq!(
-            site(true, new).unwritten_refusal(&values(json!({"comment":""}))),
-            None
-        );
+        for name in ["comment", "Foo"] {
+            assert_eq!(
+                site(true, new).unwritten_refusal(&values(json!({name:""}))),
+                None,
+                "{name}"
+            );
+        }
         assert_eq!(
             site(false, new).unwritten_refusal(&values(json!({"UsePurposes":[]}))),
             None
