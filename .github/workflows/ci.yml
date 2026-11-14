@@ -51,7 +51,7 @@ jobs:
     steps:
       - name: Веха от владельца
         id: admission
-        if: ${{ github.event_name == 'pull_request' && !github.event.pull_request.draft }}
+        if: ${{ github.event_name == 'pull_request' }}
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -69,6 +69,7 @@ jobs:
             query($owner: String!, $name: String!, $number: Int!) {
               repository(owner: $owner, name: $name) {
                 pullRequest(number: $number) {
+                  isDraft
                   milestone { number }
                   assignees { totalCount }
                   timelineItems(itemTypes: [MILESTONED_EVENT], last: 1) { nodes { ... on MilestonedEvent { actor { login } } } }
@@ -85,7 +86,12 @@ jobs:
                else empty end),
               ($issues[] | select(.milestone == null) | "Issue #\(.number) без вехи, PR не рассматривается")' <<<"$json")"
           assignees="$(jq -r '.data.repository.pullRequest.assignees.totalCount' <<<"$json")"
-          if [ -n "$problems" ]; then echo "admitted=false"; else echo "admitted=true"; fi >> "$GITHUB_OUTPUT"
+          # Черновик не занимает раннер. Признак берётся у GitHub, а не из события
+          # прогона: при push и снятии с черновика вплотную выжить может прогон
+          # события черновика, и его перезапуск проиграл бы то же событие.
+          draft="$(jq -r '.data.repository.pullRequest.isDraft' <<<"$json")"
+          if [ -n "$problems" ] || [ "$draft" = true ]; then echo "admitted=false"; else echo "admitted=true"; fi >> "$GITHUB_OUTPUT"
+          if [ "$draft" = true ]; then echo "::notice::PR #$number — черновик, тесты не запускаются"; fi
           level="$( [ "$STRICT" = true ] && echo error || echo notice )"
           if [ -n "$problems" ]; then
             while read -r problem; do echo "::$level::$problem"; done <<<"$problems"
