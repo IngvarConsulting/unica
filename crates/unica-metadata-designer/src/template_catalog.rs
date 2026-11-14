@@ -1019,7 +1019,20 @@ pub fn metadata_generated_types_8_3_27(
             ("FilterCriterionList", "List"),
         ]),
         "SettingsStorage" => Some(&[("SettingsStorageManager", "Manager")]),
-        "Sequence" => Some(&[("SequenceRecordSet", "RecordSet")]),
+        // The platform writes these three for a sequence in its own export
+        // (`tests/fixtures/formats/platform_xml/<format>/all_kinds/src/
+        // Sequences/Probe.xml`, 2.20 to 2.22) and refuses to load a borrowed
+        // sequence without its record and manager.
+        "Sequence" => Some(&[
+            ("SequenceRecord", "Record"),
+            ("SequenceManager", "Manager"),
+            ("SequenceRecordSet", "RecordSet"),
+        ]),
+        // The platform writes the manager of a WS reference in its own export
+        // (`tests/fixtures/formats/platform_xml/<format>/all_kinds/src/
+        // WSReferences/Probe.xml`, 2.20 to 2.22) and refuses to load a
+        // borrowed WS reference without it.
+        "WSReference" => Some(&[("WSReferenceManager", "Manager")]),
         "IntegrationService" => Some(&[("IntegrationServiceManager", "Manager")]),
         "DefinedType" => Some(&[("DefinedType", "DefinedType")]),
         // The queue of 8.5.4: its message is a record, its manager a manager.
@@ -1039,7 +1052,6 @@ pub fn metadata_generated_types_8_3_27(
         | "XDTOPackage"
         | "WebService"
         | "HTTPService"
-        | "WSReference"
         | "EventSubscription"
         | "ScheduledJob"
         | "FunctionalOption"

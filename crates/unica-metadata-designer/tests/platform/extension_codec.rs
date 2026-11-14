@@ -374,7 +374,19 @@ fn cfe_borrow_generated_type_profiles_cover_8_3_27_dynamic_families() {
             ],
         ),
         ("SettingsStorage", &[("SettingsStorageManager", "Manager")]),
-        ("Sequence", &[("SequenceRecordSet", "RecordSet")]),
+        // The platform writes these types in its own export of a sequence
+        // and a WS reference (`all_kinds/src/Sequences/Probe.xml`,
+        // `all_kinds/src/WSReferences/Probe.xml` of 2.20 to 2.22), and 8.3.27
+        // and 8.5.4 refuse to load a borrowed one without them.
+        (
+            "Sequence",
+            &[
+                ("SequenceRecord", "Record"),
+                ("SequenceManager", "Manager"),
+                ("SequenceRecordSet", "RecordSet"),
+            ],
+        ),
+        ("WSReference", &[("WSReferenceManager", "Manager")]),
         (
             "IntegrationService",
             &[("IntegrationServiceManager", "Manager")],

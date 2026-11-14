@@ -141,7 +141,14 @@ pub fn plan_borrow_object_with_identity(
         })
         .transpose()?;
     let initial = existing.is_none();
-    let original = existing.map(utf8).transpose()?.unwrap_or(&template);
+    let completed;
+    let original = match existing.map(utf8).transpose()? {
+        Some(text) => {
+            completed = complete_internal_info(text, kind, name, identity, fresh_uuid)?;
+            completed.as_deref().unwrap_or(text)
+        }
+        None => &template,
+    };
     let original_doc =
         Document::parse(original).map_err(|e| format!("Damaged extension descriptor: {e}"))?;
     let target = object(&original_doc)?;
@@ -191,13 +198,33 @@ pub fn plan_borrow_object_with_identity(
     // remain extension-owned even if the parent later adds an equally named field.
     for expected in template_props.children().filter(|n| n.is_element()) {
         let prop = expected.tag_name().name();
-        if reserved(prop) || prop == "Comment" || (!initial && overrides.contains(prop)) {
+        if prop == "Comment" || (!initial && overrides.contains(prop)) {
+            continue;
+        }
+        // The content of a borrowed subsystem is the extension's own too.
+        if reserved(prop) || (kind == "Subsystem" && prop == "Content") {
+            // An extension-owned property keeps its value; one a descriptor
+            // borrowed before its kind was written in full lacks takes the
+            // value a new borrowing has.
+            if optional(target_props, MD, prop)?.is_none() {
+                let (pos, text) = insertion(original, target_props, expected)?;
+                patches.push((pos..pos, text));
+            }
             continue;
         }
         let source = optional(parent_props, MD, prop)?.unwrap_or(expected);
-        let target_prop = required(target_props, MD, prop)?;
-        if !equivalent(target_prop, source) {
-            patches.push((target_prop.range(), standalone_fragment(source)));
+        match optional(target_props, MD, prop)? {
+            Some(target_prop) => {
+                if !equivalent(target_prop, source) {
+                    patches.push((target_prop.range(), fragment_in(source, target_props)));
+                }
+            }
+            // A descriptor borrowed before its kind was written in full
+            // gains the property where the platform writes it.
+            None => {
+                let (pos, text) = insertion(original, target_props, source)?;
+                patches.push((pos..pos, text));
+            }
         }
     }
     if !initial && kind == "Catalog" {
@@ -210,7 +237,7 @@ pub fn plan_borrow_object_with_identity(
             if let Some(target_prop) = optional(target_props, MD, prop)? {
                 let source = required(parent_props, MD, prop)?;
                 if !equivalent(target_prop, source) {
-                    patches.push((target_prop.range(), standalone_fragment(source)));
+                    patches.push((target_prop.range(), fragment_in(source, target_props)));
                 }
             }
         }
@@ -230,18 +257,8 @@ pub fn plan_borrow_object_with_identity(
             let source = required(parent_props, MD, prop)?;
             // Keep the platform property order from the parent. Identity fields
             // are supplied by the extension template, never copied from source.
-            let before = source
-                .next_siblings()
-                .filter(|n| n.is_element())
-                .find_map(|n| {
-                    optional(target_props, MD, n.tag_name().name())
-                        .ok()
-                        .flatten()
-                });
-            let pos = before
-                .map(|n| n.range().start)
-                .unwrap_or_else(|| closing_start(original, target_props));
-            patches.push((pos..pos, standalone_fragment(source)));
+            let (pos, text) = insertion(original, target_props, source)?;
+            patches.push((pos..pos, text));
         }
         if !overrides.is_empty() {
             let states = overrides.iter().map(|name| format!("<xr:PropertyState xmlns:xr=\"{XR}\"><xr:Property>{}</xr:Property><xr:State>{}</xr:State></xr:PropertyState>", unica_xml_format::text::escape_xml(name), override_state(kind, name).expect("validated initial override"))).collect::<String>();
@@ -267,7 +284,9 @@ pub fn plan_borrow_object_with_identity(
     }
     let check = Document::parse(changed.trim_start_matches('\u{feff}'))
         .map_err(|e| format!("Borrowed descriptor is not well formed: {e}"))?;
-    validate_identity(object(&check)?, kind, name)?;
+    let checked = object(&check)?;
+    validate_identity(checked, kind, name)?;
+    validate_properties(required(checked, MD, "Properties")?)?;
     Ok(BorrowObjectPlan {
         parent_uuid,
         kind: kind.into(),
@@ -411,6 +430,9 @@ fn reserved(name: &str) -> bool {
             // The registers a borrowed document records into are the
             // extension's own, not the parent's.
             | "RegisterRecords"
+            // So is what a borrowed common form or template does on an
+            // extension change error.
+            | "ActionOnConfigurationExtensionChangeError"
     )
 }
 
@@ -487,10 +509,121 @@ fn resolved_value(node: Node<'_, '_>, value: &str) -> (Option<String>, String) {
     (None, value.to_string())
 }
 
-// Preserve a copied subtree's meaning, making inherited namespace bindings
-// explicit. Each element is serialized with its own in-scope bindings so a
-// nested rebind and QName-valued content retain their original meaning.
-pub fn standalone_fragment(node: Node<'_, '_>) -> String {
+/// The generated types an earlier Unica wrote for a borrowed `kind` whose
+/// profile was incomplete; the platform refuses such a descriptor.
+fn legacy_generated_types(kind: &str) -> Option<&'static [&'static str]> {
+    match kind {
+        "Sequence" => Some(&["SequenceRecordSet"]),
+        "WSReference" => Some(&[]),
+        _ => None,
+    }
+}
+
+/// `text`, a borrowed `kind` descriptor written before its kind was written
+/// in full, with the `InternalInfo` a new borrowing has: the generated types
+/// of an incomplete earlier profile, keeping the identities it has, and the
+/// property the borrowed object extends. `None` when nothing is missing or the
+/// descriptor is not such a borrowed object; any other damage stays for the
+/// identity check to refuse.
+fn complete_internal_info(
+    text: &str,
+    kind: &str,
+    name: &str,
+    identity: &CfeBorrowIdentity,
+    fresh_uuid: fn() -> String,
+) -> Result<Option<String>, String> {
+    let Ok(doc) = Document::parse(text) else {
+        return Ok(None);
+    };
+    let Ok(target) = object(&doc) else {
+        return Ok(None);
+    };
+    let Some(internal) = optional(target, MD, "InternalInfo").ok().flatten() else {
+        return Ok(None);
+    };
+    let adopted = optional(target, MD, "Properties")
+        .ok()
+        .flatten()
+        .and_then(|props| optional(props, MD, "ObjectBelonging").ok().flatten())
+        .and_then(|node| node.text())
+        == Some("Adopted");
+    if target.tag_name().name() != kind || !adopted {
+        return Ok(None);
+    }
+    let present = internal
+        .children()
+        .filter(|n| n.has_tag_name((XR, "GeneratedType")))
+        .filter_map(|n| n.attribute("name"))
+        .collect::<BTreeSet<_>>();
+    let legacy_types = legacy_generated_types(kind).is_some_and(|legacy| {
+        let expected = legacy
+            .iter()
+            .map(|prefix| format!("{prefix}.{name}"))
+            .collect::<BTreeSet<_>>();
+        present.len() == expected.len()
+            && expected.iter().all(|name| present.contains(name.as_str()))
+    });
+    let states = crate::property_states::read_property_states(internal)?;
+    let extended = crate::extension::cfe_borrow_extended_property(kind);
+    let missing_state = extended.is_some_and(|property| !states.contains_key(property));
+    if !legacy_types && !missing_state {
+        return Ok(None);
+    }
+    let start = internal.range().start;
+    let line = text[..start].rfind('\n').map_or(0, |at| at + 1);
+    let indent = &text[line..start];
+    if !indent.trim().is_empty() {
+        return Ok(None);
+    }
+    let identity = identity.with_existing(text, kind)?;
+    let rebuilt =
+        crate::extension::cfe_borrow_internal_info_xml(kind, name, indent, &identity, fresh_uuid)?;
+    let mut lines = rebuilt.lines().map(str::to_string).collect::<Vec<_>>();
+    // The states of overridden properties stay as they are.
+    let kept = internal
+        .children()
+        .filter(|n| n.has_tag_name((XR, "PropertyState")))
+        .filter(|n| {
+            optional(*n, XR, "Property")
+                .ok()
+                .flatten()
+                .and_then(|p| p.text())
+                != extended
+        })
+        .map(|n| format!("{indent}\t{}", &text[n.range()]))
+        .collect::<Vec<_>>();
+    if !kept.is_empty() {
+        if lines.len() == 1 {
+            lines = vec![
+                format!("{indent}<InternalInfo>"),
+                format!("{indent}</InternalInfo>"),
+            ];
+        }
+        let close = lines.len() - 1;
+        lines.splice(close..close, kept);
+    }
+    let newline = if text.contains("\r\n") { "\r\n" } else { "\n" };
+    let rebuilt = lines.join(newline);
+    let mut completed = text.to_string();
+    completed.replace_range(internal.range(), rebuilt.trim_start());
+    Ok(Some(completed))
+}
+
+/// `node` written into a descriptor at `scope`: a namespace is declared only
+/// where neither `scope` nor an enclosing copied element already binds its
+/// prefix to the same URI, so a property copied from the parent reads as the
+/// platform writes it, not with every namespace of the parent on every node.
+/// A binding the parent has and `scope` lacks is still declared, so a nested
+/// rebind and QName-valued content keep their meaning.
+fn fragment_in(node: Node<'_, '_>, scope: Node<'_, '_>) -> String {
+    let bound = scope
+        .namespaces()
+        .map(|ns| (ns.name().map(str::to_string), ns.uri().to_string()))
+        .collect::<BTreeSet<_>>();
+    fragment_with(node, &bound)
+}
+
+fn fragment_with(node: Node<'_, '_>, bound: &BTreeSet<(Option<String>, String)>) -> String {
     if node.is_text() {
         return unica_xml_format::text::escape_xml(node.text().unwrap_or_default());
     }
@@ -505,7 +638,14 @@ pub fn standalone_fragment(node: Node<'_, '_>) -> String {
     };
     let tag = qname(node.tag_name().namespace(), node.tag_name().name());
     let mut result = format!("<{tag}");
+    let mut inner = bound.clone();
     for ns in node.namespaces() {
+        let binding = (ns.name().map(str::to_string), ns.uri().to_string());
+        if bound.contains(&binding) {
+            continue;
+        }
+        // A prefix rebound here is no longer bound as it was outside.
+        inner.retain(|(prefix, _)| prefix != &binding.0);
         match ns.name() {
             Some(prefix) => result.push_str(&format!(
                 " xmlns:{prefix}=\"{}\"",
@@ -516,6 +656,7 @@ pub fn standalone_fragment(node: Node<'_, '_>) -> String {
                 unica_xml_format::text::escape_xml(ns.uri())
             )),
         }
+        inner.insert(binding);
     }
     for attribute in node.attributes() {
         result.push_str(&format!(
@@ -530,10 +671,53 @@ pub fn standalone_fragment(node: Node<'_, '_>) -> String {
     }
     result.push('>');
     for child in node.children() {
-        result.push_str(&standalone_fragment(child));
+        result.push_str(&fragment_with(child, &inner));
     }
     result.push_str(&format!("</{tag}>"));
     result
+}
+
+/// Where and how a property absent from `props` goes so that it reads as the
+/// platform writes it: before the first property of `props` that follows
+/// `source` in the parent, or after the last property, on a line of its own
+/// with the indentation and line ending of its neighbours.
+fn insertion(
+    text: &str,
+    props: Node<'_, '_>,
+    source: Node<'_, '_>,
+) -> Result<(usize, String), String> {
+    let newline = if text.contains("\r\n") { "\r\n" } else { "\n" };
+    let fragment = fragment_in(source, props);
+    let before = source
+        .next_siblings()
+        .filter(|n| n.is_element())
+        .find_map(|n| optional(props, MD, n.tag_name().name()).ok().flatten());
+    let last = props.children().rev().find(|n| n.is_element());
+    // The neighbour opens its own line only when nothing but indentation
+    // precedes it; otherwise the property joins the neighbour's line.
+    let own_line = |node: Node<'_, '_>| {
+        let start = node.range().start;
+        let line = text[..start].rfind('\n').map_or(0, |at| at + 1);
+        let indent = &text[line..start];
+        indent.trim().is_empty().then(|| indent.to_string())
+    };
+    Ok(match (before, last) {
+        (Some(next), _) => (
+            next.range().start,
+            match own_line(next) {
+                Some(indent) => format!("{fragment}{newline}{indent}"),
+                None => fragment,
+            },
+        ),
+        (None, Some(last)) => (
+            last.range().end,
+            match own_line(last) {
+                Some(indent) => format!("{newline}{indent}{fragment}"),
+                None => fragment,
+            },
+        ),
+        (None, None) => (closing_start(text, props), fragment),
+    })
 }
 
 #[cfg(any(test, feature = "test-support"))]
