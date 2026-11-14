@@ -93,7 +93,9 @@ and the checks below stand in for the signature.
   in `main` and equals the `main@<sha>` of its release description;
 - the night that set this alpha is green and checked that very commit, so the
   slice's tree is the tree it tested;
-- `vX.Y.Z` is not released yet.
+- `vX.Y.Z` is not released yet;
+- the slice has no open marks `TODO(#N)` (`scripts/ci/open_marks.py`):
+  unfinished work is settled before a candidate, not carried into it.
 
 It commits `bump-version.py X.Y.Z-rc.N` on the slice, with `N` the next free
 number, tags the commit and pushes the tag.
@@ -117,7 +119,8 @@ atomic push sets the tag and creates `release-vX.Y` on that commit.
 - its head is not released yet: it is neither the commit of a `vX.Y.*` tag nor
   the slice under one's version commit;
 - the head has a green CI run: the line's merge queue (`ci.yml`) or a check of
-  the line by the `release.yml` button.
+  the line by the `release.yml` button;
+- the head has no open marks either.
 
 It commits `bump-version.py X.Y.Z` on the head, with `Z` the next free patch,
 and pushes only the tag: the version commit lives under the tag, and the line's

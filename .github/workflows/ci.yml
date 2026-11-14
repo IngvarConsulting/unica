@@ -125,6 +125,7 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
+      issues: read
       actions: read
     defaults:
       run:
@@ -186,6 +187,13 @@ jobs:
         # Сверка ещё и от инвентаря ночи: между ним и базой PR тест мог
         # переехать или уйти из второй цели, и ночь знает его прежний ID.
         run: python scripts/ci/background_step.py start removed-tests -- python scripts/ci/removed_tests.py --base "origin/$BASE_REF" --nightly-profile large
+      # Пометка незакрытого называет открытую задачу, которую этот PR не
+      # закрывает: иначе при влитии номер в ней поведёт в закрытое.
+      - name: Пометки незакрытого
+        if: ${{ github.event_name == 'pull_request' && env.KEPT != 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/ci/open_marks.py pr
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         if: env.KEPT != 'true'
         with:

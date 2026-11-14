@@ -49,6 +49,13 @@ class Fakes:
             return [{"ref": f"refs/tags/{tag}"} for tag in self.tags]
         raise AssertionError(path)
 
+    found: tuple = ()
+    scanned = None
+
+    def marks(self, root, rev):
+        self.scanned = rev
+        return list(self.found)
+
     def runner(self, command, cwd=None, env=None):
         self.commands.append((command, env))
         if command[:2] == ["git", "rev-parse"]:
@@ -110,7 +117,7 @@ class PublishTests(unittest.TestCase):
         fakes = Fakes(self.module)
         with tempfile.TemporaryDirectory() as directory, \
              mock.patch.dict(os.environ, {"RELEASE_TAG_KEY": "-----KEY-----", "GITHUB_OUTPUT": str(Path(directory) / "out")}):
-            tag = self.module.publish(Path(directory), "o/r", ALPHA, dry_run=False, gh=fakes.gh, runner=fakes.runner)
+            tag = self.module.publish(Path(directory), "o/r", ALPHA, dry_run=False, gh=fakes.gh, runner=fakes.runner, marks=fakes.marks)
             self.assertEqual((Path(directory) / "out").read_text(encoding="utf-8"), "tag=v0.15.0-rc.2\n")
         self.assertEqual(tag, "v0.15.0-rc.2")
         commands = [command for command, _ in fakes.commands]
@@ -125,8 +132,21 @@ class PublishTests(unittest.TestCase):
 
     def test_a_dry_run_proves_and_names_the_number_without_touching_anything(self) -> None:
         fakes = Fakes(self.module)
-        tag = self.module.publish(Path("."), "o/r", ALPHA, dry_run=True, gh=fakes.gh, runner=fakes.runner)
+        tag = self.module.publish(Path("."), "o/r", ALPHA, dry_run=True, gh=fakes.gh, runner=fakes.runner, marks=fakes.marks)
         self.assertEqual(tag, "v0.15.0-rc.2")
+        self.assertFalse(any(command[:2] in (["git", "commit"], ["git", "push"], ["git", "checkout"])
+                             for command, _ in fakes.commands))
+
+    def test_a_mark_in_the_slice_refuses_the_candidate_before_anything_is_cut(self) -> None:
+        fakes = Fakes(self.module)
+        mark = self.module.open_marks.Mark("crates/x/src/lib.rs", 7, "// " + "TODO" + "(#3014): снять", 3014)
+        fakes.found = (mark,)
+        for dry_run in (True, False):
+            with self.subTest(dry_run=dry_run), self.assertRaisesRegex(
+                    self.module.RcError, r"Кандидат не выпускается: в срезе c{12} .*\(1\): crates/x/src/lib.rs:7 — #3014"):
+                self.module.publish(Path("."), "o/r", ALPHA, dry_run=dry_run, gh=fakes.gh, runner=fakes.runner,
+                                    marks=fakes.marks)
+        self.assertEqual(fakes.scanned, SLICE)
         self.assertFalse(any(command[:2] in (["git", "commit"], ["git", "push"], ["git", "checkout"])
                              for command, _ in fakes.commands))
 
@@ -134,7 +154,7 @@ class PublishTests(unittest.TestCase):
         fakes = Fakes(self.module)
         with tempfile.TemporaryDirectory() as directory, mock.patch.dict(os.environ, {"RELEASE_TAG_KEY": ""}), \
              self.assertRaisesRegex(self.module.RcError, "RELEASE_TAG_KEY"):
-            self.module.publish(Path(directory), "o/r", ALPHA, dry_run=False, gh=fakes.gh, runner=fakes.runner)
+            self.module.publish(Path(directory), "o/r", ALPHA, dry_run=False, gh=fakes.gh, runner=fakes.runner, marks=fakes.marks)
         self.assertFalse(any(command[:2] == ["git", "push"] for command, _ in fakes.commands))
 
 

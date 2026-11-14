@@ -50,6 +50,13 @@ class Fakes:
             return {"workflow_runs": self.runs}
         raise AssertionError(path)
 
+    found: tuple = ()
+    scanned = None
+
+    def marks(self, root, rev):
+        self.scanned = rev
+        return list(self.found)
+
     def runner(self, command, cwd=None, env=None):
         self.commands.append((command, env))
         if command[:2] == ["git", "rev-parse"]:
@@ -110,7 +117,7 @@ class PublishTests(unittest.TestCase):
         fakes = Fakes(self.module)
         with tempfile.TemporaryDirectory() as directory, \
              mock.patch.dict(os.environ, {"RELEASE_TAG_KEY": "-----KEY-----", "GITHUB_OUTPUT": str(Path(directory) / "out")}):
-            tag = self.module.publish(Path(directory), "o/r", LINE, dry_run=False, gh=fakes.gh, runner=fakes.runner)
+            tag = self.module.publish(Path(directory), "o/r", LINE, dry_run=False, gh=fakes.gh, runner=fakes.runner, marks=fakes.marks)
             self.assertEqual((Path(directory) / "out").read_text(encoding="utf-8"), "tag=v0.15.2\n")
         self.assertEqual(tag, "v0.15.2")
         commands = [command for command, _ in fakes.commands]
@@ -125,16 +132,27 @@ class PublishTests(unittest.TestCase):
 
     def test_a_dry_run_names_the_version_without_touching_anything(self) -> None:
         fakes = Fakes(self.module)
-        self.assertEqual(self.module.publish(Path("."), "o/r", LINE, dry_run=True, gh=fakes.gh, runner=fakes.runner),
+        self.assertEqual(self.module.publish(Path("."), "o/r", LINE, dry_run=True, gh=fakes.gh, runner=fakes.runner, marks=fakes.marks),
                          "v0.15.2")
         self.assertFalse(any(command[0] == "git" and {"commit", "tag", "push", "checkout"} & set(command)
+                             for command, _ in fakes.commands))
+
+    def test_a_mark_in_the_head_of_the_line_refuses_the_patch(self) -> None:
+        fakes = Fakes(self.module)
+        mark = self.module.open_marks.Mark("crates/x/src/lib.rs", 7, "// " + "TODO" + "(#3014): снять", 3014)
+        fakes.found = (mark,)
+        with self.assertRaisesRegex(self.module.PatchError, r"Исправительная версия не выпускается: в голове линии"):
+            self.module.publish(Path("."), "o/r", LINE, dry_run=True, gh=fakes.gh, runner=fakes.runner,
+                                marks=fakes.marks)
+        self.assertEqual(fakes.scanned, fakes.head)
+        self.assertFalse(any(command[:2] in (["git", "commit"], ["git", "push"], ["git", "checkout"])
                              for command, _ in fakes.commands))
 
     def test_without_the_key_nothing_is_pushed(self) -> None:
         fakes = Fakes(self.module)
         with tempfile.TemporaryDirectory() as directory, mock.patch.dict(os.environ, {"RELEASE_TAG_KEY": ""}), \
              self.assertRaisesRegex(self.module.PatchError, "RELEASE_TAG_KEY"):
-            self.module.publish(Path(directory), "o/r", LINE, dry_run=False, gh=fakes.gh, runner=fakes.runner)
+            self.module.publish(Path(directory), "o/r", LINE, dry_run=False, gh=fakes.gh, runner=fakes.runner, marks=fakes.marks)
         self.assertFalse(any(command[:2] == ["git", "push"] for command, _ in fakes.commands))
 
 
