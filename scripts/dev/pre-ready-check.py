@@ -73,7 +73,8 @@ from cargo_target import cargo_target_dir  # noqa: E402
 
 CACHE_DIR_NAME = "pre-ready-check"
 # 2: в кеше только досчитанные проверки базы.
-CACHE_VERSION = 2
+# 3: авария сборки на базе больше не кешируется как падения; кешам версии 2 не верим.
+CACHE_VERSION = 3
 INCOMPLETE_EXIT = 3
 PYTHON_SUITES = ("tests/ci", "tests/dev")
 # Крейт вне рабочего пространства: его гоняет `scripts/dev/run-research.py`.
@@ -138,6 +139,9 @@ class Result:
     build: List[str] = field(default_factory=list)
     # Прогон закончился сам, а не оборван: по неполному итогу не судят.
     complete: bool = True
+    # Чего проверка не проверила, потому что сборка не состоялась: ни один
+    # тестовый бинарь не запустился. Это не падение и не успех, а «не проверено».
+    unverified: List[str] = field(default_factory=list)
 
 
 LIBTEST_LINE = re.compile(r"^test (\S+) \.\.\. (ok|FAILED|ignored)\b", re.M)
@@ -223,15 +227,18 @@ def parse_libtest(output: str, returncode: int) -> Result:
             failures.append(f"прогон оборвался или итог неполон, код {returncode}")
         elif not summaries and not starts:
             failures.append(f"прогон оборвался или итог неполон, код {returncode}")
-    if returncode != 0 and not starts and not failures:
-        failures = build_errors(output, returncode)
     if returncode == 0:
         finished = True
     elif starts:
         finished = CARGO_TARGETS_FAILED.search(output) is not None
     else:
         finished = ERROR_LINE.search(output) is not None
-    return Result(sorted(failures), sorted(skipped), [key for key in failures if is_build_failure(key)], finished)
+    # Ни одной строки `Running` при ненулевом коде: `cargo` собирает все цели и
+    # запускает их только после удачной сборки, поэтому ни один тест не исполнился.
+    # Это «не проверено», а не падение теста: судим по улике, а не по тексту ошибки
+    # компилятора. Ошибку в коде правки покажет Clippy, он компилирует то же.
+    unverified = build_errors(output, returncode) if returncode != 0 and not starts and finished else []
+    return Result(sorted(failures), sorted(skipped), [], finished, unverified)
 
 
 def normalize_path(raw: str, root: Path) -> str:
@@ -276,10 +283,13 @@ def parse_unittest(output: str, returncode: int) -> Result:
         closing = UNITTEST_SEPARATOR.search(output, dashes.end(), end) if dashes else None
         if CARGO_FAILED.search(output, header.end(), closing.start() if closing else end):
             build.add(header.group(1))
-    if returncode != 0 and not failures:
+    # Тест, который упал на сборке продукта (`cargo build` в подготовке), ничего
+    # не проверил: он «не проверен», а не упал.
+    failures = [failure for failure in failures if failure not in build]
+    if returncode != 0 and not failures and not build:
         failures = [f"набор упал без списка тестов, код {returncode}"]
     return Result(failures, sorted(set(UNITTEST_SKIPPED.findall(output))), sorted(build),
-                  UNITTEST_RAN.search(output) is not None)
+                  UNITTEST_RAN.search(output) is not None, sorted(build))
 
 
 def parse_script(output: str, returncode: int) -> Result:
@@ -1098,7 +1108,9 @@ def baseline(checks: Sequence[Check], base: str, cache_dir: Path,
                 cached[check.key] = []
                 continue
             result = run_check(check, tree, base_env, cache_dir / "logs-base")
-            if not result.complete:
+            # Авария сборки на базе — тоже недосчёт: закешированная как полный итог,
+            # она вычла бы из ветки те же ошибки и спрятала бы настоящие.
+            if not result.complete or result.unverified:
                 incomplete.append(check.key)
                 continue
             cached[check.key] = result.failures
@@ -1174,7 +1186,8 @@ def recheck(check: Check, fresh: List[str], root: Path, env: Dict[str, str],
     log_dir.mkdir(parents=True, exist_ok=True)
     (log_dir / (re.sub(r"[^\w.-]+", "_", check.key) + ".rerun.log")).write_text(completed.stdout, encoding="utf-8")
     repeated = parse(check, completed.stdout, completed.returncode, root)
-    if not repeated.complete or any(name.startswith(SYNTHETIC) for name in repeated.failures):
+    if not repeated.complete or repeated.unverified or any(name.startswith(SYNTHETIC)
+                                                           for name in repeated.failures):
         return Result(fresh), []  # повтор сам не прошёл: доверять нечему
     unstable = [name for name in names if not any(related(failure, name) for failure in repeated.failures)]
     still: List[str] = [name for name in fresh if name.startswith(SYNTHETIC)]
@@ -1193,6 +1206,37 @@ def recheck(check: Check, fresh: List[str], root: Path, env: Dict[str, str],
                 if failure in repeated.build:
                     build.add(name)
     return Result(sorted(set(still)), build=sorted(build)), unstable
+
+
+def log_path(log_dir: Path, key: str, suffix: str = ".log") -> Path:
+    return log_dir / (re.sub(r"[^\w.-]+", "_", key) + suffix)
+
+
+def repeat_after_crash(check: Check, root: Path, env: Dict[str, str], log_dir: Path) -> Tuple[Result, Path]:
+    """Сборка не состоялась: один повтор, названный в итоге.
+
+    Журнал первой попытки сохраняется: частота таких аварий — единственная
+    улика об их причине, и молчаливый повтор её стёр бы.
+    """
+    first = log_path(log_dir, check.key, ".crash.log")
+    os.replace(log_path(log_dir, check.key), first)
+    print(f"  … сборка не состоялась, повтор {check.key} (журнал первой попытки: {first})", flush=True)
+    return run_check(check, root, env, log_dir), first
+
+
+def crash_report(unverified: Dict[str, List[str]], crash_logs: Dict[str, Path], log_dir: Path) -> List[str]:
+    """Строки итога об авариях сборки: и не ушедших при повторе, и ушедших."""
+    lines = [f"Авария сборки ушла при повторе: {key} — журнал первой попытки: {path}"
+             for key, path in crash_logs.items() if key not in unverified]
+    if unverified:
+        keys = list(unverified)
+        first = unverified[keys[0]][0]
+        logs = "; ".join(f"{key}: {crash_logs.get(key, log_path(log_dir, key))}" for key in keys)
+        repeated = " Повтор был, авария повторилась." if all(key in crash_logs for key in keys) else ""
+        lines.append(f"Не проверено, сборка не состоялась: {', '.join(keys)} — тесты этих целей не исполнялись; "
+                     f"первая ошибка: {first}; журнал: {logs}.{repeated} Повторите прогон; если повторится, "
+                     "смотрите Clippy: он компилирует тот же код.")
+    return lines
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
@@ -1229,9 +1273,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print(f"  {note}")
 
     current: Dict[str, Result] = {}
+    crash_logs: Dict[str, Path] = {}
     try:
         for check in checks:
             current[check.key] = run_check(check, REPO_ROOT, env, cache_dir / "logs")
+            if current[check.key].complete and current[check.key].unverified:
+                current[check.key], crash_logs[check.key] = repeat_after_crash(check, REPO_ROOT, env,
+                                                                               cache_dir / "logs")
     except KeyboardInterrupt:
         unrun = [check.key for check in checks if check.key not in current]
         print(f"\npre-ready-check: прогон прерван, итога нет. Не прогнаны: {', '.join(unrun)}", file=sys.stderr)
@@ -1264,11 +1312,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             else:
                 del fresh[check.key]
 
+    unverified = {check.key: current[check.key].unverified for check in checks
+                  if check.key in current and current[check.key].unverified}
     print()
     for check in checks:
         if check.key in unfinished or check.key in base_unfinished:
             where = "" if check.key in unfinished else " на базе"
             print(f"[не досчитано{where}] {check.key}")
+            continue
+        if check.key in unverified and not current[check.key].failures:
+            print(f"[не проверено, сборка не состоялась] {check.key}")
+            for line in unverified[check.key]:
+                print(f"    {line}")
             continue
         known_on_base = base_failures.get(check.key, [])
         known = sum(1 for failure in set(current[check.key].failures)
@@ -1282,6 +1337,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             print(f"    {'сбой сборки: ' if failure in build[check.key] else ''}{failure}")
         for failure in unstable.get(check.key, []):
             print(f"    нестабилен, прошёл при повторе: {failure}")
+        for failure in unverified.get(check.key, []):
+            print(f"    не проверено, сборка не состоялась: {failure}")
     crate_packages = {crate: package.name for crate, package in packages.items()}
 
     def read(name: str) -> Optional[str]:
@@ -1296,13 +1353,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     count = sum(map(len, fresh.values()))
     missing = unfinished + [key for key in base_unfinished if key not in unfinished]
     builds_note = f" (из них сбой сборки: {builds} — сборка продукта, а не проверка)" if builds else ""
+    if missing or unverified:
+        not_verified = f"; не проверено: {len(unverified)} целей" if unverified else ""
+        print(f"Новые падения в досчитанных проверках: {count if fresh else 'нет'}{builds_note}{not_verified}")
     if missing:
-        if fresh:
-            print(f"Новые падения в досчитанных проверках: {count}{builds_note}")
         print(f"Итога нет: не досчитаны {', '.join(missing)}, поэтому о новых падениях судить нельзя. "
               "Повторите прогон.")
-    else:
+    elif not unverified:
         print(f"Новые падения: {count if fresh else 'нет'}{builds_note}")
+    for line in crash_report(unverified, crash_logs, cache_dir / "logs"):
+        print(line)
     print(f"Не исполнены на этой ОС, разобрать по коду: {'; '.join(unrun) if unrun else 'нет'}")
     print(f"Исполняются другим инструментом: {'; '.join(elsewhere) if elsewhere else 'нет'}")
     if description is None:
@@ -1310,7 +1370,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     for line in parity(REPO_ROOT, description is not None, bool(dirty)):
         print(line)
     print(f"Журналы: {cache_dir / 'logs'}")
-    if missing:
+    if missing or unverified:
         return INCOMPLETE_EXIT
     return 1 if fresh else 0
 
