@@ -60,6 +60,12 @@ tests/fixtures/acceptance/workspace-whole-template-removal/** -text -whitespace
 /vendor/ureq/** -text
 /plugins/unica/third-party/licenses/ureq/** -text
 
+# Preserve the four pinned bsl-analyzer license texts in Windows checkouts.
+/plugins/unica/third-party/licenses/bsl-analyzer/LICENSE-APACHE -text
+/plugins/unica/third-party/licenses/bsl-analyzer/LICENSE-GPL -text
+/plugins/unica/third-party/licenses/bsl-analyzer/LICENSE-LGPL -text
+/plugins/unica/third-party/licenses/bsl-analyzer/LICENSE-MIT -text
+
 # Raw template XML exports and the complete native Report seed retain their bytes.
 /tests/fixtures/formats/platform_xml/2.20/template-new-xml/*.xml -text whitespace=cr-at-eol
 /tests/fixtures/formats/platform_xml/2.20/template-new-xml/seed/** -text whitespace=cr-at-eol
