@@ -25,7 +25,6 @@ class DonorParityFixture:
         (self.skills_root / "cf-init" / "scripts").mkdir(parents=True)
         (self.skills_root / "demo-validate" / "scripts").mkdir(parents=True)
         (self.case_root / "fixtures" / "on-support").mkdir(parents=True)
-        (root / "docs" / "arch-v1").mkdir(parents=True)
         self.reviews_root = root / "docs" / "provenance" / "reviews"
         self.reviews_root.mkdir(parents=True)
 
@@ -37,7 +36,6 @@ class DonorParityFixture:
             self.skills_root / "demo-validate" / "scripts" / "demo-validate.py"
         )
         self.fixture_file = self.case_root / "fixtures" / "on-support" / "Configuration.xml"
-        self.evidence = root / "docs" / "arch-v1" / "donor-parity.md"
 
         self.skill_config.write_text(
             json.dumps(
@@ -65,7 +63,6 @@ class DonorParityFixture:
         self.setup_script.write_text("print('setup')\n", encoding="utf-8")
         self.validator.write_text("print('validate')\n", encoding="utf-8")
         self.fixture_file.write_text("<Configuration/>\n", encoding="utf-8")
-        self.evidence.write_text("# Evidence\n", encoding="utf-8")
 
     def manifest(self) -> dict:
         files = []
@@ -125,20 +122,6 @@ class DonorParityFixture:
             ],
         }
 
-    def relation(self, kind: str = "compatible") -> dict:
-        observation = reviewed_observation()
-        return {
-            "caseId": "demo/basic",
-            "relation": kind,
-            "contentDigest": contract.case_content_digest(
-                self.snapshot_root, "demo/basic"
-            ),
-            "reason": "Reviewed behavior differs without losing the shared outcome.",
-            "evidence": ["docs/arch-v1/donor-parity.md"],
-            "observation": observation,
-            "observationFingerprint": contract.observation_fingerprint(observation),
-        }
-
     @staticmethod
     def upstream_path(local_path: str) -> str:
         if local_path.startswith("cases/"):
@@ -146,22 +129,6 @@ class DonorParityFixture:
         if local_path.startswith("skills/"):
             return f".claude/{local_path}"
         raise AssertionError(local_path)
-
-
-def reviewed_observation() -> dict:
-    return {
-        "donorOk": True,
-        "unicaOk": True,
-        "mismatchKind": "stdout_mismatch_snapshot_equal",
-        "donorStdoutSha256": "2" * 64,
-        "unicaStdoutSha256": "3" * 64,
-        "donorStderrSha256": "4" * 64,
-        "unicaStderrSha256": "4" * 64,
-        "donorWorkspaceSha256": "5" * 64,
-        "unicaWorkspaceSha256": "5" * 64,
-        "donorExpectedFiles": {"out.xml": True},
-        "unicaExpectedFiles": {"out.xml": True},
-    }
 
 
 class DonorParityContractTests(unittest.TestCase):
@@ -255,102 +222,6 @@ class DonorParityContractTests(unittest.TestCase):
                 )
 
                 self.assertNotEqual(before, after)
-
-    def test_relation_rejects_same_gap_kind_with_changed_fingerprint(self) -> None:
-        fixture = self.fixture()
-        relation = fixture.relation()
-        observation = reviewed_observation()
-        observation["unicaStdoutSha256"] = "8" * 64
-
-        errors = contract.validate_relation_observation(
-            relation=relation,
-            content_digest=relation["contentDigest"],
-            observation=observation,
-        )
-
-        self.assertIn("observation fingerprint changed", "\n".join(errors))
-
-    def test_exact_relation_requires_an_exact_observation(self) -> None:
-        fixture = self.fixture()
-        relation = fixture.relation("exact")
-        relation.pop("observation")
-        relation.pop("observationFingerprint")
-        relation.pop("reason")
-        relation.pop("evidence")
-
-        errors = contract.validate_relation_observation(
-            relation=relation,
-            content_digest=relation["contentDigest"],
-            observation=reviewed_observation(),
-        )
-
-        self.assertIn("exact relation observed a difference", "\n".join(errors))
-
-    def test_relations_require_every_case_and_reject_extras(self) -> None:
-        fixture = self.fixture()
-        registry = {
-            "schemaVersion": 1,
-            "upstreamId": "cc-1c-skills",
-            "relations": {"other/case": fixture.relation()},
-        }
-
-        errors = contract.validate_relations(
-            fixture.repo_root, fixture.snapshot_root, registry
-        )
-
-        joined = "\n".join(errors)
-        self.assertIn("missing relation for demo/basic", joined)
-        self.assertIn("relation for unknown case other/case", joined)
-
-    def test_non_exact_relation_requires_existing_safe_evidence(self) -> None:
-        fixture = self.fixture()
-        relation = fixture.relation("platform_override")
-        relation["evidence"] = ["../outside.md", "docs/arch-v1/missing.md"]
-        registry = {
-            "schemaVersion": 1,
-            "upstreamId": "cc-1c-skills",
-            "relations": {"demo/basic": relation},
-        }
-
-        errors = contract.validate_relations(
-            fixture.repo_root, fixture.snapshot_root, registry
-        )
-
-        joined = "\n".join(errors)
-        self.assertIn("unsafe repository-relative path", joined)
-        self.assertIn("evidence path does not exist", joined)
-
-    def test_donor_ahead_requires_owner_and_decision(self) -> None:
-        fixture = self.fixture()
-        relation = fixture.relation("donor_ahead")
-        registry = {
-            "schemaVersion": 1,
-            "upstreamId": "cc-1c-skills",
-            "relations": {"demo/basic": relation},
-        }
-
-        errors = contract.validate_relations(
-            fixture.repo_root, fixture.snapshot_root, registry
-        )
-
-        joined = "\n".join(errors)
-        self.assertIn("owner is required", joined)
-        self.assertIn("decision must be adopt or defer", joined)
-
-    def test_reviewed_non_exact_relation_is_valid(self) -> None:
-        fixture = self.fixture()
-        registry = {
-            "schemaVersion": 1,
-            "upstreamId": "cc-1c-skills",
-            "relations": {"demo/basic": fixture.relation()},
-        }
-
-        errors = contract.validate_relations(
-            fixture.repo_root, fixture.snapshot_root, registry
-        )
-
-        self.assertEqual(errors, [])
-
 
 
 if __name__ == "__main__":

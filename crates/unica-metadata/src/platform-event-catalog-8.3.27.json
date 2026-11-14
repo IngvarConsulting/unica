@@ -1,14 +1,14 @@
 {
   "profile": "8.3.27",
   "source": {
-    "installationVersion": "8.3.27.2074",
+    "installationVersion": "8.3.27.2342",
     "container": "shcntx_ru.hbk",
-    "sha256": "f793eba3f941551139e82e3fbc9c652c58900b2924960714fc4ca016cd9c272a",
+    "sha256": "f8e853952e63c447e17e53c39a57f9690769a67198a888185bd7f0230f96e14b",
     "englishContainer": "shcntx_root.hbk",
-    "englishSha256": "0113af559ef2001dedbbd9e6bbfcf8bc02e3241ca715f95c8a34c4f24c962421",
+    "englishSha256": "800e7044715d2bf822b08e17e89c2571606fdb81f87216f06197a25de0a84b34",
     "eventMarkupPageCount": 693,
     "signatureEventLeafCount": 689,
-    "eventPageIdsSha256": "19ad908ce8af0ba191dc642545d70ec163d402f129c34cd9f3c2d68318a09a31"
+    "eventPageIdsSha256": "0448eaeabd75b71dd72799cc9729b8b304d93687106eb799fab1059160106ec2"
   },
   "moduleCatalogs": [
     {
@@ -5860,18 +5860,18 @@
           "sourcePageId": "platform-syntax-help:syntax-context:objects/catalog1649/catalog1676/Form field extension for a spreadsheet document field/events/OnActivate431.html"
         },
         {
-          "eventId": "OnChangeAreaContentEvent",
+          "eventId": "OnChangeAreaContent",
           "handlerRu": "ПриИзмененииСодержимогоОбласти",
-          "handlerEn": "OnChangeAreaContentEvent",
+          "handlerEn": "OnChangeAreaContent",
           "signatureRu": "Процедура ПриИзмененииСодержимогоОбласти(Область, ДополнительныеПараметры)",
-          "signatureEn": "Procedure OnChangeAreaContentEvent(Area, AdditionalParameters)",
+          "signatureEn": "Procedure OnChangeAreaContent(Area, AdditionalParameters)",
           "methodKind": "procedure",
           "contexts": [
             "thinClient",
             "webClient",
             "thickClientManaged"
           ],
-          "sourcePageId": "platform-syntax-help:syntax-context:objects/catalog1649/catalog1676/Form field extension for a spreadsheet document field/events/OnChangeAreaContentEvent410.html"
+          "sourcePageId": "platform-syntax-help:syntax-context:objects/catalog1649/catalog1676/Form field extension for a spreadsheet document field/events/OnChangeAreaContent410.html"
         },
         {
           "eventId": "Selection",
