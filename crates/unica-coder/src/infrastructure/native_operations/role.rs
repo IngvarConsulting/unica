@@ -1015,6 +1015,114 @@ pub(crate) mod medium_role_edit_contract_tests {
         updated
     }
 
+    /// Права очереди правятся в наборе её линии: файл прав 2.22 путь
+    /// принимает, чтение переключается, а `Update`, которого у вида нет,
+    /// отвергается без записи. Набор 2.20 здесь не подошёл бы: очереди
+    /// в той линии нет вовсе.
+    #[test]
+    fn queue_rights_are_edited_in_its_own_line_and_update_is_refused() {
+        let root = std::env::temp_dir().join(format!(
+            "unica-role-edit-queue-{}-{}",
+            std::process::id(),
+            NONCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        let rights = root.join("src/Roles/Demo/Ext/Rights.xml");
+        fs::create_dir_all(rights.parent().unwrap()).unwrap();
+        fs::create_dir_all(root.join("src/Queues")).unwrap();
+        fs::write(
+            root.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        fs::write(
+                root.join("src/Configuration.xml"),
+                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.22"><Configuration><Properties><Name>Main</Name></Properties><ChildObjects><Queue>Проба</Queue><Role>Demo</Role></ChildObjects></Configuration></MetaDataObject>"#,
+            )
+            .unwrap();
+        fs::write(
+                root.join("src/Queues/Проба.xml"),
+                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.22"><Queue><Properties><Name>Проба</Name></Properties></Queue></MetaDataObject>"#,
+            )
+            .unwrap();
+        fs::write(
+                root.join("src/Roles/Demo.xml"),
+                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.22"><Role><Properties><Name>Demo</Name></Properties></Role></MetaDataObject>"#,
+            )
+            .unwrap();
+        let document = [
+            r#"<Rights xmlns="http://v8.1c.ru/8.2/roles" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="Rights" version="2.22">"#,
+            "\t<setForNewObjects>false</setForNewObjects>",
+            "\t<setForAttributesByDefault>true</setForAttributesByDefault>",
+            "\t<independentRightsOfChildObjects>false</independentRightsOfChildObjects>",
+            "\t<object>",
+            "\t\t<name>Queue.Проба</name>",
+            "\t\t<right><name>Read</name><value>false</value></right>",
+            "\t</object>",
+            "</Rights>",
+        ]
+        .join("\r\n");
+        fs::write(&rights, encode_role_xml(true, &document)).unwrap();
+        let context = WorkspaceContext {
+            cwd: root.clone(),
+            workspace_root: root.clone(),
+            cache_root: root.join(".build/unica"),
+            workspace_epoch: 1,
+        };
+
+        let granted = json!({
+            "sourceSet": "main",
+            "metadataPath": "Role.Demo",
+            "operations": [
+                {"op":"setRight", "objectName":"Queue.Проба", "right":"Read", "value":true}
+            ]
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let applied = apply_edit_with_data(&granted, &context);
+        assert!(applied.outcome.ok, "{:?}", applied.outcome.errors);
+        let after = String::from_utf8(fs::read(&rights).unwrap()).unwrap();
+        assert!(
+            after.contains("<name>Read</name>") && after.contains("<value>true</value>"),
+            "{after}"
+        );
+
+        // Сведения о роли показывают очередь своей группой и её право
+        // разрешённым: перечня видов у этого ответа нет, он идёт от файла.
+        let info = analyze_role_info(
+            &Map::from_iter([(
+                "RightsPath".to_string(),
+                json!("src/Roles/Demo/Ext/Rights.xml"),
+            )]),
+            &context,
+            &WorkspaceSupportStateReader::new(&context),
+        );
+        assert!(info.outcome.ok, "{:?}", info.outcome);
+        let data = info.data.expect("role info answers with data");
+        assert_eq!(data.totals.allowed, 1);
+        assert_eq!(data.totals.denied, 0);
+        let group = &data.allowed[0];
+        assert_eq!(group.kind, "Queue");
+        assert_eq!(group.objects[0].name, "Проба");
+        assert_eq!(group.objects[0].rights[0].name, "Read");
+
+        let absent = json!({
+            "sourceSet": "main",
+            "metadataPath": "Role.Demo",
+            "operations": [
+                {"op":"setRight", "objectName":"Queue.Проба", "right":"Update", "value":true}
+            ]
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let before = fs::read(&rights).unwrap();
+        let refused = apply_edit_with_data(&absent, &context);
+        assert!(!refused.outcome.ok, "`Update` is not a right of a queue");
+        assert_eq!(fs::read(&rights).unwrap(), before);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
     #[test]
     fn a_mid_sequence_failure_publishes_nothing_and_names_its_operation() {
         // Последовательность операций — одна транзакция: отказ на второй не

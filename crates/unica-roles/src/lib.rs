@@ -578,6 +578,7 @@ const KNOWN_ROLE_OBJECT_TYPES: &[&str] = &[
     "IntegrationService",
     "SessionParameter",
     "CommonAttribute",
+    "Queue",
 ];
 
 pub fn known_role_rights(object_type: &str) -> &'static [&'static str] {
@@ -685,6 +686,11 @@ pub fn known_role_rights(object_type: &str) -> &'static [&'static str] {
             &["Read", "Update", "View", "Edit", "TotalsControl"]
         }
         "CalculationRegister" => &["Read", "View"],
+        // Очередь: только чтение, добавление и удаление, в этом порядке.
+        // Сообщение очереди запись и не меняется, интерактивных прав у вида
+        // нет. Проверено 8.5.4: роли, которой дали ещё `Update`, `View`
+        // и `Edit`, выгрузка оставила три права и об остальных промолчала.
+        "Queue" => &["Read", "Insert", "Delete"],
         "Constant" => &[
             "Read",
             "Update",
@@ -1010,6 +1016,52 @@ mod tests {
         });
         let error = parse_role_edit_request(invalid.as_object().unwrap()).unwrap_err();
         assert_eq!(error.code, "unsupported_right");
+    }
+
+    /// У очереди три права: чтение, добавление и удаление. Изменения у неё
+    /// нет — сообщение очереди запись и не меняется, — и интерактивных прав
+    /// тоже. Снято 8.5.4: роли дали шесть прав, выгрузка оставила три.
+    #[test]
+    fn the_queue_has_read_insert_and_delete_and_no_update() {
+        assert_eq!(known_role_rights("Queue"), ["Read", "Insert", "Delete"]);
+
+        for right in ["Read", "Insert", "Delete"] {
+            let args = json!({
+                "sourceSet": "main",
+                "metadataPath": "Role.Demo",
+                "operations": [{
+                    "op": "setRight",
+                    "objectName": "Queue.Проба",
+                    "right": right,
+                    "value": true
+                }]
+            });
+            let parsed = parse_role_edit_request(args.as_object().unwrap())
+                .unwrap_or_else(|error| panic!("{right}: {error}"));
+            assert_eq!(parsed.operations[0].right, right);
+        }
+
+        for right in [
+            "Update",
+            "View",
+            "Edit",
+            "InteractiveInsert",
+            "TotalsControl",
+        ] {
+            let args = json!({
+                "sourceSet": "main",
+                "metadataPath": "Role.Demo",
+                "operations": [{
+                    "op": "setRight",
+                    "objectName": "Queue.Проба",
+                    "right": right,
+                    "value": true
+                }]
+            });
+            let error = parse_role_edit_request(args.as_object().unwrap()).expect_err(right);
+            assert_eq!(error.code, "unsupported_right", "{right}");
+            assert!(error.message.contains("Queue.Проба"), "{right}: {error}");
+        }
     }
 }
 
