@@ -59,10 +59,12 @@ fn every_reference_arrives_as_a_locator_of_the_same_corpus() {
 }
 
 /// Места исполнения приходят значениями, а не текстом; место, которого
-/// справка ещё не называла, приходит как написано, а не теряется.
+/// справка ещё не называла, приходит как написано и под пометкой: иначе
+/// потребитель не отличит новое место платформы от известного значения
+/// и сравнит его как равное.
 /// rule: INV.APP.DOCUMENTATION-ARTICLE-FIELDS
 #[test]
-fn availability_arrives_as_values_and_keeps_an_unknown_place() {
+fn an_unknown_place_arrives_marked_and_not_as_a_known_value() {
     let article = parsed();
     let ArticleField::Parsed(places) = &article.availability else {
         panic!("доступность разобрана: {:?}", article.availability);
@@ -72,9 +74,12 @@ fn availability_arrives_as_values_and_keeps_an_unknown_place() {
         &vec![
             "server".to_string(),
             "thick-client".to_string(),
-            "новое место".to_string()
+            "other:новое место".to_string()
         ]
     );
+    // Пометка отличима без знания списка: известное значение — одно слово
+    // через дефис, неизвестное названо своим текстом после двоеточия.
+    assert!(places.iter().filter(|place| place.contains(':')).count() == 1);
     // Весь текст раздела остаётся рядом со значениями.
     assert!(article.availability_text.contains("новое место"));
 }

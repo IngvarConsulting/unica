@@ -16,8 +16,11 @@ fn document_id(corpus: &str, path: &str) -> String {
 }
 
 /// Место исполнения устойчивым значением. Место, которого справка ещё не
-/// называла, приходит как написано: выдумывать для него имя нельзя,
-/// а молчать о нём — значит потерять ограничение.
+/// называла, приходит как написано под пометкой `other:`: выдумывать для
+/// него имя нельзя, молчать о нём — значит потерять ограничение, а подать
+/// его наравне с известными — значит выдать неразобранный текст за
+/// значение, которое потребитель вправе сравнивать. Двоеточия в известных
+/// значениях нет, поэтому пометка их ни с чем не смешивает.
 fn context(value: &unica_bsl_types::Context) -> String {
     use unica_bsl_types::Context::*;
     match value {
@@ -31,7 +34,7 @@ fn context(value: &unica_bsl_types::Context) -> String {
         MobileAppServer => "mobile-app-server".to_string(),
         MobileStandaloneServer => "mobile-standalone-server".to_string(),
         Integration => "integration".to_string(),
-        Other(written) => written.clone(),
+        Other(written) => format!("other:{written}"),
     }
 }
 
