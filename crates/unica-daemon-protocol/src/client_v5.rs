@@ -425,6 +425,27 @@ fn daemon_alive(state: &DaemonStateDirectory) -> Result<bool, String> {
     )
 }
 
+/// What a spawned daemon that missed readiness had done: the reason a host
+/// shows when the start ran out of time.
+fn readiness_progress(
+    pid: u32,
+    waited: Duration,
+    endpoint_published: bool,
+    state: &DaemonStateDirectory,
+) -> String {
+    let progress = if endpoint_published {
+        "published its endpoint but did not answer the handshake"
+    } else {
+        "had not published its endpoint"
+    };
+    format!(
+        "; spawned daemon {pid} was still running after {:.1} s and {progress}; \
+         state directory: {}",
+        waited.as_secs_f64(),
+        state.path().display()
+    )
+}
+
 /// The exit of a spawned daemon before readiness, with the reason it
 /// recorded for the persisted state it refused and that state's directory.
 fn exited_before_readiness(
@@ -484,8 +505,16 @@ impl V5DaemonProcessOwner {
         // as ours would, so the lock is awaited for the whole deadline.
         let _spawn_lock = match state.acquire_spawn_lock_before(deadline) {
             Ok(lock) => lock,
+            // The lock is the operating system's and ends with its holder, so
+            // a lock file left on disk never holds it: a live process does.
             Err(_) if Instant::now() >= deadline => {
-                return Err(V5ConnectFailure::not_in_time("spawn lock"))
+                return Err(
+                    V5ConnectFailure::not_in_time("spawn lock").with_note(format!(
+                        "; another live process was starting this build's daemon and held its \
+                     spawn lock until the deadline; state directory: {}",
+                        state.path().display()
+                    )),
+                )
             }
             Err(error) => return Err(error.into()),
         };
@@ -541,6 +570,7 @@ impl V5DaemonProcessOwner {
         readiness_deadline: Instant,
         deadline: Instant,
     ) -> Result<Self, V5ConnectFailure> {
+        let started = Instant::now();
         let expected_pid = child.id();
         let mut endpoint = StartupEndpointObservation::new(expected_pid);
 
@@ -597,13 +627,21 @@ impl V5DaemonProcessOwner {
                 finish_ready_startup(owner, child, state, &endpoint, deadline).map_err(Into::into)
             }
             Err(error) => {
+                let mut note = String::new();
+                if matches!(error, V5ConnectFailure::NotInTime { .. }) {
+                    note.push_str(&readiness_progress(
+                        expected_pid,
+                        started.elapsed(),
+                        endpoint.record.is_some(),
+                        state,
+                    ));
+                }
                 let cleanup = child.terminate_bounded(
                     deadline
                         .saturating_duration_since(Instant::now())
                         .min(STARTUP_CLEANUP_TIMEOUT),
                 );
                 let endpoint_cleanup = endpoint.cleanup(state);
-                let mut note = String::new();
                 if let Err(cleanup) = cleanup {
                     note.push_str(&format!(
                         "; protocol-v5 daemon startup cleanup failed: {cleanup}"
@@ -1723,16 +1761,20 @@ mod medium_tests {
             started + Duration::from_millis(300),
             deadline,
         );
+        let Err(V5ConnectFailure::NotInTime {
+            stage: "spawn readiness",
+            note,
+        }) = outcome
+        else {
+            panic!("unexpected startup outcome");
+        };
+        // The refusal names what the child had done and where (#3083).
         assert!(
-            matches!(
-                outcome,
-                Err(V5ConnectFailure::NotInTime {
-                    stage: "spawn readiness",
-                    ..
-                })
-            ),
-            "unexpected startup outcome"
+            note.contains(&format!("spawned daemon {pid} was still running after")),
+            "{note}"
         );
+        assert!(note.contains("had not published its endpoint"), "{note}");
+        assert!(note.contains(&state.path().display().to_string()), "{note}");
         assert!(
             Instant::now() < deadline,
             "startup cleanup replenished the deadline"
@@ -1742,6 +1784,41 @@ mod medium_tests {
             "failed startup left its child alive"
         );
         assert!(state.read_v5_endpoint_record().unwrap().is_none());
+    }
+
+    /// A spawn lock held by a live process is awaited to the deadline, and
+    /// the refusal says so. Once the holder lets go, the lock file left on
+    /// disk holds nothing (#3083).
+    #[test]
+    fn held_spawn_lock_refusal_names_its_cause_and_a_left_file_holds_nothing() {
+        let (root, state) = state_directory();
+        let state_root = std::fs::canonicalize(root.path()).unwrap();
+        let holder = state.acquire_spawn_lock(Duration::from_millis(50)).unwrap();
+        let outcome = V5DaemonProcessOwner::connect_or_spawn_before(
+            &state_root,
+            CoreIdentity::production_v5(),
+            PathBuf::from("unused-behind-held-spawn-lock"),
+            Duration::from_secs(1),
+            Instant::now() + Duration::from_millis(200),
+        );
+        let Err(V5ConnectFailure::NotInTime {
+            stage: "spawn lock",
+            note,
+        }) = outcome
+        else {
+            panic!("a held spawn lock must end in the spawn lock stage");
+        };
+        assert!(
+            note.contains("held its spawn lock until the deadline"),
+            "{note}"
+        );
+        assert!(note.contains(&state.path().display().to_string()), "{note}");
+
+        drop(holder);
+        assert!(state.path().join(".daemon-spawn.lock").is_file());
+        assert!(state
+            .acquire_spawn_lock_before(Instant::now() + Duration::from_millis(50))
+            .is_ok());
     }
 
     #[test]
