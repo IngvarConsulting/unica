@@ -101,6 +101,25 @@ pub fn metadata_kind_index(tag: &str) -> Option<usize> {
     METADATA_KINDS.iter().position(|kind| kind.tag == tag)
 }
 
+/// Root kinds the platform exports that have no layout in the registry, each
+/// with the registry kind after which the platform writes it in the
+/// configuration's `ChildObjects`. They are never created; their place only
+/// keeps a new entry of another kind from landing on the wrong side of them.
+pub const UNLAID_ROOT_KINDS: &[(&str, &str)] = &[
+    ("WebSocketClient", "WSReference"),
+    ("ExternalDataSource", "Task"),
+];
+
+/// Place of a root kind in the configuration's `ChildObjects` as the platform
+/// writes it: the registry kinds and the kinds without a layout between them.
+pub fn root_child_objects_order(tag: &str) -> Option<usize> {
+    if let Some(index) = metadata_kind_index(tag) {
+        return Some(index * 2);
+    }
+    let (_, after) = UNLAID_ROOT_KINDS.iter().find(|(kind, _)| *kind == tag)?;
+    metadata_kind_index(after).map(|index| index * 2 + 1)
+}
+
 /// Whether platform 8.3.27 requires a root `ChildObjects` container for this
 /// physical metadata kind, including when the collection is empty.
 ///

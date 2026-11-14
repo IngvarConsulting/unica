@@ -2775,6 +2775,7 @@ fn edit_form_refuses_exhausted_ui_ids_without_writing() {
             &form_path,
             root_start,
             Some("ru"),
+            None,
         )
         .unwrap();
         assert_eq!(unchanged, original, "a no-op does not allocate an ID");

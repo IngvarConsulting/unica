@@ -1,14 +1,19 @@
-//! Deterministic provenance oracle for the compact 8.3.27 event catalog.
+//! Deterministic provenance oracle for the compact per-line event catalogs.
 //!
-//! The runtime projection reads only the checked fixture. This test enumerates
+//! The runtime projection reads only the checked fixtures. This test enumerates
 //! every `/events/` page of the installed vendor Syntax Assistant and proves
 //! that the compact fixture is an exact derivation for the approved v0.13
 //! logical owner/module profile. Vendor HBK content is never copied here.
 //!
+//! A catalog belongs to a platform line; the build it was taken from is
+//! recorded inside it as `source.installationVersion`. The oracle picks the
+//! catalog of the line it is pointed at, so the same run serves every line
+//! with a checked catalog.
+//!
 //! The vendor help is not installed on CI runners, so the oracles are
 //! `#[ignore]`d and reported as skipped there instead of passing empty. Run
 //! them on a stand with the platform:
-//! `UNICA_PLATFORM_HELP_DIR=<8.3.27.2074 installation> cargo nextest run -p unica-documentation-sources --lib --run-ignored only -E 'test(/^platform_help_oracle::/)'`.
+//! `UNICA_PLATFORM_HELP_DIR=<installation of a line with a checked catalog> cargo nextest run -p unica-documentation-sources --lib --run-ignored only -E 'test(/^platform_help_oracle::/)'`.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -21,17 +26,69 @@ use unica_metadata::event_catalog::{
     ExcludedEventPage, FormPlatformEventCatalog, PlatformEventCatalogFixture, PlatformEventSpec,
 };
 
-const FIXTURE: &str =
-    include_str!("../../../unica-metadata/src/platform-event-catalog-8.3.27.json");
-#[cfg(feature = "research")]
-const FIXTURE_PATH: &str = "../unica-metadata/src/platform-event-catalog-8.3.27.json";
+/// Закреплённые каталоги по линиям платформы. Ключ — линия, а не сборка:
+/// сборка, с которой каталог снят, записана внутри него.
+const CHECKED_CATALOGS: &[(&str, &str)] = &[
+    (
+        "8.3.27",
+        include_str!("../../../unica-metadata/src/platform-event-catalog-8.3.27.json"),
+    ),
+    (
+        "8.5.1",
+        include_str!("../../../unica-metadata/src/platform-event-catalog-8.5.1.json"),
+    ),
+    (
+        "8.5.4",
+        include_str!("../../../unica-metadata/src/platform-event-catalog-8.5.4.json"),
+    ),
+];
 
 /// The platform installation holding the vendor help. Without it the oracle
 /// cannot execute, so an explicit run fails instead of passing empty.
 fn platform_help_dir() -> PathBuf {
     std::env::var_os("UNICA_PLATFORM_HELP_DIR")
         .map(PathBuf::from)
-        .expect("set UNICA_PLATFORM_HELP_DIR to the 1C 8.3.27.2074 installation directory")
+        .expect("set UNICA_PLATFORM_HELP_DIR to a 1C installation of a line with a checked catalog")
+}
+
+/// Линия установленной сборки: три первых числа её версии.
+fn installed_line(root: &Path) -> Result<String, String> {
+    let version = discover(root, "ru")
+        .map_err(|error| format!("{error:?}"))?
+        .version;
+    let mut parts = version.split('.');
+    let line = parts.by_ref().take(3).collect::<Vec<_>>();
+    if line.len() != 3 {
+        return Err(format!(
+            "installed version {version} is not <major>.<minor>.<release>.<build>"
+        ));
+    }
+    Ok(line.join("."))
+}
+
+/// Закреплённый каталог линии, на которую указывает установка. Отказ называет
+/// линию: у неё каталога нет, и сверять нечего.
+fn checked_catalog_for(root: &Path) -> Result<(String, PlatformEventCatalogFixture), String> {
+    let line = installed_line(root)?;
+    let text = CHECKED_CATALOGS
+        .iter()
+        .find(|(described, _)| *described == line)
+        .map(|(_, text)| *text)
+        .ok_or_else(|| format!("line {line} has no checked event catalog"))?;
+    let fixture = serde_json::from_str(text).map_err(|error| error.to_string())?;
+    Ok((line, fixture))
+}
+
+/// То же, но для теста: отсутствие каталога линии — ошибка стенда, не исход.
+fn checked_catalog(root: &Path) -> PlatformEventCatalogFixture {
+    checked_catalog_for(root)
+        .expect("the installed line must have a checked event catalog")
+        .1
+}
+
+#[cfg(feature = "research")]
+fn fixture_path(line: &str) -> String {
+    format!("../unica-metadata/src/platform-event-catalog-{line}.json")
 }
 
 fn source_page_path(source_page_id: &str) -> &str {
@@ -90,6 +147,35 @@ fn declaration(raw: &str) -> String {
         .replace("&amp;", "&")
         .trim()
         .to_string()
+}
+
+/// Русское объявление, где поставщик ошибся буквой. Имя параметра попадает
+/// в порождённый код, и человек увидел бы в своём модуле латинскую букву
+/// внутри русского слова. Исключение закреплено страницей и точным ожидаемым
+/// текстом: иначе испорченная другая страница превратилась бы в придуманное имя.
+///
+/// На линии, где поставщик написал правильно, объявление проходит как есть:
+/// исключение привязано к испорченному тексту, а не к странице целиком.
+fn exact_russian_declaration(page: &CorpusPage, parsed: String) -> Result<String, String> {
+    let (damaged, canonical) = match page.path.as_str() {
+        // 8.5.1.1529: `Cообщение` начинается с латинской `C`, в 8.3.27 —
+        // с кириллической `С`. Прочее в объявлении совпадает.
+        "objects/catalog63/catalog3024/WebSocket client module/events/OnMessage747.html" => (
+            "Процедура ПриПолученииСообщения(Соединение, Cообщение)",
+            "Процедура ПриПолученииСообщения(Соединение, Сообщение)",
+        ),
+        _ => return Ok(parsed),
+    };
+    if parsed == canonical {
+        return Ok(parsed);
+    }
+    if parsed != damaged {
+        return Err(format!(
+            "pinned Russian declaration exception no longer matches {}: {parsed:?}",
+            page.path
+        ));
+    }
+    Ok(canonical.to_string())
 }
 
 fn exact_english_template(
@@ -224,12 +310,15 @@ fn derive_event(
         .signature
         .as_ref()
         .ok_or_else(|| format!("event leaf has no bilingual template: {}", page.path))?;
-    let signature_ru = declaration(
-        signature
-            .ru
-            .as_deref()
-            .ok_or_else(|| format!("event leaf has no Russian template: {}", page.path))?,
-    );
+    let signature_ru = exact_russian_declaration(
+        page,
+        declaration(
+            signature
+                .ru
+                .as_deref()
+                .ok_or_else(|| format!("event leaf has no Russian template: {}", page.path))?,
+        ),
+    )?;
     let signature_en = exact_english_template(
         page,
         english_page,
@@ -358,6 +447,10 @@ const APPROVED_EVENT_OWNERS: &[&str] = &[
     "Form field extension for a spreadsheet document field",
     "Form field extension for a text box",
     "Form field extension for a text document",
+    // Появился в линии 8.5.1: у обычной группы формы, у которой в 8.3.27
+    // не было ни одного события, платформа завела «Нажатие». В 8.3.27 такой
+    // страницы нет, и список остаётся для неё верным.
+    "Form group extension for a usual group",
     "Form group extension for pages",
     "Form table extension for dynamic list",
     "FormField",
@@ -367,6 +460,9 @@ const APPROVED_EVENT_OWNERS: &[&str] = &[
     "InformationRegisterRecordSet.&lt;Information register name&gt;",
     "Managed form extension for record set",
     "Managed form extension for tasks",
+    // Появился в линии 8.5.4 вместе с видом «Очередь» (#2960): менеджер
+    // очереди обрабатывает сообщения и ошибки обработки.
+    "QueueManager.&lt;Queue name&gt;",
     "RadioButton",
     "ReportManager.&lt;Report name&gt;",
     "ReportObject.&lt;Report name&gt;",
@@ -773,8 +869,7 @@ enum Pinning {
 }
 
 fn derive(root: &Path, pinning: Pinning) -> Result<PlatformEventCatalogFixture, String> {
-    let mut fixture: PlatformEventCatalogFixture =
-        serde_json::from_str(FIXTURE).map_err(|error| error.to_string())?;
+    let (_, mut fixture) = checked_catalog_for(root)?;
     ensure_supplemental_form_catalogs(&mut fixture);
     let corpora = discover(root, "ru").map_err(|error| format!("{error:?}"))?;
     if pinning == Pinning::Checked && corpora.version != fixture.source.installation_version {
@@ -929,12 +1024,11 @@ fn derive(root: &Path, pinning: Pinning) -> Result<PlatformEventCatalogFixture, 
 }
 
 #[test]
-#[ignore = "vendor help: needs UNICA_PLATFORM_HELP_DIR=<1C 8.3.27 installation>; run scripts/dev/check-platform-catalogs.py"]
-fn checked_platform_event_catalog_matches_complete_8_3_27_vendor_oracle() {
+#[ignore = "vendor help: needs UNICA_PLATFORM_HELP_DIR=<1C installation of a line with a checked catalog>; run scripts/dev/check-platform-catalogs.py"]
+fn checked_platform_event_catalog_matches_the_complete_vendor_oracle_of_its_line() {
     let root = platform_help_dir();
     let derived = derive_fixture(&root).expect("derive complete event fixture from vendor corpus");
-    let checked: PlatformEventCatalogFixture =
-        serde_json::from_str(FIXTURE).expect("checked event fixture");
+    let checked = checked_catalog(&root);
     assert_eq!(
         derived, checked,
         "checked platform event catalog differs from the complete vendor derivation"
@@ -942,13 +1036,16 @@ fn checked_platform_event_catalog_matches_complete_8_3_27_vendor_oracle() {
 }
 
 #[test]
-#[ignore = "vendor help: needs UNICA_PLATFORM_HELP_DIR=<1C 8.3.27 installation>; run scripts/dev/check-platform-catalogs.py"]
+#[ignore = "vendor help: needs UNICA_PLATFORM_HELP_DIR=<1C installation of a line with a checked catalog>; run scripts/dev/check-platform-catalogs.py"]
 fn vendor_oracle_rejects_a_matching_hbk_from_the_wrong_installation_version() {
     let root = platform_help_dir();
-    let checked: PlatformEventCatalogFixture =
-        serde_json::from_str(FIXTURE).expect("checked event fixture");
+    let checked = checked_catalog(&root);
+    let line = installed_line(&root).expect("installed platform line");
     let temp = tempfile::tempdir().expect("temporary installation parent");
-    let wrong_root = temp.path().join("8.3.27.9999");
+    // Подменная сборка берётся той же линии: иначе оракул сверял бы каталог
+    // одной линии с установкой другой и отказывал по линии, а не по сборке.
+    let wrong_version = format!("{line}.9999");
+    let wrong_root = temp.path().join(&wrong_version);
     std::fs::create_dir(&wrong_root).expect("wrong-version installation root");
     std::fs::copy(
         container_path(&root, "ru", &checked.source.container).unwrap(),
@@ -962,7 +1059,7 @@ fn vendor_oracle_rejects_a_matching_hbk_from_the_wrong_installation_version() {
     // эталон переснимается на новую сборку линии, и зашитое число сделало бы
     // этот оракул красным после каждого переснятия.
     assert!(
-        error.contains("8.3.27.9999") && error.contains(&checked.source.installation_version),
+        error.contains(&wrong_version) && error.contains(&checked.source.installation_version),
         "version mismatch must name actual and expected versions: {error}"
     );
 }
@@ -1025,11 +1122,10 @@ fn an_unknown_vendor_owner_cannot_enter_the_reviewed_out_of_profile_category() {
 }
 
 #[test]
-#[ignore = "vendor help: needs UNICA_PLATFORM_HELP_DIR=<1C 8.3.27 installation>; run scripts/dev/check-platform-catalogs.py"]
+#[ignore = "vendor help: needs UNICA_PLATFORM_HELP_DIR=<1C installation of a line with a checked catalog>; run scripts/dev/check-platform-catalogs.py"]
 fn bilingual_template_exceptions_are_exact_and_source_guarded() {
     let root = platform_help_dir();
-    let checked: PlatformEventCatalogFixture =
-        serde_json::from_str(FIXTURE).expect("checked event fixture");
+    let checked = checked_catalog(&root);
     let ru_bytes =
         std::fs::read(container_path(&root, "ru", &checked.source.container).unwrap()).unwrap();
     let en_bytes =
@@ -1043,9 +1139,12 @@ fn bilingual_template_exceptions_are_exact_and_source_guarded() {
         .filter_map(|page| {
             let signature = page.signature.as_ref()?;
             let raw = signature.en.as_deref()?;
+            // Сравнивается объявление, а не весь текст записи: разрыв строки
+            // поставщик пишет по-разному в разных линиях, и тело процедуры
+            // к утверждению теста не относится.
             declaration_kind(&declaration(raw)).is_err().then_some((
                 page.path.as_str(),
-                signature.ru.as_deref(),
+                signature.ru.as_deref().map(declaration),
                 raw,
             ))
         })
@@ -1056,12 +1155,12 @@ fn bilingual_template_exceptions_are_exact_and_source_guarded() {
         [
             (
                 "objects/catalog1649/catalog1679/catalog2421/Form table extension for dynamic list/events/URLGetProcessing713.html",
-                Some("Процедура ОбработкаПолученияНавигационнойСсылки(Элемент, Ключ, Представление, НавигационнаяСсылка, СтандартнаяОбработка)<br>    <?><br>КонецПроцедуры"),
+                Some("Процедура ОбработкаПолученияНавигационнойСсылки(Элемент, Ключ, Представление, НавигационнаяСсылка, СтандартнаяОбработка)".to_string()),
                 ",",
             ),
             (
                 "objects/catalog1649/catalog1679/catalog2421/Form table extension for dynamic list/events/URLListGetProcessing712.html",
-                Some("Процедура ОбработкаПолученияСпискаНавигационныхСсылок(Элемент, СписокНавигационыхСсылок, КлючПоУмолчанию)<br>    <?><br>КонецПроцедуры"),
+                Some("Процедура ОбработкаПолученияСпискаНавигационныхСсылок(Элемент, СписокНавигационыхСсылок, КлючПоУмолчанию)".to_string()),
                 ",",
             ),
         ]
@@ -1092,11 +1191,10 @@ fn bilingual_template_exceptions_are_exact_and_source_guarded() {
 }
 
 #[test]
-#[ignore = "vendor help: needs UNICA_PLATFORM_HELP_DIR=<1C 8.3.27 installation>; run scripts/dev/check-platform-catalogs.py"]
+#[ignore = "vendor help: needs UNICA_PLATFORM_HELP_DIR=<1C installation of a line with a checked catalog>; run scripts/dev/check-platform-catalogs.py"]
 fn every_vendor_event_markup_page_belongs_to_one_closed_partition_category() {
     let root = platform_help_dir();
-    let checked: PlatformEventCatalogFixture =
-        serde_json::from_str(FIXTURE).expect("checked event fixture");
+    let checked = checked_catalog(&root);
     let bytes = std::fs::read(container_path(&root, "ru", &checked.source.container).unwrap())
         .expect("syntax assistant");
     let pages = read_corpus(&bytes).expect("read complete syntax assistant");
@@ -1104,7 +1202,13 @@ fn every_vendor_event_markup_page_belongs_to_one_closed_partition_category() {
         .iter()
         .filter(|page| page.path.contains("/events/"))
         .collect::<Vec<_>>();
-    assert_eq!(event_pages.len(), 693, "pinned HBK event markup census");
+    // Перепись страниц разметки живёт в самом каталоге: у каждой линии она
+    // своя, и число в коде устаревало бы при первой же новой линии.
+    assert_eq!(
+        event_pages.len(),
+        checked.source.event_markup_page_count,
+        "pinned HBK event markup census"
+    );
 
     let selected = checked
         .module_catalogs
@@ -1172,6 +1276,7 @@ fn regenerate_checked_platform_event_catalog() {
         "set UNICA_UPDATE_PLATFORM_EVENT_CATALOG=1 explicitly"
     );
     let root = platform_help_dir();
+    let line = installed_line(&root).expect("installed platform line");
     let derived =
         rederive_fixture(&root).expect("derive complete event fixture from vendor corpus");
     let text = format!(
@@ -1179,8 +1284,48 @@ fn regenerate_checked_platform_event_catalog() {
         serde_json::to_string_pretty(&derived).expect("serialize derived event fixture")
     );
     std::fs::write(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join(FIXTURE_PATH),
+        Path::new(env!("CARGO_MANIFEST_DIR")).join(fixture_path(&line)),
         text,
     )
     .expect("write derived event fixture");
+}
+
+/// Исключение на испорченное русское объявление: подменяется только точно
+/// совпавший текст на известной странице, линия с верным текстом проходит
+/// как есть, а любой третий вариант даёт отказ.
+#[test]
+fn a_damaged_russian_declaration_is_corrected_only_where_it_is_pinned() {
+    let websocket =
+        "objects/catalog63/catalog3024/WebSocket client module/events/OnMessage747.html";
+    let page = |path: &str| CorpusPage {
+        path: path.to_string(),
+        title: String::new(),
+        text: String::new(),
+        signature: None,
+    };
+    let canonical = "Процедура ПриПолученииСообщения(Соединение, Сообщение)";
+    let damaged = "Процедура ПриПолученииСообщения(Соединение, Cообщение)";
+    assert_ne!(
+        canonical, damaged,
+        "the pinned pair must differ by a letter"
+    );
+    assert_eq!(
+        exact_russian_declaration(&page(websocket), damaged.to_string()),
+        Ok(canonical.to_string())
+    );
+    assert_eq!(
+        exact_russian_declaration(&page(websocket), canonical.to_string()),
+        Ok(canonical.to_string())
+    );
+    assert!(exact_russian_declaration(
+        &page(websocket),
+        "Процедура ПриПолученииСообщения(Соединение)".to_string()
+    )
+    .is_err());
+    let other = "objects/catalog63/catalog3024/WebSocket client module/events/OnError748.html";
+    assert_eq!(
+        exact_russian_declaration(&page(other), damaged.to_string()),
+        Ok(damaged.to_string()),
+        "an unpinned page is never corrected"
+    );
 }

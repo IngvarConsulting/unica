@@ -467,6 +467,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
         let projection = Arc::new(
             project_module(ModuleProjectionRequest {
                 at: module_at,
+                platform: self.platform_profile(),
                 capability,
                 title: module_title(module_at, capability),
                 rev: &admitted.revision,

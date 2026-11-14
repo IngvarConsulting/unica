@@ -1176,6 +1176,9 @@ mod tests {
                         signature: None,
                         applicable_version: "8.3.27".into(),
                         text: self.text.lock().unwrap().clone(),
+                        // Стенд отдаёт только текст: разобранной статьи
+                        // у него нет.
+                        article: None,
                     })
                 })
             }

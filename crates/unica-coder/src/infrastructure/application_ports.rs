@@ -2748,6 +2748,8 @@ mod medium_tests {
                 signature: None,
                 applicable_version: "8.3.27.2074".to_string(),
                 text: "Полный текст.".to_string(),
+                // Стенд отдаёт только текст: разобранной статьи у него нет.
+                article: None,
             }))
         }
     }

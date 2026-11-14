@@ -434,3 +434,25 @@ fn an_unquoted_link_target_ends_at_the_tag() {
     );
     assert_eq!(article.member_lists[0].members[0].label, "Добавить (Add)");
 }
+
+/// Вызова не бывает у свойства: раздел вызова на его странице —
+/// неожиданность, и она уходит в прочие разделы. Молча статья его не теряет
+/// и варианта, которому у свойства не место, не заводит.
+#[test]
+fn a_call_section_on_a_property_page_stays_among_the_other_sections() {
+    let html = page(&format!(
+        "<p class=\"V8SH_heading\">Колонки (Columns)</p>\
+         {}Только чтение.{}Параметры описаны прозой.",
+        chapter("Использование:"),
+        chapter("Параметры:"),
+    ));
+    let article = parse("objects/c/Sample/properties/Columns2.html", &html);
+    assert!(article.variants.is_empty());
+    assert_eq!(
+        article.other_sections,
+        vec![(
+            "Параметры".to_string(),
+            "Параметры описаны прозой.".to_string()
+        )]
+    );
+}

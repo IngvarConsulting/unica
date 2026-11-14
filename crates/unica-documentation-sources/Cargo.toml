@@ -34,4 +34,11 @@ unica-network = { path = "../unica-network", features = ["test-support"] }
 [package.metadata.unica]
 component = "service"
 file-io = "owned"
-inputs = ["crates/unica-metadata/src/platform-event-catalog-8.3.27.json"]
+# Каталог каждой описанной линии: оракул сверяет тот, чьей линии установка.
+# Перечислены по одному намеренно — страж границ крейта называет забытый путь
+# прямо, поэтому пропуск не бывает молчаливым.
+inputs = [
+    "crates/unica-metadata/src/platform-event-catalog-8.3.27.json",
+    "crates/unica-metadata/src/platform-event-catalog-8.5.1.json",
+    "crates/unica-metadata/src/platform-event-catalog-8.5.4.json",
+]

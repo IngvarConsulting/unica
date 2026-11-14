@@ -178,10 +178,14 @@ jobs:
         if: ${{ github.event_name == 'pull_request' && env.KEPT != 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_REF: ${{ github.base_ref }}
+        # База — ветка назначения на выкаченном дереве, как при локальном
+        # запуске: скрипт сам берёт её merge-base с HEAD. `base.sha` события
+        # застывает при создании PR, а дерево — merge-ref со свежей веткой,
+        # и тесты, снятые в ней позже, сверка приписала бы этому PR.
         # Сверка ещё и от инвентаря ночи: между ним и базой PR тест мог
         # переехать или уйти из второй цели, и ночь знает его прежний ID.
-        run: python scripts/ci/background_step.py start removed-tests -- python scripts/ci/removed_tests.py --base "$BASE_SHA" --nightly-profile large
+        run: python scripts/ci/background_step.py start removed-tests -- python scripts/ci/removed_tests.py --base "origin/$BASE_REF" --nightly-profile large
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         if: env.KEPT != 'true'
         with:

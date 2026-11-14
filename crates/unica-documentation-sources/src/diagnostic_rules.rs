@@ -141,6 +141,8 @@ impl DocumentationProvider for DiagnosticRulesProvider {
             signature: Some(document.code.clone()),
             applicable_version: SNAPSHOT.version.clone(),
             text: document.text.clone(),
+            // Поставщик статью полями не разбирает.
+            article: None,
         }))
     }
 }

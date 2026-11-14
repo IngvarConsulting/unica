@@ -1,9 +1,10 @@
 *.sh text eol=lf
 *.rs text eol=lf
 
-# The hashed catalog must not inherit
-# Git-for-Windows CRLF conversion from the runner's global configuration.
-crates/unica-metadata/src/platform-event-catalog-8.3.27.json text eol=lf
+# The hashed catalogs must not inherit Git-for-Windows CRLF conversion from
+# the runner's global configuration. Шаблон, а не перечисление: каталог новой
+# линии закрепляется появлением файла, а не правкой этой строки.
+crates/unica-metadata/src/platform-event-catalog-*.json text eol=lf
 
 # BSP parity fixtures preserve harvested bytes, including BOM and CRLF.
 tests/fixtures/unica_mcp_script_parity/bsp/** -text -whitespace

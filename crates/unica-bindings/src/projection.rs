@@ -11,17 +11,17 @@ use std::cell::OnceCell;
 use std::collections::HashMap;
 use unica_address::address::QualifiedAddress;
 use unica_address::module_routes::ModuleRole;
-use unica_bsl::event_catalog::module_event_catalog_8_3_27;
-use unica_bsl::profile::ModuleCapability;
+use unica_bsl::event_catalog::module_event_catalog;
+use unica_bsl::profile::{ModuleCapability, PlatformProfile};
 use unica_bsl_parser::{
     parse as parse_bsl_syntax, AnnotationFact, CodeOutlineMethodKind, ExtensionAnnotationKind,
     ParsedModule,
 };
 use unica_forms::events::{
-    foreign_handler_signature_8_3_27, form_event_catalog_8_3_27,
-    form_event_handler_signature_8_3_27, form_owner_event_parameters_8_3_27,
-    validate_property_event_binding, FormElementKind, FormEventBinding, FormEventContext,
-    FormEventOwnerKind, FormEventParameterForms, FormEventTarget,
+    foreign_handler_signature, form_event_catalog, form_event_handler_signature,
+    form_owner_event_parameters, validate_property_event_binding, FormElementKind,
+    FormEventBinding, FormEventContext, FormEventOwnerKind, FormEventParameterForms,
+    FormEventTarget,
 };
 use unica_metadata::event_catalog::PlatformEventSpec;
 use unica_refusal::RefusalCode;
@@ -192,6 +192,8 @@ pub struct DeclarativeBinding<'a> {
 
 pub struct ModuleProjectionRequest<'a> {
     pub at: &'a QualifiedAddress,
+    /// Профиль линии набора: он выбирает каталог возможных событий.
+    pub platform: PlatformProfile,
     pub capability: ModuleCapability,
     pub title: String,
     pub rev: &'a str,
@@ -259,7 +261,7 @@ impl std::fmt::Display for DirectiveRuleError {
 impl std::error::Error for DirectiveRuleError {}
 
 pub fn project_module(request: ModuleProjectionRequest<'_>) -> Result<ModuleProjectionSet, String> {
-    let specs = module_event_catalog_8_3_27(request.capability);
+    let specs = module_event_catalog(request.platform, request.capability);
     project_module_with_specs(request, specs)
 }
 
@@ -267,7 +269,7 @@ pub fn project_module_event_record(
     request: ModuleProjectionRequest<'_>,
     event_at: &str,
 ) -> Result<PlatformEventProjectionRecord, PlatformEventProjectionRecordError> {
-    let specs = module_event_catalog_8_3_27(request.capability);
+    let specs = module_event_catalog(request.platform, request.capability);
     let projection = project_module_with_specs(request, specs)
         .map_err(PlatformEventProjectionRecordError::InvalidSource)?;
     let index = projection
@@ -1259,7 +1261,7 @@ fn form_method_matches_event(
         MethodKind::Function => "function",
     };
     kind == spec.method_kind
-        && foreign_handler_signature_8_3_27(
+        && foreign_handler_signature(
             owner_events,
             &spec.event_id,
             &method
@@ -1397,7 +1399,7 @@ pub fn project_form_owner_event_record(
     methods: &[FormMethodFact<'_>],
     event_at: &str,
 ) -> Option<FormEventProjectionRecord> {
-    let catalog = form_event_catalog_8_3_27(
+    let catalog = form_event_catalog(
         context,
         owner.owner.catalog_owner(),
         owner.data_path.as_deref(),
@@ -1432,7 +1434,7 @@ pub fn project_form_owner_events(
         if !projected_owners.insert(owner_key) {
             continue;
         }
-        let catalog = form_event_catalog_8_3_27(
+        let catalog = form_event_catalog(
             context,
             owner.owner.catalog_owner(),
             owner.data_path.as_deref(),
@@ -1593,7 +1595,7 @@ fn project_known_form_event(
                 spec,
                 owner,
                 owner_events.get_or_init(|| {
-                    form_owner_event_parameters_8_3_27(
+                    form_owner_event_parameters(
                         context,
                         owner.owner.catalog_owner(),
                         owner.data_path.as_deref(),
@@ -1614,7 +1616,7 @@ fn project_known_form_event(
             |binding| format!("Процедура {}(Команда)", binding.handler),
         )
     } else {
-        form_event_handler_signature_8_3_27(owner.owner.catalog_owner(), spec)
+        form_event_handler_signature(owner.owner.catalog_owner(), spec)
     };
     let can = match state {
         EventState::Available if context.direct_part_writable => {

@@ -1039,12 +1039,13 @@ mod medium_tests {
         let planted = src.join("planted.xml");
         fs::write(&planted, "<Rights/>").unwrap();
         fs::remove_file(src.join("Roles/Sales/Ext/Rights.xml")).unwrap();
-        let created = unica_workspace::test_support::create_file_symlink_for_test(
+        if !crate::infrastructure::test_fixtures::file_link_or_skip(
             &planted,
             src.join("Roles/Sales/Ext/Rights.xml"),
-        )
-        .expect("symlink fixtures exist on Unix and Windows");
-        created.unwrap();
+        ) {
+            cleanup(&context);
+            return;
+        }
 
         let failure = selection(&context, "Role.Sales", AttachedResource::Rights, &["Role"])
             .expect_err("a symlinked resource is not a direct regular file");

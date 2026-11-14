@@ -4,6 +4,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -70,6 +71,21 @@ class AgentCliHostTests(unittest.TestCase):
 
 @unittest.skipUnless(os.name == 'nt', 'requires native Windows Job Objects')
 class NativeAgentCliCleanupTests(unittest.TestCase):
+    # Завершение Job Object асинхронное: `TerminateJobObject` возвращается
+    # раньше, чем процесс уходит из таблицы, и на занятом хосте это занимает
+    # десятые доли секунды. Ждём смерти до дедлайна, а не нулевое время;
+    # потомок, который дедлайн переждал, — по-прежнему падение.
+    CLEANUP_DEADLINE_SECONDS = 1.0
+
+    def _identity_after_cleanup(self, cli_host, pid):
+        support = cli_host.process_support()
+        deadline = time.monotonic() + self.CLEANUP_DEADLINE_SECONDS
+        identity = support._current_process_identity(pid)
+        while identity is not None and time.monotonic() < deadline:
+            time.sleep(0.01)
+            identity = support._current_process_identity(pid)
+        return identity
+
     def test_success_and_timeout_clean_descendants_without_touching_an_unrelated_process(self):
         from tests.agent_evaluation import cli_host
         sentinel = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])
@@ -93,7 +109,10 @@ class NativeAgentCliCleanupTests(unittest.TestCase):
                         self.assertEqual(events, [{'type': 'thread.started'}])
                     self.assertTrue(pidfile.exists(), 'the descendant must actually have started')
                     pid = int(pidfile.read_text())
-                    self.assertIsNone(cli_host.process_support()._current_process_identity(pid))
+                    self.assertIsNone(
+                        self._identity_after_cleanup(cli_host, pid),
+                        'the descendant must not outlive the run',
+                    )
                     self.assertIsNone(sentinel.poll(), 'cleanup terminated an unrelated process')
                     driver.stop_owned_daemons(root / 'state', root / 'unica.exe')
         finally:

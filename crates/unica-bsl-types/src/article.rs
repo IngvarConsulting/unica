@@ -335,10 +335,36 @@ pub fn parse(path: &str, html: &str) -> Article {
     };
 
     // Вариант синтаксиса открывает свою сигнатуру; параметры и возвращаемое
-    // значение принадлежат последней открытой.
+    // значение принадлежат последней открытой. Вызова не бывает у типа
+    // и у свойства: раздел вызова на их странице — неожиданность, и он
+    // уходит в прочие разделы, а не заводит им вариант, который потом
+    // некуда положить.
+    let callable = matches!(
+        kind,
+        ArticleKind::Method | ArticleKind::Event | ArticleKind::Constructor | ArticleKind::Concept
+    );
     let mut syntax_seen = false;
     for (raw_title, content) in chapters(html) {
         let title = raw_title.trim().trim_end_matches(':').trim().to_owned();
+        let variant_section = matches!(
+            title.as_str(),
+            "Синтаксис"
+                | "Syntax"
+                | "Параметры"
+                | "Parameters"
+                | "Возвращаемое значение"
+                | "Returned value"
+                | "Описание варианта метода"
+                | "Description of the method variant"
+        ) || title.starts_with("Вариант синтаксиса:")
+            || title.starts_with("Syntax variant:");
+        if variant_section && !callable {
+            let body = text(content);
+            if !body.is_empty() {
+                article.other_sections.push((title.clone(), body));
+            }
+            continue;
+        }
         if let Some(variant) = title
             .strip_prefix("Вариант синтаксиса:")
             .or_else(|| title.strip_prefix("Syntax variant:"))
@@ -957,6 +983,13 @@ pub(crate) fn text(markup: &str) -> String {
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+/// Сущности HTML и неразрывные пробелы обычным текстом, BOM в начале снят.
+/// Тем же раскрывает их плоский текст страницы: читателю достаётся
+/// «Скопировать(<Строки>)», а не «Скопировать(&lt;Строки&gt;)».
+pub fn decode_entities(raw: &str) -> String {
+    decode(raw)
 }
 
 fn decode(raw: &str) -> String {

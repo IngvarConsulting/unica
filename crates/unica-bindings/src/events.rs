@@ -11,9 +11,7 @@ use unica_bsl::event_text::RequiredEventDirective;
 use unica_bsl::profile::{ModuleCapability, PlatformProfile};
 use unica_bsl::projection::{EventProjection, EventState, MethodKind, ModuleProjectionSet};
 use unica_forms::event_targets::{PropertyEventOwner, PropertyEventOwnerKind};
-use unica_forms::events::{
-    form_event_handler_signature_8_3_27, FormDefinitionKind, FormElementKind,
-};
+use unica_forms::events::{form_event_handler_signature, FormDefinitionKind, FormElementKind};
 use unica_forms::facts::{FormEventEvidence, FormInfoElement, FormInfoEvent};
 use unica_metadata::event::FormCallType;
 use unica_metadata::event_catalog::PlatformEventSpec;
@@ -94,12 +92,14 @@ pub struct EventImplementationShape {
 pub fn project_platform_event_implementation(
     event_at: &QualifiedAddress,
     module_at: &QualifiedAddress,
+    platform: PlatformProfile,
     capability: ModuleCapability,
     module_text: Option<&str>,
 ) -> Result<EventImplementationShape, EventProjectionError> {
     let record = project_module_event_record(
         ModuleProjectionRequest {
             at: module_at,
+            platform,
             capability,
             title: String::new(),
             rev: "",
@@ -145,11 +145,14 @@ pub fn project_property_event_implementation(
         .map(unica_address::address::AddressSegment::kind);
     let inputs = form_semantic_inputs(&form_at.to_string(), &evidence);
     validate_owner_chain(owner_chain, &inputs)?;
-    let capability = PlatformProfile::v8_3_27()
+    // Линия набора уже установлена в контексте формы: профиль берётся по ней.
+    let platform = PlatformProfile::for_line_or_base(evidence.context.platform_line);
+    let capability = platform
         .module_capability(module_at)
         .ok_or_else(|| EventProjectionError::unavailable("form module capability is absent"))?;
     let module = project_module(ModuleProjectionRequest {
         at: module_at,
+        platform,
         capability,
         title: String::new(),
         rev: "",
@@ -274,7 +277,7 @@ fn shape_from_spec(
     let catalog_signature = match directive_owner {
         EventDirectiveOwner::Platform(_) => spec.signature_ru.clone(),
         EventDirectiveOwner::Property(owner) => {
-            form_event_handler_signature_8_3_27(owner.catalog_owner(), spec)
+            form_event_handler_signature(owner.catalog_owner(), spec)
         }
     };
     let signature = substitute_catalog_handler(&catalog_signature, &spec.handler_ru, &handler)?;
@@ -341,11 +344,13 @@ fn substitute_catalog_handler(
 pub fn project_platform_event(
     event_at: &QualifiedAddress,
     module_at: &QualifiedAddress,
+    platform: PlatformProfile,
     capability: ModuleCapability,
     module_text: Option<&str>,
 ) -> Result<EventProjection, EventProjectionError> {
     let projection = project_module(ModuleProjectionRequest {
         at: module_at,
+        platform,
         capability,
         title: String::new(),
         rev: "",
@@ -384,12 +389,14 @@ pub fn project_property_events(
 ) -> Result<Vec<EventProjection>, EventProjectionError> {
     let module_at = QualifiedAddress::parse(&format!("{form_at}.Module.Form"))
         .map_err(|error| EventProjectionError::unavailable(error.to_string()))?;
-    let capability = PlatformProfile::v8_3_27()
+    let platform = PlatformProfile::for_line_or_base(evidence.context.platform_line);
+    let capability = platform
         .module_capability(&module_at)
         .ok_or_else(|| EventProjectionError::unavailable("form module capability is absent"))?;
     let inputs = form_semantic_inputs(&form_at.to_string(), evidence);
     let module = project_module(ModuleProjectionRequest {
         at: &module_at,
+        platform,
         capability,
         title: String::new(),
         rev: "",

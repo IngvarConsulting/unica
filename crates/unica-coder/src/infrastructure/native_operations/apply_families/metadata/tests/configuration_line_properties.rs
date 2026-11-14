@@ -473,6 +473,19 @@ fn a_configuration_root_refuses_slots_and_forms_it_does_not_have() {
         let error = set_root_forms(source, line, values.clone()).unwrap_err();
         assert_eq!(error.kind(), kind, "{values}");
     }
+    // An argument the contract does not name is refused at its own key
+    // before the slots are looked at.
+    let error = hidden_apply(
+        source,
+        line,
+        |_| {},
+        json!({"at":"main:Configuration","dryRun":true,"ops":[
+            {"op":"form.set","args":{"values":{"defaultReportForm":"Missing"},
+                "unicaUnknownArgument":true}}]}),
+    )
+    .unwrap_err();
+    assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue);
+    assert_eq!(error.path(), Some("ops[0].args.unicaUnknownArgument"));
 }
 
 /// An extension root of 8.5.4 sets what it does when the configuration lacks

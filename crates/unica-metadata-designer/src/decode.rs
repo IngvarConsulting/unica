@@ -108,6 +108,22 @@ pub enum DescriptorPropertyChanges {
     WSReference(unica_metadata::property_input::WsReferencePropertyChanges),
     Subsystem(unica_metadata::property_input::SubsystemPropertyChanges),
     Configuration(unica_metadata::property_input::ConfigurationPropertyChanges),
+    FormDescriptor(FormDescriptorTarget),
+}
+
+/// The descriptor of a form `props.set` edits, with what proves it is
+/// registered: the owner registers the form, and the set root the owner.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FormDescriptorTarget {
+    /// The logical address of the form, `CommonForm.N` or `Kind.O.Form.F`.
+    pub form: String,
+    /// The owner descriptor that registers a form of an object; `None` for
+    /// a common form, which the set root registers.
+    pub owner_relative: Option<PathBuf>,
+    /// The kind and name the set root registers: the common form, or the
+    /// owner object.
+    pub registered: Option<(String, String)>,
+    pub values: unica_metadata::property_input::FormDescriptorPropertyChanges,
 }
 /// Where the caller wrote the fields of an addressed typed edit: the typed
 /// writer names them in its own request (`elements[0]`, `names[0]`, `scope`).
@@ -1079,6 +1095,7 @@ pub fn parse_properties(
         PropertiesSite::root_of(binding.source_kind, binding.source_line)
     } else {
         PropertiesSite::from_address(&target, binding.source_kind)
+            .map(|site| site.at_line(binding.source_line))
     }
     .ok_or_else(|| {
         ApplyPlanError::new(
@@ -1106,10 +1123,14 @@ pub fn parse_properties(
     // internal carrier key, not part of the published property arguments.
     let mut payload = args.clone();
     payload.remove("at");
-    if let Some((name, reason)) = payload
-        .get("values")
-        .and_then(Value::as_object)
-        .and_then(|values| site.later_line_refusal(binding.source_set_name(), values))
+    if let Some((name, reason)) =
+        payload
+            .get("values")
+            .and_then(Value::as_object)
+            .and_then(|values| {
+                site.unwritten_refusal(values)
+                    .or_else(|| site.later_line_refusal(binding.source_set_name(), values))
+            })
     {
         return Err(ApplyPlanError::new(ApplyPlanErrorKind::BadValue, reason)
             .at_path(format!("ops[{op_index}].args.values.{name}")));
@@ -1209,6 +1230,9 @@ pub fn parse_properties(
                 changes: DescriptorPropertyChanges::Subsystem(values),
             });
         }
+        unica_metadata::property_input::PropertiesIntent::FormDescriptor(values) => {
+            return form_descriptor_properties(&target, values, op_index, binding);
+        }
         unica_metadata::property_input::PropertiesIntent::Configuration(values) => {
             return Ok(MetadataPlanKind::DescriptorProperties {
                 relative: PathBuf::from("Configuration.xml"),
@@ -1227,6 +1251,80 @@ pub fn parse_properties(
         changes,
     })
 }
+/// The plan of a form descriptor edit: its file by the platform layout of
+/// the set, and the registrations that make it a form of the set.
+fn form_descriptor_properties(
+    target: &QualifiedAddress,
+    values: unica_metadata::property_input::FormDescriptorPropertyChanges,
+    op_index: usize,
+    binding: &MetadataDecodeContext<'_>,
+) -> Result<MetadataPlanKind, ApplyPlanError> {
+    let at = || format!("ops[{op_index}].args.at");
+    let owner = target.form_metadata_owner().ok_or_else(|| {
+        ApplyPlanError::new(
+            ApplyPlanErrorKind::BadValue,
+            "address names no form descriptor",
+        )
+        .at_path(at())
+    })?;
+    let parts = owner
+        .segments()
+        .iter()
+        .map(|segment| {
+            segment
+                .name()
+                .map(|name| format!("{}.{name}", segment.kind().as_str()))
+                .ok_or_else(|| {
+                    ApplyPlanError::new(ApplyPlanErrorKind::BadValue, "form owner has no name")
+                        .at_path(at())
+                })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let form = parts.join(".");
+    let address = MetadataAddress::parse_logical(&form).map_err(|error| {
+        ApplyPlanError::new(ApplyPlanErrorKind::BadValue, error.to_string()).at_path(at())
+    })?;
+    let relative =
+        unica_source_designer::layout::metadata_descriptor_relative(&address, binding.source_kind)
+            .map_err(|message| {
+                ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message).at_path(at())
+            })?;
+    let segment = &owner.segments()[0];
+    let first = (
+        segment.kind().as_str().to_string(),
+        segment.name().expect("named form owner").to_string(),
+    );
+    let (owner_relative, registered) = if values.common {
+        (None, Some(first))
+    } else {
+        let owner_address = MetadataAddress::parse_logical(&parts[0]).map_err(|error| {
+            ApplyPlanError::new(ApplyPlanErrorKind::BadValue, error.to_string()).at_path(at())
+        })?;
+        let owner_relative = unica_source_designer::layout::metadata_descriptor_relative(
+            &owner_address,
+            binding.source_kind,
+        )
+        .map_err(|message| {
+            ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message).at_path(at())
+        })?;
+        (Some(owner_relative), Some(first))
+    };
+    let name = target.segments()[target.segments().len() - 2]
+        .name()
+        .expect("named form")
+        .to_string();
+    Ok(MetadataPlanKind::DescriptorProperties {
+        relative,
+        name,
+        changes: DescriptorPropertyChanges::FormDescriptor(FormDescriptorTarget {
+            form,
+            owner_relative,
+            registered,
+            values,
+        }),
+    })
+}
+
 /// `attribute.add` on the owner adds header attributes; on
 /// `Owner.Name.TabularSection.T` it adds attributes of that tabular section.
 pub fn parse_attribute_add(

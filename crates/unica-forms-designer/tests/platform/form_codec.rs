@@ -9,6 +9,7 @@ fn form_item_binding_facts_preserve_both_targets_and_legacy_normalization() {
 <Button name="Both" id="1"><DataPath> Объект.<!-- split -->Ref </DataPath><CommandName> Form.Command.Заполнить </CommandName></Button>
 <Button name="Command" id="2"><CommandName><![CDATA[ Form.StandardCommand.Close ]]></CommandName></Button>
 </ChildItems></Form>"#,
+        None,
     ).unwrap();
     let both = &data.elements[0];
     assert_eq!(both.data_path.as_deref(), Some(" Объект.Ref "));
@@ -46,7 +47,9 @@ fn form_item_binding_facts_keep_damage_local_to_each_property() {
             };
             let data = parse_form_event_evidence_xml(&format!(
                 "<Form xmlns=\"http://v8.1c.ru/8.3/xcf/logform\" version=\"2.20\"><ChildItems><Button name=\"Probe\" id=\"1\">{raw}{other}</Button></ChildItems></Form>"
-            )).unwrap();
+            ),
+                None,
+).unwrap();
             let element = &data.elements[0];
             assert_eq!(element.binding_limits.len(), 1);
             assert!(element.binding_limits[0].contains(property));
@@ -67,7 +70,7 @@ fn form_command_string_values_preserve_space_and_resolve_expanded_type_names() {
         r#"<lf:AssociatedTableElementId xmlns:lf="http://v8.1c.ru/8.3/xcf/logform" xmlns="http://www.w3.org/2001/XMLSchema" xsi:type="string"> Товары </lf:AssociatedTableElementId>"#,
         "<AssociatedTableElementId> Товары </AssociatedTableElementId>",
     ] {
-        let data = parse_form_event_evidence_xml(&format!(r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xs="http://www.w3.org/2001/XMLSchema" version="2.20"><Commands><Command name="Fill" id="1">{property}<Action>Keep</Action></Command></Commands></Form>"#)).unwrap();
+        let data = parse_form_event_evidence_xml(&format!(r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xs="http://www.w3.org/2001/XMLSchema" version="2.20"><Commands><Command name="Fill" id="1">{property}<Action>Keep</Action></Command></Commands></Form>"#), None).unwrap();
         let command = &data.commands[0];
         assert_eq!(
             command.associated_table_element_id.as_deref(),
@@ -93,7 +96,7 @@ fn form_command_string_type_rejects_unresolved_or_wrong_qnames() {
         r#"<AssociatedTableElementId xsi:type="&#160;xs:string&#160;">Товары</AssociatedTableElementId>"#,
         r#"<lf:AssociatedTableElementId xmlns:lf="http://v8.1c.ru/8.3/xcf/logform" xmlns="urn:foreign" xsi:type="string">Товары</lf:AssociatedTableElementId>"#,
     ] {
-        let data = parse_form_event_evidence_xml(&format!(r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xs="http://www.w3.org/2001/XMLSchema" version="2.20"><Commands><Command name="Fill" id="1">{property}<Action>Keep</Action></Command></Commands></Form>"#)).unwrap();
+        let data = parse_form_event_evidence_xml(&format!(r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xs="http://www.w3.org/2001/XMLSchema" version="2.20"><Commands><Command name="Fill" id="1">{property}<Action>Keep</Action></Command></Commands></Form>"#), None).unwrap();
         let command = &data.commands[0];
         assert!(command.associated_table_element_id.is_none(), "{property}");
         assert_eq!(
@@ -106,7 +109,7 @@ fn form_command_string_type_rejects_unresolved_or_wrong_qnames() {
 
 #[test]
 fn form_command_option_reference_does_not_trim_non_xml_whitespace() {
-    let data = parse_form_event_evidence_xml(r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20"><Commands><Command name="Fill" id="1"><FunctionalOptions><Item>&#160;FunctionalOption.Bad&#160;</Item><Item>FunctionalOption.Keep</Item></FunctionalOptions><Action>Keep</Action></Command></Commands></Form>"#).unwrap();
+    let data = parse_form_event_evidence_xml(r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20"><Commands><Command name="Fill" id="1"><FunctionalOptions><Item>&#160;FunctionalOption.Bad&#160;</Item><Item>FunctionalOption.Keep</Item></FunctionalOptions><Action>Keep</Action></Command></Commands></Form>"#, None).unwrap();
     let command = &data.commands[0];
     assert_eq!(
         command.functional_options,
@@ -127,7 +130,7 @@ fn form_command_non_xml_whitespace_is_damage_in_boolean_and_enum_values() {
         ("<Picture><xr:Ref>CommonPicture.Fill</xr:Ref><xr:LoadTransparent>&#160;false&#160;</xr:LoadTransparent></Picture>", "LoadTransparent"),
         ("<FunctionalOptions>&#160;</FunctionalOptions>", "FunctionalOptions"),
     ] {
-        let data = parse_form_event_evidence_xml(&format!(r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" version="2.20"><Commands><Command name="Fill" id="1">{property}<Action>Keep</Action></Command></Commands></Form>"#)).unwrap();
+        let data = parse_form_event_evidence_xml(&format!(r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" version="2.20"><Commands><Command name="Fill" id="1">{property}<Action>Keep</Action></Command></Commands></Form>"#), None).unwrap();
         let command = &data.commands[0];
         assert!(command.modifies_saved_data.is_none());
         assert!(command.current_row_use.is_none());
@@ -145,7 +148,7 @@ fn form_command_context_and_picture_transparency_survive_typed_reading() {
         let text = format!(
             r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xs="http://www.w3.org/2001/XMLSchema" version="2.20"><Commands><Command name="Fill" id="1"><CurrentRowUse>DontUse</CurrentRowUse><ModifiesSavedData>true</ModifiesSavedData><AssociatedTableElementId xsi:type="xs:string">Товары</AssociatedTableElementId><FunctionalOptions><Item>FunctionalOption.Prices</Item><Item>FunctionalOption.Taxes</Item></FunctionalOptions><Picture><xr:Ref>CommonPicture.Fill</xr:Ref><xr:LoadTransparent>{transparent}</xr:LoadTransparent></Picture><Action callType="After">FillAfter</Action></Command></Commands></Form>"#
         );
-        let data = parse_form_event_evidence_xml(&text).unwrap();
+        let data = parse_form_event_evidence_xml(&text, None).unwrap();
         let command = serde_json::to_value(&data.commands[0]).unwrap();
         assert_eq!(command["currentRowUse"], "DontUse");
         assert_eq!(command["modifiesSavedData"], true);
@@ -167,7 +170,7 @@ fn form_command_properties_distinguish_absence_empty_and_local_damage() {
         let xml = format!(
             r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" version="2.20"><Commands><Command name="Fill" id="1"><Action>Keep</Action>{body}</Command></Commands></Form>"#
         );
-        parse_form_event_evidence_xml(&xml)
+        parse_form_event_evidence_xml(&xml, None)
             .unwrap()
             .commands
             .remove(0)
@@ -251,6 +254,7 @@ fn form_info_projects_direct_command_action_as_execute_binding() {
             state: unica_metadata::support_state::ObjectSupportState::NotSupported,
             direct_edit_safe: Some(true),
         },
+        None,
     )
     .unwrap();
 
@@ -3330,7 +3334,7 @@ fn form_edit_inserts_lines_with_the_form_line_ending() {
     let path = std::path::Path::new("Catalogs/X/Forms/F/Ext/Form.xml");
     let edit = |mut text: String| {
         let start = text.find("<Form").unwrap();
-        form_edit_apply_definition(&mut text, &defn, path, start, Some("ru")).unwrap();
+        form_edit_apply_definition(&mut text, &defn, path, start, Some("ru"), None).unwrap();
         text
     };
 
@@ -3376,6 +3380,7 @@ fn column_group_add_rejects_nonfields_for_direct_and_sibling_placement() {
                 std::path::Path::new("Main/Form.xml"),
                 0,
                 Some("ru"),
+                None,
             );
             let error = match result {
                 Err(error) => error,
@@ -3408,6 +3413,7 @@ fn column_group_add_accepts_supported_fields_and_preserves_their_container() {
             std::path::Path::new("Main/Form.xml"),
             0,
             Some("ru"),
+            None,
         )
         .unwrap();
         let doc = Document::parse(&xml).unwrap();
@@ -3479,6 +3485,7 @@ fn english_companions_preserve_existing_names_and_repeat_without_changes() {
         root_start,
         None,
         ScriptVariant::English,
+        None,
     )
     .unwrap();
     let doc = roxmltree::Document::parse(&xml).unwrap();
@@ -3510,6 +3517,7 @@ fn english_companions_preserve_existing_names_and_repeat_without_changes() {
         root_start,
         None,
         ScriptVariant::English,
+        None,
     )
     .unwrap();
     assert_eq!(xml, first);

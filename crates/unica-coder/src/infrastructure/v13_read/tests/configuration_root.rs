@@ -314,6 +314,87 @@ fn a_queue_is_shown_in_the_line_that_has_it() {
     }
 }
 
+/// Очередь держит единственный модуль — менеджера, и его текст читается как
+/// есть. В наборе линии, где вида нет, адрес модуля отвергается: отказ
+/// приходит по отсутствию объекта, а не по линии, и если однажды он начнёт
+/// приходить иначе, это заметит проверка.
+/// rule: INV.SOURCE.PLATFORM-CAPABILITY-EXISTENCE
+/// rule: INV.SOURCE.MODULE-COMPILATION-AND-BODY
+#[test]
+fn the_queue_module_branch_holds_only_its_manager_and_is_absent_without_the_kind() {
+    use unica_source_contract::format_identity::PlatformLine;
+    for (source, line, has) in [
+        (
+            "../../tests/fixtures/formats/platform_xml/2.20/all_kinds/src",
+            PlatformLine::new(8, 3, 27),
+            false,
+        ),
+        (
+            "../../tests/fixtures/formats/platform_xml/2.21/all_kinds/src",
+            PlatformLine::new(8, 5, 1),
+            false,
+        ),
+        (
+            "../../tests/fixtures/formats/platform_xml/2.22/all_kinds/src",
+            PlatformLine::new(8, 5, 4),
+            true,
+        ),
+    ] {
+        let source =
+            std::fs::canonicalize(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(source))
+                .unwrap();
+        let cancellation = CancellationToken::new();
+        let source_root = Arc::new(unica_workspace::read::open_source_directory(&source).unwrap());
+        let authority = LogicalViewReadAuthority::new(
+            &cancellation,
+            "main",
+            "actor-fixture-main",
+            SourceSetKind::Configuration,
+            source_root,
+            PlatformProfile::for_line(line).unwrap(),
+        );
+        let service = ViewService::new(authority, ViewCursorStore::default());
+
+        let branch = service.view(ViewRequest::new("main:Queue.Probe.Module").unwrap());
+        if !has {
+            assert!(!branch.ok, "{line}: a queue module branch without the kind");
+            assert_eq!(branch.diagnostics[0]["code"], "not_found", "{line}");
+            let manager =
+                service.view(ViewRequest::new("main:Queue.Probe.Module.Manager").unwrap());
+            assert!(
+                !manager.ok,
+                "{line}: a queue manager module without the kind"
+            );
+            assert_eq!(manager.diagnostics[0]["code"], "not_found", "{line}");
+            continue;
+        }
+
+        assert!(
+            branch.ok,
+            "{line}: {} {:?}",
+            branch.summary, branch.diagnostics
+        );
+        let items = branch.data.as_ref().unwrap()["items"].as_array().unwrap();
+        assert_eq!(
+            items
+                .iter()
+                .map(|item| item["at"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["main:Queue.Probe.Module.Manager"],
+            "{line}"
+        );
+
+        let body = service.view(ViewRequest::new("main:Queue.Probe.Module.Manager.Body").unwrap());
+        assert!(body.ok, "{line}: {} {:?}", body.summary, body.diagnostics);
+        // Начальный U+FEFF снимается, CRLF выгрузки сохраняется.
+        assert_eq!(
+            body.source_text.as_deref(),
+            Some("Процедура ПробаОчереди() Экспорт\r\nКонецПроцедуры\r\n"),
+            "{line}"
+        );
+    }
+}
+
 /// rule: INV.SOURCE.LOGICAL-BRANCH-COUNT
 #[test]
 fn configuration_root_branch_counts_match_every_reachable_collection() {

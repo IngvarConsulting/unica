@@ -357,6 +357,8 @@ impl DocumentationProvider for ConfigurationHelpProvider {
             applicable_version: configuration_version(root)
                 .unwrap_or_else(|| "unversioned".to_string()),
             text,
+            // Поставщик статью полями не разбирает.
+            article: None,
         }))
     }
 }
