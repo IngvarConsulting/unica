@@ -78,12 +78,21 @@ class NativeAgentCliCleanupTests(unittest.TestCase):
     CLEANUP_DEADLINE_SECONDS = 1.0
 
     def _identity_after_cleanup(self, cli_host, pid):
+        """Ждёт, пока потомок уйдёт из таблицы процессов хоста.
+
+        Таблица общая, а ключ в ней — PID, который ОС переиспользует. Поэтому
+        живым потомок считается, пока личность под его PID не изменилась:
+        чужой процесс, занявший освободившийся номер, нашего не продлевает.
+        """
         support = cli_host.process_support()
         deadline = time.monotonic() + self.CLEANUP_DEADLINE_SECONDS
-        identity = support._current_process_identity(pid)
+        ours = support._current_process_identity(pid)
+        identity = ours
         while identity is not None and time.monotonic() < deadline:
             time.sleep(0.01)
             identity = support._current_process_identity(pid)
+            if identity is not None and ours is not None and not ours.identifies(identity):
+                return None
         return identity
 
     def test_success_and_timeout_clean_descendants_without_touching_an_unrelated_process(self):
