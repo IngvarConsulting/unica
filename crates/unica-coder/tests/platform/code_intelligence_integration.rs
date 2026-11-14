@@ -507,10 +507,8 @@ mod medium_tests {
                     ) {
                         Ok(()) => {}
                         Err(error)
-                            if matches!(
-                                error.kind(),
-                                std::io::ErrorKind::PermissionDenied
-                                    | std::io::ErrorKind::Unsupported
+                            if crate::infrastructure::test_fixtures::link_privilege_missing(
+                                &error,
                             ) =>
                         {
                             unica_process::test_support::skip_without_host_capability(
