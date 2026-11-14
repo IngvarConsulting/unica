@@ -128,6 +128,15 @@ def lock_keeps_external(base: str, head: str, members: set[str], root: Path = RO
     return external_packages(locks[0], members) == external_packages(locks[1], members)
 
 
+def whole_build(paths: list[str], *, lock_is_internal: bool = False) -> str | None:
+    """Путь, правка которого задевает всю сборку: внешние зависимости в `Cargo.lock`,
+    корневой `Cargo.toml`, тулчейн, `.cargo/`. Единственное описание этого признака:
+    по нему очередь берёт полный набор, а гейт готовности — весь workspace.
+    """
+    return next((path for path in paths if WHOLE_BUILD.match(path)
+                 and not (path == "Cargo.lock" and lock_is_internal)), None)
+
+
 def choose(paths: list[str], directories: dict[str, str], dependents: dict[str, set[str]] | None = None, *,
            force_full: bool = False, find: Callable[[str], list[str]] = mentions, lock_is_internal: bool = False) -> Choice:
     if force_full:
@@ -136,12 +145,11 @@ def choose(paths: list[str], directories: dict[str, str], dependents: dict[str, 
         return Choice(True, (), "пустой diff")
     if all(NO_RUST.match(path) for path in paths):
         return Choice(False, (), "Rust не нужен: сайт, правила, навыки, проза", no_rust=True)
+    whole = whole_build(paths, lock_is_internal=lock_is_internal)
+    if whole:
+        return Choice(True, (), f"общая сборка: {whole}")
     selected, edited = set(), set()
     for path in paths:
-        if path == "Cargo.lock" and lock_is_internal:
-            continue
-        if WHOLE_BUILD.match(path):
-            return Choice(True, (), f"общая сборка: {path}")
         crate = crate_of(path, directories)
         if crate:
             edited.add(crate)
