@@ -474,17 +474,33 @@ class DiffTests(unittest.TestCase):
             "crates/c": CHECK.Package("unica-c", ("unica-b-tests",)),
             "crates/d": CHECK.Package("unica-d"),
         }
-        checks, notes = CHECK.plan(["crates/a", "crates/unica-research"], packages)
-        keys = [check.key for check in checks]
-        self.assertEqual(keys[:4], ["test:unica-a", "clippy:unica-a", "test:unica-b-tests", "test:unica-c"])
+        planned = CHECK.plan(["crates/a", "crates/unica-research"], packages)
+        keys = [check.key for check in planned.checks]
+        self.assertEqual(keys[:4], ["test:unica-a", "test:unica-b-tests", "test:unica-c", "clippy"])
         self.assertNotIn("test:unica-d", keys)
-        self.assertNotIn("clippy:unica-c", keys)
-        commands = {check.key: check.command("py") for check in checks}
+        self.assertNotIn("removed-tests", keys)
+        self.assertEqual((planned.touched, planned.users), (["unica-a"], ["unica-b-tests", "unica-c"]))
+        commands = {check.key: check.command("py") for check in planned.checks}
         self.assertEqual(commands["test:unica-c"][:6],
                          ["cargo", "test", "-p", "unica-c", "--tests", "--no-fail-fast"])
-        self.assertIn("-D", commands["clippy:unica-a"])
-        self.assertEqual({"fmt", "modules-fmt", "python:tests/ci", "python:tests/dev"} - set(commands), set())
-        self.assertEqual(len(notes), 1)
+        # Clippy as the PR gate runs it: the whole workspace, all targets and features.
+        self.assertEqual(commands["clippy"][:6],
+                         ["cargo", "clippy", "--workspace", "--all-targets", "--all-features", "--locked"])
+        self.assertEqual({"fmt", "modules-fmt", "version-contract", "open-marks", "python:tests/ci",
+                          "python:tests/dev"} - set(commands), set())
+        self.assertEqual(commands["open-marks"], ["py", "scripts/ci/open_marks.py", "pr", "--description", ""])
+        self.assertEqual(len(planned.notes), 1)
+
+    def test_without_rust_changes_clippy_is_not_planned(self):
+        keys = [check.key for check in CHECK.plan(["crates/unica-research"], {}).checks]
+        self.assertNotIn("clippy", keys)
+        self.assertIn("version-contract", keys)
+
+    def test_a_description_file_checks_removed_tests_from_the_base(self):
+        planned = CHECK.plan([], {}, "abc123", "/tmp/pr.md")
+        [removed] = [check for check in planned.checks if check.key == "removed-tests"]
+        self.assertEqual(removed.command("py"), ["py", "scripts/ci/removed_tests.py", "--base", "abc123",
+                                                 "--description-file", "/tmp/pr.md"])
 
     def test_dependents_follow_path_dependencies_of_every_kind_transitively(self):
         metadata = {"packages": [
@@ -668,6 +684,110 @@ class TargetOwnerTests(unittest.TestCase):
         self.assertFalse((self.target / CHECK.TARGET_OWNER).exists())
 
 
+class GateParityTests(unittest.TestCase):
+    WORKFLOW = {"jobs": {
+        "admission": {"steps": [{"name": "Допуск", "if": "${{ github.event_name == 'pull_request' }}", "run": "x"}]},
+        "ci": {"if": "${{ needs.admission.outputs.admitted == 'true' }}", "steps": [
+            {"uses": "actions/checkout@v1"},
+            {"run": "python -m pip install -r r.txt\necho"},
+            {"name": "Формат", "run": "cargo fmt"},
+            {"name": "Тесты Rust # zizmor: note", "if": "${{ github.event_name == 'merge_group' }}", "run": "q"},
+        ]},
+        "queue": {"if": "github.event_name == 'merge_group'", "steps": [
+            {"name": "Приёмка", "run": "a"}, {"name": "Формат", "run": "cargo fmt"}]},
+    }}
+
+    def test_steps_split_into_pull_request_gates_and_queue_only(self):
+        pull, queue = CHECK.gates(self.WORKFLOW)
+        self.assertEqual(pull, ["Допуск", "python -m pip install -r r.txt", "Формат"])
+        self.assertEqual(queue, ["Тесты Rust", "Приёмка"])
+
+    def test_every_pull_request_gate_of_the_workflow_is_known_to_the_gate(self):
+        """Шаг ворот PR без записи в PR_GATES — расхождение гейта с воротами."""
+        import yaml
+        workflow = yaml.safe_load((REPO_ROOT / CHECK.CI_WORKFLOW).read_text(encoding="utf-8"))
+        pull, _ = CHECK.gates(workflow)
+        self.assertEqual([name for name in pull if name not in CHECK.PR_GATES], [])
+        # A gate that left the workflow leaves the map too.
+        self.assertEqual([name for name in CHECK.PR_GATES if name not in pull], [])
+        planned_kinds = {check.kind for check in CHECK.plan(["crates/a"], {"crates/a": CHECK.Package("a")},
+                                                            "b", "d").checks}
+        self.assertEqual({kind for kind in CHECK.PR_GATES.values() if kind} - planned_kinds, set())
+
+    def test_an_unknown_gate_and_what_the_gate_does_not_run_are_named(self):
+        workflow = {"jobs": {"ci": {"steps": [
+            {"name": "Новый страж", "if": "github.event_name == 'pull_request'", "run": "x"},
+            {"name": "Удалённые тесты объявлены", "run": "y"},
+            {"name": "Пометки незакрытого", "run": "m"},
+            {"name": "Тесты Rust", "if": "github.event_name == 'merge_group'", "run": "z"}]}}}
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / CHECK.CI_WORKFLOW
+            path.parent.mkdir(parents=True)
+            import yaml
+            path.write_text(yaml.safe_dump(workflow, allow_unicode=True), encoding="utf-8")
+            lines = CHECK.parity(Path(directory), described=False)
+            described = CHECK.parity(Path(directory), described=True)
+        self.assertEqual(lines[0], "Ворота PR, которых гейт не знает: Новый страж — сверьте PR_GATES "
+                                   "в scripts/dev/pre-ready-check.py с .github/workflows/ci.yml")
+        nightly = ("сверка с ночным инвентарём не выполняется: ей нужны артефакты прогонов GitHub, "
+                   "которых на этом хосте нет")
+        self.assertTrue(lines[1].startswith("Не проверено гейтом: Удалённые тесты объявлены — описание PR не "
+                                            "задано (`--description-file`), исчезнувшие тесты только напечатаны; "
+                                            f"{nightly}; "))
+        self.assertEqual(described[1], f"Не проверено гейтом: Удалённые тесты объявлены — {nightly}")
+        self.assertTrue(lines[1].endswith("; Пометки незакрытого — описание PR не задано (`--description-file`): "
+                                          "пометки на задачи, которые закрывает этот PR, не сверены"))
+        self.assertEqual(lines[2], "Только в очереди, гейт не гоняет: Тесты Rust")
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / CHECK.CI_WORKFLOW
+            path.parent.mkdir(parents=True)
+            path.write_text(yaml.safe_dump(workflow, allow_unicode=True), encoding="utf-8")
+            dirty = CHECK.parity(Path(directory), described=True, dirty=True)
+        self.assertTrue(dirty[1].startswith("Не проверено гейтом: Удалённые тесты объявлены — незакоммиченные "
+                                            "правки не учтены: исчезнувшие тесты считаются по HEAD; "))
+
+    def test_a_removed_test_is_a_reminder_without_a_description(self):
+        output = ("python: test m.A.gone disappeared; declare 'Removes-test: m.A.gone' (or a literal prefix "
+                  "ending in *) in the pull request description\n")
+        completed = mock.Mock(returncode=1, stdout=output)
+        with mock.patch.object(CHECK.subprocess, "run", return_value=completed) as run:
+            reminder = CHECK.removed_reminder(REPO_ROOT, "abc", {})
+        self.assertEqual(reminder, "Исчезнувшие тесты — добавьте эти строки в описание PR:\n"
+                                   "    Removes-test: m.A.gone")
+        self.assertIn("--description", run.call_args.args[0])
+        with mock.patch.object(CHECK.subprocess, "run", return_value=mock.Mock(returncode=0, stdout="")):
+            self.assertEqual(CHECK.removed_reminder(REPO_ROOT, "abc", {}), "Исчезнувшие тесты: нет")
+
+    def test_removed_tests_and_scripts_report_their_refusals(self):
+        line = "python: test m.A.gone disappeared; declare 'Removes-test: m.A.gone'"
+        self.assertEqual(CHECK.parse_removed(f"::error::{line}\n", 1).failures, [line])
+        self.assertEqual(CHECK.parse_removed(f"{CHECK.REMOVED_NONE}\n", 0).failures, [])
+        self.assertFalse(CHECK.parse_removed("git failed\n", 2).complete)
+        self.assertEqual(CHECK.parse_script("version mismatch\n", 1).failures, ["version mismatch"])
+        self.assertEqual(CHECK.parse_script("", 1).failures, ["отказ без пояснения, код 1"])
+        self.assertEqual(CHECK.parse_script("note\n::error::Пометка без номера\n", 1).failures,
+                         ["Пометка без номера"])
+        crashed = CHECK.parse_script("Traceback (most recent call last):\nRuntimeError: gh api: offline\n", 1)
+        self.assertFalse(crashed.complete)
+
+    def test_removed_tests_and_open_marks_are_not_subtracted_by_the_base(self):
+        """Отказ ворот PR по описанию этого PR остаётся отказом, даже если база отказала бы так же."""
+        checks = [CHECK.Check("removed-tests", "removed-tests", "d", "b"), CHECK.Check("open-marks", "open-marks")]
+        with tempfile.TemporaryDirectory() as directory, \
+                mock.patch.object(CHECK, "add_base_tree"), mock.patch.object(CHECK, "remove_base_tree"), \
+                mock.patch.object(CHECK, "run_check") as run:
+            cached, incomplete = CHECK.baseline(checks, "b" * 40, Path(directory), {})
+        run.assert_not_called()
+        self.assertEqual((cached, incomplete), ({"removed-tests": [], "open-marks": []}, []))
+
+    def test_open_marks_read_the_description_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "pr.md"
+            path.write_text("Closes #7\n", encoding="utf-8")
+            [marks] = [check for check in CHECK.plan([], {}, "b", str(path)).checks if check.key == "open-marks"]
+            self.assertEqual(marks.command("py")[-2:], ["--description", "Closes #7\n"])
+
+
 class MainTests(unittest.TestCase):
     def run_main(self, results, base, base_unfinished=()):
         out, err = io.StringIO(), io.StringIO()
@@ -680,6 +800,8 @@ class MainTests(unittest.TestCase):
                     check.key, CHECK.Result([]))), \
                 mock.patch.object(CHECK, "baseline", return_value=(base, list(base_unfinished))), \
                 mock.patch.object(CHECK, "recheck", side_effect=lambda check, fresh, *rest: (CHECK.Result(fresh), [])), \
+                mock.patch.object(CHECK, "removed_reminder", return_value="Исчезнувшие тесты: нет"), \
+                mock.patch.object(CHECK, "parity", return_value=["Ворота PR: все шаги сверены с гейтом"]), \
                 redirect_stdout(out), redirect_stderr(err):
             code = CHECK.main([])
         return code, out.getvalue()
@@ -689,6 +811,8 @@ class MainTests(unittest.TestCase):
         code, output = self.run_main(results, {"python:tests/ci": ["m.A.known"]})
         self.assertEqual(code, 0)
         self.assertIn("Новые падения: нет", output)
+        self.assertIn("Исчезнувшие тесты: нет", output)
+        self.assertIn("Ворота PR: все шаги сверены с гейтом", output)
         results = {"python:tests/ci": CHECK.Result(["m.A.known", "m.A.fresh"])}
         code, output = self.run_main(results, {"python:tests/ci": ["m.A.known"]})
         self.assertEqual(code, 1)
