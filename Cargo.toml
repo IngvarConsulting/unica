@@ -73,6 +73,7 @@ url = "2.5.4"
 percent-encoding = "2.3"
 uuid = { version = "1", features = ["v4"] }
 windows-sys = { version = "0.59", features = [
+  "Wdk_System_SystemInformation",
   "Win32_Foundation",
   "Win32_Globalization",
   "Win32_Security",
