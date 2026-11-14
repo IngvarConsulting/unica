@@ -792,7 +792,12 @@ fn an_extension_root_shows_the_actions_of_its_line() {
                     .unwrap()
                     .keys()
                     .collect::<Vec<_>>(),
-                ["adoptedObject", "notifiedObject", "checkedObject", "extendedObject"]
+                [
+                    "adoptedObject",
+                    "notifiedObject",
+                    "checkedObject",
+                    "extendedObject"
+                ]
             );
             assert_eq!(
                 observed,
