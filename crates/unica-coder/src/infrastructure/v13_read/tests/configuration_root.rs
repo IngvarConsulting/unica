@@ -1039,3 +1039,121 @@ fn an_extension_root_shows_the_actions_of_its_line() {
         }
     }
 }
+
+/// Менеджер очереди показывает свои два события на линии, которая их завела,
+/// и ни одного там, где вида нет. Каталог событий выбирается по линии набора,
+/// поэтому проверка идёт сквозным путём `view`, а не по содержимому каталога.
+/// rule: INV.PLATFORM.MODULE-EVENT-CATALOG
+#[test]
+fn the_queue_manager_shows_its_platform_events_in_the_line_that_added_them() {
+    use unica_source_contract::format_identity::PlatformLine;
+    for (source, line, has) in [
+        (
+            "../../tests/fixtures/formats/platform_xml/2.20/all_kinds/src",
+            PlatformLine::new(8, 3, 27),
+            false,
+        ),
+        (
+            "../../tests/fixtures/formats/platform_xml/2.21/all_kinds/src",
+            PlatformLine::new(8, 5, 1),
+            false,
+        ),
+        (
+            "../../tests/fixtures/formats/platform_xml/2.22/all_kinds/src",
+            PlatformLine::new(8, 5, 4),
+            true,
+        ),
+    ] {
+        let source =
+            std::fs::canonicalize(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(source))
+                .unwrap();
+        let cancellation = CancellationToken::new();
+        let source_root = Arc::new(unica_workspace::read::open_source_directory(&source).unwrap());
+        let authority = LogicalViewReadAuthority::new(
+            &cancellation,
+            "main",
+            "actor-fixture-main",
+            SourceSetKind::Configuration,
+            source_root,
+            PlatformProfile::for_line(line).unwrap(),
+        );
+        let service = ViewService::new(authority, ViewCursorStore::default());
+
+        let manager = service.view(ViewRequest::new("main:Queue.Probe.Module.Manager").unwrap());
+        let message = service.view(
+            ViewRequest::new("main:Queue.Probe.Module.Manager.Event.MessageProcessing").unwrap(),
+        );
+        if !has {
+            assert!(
+                !message.ok,
+                "{line}: a queue manager event without the kind"
+            );
+            assert_eq!(message.diagnostics[0]["code"], "not_found", "{line}");
+            continue;
+        }
+
+        assert!(
+            manager.ok,
+            "{line}: {} {:?}",
+            manager.summary, manager.diagnostics
+        );
+        let branches = manager.data.as_ref().unwrap()["branches"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|branch| {
+                (
+                    branch["at"].as_str().unwrap(),
+                    branch["count"].as_u64().unwrap(),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            branches.contains(&("main:Queue.Probe.Module.Manager.Event", 2)),
+            "{line}: {branches:?}"
+        );
+
+        let listed =
+            service.view(ViewRequest::new("main:Queue.Probe.Module.Manager.Event").unwrap());
+        assert!(
+            listed.ok,
+            "{line}: {} {:?}",
+            listed.summary, listed.diagnostics
+        );
+        assert_eq!(
+            listed.data.as_ref().unwrap()["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|item| item["at"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            [
+                "main:Queue.Probe.Module.Manager.Event.MessageProcessing",
+                "main:Queue.Probe.Module.Manager.Event.OnProcessingError",
+            ],
+            "{line}"
+        );
+
+        assert!(
+            message.ok,
+            "{line}: {} {:?}",
+            message.summary, message.diagnostics
+        );
+        let props = &message.data.as_ref().unwrap()["props"];
+        assert_eq!(props["handler"], "ОбработкаСообщений", "{line}");
+        assert_eq!(props["handlerEn"], "MessageProcessing", "{line}");
+        assert_eq!(
+            props["signature"],
+            "Процедура ОбработкаСообщений(Сообщения, Отказ, ДополнительнаяИнформация)",
+            "{line}"
+        );
+        assert_eq!(props["state"], "available", "{line}");
+        assert_eq!(props["implementationAt"], serde_json::Value::Null, "{line}");
+        // Показ сразу предлагает создание: без этого событие видно, но мертво.
+        assert_eq!(
+            message.data.as_ref().unwrap()["can"][0]["op"],
+            "event.implement",
+            "{line}"
+        );
+    }
+}
