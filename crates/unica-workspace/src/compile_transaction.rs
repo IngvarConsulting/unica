@@ -14,6 +14,10 @@
 
 mod retained_directory_publication;
 
+#[cfg(feature = "test-support")]
+#[path = "../tests/support/nested_rollback_contract_tests.rs"]
+pub mod nested_rollback_contract_tests;
+
 use roxmltree::Document;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
