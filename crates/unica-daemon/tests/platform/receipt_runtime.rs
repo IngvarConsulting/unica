@@ -9624,3 +9624,106 @@ fn connections_to_a_live_daemon_stand_on_a_busy_machine() {
         assert!(outcome.is_ok(), "{outcome:?}");
     }
 }
+
+/// A Task read that found no bound Task yet and reads the receipt ledger
+/// only after the handoff completed — the link stood and the receipt row left
+/// the ledger in between — still reads the one Task: the Task did not vanish,
+/// it moved (#2992).
+/// rule: INV.APP.DAEMON-INVOCATION-OWNERSHIP
+#[test]
+fn a_task_read_racing_the_handoff_completion_reads_the_task() {
+    let state = tempfile::tempdir().expect("temporary daemon state");
+    let state_root = std::fs::canonicalize(state.path()).expect("physical state root");
+    let (_workspace, root) = catalog_workspace();
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let service = Arc::new(CountedKnownLongService {
+        prepares: AtomicUsize::new(0),
+        executions: AtomicUsize::new(0),
+        entered: Mutex::new(entered_tx),
+        release: Mutex::new(release_rx),
+    });
+    let (held_tx, held_rx) = mpsc::channel();
+    let (read_tx, read_rx) = mpsc::channel();
+    let hooks = Arc::new(ExactRepeatRaceHooks {
+        race_point: V5PausePoint::BeforeTaskLedgerRead,
+        race_pass: 0,
+        handoff_held: Mutex::new(held_tx),
+        handoff_gate: (Mutex::new(false), std::sync::Condvar::new()),
+        reservations: AtomicUsize::new(0),
+        repeat_at_reservation: Mutex::new(read_tx),
+        bound: (Mutex::new(false), std::sync::Condvar::new()),
+    });
+    let identity = CoreIdentity::production_v5();
+    let config = DaemonServerConfig::new(
+        state_root.clone(),
+        identity.clone(),
+        Duration::from_secs(60),
+    )
+    .with_invocation_service(service.clone())
+    .with_runtime_hooks_for_test(hooks.clone());
+    let stop = Arc::new(AtomicBool::new(false));
+    let server_stop = stop.clone();
+    let server = thread::spawn(move || {
+        run_daemon_configured_until(
+            (config).into_transport_config(),
+            |runtime| runtime,
+            || server_stop.load(Ordering::SeqCst),
+        )
+    });
+    wait_for_v5_record(&state_root, &identity);
+    let mut owner = V5DaemonProcessOwner::connect_or_spawn(
+        &state_root,
+        identity,
+        std::path::PathBuf::from("unused-existing-v5-endpoint"),
+        Duration::from_secs(2),
+    )
+    .expect("connect v5 owner");
+    let task_id = TaskId::new();
+    let call = view_catalog_request(task_id, &root);
+
+    let mut submit_session = owner
+        .connect_peer_before(Instant::now() + TEST_STEP)
+        .expect("connect the submitting session");
+    let submit_call = call.clone();
+    let submitted = thread::spawn(move || submit_session.submit_invocation(submit_call));
+    held_rx
+        .recv_timeout(TEST_STEP)
+        .expect("the handoff stops before its Task exists");
+    let mut read_session = owner
+        .connect_peer_before(Instant::now() + TEST_STEP)
+        .expect("connect the reading session");
+    let read = thread::spawn(move || read_session.get_task(task_id));
+    read_rx
+        .recv_timeout(TEST_STEP)
+        .expect("the read found no bound Task and stands before the ledger");
+    {
+        let (lock, changed) = &hooks.handoff_gate;
+        *lock.lock().unwrap() = true;
+        changed.notify_all();
+    }
+
+    let response = read.join().expect("read thread").expect("read answered");
+    let V5ServerResponse::Task { snapshot } = response else {
+        panic!("the Task moved, it did not vanish: {response:?}");
+    };
+    assert_eq!(snapshot.task_id(), task_id);
+    assert_eq!(snapshot.invocation_id(), call.invocation_id());
+    let answered = submitted_task_snapshot(submitted.join().expect("submit thread"));
+    assert_eq!(answered.task_id(), task_id);
+    entered_rx
+        .recv_timeout(TEST_STEP)
+        .expect("the single attempt executes");
+    release_tx.send(()).expect("release the execution");
+    let terminal = wait_task_terminal(&mut owner, task_id, Duration::from_secs(30));
+    assert!(
+        matches!(&terminal, V5DaemonTaskSnapshot::Completed { result, .. } if result.ok),
+        "{terminal:?}"
+    );
+    drop(owner);
+    stop.store(true, Ordering::SeqCst);
+    server
+        .join()
+        .expect("daemon thread did not panic")
+        .expect("daemon exits cleanly");
+}
