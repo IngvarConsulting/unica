@@ -947,6 +947,125 @@ mod tests {
         assert!(page.cursor.is_some());
     }
 
+    /// rule: INV.APP.DOCUMENTATION-NETWORK-READ-BOUNDARIES
+    /// rule: INV.APP.DOCUMENTATION-DENIED-CACHE
+    #[test]
+    fn medium_cancelled_or_denied_docs_search_does_not_publish_warm_v8std_hits() {
+        const CHILD: &str = "infrastructure::daemon::v13_documentation::tests::medium_warm_v8std_docs_child_process";
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        command.args(["--exact", CHILD, "--ignored", "--nocapture"]);
+        // The real shared HTTP client and machine policy read the process environment.
+        for key in [
+            "http_proxy",
+            "HTTP_PROXY",
+            "https_proxy",
+            "HTTPS_PROXY",
+            "all_proxy",
+            "ALL_PROXY",
+            "no_proxy",
+            "NO_PROXY",
+            "SSL_CERT_FILE",
+            "SSL_CERT_DIR",
+            "UNICA_DOCUMENTATION_POLICY_FILE",
+            "UNICA_STANDARDS_MCP_URL",
+        ] {
+            command.env_remove(key);
+        }
+        let output = command
+            .env("UNICA_TEST_WARM_V8STD_CHILD", "1")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success() && stdout.contains("1 passed; 0 failed"),
+            "isolated docs case failed: {stdout} {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    #[ignore = "helper process: spawned by the isolated warm v8std docs test"]
+    fn medium_warm_v8std_docs_child_process() {
+        use unica_network::test_support::HttpStand;
+
+        assert_eq!(
+            std::env::var("UNICA_TEST_WARM_V8STD_CHILD").as_deref(),
+            Ok("1")
+        );
+        let locator = "https://v8std.ru/std/702/";
+        let body = json!({
+            "jsonrpc": "2.0", "id": 1,
+            "result": { "content": [{ "type": "text", "text": json!({
+                "total": 1, "results": [{ "url": locator, "title": "Fixture standard" }]
+            }).to_string() }] }
+        });
+        let transport = HttpStand::start(body.to_string(), "application/json");
+        let workspace = tempfile::tempdir().unwrap();
+        std::fs::write(
+            workspace.path().join("unica.toml"),
+            format!(
+                "[providers.v8std]\nendpoint = \"{}\"\n",
+                transport.url("mcp")
+            ),
+        )
+        .unwrap();
+        let request = InvocationRequest::new(
+            ToolIdentity::Docs,
+            json!({"query": "fixture standard", "source": "development-standard"}),
+            workspace.path().to_string_lossy(),
+            7_000,
+        )
+        .unwrap();
+        let Preparation::Ready(prepared) =
+            prepare(&request, Arc::new(SearchCursorStore::default()))
+        else {
+            panic!("standards search should be prepared");
+        };
+        for _ in 0..2 {
+            let answer = prepared.execute(CancellationToken::new());
+            assert!(answer.ok, "{answer:?}");
+            let section = &answer.data.as_ref().unwrap()["sections"][0];
+            assert_eq!(section["provider"], "v8std");
+            assert_eq!(section["hits"][0]["documentId"], locator);
+            assert_eq!(
+                transport.header("user-agent").len(),
+                1,
+                "warm cache must replay the first response"
+            );
+        }
+
+        let cancelled = CancellationToken::new();
+        cancelled.cancel();
+        let refusal = prepared.execute(cancelled);
+        assert!(!refusal.ok, "{refusal:?}");
+        assert_eq!(refusal.diagnostics[0]["code"], "provider_unavailable");
+        assert!(
+            refusal.data.is_none(),
+            "cancelled hits escaped: {refusal:?}"
+        );
+        assert_eq!(transport.header("user-agent").len(), 1);
+
+        std::fs::write(
+            workspace.path().join("unica.toml"),
+            format!(
+                "[providers.v8std]\nendpoint = \"{}\"\nnetwork = \"deny\"\n",
+                transport.url("mcp")
+            ),
+        )
+        .unwrap();
+        let Preparation::Ready(denied_search) =
+            prepare(&request, Arc::new(SearchCursorStore::default()))
+        else {
+            panic!("denied search should prepare before consulting the provider");
+        };
+        let denied = denied_search.execute(CancellationToken::new());
+        assert!(!denied.ok, "{denied:?}");
+        assert_eq!(denied.diagnostics[0]["code"], "provider_unavailable");
+        assert!(denied.summary.contains("запрещён политикой"), "{denied:?}");
+        assert!(denied.data.is_none(), "denied hits escaped: {denied:?}");
+        assert_eq!(transport.header("user-agent").len(), 1);
+    }
+
     /// rule: INV.APP.DOCUMENTATION-SEARCH-PAGES
     #[test]
     fn prepared_docs_search_continues_across_calls_before_source_admission() {
