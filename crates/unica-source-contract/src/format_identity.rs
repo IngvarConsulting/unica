@@ -386,6 +386,48 @@ const MEMBER_LINE_ADDITIONS: &[(&str, &str, PlatformLine)] = &[
         "UseInInterfaceCompatibilityMode",
         PlatformLine::new(8, 5, 1),
     ),
+    // The auxiliary forms of a configuration root (the all_kinds export of
+    // 2.21).
+    (
+        "Configuration",
+        "AuxiliaryReportForm",
+        PlatformLine::new(8, 5, 1),
+    ),
+    (
+        "Configuration",
+        "AuxiliaryReportVariantForm",
+        PlatformLine::new(8, 5, 1),
+    ),
+    (
+        "Configuration",
+        "AuxiliaryReportSettingsForm",
+        PlatformLine::new(8, 5, 1),
+    ),
+    (
+        "Configuration",
+        "AuxiliaryDynamicListSettingsForm",
+        PlatformLine::new(8, 5, 1),
+    ),
+    (
+        "Configuration",
+        "AuxiliaryDataHistoryChangeHistoryForm",
+        PlatformLine::new(8, 5, 1),
+    ),
+    (
+        "Configuration",
+        "AuxiliaryDataHistoryVersionDataForm",
+        PlatformLine::new(8, 5, 1),
+    ),
+    (
+        "Configuration",
+        "AuxiliaryDataHistoryVersionDifferencesForm",
+        PlatformLine::new(8, 5, 1),
+    ),
+    (
+        "Configuration",
+        "AuxiliaryCollaborationSystemUsersChoiceForm",
+        PlatformLine::new(8, 5, 1),
+    ),
 ];
 
 /// The line a `member` kind's `property` exists from, when a later line than

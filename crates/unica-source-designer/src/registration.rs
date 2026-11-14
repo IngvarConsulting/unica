@@ -1,5 +1,5 @@
 //! Exact Designer child registration and byte-preserving proposal edits.
-use crate::layout::metadata_kind_index;
+use crate::layout::{metadata_kind_index, root_child_objects_order};
 use roxmltree::Document;
 use std::path::PathBuf;
 use unica_address::source_target::MetadataAddress;
@@ -145,8 +145,9 @@ pub fn cf_edit_add_child_object_text(
     type_name: &str,
     object_name: &str,
 ) -> Result<bool, String> {
+    metadata_kind_index(type_name).ok_or_else(|| format!("Unknown type '{type_name}'"))?;
     let new_type_index =
-        metadata_kind_index(type_name).ok_or_else(|| format!("Unknown type '{type_name}'"))?;
+        root_child_objects_order(type_name).ok_or_else(|| format!("Unknown type '{type_name}'"))?;
     let ((child_start, child_end, body_range), entries) = cf_edit_root_child_objects(text)?;
     let line_ending = cf_edit_line_ending(text);
     if entries
@@ -156,10 +157,10 @@ pub fn cf_edit_add_child_object_text(
         return Ok(false);
     }
 
-    // A kind the registry does not know (WebSocketClient) has no place in the
-    // order and does not decide where the new entry goes.
+    // A kind without a place in the platform order does not decide where the
+    // new entry goes.
     let target = entries.iter().find(|entry| {
-        cf_validate_child_object_type_index(&entry.type_name).is_some_and(|entry_type_index| {
+        root_child_objects_order(&entry.type_name).is_some_and(|entry_type_index| {
             entry_type_index > new_type_index
                 || (entry_type_index == new_type_index
                     && cf_edit_child_name_cmp(object_name, &entry.object_name).is_lt())

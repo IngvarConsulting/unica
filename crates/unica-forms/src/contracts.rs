@@ -468,7 +468,7 @@ fn attribute_item_schema() -> Value {
 
 /// Every form slot `form.set` writes: the contract key and its Platform XML
 /// element.
-pub const FORM_SLOTS: [(&str, &str); 22] = [
+pub const FORM_SLOTS: [(&str, &str); 40] = [
     ("defaultObjectForm", "DefaultObjectForm"),
     ("defaultFolderForm", "DefaultFolderForm"),
     ("defaultListForm", "DefaultListForm"),
@@ -492,6 +492,56 @@ pub const FORM_SLOTS: [(&str, &str); 22] = [
     ("auxiliaryLoadForm", "AuxiliaryLoadForm"),
     // From 8.5.1 (format 2.21): the slot of a report kind a later line adds.
     ("auxiliaryVariantForm", "AuxiliaryVariantForm"),
+    // The configuration root: its default forms, and from 8.5.1 its
+    // auxiliary ones, name common forms of the set.
+    ("defaultReportForm", "DefaultReportForm"),
+    ("defaultReportVariantForm", "DefaultReportVariantForm"),
+    ("defaultReportSettingsForm", "DefaultReportSettingsForm"),
+    (
+        "defaultDynamicListSettingsForm",
+        "DefaultDynamicListSettingsForm",
+    ),
+    ("defaultSearchForm", "DefaultSearchForm"),
+    (
+        "defaultDataHistoryChangeHistoryForm",
+        "DefaultDataHistoryChangeHistoryForm",
+    ),
+    (
+        "defaultDataHistoryVersionDataForm",
+        "DefaultDataHistoryVersionDataForm",
+    ),
+    (
+        "defaultDataHistoryVersionDifferencesForm",
+        "DefaultDataHistoryVersionDifferencesForm",
+    ),
+    (
+        "defaultCollaborationSystemUsersChoiceForm",
+        "DefaultCollaborationSystemUsersChoiceForm",
+    ),
+    ("defaultConstantsForm", "DefaultConstantsForm"),
+    ("auxiliaryReportForm", "AuxiliaryReportForm"),
+    ("auxiliaryReportVariantForm", "AuxiliaryReportVariantForm"),
+    ("auxiliaryReportSettingsForm", "AuxiliaryReportSettingsForm"),
+    (
+        "auxiliaryDynamicListSettingsForm",
+        "AuxiliaryDynamicListSettingsForm",
+    ),
+    (
+        "auxiliaryDataHistoryChangeHistoryForm",
+        "AuxiliaryDataHistoryChangeHistoryForm",
+    ),
+    (
+        "auxiliaryDataHistoryVersionDataForm",
+        "AuxiliaryDataHistoryVersionDataForm",
+    ),
+    (
+        "auxiliaryDataHistoryVersionDifferencesForm",
+        "AuxiliaryDataHistoryVersionDifferencesForm",
+    ),
+    (
+        "auxiliaryCollaborationSystemUsersChoiceForm",
+        "AuxiliaryCollaborationSystemUsersChoiceForm",
+    ),
 ];
 
 /// The form slots an owner kind has in the 8.3.27 export, by contract key;
@@ -557,6 +607,18 @@ pub fn form_slots_of(kind: &str) -> Option<&'static [&'static str]> {
             "auxiliarySaveForm",
             "auxiliaryLoadForm",
         ],
+        "Configuration" => &[
+            "defaultReportForm",
+            "defaultReportVariantForm",
+            "defaultReportSettingsForm",
+            "defaultDynamicListSettingsForm",
+            "defaultSearchForm",
+            "defaultDataHistoryChangeHistoryForm",
+            "defaultDataHistoryVersionDataForm",
+            "defaultDataHistoryVersionDifferencesForm",
+            "defaultCollaborationSystemUsersChoiceForm",
+            "defaultConstantsForm",
+        ],
         _ => return None,
     })
 }
@@ -612,7 +674,9 @@ pub fn form_set_in(kind: Option<&str>, line: Option<PlatformLine>) -> OperationC
             .iter()
             .map(|key| {
                 let mut field=slot.clone();
-                if kind.is_some_and(|kind| crate::default_forms::common_form_slot(kind, FORM_SLOTS.iter().find(|(name,_)|name == key).map_or("",|(_,property)|*property))) {
+                if kind == Some("Configuration") {
+                    field["description"]=json!("The name or logical address of a common form of this source set (`Name`, `CommonForm.Name`); an empty string clears the slot.");
+                } else if kind.is_some_and(|kind| crate::default_forms::common_form_slot(kind, FORM_SLOTS.iter().find(|(name,_)|name == key).map_or("",|(_,property)|*property))) {
                     field["description"]=json!("A form name or logical address of this owner, or the logical address of a compatible Managed CommonForm in the same source set. An empty string clears the slot. Report CommonForm requires a generic ReportObject main attribute and matching Main/Settings/Variant purpose (an absent ReportFormType means Main); Constant requires ConstantsSet.");
                 }
                 (*key,field)
@@ -638,8 +702,8 @@ pub fn form_set_in(kind: Option<&str>, line: Option<PlatformLine>) -> OperationC
     example.insert(keys[0].to_string(), json!("Sample"));
     OperationContract {
         schema: object(&[at(), ("values", values)], &["values"]),
-        target: "The form owner: <source-set>:<Kind>.<Name>.",
-        effect: "Point the owner's default and auxiliary form slots at the named forms, or clear a slot with an empty string. Unlisted slots stay. Only the slots of the owner's kind are accepted. Report defaultForm/defaultSettingsForm/defaultVariantForm and Constant defaultForm also accept the logical address of a compatible Managed CommonForm in the same source set.",
+        target: "The form owner: <source-set>:<Kind>.<Name>, or the configuration root <source-set>:Configuration.",
+        effect: "Point the owner's default and auxiliary form slots at the named forms, or clear a slot with an empty string. Unlisted slots stay. Only the slots of the owner's kind are accepted. Report defaultForm/defaultSettingsForm/defaultVariantForm and Constant defaultForm also accept the logical address of a compatible Managed CommonForm in the same source set. The slots of the configuration root name common forms of the set.",
         notes: "Properties of a form itself (title, size, behaviour) are written by props.set at the form address.",
         example_args: json!({"values": example}),
         help: FORM_HELP,
@@ -888,6 +952,39 @@ mod tests {
         let catalog = super::form_set_in(Some("Catalog"), Some(PlatformLine::new(8, 5, 4)));
         assert!(catalog.schema["properties"]["values"]["properties"]
             .get("auxiliaryVariantForm")
+            .is_none());
+    }
+
+    /// `can` of the configuration root offers its ten default forms, and the
+    /// eight auxiliary ones in the lines that have them.
+    /// rule: INV.SOURCE.PROFILE-CAPABILITIES
+    #[test]
+    fn a_configuration_root_is_offered_its_form_slots_by_line() {
+        use unica_source_contract::format_identity::PlatformLine;
+        let values = |line| {
+            super::form_set_in(Some("Configuration"), Some(line)).schema["properties"]["values"]
+                .clone()
+        };
+        let old = values(PlatformLine::new(8, 3, 27));
+        assert_eq!(old["properties"].as_object().unwrap().len(), 10);
+        assert_eq!(
+            old["x-unica-later-lines"]["items"]
+                .as_array()
+                .unwrap()
+                .len(),
+            8
+        );
+        assert!(old["properties"]["defaultSearchForm"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("common form"));
+        let new = values(PlatformLine::new(8, 5, 1));
+        assert_eq!(new["properties"].as_object().unwrap().len(), 18);
+        assert!(new.get("x-unica-later-lines").is_none());
+        // An object owner has none of the root slots.
+        let catalog = super::form_set_in(Some("Catalog"), Some(PlatformLine::new(8, 5, 4)));
+        assert!(catalog.schema["properties"]["values"]["properties"]
+            .get("defaultSearchForm")
             .is_none());
     }
 

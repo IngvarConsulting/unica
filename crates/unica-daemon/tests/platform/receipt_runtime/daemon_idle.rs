@@ -21,9 +21,8 @@ fn daemon_idle_saved_apply_plan_preserves_instance_and_exact_replay_after_owner_
     release_promised_work_owner(owner);
 
     let released = Instant::now();
-    let observed = daemon.observe_idle_interval(idle * 3);
     assert_held_by(
-        &daemon.owners_without_clients_since(released),
+        &daemon.held_without_clients_since(released),
         |owners| owners.retained_workspace_work && !owners.task_cancellations,
         "the saved plan, as retained workspace work",
     );
@@ -32,10 +31,6 @@ fn daemon_idle_saved_apply_plan_preserves_instance_and_exact_replay_after_owner_
         Some(daemon.record.clone()),
         "idle cleanup discarded an unexecuted apply plan and its daemon instance"
     );
-    assert!(
-        observed,
-        "the original listener must remain alive past idle"
-    );
     let mut successor = daemon.owner();
     let arguments = json!({"executionToken": token});
     let applied = promised_work_apply_over_tcp(&mut successor, workspace.path(), arguments.clone());
@@ -43,15 +38,16 @@ fn daemon_idle_saved_apply_plan_preserves_instance_and_exact_replay_after_owner_
     let written = std::fs::read(&descriptor).unwrap();
     assert_ne!(before, written);
     release_promised_work_owner(successor);
-    let observed = daemon.observe_idle_interval(idle * 3);
+    let released = Instant::now();
+    assert_held_by(
+        &daemon.held_without_clients_since(released),
+        |owners| owners.retained_workspace_work && !owners.task_cancellations,
+        "the completed plan's replay result, as retained workspace work",
+    );
     assert_eq!(
         daemon.endpoint(),
         Some(daemon.record.clone()),
         "idle cleanup discarded a completed plan's replay result"
-    );
-    assert!(
-        observed,
-        "completed plan remains promised after all owners release"
     );
     let mut replay_owner = daemon.owner();
     assert_eq!(
@@ -144,15 +140,14 @@ fn daemon_idle_running_index_producer_without_rpc_or_lease_preserves_instance_th
         .expect("the real SharedWork producer starts");
     release_promised_work_owner(owner);
     let released = Instant::now();
-    let observed = daemon.observe_idle_interval(idle * 3);
+    let held = daemon.held_without_clients_since(released);
     assert_eq!(
         daemon.endpoint(),
         Some(daemon.record.clone()),
         "idle shutdown lost a running index producer after the RPC and its lease ended"
     );
-    assert!(observed);
     assert_held_by(
-        &daemon.owners_without_clients_since(released),
+        &held,
         |owners| owners.retained_workspace_work && !owners.task_cancellations,
         "the running producer, as retained workspace work",
     );
@@ -208,10 +203,10 @@ fn daemon_idle_live_task_after_client_release_preserves_attempt_then_retires() {
     release_promised_work_owner(owner);
     let released = Instant::now();
 
-    assert!(daemon.observe_idle_interval(idle * 3));
+    let held = daemon.held_without_clients_since(released);
     assert_eq!(daemon.endpoint(), Some(daemon.record.clone()));
     assert_held_by(
-        &daemon.owners_without_clients_since(released),
+        &held,
         |owners| owners.task_cancellations,
         "the live Task, through its cancellation registration",
     );
@@ -278,12 +273,12 @@ fn daemon_idle_disconnected_inline_invocation_preserves_attempt_then_retires() {
 
     // The client has left, but the synchronous handler still owns its lease
     // until this invocation returns. Do not call its registry empty.
-    assert!(daemon.observe_until(Instant::now() + idle * 3));
+    let held = daemon.decisions_since(disconnected, |_| true);
     assert_eq!(daemon.endpoint(), Some(daemon.record.clone()));
     // Besides that lease, the begun attempt holds through its own
     // cancellation registration.
     assert_held_by(
-        &daemon.owners_since(disconnected),
+        &held,
         |owners| owners.task_cancellations,
         "the begun inline attempt, through its cancellation registration",
     );
@@ -411,23 +406,22 @@ fn daemon_idle_inline_attempt_handed_over_at_the_cutoff_keeps_an_owner_throughou
     owner.0.shutdown(std::net::Shutdown::Both).unwrap();
     drop(owner);
     let disconnected = Instant::now();
-    assert!(daemon.observe_until(disconnected + idle * 3));
+    daemon.decisions_since(disconnected, |_| true);
     let past_cutoff = Instant::now();
     clock
         .elapsed_ms
         .store(budget.as_millis() as u64 + 1, Ordering::SeqCst);
-    assert!(daemon.observe_until(past_cutoff + idle * 3));
+    // After the handoff no client lease is left: the Task alone holds.
+    assert_held_by(
+        &daemon.held_without_clients_since(past_cutoff),
+        |owners| owners.task_cancellations,
+        "the handed-over Task, through its cancellation registration",
+    );
     assert_eq!(daemon.endpoint(), Some(daemon.record.clone()));
     assert_held_by(
         &daemon.owners_since(disconnected),
         |owners| owners.task_cancellations,
         "the inline attempt and then its Task, through one cancellation registration",
-    );
-    // After the handoff no client lease is left: the Task alone holds.
-    assert_held_by(
-        &daemon.observe_without_clients_since(past_cutoff),
-        |owners| owners.task_cancellations,
-        "the handed-over Task, through its cancellation registration",
     );
     let mut successor = daemon.owner();
     let V5ServerResponse::Task { snapshot: handed } = idle_request_over_tcp(
@@ -473,18 +467,24 @@ fn daemon_idle_task_promised_during_admission_holds_without_an_actor_then_retire
         release: Arc::new((Mutex::new(true), Condvar::new())),
     });
     let idle = Duration::from_millis(80);
-    let mut daemon = PromisedWorkIdleDaemon::with_service(idle, service.clone());
+    let budget = Duration::from_millis(600);
+    // The invocation clock stands still until the test closes the response
+    // window, so the call is promised while it waits for its actor however
+    // slowly the machine runs.
+    let clock = Arc::new(InspectionClock {
+        start: Instant::now(),
+        elapsed_ms: AtomicU64::new(0),
+    });
+    let mut daemon =
+        PromisedWorkIdleDaemon::with_service_and_clock(idle, service.clone(), Arc::clone(&clock));
     // The attempt waits inside its real actor bind.
     let admission =
         crate::infrastructure::daemon::server::admission_test_control::AdmissionPause::install(
             workspace.clone(),
         );
-    let invocation = view_catalog_request_within(TaskId::new(), &workspace, 100);
+    let invocation =
+        view_catalog_request_within(TaskId::new(), &workspace, budget.as_millis() as u64);
     let mut owner = daemon.owner();
-    let submitted = Instant::now();
-    // The answer that names the promised Task may be lost: the
-    // durable promise can outlast its write window. Nothing reads it here;
-    // the Task is read by its reserved id below.
     write_json_line(
         &mut owner.0,
         &serde_json::to_value(V5ClientRequest::SubmitInvocation {
@@ -493,18 +493,29 @@ fn daemon_idle_task_promised_during_admission_holds_without_an_actor_then_retire
         .unwrap(),
     );
     admission.wait_until_entered();
-    assert!(daemon.observe_until(submitted + Duration::from_millis(100) + idle * 3));
-    // The daemon may already have closed a session whose answer it lost.
-    let _ = owner.0.shutdown(std::net::Shutdown::Both);
+    clock
+        .elapsed_ms
+        .store(budget.as_millis() as u64 + 1, Ordering::SeqCst);
+    // The answer names the Task promised at the closed window. The clock
+    // stands inside the write margin, so the answer is not lost.
+    let frame = read_bounded_v5_probe_response_frame(&mut owner.1)
+        .expect("the promise of the waiting call is answered");
+    let V5ServerResponse::Invocation {
+        outcome: V5InvocationResponse::Task { snapshot: answered },
+    } = decode_v5_server_response(&frame).unwrap()
+    else {
+        panic!("the call waiting for its actor must be promised as its Task");
+    };
+    assert_eq!(answered.task_id(), invocation.reserved_task_id());
+    owner.0.shutdown(std::net::Shutdown::Both).unwrap();
     drop(owner);
     let released = Instant::now();
 
     assert_held_by(
-        &daemon.observe_without_clients_since(released),
+        &daemon.held_without_clients_since(released),
         |owners| owners.task_cancellations && !owners.retained_workspace_work,
         "the Task promised during admission, through its cancellation registration alone",
     );
-    assert!(daemon.observe_until(Instant::now() + idle * 3));
     assert_eq!(daemon.endpoint(), Some(daemon.record.clone()));
     let mut successor = daemon.owner();
     let V5ServerResponse::Task { snapshot: promised } = idle_request_over_tcp(
@@ -584,9 +595,8 @@ fn daemon_idle_completed_index_lease_preserves_same_result_then_retires() {
     };
 
     let released = Instant::now();
-    assert!(daemon.observe_idle_interval(idle * 3));
     assert_held_by(
-        &daemon.owners_without_clients_since(released),
+        &daemon.held_without_clients_since(released),
         |owners| owners.retained_workspace_work && !owners.task_cancellations,
         "the needed lease, as retained workspace work",
     );
@@ -602,7 +612,12 @@ fn daemon_idle_completed_index_lease_preserves_same_result_then_retires() {
     assert_eq!(producers.load(Ordering::SeqCst), 1);
     release_promised_work_owner(successor);
     drop(follower);
-    assert!(daemon.observe_idle_interval(idle * 3));
+    let released = Instant::now();
+    assert_held_by(
+        &daemon.held_without_clients_since(released),
+        |owners| owners.retained_workspace_work && !owners.task_cancellations,
+        "the original lease, as retained workspace work",
+    );
     drop(lease);
     daemon.await_idle_exit();
     daemon.join();

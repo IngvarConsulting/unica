@@ -201,15 +201,17 @@ claude plugin install unica@unica</code></pre>
     <div class="wrap">
       <h2>Поддерживаемые версии платформы</h2>
       <p>
-        Версия платформы задаёт формат выгрузки, а Unica читает и пишет ровно один формат.
-        Каждая лишняя ветка это ещё один формат, который нужно держать в тестах, поэтому старые
-        версии не поддерживаем намеренно: актуальные типовые конфигурации уже вышли на 8.3.27 и выше.
+        Версия платформы задаёт формат выгрузки. Unica читает и правит наборы 8.3.27, 8.5.1 и 8.5.4,
+        каждый — в его собственном формате, и не переводит набор в другой формат без вашего выбора.
+        Старые версии не поддерживаем намеренно: каждая лишняя ветка — ещё один формат в тестах,
+        а актуальные типовые конфигурации уже вышли на 8.3.27 и выше.
       </p>
       <div class="table-wrap">
       <table class="versions">
         <thead><tr><th>Платформа</th><th>Формат выгрузки</th><th>Статус</th></tr></thead>
         <tbody>
-          <tr><td><code>8.5.1.x</code>, <code>8.5.4.x</code></td><td><code>2.21</code> и выше</td><td><span class="status status-plan">Планируем</span></td></tr>
+          <tr><td><code>8.5.4.x</code></td><td><code>2.22</code></td><td><span class="status status-ok">Поддержали</span></td></tr>
+          <tr><td><code>8.5.1.x</code></td><td><code>2.21</code></td><td><span class="status status-ok">Поддержали</span></td></tr>
           <tr><td><code>8.3.27.x</code></td><td><code>2.20</code></td><td><span class="status status-ok">Поддержали</span></td></tr>
           <tr><td><code>8.3.26.x</code> и ниже</td><td><code>2.19</code> и ниже</td><td><span class="status status-no">Не планируем</span></td></tr>
         </tbody>

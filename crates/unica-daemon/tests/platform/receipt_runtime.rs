@@ -4490,11 +4490,18 @@ type ListenerOwnersLog = Arc<Mutex<Vec<(Instant, V5ListenerOwners)>>>;
 struct PromisedWorkIdleHooks {
     observations: mpsc::Sender<(Instant, bool)>,
     owners: ListenerOwnersLog,
+    /// Closed until the test lets the daemon retire: the listener keeps
+    /// deciding, but cannot leave before the test has read its decisions.
+    idle_exit: Arc<AtomicBool>,
 }
 
 impl V5RuntimeHooks<CanonicalInvocationHost> for PromisedWorkIdleHooks {
     fn as_any(&self) -> &dyn std::any::Any {
         self
+    }
+
+    fn idle_exit_permitted(&self) -> bool {
+        self.idle_exit.load(Ordering::SeqCst)
     }
 
     fn after_idle_owner_leases_read(&self, empty: bool) {
@@ -4533,7 +4540,13 @@ struct PromisedWorkIdleDaemon {
     observations: mpsc::Receiver<(Instant, bool)>,
     exited: mpsc::Receiver<()>,
     owners: ListenerOwnersLog,
+    idle_exit: Arc<AtomicBool>,
 }
+
+/// How many listener decisions without a client a test reads before it says
+/// what held the daemon. A count of decisions, not a span of time: the idle
+/// exit stays closed meanwhile, so a loaded machine only slows them down.
+const HELD_DECISIONS: usize = 3;
 
 impl PromisedWorkIdleDaemon {
     fn start(idle_grace: Duration) -> Self {
@@ -4549,13 +4562,17 @@ impl PromisedWorkIdleDaemon {
     ) -> Self {
         let owners = ListenerOwnersLog::default();
         let recorded = Arc::clone(&owners);
+        let idle_exit = Arc::new(AtomicBool::new(false));
+        let gate = Arc::clone(&idle_exit);
         let mut daemon = Self::with_service_and_hooks(idle_grace, service, |observations| {
             Arc::new(PromisedWorkIdleHooks {
                 observations,
                 owners: recorded,
+                idle_exit: gate,
             })
         });
         daemon.owners = owners;
+        daemon.idle_exit = idle_exit;
         daemon
     }
 
@@ -4568,6 +4585,8 @@ impl PromisedWorkIdleDaemon {
     ) -> Self {
         let owners = ListenerOwnersLog::default();
         let recorded = Arc::clone(&owners);
+        let idle_exit = Arc::new(AtomicBool::new(false));
+        let gate = Arc::clone(&idle_exit);
         let mut daemon = Self::start_configured(
             idle_grace,
             service,
@@ -4575,11 +4594,13 @@ impl PromisedWorkIdleDaemon {
                 Arc::new(PromisedWorkIdleHooks {
                     observations,
                     owners: recorded,
+                    idle_exit: gate,
                 })
             },
             Some(clock),
         );
         daemon.owners = owners;
+        daemon.idle_exit = idle_exit;
         daemon
     }
 
@@ -4639,6 +4660,8 @@ impl PromisedWorkIdleDaemon {
             observations: observed,
             exited,
             owners: ListenerOwnersLog::default(),
+            // Hooks other than the promised-work ones do not read it.
+            idle_exit: Arc::new(AtomicBool::new(true)),
         }
     }
 
@@ -4653,33 +4676,44 @@ impl PromisedWorkIdleDaemon {
             .collect()
     }
 
-    /// Observe the listener until it reads an owner set without a client
-    /// lease after `since`, so a slow handler that still holds its lease
-    /// does not leave the check empty.
-    fn observe_without_clients_since(&self, since: Instant) -> Vec<V5ListenerOwners> {
+    /// The owner sets of the listener decisions after `since` that `counts`
+    /// accepts, read until there are [`HELD_DECISIONS`] of them. The idle exit
+    /// is closed, so the listener keeps deciding however slowly the machine
+    /// runs; a daemon that leaves anyway was stopped or failed.
+    fn decisions_since(
+        &self,
+        since: Instant,
+        counts: impl Fn(&V5ListenerOwners) -> bool,
+    ) -> Vec<V5ListenerOwners> {
         let watchdog = Instant::now() + TEST_STEP;
         loop {
-            let observed = self.owners_without_clients_since(since);
-            if !observed.is_empty() || Instant::now() >= watchdog {
-                return observed;
+            let read: Vec<_> = self
+                .owners_since(since)
+                .into_iter()
+                .filter(|owners| counts(owners))
+                .collect();
+            if read.len() >= HELD_DECISIONS {
+                return read;
             }
-            assert!(
-                self.observe_until(Instant::now() + Duration::from_millis(20)),
-                "the daemon exited while its work was still owned"
-            );
+            match self
+                .observations
+                .recv_timeout(watchdog.saturating_duration_since(Instant::now()))
+            {
+                Ok(_) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    panic!("the daemon left while its idle exit was closed")
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    panic!("the listener did not decide {HELD_DECISIONS} times")
+                }
+            }
         }
     }
 
-    /// The owner sets the listener read after `since` with no client lease:
-    /// what kept the daemon once every client had left.
-    fn owners_without_clients_since(&self, since: Instant) -> Vec<V5ListenerOwners> {
-        self.owners
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|(observed, owners)| *observed >= since && !owners.client_leases)
-            .map(|(_, owners)| *owners)
-            .collect()
+    /// What held the daemon once every client had left: the listener's own
+    /// decisions without a client lease after `since`.
+    fn held_without_clients_since(&self, since: Instant) -> Vec<V5ListenerOwners> {
+        self.decisions_since(since, |owners| !owners.client_leases)
     }
 
     fn owner(&mut self) -> (TcpStream, BufReader<TcpStream>) {
@@ -4697,25 +4731,6 @@ impl PromisedWorkIdleDaemon {
             .unwrap()
             .read_v5_endpoint_record()
             .unwrap()
-    }
-
-    /// Observe the actual listener past the requested interval. Its exit drops
-    /// the sole sender, so an early idle exit is also observed without sleeping.
-    fn observe_until(&self, threshold: Instant) -> bool {
-        let watchdog = Instant::now() + TEST_STEP;
-        loop {
-            match self
-                .observations
-                .recv_timeout(watchdog.saturating_duration_since(Instant::now()))
-            {
-                Ok((observed, _)) if observed >= threshold => return true,
-                Ok(_) => {}
-                Err(mpsc::RecvTimeoutError::Disconnected) => return false,
-                Err(mpsc::RecvTimeoutError::Timeout) => {
-                    panic!("listener did not reach the idle observation or exit")
-                }
-            }
-        }
     }
 
     /// Begin the interval only at a fresh observation of the actual empty
@@ -4755,6 +4770,8 @@ impl PromisedWorkIdleDaemon {
     /// Lease observations precede the idle decision, and visible terminal
     /// results can precede the last Task guard drop. Await the runtime itself.
     fn await_idle_exit_before(&self, watchdog: Instant) {
+        // The test has read what it checks: let the daemon retire.
+        self.idle_exit.store(true, Ordering::SeqCst);
         self.exited
             .recv_timeout(watchdog.saturating_duration_since(Instant::now()))
             .expect("promised-work daemon did not return within the idle watchdog");
