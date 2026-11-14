@@ -27,15 +27,7 @@ fn cf_consumers_share_the_canonical_metadata_kind_order() {
     }
 }
 
-/// The registry kinds of the 2.20 reference export stand in the order in
-/// which the platform writes its `ChildObjects`; kinds of later lines are
-/// checked against their own exports.
-/// rule: INV.SOURCE.CHILD-OBJECTS-PLATFORM-ORDER
-#[test]
-fn the_registry_follows_the_child_objects_order_of_the_platform_export() {
-    let export = include_str!(
-        "../../../../tests/fixtures/formats/platform_xml/2.20/all_kinds/src/Configuration.xml"
-    );
+fn exported_root_kinds(export: &str) -> Vec<&str> {
     let child_objects = &export[export.find("<ChildObjects>").unwrap()..];
     let child_objects = &child_objects[..child_objects.find("</ChildObjects>").unwrap()];
     let mut exported = Vec::<&str>::new();
@@ -48,18 +40,117 @@ fn the_registry_follows_the_child_objects_order_of_the_platform_export() {
             exported.push(tag);
         }
     }
-    let registry = cf_type_order();
-    let known = exported
+    exported
+}
+
+/// Every root kind of each reference export has a place in the order, and
+/// the places follow the order in which the platform writes its
+/// `ChildObjects`: a kind the order misses fails here, not silently.
+/// rule: INV.SOURCE.CHILD-OBJECTS-PLATFORM-ORDER
+#[test]
+fn the_registry_follows_the_child_objects_order_of_the_platform_export() {
+    for (format, export) in [
+        (
+            "2.20",
+            include_str!(
+                "../../../../tests/fixtures/formats/platform_xml/2.20/all_kinds/src/Configuration.xml"
+            ),
+        ),
+        (
+            "2.21",
+            include_str!(
+                "../../../../tests/fixtures/formats/platform_xml/2.21/all_kinds/src/Configuration.xml"
+            ),
+        ),
+        (
+            "2.22",
+            include_str!(
+                "../../../../tests/fixtures/formats/platform_xml/2.22/all_kinds/src/Configuration.xml"
+            ),
+        ),
+    ] {
+        let exported = exported_root_kinds(export);
+        for (kind, _) in crate::layout::UNLAID_ROOT_KINDS {
+            assert!(exported.contains(kind), "{format}: no {kind} in the export");
+        }
+        let places = exported
+            .iter()
+            .map(|kind| {
+                crate::layout::root_child_objects_order(kind)
+                    .unwrap_or_else(|| panic!("{format}: {kind} has no place in the root order"))
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            places.windows(2).all(|pair| pair[0] < pair[1]),
+            "{format}: {exported:?} out of the root order"
+        );
+    }
+}
+
+/// A metadata kind that Unica addresses either has a place in the root
+/// order or is not a root kind at all.
+/// rule: INV.SOURCE.CHILD-OBJECTS-PLATFORM-ORDER
+#[test]
+fn every_addressed_root_kind_has_a_place_in_the_root_order() {
+    use unica_address::address::NodeKind;
+    const NOT_ROOT: &[NodeKind] = &[
+        NodeKind::Form,
+        NodeKind::Template,
+        NodeKind::Command,
+        NodeKind::ExternalDataProcessor,
+        NodeKind::ExternalReport,
+    ];
+    for kind in NodeKind::metadata_kinds()
         .iter()
         .copied()
-        .filter(|kind| registry.contains(kind))
-        .collect::<Vec<_>>();
-    let ordered = registry
-        .iter()
-        .copied()
-        .filter(|kind| exported.contains(kind))
-        .collect::<Vec<_>>();
-    assert_eq!(ordered, known);
+        .chain([NodeKind::WebSocketClient])
+    {
+        assert!(kind.is_metadata_kind(), "{}", kind.as_str());
+        if NOT_ROOT.contains(&kind) {
+            continue;
+        }
+        assert!(
+            crate::layout::root_child_objects_order(kind.as_str()).is_some(),
+            "{} has no place in the root order",
+            kind.as_str()
+        );
+    }
+}
+
+/// rule: INV.SOURCE.CHILD-OBJECTS-PLATFORM-ORDER
+#[test]
+fn a_new_ws_reference_stands_before_the_web_socket_client() {
+    let mut xml = concat!(
+        "<MetaDataObject><Configuration><ChildObjects>
+",
+        "	<WSReference>A</WSReference>
+",
+        "	<WebSocketClient>Phone</WebSocketClient>
+",
+        "	<EventSubscription>OnWrite</EventSubscription>
+",
+        "</ChildObjects></Configuration></MetaDataObject>"
+    )
+    .to_string();
+
+    assert!(
+        crate::registration::cf_edit_add_child_object_text(&mut xml, "WSReference", "B").unwrap()
+    );
+    assert!(xml.contains(concat!(
+        "	<WSReference>A</WSReference>
+",
+        "	<WSReference>B</WSReference>
+",
+        "	<WebSocketClient>Phone</WebSocketClient>
+",
+    )));
+    assert!(crate::registration::cf_edit_add_child_object_text(
+        &mut xml,
+        "WebSocketClient",
+        "Chat"
+    )
+    .expect_err("a kind without a layout is not created")
+    .contains("Unknown type 'WebSocketClient'"));
 }
 
 /// rule: INV.SOURCE.CHILD-OBJECTS-PLATFORM-ORDER
