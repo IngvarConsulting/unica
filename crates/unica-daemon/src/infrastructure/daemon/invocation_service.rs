@@ -1644,7 +1644,11 @@ pub(crate) mod test_control {
         }
 
         pub(crate) fn release(&self) {
-            self.gate.state.lock().unwrap().1 = true;
+            self.gate
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .1 = true;
             self.gate.changed.notify_all();
         }
     }
@@ -1652,7 +1656,10 @@ pub(crate) mod test_control {
     impl Drop for AdmissionPause {
         fn drop(&mut self) {
             self.release();
-            gates().lock().unwrap().remove(&self.workspace);
+            gates()
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(&self.workspace);
         }
     }
 

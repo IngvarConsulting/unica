@@ -4951,7 +4951,9 @@ struct IdleIndexProducerCleanup {
 impl IdleIndexProducerCleanup {
     fn release(&self) {
         let (released, changed) = &*self.release;
-        *released.lock().unwrap() = true;
+        *released
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = true;
         changed.notify_all();
     }
 }

@@ -90,9 +90,19 @@ impl SecuritySnapshot {
     }
 
     pub fn apply_to(&self, path: &Path) {
-        std::fs::set_permissions(path, self.permissions.clone()).unwrap();
+        self.restore(path).unwrap_or_else(|error| panic!("{error}"));
+    }
+
+    /// Restores the captured access and reports a failure instead of panicking.
+    pub fn restore(&self, path: &Path) -> Result<(), String> {
+        std::fs::set_permissions(path, self.permissions.clone())
+            .map_err(|error| format!("restore {}: {error}", path.display()))?;
+        // The ACL helper asserts; while a test already panics it is left as is.
         #[cfg(target_os = "macos")]
-        self.acl.apply_to(path);
+        if !std::thread::panicking() {
+            self.acl.apply_to(path);
+        }
+        Ok(())
     }
 }
 
@@ -113,17 +123,24 @@ impl SecuritySnapshot {
     }
 
     pub fn apply_to(&self, path: &Path) {
+        self.restore(path).unwrap_or_else(|error| panic!("{error}"));
+    }
+
+    /// Restores the captured access and reports a failure instead of panicking.
+    pub fn restore(&self, path: &Path) -> Result<(), String> {
         let sddl = self.0.trim().replace('\'', "''");
-        powershell(
+        try_powershell(
             path,
             &format!(
                 r#"
-            $acl = Get-Acl -LiteralPath $path
-            $acl.SetSecurityDescriptorSddlForm('{sddl}')
-            Set-Acl -LiteralPath $path -AclObject $acl
+            $item = Get-Item -LiteralPath $path -Force
+            $acl = $item.GetAccessControl('Access')
+            $acl.SetSecurityDescriptorSddlForm('{sddl}', 'Access')
+            $item.SetAccessControl($acl)
         "#
             ),
-        );
+        )
+        .map(|_| ())
     }
 }
 
@@ -169,7 +186,15 @@ impl InsecureAccess {
 
 impl Drop for InsecureAccess {
     fn drop(&mut self) {
-        self.original.apply_to(&self.path);
+        // A second panic while a test already unwinds aborts the whole test
+        // binary; the failed restore is reported instead (#3065).
+        if let Err(error) = self.original.restore(&self.path) {
+            if std::thread::panicking() {
+                eprintln!("fixture access was not restored: {error}");
+            } else {
+                panic!("fixture access was not restored: {error}");
+            }
+        }
     }
 }
 
@@ -190,29 +215,41 @@ fn expose_to_others(path: &Path) {
     powershell(
         path,
         r#"
-        $acl = Get-Acl -LiteralPath $path
+        $item = Get-Item -LiteralPath $path -Force
+        $acl = $item.GetAccessControl('Access')
         $everyone = [System.Security.Principal.SecurityIdentifier]::new('S-1-1-0')
         $rule = [System.Security.AccessControl.FileSystemAccessRule]::new($everyone, [System.Security.AccessControl.FileSystemRights]::Read, [System.Security.AccessControl.AccessControlType]::Allow)
         $acl.AddAccessRule($rule)
-        Set-Acl -LiteralPath $path -AclObject $acl
+        $item.SetAccessControl($acl)
     "#,
     );
 }
 
 #[cfg(windows)]
 fn powershell(path: &Path, body: &str) -> String {
-    let escaped = path.to_str().unwrap().replace('\'', "''");
+    try_powershell(path, body).unwrap_or_else(|error| panic!("{error}"))
+}
+
+#[cfg(windows)]
+fn try_powershell(path: &Path, body: &str) -> Result<String, String> {
+    let escaped = path
+        .to_str()
+        .ok_or_else(|| format!("non-UTF-8 fixture path {}", path.display()))?
+        .replace('\'', "''");
     let script = format!("$ErrorActionPreference='Stop'; $path='{escaped}'; {body}");
     let output = std::process::Command::new("powershell.exe")
         .args(["-NoProfile", "-NonInteractive", "-Command", &script])
         .output()
-        .expect("inspect or change the isolated fixture's Windows ACL");
-    assert!(
-        output.status.success(),
-        "Windows ACL fixture failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    String::from_utf8(output.stdout).unwrap().trim().to_owned()
+        .map_err(|error| {
+            format!("inspect or change the isolated fixture's Windows ACL: {error}")
+        })?;
+    if !output.status.success() {
+        return Err(format!(
+            "Windows ACL fixture failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
 
 #[cfg(target_os = "macos")]

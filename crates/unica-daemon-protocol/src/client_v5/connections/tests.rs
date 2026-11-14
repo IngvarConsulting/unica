@@ -91,8 +91,15 @@ impl Endpoint {
 impl Drop for Endpoint {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
-        let _ = TcpStream::connect(self.record.loopback_addr().unwrap());
-        self.worker.take().unwrap().join().unwrap();
+        if let Ok(address) = self.record.loopback_addr() {
+            let _ = TcpStream::connect(address);
+        }
+        if let Some(worker) = self.worker.take() {
+            let joined = worker.join();
+            if !std::thread::panicking() {
+                joined.unwrap();
+            }
+        }
     }
 }
 
