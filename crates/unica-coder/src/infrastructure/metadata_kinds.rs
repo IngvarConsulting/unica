@@ -1,7 +1,9 @@
 use unica_address::address::NodeKind;
 #[cfg(any(test, feature = "test-support"))]
+use unica_address::module_routes::has_direct_module_route;
+use unica_address::module_routes::has_nested_module_route;
+#[cfg(any(test, feature = "test-support"))]
 use unica_address::module_routes::ModuleRole;
-use unica_bsl::profile::PlatformProfile;
 use unica_source_designer::layout::metadata_kind;
 
 #[cfg(any(test, feature = "test-support"))]
@@ -9,15 +11,15 @@ pub(crate) fn supports_direct_module_role(tag: &str, role: &str) -> bool {
     metadata_kind(tag)
         .and_then(|layout| NodeKind::parse(layout.tag).ok())
         .zip(ModuleRole::from_v12_terminal(role))
-        .is_some_and(|(owner, role)| {
-            PlatformProfile::v8_3_27().supports_direct_module_role(owner, role)
-        })
+        // Маршруты модулей от линии не зависят: линии 8.5 держат таблицы
+        // модулей и ролей 8.3.27, и вопрос задаётся самим маршрутам.
+        .is_some_and(|(owner, role)| has_direct_module_route(owner, role))
 }
 
 pub(crate) fn supports_nested_form_or_command(tag: &str) -> bool {
     metadata_kind(tag)
         .and_then(|layout| NodeKind::parse(layout.tag).ok())
-        .is_some_and(|owner| PlatformProfile::v8_3_27().supports_nested_form_or_command(owner))
+        .is_some_and(has_nested_module_route)
 }
 
 #[cfg(test)]

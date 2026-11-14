@@ -288,6 +288,7 @@ mod tests {
                     state: unica_metadata::support_state::ObjectSupportState::NotSupported,
                     direct_edit_safe: Some(true),
                 },
+                None,
             )
             .unwrap();
             let observed = serde_json::to_value(data.attributes).unwrap();

@@ -75,7 +75,14 @@ fn validate_form_inner(
             Some((_, source)) => source.to_string(),
             None => read_utf8_sig(&form_path)?,
         };
-        validate_form_image(args, &reader, &form_path, &text, signatures)
+        validate_form_image(
+            args,
+            &reader,
+            &form_path,
+            &text,
+            signatures,
+            unica_forms_designer::root::declared_platform_line(&text),
+        )
     })();
     form_validation_outcome(result)
 }
@@ -117,8 +124,13 @@ pub(crate) fn form_validation_outcome(
 pub(crate) fn form_validation_requires_module(
     text: &str,
     metadata_owner: Option<unica_address::address::NodeKind>,
+    platform_line: Option<unica_source_contract::format_identity::PlatformLine>,
 ) -> bool {
-    unica_forms_designer::codec::form_validation_requires_module(text, metadata_owner)
+    unica_forms_designer::codec::form_validation_requires_module(
+        text,
+        metadata_owner,
+        platform_line,
+    )
 }
 
 /// Связывает сохранённые факты чтения с кодеком формы.
@@ -128,6 +140,7 @@ pub(crate) fn validate_form_input(
     module: Option<&str>,
     config_context: bool,
     metadata_owner: Option<unica_address::address::NodeKind>,
+    platform_line: Option<unica_source_contract::format_identity::PlatformLine>,
 ) -> AdapterOutcome {
     form_validation_outcome(
         unica_forms_designer::codec::validate_form_image_with_context(
@@ -138,6 +151,7 @@ pub(crate) fn validate_form_input(
                 config_context,
                 metadata_owner,
                 module,
+                platform_line,
             },
         ),
     )
@@ -205,7 +219,13 @@ pub(crate) fn analyze_form_info_with_data(
         let support = support_reader
             .object_support(&selection.target)
             .map_err(|error| error.to_string())?;
-        let data = parse_form_info_xml(&text, form_name, object_context, support)?;
+        let data = parse_form_info_xml(
+            &text,
+            form_name,
+            object_context,
+            support,
+            unica_forms_designer::root::declared_platform_line(&text),
+        )?;
 
         Ok((data, form_path))
     })();
@@ -888,6 +908,7 @@ fn form_edit_with_mode_data(
         let (mut xml_text, bom, form_root_start) =
             form_edit_decode_image(&original_bytes, &form_path)?;
         let original_xml_text = xml_text.clone();
+        let platform_line = unica_forms_designer::root::declared_platform_line(&xml_text);
         let FormEditApplied {
             added_elements,
             added_attrs,
@@ -903,6 +924,7 @@ fn form_edit_with_mode_data(
             &form_path,
             form_root_start,
             Some(LEGACY_FORM_TEXT_LANGUAGE),
+            platform_line,
         )?;
         form_edit_require_valid(validate_form_for_edit(
             args,

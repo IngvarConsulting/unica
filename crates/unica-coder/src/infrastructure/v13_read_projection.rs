@@ -856,7 +856,7 @@ fn root_branches(
                 is_root_branch_kind(&branch)
                     && crate::infrastructure::logical_tree::route_logical_address(
                         &branch,
-                        unica_bsl::profile::PlatformProfile::v8_3_27(),
+                        unica_bsl::profile::PlatformProfile::for_line_or_base(line),
                     )
                     .is_ok()
             });

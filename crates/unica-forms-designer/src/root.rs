@@ -32,3 +32,17 @@ pub fn form_edit_opening_tag_end(text: &str, start: usize) -> Option<usize> {
     }
     None
 }
+
+/// Линия платформы, которую объявляет сама форма своим форматом выгрузки.
+///
+/// Так линию узнаёт путь, у которого нет допущенного набора: проверка файла
+/// формы на диске. Там спрашивать линию не у кого, а форма её называет сама,
+/// как и всякий корень выгрузки.
+pub fn declared_platform_line(
+    text: &str,
+) -> Option<unica_source_contract::format_identity::PlatformLine> {
+    let document = roxmltree::Document::parse(text.trim_start_matches('\u{feff}')).ok()?;
+    let root = document.root_element();
+    require_form_root(root).ok()?;
+    unica_source_contract::format_identity::export_format_line(root.attribute("version")?)
+}

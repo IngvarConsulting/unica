@@ -23,10 +23,11 @@ impl<'a> LogicalViewReadAuthority<'a> {
         if let Some(data) = cache.get(&key) {
             return Ok(Arc::clone(data));
         }
-        let data = Arc::new(
-            self.read
-                .form_data(target, &mut || self.read_checkpoint())?,
-        );
+        let data = Arc::new(self.read.form_data(
+            target,
+            Some(self.platform_profile().line()),
+            &mut || self.read_checkpoint(),
+        )?);
         cache.insert(key, Arc::clone(&data));
         Ok(data)
     }

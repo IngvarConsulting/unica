@@ -92,6 +92,7 @@ fn plan_one_event(
         let shape = project_platform_event_implementation(
             &source.event_at,
             &source.module_at,
+            profile,
             capability,
             module_text.as_deref(),
         )
@@ -117,6 +118,7 @@ fn plan_one_event(
         let post = project_platform_event_implementation(
             &source.event_at,
             &source.module_at,
+            profile,
             capability,
             Some(post_text),
         )
@@ -152,7 +154,8 @@ fn plan_one_event(
     let shape = project_property_event_implementation(&source, form_text, module_text.as_deref())
         .map_err(projection_error)?;
     require_plannable_state(&shape)?;
-    let evidence = parse_form_event_evidence_xml(form_text).map_err(invalid_source)?;
+    let evidence =
+        parse_form_event_evidence_xml(form_text, Some(profile.line())).map_err(invalid_source)?;
     let effective_call_type = property_call_type(
         &shape,
         &evidence.context.definition,

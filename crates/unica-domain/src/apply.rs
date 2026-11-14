@@ -364,8 +364,7 @@ pub fn source_set_traits_for_read(
 }
 
 pub fn source_classification_profile(source: SourceSetTraits) -> PlatformProfile {
-    crate::source_capabilities::bsl_profile_for_source(source.classification_profile())
-        .unwrap_or_else(PlatformProfile::v8_3_27)
+    PlatformProfile::for_line_or_base(source.classification_profile().semantic_line())
 }
 
 /// The sole semantic classifier binds pure source facts to a logical address.

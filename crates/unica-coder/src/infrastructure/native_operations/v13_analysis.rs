@@ -76,6 +76,7 @@ pub fn validate_form_input(
             input.module.as_deref(),
             input.config_context,
             input.metadata_owner,
+            input.platform_line,
         )
     })
 }
