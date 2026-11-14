@@ -715,3 +715,106 @@ fn repeated_borrowing_completes_a_descriptor_borrowed_in_part() {
         assert_eq!(String::from_utf8(completed).unwrap(), full, "{kind}");
     }
 }
+
+fn seeded_borrow(parent: &str, existing: Option<&str>) -> Result<String, BorrowObjectError> {
+    plan_borrow_object_with_identity(
+        parent.as_bytes(),
+        existing.map(str::as_bytes),
+        None,
+        &CfeBorrowIdentity::for_plan([7; 32]),
+        fixture_uuid_v4,
+    )
+    .map(|plan| String::from_utf8(plan.bytes).unwrap())
+}
+
+fn small_parent(kind: &str, version: &str, own: &str) -> String {
+    format!(
+        r#"<MetaDataObject xmlns="{MD}" xmlns:xr="{XR}" version="{version}"><{kind} uuid="00000000-0000-4000-8000-000000000001"><Properties><Name>Orders</Name><Comment/>{own}</Properties><ChildObjects/></{kind}></MetaDataObject>"#
+    )
+}
+
+/// `text` without the lines from the one holding `from` through the next one
+/// holding `to`.
+fn without_lines(text: &str, from: &str, to: &str) -> String {
+    let lines = text.split('\n').collect::<Vec<_>>();
+    let start = lines.iter().position(|line| line.contains(from)).unwrap();
+    let end = start + lines[start..].iter().position(|line| line.contains(to)).unwrap();
+    [&lines[..start], &lines[end + 1..]].concat().join("\n")
+}
+
+/// A descriptor an earlier Unica borrowed without what the platform needs in
+/// `InternalInfo` gains it on the next borrowing, keeping the identities it
+/// has: the generated types of a sequence and a WS reference, the extended
+/// property of a common form, a role and a subsystem (#2996).
+/// rule: INV.SOURCE.BORROWED-OBJECT-IDENTITY
+#[test]
+fn repeated_borrowing_completes_the_internal_info_of_an_earlier_borrowing() {
+    let sequence = small_parent("Sequence", "2.20", "");
+    let full = seeded_borrow(&sequence, None).unwrap();
+    let legacy = without_lines(
+        &without_lines(&full, "\"SequenceRecord.Orders\"", "</xr:GeneratedType>"),
+        "\"SequenceManager.Orders\"",
+        "</xr:GeneratedType>",
+    );
+    assert!(!legacy.contains("SequenceManager"), "{legacy}");
+    assert_eq!(seeded_borrow(&sequence, Some(&legacy)).unwrap(), full);
+    // A sequence that lost a type the earlier profile had is damaged, not
+    // borrowed in part, and is still refused.
+    let damaged = without_lines(&full, "\"SequenceRecordSet.Orders\"", "</xr:GeneratedType>");
+    assert!(seeded_borrow(&sequence, Some(&damaged))
+        .unwrap_err()
+        .to_string()
+        .contains("missing GeneratedType SequenceRecordSet.Orders"));
+    for kind in ["WSReference", "CommonForm", "Role", "Subsystem"] {
+        let parent = small_parent(kind, "2.20", "");
+        let full = seeded_borrow(&parent, None).unwrap();
+        let legacy = without_lines(&full, "<InternalInfo>", "</InternalInfo>").replacen(
+            "\t\t<Properties>",
+            "\t\t<InternalInfo/>\n\t\t<Properties>",
+            1,
+        );
+        assert!(legacy.contains("<InternalInfo/>"), "{kind}: {legacy}");
+        assert_eq!(seeded_borrow(&parent, Some(&legacy)).unwrap(), full, "{kind}");
+    }
+}
+
+/// A common template of format 2.22 borrowed before its kind was written in
+/// full gains its template type and its action on an extension change error
+/// in the platform's order; a descriptor whose properties share one line
+/// stays well formed (#2996).
+/// rule: INV.SOURCE.WRITABLE-PROFILE
+#[test]
+fn repeated_borrowing_completes_a_common_template_of_format_2_22() {
+    let parent = small_parent(
+        "CommonTemplate",
+        "2.22",
+        "<TemplateType>SpreadsheetDocument</TemplateType>",
+    );
+    let full = seeded_borrow(&parent, None).unwrap();
+    let missing = [
+        "\t\t\t<TemplateType>SpreadsheetDocument</TemplateType>\n",
+        "\t\t\t<ActionOnConfigurationExtensionChangeError>Warning</ActionOnConfigurationExtensionChangeError>\n",
+    ];
+    let legacy = missing
+        .iter()
+        .fold(full.clone(), |text, line| text.replacen(line, "", 1));
+    assert_ne!(legacy, full);
+    assert_eq!(seeded_borrow(&parent, Some(&legacy)).unwrap(), full);
+    let one_line = {
+        let start = legacy.find("\t\t\t<ObjectBelonging>").unwrap();
+        let end = legacy.find("\t\t</Properties>").unwrap();
+        let joined = legacy[start..end].replace(['\n', '\t'], "");
+        format!("{}\t\t\t{joined}\n{}", &legacy[..start], &legacy[end..])
+    };
+    let completed = seeded_borrow(&parent, Some(&one_line)).unwrap();
+    let doc = Document::parse(&completed).unwrap();
+    for (prop, count) in [("Name", 1), ("TemplateType", 1), ("Comment", 1)] {
+        assert_eq!(
+            doc.descendants()
+                .filter(|n| n.has_tag_name((MD, prop)))
+                .count(),
+            count,
+            "{prop}: {completed}"
+        );
+    }
+}

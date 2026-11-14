@@ -12,7 +12,8 @@ What the platform writes beyond the identity of a borrowed object:
 
 - a common form, a role and a subsystem: `xr:PropertyState` of `Form`,
   `Rights` and `CommandInterface` respectively, state `Extended`, in
-  `InternalInfo`;
+  `InternalInfo`; the export has no `Ext/` file for it, the descriptor is all
+  the platform writes for such a borrowed object;
 - a common template: its `TemplateType` from the parent;
 - a subsystem: an empty `Content`;
 - a catalog: `Hierarchical` and `CodeLength` from the parent;

@@ -445,13 +445,14 @@ pub fn cfe_borrow_object_xml(
     }
     if type_name == "CommonTemplate" {
         // The kind of the template is the parent's; 8.3.27 and 8.5.4 export it.
-        let template_type = source_props
+        if let Some(template_type) = source_props
             .and_then(|props| unica_xml_format::read::child_direct_text(props, "TemplateType"))
-            .ok_or("Borrowed common template has no TemplateType in its parent")?;
-        lines.push(format!(
-            "\t\t\t<TemplateType>{}</TemplateType>",
-            unica_xml_format::text::escape_xml(&template_type)
-        ));
+        {
+            lines.push(format!(
+                "\t\t\t<TemplateType>{}</TemplateType>",
+                unica_xml_format::text::escape_xml(&template_type)
+            ));
+        }
     }
     if type_name == "Subsystem" {
         // A borrowed subsystem starts with no content of its own.
@@ -530,7 +531,7 @@ pub fn cfe_borrow_internal_info_xml(
 /// is borrowed: 8.3.27 and 8.5.4 export it as `Extended` in `InternalInfo`
 /// of a borrowed common form, role and subsystem
 /// (`tests/fixtures/formats/platform_xml/*/cfe_borrow_kinds/`).
-fn cfe_borrow_extended_property(type_name: &str) -> Option<&'static str> {
+pub(crate) fn cfe_borrow_extended_property(type_name: &str) -> Option<&'static str> {
     match type_name {
         "CommonForm" => Some("Form"),
         "Role" => Some("Rights"),
@@ -4519,6 +4520,15 @@ impl CfeBorrowIdentity {
             }
         }
         Ok(identity)
+    }
+
+    /// The identities the borrowed `child_name` in `text` already has, any
+    /// other drawn as this plan draws them.
+    pub(crate) fn with_existing(&self, text: &str, child_name: &str) -> Result<Self, String> {
+        Ok(Self {
+            plan_seed: self.plan_seed,
+            ..Self::read(text, child_name)?
+        })
     }
 
     pub fn wrapper_uuid(&self, fresh_uuid: fn() -> String) -> String {
