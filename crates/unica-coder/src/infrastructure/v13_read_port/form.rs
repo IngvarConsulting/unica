@@ -41,15 +41,17 @@ impl ProviderReadAuthority {
     pub(crate) fn form_payload(
         &self,
         target: &MetadataAddress,
+        platform_line: Option<unica_source_contract::format_identity::PlatformLine>,
         checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
     ) -> Result<Value, ViewError> {
-        serde_json::to_value(self.form_data(target, checkpoint)?)
+        serde_json::to_value(self.form_data(target, platform_line, checkpoint)?)
             .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()))
     }
 
     pub(crate) fn form_data(
         &self,
         target: &MetadataAddress,
+        platform_line: Option<unica_source_contract::format_identity::PlatformLine>,
         checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
     ) -> Result<FormInfoData, ViewError> {
         let descriptor = self.metadata_descriptor(target)?;
@@ -107,7 +109,7 @@ impl ProviderReadAuthority {
                 Some(_) => FormSupportRuleReason::RuleAbsent,
             })
         };
-        let mut data = parse_form_info_xml(text, form_name, object_context, support)
+        let mut data = parse_form_info_xml(text, form_name, object_context, support, platform_line)
             .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?;
         data.support_details = Some(FormSupportDetails {
             support_rule: own_rule,
@@ -120,6 +122,7 @@ impl ProviderReadAuthority {
     pub(crate) fn form_validation_input(
         &self,
         target: &MetadataAddress,
+        platform_line: Option<unica_source_contract::format_identity::PlatformLine>,
         checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
     ) -> Result<FormValidationInput, ViewError> {
         let wrapper = self.metadata_descriptor(target)?;
@@ -169,6 +172,7 @@ impl ProviderReadAuthority {
         let module = if crate::infrastructure::form_composition::form_validation_requires_module(
             &text,
             metadata_owner,
+            platform_line,
         ) {
             let module_target = unica_source_designer::module_layout::form_module_target(target)
                 .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?;
@@ -184,6 +188,7 @@ impl ProviderReadAuthority {
             module,
             config_context: !self.is_external_source_set(),
             metadata_owner,
+            platform_line,
             format_guard,
         })
     }

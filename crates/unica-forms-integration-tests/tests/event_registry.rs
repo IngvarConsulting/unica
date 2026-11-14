@@ -2,7 +2,7 @@
 mod tests {
 
     use unica_address::address::NodeKind;
-    use unica_bsl::event_catalog::module_event_catalog_8_3_27;
+    use unica_bsl::event_catalog::module_event_catalog;
     use unica_bsl::projection::MethodParameter;
     use unica_forms::events::test_support::{NO_EVENTS, OBJECT_RECORD_FORM_EVENTS};
     use unica_forms::events::*;
@@ -14,9 +14,51 @@ mod tests {
     const FORM_PREFIX: &str = r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform"
         xmlns:v8="http://v8.1c.ru/8.1/data/core">"#;
 
+    /// Каталог названной линии: у стражей он назван прямо, иначе они молча
+    /// проверяли бы ту линию, которая оказалась младшей.
+    fn catalog_of_line(
+        major: u32,
+        minor: u32,
+        release: u32,
+    ) -> &'static PlatformEventCatalogFixture {
+        platform_event_catalog_fixture_for_line(Some(
+            unica_source_contract::format_identity::PlatformLine::new(major, minor, release),
+        ))
+        .expect("the named line must have a checked catalog")
+    }
+
+    /// События владельца по всем его каталогам: так их и выбирает
+    /// `form_event_catalog`, у одного владельца записей каталога несколько.
+    fn events_by_owner(
+        fixture: &'static PlatformEventCatalogFixture,
+    ) -> std::collections::BTreeMap<String, std::collections::BTreeSet<&'static str>> {
+        let mut by_owner =
+            std::collections::BTreeMap::<String, std::collections::BTreeSet<&'static str>>::new();
+        for catalog in &fixture.module_catalogs {
+            by_owner
+                .entry(format!("{}.{}", catalog.owner_kind, catalog.module_role))
+                .or_default()
+                .extend(catalog.events.iter().map(|event| event.event_id.as_str()));
+        }
+        for catalog in &fixture.form_catalogs {
+            for owner in &catalog.owner_kinds {
+                by_owner
+                    .entry(owner.clone())
+                    .or_default()
+                    .extend(catalog.events.iter().map(|event| event.event_id.as_str()));
+            }
+        }
+        by_owner
+    }
+
+    /// Линия, факты которой закрепляют эти тесты. Названа один раз: тест,
+    /// забывший её назвать, иначе проверял бы линию по умолчанию.
+    const PINNED_LINE: unica_source_contract::format_identity::PlatformLine =
+        unica_source_contract::format_identity::PlatformLine::new(8, 3, 27);
+
     fn context(xml: &str) -> FormEventContext {
         let document = Document::parse(xml).unwrap();
-        context_from_root(document.root_element())
+        context_from_root(document.root_element(), Some(PINNED_LINE))
     }
 
     fn regular_context(main_attribute: MainAttributeKind) -> FormEventContext {
@@ -28,6 +70,7 @@ mod tests {
             main_attribute_provenance: MainAttributeProvenance::Missing,
             main_attribute_name: None,
             metadata_owner: None,
+            platform_line: Some(PINNED_LINE),
         }
     }
 
@@ -40,11 +83,12 @@ mod tests {
             main_attribute_provenance: MainAttributeProvenance::InheritedBaseFormUnavailable,
             main_attribute_name: None,
             metadata_owner: None,
+            platform_line: Some(PINNED_LINE),
         }
     }
 
-    fn form_event_catalog_8_3_27(owner: FormEventOwnerKind) -> Vec<&'static PlatformEventSpec> {
-        unica_forms::events::form_event_catalog_8_3_27(
+    fn form_event_catalog(owner: FormEventOwnerKind) -> Vec<&'static PlatformEventSpec> {
+        unica_forms::events::form_event_catalog(
             &regular_context(MainAttributeKind::Other),
             owner,
             None,
@@ -65,6 +109,7 @@ mod tests {
             main_attribute_provenance: MainAttributeProvenance::DirectForm,
             main_attribute_name: Some("Object".to_string()),
             metadata_owner: Some(metadata_owner),
+            platform_line: Some(PINNED_LINE),
         }
     }
 
@@ -959,7 +1004,7 @@ mod tests {
         for (raw, expected) in cases {
             let at = QualifiedAddress::parse(raw).unwrap();
             let capability = profile.module_capability(&at).unwrap();
-            let actual = module_event_catalog_8_3_27(capability)
+            let actual = module_event_catalog(profile, capability)
                 .iter()
                 .map(|event| event.event_id.as_str())
                 .collect::<Vec<_>>();
@@ -967,12 +1012,20 @@ mod tests {
         }
     }
 
+    /// Каждая линия покрывает матрицу «владелец × прямая роль» своим
+    /// каталогом, и считается она по видам, которые есть **в этой линии**.
+    /// Вид, который завела старшая линия, не ждут от младшего каталога
+    /// и не исключают из матрицы: `Очередь` существует с 8.5.4, там её
+    /// менеджер и покрыт.
     /// rule: INV.PLATFORM.MODULE-EVENT-CATALOG
     #[test]
-    fn module_catalog_covers_the_task12_direct_owner_role_matrix_exactly() {
+    fn every_line_catalog_covers_the_direct_owner_role_matrix_of_its_own_line() {
         use unica_address::address::NodeKind;
         use unica_address::module_routes::ModuleRole;
         use unica_bsl::profile::PlatformProfile;
+        use unica_source_contract::format_identity::{
+            metadata_kind_exists, DESCRIBED_PLATFORM_LINES,
+        };
 
         let direct_roles = [
             ModuleRole::Object,
@@ -980,24 +1033,29 @@ mod tests {
             ModuleRole::RecordSet,
             ModuleRole::ValueManager,
         ];
-        let profile = PlatformProfile::v8_3_27();
-        let expected = NodeKind::metadata_kinds()
-            .iter()
-            .flat_map(|owner| direct_roles.iter().map(move |role| (*owner, *role)))
-            .filter(|(owner, role)| profile.supports_direct_module_role(*owner, *role))
-            .map(|(owner, role)| (owner.as_str(), role.as_str()))
-            .collect::<std::collections::BTreeSet<_>>();
-        let actual = platform_event_catalog_fixture()
-            .module_catalogs
-            .iter()
-            .filter(|catalog| {
-                direct_roles
-                    .iter()
-                    .any(|role| role.as_str() == catalog.module_role)
-            })
-            .map(|catalog| (catalog.owner_kind.as_str(), catalog.module_role.as_str()))
-            .collect::<std::collections::BTreeSet<_>>();
-        assert_eq!(actual, expected);
+        for (line, id) in DESCRIBED_PLATFORM_LINES {
+            let profile = PlatformProfile::for_line(*line)
+                .unwrap_or_else(|| panic!("described line {id} has no profile"));
+            let expected = NodeKind::metadata_kinds()
+                .iter()
+                .filter(|owner| metadata_kind_exists(Some(*line), owner.as_str()))
+                .flat_map(|owner| direct_roles.iter().map(move |role| (*owner, *role)))
+                .filter(|(owner, role)| profile.supports_direct_module_role(*owner, *role))
+                .map(|(owner, role)| (owner.as_str(), role.as_str()))
+                .collect::<std::collections::BTreeSet<_>>();
+            let actual = platform_event_catalog_fixture_for_line(Some(*line))
+                .unwrap_or_else(|| panic!("described line {id} has no catalog"))
+                .module_catalogs
+                .iter()
+                .filter(|catalog| {
+                    direct_roles
+                        .iter()
+                        .any(|role| role.as_str() == catalog.module_role)
+                })
+                .map(|catalog| (catalog.owner_kind.as_str(), catalog.module_role.as_str()))
+                .collect::<std::collections::BTreeSet<_>>();
+            assert_eq!(actual, expected, "line {id}");
+        }
     }
 
     /// rule: INV.PLATFORM.MODULE-EVENT-CATALOG
@@ -1022,13 +1080,13 @@ mod tests {
         let mut observed_keys = std::collections::BTreeSet::new();
         for owner in owners {
             let key = unica_forms::events::test_support::form_event_owner_catalog_key(owner);
-            let expected = platform_event_catalog_fixture()
+            let expected = catalog_of_line(8, 3, 27)
                 .form_catalogs
                 .iter()
                 .find(|catalog| catalog.owner_kinds.contains(&key))
                 .unwrap_or_else(|| panic!("missing checked catalog for {key}"));
             assert_eq!(
-                form_event_catalog_8_3_27(owner)
+                form_event_catalog(owner)
                     .into_iter()
                     .map(|event| event.event_id.as_str())
                     .collect::<Vec<_>>(),
@@ -1041,7 +1099,7 @@ mod tests {
             );
             observed_keys.insert(key);
         }
-        let expected_keys = platform_event_catalog_fixture()
+        let expected_keys = catalog_of_line(8, 3, 27)
             .form_catalogs
             .iter()
             .flat_map(|catalog| catalog.owner_kinds.iter().cloned())
@@ -1058,14 +1116,11 @@ mod tests {
             None,
             NodeKind::CommonForm,
         );
-        let base = unica_forms::events::form_event_catalog_8_3_27(
-            &base_context,
-            FormEventOwnerKind::Form,
-            None,
-        )
-        .into_iter()
-        .map(|event| event.event_id.as_str())
-        .collect::<std::collections::BTreeSet<_>>();
+        let base =
+            unica_forms::events::form_event_catalog(&base_context, FormEventOwnerKind::Form, None)
+                .into_iter()
+                .map(|event| event.event_id.as_str())
+                .collect::<std::collections::BTreeSet<_>>();
         assert_eq!(base.len(), 26);
 
         let cases = [
@@ -1232,14 +1287,11 @@ mod tests {
             ),
         ];
         for (case, context, expected_additions) in cases {
-            let actual = unica_forms::events::form_event_catalog_8_3_27(
-                &context,
-                FormEventOwnerKind::Form,
-                None,
-            )
-            .into_iter()
-            .map(|event| event.event_id.as_str())
-            .collect::<std::collections::BTreeSet<_>>();
+            let actual =
+                unica_forms::events::form_event_catalog(&context, FormEventOwnerKind::Form, None)
+                    .into_iter()
+                    .map(|event| event.event_id.as_str())
+                    .collect::<std::collections::BTreeSet<_>>();
             let additions = actual.difference(&base).copied().collect::<Vec<_>>();
             assert_eq!(additions, expected_additions, "{case}");
             assert_eq!(
@@ -1255,7 +1307,7 @@ mod tests {
             Some("cfg:DocumentObject.Order"),
             NodeKind::Document,
         );
-        let extension_ids = unica_forms::events::form_event_catalog_8_3_27(
+        let extension_ids = unica_forms::events::form_event_catalog(
             &extension_document,
             FormEventOwnerKind::Form,
             None,
@@ -1272,17 +1324,17 @@ mod tests {
             NodeKind::Catalog,
         );
         dynamic.main_attribute_name = Some("List".to_string());
-        let ordinary_table = unica_forms::events::form_event_catalog_8_3_27(
+        let ordinary_table = unica_forms::events::form_event_catalog(
             &dynamic,
             FormEventOwnerKind::Table,
             Some("OtherRows"),
         );
-        let dynamic_table = unica_forms::events::form_event_catalog_8_3_27(
+        let dynamic_table = unica_forms::events::form_event_catalog(
             &dynamic,
             FormEventOwnerKind::Table,
             Some("List"),
         );
-        let inherited_dynamic_table = unica_forms::events::form_event_catalog_8_3_27(
+        let inherited_dynamic_table = unica_forms::events::form_event_catalog(
             &dynamic,
             FormEventOwnerKind::Table,
             Some("~List"),
@@ -1315,7 +1367,7 @@ mod tests {
     /// rule: INV.PLATFORM.MODULE-EVENT-CATALOG
     #[test]
     fn event_catalog_entries_have_exact_bilingual_shape_context_and_provenance() {
-        let fixture = platform_event_catalog_fixture();
+        let fixture = catalog_of_line(8, 3, 27);
         for events in fixture
             .module_catalogs
             .iter()
@@ -1348,7 +1400,7 @@ mod tests {
     /// rule: INV.PLATFORM.MODULE-EVENT-CATALOG
     #[test]
     fn every_catalog_has_unique_semantic_event_ids_not_generic_storage_names() {
-        let fixture = platform_event_catalog_fixture();
+        let fixture = catalog_of_line(8, 3, 27);
         for (catalog, events) in fixture
             .module_catalogs
             .iter()
@@ -1384,7 +1436,7 @@ mod tests {
     /// rule: INV.PLATFORM.MODULE-EVENT-CATALOG
     #[test]
     fn form_catalog_execution_contexts_distinguish_client_and_server_callbacks() {
-        let form = form_event_catalog_8_3_27(FormEventOwnerKind::Form);
+        let form = form_event_catalog(FormEventOwnerKind::Form);
         let on_open = form
             .iter()
             .find(|event| event.event_id == "OnOpen")
@@ -1404,8 +1456,7 @@ mod tests {
             .find(|event| event.event_id == "OnCreateAtServer")
             .unwrap();
         assert_eq!(create_at_server.contexts, ["server"]);
-        let field =
-            form_event_catalog_8_3_27(FormEventOwnerKind::Element(FormElementKind::InputField));
+        let field = form_event_catalog(FormEventOwnerKind::Element(FormElementKind::InputField));
         assert_eq!(
             field
                 .iter()
@@ -1436,7 +1487,7 @@ mod tests {
             digest,
             "6136934c1b315bd10ce06c8ee5228cd17bd7fa705711e6ad3d05cb68f1d65871"
         );
-        let fixture = platform_event_catalog_fixture();
+        let fixture = catalog_of_line(8, 3, 27);
         assert_eq!(fixture.profile, "8.3.27");
         assert_eq!(fixture.source.installation_version, "8.3.27.2342");
         assert_eq!(fixture.module_catalogs.len(), 48);
@@ -1468,10 +1519,238 @@ mod tests {
         );
     }
 
+    /// Каталог линии 8.5.1 закреплён так же, как каталог 8.3.27: его состав
+    /// не меняется молча. Он не копия младшего — у него свои события
+    /// и своя подпись поля табличного документа.
+    /// rule: INV.PLATFORM.MODULE-EVENT-CATALOG
+    #[test]
+    fn checked_event_catalog_of_8_5_1_is_a_closed_immutable_set_of_its_own() {
+        use sha2::{Digest, Sha256};
+
+        let bytes = include_bytes!("../../unica-metadata/src/platform-event-catalog-8.5.1.json");
+        let digest = Sha256::digest(bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        assert_eq!(
+            digest,
+            "39d06af269764dec5dcbf29fc4ec2791a035a2e00e4406e4ee63cc64f5be6ce1"
+        );
+        let fixture = catalog_of_line(8, 5, 1);
+        assert_eq!(fixture.profile, "8.5.1");
+        assert_eq!(fixture.source.installation_version, "8.5.1.1529");
+        assert_eq!(fixture.source.event_markup_page_count, 701);
+        assert_eq!(fixture.module_catalogs.len(), 48);
+        assert_eq!(fixture.form_catalogs.len(), 32);
+        assert_eq!(
+            fixture
+                .module_catalogs
+                .iter()
+                .map(|catalog| catalog.events.len())
+                .sum::<usize>(),
+            206
+        );
+        assert_eq!(
+            fixture
+                .form_catalogs
+                .iter()
+                .map(|catalog| catalog.events.len())
+                .sum::<usize>(),
+            206
+        );
+        assert_eq!(fixture.excluded_structural_pages.len(), 4);
+        assert_eq!(fixture.excluded_external_data_source_pages.len(), 13);
+        assert_eq!(fixture.excluded_generic_template_pages.len(), 5);
+        assert_eq!(fixture.excluded_out_of_profile_pages.len(), 269);
+    }
+
+    /// Каталог линии 8.5.4 закреплён так же: его состав не меняется молча.
+    /// rule: INV.PLATFORM.MODULE-EVENT-CATALOG
+    #[test]
+    fn checked_event_catalog_of_8_5_4_is_a_closed_immutable_set_of_its_own() {
+        use sha2::{Digest, Sha256};
+
+        let bytes = include_bytes!("../../unica-metadata/src/platform-event-catalog-8.5.4.json");
+        let digest = Sha256::digest(bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        assert_eq!(
+            digest,
+            "ccbd75f26fb214764f8c73c09286c12757b7585a9b523f0d664374f2dd7afdee"
+        );
+        let fixture = catalog_of_line(8, 5, 4);
+        assert_eq!(fixture.profile, "8.5.4");
+        assert_eq!(fixture.source.installation_version, "8.5.4.2028");
+        assert_eq!(fixture.source.event_markup_page_count, 703);
+        // На одну запись каталога модулей больше: вид «Очередь» (#2960).
+        assert_eq!(fixture.module_catalogs.len(), 49);
+        assert_eq!(fixture.form_catalogs.len(), 32);
+        assert_eq!(
+            fixture
+                .module_catalogs
+                .iter()
+                .map(|catalog| catalog.events.len())
+                .sum::<usize>(),
+            208
+        );
+        assert_eq!(
+            fixture
+                .form_catalogs
+                .iter()
+                .map(|catalog| catalog.events.len())
+                .sum::<usize>(),
+            206
+        );
+        assert_eq!(fixture.excluded_structural_pages.len(), 4);
+        assert_eq!(fixture.excluded_external_data_source_pages.len(), 13);
+        assert_eq!(fixture.excluded_generic_template_pages.len(), 5);
+        assert_eq!(fixture.excluded_out_of_profile_pages.len(), 269);
+    }
+
+    /// Каталог 8.5.1 покрывает свою линию в точности: все события, которые
+    /// платформа завела в ней, есть, и ни одно событие 8.3.27 не потеряно.
+    /// Сравнение идёт по объединению событий владельца во всех его каталогах —
+    /// так же, как их выбирает `form_event_catalog`, а не по записям каталога:
+    /// у одного владельца записей несколько.
+    ///
+    /// Матрицу покрытия каждая линия проверяет по своему каталогу, поэтому
+    /// сужение проверки у младшей линии не оставляет старшую без покрытия.
+    /// rule: INV.PLATFORM.MODULE-EVENT-CATALOG
+    #[test]
+    fn the_8_5_1_catalog_covers_exactly_what_its_line_added_over_8_3_27() {
+        let old = events_by_owner(catalog_of_line(8, 3, 27));
+        let new = events_by_owner(catalog_of_line(8, 5, 1));
+        let mut lost = Vec::new();
+        for (owner, events) in &old {
+            let now = new.get(owner).cloned().unwrap_or_default();
+            lost.extend(
+                events
+                    .difference(&now)
+                    .map(|event| format!("{owner}.{event}")),
+            );
+        }
+        assert!(
+            lost.is_empty(),
+            "8.5.1 lost events that 8.3.27 knows: {lost:#?}"
+        );
+        let mut added = Vec::new();
+        for (owner, events) in &new {
+            let was = old.get(owner).cloned().unwrap_or_default();
+            added.extend(
+                events
+                    .difference(&was)
+                    .map(|event| format!("{owner}.{event}")),
+            );
+        }
+        added.sort();
+        assert_eq!(
+            added,
+            [
+                "Column.Group.Click",
+                "Column.SpreadsheetDocumentField.OnGenerateToolTipText",
+                "Element.Group.Click",
+                "Element.SpreadsheetDocumentField.OnGenerateToolTipText",
+                "Form.AfterComposeResult",
+                "Form.OnComposeResult",
+                "Form.OnSettingsChange",
+                "Report.Object.ResultCompositionProcessing",
+                "Table.OnHover",
+                "Table.OnSelectedRowsSetChange",
+            ],
+            "the 8.5.1 line adds exactly these events over 8.3.27"
+        );
+    }
+
+    /// Каталог 8.5.4 покрывает свою линию в точности: вид «Очередь» получает
+    /// свои два события и ничего сверх них, а события 8.5.1 не потеряны.
+    /// rule: INV.PLATFORM.MODULE-EVENT-CATALOG
+    #[test]
+    fn the_8_5_4_catalog_covers_exactly_what_its_line_added_over_8_5_1() {
+        let old = events_by_owner(catalog_of_line(8, 5, 1));
+        let new = events_by_owner(catalog_of_line(8, 5, 4));
+        let mut lost = Vec::new();
+        for (owner, events) in &old {
+            let now = new.get(owner).cloned().unwrap_or_default();
+            lost.extend(
+                events
+                    .difference(&now)
+                    .map(|event| format!("{owner}.{event}")),
+            );
+        }
+        assert!(
+            lost.is_empty(),
+            "8.5.4 lost events that 8.5.1 knows: {lost:#?}"
+        );
+        let mut added = Vec::new();
+        for (owner, events) in &new {
+            let was = old.get(owner).cloned().unwrap_or_default();
+            added.extend(
+                events
+                    .difference(&was)
+                    .map(|event| format!("{owner}.{event}")),
+            );
+        }
+        added.sort();
+        assert_eq!(
+            added,
+            [
+                "Queue.Manager.MessageProcessing",
+                "Queue.Manager.OnProcessingError",
+            ],
+            "the 8.5.4 line adds exactly the queue manager events over 8.5.1"
+        );
+    }
+
+    /// Подпись, которую поставщик изменил в линии, попадает в её каталог:
+    /// обработчик, верный для своей линии, не сверяется с чужой подписью.
+    /// Это и есть довод за каталог по линии, сильнее нового события.
+    /// rule: INV.PLATFORM.MODULE-EVENT-CATALOG
+    #[test]
+    fn a_signature_the_vendor_changed_in_a_line_belongs_to_that_lines_catalog() {
+        let signature = |line: (u32, u32, u32), owner: &str, event: &str| {
+            let fixture = catalog_of_line(line.0, line.1, line.2);
+            fixture
+                .form_catalogs
+                .iter()
+                .filter(|catalog| catalog.owner_kinds.iter().any(|kind| kind == owner))
+                .flat_map(|catalog| catalog.events.iter())
+                .find(|spec| spec.event_id == event)
+                .map(|spec| spec.signature_en.clone())
+                .unwrap_or_else(|| panic!("{owner}.{event} is absent from {line:?}"))
+        };
+        // 8.5.1 добавила полю табличного документа два параметра расшифровки.
+        assert_eq!(
+            signature(
+                (8, 3, 27),
+                "Element.SpreadsheetDocumentField",
+                "AdditionalDetailProcessing"
+            ),
+            "Procedure AdditionalDetailProcessing(Details, StandardProcessing, AdditionalParameters)"
+        );
+        assert_eq!(
+            signature(
+                (8, 5, 1),
+                "Element.SpreadsheetDocumentField",
+                "AdditionalDetailProcessing"
+            ),
+            "Procedure AdditionalDetailProcessing(Details, StandardProcessing, AdditionalParameters, AllAreaDetails, ForActionPanel)"
+        );
+        // 8.5.4 добавила форме параметр назначения навигационных ссылок.
+        assert_eq!(
+            signature((8, 5, 1), "Form", "URLListGetProcessing"),
+            "Procedure URLListGetProcessing(URLList, DefaultKey)"
+        );
+        assert_eq!(
+            signature((8, 5, 4), "Form", "URLListGetProcessing"),
+            "Procedure URLListGetProcessing(URLList, DefaultKey, Purpose)"
+        );
+    }
+
     /// rule: INV.PLATFORM.MODULE-EVENT-CATALOG
     #[test]
     fn checked_event_fixture_is_non_skipping_closed_partition_evidence() {
-        let fixture = platform_event_catalog_fixture();
+        let fixture = catalog_of_line(8, 3, 27);
         let mut memberships = std::collections::BTreeMap::<&str, Vec<&str>>::new();
         let mut selected_records = std::collections::BTreeMap::<&str, usize>::new();
         for event in fixture
@@ -1604,6 +1883,7 @@ mod tests {
             main_attribute_provenance: MainAttributeProvenance::DirectForm,
             main_attribute_name: Some("Объект".to_string()),
             metadata_owner: Some(NodeKind::Catalog),
+            platform_line: Some(PINNED_LINE),
         }
     }
 
@@ -1617,7 +1897,7 @@ mod tests {
     }
 
     fn events_of(owner: FormEventOwnerKind) -> Vec<FormEventParameterForms> {
-        form_owner_event_parameters_8_3_27(&item_form(), owner, Some("Объект.Строки"))
+        form_owner_event_parameters(&item_form(), owner, Some("Объект.Строки"))
     }
 
     fn forms_of(owner: FormEventOwnerKind, event: &str) -> Vec<Vec<String>> {
@@ -1643,7 +1923,7 @@ mod tests {
         event: &str,
         handler: &[MethodParameter],
     ) -> Option<HandlerSignatureFinding> {
-        foreign_handler_signature_8_3_27(
+        foreign_handler_signature(
             &events_of(owner),
             event,
             &handler
@@ -1678,7 +1958,7 @@ mod tests {
             [["НовыйОбъект", "Источник", "СтандартнаяОбработка"]]
         );
         // Dynamic-list table events exist only for a table bound to the list.
-        let dynamic = form_owner_event_parameters_8_3_27(&list_form(), table, Some("Список"));
+        let dynamic = form_owner_event_parameters(&list_form(), table, Some("Список"));
         let dynamic_forms = |event: &str| {
             dynamic
                 .iter()
@@ -1724,10 +2004,10 @@ mod tests {
                          owner: FormEventOwnerKind,
                          data_path: Option<&str>,
                          event: &str| {
-            unica_forms::events::form_event_catalog_8_3_27(context, owner, data_path)
+            unica_forms::events::form_event_catalog(context, owner, data_path)
                 .into_iter()
                 .find(|spec| spec.event_id == event)
-                .map(|spec| form_event_handler_signature_8_3_27(owner, spec))
+                .map(|spec| form_event_handler_signature(owner, spec))
                 .unwrap_or_default()
         };
         let item = |owner, event| signature(&item_form(), owner, Some("Объект.Строки"), event);
@@ -1774,9 +2054,9 @@ mod tests {
         // The check compares a handler with the same list.
         assert_eq!(
             forms_of(INPUT, "OnChange")[0],
-            form_event_handler_parameters_8_3_27(
+            form_event_handler_parameters(
                 INPUT,
-                unica_forms::events::form_event_catalog_8_3_27(&item_form(), INPUT, None)
+                unica_forms::events::form_event_catalog(&item_form(), INPUT, None)
                     .into_iter()
                     .find(|spec| spec.event_id == "OnChange")
                     .unwrap()
@@ -1800,14 +2080,14 @@ mod tests {
             metadata_owner: Some(NodeKind::DataProcessor),
             ..item_form()
         };
-        let events = form_owner_event_parameters_8_3_27(&plain, FormEventOwnerKind::Form, None);
+        let events = form_owner_event_parameters(&plain, FormEventOwnerKind::Form, None);
         assert!(events.iter().all(|event| event.event_id != "BeforeWrite"));
         let task = FormEventContext {
             main_attribute_type: Some("cfg:TaskObject.Задача".to_string()),
             metadata_owner: Some(NodeKind::Task),
             ..item_form()
         };
-        let activation = form_owner_event_parameters_8_3_27(&task, FormEventOwnerKind::Form, None)
+        let activation = form_owner_event_parameters(&task, FormEventOwnerKind::Form, None)
             .into_iter()
             .find(|event| event.event_id == "ActivationProcessing")
             .unwrap();

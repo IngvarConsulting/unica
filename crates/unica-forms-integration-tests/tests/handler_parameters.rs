@@ -353,8 +353,15 @@ mod form_handler_parameter_tests {
         mode: HandlerSignatures,
     ) -> AdapterOutcome {
         let reader = ProjectDiscoveryReader::new(&context.cwd);
-        let (ok, stdout, artifact, errors, warnings) =
-            validate_form_image(args, &reader, path, xml, mode).unwrap();
+        let (ok, stdout, artifact, errors, warnings) = validate_form_image(
+            args,
+            &reader,
+            path,
+            xml,
+            mode,
+            unica_forms_designer::root::declared_platform_line(xml),
+        )
+        .unwrap();
         AdapterOutcome {
             ok,
             summary: String::new(),

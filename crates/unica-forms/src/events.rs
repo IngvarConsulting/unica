@@ -132,7 +132,8 @@ const SPREADSHEET_DOCUMENT_FIELD_EVENTS: &[&str] = &[
 ];
 const NO_EVENTS: &[&str] = &[];
 
-use unica_metadata::event_catalog::{platform_event_catalog_fixture, PlatformEventSpec};
+use unica_metadata::event_catalog::{platform_event_catalog_fixture_for_line, PlatformEventSpec};
+use unica_source_contract::format_identity::PlatformLine;
 
 const NAMED_PERSISTENT_OBJECT_TYPES: &[&str] = &[
     "CatalogObject",
@@ -234,6 +235,9 @@ pub struct FormEventContext {
     pub main_attribute_provenance: MainAttributeProvenance,
     pub main_attribute_name: Option<String>,
     pub metadata_owner: Option<NodeKind>,
+    /// Линия платформы набора: она выбирает каталог возможных событий.
+    /// `None` — линия не известна вызывающему, и отвечает младший каталог.
+    pub platform_line: Option<PlatformLine>,
 }
 
 /// Element categories used by the compact form DSL and their XML equivalents.
@@ -472,14 +476,15 @@ impl FormEventOwnerKind {
 }
 
 /// Form possible events use the v0.12 owner taxonomy and the checked vendor
-/// 8.3.27 catalog. The v0.12 validation matrices remain unchanged.
-pub fn form_event_catalog_8_3_27(
+/// catalog of the set's platform line. The v0.12 validation matrices remain
+/// unchanged.
+pub fn form_event_catalog(
     context: &FormEventContext,
     owner: FormEventOwnerKind,
     data_path: Option<&str>,
 ) -> Vec<&'static PlatformEventSpec> {
     if owner == FormEventOwnerKind::Command {
-        return vec![form_command_execute_event_8_3_27()];
+        return vec![form_command_execute_event()];
     }
     let key = owner.catalog_key();
     let normalized_type = context
@@ -495,7 +500,12 @@ pub fn form_event_catalog_8_3_27(
                 .and_then(|path| path.split('.').next())
                 .is_some_and(|root| root == name)
         });
-    let mut selected = platform_event_catalog_fixture()
+    // Линия без закреплённого каталога не получает событий: пустой список
+    // честнее состава другой линии.
+    let Some(fixture) = platform_event_catalog_fixture_for_line(context.platform_line) else {
+        return Vec::new();
+    };
+    let mut selected = fixture
         .form_catalogs
         .iter()
         .filter(|catalog| catalog.owner_kinds.contains(&key))
@@ -553,7 +563,7 @@ const UNDOCUMENTED_FORMS: &[(&str, &str, &[&str])] = &[(
 
 /// Known parameter lists of one form or item event under one owner, from the
 /// checked 8.3.27 catalog. The first list follows
-/// [`form_event_handler_parameters_8_3_27`].
+/// [`form_event_handler_parameters`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FormEventParameterForms {
     pub event_id: String,
@@ -567,7 +577,7 @@ pub struct FormEventParameterForms {
 /// Every catalogued event of the owner with its known parameter lists. The
 /// events are selected for this form exactly as the event catalog selects
 /// them: by form kind, main attribute and a table's dynamic-list source.
-pub fn form_owner_event_parameters_8_3_27(
+pub fn form_owner_event_parameters(
     context: &FormEventContext,
     owner: FormEventOwnerKind,
     data_path: Option<&str>,
@@ -577,10 +587,10 @@ pub fn form_owner_event_parameters_8_3_27(
         FormEventOwnerKind::Column(kind) => format!("Element.{}", kind.catalog_key()),
         _ => key,
     };
-    form_event_catalog_8_3_27(context, owner, data_path)
+    form_event_catalog(context, owner, data_path)
         .into_iter()
         .filter_map(|spec| {
-            let mut forms = vec![form_event_handler_parameters_8_3_27(owner, spec)?];
+            let mut forms = vec![form_event_handler_parameters(owner, spec)?];
             forms.extend(
                 UNDOCUMENTED_FORMS
                     .iter()
@@ -606,7 +616,7 @@ pub fn form_owner_event_parameters_8_3_27(
 /// those handlers; it is not added where the help already names it or
 /// [`TABLE_EVENTS_WITHOUT_ITEM`] says otherwise. A command action keeps its
 /// own `(Команда)`. `None` means the catalog signature has no parameter list.
-pub fn form_event_handler_parameters_8_3_27(
+pub fn form_event_handler_parameters(
     owner: FormEventOwnerKind,
     spec: &PlatformEventSpec,
 ) -> Option<Vec<String>> {
@@ -627,13 +637,10 @@ pub fn form_event_handler_parameters_8_3_27(
 }
 
 /// The Russian catalog signature of the event with the parameters of
-/// [`form_event_handler_parameters_8_3_27`]. A signature without a parameter
+/// [`form_event_handler_parameters`]. A signature without a parameter
 /// list is returned as the catalog has it.
-pub fn form_event_handler_signature_8_3_27(
-    owner: FormEventOwnerKind,
-    spec: &PlatformEventSpec,
-) -> String {
-    let Some(parameters) = form_event_handler_parameters_8_3_27(owner, spec) else {
+pub fn form_event_handler_signature(owner: FormEventOwnerKind, spec: &PlatformEventSpec) -> String {
+    let Some(parameters) = form_event_handler_parameters(owner, spec) else {
         return spec.signature_ru.clone();
     };
     let Some((head, _)) = spec.signature_ru.split_once('(') else {
@@ -677,7 +684,7 @@ pub enum HandlerSignatureFinding {
 /// The handler's parameter count must also differ from every known list of
 /// the bound event: with the same count the platform passes exactly the bound
 /// event's arguments, and different names are only names.
-pub fn foreign_handler_signature_8_3_27(
+pub fn foreign_handler_signature(
     owner_events: &[FormEventParameterForms],
     event: &str,
     parameters: &[(&str, bool)],
@@ -759,7 +766,7 @@ fn signature_parameters(signature: &str) -> Option<Vec<String>> {
 /// A managed-form command's direct `Action` is a form property binding, not
 /// the metadata Command-module `CommandProcessing` event. Keep this record
 /// outside the checked vendor module catalog so that catalog stays byte-exact.
-fn form_command_execute_event_8_3_27() -> &'static PlatformEventSpec {
+fn form_command_execute_event() -> &'static PlatformEventSpec {
     static EVENT: OnceLock<PlatformEventSpec> = OnceLock::new();
     EVENT.get_or_init(|| PlatformEventSpec {
         event_id: "Execute".to_string(),
@@ -912,7 +919,7 @@ fn catalogued_event(
         FormEventTarget::Element(FormElementKind::Table) => FormEventOwnerKind::Table,
         FormEventTarget::Element(kind) => FormEventOwnerKind::Element(kind),
     };
-    form_event_catalog_8_3_27(context, owner, binding.data_path)
+    form_event_catalog(context, owner, binding.data_path)
         .iter()
         .any(|spec| spec.event_id == binding.name)
 }

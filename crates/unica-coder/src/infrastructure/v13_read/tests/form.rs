@@ -370,9 +370,14 @@ fn pure_event_projectors_match_physical_view_service_event_nodes() {
             panic!("platform event must resolve to a module source")
         };
         let capability = profile.module_prefix_capability(&platform_at).unwrap();
-        let pure =
-            project_platform_event(&resolved.event_at, &resolved.module_at, capability, source)
-                .unwrap();
+        let pure = project_platform_event(
+            &resolved.event_at,
+            &resolved.module_at,
+            profile,
+            capability,
+            source,
+        )
+        .unwrap();
         let physical = fixture
             .view_service()
             .view(ViewRequest::new(&platform_at.to_string()).unwrap());

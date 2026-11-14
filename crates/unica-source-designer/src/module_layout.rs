@@ -959,6 +959,13 @@ mod code_layout_tests {
                 "Constant.Mode",
                 "ValueManagerModule",
             ),
+            // Очередь линии 8.5.4: выгрузка кладёт её модуль менеджера
+            // в общее для прямых модулей место.
+            (
+                "Queues/Probe/Ext/ManagerModule.bsl",
+                "Queue.Probe",
+                "ManagerModule",
+            ),
         ];
         for (path, owner, role) in direct_cases {
             assert_module_identity(path, owner, role);
@@ -1005,6 +1012,9 @@ mod code_layout_tests {
             "Catalogs/Items/Ext/Module.bsl",
             "CommonModules/X/Ext/ObjectModule.bsl",
             "Languages/Ru/Ext/ManagerModule.bsl",
+            // У очереди есть только модуль менеджера; файл модуля объекта
+            // рядом с её дескриптором — не её раскладка.
+            "Queues/Probe/Ext/ObjectModule.bsl",
             "Catalogs/Items/Forms/Main/Ext/Module.bsl",
             "Catalogs/Items/Commands/Print/Ext/Module.bsl",
             "Catalogs/Items/Ext/FakeModule.bsl",

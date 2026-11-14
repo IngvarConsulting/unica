@@ -798,7 +798,9 @@ fn cfe_validate_module_layouts(
         .map_err(|error| error.to_string())?;
     let branch =
         QualifiedAddress::parse(&format!("{owner}.Module")).map_err(|error| error.to_string())?;
-    let profile = PlatformProfile::v8_3_27();
+    // Состав модулей владельца задают маршруты модулей, а они от линии
+    // не зависят: линии 8.5 держат таблицы модулей и ролей 8.3.27.
+    let profile = PlatformProfile::for_line_or_base(None);
     let children = profile.module_children(&branch);
     let candidates = profile
         .module_capability(&owner)

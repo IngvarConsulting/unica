@@ -28,11 +28,13 @@ pub fn project_declarative_binding(
         other => return Err(format!("unknown declarative service owner `{other}`")),
     };
     let at = QualifiedAddress::parse(module_at).map_err(|error| error.to_string())?;
-    let capability = PlatformProfile::v8_3_27()
+    let platform = PlatformProfile::v8_3_27();
+    let capability = platform
         .module_capability(&at)
         .ok_or_else(|| format!("service module `{module_at}` is not in profile 8.3.27"))?;
     project_module(ModuleProjectionRequest {
         at: &at,
+        platform,
         capability,
         title: format!("{} module", capability.role().as_str()),
         rev: "fixture-rev",

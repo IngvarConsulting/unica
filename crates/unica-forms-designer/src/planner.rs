@@ -85,8 +85,10 @@ pub fn form_item_at<'a>(
     }
 }
 /// Дерево элементов формы, как его читает `view`.
+/// Дерево элементов формы от линии не зависит: оно читается из самого XML,
+/// а каталог возможных событий здесь не спрашивают.
 pub fn form_items_of(text: &str) -> Result<Vec<FormInfoElement>, String> {
-    crate::codec::parse_form_event_evidence_xml(text).map(|evidence| evidence.elements)
+    crate::codec::parse_form_event_evidence_xml(text, None).map(|evidence| evidence.elements)
 }
 /// Узел правки есть в форме и подходит операции; сосед `after` нового
 /// элемента лежит в том же контейнере.
@@ -1920,6 +1922,8 @@ pub fn stage_form_edit(
                 root_start,
                 lang,
                 script_variant,
+                // Линия набора известна праву правки: она и выбирает каталог.
+                authority.source_profile().semantic_line(),
             )
         };
         let before = xml_text.clone();
@@ -1975,6 +1979,7 @@ pub fn stage_form_edit(
         &absolute,
         &xml_text,
         crate::codec::HandlerSignatures::Check,
+        authority.source_profile().semantic_line(),
     );
     crate::codec::form_validation_require_valid(validation).map_err(|message| {
         ApplyPlanError::new(ApplyPlanErrorKind::Postcondition, message).at_path(args_path)
