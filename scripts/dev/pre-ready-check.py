@@ -159,6 +159,8 @@ CARGO_RUNNING = re.compile(r"^[ \t]+Running ", re.M)
 CARGO_RERUN = re.compile(r"^error: test failed, to rerun pass `([^`]+)`", re.M)
 CARGO_TARGETS_FAILED = re.compile(r"^error: \d+ targets? failed:$", re.M)
 REMOVED_NONE = "no undeclared removed tests"
+# Проверки без сверки с базой: каждый их отказ — отказ ворот PR.
+BASELESS = ("removed-tests", "open-marks")
 REMOVED_DECLARE = re.compile(r"declare '([^']+)'")
 
 
@@ -1004,7 +1006,7 @@ def gates(workflow: Dict[str, object]) -> Tuple[List[str], List[str]]:
     return unique(pull), [name for name in unique(queue) if name not in pull]
 
 
-def parity(root: Path, described: bool) -> List[str]:
+def parity(root: Path, described: bool, dirty: bool = False) -> List[str]:
     """Строки отчёта о сверке с воротами PR."""
     try:
         import yaml  # noqa: PLC0415 — нужен только для сверки
@@ -1014,11 +1016,15 @@ def parity(root: Path, described: bool) -> List[str]:
     pull, queue = gates(workflow)
     unknown = [name for name in pull if name not in PR_GATES]
     reasons: Dict[str, List[str]] = {name: [PARTIAL[name]] for name in pull if name in PARTIAL}
-    if not described:
-        for name in pull:
-            if name in PARTIAL and PR_GATES.get(name) == "removed-tests":
+    for name in pull:
+        if PR_GATES.get(name) == "removed-tests" and name in PARTIAL:
+            if not described:
                 reasons[name].insert(0, "описание PR не задано (`--description-file`), "
                                         "исчезнувшие тесты только напечатаны")
+            if dirty:
+                reasons[name].insert(0, "незакоммиченные правки не учтены: исчезнувшее считается по HEAD")
+    if not described:
+        for name in pull:
             if PR_GATES.get(name) == "open-marks":
                 reasons.setdefault(name, []).append(
                     "описание PR не задано (`--description-file`): пометки на задачи, "
@@ -1084,8 +1090,10 @@ def baseline(checks: Sequence[Check], base: str, cache_dir: Path,
     base_env = {**env, "CARGO_TARGET_DIR": str(cache_dir / "base-build")}
     try:
         for check in missing:
-            # Исчезнувшее считается от базы: на самой базе сверять нечего.
-            if check.kind == "removed-tests" or (
+            # Исчезнувшее считается от базы: на самой базе сверять нечего. Пометки
+            # сверяются с описанием этого PR и состоянием задач сейчас: тот же
+            # отказ на базе не снимает его с PR, ворота откажут всё равно.
+            if check.kind in BASELESS or (
                     check.kind == "test" and not crate_exists_on_base(tree, check.target)):
                 cached[check.key] = []
                 continue
@@ -1299,7 +1307,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     print(f"Исполняются другим инструментом: {'; '.join(elsewhere) if elsewhere else 'нет'}")
     if description is None:
         print(removed_reminder(REPO_ROOT, base, env))
-    for line in parity(REPO_ROOT, description is not None):
+    for line in parity(REPO_ROOT, description is not None, bool(dirty)):
         print(line)
     print(f"Журналы: {cache_dir / 'logs'}")
     if missing:

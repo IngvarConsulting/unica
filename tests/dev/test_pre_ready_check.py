@@ -738,6 +738,13 @@ class GateParityTests(unittest.TestCase):
         self.assertTrue(lines[1].endswith("; Пометки незакрытого — описание PR не задано (`--description-file`): "
                                           "пометки на задачи, которые закрывает этот PR, не сверены"))
         self.assertEqual(lines[2], "Только в очереди, гейт не гоняет: Тесты Rust")
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / CHECK.CI_WORKFLOW
+            path.parent.mkdir(parents=True)
+            path.write_text(yaml.safe_dump(workflow, allow_unicode=True), encoding="utf-8")
+            dirty = CHECK.parity(Path(directory), described=True, dirty=True)
+        self.assertTrue(dirty[1].startswith("Не проверено гейтом: Удалённые тесты объявлены — незакоммиченные "
+                                            "правки не учтены: исчезнувшее считается по HEAD; "))
 
     def test_a_removed_test_is_a_reminder_without_a_description(self):
         output = ("python: test m.A.gone disappeared; declare 'Removes-test: m.A.gone' (or a literal prefix "
@@ -762,6 +769,16 @@ class GateParityTests(unittest.TestCase):
                          ["Пометка без номера"])
         crashed = CHECK.parse_script("Traceback (most recent call last):\nRuntimeError: gh api: offline\n", 1)
         self.assertFalse(crashed.complete)
+
+    def test_removed_tests_and_open_marks_are_not_subtracted_by_the_base(self):
+        """Отказ ворот PR по описанию этого PR остаётся отказом, даже если база отказала бы так же."""
+        checks = [CHECK.Check("removed-tests", "removed-tests", "d", "b"), CHECK.Check("open-marks", "open-marks")]
+        with tempfile.TemporaryDirectory() as directory, \
+                mock.patch.object(CHECK, "add_base_tree"), mock.patch.object(CHECK, "remove_base_tree"), \
+                mock.patch.object(CHECK, "run_check") as run:
+            cached, incomplete = CHECK.baseline(checks, "b" * 40, Path(directory), {})
+        run.assert_not_called()
+        self.assertEqual((cached, incomplete), ({"removed-tests": [], "open-marks": []}, []))
 
     def test_open_marks_read_the_description_file(self):
         with tempfile.TemporaryDirectory() as directory:
