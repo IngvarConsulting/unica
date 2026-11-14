@@ -429,7 +429,7 @@ fn run_daemon_configured_until<
         }
         runtime.hooks().listener_ownership_observed(no_active_work);
         if no_active_work {
-            if idle_since.elapsed() >= config.idle_grace {
+            if idle_since.elapsed() >= config.idle_grace && runtime.hooks().idle_exit_permitted() {
                 break;
             }
         } else {
