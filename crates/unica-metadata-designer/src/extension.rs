@@ -413,6 +413,11 @@ pub fn cfe_borrow_object_xml(
     {
         lines.push(format!("\t\t\t{property}"));
     }
+    if type_name == "Document" {
+        // A borrowed document names its own register records, empty when
+        // borrowed, as 8.3.27 and 8.5 export it (#2996).
+        lines.push("\t\t\t<RegisterRecords/>".to_string());
+    }
     if type_name == "CommonModule" {
         for prop_name in [
             "Global",
@@ -867,7 +872,10 @@ pub fn cfe_borrow_adopted_attribute_xml(
             unica_xml_format::text::escape_xml(&attr.source_uuid)
         ),
     ];
-    lines.extend(cfe_borrow_adopted_lines(format_version, &format!("{indent}\t\t")));
+    lines.extend(cfe_borrow_adopted_lines(
+        format_version,
+        &format!("{indent}\t\t"),
+    ));
     if !attr.type_xml.is_empty() {
         lines.push(format!("{indent}\t\t{}", attr.type_xml));
     }
@@ -921,7 +929,10 @@ pub fn cfe_borrow_adopted_tabular_section_xml(
         "{indent}\t\t<ExtendedConfigurationObject>{}</ExtendedConfigurationObject>",
         unica_xml_format::text::escape_xml(&section.source_uuid)
     ));
-    lines.extend(cfe_borrow_adopted_lines(format_version, &format!("{indent}\t\t")));
+    lines.extend(cfe_borrow_adopted_lines(
+        format_version,
+        &format!("{indent}\t\t"),
+    ));
     lines.push(format!("{indent}\t</Properties>"));
     if section.attributes.is_empty() {
         lines.push(format!("{indent}\t<ChildObjects/>"));

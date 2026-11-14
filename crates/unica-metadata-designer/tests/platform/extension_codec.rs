@@ -610,16 +610,12 @@ fn member_property_names(node: roxmltree::Node<'_, '_>) -> Vec<String> {
 }
 
 /// The member of `document` named `name`.
-fn named_member<'a>(
-    document: &'a Document<'a>,
-    tag: &str,
-    name: &str,
-) -> roxmltree::Node<'a, 'a> {
+fn named_member<'a>(document: &'a Document<'a>, tag: &str, name: &str) -> roxmltree::Node<'a, 'a> {
     document
         .descendants()
         .find(|node| {
             node.has_tag_name((CFE_PATCH_MD_NAMESPACE, tag))
-                && member_property_names(*node).first().is_some()
+                && !member_property_names(*node).is_empty()
                 && unica_xml_format::read::child_element(*node, "Properties")
                     .and_then(|props| unica_xml_format::read::child_direct_text(props, "Name"))
                     .as_deref()
@@ -634,17 +630,21 @@ fn named_member<'a>(
 /// rule: INV.SOURCE.WRITABLE-PROFILE
 #[test]
 fn borrowed_members_of_format_2_22_have_the_platform_properties() {
-    let corpus = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tests/fixtures/formats/platform_xml/2.22");
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let read = |path: std::path::PathBuf| {
         std::fs::read_to_string(path)
             .unwrap()
             .trim_start_matches('\u{feff}')
             .to_string()
     };
-    let parent_text = read(corpus.join("all_kinds/src/Catalogs/Валюты.xml"));
+    let parent_text =
+        read(manifest.join(
+            "../../tests/fixtures/formats/platform_xml/2.22/all_kinds/src/Catalogs/Валюты.xml",
+        ));
     let parent = Document::parse(&parent_text).unwrap();
-    let platform_text = read(corpus.join("cfe_borrow/extension-catalog-members.xml"));
+    let platform_text = read(manifest.join(
+        "../../tests/fixtures/formats/platform_xml/2.22/cfe_borrow/extension-catalog-members.xml",
+    ));
     let platform = Document::parse(&platform_text).unwrap();
     let attribute = cfe_borrow_source_attribute(named_member(&parent, "Attribute", "Наценка"));
     let section =

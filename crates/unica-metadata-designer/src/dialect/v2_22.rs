@@ -20,7 +20,8 @@ pub(crate) static DIALECT: MetadataDialect = MetadataDialect {
 /// borrowed form also names what it does on an extension change error,
 /// `Warning` (`tests/fixtures/formats/platform_xml/2.22/cfe_borrow/`).
 pub(crate) fn adopted_properties(node: super::AdoptedNode) -> &'static [&'static str] {
-    const MISSING: &str = "<ActionOnConfigurationObjectMissing>Auto</ActionOnConfigurationObjectMissing>";
+    const MISSING: &str =
+        "<ActionOnConfigurationObjectMissing>Auto</ActionOnConfigurationObjectMissing>";
     match node {
         super::AdoptedNode::Object => &[MISSING],
         super::AdoptedNode::Form => &[

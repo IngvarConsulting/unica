@@ -151,7 +151,10 @@ mod tests {
         let target = MetadataAddress::parse_logical("Catalog.Валюты.Form.ФормаЭлемента").unwrap();
         let (properties, limits) =
             parse_form_metadata_properties(descriptor.as_bytes(), &target).unwrap();
-        assert_eq!(properties["ActionOnConfigurationObjectMissing"], json!("Auto"));
+        assert_eq!(
+            properties["ActionOnConfigurationObjectMissing"],
+            json!("Auto")
+        );
         assert_eq!(
             properties["ActionOnConfigurationExtensionChangeError"],
             json!("Warning")

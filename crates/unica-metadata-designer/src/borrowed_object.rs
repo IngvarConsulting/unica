@@ -408,6 +408,9 @@ fn reserved(name: &str) -> bool {
             // What a borrowed object does when its configuration object is
             // missing belongs to the extension, not to the parent.
             | "ActionOnConfigurationObjectMissing"
+            // The registers a borrowed document records into are the
+            // extension's own, not the parent's.
+            | "RegisterRecords"
     )
 }
 
