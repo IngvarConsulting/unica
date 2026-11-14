@@ -1,6 +1,5 @@
 ---
 id: INV.PERF.SERVICE-READINESS-WITHOUT-SOURCE-SCAN
-gap: https://github.com/IngvarConsulting/unica/issues/968
 ---
 
 # Сервис отвечает на проверку готовности до обхода исходников

@@ -123,6 +123,10 @@ mod medium_tests {
     use unica_analysis_services::provider_host::ProviderHostKey;
     use unica_source_contract::workspace::WorkspaceContext;
 
+    mod readiness_before_preparation {
+        include!("../workspace_service_support/readiness_before_preparation.rs");
+    }
+
     #[test]
     fn legacy_workspace_service_runtime_is_owned_by_the_workspace_actor_adapter() {
         let context = test_context("legacy-runtime-actor-owner");
