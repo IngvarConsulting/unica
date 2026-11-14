@@ -155,9 +155,13 @@ fn concurrent_registration_commits_serialize_before_preflight() {
 
 #[test]
 fn symlink_targets_are_rejected() {
-    unica_workspace::compile_transaction::contract_tests::symlink_targets_are_rejected(
-        unica_source_designer::registration::cf_edit_add_child_object_text,
-    );
+    if let Err(skip) =
+        unica_workspace::compile_transaction::contract_tests::symlink_targets_are_rejected(
+            unica_source_designer::registration::cf_edit_add_child_object_text,
+        )
+    {
+        unica_process::test_support::skip_named_host_capability(skip.capability, skip.reason);
+    }
 }
 
 #[test]
