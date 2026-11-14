@@ -561,6 +561,11 @@ pub mod test_support {
     }
 }
 
+/// The Designer configuration profile with verified tabular section Use and FillChecking.
+pub fn supports_tabular_section_properties(profile: crate::SourceProfile) -> bool {
+    profile == crate::SourceProfile::platform_xml_8_3_27_format_2_20()
+}
+
 #[cfg(test)]
 mod tests {
     use super::{FormatFamilyId, FormatIdentity, FormatKey, PlatformLine};

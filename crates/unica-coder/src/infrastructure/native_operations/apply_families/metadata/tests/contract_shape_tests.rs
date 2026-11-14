@@ -150,7 +150,8 @@ fn medium_all_twenty_one_member_shapes_match_the_productive_parser_without_sourc
                     (
                         "required",
                         json!(true),
-                        matches!(family, "attribute" | "dimension" | "resource"),
+                        matches!(family, "attribute" | "dimension" | "resource")
+                            || (family == "tabularSection" && verb == "set"),
                     ),
                     ("required", json!("true"), false),
                     (

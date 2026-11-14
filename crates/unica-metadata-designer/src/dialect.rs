@@ -3,6 +3,7 @@
 //! about the versions of the files it reads and writes. A new export format
 //! version edits this module, not the readers and writers that ask it.
 pub(crate) mod root_version;
+pub(crate) mod tabular_section;
 pub(crate) mod v2_20;
 pub(crate) mod v2_21;
 pub(crate) mod v2_22;
@@ -64,6 +65,14 @@ static V2_20: MetadataDialect = MetadataDialect {
 
 /// The dialects the codec has, one per export format version.
 static DIALECTS: &[&MetadataDialect] = &[&V2_20, &v2_21::DIALECT, &v2_22::DIALECT];
+
+/// Select only a dialect proved by the literal root version.
+pub(crate) fn exact(version: Option<&str>) -> Option<&'static MetadataDialect> {
+    DIALECTS
+        .iter()
+        .copied()
+        .find(|dialect| Some(dialect.version) == version)
+}
 
 /// The dialect of the version the codec writes.
 pub(crate) fn writable() -> &'static MetadataDialect {

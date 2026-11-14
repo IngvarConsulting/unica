@@ -772,6 +772,12 @@ pub fn parse_typed_meta_local_info_inner(
     );
     let format = unica_source_designer::roots::root_version_literal(xml, doc.root_element());
     let member_read_profile = source_kind.and_then(|source| {
+        if kind == MetadataKind::ChartOfCharacteristicTypes
+            && source == unica_source_contract::SourceSetKind::Configuration
+            && crate::dialect::tabular_section::supports_root(xml, doc.root_element())
+        {
+            return Some(unica_metadata::MetaMemberReadProfile::ChartTabularSection);
+        }
         unica_metadata::MetaMemberReadProfile::for_source(
             source,
             kind,
