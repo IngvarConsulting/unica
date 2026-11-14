@@ -3282,6 +3282,11 @@ struct ProcessTree {
     /// The process leads its own process group of this process's console:
     /// CTRL_BREAK reaches it and its console descendants only.
     console_group: bool,
+    /// The group kills its processes on close only until the child runs: a
+    /// detached service outlives this process, but a child still suspended
+    /// when this process dies must die with the group handle instead of
+    /// waiting forever with every handle it inherited.
+    detaches_after_resume: bool,
 }
 
 // SAFETY: Windows kernel handles may be transferred and used from other threads.
@@ -3329,7 +3334,9 @@ impl ProcessTree {
     /// processes that may leave their groups (the runner's live agent), and a
     /// process leaves only when every group above it allows that.
     fn prepare_detachable(command: &mut Command) -> io::Result<Self> {
-        Self::prepare_with_policy(command, false, true, false)
+        let mut tree = Self::prepare_with_policy(command, true, true, false)?;
+        tree.detaches_after_resume = true;
+        Ok(tree)
     }
 
     fn prepare_with_policy(
@@ -3369,20 +3376,7 @@ impl ProcessTree {
             flags |= JOB_OBJECT_LIMIT_BREAKAWAY_OK;
         }
         if flags != 0 {
-            // SAFETY: this Windows POD structure is valid when zero-initialized.
-            let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { zeroed() };
-            limits.BasicLimitInformation.LimitFlags = flags;
-            // SAFETY: `limits` points to the structure and size required by the information class.
-            let configured = unsafe {
-                SetInformationJobObject(
-                    job,
-                    JobObjectExtendedLimitInformation,
-                    &limits as *const _ as *const _,
-                    size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
-                )
-            };
-            if configured == 0 {
-                let error = io::Error::last_os_error();
+            if let Err(error) = set_job_limits(job, flags) {
                 // SAFETY: `job` is a live handle created above and is not used after closing.
                 unsafe {
                     windows_sys::Win32::Foundation::CloseHandle(job);
@@ -3395,6 +3389,7 @@ impl ProcessTree {
             job,
             exit_census: None,
             console_group,
+            detaches_after_resume: false,
         })
     }
 
@@ -3440,6 +3435,10 @@ impl ProcessTree {
             return Err(io::Error::other(format!(
                 "unexpected primary thread suspend count: {previous_suspend_count}"
             )));
+        }
+        if self.detaches_after_resume {
+            use windows_sys::Win32::System::JobObjects::JOB_OBJECT_LIMIT_BREAKAWAY_OK;
+            set_job_limits(self.job, JOB_OBJECT_LIMIT_BREAKAWAY_OK)?;
         }
         Ok(None)
     }
@@ -3594,6 +3593,32 @@ impl Drop for ScopedWindowsHandle {
             windows_sys::Win32::Foundation::CloseHandle(self.0);
         }
     }
+}
+
+#[cfg(windows)]
+fn set_job_limits(job: windows_sys::Win32::Foundation::HANDLE, flags: u32) -> io::Result<()> {
+    use std::mem::{size_of, zeroed};
+    use windows_sys::Win32::System::JobObjects::{
+        JobObjectExtendedLimitInformation, SetInformationJobObject,
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+    };
+
+    // SAFETY: this Windows POD structure is valid when zero-initialized.
+    let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { zeroed() };
+    limits.BasicLimitInformation.LimitFlags = flags;
+    // SAFETY: `limits` points to the structure and size required by the information class.
+    let configured = unsafe {
+        SetInformationJobObject(
+            job,
+            JobObjectExtendedLimitInformation,
+            &limits as *const _ as *const _,
+            size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+        )
+    };
+    if configured == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 #[cfg(windows)]
@@ -8390,6 +8415,72 @@ mod medium_tests {
         }
         assert!(marker.exists(), "child did not resume after attachment");
         child.wait();
+    }
+
+    fn sleeping_helper() -> Command {
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "platform::process::medium_tests::managed_child_test_helper",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env(HELPER_ENV, "sleep")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        command
+    }
+
+    /// A detached service whose starter dies before resuming it must not
+    /// stay suspended forever, holding every handle it inherited (#2993).
+    /// rule: INV.PLATFORM.PROCESS-TREE-LIFECYCLE
+    #[cfg(windows)]
+    #[test]
+    fn detachable_child_still_suspended_dies_with_its_group_handle() {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::System::JobObjects::AssignProcessToJobObject;
+
+        let mut command = sleeping_helper();
+        let process_tree = ProcessTree::prepare_detachable(&mut command).unwrap();
+        let mut child = ChildCleanupGuard(Some(command.spawn().unwrap()));
+        // The group is joined but the primary thread is never resumed: the
+        // starter is gone between the two steps.
+        // SAFETY: both handles are live for the duration of the call.
+        let assigned = unsafe {
+            AssignProcessToJobObject(process_tree.job, child.child_mut().as_raw_handle() as _)
+        };
+        assert_ne!(assigned, 0, "{}", std::io::Error::last_os_error());
+        drop(process_tree);
+
+        let started = Instant::now();
+        while child.child_mut().try_wait().unwrap().is_none() {
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "a suspended child outlived its starter's group handle"
+            );
+            thread::sleep(Duration::from_millis(25));
+        }
+    }
+
+    /// Once resumed, the detached service outlives the group handle of the
+    /// process that started it, as before.
+    /// rule: INV.PLATFORM.PROCESS-TREE-LIFECYCLE
+    #[cfg(windows)]
+    #[test]
+    fn detachable_child_once_resumed_outlives_its_group_handle() {
+        let mut command = sleeping_helper();
+        let mut process_tree = ProcessTree::prepare_detachable(&mut command).unwrap();
+        let mut child = ChildCleanupGuard(Some(command.spawn().unwrap()));
+        process_tree.attach(child.child_mut()).unwrap();
+        drop(process_tree);
+
+        thread::sleep(Duration::from_millis(250));
+        assert!(
+            child.child_mut().try_wait().unwrap().is_none(),
+            "a resumed detached child died with its starter's group handle"
+        );
     }
 
     /// rule: INV.RUNTIME.RUNNER-MUTATION-CANCELLATION
