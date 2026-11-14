@@ -753,6 +753,96 @@ fn an_open_editor_buffer_keeps_its_idle_actor() {
     let _ = std::fs::remove_dir_all(root);
 }
 
+/// Stores a finished plan the way an executed preview leaves it, at the
+/// retention clock's present.
+fn save_completed_plan(actor: &WorkspaceActor<(), ()>) -> String {
+    let token = uuid::Uuid::new_v4().to_string();
+    let mut plans = actor.saved_apply_plans.lock().unwrap();
+    plans.last_saved = Some(actor_retention_now());
+    plans.entries.insert(
+        token.clone(),
+        Arc::new(SavedApplyPlan {
+            diff_layout: std::sync::OnceLock::new(),
+            execution_lane: DeadlineLock::fail_closed("saved apply execution lane is poisoned"),
+            state: Mutex::new(SavedApplyState::Completed(SavedApplyOutcome {
+                result: DomainResult::success("applied"),
+                authority: FactualOutcomeAuthority::Cancellable,
+            })),
+        }),
+    );
+    token
+}
+
+/// rule: INV.RUNTIME.DAEMON-ACTIVE-OWNERS
+#[test]
+fn a_saved_plan_keeps_its_idle_actor_only_for_the_plan_term() {
+    let root = temp_root("saved-plan-term");
+    let source = root.join("src");
+    std::fs::create_dir_all(&source).unwrap();
+    let registry = idle_registry_for_test(Duration::ZERO);
+    let admit = |at: Instant| {
+        super::with_actor_retention_time_for_test(at, || {
+            registry
+                .get_or_create(&context(&root), [source_input("main", &source)], "p")
+                .unwrap()
+        })
+    };
+    let at = |at: Instant, check: &dyn Fn()| super::with_actor_retention_time_for_test(at, check);
+    let saved_at = Instant::now();
+    let actor = admit(saved_at);
+    let token = super::with_actor_retention_time_for_test(saved_at, || save_completed_plan(&actor));
+    let weak = Arc::downgrade(&actor);
+    drop(actor);
+
+    let last_moment = saved_at + SAVED_APPLY_PLAN_TERM - Duration::from_millis(1);
+    at(last_moment, &|| {
+        assert!(
+            registry.has_retained_work(),
+            "a plan within its term holds the listener"
+        );
+        registry.evict_idle_warm_actors().unwrap();
+    });
+    assert!(
+        weak.upgrade().is_some(),
+        "a plan within its term keeps its actor"
+    );
+
+    // A later admission of the workspace restarts the term.
+    let readmitted_at = saved_at + SAVED_APPLY_PLAN_TERM / 2;
+    drop(admit(readmitted_at));
+    at(last_moment + SAVED_APPLY_PLAN_TERM / 2, &|| {
+        assert!(
+            registry.has_retained_work(),
+            "the term runs from the latest admission"
+        );
+    });
+
+    let expired = readmitted_at + SAVED_APPLY_PLAN_TERM;
+    at(expired, &|| {
+        assert!(
+            !registry.has_retained_work(),
+            "a plan past its term must not hold the listener"
+        );
+        registry.evict_idle_warm_actors().unwrap();
+    });
+    assert!(
+        weak.upgrade().is_none(),
+        "a plan past its term leaves with its actor"
+    );
+    let fresh = admit(expired);
+    assert!(
+        !fresh
+            .saved_apply_plans
+            .lock()
+            .unwrap()
+            .entries
+            .contains_key(&token),
+        "the token of an expired plan must not reach a later actor"
+    );
+    drop(fresh);
+    let _ = std::fs::remove_dir_all(root);
+}
+
 #[test]
 fn daemon_actor_registry_admits_live_identities_and_releases_only_unowned_actors() {
     let parent = temp_root("live-admissions");
