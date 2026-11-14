@@ -744,7 +744,7 @@ class GateParityTests(unittest.TestCase):
             path.write_text(yaml.safe_dump(workflow, allow_unicode=True), encoding="utf-8")
             dirty = CHECK.parity(Path(directory), described=True, dirty=True)
         self.assertTrue(dirty[1].startswith("Не проверено гейтом: Удалённые тесты объявлены — незакоммиченные "
-                                            "правки не учтены: исчезнувшее считается по HEAD; "))
+                                            "правки не учтены: исчезнувшие тесты считаются по HEAD; "))
 
     def test_a_removed_test_is_a_reminder_without_a_description(self):
         output = ("python: test m.A.gone disappeared; declare 'Removes-test: m.A.gone' (or a literal prefix "

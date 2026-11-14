@@ -1022,7 +1022,7 @@ def parity(root: Path, described: bool, dirty: bool = False) -> List[str]:
                 reasons[name].insert(0, "описание PR не задано (`--description-file`), "
                                         "исчезнувшие тесты только напечатаны")
             if dirty:
-                reasons[name].insert(0, "незакоммиченные правки не учтены: исчезнувшее считается по HEAD")
+                reasons[name].insert(0, "незакоммиченные правки не учтены: исчезнувшие тесты считаются по HEAD")
     if not described:
         for name in pull:
             if PR_GATES.get(name) == "open-marks":
