@@ -164,3 +164,50 @@ fn a_result_of_several_types_keeps_every_type_and_its_description() {
         "описания обоих случаев остаются: {returns:?}"
     );
 }
+
+/// Описание альтернативного типа говорит, когда альтернатива применима,
+/// и остаётся при своей записи: без него поле теряет половину смысла,
+/// хотя текст комментария и доходит целиком.
+#[test]
+fn an_alternative_type_keeps_the_description_of_its_case() {
+    let doc = parse(
+        "// Параметры:\n\
+         //   Значение - Число - число.\n\
+         //            - Строка - или строка, если передано представление.\n",
+    );
+    let parameters = doc.parameters.parsed().expect("параметры разобраны");
+
+    assert_eq!(parameters[0].types, ["Число", "Строка"]);
+    assert_eq!(
+        parameters[0].description, "число. или строка, если передано представление.",
+        "описание альтернативы не теряется: {parameters:?}"
+    );
+}
+
+/// Альтернативный тип ключа возвращаемой коллекции принадлежит ключу,
+/// а не самому значению: иначе тип ключа уезжает в типы возврата, и
+/// потребитель читает, что функция возвращает строку.
+#[test]
+fn an_alternative_of_a_returned_key_belongs_to_that_key() {
+    let doc = parse(
+        "// Возвращаемое значение:\n\
+         //   Структура:\n\
+         //     * Значение - Число - число.\n\
+         //              - Строка - или строка.\n\
+         //       Продолжение описания ключа.\n",
+    );
+    let returns = doc.returns.parsed().expect("возврат разобран");
+
+    assert_eq!(
+        returns.types,
+        ["Структура"],
+        "типы возврата не вбирают тип ключа: {returns:?}"
+    );
+    assert_eq!(returns.keys[0].name, "Значение");
+    assert_eq!(returns.keys[0].types, ["Число", "Строка"]);
+    assert_eq!(
+        returns.keys[0].description, "число. или строка. Продолжение описания ключа.",
+        "описание ключа остаётся при ключе: {returns:?}"
+    );
+    assert_eq!(returns.description, "", "{returns:?}");
+}

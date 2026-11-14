@@ -242,9 +242,13 @@ fn parameters(text: &str) -> Option<Vec<DocParameter>> {
         }
         if let Some(rest) = line.strip_prefix('-') {
             // Альтернативный тип предыдущей записи: `- Строка - описание`.
-            if let Some(types) = type_list(first_part(rest)) {
+            // Описание альтернативы говорит, когда она применима, и
+            // остаётся при записи: без него поле теряет половину смысла.
+            let (types, type_text, description) = types_and_description(rest.trim());
+            if !types.is_empty() {
                 if let Some(target) = owner_of(&mut found, &path) {
-                    append_types(target, types);
+                    append_types(target, types, &type_text);
+                    continue_description(target, &description);
                 }
             }
             continue;
@@ -287,23 +291,22 @@ fn owner_of<'a>(found: &'a mut [DocParameter], path: &[usize]) -> Option<&'a mut
     Some(current)
 }
 
-fn append_types(target: &mut DocParameter, types: Vec<String>) {
+fn append_types(target: &mut DocParameter, types: Vec<String>, type_text: &str) {
     if !target.type_text.is_empty() {
         target.type_text.push_str("; ");
     }
-    target.type_text.push_str(&types.join(", "));
+    target.type_text.push_str(type_text);
     target.types.extend(types);
 }
 
 fn continue_description(target: &mut DocParameter, line: &str) {
+    if line.is_empty() {
+        return;
+    }
     if !target.description.is_empty() {
         target.description.push(' ');
     }
     target.description.push_str(line);
-}
-
-fn first_part(text: &str) -> &str {
-    text.split_once(" - ").map_or(text, |(first, _)| first)
 }
 
 /// Раздел возвращаемого значения записан без имени: `Тип - описание`.
@@ -341,7 +344,27 @@ fn returns(text: &str) -> Option<DocReturn> {
             continue;
         }
         let base = *base.get_or_insert(indent);
+        let alternative = line.starts_with('-');
         let head = line.strip_prefix('-').unwrap_or(line).trim();
+        // Строка на крае раздела, не открывающая альтернативу, говорит
+        // о самом значении: следующий его тип. Открытый ключ на ней
+        // закрывается, иначе тип значения достался бы ключу.
+        if !alternative && indent <= base {
+            path.clear();
+        }
+        // Альтернативный тип и продолжение описания после ключа коллекции
+        // принадлежат этому ключу, а не самому значению: иначе тип ключа
+        // уезжал бы в типы возврата, а его оговорка — в его описание.
+        if let Some(key) = active_key(&mut result, &path) {
+            let (types, type_text, description) = types_and_description(head);
+            if types.is_empty() {
+                continue_description(key, head);
+            } else {
+                append_types(key, types, &type_text);
+                continue_description(key, &description);
+            }
+            continue;
+        }
         if indent <= base || line.starts_with('-') {
             let (types, type_text, description) = types_and_description(head);
             if !types.is_empty() {
@@ -354,7 +377,6 @@ fn returns(text: &str) -> Option<DocReturn> {
                     push_sentence(&mut result.description, &description);
                     described = true;
                 }
-                path.clear();
                 continue;
             }
         }
@@ -363,6 +385,18 @@ fn returns(text: &str) -> Option<DocReturn> {
         described = true;
     }
     (!result.types.is_empty() || described).then_some(result)
+}
+
+/// Ключ, открытый последним: к нему относятся его альтернативные типы и
+/// продолжения описания. Без пути открытого ключа нет — строка относится
+/// к самому значению.
+fn active_key<'a>(result: &'a mut DocReturn, path: &[usize]) -> Option<&'a mut DocParameter> {
+    let (last, parents) = path.split_last()?;
+    let mut keys = &mut result.keys;
+    for step in parents {
+        keys = &mut keys.get_mut(*step)?.keys;
+    }
+    keys.get_mut(*last)
 }
 
 /// Ключи той записи, к которой они относятся: без пути — ключи самого
