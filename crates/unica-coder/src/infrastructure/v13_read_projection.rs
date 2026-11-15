@@ -1041,6 +1041,8 @@ fn validate_reader_payload(reader: LogicalReader, payload: &Value) -> Result<(),
             "drawingCount",
         ],
         LogicalReader::Xdto => &[
+            "Synonym",
+            "synonymError",
             "Comment",
             "commentError",
             "sourceSet",
@@ -1653,6 +1655,20 @@ fn project_xdto(
             payload,
         );
         let mut limits = Vec::new();
+        if let Some(synonym) = payload.get("Synonym") {
+            place_prop(
+                &mut props,
+                &mut limits,
+                address,
+                "Synonym",
+                synonym,
+                false,
+                "metadata synonym",
+            );
+        }
+        if let Some(message) = payload.get("synonymError").and_then(Value::as_str) {
+            limits.push(format!("Synonym: {message}"));
+        }
         if let Some(comment) = payload.get("Comment") {
             place_prop(
                 &mut props,
