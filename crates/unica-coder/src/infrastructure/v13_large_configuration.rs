@@ -904,9 +904,10 @@ pub(super) fn read_configuration_root(
     panels: Value,
     checkpoint: &dyn Fn() -> Result<(), ViewError>,
 ) -> Result<StreamedConfigurationRoot, ViewError> {
-    let state = parse_configuration_owner(file, checkpoint)?;
+    let state = parse_configuration_owner(file, checkpoint, true)?;
     let RootState {
         properties,
+        purpose,
         version,
         total_objects,
         registrations,
@@ -969,6 +970,10 @@ pub(super) fn read_configuration_root(
         "extensionPurpose": optional("ConfigurationExtensionPurpose"),
         "support": support,
         "properties": {
+            "usePurposes": purpose.use_purposes,
+            "defaultRoles": purpose.default_roles,
+            "usedMobileApplicationFunctionalities": purpose.used_mobile_application_functionalities,
+            "includeHelpInContents": purpose.include_help_in_contents,
             "compatibilityMode": optional("CompatibilityMode"),
             "defaultRunMode": optional("DefaultRunMode"),
             "scriptVariant": optional("ScriptVariant"),
@@ -1010,7 +1015,7 @@ pub(crate) fn read_configuration_registration_index(
     file: impl Read + Seek,
     checkpoint: &dyn Fn() -> Result<(), ViewError>,
 ) -> Result<RegistrationIndex, ViewError> {
-    let state = parse_configuration_owner(file, checkpoint)?;
+    let state = parse_configuration_owner(file, checkpoint, false)?;
     RegistrationIndex::from_sorter(state.registrations, checkpoint)
 }
 
@@ -1114,6 +1119,7 @@ impl<R: Read> Read for RootHeaderRead<R> {
 fn parse_configuration_owner(
     mut file: impl Read + Seek,
     checkpoint: &dyn Fn() -> Result<(), ViewError>,
+    read_purpose: bool,
 ) -> Result<RootState, ViewError> {
     skip_leading_boms(&mut file, checkpoint)?;
     let checkpoint_failure = Rc::new(RefCell::new(None));
@@ -1124,6 +1130,15 @@ fn parse_configuration_owner(
     };
     let mut parser = configuration_parser_config().create_reader(BufReader::new(checked));
     let mut state = RootState::new();
+    // Retain only the four structured purpose properties, using the same
+    // namespace-aware codec as the ordinary root. The rest remains streamed.
+    let mut purpose_xml = xml::writer::EmitterConfig::new()
+        .write_document_declaration(false)
+        .create_writer(Vec::new());
+    purpose_xml
+        .write(xml::writer::XmlEvent::start_element("Properties").default_ns(MD_NS))
+        .map_err(|error| source_unreadable(&error.to_string()))?;
+    let mut purpose_depth = 0_usize;
     loop {
         checkpoint()?;
         let event = match parser.next() {
@@ -1138,6 +1153,24 @@ fn parse_configuration_owner(
                 ));
             }
         };
+        let starts_purpose = read_purpose
+            && matches!(&event, XmlEvent::StartElement { name, .. }
+            if state.ignored_depth == 0
+                && matches!(state.stack.last().map(|frame| &frame.role), Some(FrameRole::Properties))
+                && name.namespace.as_deref() == Some(MD_NS)
+                && matches!(name.local_name.as_str(), "UsePurposes" | "DefaultRoles" | "UsedMobileApplicationFunctionalities" | "IncludeHelpInContents"));
+        if purpose_depth != 0 || starts_purpose {
+            if let Some(writer_event) = event.as_writer_event() {
+                purpose_xml
+                    .write(writer_event)
+                    .map_err(|error| source_unreadable(&error.to_string()))?;
+            }
+            match &event {
+                XmlEvent::StartElement { .. } => purpose_depth += 1,
+                XmlEvent::EndElement { .. } => purpose_depth -= 1,
+                _ => {}
+            }
+        }
         match event {
             XmlEvent::StartDocument { .. } => {}
             XmlEvent::StartElement {
@@ -1168,6 +1201,16 @@ fn parse_configuration_owner(
         return Err(source_unreadable(
             "Configuration.xml has no single Configuration/Properties owner",
         ));
+    }
+    purpose_xml
+        .write(xml::writer::XmlEvent::end_element())
+        .map_err(|error| source_unreadable(&error.to_string()))?;
+    let purpose_xml = String::from_utf8(purpose_xml.into_inner())
+        .map_err(|error| source_unreadable(&error.to_string()))?;
+    if read_purpose {
+        state.purpose =
+            unica_metadata_designer::configuration::read_cf_purpose_properties_xml(&purpose_xml)
+                .map_err(|error| source_unreadable(&error))?;
     }
     Ok(state)
 }
@@ -1229,6 +1272,7 @@ struct RootState {
     saw_first_child_objects: bool,
     version: String,
     properties: BTreeMap<String, String>,
+    purpose: unica_metadata::configuration::CfPurposeProperties,
     total_objects: usize,
     registrations: RegistrationSorter,
 }

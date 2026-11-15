@@ -190,6 +190,7 @@ pub fn parse_cf_info_xml(
         support,
         extension_purpose,
         properties: CfInfoProperties {
+            purpose: read_cf_purpose_properties(props)?,
             compatibility_mode: optional(cf_prop_text(props, "CompatibilityMode")),
             default_run_mode: optional(cf_prop_text(props, "DefaultRunMode")),
             script_variant: optional(cf_prop_text(props, "ScriptVariant")),
@@ -271,6 +272,162 @@ pub fn parse_cf_info_xml(
     Ok(ParsedCfInfo {
         data,
         registered_objects,
+    })
+}
+
+/// The four purpose properties share the same strict reader in DOM and streamed roots.
+pub fn read_cf_purpose_properties_xml(xml: &str) -> Result<CfPurposeProperties, String> {
+    let doc =
+        Document::parse(xml).map_err(|error| format!("Configuration properties XML: {error}"))?;
+    read_cf_purpose_properties(doc.root_element())
+}
+
+fn read_cf_purpose_properties(
+    props: roxmltree::Node<'_, '_>,
+) -> Result<CfPurposeProperties, String> {
+    fn scalar(node: roxmltree::Node<'_, '_>) -> Result<String, String> {
+        if node.children().any(|child| child.is_element()) {
+            return Err(format!(
+                "{} must contain scalar text",
+                node.tag_name().name()
+            ));
+        }
+        Ok(node
+            .children()
+            .filter(|child| child.is_text())
+            .filter_map(|child| child.text())
+            .collect::<String>()
+            .trim()
+            .to_string())
+    }
+    fn boolean(node: roxmltree::Node<'_, '_>) -> Result<bool, String> {
+        match scalar(node)?.as_str() {
+            "true" | "1" => Ok(true),
+            "false" | "0" => Ok(false),
+            _ => Err(format!(
+                "{} must contain an XML boolean",
+                node.tag_name().name()
+            )),
+        }
+    }
+    fn children<'a, 'input>(
+        node: roxmltree::Node<'a, 'input>,
+        name: &str,
+        namespace: &str,
+    ) -> Result<Vec<roxmltree::Node<'a, 'input>>, String> {
+        if node
+            .children()
+            .any(|child| child.is_text() && !child.text().unwrap_or_default().trim().is_empty())
+        {
+            return Err(format!(
+                "{} has unexpected scalar text",
+                node.tag_name().name()
+            ));
+        }
+        node.children()
+            .filter(|child| child.is_element())
+            .map(|child| {
+                if child.tag_name().name() == name
+                    && child.tag_name().namespace() == Some(namespace)
+                {
+                    Ok(child)
+                } else {
+                    Err(format!(
+                        "{} has an unexpected list member {}",
+                        node.tag_name().name(),
+                        child.tag_name().name()
+                    ))
+                }
+            })
+            .collect()
+    }
+    let section = |name: &str| -> Result<Option<roxmltree::Node<'_, '_>>, String> {
+        let mut matches = props.children().filter(|node| {
+            node.is_element()
+                && node.tag_name().name() == name
+                && node.tag_name().namespace() == Some(CF_MD_NS)
+        });
+        let first = matches.next();
+        if matches.next().is_some() {
+            return Err(format!("duplicate Configuration property {name}"));
+        }
+        Ok(first)
+    };
+    let use_purposes = section("UsePurposes")?
+        .map(|node| {
+            children(node, "Value", CF_V8_NS)?
+                .into_iter()
+                .map(|child| {
+                    let value = scalar(child)?;
+                    match value.as_str() {
+                        "PlatformApplication" | "MobilePlatformApplication" => Ok(value),
+                        _ => Err(format!("unknown ApplicationUsePurpose {value}")),
+                    }
+                })
+                .collect::<Result<Vec<_>, String>>()
+        })
+        .transpose()?;
+    let default_roles = section("DefaultRoles")?
+        .map(|node| {
+            children(node, "Item", CF_XR_NS)?
+                .into_iter()
+                .map(|child| {
+                    let value = scalar(child)?;
+                    if value.strip_prefix("Role.").is_some_and(|name| {
+                        !name.is_empty() && name.chars().all(|ch| ch.is_alphanumeric() || ch == '_')
+                    }) {
+                        Ok(value)
+                    } else {
+                        Err(format!("invalid default role reference {value}"))
+                    }
+                })
+                .collect::<Result<Vec<_>, String>>()
+        })
+        .transpose()?;
+    let used_mobile_application_functionalities = section("UsedMobileApplicationFunctionalities")?
+        .map(|node| {
+            children(node, "functionality", CF_CAI_NS)?
+                .into_iter()
+                .map(|item| {
+                    if item.children().any(|child| {
+                        child.is_text() && !child.text().unwrap_or_default().trim().is_empty()
+                    }) {
+                        return Err("mobile functionality has unexpected scalar text".to_string());
+                    }
+                    let mut functionality = None;
+                    let mut use_flag = None;
+                    for child in item.children().filter(|child| child.is_element()) {
+                        if child.tag_name().namespace() != Some(CF_CAI_NS) {
+                            return Err("mobile functionality has a foreign member".to_string());
+                        }
+                        match child.tag_name().name() {
+                            "functionality" if functionality.is_none() => {
+                                functionality = Some(scalar(child)?)
+                            }
+                            "use" if use_flag.is_none() => use_flag = Some(boolean(child)?),
+                            _ => {
+                                return Err(
+                                    "mobile functionality has an unexpected or duplicate member"
+                                        .to_string(),
+                                )
+                            }
+                        }
+                    }
+                    Ok(CfMobileFunctionality {
+                        functionality: functionality
+                            .filter(|value| !value.is_empty())
+                            .ok_or("mobile functionality has no name")?,
+                        r#use: use_flag.ok_or("mobile functionality has no use flag")?,
+                    })
+                })
+                .collect::<Result<Vec<_>, String>>()
+        })
+        .transpose()?;
+    Ok(CfPurposeProperties {
+        use_purposes,
+        default_roles,
+        used_mobile_application_functionalities,
+        include_help_in_contents: section("IncludeHelpInContents")?.map(boolean).transpose()?,
     })
 }
 
