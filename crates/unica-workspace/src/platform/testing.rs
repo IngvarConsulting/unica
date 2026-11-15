@@ -357,25 +357,184 @@ pub fn unix_mode_for_test(_path: &Path) -> io::Result<Option<u32>> {
     Ok(None)
 }
 
-/// Count descriptors (Unix) or handles (Windows) this process holds now. Only
-/// the difference between two calls is meaningful: the count includes
-/// whatever the test harness and concurrent tests keep open.
-#[cfg(unix)]
-pub fn open_handle_count_for_test() -> io::Result<usize> {
-    Ok(std::fs::read_dir("/dev/fd")?.count())
+/// Count descriptors (Unix) or handles (Windows) this process holds on `root`
+/// and the files and directories under it. A test that owns `root` counts
+/// what its own work keeps open there; whatever the test harness and
+/// concurrent tests hold elsewhere is not in the count.
+///
+/// The count asks the operating system rather than counting the opens of the
+/// filesystem facade, and a simpler counter would stop checking the subject:
+/// - the bound (`INV.APP.BOUNDED-OPEN-DESCRIPTORS`) is on descriptors the
+///   operating system keeps open, not on the opens the product makes;
+/// - opens do not all pass the facade: portable `std::fs` opens files outside
+///   `platform/`, and `cap_primitives` opens the directories of a route
+///   inside it, out of sight of product code;
+/// - counting retention through a wrapper on `Drop` of every held `File` or
+///   `Dir` would change product types for a test and still not be "closed in
+///   the operating system".
+pub fn open_handles_under_for_test(root: &Path) -> io::Result<usize> {
+    let root = std::fs::canonicalize(root)?;
+    Ok(open_handle_paths_for_test()?
+        .iter()
+        .filter(|path| is_at_or_under(path, &root))
+        .count())
 }
 
 #[cfg(windows)]
-pub fn open_handle_count_for_test() -> io::Result<usize> {
-    use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetProcessHandleCount};
+fn is_at_or_under(path: &Path, root: &Path) -> bool {
+    // Windows paths compare without regard to letter case.
+    let path = path.to_string_lossy().to_lowercase();
+    let root = root.to_string_lossy().to_lowercase();
+    let root = root.trim_end_matches('\\');
+    path == root || path.starts_with(&format!("{root}\\"))
+}
 
-    let mut count = 0_u32;
-    // SAFETY: the pseudo-handle of the current process needs no closing and
-    // `count` is a valid output location for the duration of the call.
-    if unsafe { GetProcessHandleCount(GetCurrentProcess(), &mut count) } == 0 {
-        return Err(io::Error::last_os_error());
+#[cfg(not(windows))]
+fn is_at_or_under(path: &Path, root: &Path) -> bool {
+    path.starts_with(root)
+}
+
+/// The paths of the descriptors this process holds now; a descriptor that is
+/// not a file or directory is left out.
+#[cfg(target_os = "linux")]
+fn open_handle_paths_for_test() -> io::Result<Vec<PathBuf>> {
+    let mut paths = Vec::new();
+    for entry in std::fs::read_dir("/proc/self/fd")? {
+        // A descriptor closed while the directory is read has no link left.
+        if let Ok(target) = std::fs::read_link(entry?.path()) {
+            paths.push(target);
+        }
     }
-    Ok(count as usize)
+    Ok(paths)
+}
+
+#[cfg(target_os = "macos")]
+fn open_handle_paths_for_test() -> io::Result<Vec<PathBuf>> {
+    use std::os::unix::ffi::OsStrExt;
+
+    let mut paths = Vec::new();
+    for entry in std::fs::read_dir("/dev/fd")? {
+        let Some(fd) = entry?
+            .file_name()
+            .to_str()
+            .and_then(|name| name.parse().ok())
+        else {
+            continue;
+        };
+        let mut buffer = [0_u8; libc::PATH_MAX as usize];
+        // SAFETY: F_GETPATH writes at most PATH_MAX bytes into `buffer`; a
+        // descriptor closed meanwhile only makes the call fail.
+        if unsafe { libc::fcntl(fd, libc::F_GETPATH, buffer.as_mut_ptr()) } == -1 {
+            continue;
+        }
+        let length = buffer
+            .iter()
+            .position(|byte| *byte == 0)
+            .unwrap_or(buffer.len());
+        paths.push(PathBuf::from(std::ffi::OsStr::from_bytes(
+            &buffer[..length],
+        )));
+    }
+    Ok(paths)
+}
+
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
+fn open_handle_paths_for_test() -> io::Result<Vec<PathBuf>> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "descriptor paths are read on Linux and macOS",
+    ))
+}
+
+#[cfg(windows)]
+fn open_handle_paths_for_test() -> io::Result<Vec<PathBuf>> {
+    use std::os::windows::ffi::OsStringExt;
+    use windows_sys::Wdk::System::SystemInformation::NtQuerySystemInformation;
+    use windows_sys::Win32::Foundation::HANDLE;
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetFileType, GetFinalPathNameByHandleW, FILE_NAME_NORMALIZED, FILE_TYPE_DISK,
+        VOLUME_NAME_DOS,
+    };
+    use windows_sys::Win32::System::Threading::GetCurrentProcessId;
+
+    // SystemExtendedHandleInformation: every handle of every process, with
+    // its owner and value; the layout is the documented
+    // SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX.
+    const SYSTEM_EXTENDED_HANDLE_INFORMATION: i32 = 64;
+    const STATUS_INFO_LENGTH_MISMATCH: i32 = 0xC000_0004_u32 as i32;
+    #[repr(C)]
+    struct Entry {
+        object: *mut core::ffi::c_void,
+        process_id: usize,
+        handle_value: usize,
+        granted_access: u32,
+        creator_back_trace_index: u16,
+        object_type_index: u16,
+        handle_attributes: u32,
+        reserved: u32,
+    }
+
+    let mut buffer = vec![0_usize; 1 << 16];
+    let count = loop {
+        let length = (buffer.len() * std::mem::size_of::<usize>()) as u32;
+        let mut needed = 0_u32;
+        // SAFETY: `buffer` is writable for `length` bytes and aligned for the
+        // pointer-sized fields of the returned table.
+        let status = unsafe {
+            NtQuerySystemInformation(
+                SYSTEM_EXTENDED_HANDLE_INFORMATION,
+                buffer.as_mut_ptr().cast(),
+                length,
+                &mut needed,
+            )
+        };
+        if status == STATUS_INFO_LENGTH_MISMATCH {
+            // Handles are opened while the table is read: grow with room.
+            let wanted = (needed as usize).max(length as usize) * 2;
+            buffer = vec![0; wanted / std::mem::size_of::<usize>() + 1];
+            continue;
+        }
+        if status < 0 {
+            return Err(io::Error::other(format!(
+                "NtQuerySystemInformation failed with status {status:#x}"
+            )));
+        }
+        break buffer[0];
+    };
+    // SAFETY: on success the table is a count and a reserved word followed by
+    // `count` entries, all inside `buffer`.
+    let entries =
+        unsafe { std::slice::from_raw_parts(buffer.as_ptr().add(2).cast::<Entry>(), count) };
+    let process = unsafe { GetCurrentProcessId() } as usize;
+    let mut paths = Vec::new();
+    for entry in entries.iter().filter(|entry| entry.process_id == process) {
+        let handle = entry.handle_value as HANDLE;
+        // Only a disk file or directory has a path; asking a pipe or a
+        // console for one can block. A handle closed and reused meanwhile is
+        // classified by what it is now.
+        // SAFETY: the value names a handle of this process or none; the call
+        // only reads its type.
+        if unsafe { GetFileType(handle) } != FILE_TYPE_DISK {
+            continue;
+        }
+        let mut name = vec![0_u16; 1024];
+        // SAFETY: `name` is writable for its length in UTF-16 units.
+        let length = unsafe {
+            GetFinalPathNameByHandleW(
+                handle,
+                name.as_mut_ptr(),
+                name.len() as u32,
+                FILE_NAME_NORMALIZED | VOLUME_NAME_DOS,
+            )
+        } as usize;
+        if length == 0 || length >= name.len() {
+            continue;
+        }
+        paths.push(PathBuf::from(std::ffi::OsString::from_wide(
+            &name[..length],
+        )));
+    }
+    Ok(paths)
 }
 
 #[cfg(all(any(test, feature = "test-support"), unix))]

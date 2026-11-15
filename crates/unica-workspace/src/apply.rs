@@ -2017,6 +2017,28 @@ pub(crate) mod tests {
         );
     }
 
+    /// The descriptor count a test asserts on is of its own root: a file and
+    /// a directory held open under the root are counted, and released they
+    /// are not; descriptors held elsewhere in the process are never counted.
+    #[test]
+    fn open_handles_under_a_root_counts_only_that_root() {
+        use crate::platform::testing::open_handles_under_for_test;
+        let own = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        std::fs::create_dir(own.path().join("Dir")).unwrap();
+        std::fs::write(own.path().join("Dir/File.bsl"), b"x").unwrap();
+        std::fs::write(other.path().join("File.bsl"), b"x").unwrap();
+        let before = open_handles_under_for_test(own.path()).unwrap();
+        let elsewhere = std::fs::File::open(other.path().join("File.bsl")).unwrap();
+        assert_eq!(open_handles_under_for_test(own.path()).unwrap(), before);
+        let file = std::fs::File::open(own.path().join("Dir/File.bsl")).unwrap();
+        let directory =
+            crate::platform::filesystem::open_directory_nofollow(&own.path().join("Dir")).unwrap();
+        assert_eq!(open_handles_under_for_test(own.path()).unwrap(), before + 2);
+        drop((file, directory, elsewhere));
+        assert_eq!(open_handles_under_for_test(own.path()).unwrap(), before);
+    }
+
     /// A reference scan over a whole configuration must not
     /// keep a descriptor per inspected file or directory: the saved guard is
     /// an identity and a fingerprint, re-proved by walking the route again.
@@ -2025,7 +2047,7 @@ pub(crate) mod tests {
     /// rule: INV.APP.BOUNDED-OPEN-DESCRIPTORS
     #[test]
     fn reference_scan_descriptor_count_does_not_grow_with_inputs() {
-        use crate::platform::testing::open_handle_count_for_test;
+        use crate::platform::testing::open_handles_under_for_test;
         const DIRECTORIES: usize = 32;
         const FILES_PER_DIRECTORY: usize = 16;
         let temp = tempfile::tempdir().unwrap();
@@ -2049,7 +2071,7 @@ pub(crate) mod tests {
             authority.clone(),
             ProviderDeadline::no_deadline(),
         );
-        let before = open_handle_count_for_test().unwrap();
+        let before = open_handles_under_for_test(root).unwrap();
         for relative in &inputs {
             assert!(state
                 .read_guarded_bounded(relative, 1024)
@@ -2057,16 +2079,18 @@ pub(crate) mod tests {
                 .is_some());
         }
         assert_eq!(state.read_guards.len(), inputs.len());
-        let after_scan = open_handle_count_for_test().unwrap();
+        let after_scan = open_handles_under_for_test(root).unwrap();
         state
             .replace("Owner.bsl", b"before", b"after!".to_vec())
             .unwrap();
         let transaction = state.finalize().unwrap();
-        let after_finalize = open_handle_count_for_test().unwrap();
-        // The old guard kept the file and every directory of its route open:
-        // more than three descriptors per input here. A fixed allowance
-        // absorbs descriptors of concurrently running tests.
-        let allowance = 32;
+        let after_finalize = open_handles_under_for_test(root).unwrap();
+        // The count is of descriptors on this root only, so tests running
+        // alongside do not enter it. The old guard kept the file and every
+        // directory of its route open, more than three descriptors per input;
+        // a scan that keeps fewer than one per directory of inputs keeps none
+        // per input.
+        let allowance = DIRECTORIES;
         assert!(
             after_scan.saturating_sub(before) < allowance,
             "scan of {} inputs kept {} descriptors open",
