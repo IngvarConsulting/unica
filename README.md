@@ -17,7 +17,7 @@ Unica (Ю&#x301;ника) — плагин для [Codex](https://openai.com/cod
 - один из агентов:
   - [Codex CLI](https://learn.chatgpt.com/docs/codex/cli);
   - [Claude Code](https://code.claude.com/docs/en/overview);
-  - ZCode Desktop с поддержкой `.zcode-plugin` (контракт проверяется для 3.14.4);
+  - ZCode Desktop;
 - стандартный Git, включая Git for Windows на Windows;
 - платформа 1С только для операций, которым нужен запуск 1С.
 
