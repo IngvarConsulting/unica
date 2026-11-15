@@ -6885,7 +6885,11 @@ mod medium_tests {
             let real = root.join("real");
             let link = root.join("link");
             fs::create_dir_all(&real).unwrap();
-            std::os::windows::fs::symlink_dir(&real, &link).unwrap();
+            // Предмет проверки — точка повторного разбора, а отказ стоит
+            // на её атрибуте, не на метке ссылки. Соединение каталогов несёт
+            // тот же атрибут и создаётся без привилегии, поэтому проверка
+            // исполняется здесь и покрывает второй вид точки.
+            crate::platform::testing::create_directory_junction_for_test(&real, &link).unwrap();
 
             let error = open_directory_nofollow(&link).unwrap_err();
 
@@ -7352,7 +7356,21 @@ mod medium_tests {
             fs::create_dir_all(&root).unwrap();
             let target = root.join("target.txt");
             fs::write(&target, b"target").unwrap();
-            std::os::windows::fs::symlink_file(&target, root.join("link.txt")).unwrap();
+            // Подменяется файл, а соединение бывает только на каталог:
+            // без привилегии ссылок эту точку повторного разбора не создать.
+            let link = crate::platform::testing::create_file_link_fixture_for_test(
+                &target,
+                root.join("link.txt"),
+            )
+            .unwrap();
+            if link != crate::platform::testing::FileLinkFixtureOutcome::Created {
+                fs::remove_dir_all(&root).unwrap();
+                unica_process::test_support::skip_without_host_capability(
+                    unica_process::test_support::HostCapability::Symlink,
+                    "the reparse point of the test is a file symbolic link",
+                );
+                return;
+            }
             let parent = open_directory_nofollow(&root).unwrap();
 
             let (opened, kind) = open_any_child_nofollow(&parent, std::ffi::OsStr::new("link.txt"))

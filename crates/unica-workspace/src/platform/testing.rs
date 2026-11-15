@@ -193,6 +193,60 @@ pub fn sharing_violation_error_cases_for_test() -> [(io::Error, bool); 2] {
     ]
 }
 
+/// Соединение каталогов — вторая разновидность точки повторного разбора, и
+/// единственная, которую Windows создаёт без привилегии ссылок. Так проверка,
+/// чей предмет — точка разбора, а не ссылка, исполняется и там, где
+/// привилегии нет.
+///
+/// Успех определяется состоянием файловой системы, а не кодом возврата:
+/// `mklink /J` с отсутствующей целью отдаёт ноль и оставляет висячее
+/// соединение — атрибут точки стоит, а цели нет. Код возврата и вывод идут
+/// только уликой в сообщении об ошибке; вывод берётся с потерями и не
+/// разбирается, потому что приходит в кодовой странице консоли.
+///
+/// Буфер точки через `FSCTL_SET_REPARSE_POINT` здесь не собирается: сборка
+/// в `unsafe` рискует тонкой ошибкой, из-за которой тест замигает вместо
+/// того, чтобы упасть, — а это ровно то, что такие проверки и лечат.
+#[cfg(all(test, windows))]
+pub fn create_directory_junction_for_test(target: &Path, link: &Path) -> io::Result<()> {
+    use std::os::windows::fs::MetadataExt;
+    use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+
+    let done = std::process::Command::new("cmd")
+        .args(["/c", "mklink", "/J"])
+        .arg(link)
+        .arg(target)
+        .output()?;
+    let evidence = || {
+        format!(
+            "mklink /J {} {} exited with {:?}: {}{}",
+            link.display(),
+            target.display(),
+            done.status.code(),
+            String::from_utf8_lossy(&done.stdout).trim(),
+            String::from_utf8_lossy(&done.stderr).trim(),
+        )
+    };
+    let metadata = std::fs::symlink_metadata(link).map_err(|error| {
+        io::Error::other(format!("{}: no junction at the link; {error}", evidence()))
+    })?;
+    if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT == 0 {
+        return Err(io::Error::other(format!(
+            "{}: the link carries no reparse point",
+            evidence()
+        )));
+    }
+    let (resolved, wanted) = (std::fs::canonicalize(link), std::fs::canonicalize(target));
+    match (resolved, wanted) {
+        (Ok(resolved), Ok(wanted)) if resolved == wanted => Ok(()),
+        (resolved, wanted) => Err(io::Error::other(format!(
+            "{}: the junction does not lead to the target; link resolves to {resolved:?}, \
+             target resolves to {wanted:?}",
+            evidence()
+        ))),
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FileLinkFixtureOutcome {
     Created,
@@ -508,6 +562,46 @@ mod medium_tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+
+    /// `mklink /J` отдаёт ноль и при отсутствующей цели, оставляя висячее
+    /// соединение: атрибут точки стоит, цели нет. Помощник решает по
+    /// состоянию файловой системы, поэтому такой вызов успехом не считает —
+    /// иначе подготовка проверки формально прошла бы, а проверялось бы не то.
+    #[cfg(windows)]
+    #[test]
+    fn a_junction_to_a_missing_target_is_not_a_success() {
+        let root = unique_temp_root("junction-dangling");
+        let link = root.join("link");
+        let absent = root.join("absent");
+
+        let error = super::create_directory_junction_for_test(&absent, &link)
+            .expect_err("a junction to a missing target must not pass as created");
+
+        let message = error.to_string();
+        assert!(message.contains("does not lead to the target"), "{message}");
+        assert!(message.contains("mklink /J"), "{message}");
+        // Висячее соединение осталось на диске: помощник судит о состоянии,
+        // а не убирает за `mklink`.
+        assert!(fs::symlink_metadata(&link).is_ok(), "{message}");
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// Соединение к существующему каталогу — успех, и его видно по состоянию:
+    /// точка стоит и ведёт к цели.
+    #[cfg(windows)]
+    #[test]
+    fn a_junction_to_a_directory_is_created_without_the_symlink_privilege() {
+        let root = unique_temp_root("junction-created");
+        let target = root.join("target");
+        let link = root.join("link");
+        fs::create_dir_all(&target).unwrap();
+        fs::write(target.join("inside.txt"), b"inside").unwrap();
+
+        super::create_directory_junction_for_test(&target, &link).unwrap();
+
+        assert_eq!(fs::read(link.join("inside.txt")).unwrap(), b"inside");
+        fs::remove_dir_all(&root).unwrap();
+    }
 
     #[test]
     fn unix_mode_fixture_is_exact_or_explicitly_unsupported() {

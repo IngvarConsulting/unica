@@ -1964,7 +1964,6 @@ mod tests {
 mod windows_tests {
     use super::*;
     use std::fs;
-    use std::os::windows::fs::{symlink_dir, symlink_file};
     use uuid::Uuid;
 
     struct Fixture {
@@ -2025,7 +2024,17 @@ mod windows_tests {
         let outside = fixture.root.join("outside.xml");
         fs::write(&outside, b"outside").unwrap();
         fs::remove_file(&path).unwrap();
-        symlink_file(&outside, &path).unwrap();
+        // Подменяется файл, а соединение бывает только на каталог: без
+        // привилегии ссылок такую точку повторного разбора не создать.
+        if crate::platform::testing::create_file_link_fixture_for_test(&outside, &path).unwrap()
+            != crate::platform::testing::FileLinkFixtureOutcome::Created
+        {
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::Symlink,
+                "the reparse point of the test is a file symbolic link",
+            );
+            return;
+        }
         assert!(read_root_relative_regular_file(&fixture.root, &path, 1024, |_| {}).is_err());
     }
 
@@ -2037,7 +2046,12 @@ mod windows_tests {
         fs::create_dir(&outside).unwrap();
         fs::write(outside.join("resource.xml"), b"outside").unwrap();
         fs::remove_dir_all(fixture.root.join("parent")).unwrap();
-        symlink_dir(&outside, fixture.root.join("parent")).unwrap();
+        // Соединение каталогов: тот же атрибут точки разбора, без привилегии.
+        crate::platform::testing::create_directory_junction_for_test(
+            &outside,
+            &fixture.root.join("parent"),
+        )
+        .unwrap();
         assert!(read_root_relative_regular_file(&fixture.root, &path, 1024, |_| {}).is_err());
     }
 
@@ -2045,7 +2059,8 @@ mod windows_tests {
     fn rejects_reparse_source_root() {
         let fixture = Fixture::new();
         let alias = fixture.root.with_extension("alias");
-        symlink_dir(&fixture.root, &alias).unwrap();
+        crate::platform::testing::create_directory_junction_for_test(&fixture.root, &alias)
+            .unwrap();
         let result = read_root_relative_regular_file(
             &alias,
             &alias.join("parent/resource.xml"),
