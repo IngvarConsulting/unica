@@ -16,11 +16,11 @@ fn install_synonym(fixture: &RealReaderFixture, synonym: &str) -> PathBuf {
 #[test]
 fn xdto_synonym_reaches_public_view_from_the_descriptor_without_writes() {
     for (xml, expected) in [
-        ("<Synonym><v8:item><v8:lang>en</v8:lang><v8:content>Contracts</v8:content></v8:item><v8:item><v8:lang>ru</v8:lang><v8:content>  Договоры &amp; акты<![CDATA[.]]></v8:content></v8:item></Synonym>", "  Договоры & акты."),
-        ("<Synonym><v8:item><v8:lang>en</v8:lang><v8:content>Contracts</v8:content></v8:item></Synonym>", "Contracts"),
+        ("<Synonym><v8:item><v8:lang>en</v8:lang><v8:content>Contracts</v8:content></v8:item><v8:item><v8:lang>ru</v8:lang><v8:content>  Договоры &amp; акты<![CDATA[.]]></v8:content></v8:item></Synonym>", "en = 'Contracts'; ru = '  Договоры & акты.'"),
+        ("<Synonym><v8:item><v8:lang>en</v8:lang><v8:content>Contracts</v8:content></v8:item></Synonym>", "en = 'Contracts'"),
         ("<Synonym/>", ""),
         ("<Synonym></Synonym>", ""),
-        ("<Synonym><v8:item><v8:lang>ru</v8:lang><v8:content/></v8:item></Synonym>", ""),
+        ("<Synonym><v8:item><v8:lang>ru</v8:lang><v8:content/></v8:item></Synonym>", "ru = ''"),
     ] {
         let fixture = RealReaderFixture::new();
         let descriptor = install_synonym(&fixture, xml);
@@ -31,7 +31,7 @@ fn xdto_synonym_reaches_public_view_from_the_descriptor_without_writes() {
         let result = service.view(ViewRequest::new(PACKAGE).unwrap());
         assert!(result.ok, "XDTO root must remain readable");
         let data = result.data.unwrap();
-        assert_eq!(data["props"]["Synonym"], expected);
+        assert_eq!(data["props"].get("Synonym").and_then(serde_json::Value::as_str), (!expected.is_empty()).then_some(expected));
         assert_eq!(data["props"]["Comment"], "");
         assert!(data["props"]["targetNamespace"].is_string());
         assert!(data["props"]["total"].is_number());
@@ -81,7 +81,7 @@ fn xdto_synonym_absence_and_damage_do_not_hide_independent_package_facts() {
 
 #[test]
 fn xdto_synonym_compact_budget_preserves_whole_property_reading() {
-    for size in [1024, 1025] {
+    for size in [1020, 1021] {
         let fixture = RealReaderFixture::new();
         let text = "Я".repeat(size);
         install_synonym(&fixture, &format!("<Synonym><v8:item><v8:lang>ru</v8:lang><v8:content>{text}</v8:content></v8:item></Synonym>"));
@@ -89,8 +89,8 @@ fn xdto_synonym_compact_budget_preserves_whole_property_reading() {
         let result = service.view(ViewRequest::new(PACKAGE).unwrap());
         assert!(result.ok);
         let data = result.data.unwrap();
-        if size == 1024 {
-            assert_eq!(data["props"]["Synonym"], text);
+        if size == 1020 {
+            assert_eq!(data["props"]["Synonym"], format!("ru = '{text}'"));
         } else {
             assert!(data["props"].get("Synonym").is_none());
             assert!(data["limits"]
@@ -103,7 +103,7 @@ fn xdto_synonym_compact_budget_preserves_whole_property_reading() {
             service.view(ViewRequest::new(PACKAGE).unwrap())
         });
         assert!(whole.ok);
-        assert_eq!(whole.data.unwrap()["props"]["Synonym"], text);
+        assert_eq!(whole.data.unwrap()["props"]["Synonym"], format!("ru = '{text}'"));
     }
 }
 

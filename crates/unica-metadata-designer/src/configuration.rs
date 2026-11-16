@@ -179,17 +179,35 @@ pub fn parse_cf_info_xml(
                 })
         })
         .collect();
+    let mut property_limits = Vec::new();
+    let mut localized = |name| match crate::info_projection::localized_property_as_nstr(props, "Configuration", name) {
+        Ok(value) => value,
+        Err(error) => {
+            property_limits.push(format!("source_unreadable: {error}"));
+            None
+        }
+    };
+    let synonym = localized("Synonym");
+    let caption = localized("Caption");
+    let short_caption = localized("ShortCaption");
+    let localized_properties = unica_metadata::descriptor_operations::CONFIGURATION_LOCALIZED_PROPERTIES
+        .iter()
+        .filter(|(_, key)| !matches!(*key, "synonym" | "caption" | "shortCaption"))
+        .filter_map(|(tag, key)| localized(tag).map(|value| (key.to_string(), value.into())))
+        .collect();
     let data = CfInfoData {
         format: version.to_string(),
         name: cf_prop_text(props, "Name"),
-        synonym: optional(cf_prop_ml(props, "Synonym")),
-        caption: optional(cf_prop_ml(props, "Caption")),
-        short_caption: optional(cf_prop_ml(props, "ShortCaption")),
+        synonym,
+        caption,
+        short_caption,
+        property_limits,
         version: optional(cf_prop_text(props, "Version")),
         vendor: optional(cf_prop_text(props, "Vendor")),
         support,
         extension_purpose,
         properties: CfInfoProperties {
+            localized_properties,
             purpose: read_cf_purpose_properties(props)?,
             compatibility_mode: optional(cf_prop_text(props, "CompatibilityMode")),
             default_run_mode: optional(cf_prop_text(props, "DefaultRunMode")),

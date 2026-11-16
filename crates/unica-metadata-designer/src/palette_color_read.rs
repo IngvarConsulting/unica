@@ -67,7 +67,7 @@ mod tests {
         ] {
             let mut payload = json!({});
             enrich_palette_color(raw.as_bytes(), &mut payload).unwrap();
-            assert_eq!(payload["synonym"], "Проба");
+            assert_eq!(payload["synonym"], "ru = 'Проба'");
             assert_eq!(
                 payload["properties"],
                 json!([{"key":"Color","value":"#1A2B3C"}])

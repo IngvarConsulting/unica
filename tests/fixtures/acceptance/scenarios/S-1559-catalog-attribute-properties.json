@@ -211,7 +211,7 @@
         },
         {
           "pointer": "/data/props/synonym",
-          "eq": "Код языка"
+          "eq": "ru = 'Код языка'"
         },
         {
           "pointer": "/data/props/type/variants/0/length",
@@ -284,7 +284,7 @@
         },
         {
           "pointer": "/data/props/synonym",
-          "eq": "Параметры прописи"
+          "eq": "ru = 'Параметры прописи'"
         },
         {
           "pointer": "/data/props/type/variants/0/length",
@@ -296,12 +296,7 @@
         },
         {
           "pointer": "/data/props/ToolTip",
-          "eq": [
-            {
-              "language": "ru",
-              "content": "Настройки представления суммы прописью"
-            }
-          ]
+          "eq": "ru = 'Настройки представления суммы прописью'"
         }
       ],
       "fileAssertions": [
@@ -553,7 +548,7 @@
         },
         {
           "pointer": "/data/props/synonym",
-          "eq": "Код языка"
+          "eq": "ru = 'Код языка'"
         },
         {
           "pointer": "/data/props/type/variants/0/length",

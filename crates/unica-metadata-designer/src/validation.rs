@@ -2110,29 +2110,9 @@ pub fn parse_common_template_descriptor_from_bytes(
         return Err("common template descriptor belongs to another logical address".into());
     }
     let template_type = template_descriptor_type(*properties)?;
-    let synonyms = properties
-        .children()
-        .filter(|node| node.is_element() && node.tag_name().name() == "Synonym")
-        .collect::<Vec<_>>();
-    let (synonym, unreadable_synonym) = match synonyms.as_slice() {
-        [] => (None, None),
-        [node]
-            if super::info_projection::meta_info_property_value_is_valid(
-                *node,
-                unica_metadata::MetaInfoPropertyValueKind::LocalizedString,
-            ) && super::info_projection::direct_text_content(*node)
-                .trim()
-                .is_empty() =>
-        {
-            let value = super::xml_model::meta_info_ml_text(*node);
-            ((!value.is_empty()).then_some(value), None)
-        }
-        _ => (
-            None,
-            Some(
-                "CommonTemplate Synonym is malformed, duplicated or has a foreign namespace".into(),
-            ),
-        ),
+    let (synonym, unreadable_synonym) = match crate::info_projection::localized_property_as_nstr(*properties, "CommonTemplate", "Synonym") {
+        Ok(synonym) => (synonym, None),
+        Err(error) => (None, Some(error)),
     };
     Ok(CommonTemplateDescriptorFacts {
         template_type,

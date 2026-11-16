@@ -315,10 +315,15 @@ impl Validator<'_> {
                 .as_str()
                 .is_some_and(|text| contract_pattern(pattern).is_match(text))
             {
-                return Err(error(
-                    path,
-                    "text does not match the supported argument grammar",
-                ));
+                // A described grammar names its form, so the refusal tells the
+                // caller what to send instead.
+                let message = match schema["description"].as_str() {
+                    Some(form) => {
+                        format!("text does not match the supported argument grammar: {form}")
+                    }
+                    None => "text does not match the supported argument grammar".to_string(),
+                };
+                return Err(error(path, message));
             }
         }
         if let Some(values) = schema["enum"].as_array() {

@@ -154,24 +154,15 @@
         },
         {
           "pointer": "/data/items/1/props/ToolTip",
-          "eq": [
-            {
-              "language": "ru",
-              "content": "Настройки представления суммы прописью"
-            },
-            {
-              "language": "en",
-              "content": "Amount spelling settings & presentation"
-            }
-          ]
+          "eq": "ru = 'Настройки представления суммы прописью'; en = 'Amount spelling settings & presentation'"
         },
         {
           "pointer": "/data/items/0/props/synonym",
-          "eq": "Код языка"
+          "eq": "ru = 'Код языка'"
         },
         {
           "pointer": "/data/items/1/props/synonym",
-          "eq": "Параметры прописи"
+          "eq": "ru = 'Параметры прописи'"
         },
         {
           "pointer": "/data/items/1/props/required",
@@ -244,7 +235,7 @@
         },
         {
           "pointer": "/data/props/synonym",
-          "eq": "Код языка"
+          "eq": "ru = 'Код языка'"
         },
         {
           "pointer": "/data/props/type/variants/0/length",
@@ -321,7 +312,7 @@
         },
         {
           "pointer": "/data/props/synonym",
-          "eq": "Параметры прописи"
+          "eq": "ru = 'Параметры прописи'"
         },
         {
           "pointer": "/data/props/type/variants/0/length",
@@ -333,16 +324,7 @@
         },
         {
           "pointer": "/data/props/ToolTip",
-          "eq": [
-            {
-              "language": "ru",
-              "content": "Настройки представления суммы прописью"
-            },
-            {
-              "language": "en",
-              "content": "Amount spelling settings & presentation"
-            }
-          ]
+          "eq": "ru = 'Настройки представления суммы прописью'; en = 'Amount spelling settings & presentation'"
         }
       ],
       "fileAssertions": [
@@ -618,7 +600,7 @@
         },
         {
           "pointer": "/data/props/synonym",
-          "eq": "Параметры прописи"
+          "eq": "ru = 'Параметры прописи'"
         },
         {
           "pointer": "/data/props/type/variants/0/length",

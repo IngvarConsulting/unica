@@ -39,6 +39,15 @@ impl ProviderReadAuthority {
             Ok(None) => {}
             Err(message) => payload["commentError"] = json!(message),
         }
+        match crate::infrastructure::family_codecs::metadata_read_codec()
+            .descriptor_localized_property(descriptor, "Role", "Synonym")
+        {
+            Ok(value) => payload["synonym"] = json!(value),
+            Err(message) => {
+                payload["synonym"] = Value::Null;
+                payload["synonymError"] = json!(message);
+            }
+        }
         Ok(payload)
     }
 }

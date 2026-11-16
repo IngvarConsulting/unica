@@ -2183,18 +2183,9 @@ pub fn parse_subsystem_info_xml(
 
     let name =
         unica_xml_format::read::child_text(props, "Name", Some("http://v8.1c.ru/8.3/MDClasses"));
-    let synonym = props
-        .children()
-        .find(|node| {
-            unica_xml_format::names::element_has_name(
-                *node,
-                "Synonym",
-                Some("http://v8.1c.ru/8.3/MDClasses"),
-            )
-        })
-        .map(unica_xml_format::read::multilang_text)
-        .unwrap_or_default();
     let mut property_limits = Vec::new();
+    let synonym = subsystem_text_property(props, "Synonym", true, &mut property_limits)
+        .unwrap_or_default();
     let comment = subsystem_text_property(props, "Comment", false, &mut property_limits);
     let include_help_in_contents =
         subsystem_text_property(props, "IncludeHelpInContents", false, &mut property_limits)
@@ -2265,7 +2256,16 @@ fn subsystem_text_property(
     localized: bool,
     limits: &mut Vec<String>,
 ) -> Option<String> {
-    use crate::info_projection::{direct_text_content, localized_string_is_valid};
+    use crate::info_projection::direct_text_content;
+    if localized {
+        return match crate::info_projection::localized_property_as_nstr(properties, "Subsystem", name) {
+            Ok(value) => value,
+            Err(error) => {
+                limits.push(format!("source_unreadable: {error}"));
+                None
+            }
+        };
+    }
     let nodes = properties
         .children()
         .filter(|node| node.is_element() && node.tag_name().name() == name)
@@ -2277,44 +2277,13 @@ fn subsystem_text_property(
         let direct_text = direct_text_content(*node);
         let valid = node.tag_name().namespace() == Some("http://v8.1c.ru/8.3/MDClasses")
             && node.attributes().len() == 0
-            && if localized {
-                direct_text.trim().is_empty() && localized_string_is_valid(*node)
-            } else {
-                !node.children().any(|child| child.is_element())
-            };
+            && !node.children().any(|child| child.is_element());
         if valid {
-            return Some(if localized {
-                subsystem_localized_text(*node)
-            } else {
-                direct_text
-            });
+            return Some(direct_text);
         }
     }
     limits.push(format!("source_unreadable: Subsystem properties.{name} is malformed, duplicated or has a foreign namespace"));
     None
-}
-
-fn subsystem_localized_text(node: roxmltree::Node<'_, '_>) -> String {
-    use crate::info_projection::direct_text_content;
-    let values = node
-        .children()
-        .filter(roxmltree::Node::is_element)
-        .map(|item| {
-            let text = |name| {
-                item.children()
-                    .find(|child| child.is_element() && child.tag_name().name() == name)
-                    .map(direct_text_content)
-                    .unwrap_or_default()
-            };
-            (text("lang"), text("content"))
-        })
-        .collect::<Vec<_>>();
-    values
-        .iter()
-        .find(|(language, content)| language == "ru" && !content.is_empty())
-        .or_else(|| values.iter().find(|(_, content)| !content.is_empty()))
-        .map(|(_, content)| content.clone())
-        .unwrap_or_default()
 }
 
 pub fn append_subsystem_overview(lines: &mut Vec<String>, data: &SubsystemInfoData) {

@@ -292,6 +292,21 @@ const fn form_member(common: bool) -> &'static str {
     }
 }
 
+/// Localized properties read and written on a configuration descriptor.
+pub const CONFIGURATION_LOCALIZED_PROPERTIES: &[(&str, &str)] = &[
+    ("Synonym", "synonym"),
+    ("Caption", "caption"),
+    ("ShortCaption", "shortCaption"),
+    ("BriefInformation", "briefInformation"),
+    ("DetailedInformation", "detailedInformation"),
+    ("Copyright", "copyright"),
+    ("VendorInformationAddress", "vendorInformationAddress"),
+    (
+        "ConfigurationInformationAddress",
+        "configurationInformationAddress",
+    ),
+];
+
 impl DescriptorProperty {
     /// Localized properties keep one value per language; the others are
     /// plain element text.
@@ -614,6 +629,9 @@ impl PropertiesSite {
                         continue;
                     }
                     let schema = match field.kind() {
+                        DescriptorPropertyKind::String if field.localized() => {
+                            crate::localized_value_schema()
+                        }
                         DescriptorPropertyKind::String => json!({"type":"string"}),
                         DescriptorPropertyKind::Boolean => json!({"type":"boolean"}),
                         DescriptorPropertyKind::Enum => {
@@ -976,7 +994,7 @@ mod tests {
             let oracle = jsonschema::validator_for(&new.schema).unwrap();
             assert!(oracle.is_valid(&json!({"values":{
                 "ClientApplicationTheme":"Dark","InterfaceCompatibilityMode":"Version8_5",
-                "caption":"Учёт"
+                "caption":"ru = 'Учёт'"
             }})));
         }
 
@@ -1746,10 +1764,10 @@ mod tests {
     fn normalization_keeps_independent_alias_groups_and_rejects_collisions() {
         for site in [PropertiesSite::Role, PropertiesSite::Subsystem] {
             let contract = PropertiesOperation::Set.contract(site);
-            let args = json!({"values":{"synonym":"S","Comment":"C"}});
+            let args = json!({"values":{"synonym":"ru = 'S'","Comment":"C"}});
             assert_eq!(contract.normalize(&args, "args").unwrap(), args);
             for values in [
-                json!({"Synonym":"S","synonym":"S"}),
+                json!({"Synonym":"ru = 'S'","synonym":"ru = 'S'"}),
                 json!({"Comment":"C","comment":"different"}),
                 json!({}),
             ] {
