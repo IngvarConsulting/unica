@@ -537,17 +537,9 @@ impl<A: ViewReadAuthority> ViewService<A> {
                     items
                         .iter()
                         .position(|item| {
-                            item.get("at")
-                                .and_then(Value::as_str)
-                                .and_then(|at| QualifiedAddress::parse(at).ok())
-                                .is_some_and(|at| {
-                                    at.segments()
-                                        .last()
-                                        .and_then(|segment| segment.name())
-                                        .is_some_and(|name| {
-                                            name.to_lowercase().starts_with(&prefix)
-                                        })
-                                })
+                            item.get("at").and_then(Value::as_str).is_some_and(|at| {
+                                QualifiedAddress::last_name_starts_with(at, &prefix)
+                            })
                         })
                         .unwrap_or(items.len())
                 })
