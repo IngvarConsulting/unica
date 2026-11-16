@@ -393,7 +393,7 @@ pub fn catalog_for(release: SurfaceRelease) -> Option<V13Catalog> {
                     description: "Search bundled Unica and safe 1C documentation by topic, or open a document locator. Search hits and long document text use pages; each search source reports whether its retrieved window is complete.",
                     input_schema: schema(
                         json!({
-                            "query": {"type": "string", "description": "Documentation question or search phrase."},
+                            "query": {"type": "string", "description": "Documentation question, search phrase, or an exact documentId returned by this tool. Platform-help locators include the installation build: platform-syntax-help:<platform-build>:<corpus>:<path>."},
                             "source": {"type": "string", "description": "Optional documented source kind, not a provider identity."},
                             "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 20, "description": "Maximum hits per search page or text fragments per long document page, from 1 to 50. A text fragment is one line or at most 16 KiB of a longer line; short documents still arrive whole."},
                             "cursor": cursor("Continue the same documentation search or long document. A document cursor checks its complete text and metadata for changes; concatenate document.text fragments in page order."),
