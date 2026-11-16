@@ -434,7 +434,10 @@ fn every_workspace_folder_is_answered_with_its_space_or_a_failure_in_order() {
     );
     assert_eq!(
         content["result"],
-        json!({"text": "// unica://w0/main/CommonModule.A.Module"})
+        json!({
+            "text": "// unica://w0/main/CommonModule.A.Module",
+            "rev": "5df25f71343a19627da6c0b79e0636bfa474dc846e16b0a818a0d75917cc4099",
+        })
     );
     assert_eq!(
         error_code(&editor.request("workspace/textDocumentContent", json!({}))),
