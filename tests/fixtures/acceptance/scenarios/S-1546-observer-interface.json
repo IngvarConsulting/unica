@@ -2,7 +2,7 @@
   "id": "S-1546-observer-interface",
   "issue": 1546,
   "area": "Чтение модулей",
-  "task": "Пройти Interface к точному returned Method; сохранить нормативные группы, пустые срезы и отдельные наборы одноимённого модуля без записи",
+  "task": "Открыть адрес среза Interface, затем открыть метод по каноническому адресу из среза. Проверить пустой срез и изоляцию наборов исходников.",
   "workspace": "tests/fixtures/acceptance/workspace-observer-interface",
   "wire": [
     {
@@ -20,7 +20,7 @@
         },
         {
           "pointer": "/data/items/0/at",
-          "absent": true
+          "eq": "main:CommonModule.Shared.Interface.Public"
         },
         {
           "pointer": "/data/items/0/methods",
@@ -35,7 +35,7 @@
         },
         {
           "pointer": "/data/items/1/at",
-          "absent": true
+          "eq": "main:CommonModule.Shared.Interface.Library"
         },
         {
           "pointer": "/data/items/1/methods",
@@ -51,7 +51,7 @@
         },
         {
           "pointer": "/data/items/2/at",
-          "absent": true
+          "eq": "main:CommonModule.Shared.Interface.Override"
         },
         {
           "pointer": "/data/items/2/methods",
@@ -61,8 +61,41 @@
         }
       ],
       "captures": {
+        "slice": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.slice"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "$capture.slice"
+        },
+        {
+          "pointer": "/data/items",
+          "sameItems": [
+            {
+              "at": "main:CommonModule.Shared.Method.Открытая",
+              "kind": "Method"
+            },
+            {
+              "at": "main:CommonModule.Shared.Method.Вложенная",
+              "kind": "Method"
+            }
+          ]
+        }
+      ],
+      "captures": {
         "method": {
-          "pointer": "/data/items/0/methods/0"
+          "pointer": "/data/items/0/at"
         }
       }
     },
@@ -104,6 +137,21 @@
         },
         {
           "pointer": "/data/items/2/methods",
+          "eq": []
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule.Empty.Interface.Public"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
           "eq": []
         }
       ]
@@ -196,6 +244,30 @@
           "kind": "sha256",
           "path": "v8project.yaml",
           "eq": "ad66bbc36bcab2877eae70d9b5eb5e9233f0d0c0018de56429b3c5f757236945"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "ext:CommonModule.Shared.Interface.Library"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "sameItems": [
+            {
+              "at": "ext:CommonModule.Shared.Method.Открытая",
+              "kind": "Method"
+            },
+            {
+              "at": "ext:CommonModule.Shared.Method.ТолькоРасширение",
+              "kind": "Method"
+            }
+          ]
         }
       ]
     }

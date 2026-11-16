@@ -336,10 +336,8 @@ impl InterfaceKind {
     }
 }
 
-/// Срез методов модуля по нормативным областям. У среза нет адреса:
-/// у `Interface` не бывает имени, и `…Interface.Public` грамматика адреса
-/// отвергает (CTR.SOURCE.QUALIFIED-LOGICAL-ADDRESS). Срез — элемент ветви
-/// `…Interface`, а его методы адресуются своими `…Method.<имя>` (#1467).
+/// Срез методов модуля по нормативным областям. Чтение публикует срез под
+/// `…Interface.<имя>` со ссылками на исходные `…Method.<имя>`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct InterfaceProjection {
     pub kind: &'static str,

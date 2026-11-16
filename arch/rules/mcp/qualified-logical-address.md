@@ -29,11 +29,16 @@ id: CTR.SOURCE.QUALIFIED-LOGICAL-ADDRESS
 так же.
 
 Вид в конце без имени обозначает ветвь, например
-`main:Catalog.Валюты.Attribute`. У `Configuration`, `Interface`, `Metadata` и `Schedule` имени
+`main:Catalog.Валюты.Attribute`. У `Configuration`, командного `Interface`, `Metadata` и `Schedule` имени
 не бывает: следующий сегмент разбирается как вид. Выдуманное имя
 отклоняется с объяснением этой причины. `Configuration` разрешён только
 как самостоятельный корень `main:Configuration` и перед вопросом к его
 словарю `main:Configuration.Can.<op>`.
+
+У программного интерфейса BSL-модуля имя после `Interface` обозначает срез:
+`Public`, `Library` или `Override`. Например,
+`main:CommonModule.ZipАрхивы.Interface.Public`. Методы в срезе читаются
+по своим каноническим адресам.
 
 `Metadata` обозначает декларацию общей формы или именованной формы владельца:
 `main:CommonForm.ВыборПериода.Metadata` либо

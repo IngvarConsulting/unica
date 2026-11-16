@@ -255,7 +255,7 @@ fn module_projection_suffix_is_valid(suffix: &[AddressSegment]) -> bool {
     }
 }
 
-fn module_route_for_segments(segments: &[AddressSegment]) -> Option<ModuleRoute> {
+pub(crate) fn module_route_for_segments(segments: &[AddressSegment]) -> Option<ModuleRoute> {
     match segments {
         [owner] if owner.name().is_some() && owner.kind() == NodeKind::CommonModule => Some(route(
             NodeKind::CommonModule,
