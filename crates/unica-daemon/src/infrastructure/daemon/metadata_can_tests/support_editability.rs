@@ -48,13 +48,12 @@ fn a_locked_object_and_its_nodes_show_the_editability_apply_acts_on() {
     }
     assert!(ops.iter().any(|(op, _)| op == "supportRule.set"));
 
-    // A node under the object takes the object's editability; it has no own
-    // record here, so it names no rule.
+    // A subordinate node explains the owner's lock without copying its state.
     let attributes = view(&runtime, &fixture, "main:Catalog.Items.Attribute");
-    assert_eq!(
-        support(&attributes),
-        &json!({"editable": false, "reason": "locked", "policy": "deny"})
-    );
+    assert!(attributes["props"].get("support").is_none());
+    assert!(attributes["limits"].as_array().unwrap().contains(&json!(
+        "Editing blocked by vendor support: `main:Catalog.Items` is a vendor object with the support rule `locked`"
+    )));
 
     // The tree's lock without reading the object.
     let catalogs = view(&runtime, &fixture, "main:Catalog");
@@ -65,6 +64,42 @@ fn a_locked_object_and_its_nodes_show_the_editability_apply_acts_on() {
         .unwrap();
     assert_eq!(row["support"], "locked");
     assert!(row["props"].get("support").is_none());
+}
+
+/// rule: INV.APP.SUPPORT-STATE
+#[test]
+fn a_configuration_module_and_its_event_explain_the_configuration_lock() {
+    let fixture = Fixture::new("workspace-support-view");
+    let ext = fixture.workspace.join("main/Ext");
+    let marker = ext.join("ParentConfigurations.bin");
+    let state = std::fs::read_to_string(&marker).unwrap();
+    assert!(state.starts_with("{6,0,"));
+    std::fs::write(&marker, state.replacen("{6,0,", "{6,1,", 1)).unwrap();
+    std::fs::write(
+        ext.join("SessionModule.bsl"),
+        "Процедура Probe() Экспорт\nКонецПроцедуры\n",
+    )
+    .unwrap();
+    let runtime = runtime();
+
+    let owner = view(&runtime, &fixture, "main:Configuration");
+    assert_eq!(support(&owner)["reason"], "configurationReadOnly");
+    for (address, operation) in [
+        ("main:Module.Session", "code.insert"),
+        (
+            "main:Module.Session.Event.SessionParametersSetting",
+            "event.implement",
+        ),
+    ] {
+        let node = view(&runtime, &fixture, address);
+        assert!(node["props"].get("support").is_none(), "{address}");
+        assert!(node["limits"].as_array().unwrap().contains(&json!(
+            "Editing blocked by vendor support: the configuration is on vendor support with changes disabled"
+        )));
+        assert!(blocked_ops(&node).iter().any(|(op, reason)| {
+            op == operation && reason.as_deref() == Some("configurationReadOnly")
+        }));
+    }
 }
 
 /// Without a marker nothing is on support; an unreadable marker is not
@@ -117,4 +152,8 @@ fn a_warn_policy_makes_a_locked_object_editable() {
     assert!(blocked_ops(&object)
         .iter()
         .all(|(_, blocked)| blocked.is_none()));
+
+    let attributes = view(&runtime, &fixture, "main:Catalog.Items.Attribute");
+    assert!(attributes["props"].get("support").is_none());
+    assert!(attributes.get("limits").is_none());
 }

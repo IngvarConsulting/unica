@@ -6,8 +6,7 @@ use crate::infrastructure::v13_read_port::{attach_editability, own_rule, shows_e
 use unica_source_contract::proposal::SupportPolicyMode;
 
 impl<'a> LogicalViewReadAuthority<'a> {
-    /// Replaces the support facts of the projected node at `at` with its
-    /// editability under the project policy (read only for such a node) and
+    /// Publishes the node's own support facts or explains an inherited lock and
     /// marks the `can` entries that `apply`
     /// would refuse without a support change. A node outside an object of a
     /// configuration or extension set is left as it is.

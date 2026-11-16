@@ -439,11 +439,7 @@
         },
         {
           "pointer": "/data/props/support",
-          "eq": {
-            "editable": true,
-            "reason": "notSupported",
-            "policy": "deny"
-          }
+          "absent": true
         }
       ]
     },
@@ -486,11 +482,7 @@
         },
         {
           "pointer": "/data/props/support",
-          "eq": {
-            "editable": true,
-            "reason": "notSupported",
-            "policy": "deny"
-          }
+          "absent": true
         }
       ]
     },
@@ -665,11 +657,7 @@
         },
         {
           "pointer": "/data/props/support",
-          "eq": {
-            "editable": true,
-            "reason": "notSupported",
-            "policy": "deny"
-          }
+          "absent": true
         }
       ]
     },
@@ -712,11 +700,7 @@
         },
         {
           "pointer": "/data/props/support",
-          "eq": {
-            "editable": true,
-            "reason": "notSupported",
-            "policy": "deny"
-          }
+          "absent": true
         }
       ]
     },
