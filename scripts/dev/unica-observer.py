@@ -1157,6 +1157,10 @@ main { display: grid; grid-template-columns: var(--tree-w, 300px) 6px minmax(0, 
 .err { color: var(--bad); overflow-wrap: anywhere; }
 .more { margin-top: 4px; color: var(--link); }
 #node h2 { margin: 0 0 14px; font-size: 12px; font-weight: 600; overflow-wrap: anywhere; }
+#node .node-heading { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; }
+#node .node-heading h2 { margin-bottom: 0; }
+button.address-jump { box-sizing: border-box; width: 18px; height: 18px; min-height: 0; margin-left: 5px; padding: 0; border-radius: 0; color: var(--link); font-size: 10px; line-height: 1; vertical-align: middle; }
+.address-jump::before { content: "▶"; }
 .at { font: 12px var(--mono); overflow-wrap: anywhere; }
 dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 5px 14px; margin: 10px 0; font-size: 12px; }
 dt { color: var(--muted); }
@@ -1303,9 +1307,12 @@ const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const pretty = (v) => JSON.stringify(v, null, 2);
 const cache = new Map();
+const sourceSetNames = new Set();
+const expandTreeRows = new WeakMap();
 const PAGE_LIMIT = 50;
 let selected = null;
 let selectedRow = null;
+let selectionVersion = 0;
 
 async function api(path, body) {
   const init = body === undefined ? {} : {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)};
@@ -1499,6 +1506,21 @@ function highlightCodeBlocks(container, sourceText) {
         span.className = `syntax-${token.kind}`;
         span.textContent = token.text;
         code.appendChild(span);
+        if (!source && token.kind === "string") {
+          const candidate = token.text.slice(1, -1);
+          const separator = candidate.indexOf(":");
+          if (sourceSetNames.has(candidate.slice(0, separator)) &&
+              /^[^:\s]+:[\p{L}_][\p{L}\p{N}_]*(?=[.#]|$)/u.test(candidate)) {
+            const at = JSON.parse(token.text);
+            const jump = document.createElement("button");
+            jump.type = "button";
+            jump.className = "address-jump";
+            jump.title = `Открыть ${at}`;
+            jump.setAttribute("aria-label", jump.title);
+            jump.onclick = () => { showTab("node"); select(at); };
+            code.appendChild(jump);
+          }
+        }
       } else code.appendChild(document.createTextNode(token.text));
     }
     pre.dataset.language = language;
@@ -1568,21 +1590,20 @@ function makeRow(label, at, meta, count) {
   kids.hidden = true;
   wrap.append(row, kids);
   if (at !== undefined) {
-    let loaded = false;
-    let loading = false;
-    const toggle = async () => {
-      if (!tog.textContent || loading) return;
-      if (!loaded) {
-        loading = true;
-        try { await fill(kids, at); }
-        catch (error) { kids.insertAdjacentHTML("beforeend", `<div class="err">ошибка страницы: ${esc(error.message)}</div>`); }
-        finally { loading = false; }
-        loaded = true;
-      }
+    wrap.dataset.at = at;
+    let loading;
+    const setOpen = async (open) => {
       if (!tog.textContent) return;
-      kids.hidden = !kids.hidden;
-      tog.textContent = kids.hidden ? "▸" : "▾";
+      loading ??= fill(kids, at).catch(error => {
+        kids.insertAdjacentHTML("beforeend", `<div class="err">ошибка страницы: ${esc(error.message)}</div>`);
+      });
+      await loading;
+      if (!tog.textContent) return;
+      kids.hidden = !open;
+      tog.textContent = open ? "▾" : "▸";
     };
+    expandTreeRows.set(wrap, () => setOpen(true));
+    const toggle = () => setOpen(kids.hidden);
     tog.onclick = (event) => {
       event.stopPropagation();
       if (event.detail <= 1) toggle();
@@ -1625,7 +1646,10 @@ async function fill(container, at, cursor) {
   // нет, детьми служат корни наборов исходников `<имя>:Configuration`.
   for (const set of (at ? [] : data.sourceSets || [])) {
     const rootAt = `${set.name}:Configuration`;
-    container.appendChild(makeRow(rootAt, rootAt, ` <span class="badge">${esc(set.kind || "")}</span> <span class="cnt">${esc(set.sourceState || "")}</span>`));
+    sourceSetNames.add(set.name);
+    const row = makeRow(rootAt, rootAt, ` <span class="badge">${esc(set.kind || "")}</span> <span class="cnt">${esc(set.sourceState || "")}</span>`);
+    row.dataset.sourceSet = set.name;
+    container.appendChild(row);
   }
   for (const branch of data.branches || []) {
     const badges = `<span class="cnt">${branch.count ?? ""}</span>` + (isGraph(branch.at) ? ' <span class="badge graph">граф вызовов</span>' : "");
@@ -1647,12 +1671,63 @@ async function fill(container, at, cursor) {
   if (result.cursor) {
     const more = document.createElement("div");
     more.className = "row more";
+    more.dataset.cursor = result.cursor;
     const page = result.page ? " " + JSON.stringify(result.page) : "";
     more.textContent = "ещё…" + page;
-    more.onclick = async () => { more.remove(); await fill(container, at, result.cursor); };
+    let loadingPage;
+    more.onclick = () => loadingPage ??= fill(container, at, result.cursor).finally(() => more.remove());
     container.appendChild(more);
   }
   if (!container.childElementCount) markLeaf(container.previousElementSibling);
+}
+
+function highlightTreeRow(row) {
+  selectedRow?.classList.remove("sel");
+  selectedRow = row;
+  selectedRow?.classList.add("sel");
+}
+
+async function findTreeRow(wrap, target, version) {
+  if (wrap.dataset.at === target) return wrap;
+  await expandTreeRows.get(wrap)?.();
+  const kids = wrap.lastElementChild;
+  const visitedPages = new Set();
+  while (version === selectionVersion) {
+    const candidates = Array.from(kids.children).filter(child => {
+      const {at, sourceSet} = child.dataset;
+      return at !== undefined && (at === target || target.startsWith(at + ".") ||
+        (sourceSet !== undefined && target.startsWith(sourceSet + ":")));
+    });
+    // When a collection also lists deeper addresses, prefer their parent.
+    candidates.sort((a, b) => a.dataset.at.length - b.dataset.at.length);
+    if (candidates.length) return findTreeRow(candidates[0], target, version);
+    const more = kids.querySelector(":scope > .more");
+    if (!more || visitedPages.has(more.dataset.cursor)) return wrap;
+    visitedPages.add(more.dataset.cursor);
+    await more.onclick();
+  }
+  return wrap;
+}
+
+async function revealSelectedInTree(button, status, at, kind) {
+  button.disabled = true;
+  status.textContent = "Раскрываю дерево…";
+  const version = selectionVersion;
+  try {
+    // A line window is displayed in the card; the tree has one Body row.
+    const target = kind === "Body" ? at.replace(/#L\d+(?:-L\d+)?$/, "") : at;
+    const wrap = await findTreeRow($("tree").firstElementChild, target, version);
+    if (version !== selectionVersion) return;
+    const row = wrap.firstElementChild;
+    highlightTreeRow(row);
+    row.scrollIntoView({block: "nearest", inline: "nearest"});
+    status.textContent = wrap.dataset.at === at ? "" :
+      wrap.dataset.at ? `В дереве: ${wrap.dataset.at}` : "Адрес не найден в дереве";
+  } catch (error) {
+    status.textContent = error.message;
+  } finally {
+    button.disabled = false;
+  }
 }
 
 function sourceTextHtml(answer) {
@@ -1667,7 +1742,9 @@ function renderNode(at, answer) {
   const nodeAt = data.at || result.at || at || "";
   selected = nodeAt;
   $("addr").value = nodeAt;
-  let html = `<h2 class="at">${esc(nodeAt || "(корень)")}</h2>`;
+  let html = `<div class="node-heading"><h2 class="at">${esc(nodeAt || "(корень)")}</h2>` +
+    (nodeAt ? '<button id="revealNode">Показать в дереве</button><span class="cnt" id="revealStatus" role="status"></span>' : "") +
+    "</div>";
   html += `<dl><dt>ok</dt><dd class="${result.ok ? "yes" : "err"}">${result.ok}</dd>`;
   html += `<dt>kind</dt><dd>${esc(data.kind ?? "—")}</dd><dt>title</dt><dd>${esc(data.title ?? "—")}</dd>`;
   html += `<dt>summary</dt><dd>${esc(result.summary ?? "")}</dd><dt>время</dt><dd>${timing(answer)}</dd></dl>`;
@@ -1712,6 +1789,8 @@ function renderNode(at, answer) {
   html += `<section><h3>ответ view</h3><details><summary>сырой JSON</summary><pre>${esc(pretty(answer))}</pre></details></section>`;
   node.innerHTML = html;
   highlightCodeBlocks(node, answer.sourceText);
+  const reveal = $("revealNode");
+  if (reveal) reveal.onclick = () => revealSelectedInTree(reveal, $("revealStatus"), nodeAt, data.kind);
   node.querySelectorAll("a[data-at]").forEach((a) => a.onclick = (event) => { event.preventDefault(); select(a.dataset.at); });
   node.querySelectorAll("button[data-contract]").forEach((b) => b.onclick = () => showContract(nodeAt, data.can[+b.dataset.contract]));
   node.querySelectorAll("button[data-preview]").forEach((b) => b.onclick = () => showPreview(nodeAt, data.can[+b.dataset.preview]));
@@ -1721,19 +1800,23 @@ function renderNode(at, answer) {
 }
 
 async function select(at, row, fresh) {
-  if (selectedRow) selectedRow.classList.remove("sel");
-  if (row) { row.classList.add("sel"); selectedRow = row; }
+  const version = ++selectionVersion;
+  highlightTreeRow(row);
   $("node").innerHTML = `<p class="cnt" id="nodeLoading"></p>`;
   const stop = ticking($("nodeLoading"), `загрузка ${at || "(корень)"}…`);
   try {
     const answer = await view(at, undefined, fresh);
     stop();
+    if (version !== selectionVersion) return;
     renderNode(at, answer);
     const result = answer.result || {};
     const data = result.data || {};
     if (result.ok && !result.cursor && !["branches", "items", "sourceSets"].some((key) => (data[key] || []).length)) markLeaf(row);
   }
-  catch (error) { stop(); $("node").innerHTML = `<p class="err">${esc(error.message)}</p>`; }
+  catch (error) {
+    stop();
+    if (version === selectionVersion) $("node").innerHTML = `<p class="err">${esc(error.message)}</p>`;
+  }
 }
 
 async function showContract(nodeAt, entry) {
