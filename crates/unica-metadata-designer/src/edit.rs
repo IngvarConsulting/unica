@@ -310,6 +310,7 @@ fn meta_edit_set_mltext_values(
     };
     let (range, replacement) = match render(properties)? {
         Some(edit) => edit,
+        None if items.is_empty() => return Ok(()),
         None => {
             meta_edit_replace_or_insert_property(
                 properties,
@@ -326,10 +327,14 @@ fn meta_edit_set_mltext_values(
 }
 
 fn synonym_update_error(message: String) -> MetaDiagnostic {
+    localized_update_error("synonym", message)
+}
+
+fn localized_update_error(field: &str, message: String) -> MetaDiagnostic {
     typed_diagnostic(
         MetaDiagnosticCode::ProviderUnavailable,
         message,
-        Some("synonym"),
+        Some(field),
     )
 }
 
@@ -1143,6 +1148,7 @@ pub fn typed_operation_effect_value(
             scope.as_ref(),
             elements.iter().map(|element| element.name.as_str()),
             &target,
+            false,
         )?,
         MetaEditOperation::Update {
             collection,
@@ -1162,6 +1168,7 @@ pub fn typed_operation_effect_value(
                     }
                 }),
                 &target,
+                elements.iter().any(|element| element.tool_tip.is_some()),
             )?;
             if elements
                 .iter()
@@ -1198,6 +1205,7 @@ pub fn typed_operation_effect_value(
             scope.as_ref(),
             names.iter().map(String::as_str),
             &target,
+            false,
         )?,
         MetaEditOperation::Copy {
             collection,
@@ -1211,6 +1219,7 @@ pub fn typed_operation_effect_value(
             scope.as_ref(),
             std::iter::once(new_name.as_str()),
             &target,
+            false,
         )?,
         MetaEditOperation::EditRelations { relation, .. } => {
             let mut diagnostics = Vec::new();
@@ -1258,6 +1267,7 @@ pub fn typed_collection_effect_value<'a>(
     scope: Option<&unica_metadata::MetaScope>,
     names: impl Iterator<Item = &'a str>,
     target: &MetadataAddress,
+    include_tool_tip: bool,
 ) -> Result<Value, MetaDiagnostic> {
     let top = unica_xml_format::read::child_element(object, "ChildObjects");
     let parent = if let Some(scope) = scope {
@@ -1312,13 +1322,45 @@ pub fn typed_collection_effect_value<'a>(
             Some("elements"),
         ));
     }
-    serde_json::to_value(selected).map_err(|_| {
+    let tool_tips = if include_tool_tip {
+        selected
+            .iter()
+            .map(|element| {
+                let properties = parent
+                    .into_iter()
+                    .flat_map(|node| unica_xml_format::read::child_elements(node, "Attribute"))
+                    .find(|node| {
+                        meta_edit_child_object_name(*node)
+                            .is_some_and(|name| metadata_name_eq(&name, &element.name))
+                    })
+                    .and_then(|node| unica_xml_format::read::child_element(node, "Properties"))
+                    .ok_or_else(|| {
+                        localized_update_error("toolTip", "attribute has no Properties".into())
+                    })?;
+                crate::info_projection::localized_property_as_nstr(
+                    properties,
+                    "Attribute",
+                    "ToolTip",
+                )
+                .map_err(|message| localized_update_error("toolTip", message))
+            })
+            .collect::<Result<Vec<_>, _>>()?
+    } else {
+        Vec::new()
+    };
+    let mut effect = serde_json::to_value(selected).map_err(|_| {
         typed_diagnostic(
             MetaDiagnosticCode::ProviderUnavailable,
             "metadata elements cannot be normalized",
             Some("elements"),
         )
-    })
+    })?;
+    if let Some(rows) = effect.as_array_mut() {
+        for (row, value) in rows.iter_mut().zip(tool_tips) {
+            row["toolTip"] = serde_json::json!(value.unwrap_or_default());
+        }
+    }
+    Ok(effect)
 }
 pub fn apply_typed_operation<F>(
     xml_text: &mut String,
@@ -2691,14 +2733,19 @@ pub fn update_typed_element(
             )
         })?;
     }
-    if let Some(synonym) = &update.synonym {
-        let document =
-            Document::parse(xml_text).map_err(|error| synonym_update_error(error.to_string()))?;
+    if update.synonym.is_some() || update.tool_tip.is_some() {
+        let field = if update.synonym.is_some() {
+            "synonym"
+        } else {
+            "toolTip"
+        };
+        let document = Document::parse(xml_text)
+            .map_err(|error| localized_update_error(field, error.to_string()))?;
         let properties = document
             .descendants()
             .find(|node| node.is_element() && node.range().start == properties_start)
             .ok_or_else(|| {
-                synonym_update_error("metadata element has no Properties".to_string())
+                localized_update_error(field, "metadata element has no Properties".to_string())
             })?;
         let mut namespaces = String::new();
         for namespace in properties.namespaces() {
@@ -2710,14 +2757,15 @@ pub fn update_typed_element(
                 unica_xml_format::text::escape_xml(namespace.uri())
             ));
         }
-        meta_edit_set_mltext_values(
-            &mut properties_text,
-            "Synonym",
-            &indent,
-            synonym,
-            &namespaces,
-        )
-        .map_err(synonym_update_error)?;
+        for (field, tag, items) in [
+            ("synonym", "Synonym", update.synonym.as_ref()),
+            ("toolTip", "ToolTip", update.tool_tip.as_ref()),
+        ] {
+            if let Some(items) = items {
+                meta_edit_set_mltext_values(&mut properties_text, tag, &indent, items, &namespaces)
+                    .map_err(|message| localized_update_error(field, message))?;
+            }
+        }
     }
     if let Some(comment) = &update.comment {
         let replacement = if comment.is_empty() {

@@ -56,6 +56,55 @@
       ]
     },
     {
+      "tool": "unica.view",
+      "args": {
+        "at": "ext:Catalog.ПР_НастройкиВалют.TabularSection.Представления.Attribute.КодЯзыка.Can.attribute.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/toolTip",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/synonym/type",
+          "eq": "string"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "ext:Catalog.ПР_НастройкиВалют.TabularSection.Представления.Attribute.КодЯзыка",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "toolTip": "ru = 'Подсказка'"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: toolTip requires a catalog tabular-section attribute in an ordinary configuration",
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ]
+    },
+    {
       "tool": "unica.apply",
       "args": {
         "at": "ext:Catalog.ПР_НастройкиВалют.TabularSection.Представления.Attribute.КодЯзыка",

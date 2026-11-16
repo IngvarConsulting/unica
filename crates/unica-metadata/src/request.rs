@@ -840,6 +840,7 @@ pub fn parse_element_update(
         MetadataArgumentReader::new(object, metadata_element_input_schema(true, false), field);
     reader.reject_unknown()?;
     Ok(MetaElementUpdateInput {
+        tool_tip: reader.read("toolTip", optional_localized_at)?,
         indexing: reader.read("indexing", optional_string_at)?,
         master: reader.read("master", optional_bool_at)?,
         main_filter: reader.read("mainFilter", optional_bool_at)?,

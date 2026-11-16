@@ -1424,6 +1424,15 @@ pub fn parse_attribute_set(
         )
         .at_path(format!("ops[{op_index}].args.values.name")));
     }
+    if values.contains_key("toolTip")
+        && binding.source_kind != unica_source_contract::SourceSetKind::Configuration
+    {
+        return Err(ApplyPlanError::new(
+            ApplyPlanErrorKind::BadValue,
+            "toolTip requires a catalog tabular-section attribute in an ordinary configuration",
+        )
+        .at_path(format!("ops[{op_index}].args.values.toolTip")));
+    }
     let mut legacy = json!({"op": "update", "collection": "attributes", "elements": [values]});
     if let Some(section) = scope {
         legacy["scope"] = json!({"tabularSection": section});

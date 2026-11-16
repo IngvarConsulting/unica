@@ -200,6 +200,20 @@ pub(crate) fn prepare_typed_edit(
     context: &WorkspaceContext,
 ) -> Result<Box<dyn PreparedMetadataMutation>, unica_metadata::request::MetaFailure> {
     let target = request.metadata_path.clone();
+    if resolved.handle.source_set_kind() != unica_source_contract::SourceSetKind::Configuration
+        && request.operations.iter().any(|operation| {
+            matches!(operation, unica_metadata::MetaEditOperation::Update { elements, .. }
+                if elements.iter().any(|element| element.tool_tip.is_some()))
+        })
+    {
+        return Err(unica_metadata_designer::edit::typed_diagnostic(
+            MetaDiagnosticCode::InvalidArguments,
+            "toolTip requires a catalog tabular-section attribute in an ordinary configuration",
+            Some("toolTip"),
+        )
+        .with_metadata_path(target)
+        .into());
+    }
     let diagnostics = Vec::new();
     match evaluate_resolved_support_guard(
         &resolved.descriptor_path,
