@@ -31,6 +31,8 @@ pub struct CfInfoData {
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CfInfoProperties {
+    #[serde(flatten)]
+    pub purpose: CfPurposeProperties,
     pub compatibility_mode: Option<String>,
     pub default_run_mode: Option<String>,
     pub script_variant: Option<String>,
@@ -62,6 +64,22 @@ pub struct CfInfoProperties {
     /// The form slots of the root its line has, by camel-case name: the
     /// common form each names, `null` when empty (`ROOT_FORM_SLOTS`).
     pub forms: serde_json::Map<String, serde_json::Value>,
+}
+
+/// Ordered root lists preserve absence separately from an explicitly empty section.
+#[derive(Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CfPurposeProperties {
+    pub use_purposes: Option<Vec<String>>,
+    pub default_roles: Option<Vec<String>>,
+    pub used_mobile_application_functionalities: Option<Vec<CfMobileFunctionality>>,
+    pub include_help_in_contents: Option<bool>,
+}
+
+#[derive(serde::Serialize)]
+pub struct CfMobileFunctionality {
+    pub functionality: String,
+    pub r#use: bool,
 }
 
 /// The form slots of a configuration root in the order the platform writes

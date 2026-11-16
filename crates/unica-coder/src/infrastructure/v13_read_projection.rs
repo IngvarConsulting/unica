@@ -732,6 +732,17 @@ pub(super) fn project_configuration_with_counts(
             _ => {}
         }
     }
+    if let Some(roles) = props
+        .get_mut("properties")
+        .and_then(|properties| properties.get_mut("defaultRoles"))
+        .and_then(Value::as_array_mut)
+    {
+        for role in roles {
+            if let Some(reference) = role.as_str() {
+                *role = Value::String(format!("{}:{reference}", address.source_set()));
+            }
+        }
+    }
     // Вид, которого нет в линии платформы набора, пустой ветви не получает.
     let line = payload
         .get("format")
