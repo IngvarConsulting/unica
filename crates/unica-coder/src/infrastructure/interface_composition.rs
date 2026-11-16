@@ -40,10 +40,6 @@ pub(crate) fn edit_interface_with_data(
             "CIPath",
         )
         .map(|path| unica_operation_contract::input::absolutize(path, &context.cwd))?;
-        let format_version = unica_source_designer::format_profile::ACTIVE_FORMAT_PROFILE
-            .export_format
-            .to_string();
-
         let mut stdout = String::new();
         let source_exists = ci_path.is_file();
         let created_new = if !source_exists {
@@ -86,6 +82,13 @@ pub(crate) fn edit_interface_with_data(
         let mut text = source_text.clone();
         text = unica_xml_format::text::lxml_parser_normalized_text(&text);
         if text.is_empty() {
+            // A new command interface follows the export format of its owner.
+            let format_version =
+                crate::infrastructure::native_operations::common::detect_format_version(
+                    &metadata_owner_path,
+                    context,
+                )?
+                .to_string();
             text = emit_empty_command_interface_document(&format_version);
         }
         let mut transaction = CompileTransaction::new();

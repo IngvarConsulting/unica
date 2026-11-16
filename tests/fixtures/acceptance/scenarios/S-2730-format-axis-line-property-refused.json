@@ -1,0 +1,32 @@
+{
+  "id": "S-2730-format-axis-line-property-refused",
+  "issue": 2730,
+  "area": "Форматы выгрузки",
+  "task": "Поставить тему клиентского приложения в наборе формата 2.20: отказ называет линию, с которой свойство есть, и формат набора.",
+  "workspace": "tests/fixtures/acceptance/workspace-all-kinds",
+  "formats": [
+    "2.20"
+  ],
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "ClientApplicationTheme": "Dark"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: Property `ClientApplicationTheme` exists from platform 8.5.1 (format 2.21); source set `main` is in format 2.20 (platform 8.3.27)."
+    }
+  ]
+}

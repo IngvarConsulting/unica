@@ -1,0 +1,29 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:ns1="http://v8.1c.ru/8.1/data/core" xmlns:tns="http://v8.1c.ru/8.2/managed-application/objectlocksexception" xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="http://v8.1c.ru/8.2/managed-application/objectlocksexception" attributeFormDefault="unqualified" elementFormDefault="qualified">
+	<xs:import namespace="http://v8.1c.ru/8.1/data/core"/>
+	<xs:complexType name="ObjectLocksException">
+		<xs:complexContent>
+			<xs:extension base="ns1:GenericException">
+				<xs:sequence>
+					<xs:element name="frmtDescr" type="xs:string"/>
+					<xs:element name="seanceIDs" type="xs:string"/>
+					<xs:element name="connBySrvrProc" type="xs:string"/>
+					<xs:element name="blockUserName" type="xs:string"/>
+					<xs:element name="blockComputerName" type="xs:string"/>
+					<xs:element name="blockInfo" type="xs:string"/>
+					<xs:element name="seancesToFinish" type="tns:SeanceToFinish" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="otherSeancesDescr" type="xs:string"/>
+				</xs:sequence>
+				<xs:attribute name="reason" type="xs:decimal"/>
+				<xs:attribute name="userID" type="ns1:UUID"/>
+				<xs:attribute name="isFormatted" type="xs:boolean"/>
+				<xs:attribute name="allowTerminationAtSessionStart" type="xs:boolean"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="SeanceToFinish">
+		<xs:attribute name="seanceID" type="ns1:UUID"/>
+		<xs:attribute name="descr" type="xs:string"/>
+		<xs:attribute name="seancePID" type="xs:string"/>
+	</xs:complexType>
+</xs:schema>

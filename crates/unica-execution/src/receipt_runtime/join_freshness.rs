@@ -29,7 +29,6 @@ pub const TIMESTAMP_MARGIN: Duration = Duration::from_secs(2);
 // problem: Проверка должна оставаться дешёвой: она идёт внутри бюджета прямого ответа присоединяющегося вызова.
 // on-reach: исходники считаются изменёнными, вызов не присоединяется и исполняется сам
 // decision: закреплено правилом
-// decision-date: 2026-10-12
 // decision-source: arch/rules/runtime/read-call-joining.md
 pub(super) const MAX_CHECKED_ENTRIES: usize = 500_000;
 /// Предел времени одной проверки: она идёт внутри бюджета прямого ответа
@@ -45,7 +44,6 @@ pub(super) const MAX_CHECKED_ENTRIES: usize = 500_000;
 // problem: Проверка идёт внутри бюджета прямого ответа присоединяющегося вызова.
 // on-reach: исходники считаются изменёнными, вызов не присоединяется и исполняется сам
 // decision: закреплено правилом
-// decision-date: 2026-10-12
 // decision-source: arch/rules/runtime/read-call-joining.md
 pub(super) const MAX_CHECK_DURATION: Duration = Duration::from_secs(2);
 

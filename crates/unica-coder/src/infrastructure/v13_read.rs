@@ -158,7 +158,9 @@ struct OwnerEdgeCacheKey {
 }
 
 mod diagnostic_scope;
+mod editability_view;
 mod form_payload;
+mod method_doc;
 mod module_body_read;
 mod typed_payload_read;
 mod validation_input;
@@ -198,12 +200,11 @@ impl<'a> LogicalViewReadAuthority<'a> {
         profile: PlatformProfile,
         deadline: ProviderDeadline,
     ) -> Self {
-        Self::with_read_authority_and_registration_cache(
+        Self::over_artifacts(
             cancellation,
-            read,
+            read.with_artifacts(Arc::new(RegistrationCache::default())),
             profile,
             deadline,
-            Arc::new(RegistrationCache::default()),
         )
     }
 
@@ -214,9 +215,23 @@ impl<'a> LogicalViewReadAuthority<'a> {
         deadline: ProviderDeadline,
         registration_cache: Arc<RegistrationCache>,
     ) -> Self {
+        let read = read.with_artifacts(registration_cache);
+        // The actor's retained artifacts: the first read of the set starts
+        // proving its top-level descriptors in the background, so a branch
+        // opened next finds them retained.
+        read.start_owner_warmup();
+        Self::over_artifacts(cancellation, read, profile, deadline)
+    }
+
+    fn over_artifacts(
+        cancellation: &'a CancellationToken,
+        read: ProviderReadAuthority,
+        profile: PlatformProfile,
+        deadline: ProviderDeadline,
+    ) -> Self {
         Self {
             cancellation,
-            read: read.with_artifacts(registration_cache),
+            read,
             profile,
             deadline,
             module_projections: Mutex::new(BTreeMap::new()),
@@ -623,6 +638,9 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
                 SourceSetKind::Configuration | SourceSetKind::Extension
             ) && self.read.configuration_xml_requires_streaming()
             {
+                // The branch proves every member: their stamps come from one
+                // pass over the kind directory.
+                self.read.stamp_descriptors_by_directory();
                 let index = self.streamed_configuration_registration_index(admitted)?;
                 let names =
                     index.names_for_kind(branch_kind.as_str(), &|| self.read_checkpoint())?;
@@ -650,6 +668,7 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
                     support,
                 )?
             } else {
+                self.read.stamp_descriptors_by_directory();
                 let payload = self.configuration_payload(admitted)?;
                 if branch_kind != NodeKind::WebSocketClient {
                     for item in payload
@@ -1451,8 +1470,7 @@ fn module_projection_view(
         .as_ref()
         .is_some_and(|common| !common.execution_environment_known());
     let view = module_projection_view_data(requested, prefix_len, projections)?;
-    // `null` в контекстах — ответ «неизвестно»; предел называет причину на
-    // уровне узла, чтобы её видел и тот, кто контексты не читает (#1364).
+    // Предел сообщает, что для заимствованного модуля известны не все флаги среды.
     Ok(if unknown {
         view.with_limit(UNKNOWN_CONTEXTS_LIMIT)
     } else {
@@ -1488,7 +1506,7 @@ fn module_projection_view_data(
     if (branch == NodeKind::Method && suffix.len() > 2)
         || (matches!(
             branch,
-            NodeKind::Interface | NodeKind::Event | NodeKind::Compilation | NodeKind::Body
+            NodeKind::Interface | NodeKind::Event | NodeKind::Body
         ) && suffix.len() > 1)
     {
         return Err(ViewError::new(
@@ -1527,20 +1545,6 @@ fn module_projection_view_data(
                 projections.method_text(method),
                 method.text_from_line,
             )
-        }
-        (NodeKind::Method, Some(name), Some(detail))
-            if detail.name().is_none() && detail.kind() == NodeKind::Compilation =>
-        {
-            let method = find_method(projections, name)?;
-            let from = method.body_from_line.saturating_sub(1);
-            let to = method.body_to_line.saturating_add(1);
-            let items = projections
-                .compilation()
-                .iter()
-                .filter(|range| range.from_line <= to && range.to_line >= from)
-                .map(|range| serde_json::to_value(range).unwrap_or(Value::Null))
-                .collect();
-            module_collection(requested, NodeKind::Compilation, items)
         }
         (NodeKind::Region, None, None) => module_collection(
             requested,
@@ -1594,15 +1598,6 @@ fn module_projection_view_data(
                     format!("event `{name}` was not found"),
                 )
             }),
-        (NodeKind::Compilation, None, None) => module_collection(
-            requested,
-            NodeKind::Compilation,
-            projections
-                .compilation()
-                .iter()
-                .map(|range| serde_json::to_value(range).unwrap_or(Value::Null))
-                .collect(),
-        ),
         (NodeKind::Body, None, None) => module_text(requested, projections.source_text(), 1),
         _ => Err(ViewError::new(
             RefusalCode::NotFound,
@@ -1736,7 +1731,6 @@ fn method_node(method: &MethodProjection) -> NodeView {
         ("signature".to_string(), json!(method.signature)),
         ("methodKind".to_string(), json!(method.method_kind)),
         ("export".to_string(), json!(method.export)),
-        ("compile".to_string(), json!(method.compile)),
         // Область называет свои строки; метод называет строки своего текста
         // `Body` — от документирующего комментария до строки окончания.
         // Это координата внутри модуля, а не физическая раскладка.
@@ -1745,6 +1739,9 @@ fn method_node(method: &MethodProjection) -> NodeView {
     ]);
     if let Some(doc) = &method.doc {
         props.insert("doc".to_string(), json!(doc));
+        // Поля комментария идут рядом с его текстом, а не вместо него:
+        // нестандартный комментарий доходит без потерь.
+        props.insert("docFields".to_string(), method_doc::doc_fields(doc));
     }
     if !method.handles.is_empty() {
         props.insert("handles".to_string(), json!(method.handles));
@@ -1757,10 +1754,6 @@ fn method_node(method: &MethodProjection) -> NodeView {
         props.insert("area".to_string(), json!(area));
     }
     NodeView::new(&method.at, NodeKind::Method.as_str(), &method.name, props).with_branches(vec![
-        BranchRef::new(
-            format!("{}.Compilation", method.at),
-            method.compilation_count,
-        ),
         BranchRef::new(format!("{}.Body", method.at), method.text_line_count()),
     ])
 }

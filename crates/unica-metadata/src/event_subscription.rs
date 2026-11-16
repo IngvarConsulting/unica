@@ -1,5 +1,38 @@
 use super::{MetaDiagnostic, MetaDiagnosticCode};
 use serde::Serialize;
+use unica_address::address::{NodeKind, QualifiedAddress};
+
+pub(crate) fn platform_handler_parts(value: &str) -> Option<(&str, &str)> {
+    let (owner, procedure) = value.strip_prefix("CommonModule.")?.split_once('.')?;
+    (crate::identifier::is_1c_identifier(owner) && crate::identifier::is_1c_identifier(procedure))
+        .then_some((owner, procedure))
+}
+
+/// XML names a procedure without its source set or a Method segment.
+pub fn subscription_handler_address(source_set: &str, value: &str) -> Option<QualifiedAddress> {
+    let (owner, procedure) = platform_handler_parts(value.trim())?;
+    QualifiedAddress::parse(&format!(
+        "{source_set}:CommonModule.{owner}.Method.{procedure}"
+    ))
+    .ok()
+}
+
+/// The XML field cannot name a handler in another source set.
+pub fn subscription_handler_platform_value(source_set: &str, value: &str) -> Option<String> {
+    let address = QualifiedAddress::parse(value).ok()?;
+    let [owner, procedure] = address.segments() else {
+        return None;
+    };
+    if address.source_set() != source_set
+        || owner.kind() != NodeKind::CommonModule
+        || procedure.kind() != NodeKind::Method
+    {
+        return None;
+    }
+    let value = format!("CommonModule.{}.{}", owner.name()?, procedure.name()?);
+    platform_handler_parts(&value)?;
+    Some(value)
+}
 
 /// A platform class that owns subscription events.
 ///

@@ -29,6 +29,22 @@
         },
         "attributes": {
           "pointer": "/data/branches/1/at"
+        },
+        "unchanged1": {
+          "file": "src/CommonForms/Appearance/Ext/Form.xml",
+          "kind": "sha256"
+        },
+        "unchanged2": {
+          "file": "src/CommonForms/Appearance.xml",
+          "kind": "sha256"
+        },
+        "unchanged3": {
+          "file": "src/Configuration.xml",
+          "kind": "sha256"
+        },
+        "unchanged4": {
+          "file": "v8project.yaml",
+          "kind": "sha256"
         }
       }
     },
@@ -200,7 +216,12 @@
                   ]
                 }
               }
-            ]
+            ],
+            "support": {
+              "editable": true,
+              "reason": "notSupported",
+              "policy": "deny"
+            }
           }
         },
         {
@@ -227,22 +248,22 @@
         {
           "path": "src/CommonForms/Appearance/Ext/Form.xml",
           "kind": "sha256",
-          "eq": "031b480691e89f964d7344fb6f9c19c29cabd1bd6e69b7e7983140fce9b6f53c"
+          "eq": "$capture.unchanged1"
         },
         {
           "path": "src/CommonForms/Appearance.xml",
           "kind": "sha256",
-          "eq": "3f78fa89662eb4b498c5fa6316ec511ee6217cf21dbdfd3f1119ea6455c0be2e"
+          "eq": "$capture.unchanged2"
         },
         {
           "path": "src/Configuration.xml",
           "kind": "sha256",
-          "eq": "6f8fd93dee554d6144a6dcf9c3c1efb509feacf80a097e0192d25c263543f758"
+          "eq": "$capture.unchanged3"
         },
         {
           "path": "v8project.yaml",
           "kind": "sha256",
-          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+          "eq": "$capture.unchanged4"
         }
       ]
     }

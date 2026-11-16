@@ -89,7 +89,7 @@
           "eq": "main:Catalog.Валюты"
         },
         {
-          "pointer": "/data/props/support",
+          "pointer": "/data/props/support/reason",
           "eq": "removedFromSupport"
         }
       ]

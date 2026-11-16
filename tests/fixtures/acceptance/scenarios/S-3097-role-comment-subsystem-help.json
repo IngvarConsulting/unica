@@ -1,0 +1,356 @@
+{
+  "id": "S-3097-role-comment-subsystem-help",
+  "issue": 3097,
+  "area": "Навигация по исходникам",
+  "task": "Прочитать Comment роли и IncludeHelpInContents подсистемы из XML, различить пустоту, отсутствие и локальное повреждение, сохранить права/RLS, вложенность и исходные байты; прочитать длинный Comment целиком",
+  "workspace": "tests/fixtures/acceptance/workspace-role-comment-subsystem-help",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {},
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "file_0": {
+          "kind": "sha256",
+          "file": "src/Configuration.xml"
+        },
+        "file_1": {
+          "kind": "sha256",
+          "file": "src/Roles/Reader.xml"
+        },
+        "file_2": {
+          "kind": "sha256",
+          "file": "src/Roles/Reader/Ext/Rights.xml"
+        },
+        "file_3": {
+          "kind": "sha256",
+          "file": "src/Roles/Empty.xml"
+        },
+        "file_4": {
+          "kind": "sha256",
+          "file": "src/Roles/Empty/Ext/Rights.xml"
+        },
+        "file_5": {
+          "kind": "sha256",
+          "file": "src/Roles/Absent.xml"
+        },
+        "file_6": {
+          "kind": "sha256",
+          "file": "src/Roles/Absent/Ext/Rights.xml"
+        },
+        "file_7": {
+          "kind": "sha256",
+          "file": "src/Roles/Long.xml"
+        },
+        "file_8": {
+          "kind": "sha256",
+          "file": "src/Roles/Long/Ext/Rights.xml"
+        },
+        "file_9": {
+          "kind": "sha256",
+          "file": "src/Roles/Damaged.xml"
+        },
+        "file_10": {
+          "kind": "sha256",
+          "file": "src/Roles/Damaged/Ext/Rights.xml"
+        },
+        "file_11": {
+          "kind": "sha256",
+          "file": "src/Subsystems/Help.xml"
+        },
+        "file_12": {
+          "kind": "sha256",
+          "file": "src/Subsystems/AbsentHelp.xml"
+        },
+        "file_13": {
+          "kind": "sha256",
+          "file": "src/Subsystems/EmptyHelp.xml"
+        },
+        "file_14": {
+          "kind": "sha256",
+          "file": "src/Subsystems/Help/Subsystems/Disabled.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Role.Reader"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": "Назначение & <строка>."
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Role.Empty"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": ""
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Role.Absent"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Role.Damaged"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "absent": true
+        },
+        {
+          "pointer": "/data/limits/0",
+          "contains": "Comment"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Role.Long"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "absent": true
+        },
+        {
+          "pointer": "/data/limits/0",
+          "contains": ".Props.Comment"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Role.Reader.Right.Catalog_Products"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/allowedCount",
+          "eq": 2
+        },
+        {
+          "pointer": "/data/props/deniedCount",
+          "eq": 1
+        },
+        {
+          "pointer": "/data/branches/0/at",
+          "eq": "main:Role.Reader.Right.Catalog_Products.RLS"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Subsystem.Help"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/IncludeHelpInContents",
+          "eq": true
+        },
+        {
+          "pointer": "/data/props/Comment",
+          "eq": "Независимый комментарий"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Subsystem.Help.Subsystem.Disabled"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/IncludeHelpInContents",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/Comment",
+          "eq": "Независимый комментарий"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Subsystem.AbsentHelp"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/IncludeHelpInContents",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/Comment",
+          "eq": "Независимый комментарий"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Subsystem.EmptyHelp"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/IncludeHelpInContents",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/Comment",
+          "eq": "Независимый комментарий"
+        },
+        {
+          "pointer": "/data/limits/0",
+          "contains": "IncludeHelpInContents"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Role.Long.Props.Comment"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": "ЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯ"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "$capture.file_0"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Roles/Reader.xml",
+          "eq": "$capture.file_1"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Roles/Reader/Ext/Rights.xml",
+          "eq": "$capture.file_2"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Roles/Empty.xml",
+          "eq": "$capture.file_3"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Roles/Empty/Ext/Rights.xml",
+          "eq": "$capture.file_4"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Roles/Absent.xml",
+          "eq": "$capture.file_5"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Roles/Absent/Ext/Rights.xml",
+          "eq": "$capture.file_6"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Roles/Long.xml",
+          "eq": "$capture.file_7"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Roles/Long/Ext/Rights.xml",
+          "eq": "$capture.file_8"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Roles/Damaged.xml",
+          "eq": "$capture.file_9"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Roles/Damaged/Ext/Rights.xml",
+          "eq": "$capture.file_10"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Subsystems/Help.xml",
+          "eq": "$capture.file_11"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Subsystems/AbsentHelp.xml",
+          "eq": "$capture.file_12"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Subsystems/EmptyHelp.xml",
+          "eq": "$capture.file_13"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Subsystems/Help/Subsystems/Disabled.xml",
+          "eq": "$capture.file_14"
+        }
+      ]
+    }
+  ]
+}

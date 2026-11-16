@@ -53,8 +53,19 @@ pub trait MetadataReadCodec: Send + Sync {
     /// чтение остальных и попадает в `unreadable`.
     fn numerator(&self, descriptor: &[u8]) -> Result<NumeratorFacts, String>;
 
+    /// Флаги индексирования, истории и ввода общего реквизита.
+    /// Нечитаемые поля попадают в `unreadable`, остальные сохраняются.
+    fn common_attribute(&self, descriptor: &[u8], payload: &mut Value) -> Result<(), String>;
+
     /// Дополняет ответ чтения элемента стиля его видом и значением.
     fn style_item(&self, descriptor: &[u8], payload: &mut Value) -> Result<(), String>;
+
+    /// Дополняет ответ чтения цвета палитры его синонимом и цветом.
+    fn palette_color(&self, descriptor: &[u8], payload: &mut Value) -> Result<(), String>;
+
+    /// Дополняет ответ чтения очереди её синонимом, свойствами
+    /// обработки и дочерними.
+    fn queue(&self, descriptor: &[u8], payload: &mut Value) -> Result<(), String>;
 
     /// Комментарий и цвет элемента стиля `name`. `relative` — путь
     /// дескриптора в источнике: по нему кодек узнаёт профиль записи.
@@ -64,6 +75,15 @@ pub trait MetadataReadCodec: Send + Sync {
         name: &str,
         relative: &Path,
     ) -> Result<StyleItemPropertiesObservation, String>;
+
+    /// Основные формы сохранения и загрузки хранилища настроек как адреса
+    /// текущего набора. Повреждённые назначения попадают в `unreadable`.
+    fn settings_storage_forms(
+        &self,
+        descriptor: &[u8],
+        source_set: &str,
+        payload: &mut Value,
+    ) -> Result<(), String>;
 
     /// Свойства формы и ограничения чтения, которые не прерывают его.
     fn form_metadata(

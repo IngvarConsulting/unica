@@ -122,6 +122,11 @@ pub enum V5DaemonTaskSnapshot {
         poll_interval_ms: u64,
         version: u64,
         cancel_requested: bool,
+        /// A process of the Task was interrupted by its cancel and works on
+        /// until its own answer: the cancel waits for it. Live state, never
+        /// stored.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        awaits_interrupted_work: bool,
     },
     Completed {
         task_id: TaskId,
@@ -305,6 +310,19 @@ impl V5DaemonTaskSnapshot {
             Self::Failed { .. } => InvocationStatus::Failed,
             Self::Cancelled { .. } => InvocationStatus::Cancelled,
         }
+    }
+
+    /// Whether the cancel of a working Task waits for a process of it that
+    /// was interrupted by the cancel and works on until its own answer.
+    pub fn awaits_interrupted_work(&self) -> bool {
+        matches!(
+            self,
+            Self::Working {
+                cancel_requested: true,
+                awaits_interrupted_work: true,
+                ..
+            }
+        )
     }
 
     pub fn cancel_requested(&self) -> bool {

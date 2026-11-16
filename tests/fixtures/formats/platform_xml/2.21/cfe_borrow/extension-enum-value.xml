@@ -1,0 +1,42 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:app="http://v8.1c.ru/8.2/managed-application/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:cmi="http://v8.1c.ru/8.2/managed-application/cmi" xmlns:ent="http://v8.1c.ru/8.1/data/enterprise" xmlns:lf="http://v8.1c.ru/8.2/managed-application/logform" xmlns:pal="http://v8.1c.ru/8.1/data/ui/colors/palette" xmlns:style="http://v8.1c.ru/8.1/data/ui/style" xmlns:sys="http://v8.1c.ru/8.1/data/ui/fonts/system" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:v8ui="http://v8.1c.ru/8.1/data/ui" xmlns:web="http://v8.1c.ru/8.1/data/ui/colors/web" xmlns:win="http://v8.1c.ru/8.1/data/ui/colors/windows" xmlns:xen="http://v8.1c.ru/8.3/xcf/enums" xmlns:xpr="http://v8.1c.ru/8.3/xcf/predef" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.21">
+	<Enum uuid="5e1f35a2-9c76-43d5-b8a6-cebc996bd9da">
+		<InternalInfo>
+			<xr:GeneratedType name="EnumRef.СпособыУстановкиКурсаВалюты" category="Ref">
+				<xr:TypeId>0cb875b1-17b6-42fe-b92d-9661ef64f51f</xr:TypeId>
+				<xr:ValueId>100066c9-e752-4898-8678-6bd83fe0c5d8</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="EnumManager.СпособыУстановкиКурсаВалюты" category="Manager">
+				<xr:TypeId>5de2ae23-a800-4388-a86f-374e8c3320c5</xr:TypeId>
+				<xr:ValueId>095854c5-5c61-4603-9ef1-c05573442c00</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="EnumList.СпособыУстановкиКурсаВалюты" category="List">
+				<xr:TypeId>af9359c7-7bc2-4a6c-bae1-4c82e493b7d4</xr:TypeId>
+				<xr:ValueId>ee3486ab-9a7d-4522-b7c3-c399736ec72e</xr:ValueId>
+			</xr:GeneratedType>
+		</InternalInfo>
+		<Properties>
+			<ObjectBelonging>Adopted</ObjectBelonging>
+			<Name>СпособыУстановкиКурсаВалюты</Name>
+			<Comment/>
+			<ExtendedConfigurationObject>271496d6-f598-5ec4-8cf6-4bff69562a99</ExtendedConfigurationObject>
+		</Properties>
+		<ChildObjects>
+			<EnumValue uuid="871a7ead-5796-4e04-a625-796cda00af98">
+				<InternalInfo/>
+				<Properties>
+					<ObjectBelonging>Adopted</ObjectBelonging>
+					<Name>ЗагрузкаИзИнтернета</Name>
+					<Synonym>
+						<v8:item>
+							<v8:lang>ru</v8:lang>
+							<v8:content>Загрузка из интернета</v8:content>
+						</v8:item>
+					</Synonym>
+					<Comment/>
+					<ExtendedConfigurationObject>fd400786-6741-5718-8b41-09e2ecc331c5</ExtendedConfigurationObject>
+				</Properties>
+			</EnumValue>
+		</ChildObjects>
+	</Enum>
+</MetaDataObject>

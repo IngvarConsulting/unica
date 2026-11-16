@@ -1,0 +1,477 @@
+{
+  "id": "S-1069-form-attribute-remove",
+  "name": "remove-unused-form-attribute-atomically",
+  "issue": 1069,
+  "area": "Формы",
+  "workspace": "tests/fixtures/acceptance/workspace-form-attribute-remove",
+  "task": "Удалить неиспользуемый реквизит формы через attribute.remove на его адресе: закрытый контракт, preview без записи, stale token, ссылки и основной реквизит блокируют удаление, поздний отказ атомарен, удаление поля и его реквизита публикуется одним пакетом, соседние ID и владелец сохранены.",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Report.CorpusReport.Form.Main.Attribute.Unused"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before": {
+          "kind": "sha256",
+          "file": "src/Reports/CorpusReport/Forms/Main/Ext/Form.xml"
+        },
+        "ownerBefore": {
+          "kind": "sha256",
+          "file": "src/Reports/CorpusReport.xml"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/can",
+          "contains": {
+            "op": "attribute.remove",
+            "args": "at"
+          }
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Report.CorpusReport.Form.Main.Attribute.Unused.Can.attribute.remove"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/additionalProperties",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/contract/exampleArgs",
+          "eq": {}
+        },
+        {
+          "pointer": "/data/props/contract/help/path",
+          "eq": "skills/form-edit/SKILL.md"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Report.CorpusReport.Form.Main.Attribute.Unused",
+        "ops": [
+          {
+            "op": "attribute.remove"
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "oldToken": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/validated",
+          "eq": true
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Reports/CorpusReport/Forms/Main/Ext/Form.xml",
+          "eq": "$capture.before"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Report.CorpusReport.Form.Main",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "AutoTitle": false
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "changeToken": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/validated",
+          "eq": true
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.changeToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "changed": {
+          "kind": "sha256",
+          "file": "src/Reports/CorpusReport/Forms/Main/Ext/Form.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.oldToken"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "stale_revision: retained apply preimage changed: Reports/CorpusReport/Forms/Main/Ext/Form.xml; input `Reports/CorpusReport/Forms/Main/Ext/Form.xml`: source write target; the pl",
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Reports/CorpusReport/Forms/Main/Ext/Form.xml",
+          "eq": "$capture.changed"
+        }
+      ],
+      "assertions": [
+        {
+          "pointer": "/summary",
+          "eq": "retained apply preimage changed: Reports/CorpusReport/Forms/Main/Ext/Form.xml; input `Reports/CorpusReport/Forms/Main/Ext/Form.xml`: source write target; the plan retains its original state to prevent overwriting changes; request a fresh plan with apply(at, ops)"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Report.CorpusReport.Form.Main.Attribute.Referenced",
+        "ops": [
+          {
+            "op": "attribute.remove"
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: attribute.remove: CheckBoxField `ReferencedField`/DataPath still references attribute `Referenced` through `Referenced`; remove the XML reference first",
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Reports/CorpusReport/Forms/Main/Ext/Form.xml",
+          "eq": "$capture.changed"
+        }
+      ],
+      "assertions": [
+        {
+          "pointer": "/summary",
+          "eq": "attribute.remove: CheckBoxField `ReferencedField`/DataPath still references attribute `Referenced` through `Referenced`; remove the XML reference first"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Report.CorpusReport.Form.Main.Attribute.Rows",
+        "ops": [
+          {
+            "op": "attribute.remove"
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: attribute.remove: main attribute `Rows` is protected",
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Reports/CorpusReport/Forms/Main/Ext/Form.xml",
+          "eq": "$capture.changed"
+        }
+      ],
+      "assertions": [
+        {
+          "pointer": "/summary",
+          "eq": "attribute.remove: main attribute `Rows` is protected"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Report.CorpusReport.Form.Main.Attribute.Unused",
+        "ops": [
+          {
+            "op": "attribute.remove",
+            "args": {
+              "name": "UnusedExtra"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: ops[0].args.name: unknown argument; `attribute.remove` writes only the arguments listed at `main:Report.CorpusReport.Form.Main.Attribute.Unused.Can.attribute.re",
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Reports/CorpusReport/Forms/Main/Ext/Form.xml",
+          "eq": "$capture.changed"
+        }
+      ],
+      "assertions": [
+        {
+          "pointer": "/summary",
+          "eq": "ops[0].args.name: unknown argument; `attribute.remove` writes only the arguments listed at `main:Report.CorpusReport.Form.Main.Attribute.Unused.Can.attribute.remove`"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Report.CorpusReport.Form.Main",
+        "ops": [
+          {
+            "op": "item.remove",
+            "args": {
+              "at": "main:Report.CorpusReport.Form.Main.Item.ReferencedField"
+            }
+          },
+          {
+            "op": "attribute.remove",
+            "args": {
+              "at": "main:Report.CorpusReport.Form.Main.Attribute.Rows"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: attribute.remove: main attribute `Rows` is protected",
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Reports/CorpusReport/Forms/Main/Ext/Form.xml",
+          "eq": "$capture.changed"
+        }
+      ],
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[1].args.at"
+        },
+        {
+          "pointer": "/summary",
+          "eq": "attribute.remove: main attribute `Rows` is protected"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Report.CorpusReport.Form.Main",
+        "ops": [
+          {
+            "op": "item.remove",
+            "args": {
+              "at": "main:Report.CorpusReport.Form.Main.Item.ReferencedField"
+            }
+          },
+          {
+            "op": "attribute.remove",
+            "args": {
+              "at": "main:Report.CorpusReport.Form.Main.Attribute.Referenced"
+            }
+          },
+          {
+            "op": "attribute.remove",
+            "args": {
+              "at": "main:Report.CorpusReport.Form.Main.Attribute.Unused"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "removeToken": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/validated",
+          "eq": true
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Reports/CorpusReport/Forms/Main/Ext/Form.xml",
+          "eq": "$capture.changed"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.removeToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        },
+        {
+          "pointer": "/data/validated",
+          "eq": true
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "xmlTags",
+          "path": "src/Reports/CorpusReport/Forms/Main/Ext/Form.xml",
+          "select": ".//{http://v8.1c.ru/8.3/xcf/logform}Attributes/{http://v8.1c.ru/8.3/xcf/logform}Attribute[@name=\"Unused\"]",
+          "eq": []
+        },
+        {
+          "kind": "xmlTags",
+          "path": "src/Reports/CorpusReport/Forms/Main/Ext/Form.xml",
+          "select": ".//{http://v8.1c.ru/8.3/xcf/logform}Attributes/{http://v8.1c.ru/8.3/xcf/logform}Attribute[@name=\"Referenced\"]",
+          "eq": []
+        },
+        {
+          "kind": "xmlTags",
+          "path": "src/Reports/CorpusReport/Forms/Main/Ext/Form.xml",
+          "select": ".//{http://v8.1c.ru/8.3/xcf/logform}Attributes/{http://v8.1c.ru/8.3/xcf/logform}Attribute[@name=\"UnusedExtra\"][@id=\"3\"]",
+          "eq": [
+            "Attribute"
+          ]
+        },
+        {
+          "kind": "xmlTags",
+          "path": "src/Reports/CorpusReport/Forms/Main/Ext/Form.xml",
+          "select": ".//{http://v8.1c.ru/8.3/xcf/logform}Attributes/{http://v8.1c.ru/8.3/xcf/logform}Attribute[@name=\"Rows\"][@id=\"1\"]",
+          "eq": [
+            "Attribute"
+          ]
+        },
+        {
+          "kind": "xmlTags",
+          "path": "src/Reports/CorpusReport/Forms/Main/Ext/Form.xml",
+          "select": ".//{http://v8.1c.ru/8.3/xcf/logform}CheckBoxField[@name=\"ReferencedField\"]",
+          "eq": []
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Reports/CorpusReport.xml",
+          "eq": "$capture.ownerBefore"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Report.CorpusReport.Form.Main.Attribute"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:Report.CorpusReport.Form.Main.Attribute.Rows"
+        },
+        {
+          "pointer": "/data/items/1/at",
+          "eq": "main:Report.CorpusReport.Form.Main.Attribute.UnusedExtra"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Report.CorpusReport.Form.Main.Attribute.Unused",
+        "ops": [
+          {
+            "op": "attribute.remove"
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "not_found: form attribute `Unused` was not found",
+      "assertions": [
+        {
+          "pointer": "/summary",
+          "eq": "form attribute `Unused` was not found"
+        }
+      ]
+    },
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "main:Report.CorpusReport.Form.Main"
+      },
+      "expect": [
+        "ok"
+      ],
+      "status": "passed",
+      "validators": [
+        "form"
+      ]
+    }
+  ]
+}

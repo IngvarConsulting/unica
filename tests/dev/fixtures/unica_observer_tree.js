@@ -86,5 +86,15 @@ async function run() {
   const malformedRoot = new Element('div'); await context.fill(malformedRoot, 'malformed');
   assert.deepEqual(malformedRoot.children.map(name), malformed.map(item => JSON.stringify(item).slice(0, 160)));
   assert.ok(calls.every(at => !at.endsWith('.Public') && !at.endsWith('.Library') && !at.endsWith('.Override')));
+
+  const subscription = 'main:EventSubscription.BeforeWrite';
+  const handler = 'main:CommonModule.EventHandlers.Method.OnBeforeWrite';
+  replies[subscription] = {at: subscription, kind: 'EventSubscription', props: {Handler: handler}};
+  const subscriptionRoot = new Element('div');
+  await context.fill(subscriptionRoot, subscription);
+  assert.deepEqual(subscriptionRoot.children.map(name), ['Handler']);
+  const handlerRow = row(subscriptionRoot.children[0]);
+  handlerRow.onclick(event(handlerRow));
+  assert.equal(selected.at(-1).at, handler);
 }
 run().catch(error => { console.error(error); process.exitCode = 1; });

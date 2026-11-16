@@ -39,6 +39,13 @@ fn large_configuration_root_keeps_legacy_duplicate_and_namespace_semantics() {
         "<CommonModule>РеактивныйСервер</CommonModule><alien:Catalog xmlns:alien=\"urn:other\">Ghost</alien:Catalog></ChildObjects>",
         1,
     );
+    // A filled form slot of the root reads the same in both readers.
+    assert!(xml.contains("<DefaultSearchForm/>"));
+    let xml = xml.replacen(
+        "<DefaultSearchForm/>",
+        "<DefaultSearchForm>CommonForm.Поиск</DefaultSearchForm>",
+        1,
+    );
     fs::write(&path, &xml).unwrap();
 
     let reader = fixture.read_authority();
@@ -59,6 +66,10 @@ fn large_configuration_root_keeps_legacy_duplicate_and_namespace_semantics() {
     )
     .expect("Configuration has a profile module branch");
     let expected = serde_json::to_value(legacy.with_branch(module_branch)).unwrap();
+    assert_eq!(
+        expected["props"]["properties"]["forms"]["defaultSearchForm"],
+        "CommonForm.Поиск"
+    );
 
     fs::write(
         &path,

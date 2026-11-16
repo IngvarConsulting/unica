@@ -265,7 +265,8 @@ class CollectResultsTests(unittest.TestCase):
                 bundle.add(item, arcname=item.name)
         fetched: list[str] = []
 
-        def fake_fetch(url: str, target: Path) -> bool:
+        def fake_fetch(site: str, path: str, target: Path) -> bool:
+            url = f"{site}/{path}"
             fetched.append(url)
             if url.endswith("/data/release-v0.12/results/all.tar.gz"):
                 target.parent.mkdir(parents=True, exist_ok=True)
@@ -332,7 +333,8 @@ class CollectResultsTests(unittest.TestCase):
         archive = self.archive_results(stored, "initial.tar.gz")
         fetched = []
 
-        def fetch(url: str, target: Path) -> bool:
+        def fetch(site: str, path: str, target: Path) -> bool:
+            url = f"{site}/{path}"
             fetched.append(url)
             if url != "https://site/data/main/results/queue.tar.gz":
                 return False
@@ -378,7 +380,7 @@ class CollectResultsTests(unittest.TestCase):
 
     def test_scope_skip_without_inventory_is_metadata_without_invented_cases(self) -> None:
         self.routing_artifacts()
-        self.collect.fetch = lambda _url, _target: False
+        self.collect.fetch = lambda _site, _path, _target: False
         jobs = self.jobs_file({"Unica CI": "skipped"})
         output = self.root / "fresh"
 
@@ -403,7 +405,7 @@ class CollectResultsTests(unittest.TestCase):
         for index, conclusions in enumerate(({}, {"Unica CI": "success"}, {"Unica CI": "failure"}, {"Unica CI": "cancelled"})):
             with self.subTest(conclusions=conclusions):
                 output = self.root / f"fresh-{index}"
-                self.collect.fetch = lambda _url, _target: False
+                self.collect.fetch = lambda _site, _path, _target: False
                 self.collect.collect(self.artifacts, output, self.jobs_file(conclusions), "", "")
                 skip = json.loads((output / "main/run.json").read_text())["routing_skips"][0]
                 self.assertEqual(skip["scope_skip"], self.scope_skip())
@@ -605,7 +607,7 @@ class CollectResultsTests(unittest.TestCase):
         self.allure.write(stored, self.rust("stored::unknown_lane", "ubuntu-latest"))
         (stored / "run.json").write_text(json.dumps({"sha": "old-sha", "profile": "all"}))
         archive = self.archive_results(stored, "stored.tar.gz")
-        def fetch(_url, target):
+        def fetch(_site, _path, target):
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(archive.read_bytes())
             return True
@@ -633,7 +635,7 @@ class CollectResultsTests(unittest.TestCase):
         self.allure.write(stored, entry)
         (stored / "run.json").write_text(json.dumps({"sha": "prior-sha", "profile": "all"}))
         archive = self.archive_results(stored, "stored.tar.gz")
-        def fetch(_url, target):
+        def fetch(_site, _path, target):
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(archive.read_bytes())
             return True

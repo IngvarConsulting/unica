@@ -128,15 +128,31 @@ pub fn search(
                 .hits
                 .iter()
                 .map(|hit| {
-                    json!({
+                    // Подпись, вид и владелец есть не у всякой находки:
+                    // статья стандарта разработки их не знает, у страницы
+                    // типа нет владельца. Ключа нет там, где источник о нём
+                    // молчит: пустое поле за каждую находку — это вес
+                    // выдачи без сведений.
+                    let mut value = json!({
                         "rank": hit.rank,
                         "providerScore": hit.provider_score,
                         "documentId": hit.document_id,
                         "title": hit.title,
-                        "signature": hit.signature,
                         "snippet": hit.snippet,
                         "applicableVersion": hit.applicable_version,
-                    })
+                    });
+                    if let Some(object) = value.as_object_mut() {
+                        for (key, named) in [
+                            ("signature", hit.signature.as_ref()),
+                            ("kind", hit.kind.as_ref()),
+                            ("owner", hit.owner.as_ref()),
+                        ] {
+                            if let Some(named) = named {
+                                object.insert(key.to_string(), json!(named));
+                            }
+                        }
+                    }
+                    value
                 })
                 .collect();
             // Exactness is conservative: a full window may have more matches
@@ -215,7 +231,15 @@ pub fn get(
                 "title": document.title,
                 "signature": document.signature,
                 "applicableVersion": document.applicable_version,
+                // Сырой текст идёт рядом с полями и при разобранной статье:
+                // разбор не отменяет доступа к исходному.
                 "text": document.text,
+                // Версия схемы формата: по ней потребитель знает, какие
+                // поля вправе ждать.
+                "schemaVersion": crate::article_projection::ARTICLE_SCHEMA_VERSION,
+                // Статьи нет, когда поставщик её не разбирает: ключ
+                // отсутствует, а не стоит пустым.
+                "article": document.article.as_ref().map(crate::article_projection::article),
             }
         }));
     }
@@ -278,8 +302,49 @@ mod tests {
                 signature: Some("Имя()".to_string()),
                 snippet: "текст".to_string(),
                 applicable_version: "8.3.27.2074".to_string(),
+                kind: Some("method".to_string()),
+                owner: Some("ТаблицаЗначений".to_string()),
             }],
         }
+    }
+
+    /// Находка называет, что открыть: вид статьи, владелец и подпись
+    /// рядом с заголовком. Чего источник не различает, того нет ключом:
+    /// пустое поле за каждую находку — вес выдачи без сведений.
+    /// rule: INV.APP.DOCUMENTATION-SEARCH-HIT
+    #[test]
+    fn a_hit_names_what_to_open_and_omits_what_its_source_does_not_know() {
+        let mut section = ok_section("platform-syntax-help");
+        let registry = DocumentationRegistry::new(vec![Arc::new(Stub {
+            id: "platform-syntax-help",
+            section: section.clone(),
+        })])
+        .expect("реестр");
+        let answer = search(&registry, &request(), &context()).expect("выдача");
+        let hit = &answer["sections"][0]["hits"][0];
+        assert_eq!(hit["kind"], json!("method"));
+        assert_eq!(hit["owner"], json!("ТаблицаЗначений"));
+        assert_eq!(hit["signature"], json!("Имя()"));
+
+        // Источник, который вида, владельца и подписи не знает.
+        section.hits[0].kind = None;
+        section.hits[0].owner = None;
+        section.hits[0].signature = None;
+        let registry = DocumentationRegistry::new(vec![Arc::new(Stub {
+            id: "platform-syntax-help",
+            section,
+        })])
+        .expect("реестр");
+        let answer = search(&registry, &request(), &context()).expect("выдача");
+        let hit = &answer["sections"][0]["hits"][0];
+        assert!(
+            hit.get("kind").is_none() && hit.get("owner").is_none(),
+            "чего источник не различает, того нет ключом: {hit}"
+        );
+        assert!(hit.get("signature").is_none(), "{hit}");
+        // Заголовок и строка о находке остаются всегда.
+        assert_eq!(hit["title"], json!("Заголовок"));
+        assert_eq!(hit["snippet"], json!("текст"));
     }
 
     fn failed_section(id: &str) -> DocumentationSection {
@@ -821,7 +886,78 @@ mod tests {
             signature: Some("Имя()".to_string()),
             applicable_version: "8.3.27.2074".to_string(),
             text: "Полный текст открытой страницы.".to_string(),
+            article: None,
         }
+    }
+
+    /// Разобранная статья доходит до ответа рядом с сырым текстом, и ответ
+    /// называет версию схемы: по ней потребитель знает, какие поля ждать.
+    /// rule: INV.APP.DOCUMENTATION-ARTICLE-STATES
+    #[test]
+    fn a_parsed_article_arrives_next_to_the_raw_text_and_the_schema_version() {
+        let mut owned = document("platform-help");
+        owned.article = Some(HelpArticle {
+            kind: ArticleKind::Method,
+            name: LocalizedName {
+                ru: "Скопировать".to_string(),
+                en: Some("Copy".to_string()),
+            },
+            owner: None,
+            owner_document_id: None,
+            variants: ArticleField::Empty,
+            value_types: ArticleField::Empty,
+            value_type_text: String::new(),
+            read_only: ArticleField::Empty,
+            availability: ArticleField::Empty,
+            availability_text: String::new(),
+            since_version: ArticleField::Empty,
+            description: ArticleField::Parsed("Создаёт копию.".to_string()),
+            note: ArticleField::Empty,
+            example: ArticleField::Empty,
+            collection_element: ArticleField::Empty,
+            member_lists: Vec::new(),
+            links: Vec::new(),
+            other_sections: Vec::new(),
+        });
+        let registry = DocumentationRegistry::new(vec![Arc::new(GetStub {
+            id: "platform-help",
+            answer: Some(Ok(owned)),
+        })])
+        .expect("реестр собран");
+
+        let result = get(
+            &registry,
+            "platform-syntax-help:syntax-context:page.html",
+            "ru",
+            &context(),
+        )
+        .expect("владелец ответил");
+        let document = &result["document"];
+        assert_eq!(document["article"]["kind"], json!("method"));
+        assert_eq!(document["article"]["description"], json!("Создаёт копию."));
+        // Сырой текст остаётся рядом: разбор не отменяет доступа к исходному.
+        assert_eq!(document["text"], json!("Полный текст открытой страницы."));
+        assert_eq!(
+            document["schemaVersion"],
+            json!(crate::article_projection::ARTICLE_SCHEMA_VERSION)
+        );
+    }
+
+    /// Поставщик, который статью не разбирает, статьи и не обещает: ключ
+    /// приходит пустым, а не выдуманной статьёй.
+    #[test]
+    fn a_provider_without_an_article_answers_without_one() {
+        let registry = DocumentationRegistry::new(vec![Arc::new(GetStub {
+            id: "v8std",
+            answer: Some(Ok(document("v8std"))),
+        })])
+        .expect("реестр собран");
+        let result = get(&registry, "v8std:std702", "ru", &context()).expect("владелец ответил");
+        assert_eq!(result["document"]["article"], Value::Null);
+        assert_eq!(
+            result["document"]["schemaVersion"],
+            json!(crate::article_projection::ARTICLE_SCHEMA_VERSION)
+        );
     }
 
     /// Владельца находит первый не-`None` в порядке реестра, и его документ

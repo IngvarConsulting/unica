@@ -205,11 +205,10 @@ fn a_connection_secret_from_configuration_and_runner_answer_is_not_stored_or_rea
                 path.strip_prefix(&state).unwrap().display()
             ));
         }
-        // The runner's own configuration projection and the probe's marker
-        // hold the secret by design; nothing else in the workspace may.
+        // The local config and the probe's marker hold the secret by design;
+        // nothing else in the workspace may.
         let kept = [
             case.workspace.join("v8project.local.yaml"),
-            case.workspace.join(".build/unica/runner-project"),
             case.workspace.join("probe-saw-secret"),
         ];
         for path in files_with(&case.workspace, &case.secret, &kept) {

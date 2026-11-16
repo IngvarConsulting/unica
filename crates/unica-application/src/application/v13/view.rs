@@ -51,7 +51,6 @@ const MAX_LIMIT: usize = 50;
 // problem: неизвестно
 // on-reach: страница останавливается по объёму (stoppedBy bytes) с курсором; неделимый элемент отдаётся целиком
 // decision: закреплено правилом INV.WIRE.READ-PAGE-BUDGET
-// decision-date: 2026-09-23
 // decision-source: arch/rules/mcp/read-page-budget.md
 pub const PREFERRED_PAGE_BYTES: usize = 64 * 1024;
 type ViewProjector<'a> = dyn Fn(&Value) -> Result<Value, ViewError> + 'a;

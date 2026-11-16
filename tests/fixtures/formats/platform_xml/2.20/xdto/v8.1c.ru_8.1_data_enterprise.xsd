@@ -1,0 +1,390 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:ns1="http://v8.1c.ru/8.1/data/core" xmlns:tns="http://v8.1c.ru/8.1/data/enterprise" xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="http://v8.1c.ru/8.1/data/enterprise" attributeFormDefault="unqualified" elementFormDefault="qualified">
+	<xs:import namespace="http://v8.1c.ru/8.1/data/core"/>
+	<xs:simpleType name="AccountType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Active"/>
+			<xs:enumeration value="Passive"/>
+			<xs:enumeration value="ActivePassive"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="AccountingRecordType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Debit"/>
+			<xs:enumeration value="Credit"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="AccumulationRecordType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Receipt"/>
+			<xs:enumeration value="Expense"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="AccumulationRegisterAggregatePeriodicity">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Nonperiodical"/>
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="Day"/>
+			<xs:enumeration value="Month"/>
+			<xs:enumeration value="Quarter"/>
+			<xs:enumeration value="HalfYear"/>
+			<xs:enumeration value="Year"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="AccumulationRegisterAggregateUse">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="Always"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="AnyDBRef">
+		<xs:restriction base="tns:AnyRef"/>
+	</xs:simpleType>
+	<xs:simpleType name="AnyIBRef">
+		<xs:union memberTypes="tns:AnyDBRef tns:AnyMDEnum"/>
+	</xs:simpleType>
+	<xs:simpleType name="AnyMDEnum">
+		<xs:restriction base="xs:NCName"/>
+	</xs:simpleType>
+	<xs:simpleType name="AnyRef">
+		<xs:restriction base="xs:string">
+			<xs:pattern value="[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="AutoShowStateMode">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="DontShow"/>
+			<xs:enumeration value="Show"/>
+			<xs:enumeration value="ShowOnComposition"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="AutoTimeMode">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="DontUse"/>
+			<xs:enumeration value="Last"/>
+			<xs:enumeration value="First"/>
+			<xs:enumeration value="CurrentOrLast"/>
+			<xs:enumeration value="CurrentOrFirst"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="CalculationRegisterPeriodType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="RegistrationPeriod"/>
+			<xs:enumeration value="ActionPeriod"/>
+			<xs:enumeration value="ActualActionPeriod"/>
+			<xs:enumeration value="BasePeriod"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ClientApplicationBaseFontVariant">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Normal"/>
+			<xs:enumeration value="Large"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ClientApplicationFormScaleVariant">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="Normal"/>
+			<xs:enumeration value="Compact"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ClientApplicationInterfaceVariant">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Version8_2"/>
+			<xs:enumeration value="Taxi"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ClientApplicationType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="ThickClient"/>
+			<xs:enumeration value="ThinClient"/>
+			<xs:enumeration value="WebClient"/>
+			<xs:enumeration value="MobileClient"/>
+			<xs:enumeration value="MobileAppClient"/>
+			<xs:enumeration value="ExternalConnection"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ClientConnectionSpeed">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Normal"/>
+			<xs:enumeration value="Low"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ComparisonType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Equal"/>
+			<xs:enumeration value="NotEqual"/>
+			<xs:enumeration value="Less"/>
+			<xs:enumeration value="LessOrEqual"/>
+			<xs:enumeration value="Greater"/>
+			<xs:enumeration value="GreaterOrEqual"/>
+			<xs:enumeration value="Interval"/>
+			<xs:enumeration value="IntervalIncludingBounds"/>
+			<xs:enumeration value="IntervalIncludingLowerBound"/>
+			<xs:enumeration value="IntervalIncludingUpperBound"/>
+			<xs:enumeration value="Contains"/>
+			<xs:enumeration value="InList"/>
+			<xs:enumeration value="InListByHierarchy"/>
+			<xs:enumeration value="NotInList"/>
+			<xs:enumeration value="NotInListByHierarchy"/>
+			<xs:enumeration value="InHierarchy"/>
+			<xs:enumeration value="NotInHierarchy"/>
+			<xs:enumeration value="NotContains"/>
+			<xs:enumeration value="BeginsWith"/>
+			<xs:enumeration value="NotBeginsWith"/>
+			<xs:enumeration value="Like"/>
+			<xs:enumeration value="NotLike"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="DataChangeType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Create"/>
+			<xs:enumeration value="Update"/>
+			<xs:enumeration value="Delete"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="DataLineChangeType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Add"/>
+			<xs:enumeration value="Update"/>
+			<xs:enumeration value="Delete"/>
+			<xs:enumeration value="Move"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="DatabaseCopiesUse">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="UseCopiesOnly"/>
+			<xs:enumeration value="PreferUseCopies"/>
+			<xs:enumeration value="DontUseCopies"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="DocumentPostingMode">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Regular"/>
+			<xs:enumeration value="RealTime"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="DocumentWriteMode">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Write"/>
+			<xs:enumeration value="Posting"/>
+			<xs:enumeration value="UndoPosting"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="FoldersAndItemsUse">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Items"/>
+			<xs:enumeration value="Folders"/>
+			<xs:enumeration value="FoldersAndItems"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="JobScheduleMonths">
+		<xs:list itemType="xs:decimal"/>
+	</xs:simpleType>
+	<xs:simpleType name="JobScheduleWeekDays">
+		<xs:list itemType="xs:decimal"/>
+	</xs:simpleType>
+	<xs:simpleType name="LinkedValueChangeMode">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Clear"/>
+			<xs:enumeration value="DontChange"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="MessageStatus">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="WithoutStatus"/>
+			<xs:enumeration value="Ordinary"/>
+			<xs:enumeration value="Information"/>
+			<xs:enumeration value="Attention"/>
+			<xs:enumeration value="Important"/>
+			<xs:enumeration value="VeryImportant"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ModalityUseMode">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Use"/>
+			<xs:enumeration value="UseWithWarnings"/>
+			<xs:enumeration value="DontUse"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="PostingModeUse">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Regular"/>
+			<xs:enumeration value="RealTime"/>
+			<xs:enumeration value="Ask"/>
+			<xs:enumeration value="Auto"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="PredefinedDataUpdate">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="AutoUpdate"/>
+			<xs:enumeration value="DontAutoUpdate"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ReplacementMode">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Append"/>
+			<xs:enumeration value="Replace"/>
+			<xs:enumeration value="Merge"/>
+			<xs:enumeration value="Delete"/>
+			<xs:enumeration value="Update"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ReportResultViewMode">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="Default"/>
+			<xs:enumeration value="Compact"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="RequiredDataRelevance">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="Relevant"/>
+			<xs:enumeration value="Any"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ResultCompositionMode">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="Background"/>
+			<xs:enumeration value="Directly"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="SliceUse">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="DontUse"/>
+			<xs:enumeration value="First"/>
+			<xs:enumeration value="Last"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="SortDirection">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Asc"/>
+			<xs:enumeration value="Desc"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="TransactionsIsolationLevel">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="ReadUncommitted"/>
+			<xs:enumeration value="ReadCommitted"/>
+			<xs:enumeration value="RepeatableRead"/>
+			<xs:enumeration value="Serializable"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="UpdateOnDataChange">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="DontUpdate"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ViewModeApplicationOnSetReportResult">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="Apply"/>
+			<xs:enumeration value="DontApply"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:complexType name="Aggregate">
+		<xs:sequence>
+			<xs:element name="use" type="xs:boolean" minOccurs="0"/>
+			<xs:element name="periodicity" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="beginOfPeriod" type="xs:dateTime" minOccurs="0"/>
+			<xs:element name="endOfPeriod" type="xs:dateTime" minOccurs="0"/>
+			<xs:element name="size" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="dimension" type="xs:string" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="AggregateList">
+		<xs:sequence>
+			<xs:element name="buildDate" type="xs:dateTime" minOccurs="0"/>
+			<xs:element name="sizeLimit" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="size" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="effect" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="aggregate" type="tns:Aggregate" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="Bound">
+		<xs:sequence>
+			<xs:element name="value" nillable="true"/>
+			<xs:element name="kind" type="xs:decimal"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="Filter">
+		<xs:sequence>
+			<xs:element name="FilterItem" type="tns:FilterItem" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="FilterItem">
+		<xs:sequence>
+			<xs:element name="Name" type="xs:NCName"/>
+			<xs:element name="Usage" type="xs:boolean" default="true" minOccurs="0"/>
+			<xs:element name="ComparisonType" type="tns:ComparisonType" default="Equal" minOccurs="0"/>
+			<xs:element name="Value" nillable="true" minOccurs="0"/>
+			<xs:element name="ValueFrom" nillable="true" minOccurs="0"/>
+			<xs:element name="ValueTo" nillable="true" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="JobSchedule">
+		<xs:sequence>
+			<xs:element name="WeekDays" type="tns:JobScheduleWeekDays"/>
+			<xs:element name="Months" type="tns:JobScheduleMonths"/>
+			<xs:element name="DetailedDailySchedules" type="tns:JobSchedule" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+		<xs:attribute name="BeginDate" type="xs:date"/>
+		<xs:attribute name="EndDate" type="xs:date"/>
+		<xs:attribute name="BeginTime" type="xs:time"/>
+		<xs:attribute name="EndTime" type="xs:time"/>
+		<xs:attribute name="CompletionTime" type="xs:time"/>
+		<xs:attribute name="CompletionInterval" type="xs:decimal"/>
+		<xs:attribute name="RepeatPeriodInDay" type="xs:decimal"/>
+		<xs:attribute name="RepeatPause" type="xs:decimal"/>
+		<xs:attribute name="WeekDayInMonth" type="xs:decimal"/>
+		<xs:attribute name="DayInMonth" type="xs:decimal"/>
+		<xs:attribute name="WeeksPeriod" type="xs:decimal"/>
+		<xs:attribute name="DaysRepeatPeriod" type="xs:decimal"/>
+	</xs:complexType>
+	<xs:complexType name="ObjectDeletion">
+		<xs:sequence>
+			<xs:element name="Ref" type="tns:AnyRef"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="PointOfTime">
+		<xs:sequence>
+			<xs:element name="date" type="xs:dateTime"/>
+			<xs:element name="reference" type="tns:AnyRef" nillable="true"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="PointOfTimeWithPeriodAdjustment">
+		<xs:sequence>
+			<xs:element name="date" type="xs:dateTime"/>
+			<xs:element name="dateAdjustment" type="xs:decimal"/>
+			<xs:element name="reference" type="tns:AnyRef" nillable="true"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="UserMessage">
+		<xs:sequence>
+			<xs:element name="Text" type="xs:string" minOccurs="0"/>
+			<xs:element name="Ref" type="tns:AnyRef" nillable="true"/>
+			<xs:element name="pic" minOccurs="0"/>
+			<xs:element name="details" type="xs:string" minOccurs="0"/>
+		</xs:sequence>
+		<xs:attribute name="MessageMarker" type="xs:decimal"/>
+		<xs:attribute name="DataPath" type="xs:string"/>
+		<xs:attribute name="FormAttributePath" type="xs:string"/>
+		<xs:attribute name="FormID" type="ns1:UUID"/>
+		<xs:attribute name="notification" type="xs:boolean"/>
+		<xs:attribute name="caption" type="xs:string"/>
+		<xs:attribute name="url" type="xs:string"/>
+		<xs:attribute name="tag" type="xs:string"/>
+	</xs:complexType>
+	<xs:complexType name="UserMessages">
+		<xs:sequence>
+			<xs:element name="message" type="tns:UserMessage" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+</xs:schema>

@@ -128,7 +128,9 @@ fn registered(owner: &[u8], kind: &str, name: &str) -> Result<bool, ApplyPlanErr
         .filter(|node| node.is_element())
         .collect::<Vec<_>>();
     if !root.has_tag_name((NS, "MetaDataObject"))
-        || root.attribute("version") != Some("2.20")
+        || !unica_source_designer::format_profile::is_writable_root_version(
+            root.attribute("version"),
+        )
         || objects.len() != 1
         || !objects[0].has_tag_name((NS, "Configuration"))
     {
@@ -197,6 +199,27 @@ pub(super) fn plan(
     )
 }
 
+/// A borrow takes its parent from a configuration: the admission reads an
+/// extension too when an apply compares compatibility modes.
+fn require_configuration_parent(
+    admission: &ApplyAdmission,
+    parent: &QualifiedAddress,
+) -> Result<(), ApplyPlanError> {
+    let kind = admission
+        .read_dependency_sets()
+        .into_iter()
+        .find(|(name, _)| *name == parent.source_set())
+        .map(|(_, kind)| kind);
+    if kind.is_some_and(|kind| kind != SourceSetKind::Configuration) {
+        return Err(ApplyPlanError::new(
+            ApplyPlanErrorKind::BadValue,
+            "from must name an object of a configuration source set",
+        )
+        .at_path(parent.to_string()));
+    }
+    Ok(())
+}
+
 fn parent_form_name(parent: &QualifiedAddress) -> Option<&str> {
     parent
         .segments()
@@ -232,6 +255,7 @@ fn plan_object(
         .at_path(at.clone())
     })?;
     let relative = PathBuf::from(layout.directory).join(format!("{name}.xml"));
+    require_configuration_parent(admission, parent)?;
     let parent_owner =
         admission.read_apply_dependency(parent.source_set(), Path::new("Configuration.xml"))?;
     if !registered(&parent_owner, kind, name)? {
@@ -261,6 +285,13 @@ fn plan_object(
                 "extension Configuration descriptor is missing",
             )
         })?;
+    if requested_overrides.is_some_and(|overrides| !overrides.is_empty()) {
+        unica_source_designer::extension_mode::admit_by_extension_configuration(
+            Some(&destination_owner),
+            unica_source_contract::compatibility::ExtensionOperation::OverrideBorrowedProperty,
+            &format!("ops[{index}].args.overrides"),
+        )?;
+    }
     let existing = staged
         .read(&relative)
         .map_err(|error| ApplyPlanError::staging(error, parent.to_string()))?;
@@ -487,6 +518,7 @@ fn plan_form(
         ApplyPlanError::new(kind, error.to_string()).at_path(from.clone())
     };
 
+    require_configuration_parent(admission, parent)?;
     let parent_configuration =
         admission.read_apply_dependency(parent.source_set(), Path::new("Configuration.xml"))?;
     if !registered(&parent_configuration, kind, name)? {
@@ -636,15 +668,21 @@ fn plan_form(
             )?;
             let uuid =
                 identity.new_uuid("form", &from, crate::infrastructure::source_ids::fresh_uuid);
+            // The new files take the format of the extension set they join,
+            // not the parent's (INV.SOURCE.WRITABLE-PROFILE).
+            let set_format = binding
+                .source_profile()
+                .serialization_format()
+                .unwrap_or(parent_form.version.as_str())
+                .to_string();
             let mut content = b"\xef\xbb\xbf".to_vec();
             content.extend_from_slice(
-                unica_forms_designer::codec::borrowed_form_content_xml(&parent_form.version)
-                    .as_bytes(),
+                unica_forms_designer::codec::borrowed_form_content_xml(&set_format).as_bytes(),
             );
             for (relative, bytes) in [
                 (
                     &form_relative,
-                    borrowed_form::borrowed_form_descriptor(form, &uuid, &parent_form),
+                    borrowed_form::borrowed_form_descriptor(form, &uuid, &parent_form, &set_format),
                 ),
                 (&content_relative, content),
             ] {
@@ -1265,14 +1303,14 @@ mod tests {
         let parent = std::fs::read_to_string(&descriptor).unwrap();
         std::fs::write(
             &descriptor,
-            parent.replace("version=\"2.20\"", "version=\"2.21\""),
+            parent.replace("version=\"2.20\"", "version=\"2.23\""),
         )
         .unwrap();
         let before = unica_workspace::test_support::tree_snapshot(&fixture.dst);
         let error = fixture
             .run(true, None, None)
             .expect_err("a newer parent descriptor must refuse before emitting borrowed XML");
-        assert!(error.contains("2.21"), "{error}");
+        assert!(error.contains("2.23"), "{error}");
         assert_eq!(
             unica_workspace::test_support::tree_snapshot(&fixture.dst),
             before
@@ -1314,7 +1352,7 @@ mod tests {
     fn platform(name: &str) -> Vec<u8> {
         std::fs::read(
             Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../tests/fixtures/platform_8_3_27/cfe_borrow")
+                .join("../../tests/fixtures/formats/platform_xml/2.20/cfe_borrow")
                 .join(name),
         )
         .unwrap()

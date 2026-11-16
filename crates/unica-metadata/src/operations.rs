@@ -597,6 +597,8 @@ pub struct MetaElementUpdateInput {
     pub master: Option<bool>,
     pub main_filter: Option<bool>,
     pub type_reduction_mode: Option<String>,
+    /// `Color` of an enumeration value, from 8.5.1.
+    pub color: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -614,6 +616,8 @@ pub struct MetaElementUpdate {
     pub master: Option<bool>,
     pub main_filter: Option<bool>,
     pub type_reduction_mode: Option<String>,
+    /// `Color` of an enumeration value, from 8.5.1.
+    pub color: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -964,6 +968,7 @@ impl MetaElementUpdate {
             && input.main_filter.is_none()
             && input.deny_incomplete_values.is_none()
             && input.type_reduction_mode.is_none()
+            && input.color.is_none()
         {
             return Err(invalid_operation(
                 field,
@@ -984,6 +989,22 @@ impl MetaElementUpdate {
                 return Err(invalid_operation(
                     format!("{field}.typeReductionMode"),
                     "typeReductionMode requires a dimension and Deny or TransformValues",
+                ));
+            }
+        }
+        if input.color.is_some() && collection != MetaCollection::EnumValues {
+            return Err(invalid_operation(
+                format!("{field}.color"),
+                "color is a property of an enumeration value",
+            ));
+        }
+        if let Some(color) = &input.color {
+            if color != "auto"
+                && crate::style_color::StyleItemColor::parse_argument(color).is_none()
+            {
+                return Err(invalid_operation(
+                    format!("{field}.color"),
+                    "color must be auto, #RRGGBB, or a web or style color the platform knows",
                 ));
             }
         }
@@ -1013,6 +1034,7 @@ impl MetaElementUpdate {
             main_filter: input.main_filter,
             deny_incomplete_values: input.deny_incomplete_values,
             type_reduction_mode: input.type_reduction_mode,
+            color: input.color,
         })
     }
 }

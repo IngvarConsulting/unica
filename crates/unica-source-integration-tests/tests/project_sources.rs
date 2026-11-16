@@ -2202,7 +2202,14 @@ source-set:
             root.join("epf/ConfigDumpInfo.xml"),
         )
         .expect("symlink fixtures exist on Unix and Windows");
-        symlink_result.unwrap();
+        if symlink_result.is_err() {
+            fs::remove_dir_all(&root).unwrap();
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::Symlink,
+                "the evidence of the test is a symlinked ConfigDumpInfo.xml",
+            );
+            return;
+        }
 
         let map = discover_project_source_map(&root).unwrap();
 

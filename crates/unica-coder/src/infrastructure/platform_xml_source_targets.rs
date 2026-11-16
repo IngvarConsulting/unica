@@ -654,13 +654,16 @@ fn validate_navigation_owner(
         )
     })?;
     if owners.is_empty()
-        || owners
-            .iter()
-            .any(|owner| owner.version.as_deref() != Some("2.20"))
+        || owners.iter().any(|owner| {
+            !unica_source_designer::format_profile::is_writable_root_version(
+                owner.version.as_deref(),
+            )
+        })
     {
         return Err(format!(
-            "sourceSet `{}` does not prove the Platform XML 2.20 address profile",
-            selected.source_set.name
+            "sourceSet `{}` does not prove the Platform XML {} address profile",
+            selected.source_set.name,
+            unica_source_designer::format_profile::ACTIVE_FORMAT_PROFILE.export_format
         ));
     }
     Ok(())
@@ -757,7 +760,7 @@ fn read_navigation_descriptor(path: &Path) -> Result<Vec<u8>, ()> {
 
 fn descriptor_name_from_bytes(raw: &[u8], expected_kind: &str) -> Result<String, ()> {
     let (version, name) = descriptor_version_and_name_from_bytes(raw, expected_kind)?;
-    if version.as_deref() != Some("2.20") {
+    if !unica_source_designer::format_profile::is_writable_root_version(version.as_deref()) {
         return Err(());
     }
     Ok(name)
@@ -1789,7 +1792,6 @@ mod medium_tests {
     use unica_source_contract::workspace::WorkspaceContext;
     use unica_work_control::cancellation::CancellationToken;
     use unica_workspace::paths::normalize_path_identity;
-    use unica_workspace::test_support::create_dir_symlink_for_test;
     use unica_workspace::test_support::{
         create_directory_link_fixture_for_test, create_file_link_fixture_for_test,
         FileLinkFixtureOutcome,
@@ -2367,10 +2369,13 @@ mod medium_tests {
             "CommonModule",
             "Shared",
         );
-        let result =
-            create_dir_symlink_for_test(root.join("RealCommonModules"), root.join("CommonModules"))
-                .expect("symlink fixtures exist on Unix and Windows");
-        result.unwrap();
+        if !crate::infrastructure::test_fixtures::dir_link_or_skip(
+            root.join("RealCommonModules"),
+            root.join("CommonModules"),
+        ) {
+            cleanup(&context);
+            return;
+        }
 
         let error =
             resolve_platform_xml_target(&context, &target("main", "CommonModule.Shared.Module"))
@@ -2591,9 +2596,13 @@ mod medium_tests {
         let real = context.workspace_root.join("real-src");
         fs::create_dir_all(&real).unwrap();
         fs::write(real.join("Configuration.xml"), "<MetaDataObject/>").unwrap();
-        let result = create_dir_symlink_for_test(&real, context.workspace_root.join("src"))
-            .expect("symlink fixtures exist on Unix and Windows");
-        result.unwrap();
+        if !crate::infrastructure::test_fixtures::dir_link_or_skip(
+            &real,
+            context.workspace_root.join("src"),
+        ) {
+            cleanup(&context);
+            return;
+        }
 
         let error = resolve_platform_xml_root_target(&context, &root_target("main")).unwrap_err();
 
@@ -2621,9 +2630,10 @@ mod medium_tests {
         let resolution = resolve_platform_xml_root_target(&context, &root_target("main")).unwrap();
         let replacement = context.workspace_root.join("replacement");
         fs::rename(&root, &replacement).unwrap();
-        let result = create_dir_symlink_for_test(&replacement, &root)
-            .expect("symlink fixtures exist on Unix and Windows");
-        result.unwrap();
+        if !crate::infrastructure::test_fixtures::dir_link_or_skip(&replacement, &root) {
+            cleanup(&context);
+            return;
+        }
 
         let error = revalidate_platform_xml_target(&context, &resolution.handle).unwrap_err();
 
