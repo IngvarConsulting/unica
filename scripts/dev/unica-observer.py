@@ -1655,6 +1655,9 @@ async function fill(container, at, cursor) {
     const badges = `<span class="cnt">${branch.count ?? ""}</span>` + (isGraph(branch.at) ? ' <span class="badge graph">граф вызовов</span>' : "");
     container.appendChild(makeRow(shortLabel(branch.at, parent), branch.at, " " + badges));
   }
+  if (data.kind === "Operation" && data.at?.includes(":WebService.") && typeof data.props?.implementationAt === "string") {
+    container.appendChild(makeRow("Handler", data.props.implementationAt));
+  }
   for (const item of data.items || []) {
     if (item && typeof item.at === "string") {
       const meta = item.kind ? ` <span class="badge">${esc(item.kind)}</span>` : "";
