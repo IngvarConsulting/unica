@@ -2110,7 +2110,11 @@ pub fn parse_common_template_descriptor_from_bytes(
         return Err("common template descriptor belongs to another logical address".into());
     }
     let template_type = template_descriptor_type(*properties)?;
-    let (synonym, unreadable_synonym) = match crate::info_projection::localized_property_as_nstr(*properties, "CommonTemplate", "Synonym") {
+    let (synonym, unreadable_synonym) = match crate::info_projection::localized_property_as_nstr(
+        *properties,
+        "CommonTemplate",
+        "Synonym",
+    ) {
         Ok(synonym) => (synonym, None),
         Err(error) => (None, Some(error)),
     };

@@ -284,23 +284,41 @@ fn meta_edit_set_mltext_values(
     let render = |properties: &str| -> Result<Option<(std::ops::Range<usize>, String)>, String> {
         let wrapped = format!("{opening}{properties}</w>");
         let document = Document::parse(&wrapped).map_err(|error| error.to_string())?;
-        let owner = document.root_element().children().find(roxmltree::Node::is_element)
+        let owner = document
+            .root_element()
+            .children()
+            .find(roxmltree::Node::is_element)
             .ok_or_else(|| "metadata element has no Properties".to_string())?;
-        let Some(property) = crate::info_projection::direct_meta_info_property(owner, "metadata element", tag)
-            .map_err(|error| error.message)?
+        let Some(property) =
+            crate::info_projection::direct_meta_info_property(owner, "metadata element", tag)
+                .map_err(|error| error.message)?
         else {
             return Ok(None);
         };
         let range = property.range();
-        let values = items.iter().map(|item| (item.language.clone(), item.content.clone())).collect::<Vec<_>>();
-        let replacement = unica_xml_format::localized::replace_language_values(&wrapped, property, indent, &values);
-        Ok(Some((range.start - opening.len()..range.end - opening.len(), replacement)))
+        let values = items
+            .iter()
+            .map(|item| (item.language.clone(), item.content.clone()))
+            .collect::<Vec<_>>();
+        let replacement = unica_xml_format::localized::replace_language_values(
+            &wrapped, property, indent, &values,
+        );
+        Ok(Some((
+            range.start - opening.len()..range.end - opening.len(),
+            replacement,
+        )))
     };
     let (range, replacement) = match render(properties)? {
         Some(edit) => edit,
         None => {
-            meta_edit_replace_or_insert_property(properties, tag, &format!("{indent}<{tag}/>"), indent)?;
-            render(properties)?.ok_or_else(|| format!("multilingual property `{tag}` is missing"))?
+            meta_edit_replace_or_insert_property(
+                properties,
+                tag,
+                &format!("{indent}<{tag}/>"),
+                indent,
+            )?;
+            render(properties)?
+                .ok_or_else(|| format!("multilingual property `{tag}` is missing"))?
         }
     };
     properties.replace_range(range, &replacement);
@@ -308,7 +326,11 @@ fn meta_edit_set_mltext_values(
 }
 
 fn synonym_update_error(message: String) -> MetaDiagnostic {
-    typed_diagnostic(MetaDiagnosticCode::ProviderUnavailable, message, Some("synonym"))
+    typed_diagnostic(
+        MetaDiagnosticCode::ProviderUnavailable,
+        message,
+        Some("synonym"),
+    )
 }
 
 pub fn meta_edit_xml_element_range(
@@ -1074,9 +1096,16 @@ pub fn typed_operation_effect_value(
                     continue;
                 }
                 if *key == MetaPropertyKey::Synonym {
-                    let properties = properties.ok_or_else(|| synonym_update_error("metadata Synonym has no Properties".to_string()))?;
-                    let value = super::info_projection::localized_property_as_nstr(properties, kind.as_str(), "Synonym")
-                        .map_err(synonym_update_error)?.unwrap_or_default();
+                    let properties = properties.ok_or_else(|| {
+                        synonym_update_error("metadata Synonym has no Properties".to_string())
+                    })?;
+                    let value = super::info_projection::localized_property_as_nstr(
+                        properties,
+                        kind.as_str(),
+                        "Synonym",
+                    )
+                    .map_err(synonym_update_error)?
+                    .unwrap_or_default();
                     selected.insert(public_key, Value::String(value));
                     continue;
                 }
@@ -2244,8 +2273,13 @@ pub fn apply_typed_nested_attribute_fields(
     }
     Ok(())
 }
-fn apply_typed_element_fields(xml: &mut String, element: &MetaElementDefinition) -> Result<(), MetaDiagnostic> {
-    let range = typed_properties_text_range(xml).ok_or_else(|| synonym_update_error("the rendered element has no Properties".to_string()))?;
+fn apply_typed_element_fields(
+    xml: &mut String,
+    element: &MetaElementDefinition,
+) -> Result<(), MetaDiagnostic> {
+    let range = typed_properties_text_range(xml).ok_or_else(|| {
+        synonym_update_error("the rendered element has no Properties".to_string())
+    })?;
     let mut text = xml[range.clone()].to_string();
     let indent = meta_edit_property_child_indent(&text);
     if let Some(synonym) = &element.synonym {
@@ -2658,17 +2692,32 @@ pub fn update_typed_element(
         })?;
     }
     if let Some(synonym) = &update.synonym {
-        let document = Document::parse(xml_text).map_err(|error| synonym_update_error(error.to_string()))?;
-        let properties = document.descendants().find(|node| node.is_element()
-            && node.range().start == properties_start)
-            .ok_or_else(|| synonym_update_error("metadata element has no Properties".to_string()))?;
+        let document =
+            Document::parse(xml_text).map_err(|error| synonym_update_error(error.to_string()))?;
+        let properties = document
+            .descendants()
+            .find(|node| node.is_element() && node.range().start == properties_start)
+            .ok_or_else(|| {
+                synonym_update_error("metadata element has no Properties".to_string())
+            })?;
         let mut namespaces = String::new();
         for namespace in properties.namespaces() {
-            let prefix = namespace.name().map_or(String::new(), |name| format!(":{name}"));
-            namespaces.push_str(&format!(" xmlns{prefix}=\"{}\"", unica_xml_format::text::escape_xml(namespace.uri())));
+            let prefix = namespace
+                .name()
+                .map_or(String::new(), |name| format!(":{name}"));
+            namespaces.push_str(&format!(
+                " xmlns{prefix}=\"{}\"",
+                unica_xml_format::text::escape_xml(namespace.uri())
+            ));
         }
-        meta_edit_set_mltext_values(&mut properties_text, "Synonym", &indent, synonym, &namespaces)
-            .map_err(synonym_update_error)?;
+        meta_edit_set_mltext_values(
+            &mut properties_text,
+            "Synonym",
+            &indent,
+            synonym,
+            &namespaces,
+        )
+        .map_err(synonym_update_error)?;
     }
     if let Some(comment) = &update.comment {
         let replacement = if comment.is_empty() {
@@ -4515,10 +4564,12 @@ mod prefixed_property_writer_tests {
         let original = "<md:Properties><other:Synonym><core:item><core:lang>en</core:lang><core:content>Same</core:content></core:item></other:Synonym></md:Properties>";
         let items = unica_metadata::parse_nstr("en = 'New\rline'").unwrap();
         let mut edited = original.to_string();
-        super::meta_edit_set_mltext_values(&mut edited, "Synonym", "\t", &items, namespaces).unwrap();
+        super::meta_edit_set_mltext_values(&mut edited, "Synonym", "\t", &items, namespaces)
+            .unwrap();
         assert_eq!(edited, original.replace("Same", "New&#13;line"));
         let saved = edited.clone();
-        super::meta_edit_set_mltext_values(&mut edited, "Synonym", "\t", &items, namespaces).unwrap();
+        super::meta_edit_set_mltext_values(&mut edited, "Synonym", "\t", &items, namespaces)
+            .unwrap();
         assert_eq!(edited, saved);
     }
 

@@ -2184,8 +2184,8 @@ pub fn parse_subsystem_info_xml(
     let name =
         unica_xml_format::read::child_text(props, "Name", Some("http://v8.1c.ru/8.3/MDClasses"));
     let mut property_limits = Vec::new();
-    let synonym = subsystem_text_property(props, "Synonym", true, &mut property_limits)
-        .unwrap_or_default();
+    let synonym =
+        subsystem_text_property(props, "Synonym", true, &mut property_limits).unwrap_or_default();
     let comment = subsystem_text_property(props, "Comment", false, &mut property_limits);
     let include_help_in_contents =
         subsystem_text_property(props, "IncludeHelpInContents", false, &mut property_limits)
@@ -2258,7 +2258,11 @@ fn subsystem_text_property(
 ) -> Option<String> {
     use crate::info_projection::direct_text_content;
     if localized {
-        return match crate::info_projection::localized_property_as_nstr(properties, "Subsystem", name) {
+        return match crate::info_projection::localized_property_as_nstr(
+            properties,
+            "Subsystem",
+            name,
+        ) {
             Ok(value) => value,
             Err(error) => {
                 limits.push(format!("source_unreadable: {error}"));

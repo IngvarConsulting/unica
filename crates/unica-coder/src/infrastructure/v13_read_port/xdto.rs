@@ -48,9 +48,12 @@ impl ProviderReadAuthority {
         let mut payload = serde_json::to_value(data)
             .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()))?;
         if type_name.is_none() {
-            match std::str::from_utf8(&descriptor).map_err(|error| error.to_string())
-                .and_then(|descriptor| crate::infrastructure::family_codecs::metadata_read_codec()
-                    .descriptor_localized_property(descriptor, "XDTOPackage", "Synonym")) {
+            match std::str::from_utf8(&descriptor)
+                .map_err(|error| error.to_string())
+                .and_then(|descriptor| {
+                    crate::infrastructure::family_codecs::metadata_read_codec()
+                        .descriptor_localized_property(descriptor, "XDTOPackage", "Synonym")
+                }) {
                 Ok(Some(synonym)) => payload["Synonym"] = json!(synonym),
                 Ok(None) => {}
                 Err(message) => payload["synonymError"] = json!(message),

@@ -141,7 +141,10 @@ fn common_module_synonym_is_retained_until_its_descriptor_changes() {
     );
 
     // The same synonym reversed: other content of the same length.
-    let before_text = unica_metadata::parse_nstr(before.as_str().unwrap()).unwrap().remove(0).content;
+    let before_text = unica_metadata::parse_nstr(before.as_str().unwrap())
+        .unwrap()
+        .remove(0)
+        .content;
     let reversed: String = before_text.chars().rev().collect();
     assert_ne!(
         reversed, before_text,

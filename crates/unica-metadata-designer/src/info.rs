@@ -353,7 +353,11 @@ pub fn typed_element(
         crate::info_projection::direct_md_child_text(properties, "Name").unwrap_or_default();
     let mut incomplete = raw_name.trim().is_empty();
     let name = if incomplete { String::new() } else { raw_name };
-    let synonym = match crate::info_projection::localized_property_as_nstr(properties, "metadata collection item", "Synonym") {
+    let synonym = match crate::info_projection::localized_property_as_nstr(
+        properties,
+        "metadata collection item",
+        "Synonym",
+    ) {
         Ok(value) => value,
         Err(error) => {
             diagnostics.push(
@@ -741,19 +745,24 @@ pub fn parse_typed_meta_local_info_inner(
         .into());
     }
     let mut diagnostics = Vec::new();
-    let synonym = properties.and_then(|properties| {
-        match crate::info_projection::localized_property_as_nstr(properties, kind.as_str(), "Synonym") {
-            Ok(value) => value,
-            Err(error) => {
-                diagnostics.push(
-                    MetaDiagnostic::error(MetaDiagnosticCode::ProviderUnavailable, error)
-                        .with_metadata_path(target.clone())
-                        .with_field("properties.Synonym"),
-                );
-                None
-            }
-        }
-    });
+    let synonym =
+        properties.and_then(
+            |properties| match crate::info_projection::localized_property_as_nstr(
+                properties,
+                kind.as_str(),
+                "Synonym",
+            ) {
+                Ok(value) => value,
+                Err(error) => {
+                    diagnostics.push(
+                        MetaDiagnostic::error(MetaDiagnosticCode::ProviderUnavailable, error)
+                            .with_metadata_path(target.clone())
+                            .with_field("properties.Synonym"),
+                    );
+                    None
+                }
+            },
+        );
     for error in crate::info_projection::meta_info_profile_errors(kind, properties, child_objects) {
         diagnostics.push(
             MetaDiagnostic::error(error.code, error.message)

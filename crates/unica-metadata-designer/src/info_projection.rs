@@ -1582,13 +1582,17 @@ pub fn localized_property_as_nstr(
     owner: &str,
     name: &str,
 ) -> Result<Option<String>, String> {
-    let Some(node) = direct_meta_info_property(properties, owner, name).map_err(|error| error.message)? else {
+    let Some(node) =
+        direct_meta_info_property(properties, owner, name).map_err(|error| error.message)?
+    else {
         return Ok(None);
     };
     localized_node_as_nstr(node).map_err(|error| format!("{owner} properties.{name}: {error}"))
 }
 
-pub(crate) fn localized_node_as_nstr(node: roxmltree::Node<'_, '_>) -> Result<Option<String>, String> {
+pub(crate) fn localized_node_as_nstr(
+    node: roxmltree::Node<'_, '_>,
+) -> Result<Option<String>, String> {
     let Some(MetaObservedPropertyValue::LocalizedString { values }) =
         strict_localized_meta_info_property_value(node)
     else {
@@ -1597,10 +1601,13 @@ pub(crate) fn localized_node_as_nstr(node: roxmltree::Node<'_, '_>) -> Result<Op
     if values.is_empty() {
         return Ok(None);
     }
-    let items = values.into_iter()
+    let items = values
+        .into_iter()
         .map(|value| unica_metadata::LocalizedItem::new(value.language, value.content))
         .collect::<Vec<_>>();
-    unica_metadata::format_nstr(&items).map(Some).ok_or_else(|| "translations cannot be represented as NStr".to_string())
+    unica_metadata::format_nstr(&items)
+        .map(Some)
+        .ok_or_else(|| "translations cannot be represented as NStr".to_string())
 }
 
 pub fn parsed_localized_meta_info_property_value(

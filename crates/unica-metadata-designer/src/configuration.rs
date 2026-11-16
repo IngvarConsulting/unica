@@ -180,7 +180,11 @@ pub fn parse_cf_info_xml(
         })
         .collect();
     let mut property_limits = Vec::new();
-    let mut localized = |name| match crate::info_projection::localized_property_as_nstr(props, "Configuration", name) {
+    let mut localized = |name| match crate::info_projection::localized_property_as_nstr(
+        props,
+        "Configuration",
+        name,
+    ) {
         Ok(value) => value,
         Err(error) => {
             property_limits.push(format!("source_unreadable: {error}"));
@@ -190,11 +194,12 @@ pub fn parse_cf_info_xml(
     let synonym = localized("Synonym");
     let caption = localized("Caption");
     let short_caption = localized("ShortCaption");
-    let localized_properties = unica_metadata::descriptor_operations::CONFIGURATION_LOCALIZED_PROPERTIES
-        .iter()
-        .filter(|(_, key)| !matches!(*key, "synonym" | "caption" | "shortCaption"))
-        .filter_map(|(tag, key)| localized(tag).map(|value| (key.to_string(), value.into())))
-        .collect();
+    let localized_properties =
+        unica_metadata::descriptor_operations::CONFIGURATION_LOCALIZED_PROPERTIES
+            .iter()
+            .filter(|(_, key)| !matches!(*key, "synonym" | "caption" | "shortCaption"))
+            .filter_map(|(tag, key)| localized(tag).map(|value| (key.to_string(), value.into())))
+            .collect();
     let data = CfInfoData {
         format: version.to_string(),
         name: cf_prop_text(props, "Name"),

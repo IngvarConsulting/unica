@@ -6,7 +6,10 @@ fn common_template_empty_synonyms_have_no_value_like_other_metadata() {
         ("", None),
         ("<Synonym/>", None),
         ("<Synonym>   </Synonym>", None),
-        ("<Synonym><v8:item><v8:lang>ru</v8:lang><v8:content/></v8:item></Synonym>", Some("ru = ''")),
+        (
+            "<Synonym><v8:item><v8:lang>ru</v8:lang><v8:content/></v8:item></Synonym>",
+            Some("ru = ''"),
+        ),
     ] {
         let fixture = RealReaderFixture::new();
         install_common_template_fixture(&fixture);
@@ -22,7 +25,12 @@ fn common_template_empty_synonyms_have_no_value_like_other_metadata() {
             .view(ViewRequest::new("main:CommonTemplate.Print").unwrap());
         assert!(result.ok, "{synonym:?}: the call failed");
         let data = result.data.unwrap();
-        assert_eq!(data["props"].get("Synonym").and_then(serde_json::Value::as_str), expected);
+        assert_eq!(
+            data["props"]
+                .get("Synonym")
+                .and_then(serde_json::Value::as_str),
+            expected
+        );
         assert_eq!(data["props"]["format"], "SpreadsheetDocument");
     }
 }

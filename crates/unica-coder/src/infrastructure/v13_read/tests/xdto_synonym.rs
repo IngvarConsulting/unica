@@ -103,7 +103,10 @@ fn xdto_synonym_compact_budget_preserves_whole_property_reading() {
             service.view(ViewRequest::new(PACKAGE).unwrap())
         });
         assert!(whole.ok);
-        assert_eq!(whole.data.unwrap()["props"]["Synonym"], format!("ru = '{text}'"));
+        assert_eq!(
+            whole.data.unwrap()["props"]["Synonym"],
+            format!("ru = '{text}'")
+        );
     }
 }
 

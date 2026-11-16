@@ -99,7 +99,10 @@ fn common_module_synonym_obeys_compact_limit_and_is_readable_whole() {
         service.view(ViewRequest::new(MODULE).unwrap())
     });
     assert!(whole.ok, "the whole-property projection must work");
-    assert_eq!(whole.data.as_ref().unwrap()["props"]["synonym"], format!("ru = '{text}'"));
+    assert_eq!(
+        whole.data.as_ref().unwrap()["props"]["synonym"],
+        format!("ru = '{text}'")
+    );
 }
 
 #[test]
