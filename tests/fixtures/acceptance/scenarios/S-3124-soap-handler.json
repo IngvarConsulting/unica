@@ -69,39 +69,39 @@
       ],
       "fileAssertions": [
         {
-          "file": "other/Configuration.xml",
           "kind": "sha256",
-          "eq": "$capture.file0"
+          "eq": "$capture.file0",
+          "path": "other/Configuration.xml"
         },
         {
-          "file": "other/WebServices/Exchange/Ext/Module.bsl",
           "kind": "sha256",
-          "eq": "$capture.file1"
+          "eq": "$capture.file1",
+          "path": "other/WebServices/Exchange/Ext/Module.bsl"
         },
         {
-          "file": "other/WebServices/Exchange.xml",
           "kind": "sha256",
-          "eq": "$capture.file2"
+          "eq": "$capture.file2",
+          "path": "other/WebServices/Exchange.xml"
         },
         {
-          "file": "src/Configuration.xml",
           "kind": "sha256",
-          "eq": "$capture.file3"
+          "eq": "$capture.file3",
+          "path": "src/Configuration.xml"
         },
         {
-          "file": "src/WebServices/Exchange/Ext/Module.bsl",
           "kind": "sha256",
-          "eq": "$capture.file4"
+          "eq": "$capture.file4",
+          "path": "src/WebServices/Exchange/Ext/Module.bsl"
         },
         {
-          "file": "src/WebServices/Exchange.xml",
           "kind": "sha256",
-          "eq": "$capture.file5"
+          "eq": "$capture.file5",
+          "path": "src/WebServices/Exchange.xml"
         },
         {
-          "file": "v8project.yaml",
           "kind": "sha256",
-          "eq": "$capture.file6"
+          "eq": "$capture.file6",
+          "path": "v8project.yaml"
         }
       ]
     },
@@ -121,39 +121,39 @@
       ],
       "fileAssertions": [
         {
-          "file": "other/Configuration.xml",
           "kind": "sha256",
-          "eq": "$capture.file0"
+          "eq": "$capture.file0",
+          "path": "other/Configuration.xml"
         },
         {
-          "file": "other/WebServices/Exchange/Ext/Module.bsl",
           "kind": "sha256",
-          "eq": "$capture.file1"
+          "eq": "$capture.file1",
+          "path": "other/WebServices/Exchange/Ext/Module.bsl"
         },
         {
-          "file": "other/WebServices/Exchange.xml",
           "kind": "sha256",
-          "eq": "$capture.file2"
+          "eq": "$capture.file2",
+          "path": "other/WebServices/Exchange.xml"
         },
         {
-          "file": "src/Configuration.xml",
           "kind": "sha256",
-          "eq": "$capture.file3"
+          "eq": "$capture.file3",
+          "path": "src/Configuration.xml"
         },
         {
-          "file": "src/WebServices/Exchange/Ext/Module.bsl",
           "kind": "sha256",
-          "eq": "$capture.file4"
+          "eq": "$capture.file4",
+          "path": "src/WebServices/Exchange/Ext/Module.bsl"
         },
         {
-          "file": "src/WebServices/Exchange.xml",
           "kind": "sha256",
-          "eq": "$capture.file5"
+          "eq": "$capture.file5",
+          "path": "src/WebServices/Exchange.xml"
         },
         {
-          "file": "v8project.yaml",
           "kind": "sha256",
-          "eq": "$capture.file6"
+          "eq": "$capture.file6",
+          "path": "v8project.yaml"
         }
       ]
     },
@@ -173,39 +173,39 @@
       ],
       "fileAssertions": [
         {
-          "file": "other/Configuration.xml",
           "kind": "sha256",
-          "eq": "$capture.file0"
+          "eq": "$capture.file0",
+          "path": "other/Configuration.xml"
         },
         {
-          "file": "other/WebServices/Exchange/Ext/Module.bsl",
           "kind": "sha256",
-          "eq": "$capture.file1"
+          "eq": "$capture.file1",
+          "path": "other/WebServices/Exchange/Ext/Module.bsl"
         },
         {
-          "file": "other/WebServices/Exchange.xml",
           "kind": "sha256",
-          "eq": "$capture.file2"
+          "eq": "$capture.file2",
+          "path": "other/WebServices/Exchange.xml"
         },
         {
-          "file": "src/Configuration.xml",
           "kind": "sha256",
-          "eq": "$capture.file3"
+          "eq": "$capture.file3",
+          "path": "src/Configuration.xml"
         },
         {
-          "file": "src/WebServices/Exchange/Ext/Module.bsl",
           "kind": "sha256",
-          "eq": "$capture.file4"
+          "eq": "$capture.file4",
+          "path": "src/WebServices/Exchange/Ext/Module.bsl"
         },
         {
-          "file": "src/WebServices/Exchange.xml",
           "kind": "sha256",
-          "eq": "$capture.file5"
+          "eq": "$capture.file5",
+          "path": "src/WebServices/Exchange.xml"
         },
         {
-          "file": "v8project.yaml",
           "kind": "sha256",
-          "eq": "$capture.file6"
+          "eq": "$capture.file6",
+          "path": "v8project.yaml"
         }
       ]
     },
@@ -230,39 +230,39 @@
       ],
       "fileAssertions": [
         {
-          "file": "other/Configuration.xml",
           "kind": "sha256",
-          "eq": "$capture.file0"
+          "eq": "$capture.file0",
+          "path": "other/Configuration.xml"
         },
         {
-          "file": "other/WebServices/Exchange/Ext/Module.bsl",
           "kind": "sha256",
-          "eq": "$capture.file1"
+          "eq": "$capture.file1",
+          "path": "other/WebServices/Exchange/Ext/Module.bsl"
         },
         {
-          "file": "other/WebServices/Exchange.xml",
           "kind": "sha256",
-          "eq": "$capture.file2"
+          "eq": "$capture.file2",
+          "path": "other/WebServices/Exchange.xml"
         },
         {
-          "file": "src/Configuration.xml",
           "kind": "sha256",
-          "eq": "$capture.file3"
+          "eq": "$capture.file3",
+          "path": "src/Configuration.xml"
         },
         {
-          "file": "src/WebServices/Exchange/Ext/Module.bsl",
           "kind": "sha256",
-          "eq": "$capture.file4"
+          "eq": "$capture.file4",
+          "path": "src/WebServices/Exchange/Ext/Module.bsl"
         },
         {
-          "file": "src/WebServices/Exchange.xml",
           "kind": "sha256",
-          "eq": "$capture.file5"
+          "eq": "$capture.file5",
+          "path": "src/WebServices/Exchange.xml"
         },
         {
-          "file": "v8project.yaml",
           "kind": "sha256",
-          "eq": "$capture.file6"
+          "eq": "$capture.file6",
+          "path": "v8project.yaml"
         }
       ]
     },
@@ -282,39 +282,39 @@
       ],
       "fileAssertions": [
         {
-          "file": "other/Configuration.xml",
           "kind": "sha256",
-          "eq": "$capture.file0"
+          "eq": "$capture.file0",
+          "path": "other/Configuration.xml"
         },
         {
-          "file": "other/WebServices/Exchange/Ext/Module.bsl",
           "kind": "sha256",
-          "eq": "$capture.file1"
+          "eq": "$capture.file1",
+          "path": "other/WebServices/Exchange/Ext/Module.bsl"
         },
         {
-          "file": "other/WebServices/Exchange.xml",
           "kind": "sha256",
-          "eq": "$capture.file2"
+          "eq": "$capture.file2",
+          "path": "other/WebServices/Exchange.xml"
         },
         {
-          "file": "src/Configuration.xml",
           "kind": "sha256",
-          "eq": "$capture.file3"
+          "eq": "$capture.file3",
+          "path": "src/Configuration.xml"
         },
         {
-          "file": "src/WebServices/Exchange/Ext/Module.bsl",
           "kind": "sha256",
-          "eq": "$capture.file4"
+          "eq": "$capture.file4",
+          "path": "src/WebServices/Exchange/Ext/Module.bsl"
         },
         {
-          "file": "src/WebServices/Exchange.xml",
           "kind": "sha256",
-          "eq": "$capture.file5"
+          "eq": "$capture.file5",
+          "path": "src/WebServices/Exchange.xml"
         },
         {
-          "file": "v8project.yaml",
           "kind": "sha256",
-          "eq": "$capture.file6"
+          "eq": "$capture.file6",
+          "path": "v8project.yaml"
         }
       ]
     }
