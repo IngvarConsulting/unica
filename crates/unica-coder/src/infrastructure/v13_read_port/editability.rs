@@ -64,6 +64,7 @@ pub const fn policy_name(policy: SupportPolicyMode) -> &'static str {
 pub struct NodeEditability {
     pub reason: SupportReason,
     pub policy: SupportPolicyMode,
+    detail: Option<String>,
     /// The support cannot be read — a damaged marker or an owner whose
     /// descriptor names no uuid: `apply` refuses under `deny` and `off` alike
     /// (INV.SAFETY.APPLY-SUPPORT-GATE).
@@ -83,7 +84,8 @@ impl NodeEditability {
 }
 
 /// Whether `at` is a node that belongs to an object of a configuration or
-/// extension set: the root, or any address under a named top-level object.
+/// extension set: the root and its modules, or an address under a named
+/// top-level object.
 pub fn shows_editability(at: &QualifiedAddress, kind: SourceSetKind) -> bool {
     if !matches!(
         kind,
@@ -96,9 +98,14 @@ pub fn shows_editability(at: &QualifiedAddress, kind: SourceSetKind) -> bool {
     // owner of its own: its items carry `support`.
     match at.segments() {
         [root, ..] if root.kind() == NodeKind::Configuration => true,
+        [module, ..] if module.kind() == NodeKind::Module => module.name().is_some(),
         [owner, ..] => owner.kind().is_metadata_kind() && owner.name().is_some(),
         [] => false,
     }
+}
+
+fn is_support_owner(at: &QualifiedAddress) -> bool {
+    matches!(at.segments(), [owner] if owner.kind() != NodeKind::Module)
 }
 
 const SUPPORT_OPERATIONS: &[&str] = &["supportCapability.set", "supportRule.set"];
@@ -133,6 +140,7 @@ impl ProviderReadAuthority {
                 NodeEditability {
                     reason: SupportReason::Extension,
                     policy,
+                    detail: None,
                     marker_unreadable: false,
                 },
                 none,
@@ -144,6 +152,7 @@ impl ProviderReadAuthority {
                     NodeEditability {
                         reason: SupportReason::Unknown,
                         policy,
+                        detail: Some("the vendor support state cannot be read".to_owned()),
                         marker_unreadable: true,
                     },
                     none,
@@ -160,6 +169,7 @@ impl ProviderReadAuthority {
                     NodeEditability {
                         reason: SupportReason::Unknown,
                         policy,
+                        detail: Some("the vendor support state cannot be read".to_owned()),
                         marker_unreadable: false,
                     },
                     none,
@@ -194,11 +204,17 @@ impl ProviderReadAuthority {
         } else {
             facts.owner_rule
         };
+        let marker_unreadable = facts.unreadable.is_some();
+        let detail = facts
+            .unreadable
+            .map(|unreadable| unreadable.reason)
+            .or_else(|| facts.lock.map(|lock| lock.reason));
         Ok((
             NodeEditability {
                 reason,
                 policy,
-                marker_unreadable: facts.unreadable.is_some(),
+                detail,
+                marker_unreadable,
             },
             OwnerRecord {
                 rule,
@@ -348,11 +364,8 @@ fn rule_name(rule: u8) -> Option<&'static str> {
     }
 }
 
-/// Replaces the support facts of a projected node with one
-/// `props.support {editable, reason, policy, rule?, objects?}` and marks the
-/// node's `can` entries that `apply` would refuse under `deny` without a
-/// support change. `own_rule` is the rule of the node's own record when it
-/// has one (the object itself, a form).
+/// Shows full support facts on owners and nodes with their own record.
+/// Other nodes explain a support lock through their limits and blocked edits.
 pub(crate) fn attach_editability(
     data: &mut Value,
     at: &QualifiedAddress,
@@ -381,20 +394,37 @@ pub(crate) fn attach_editability(
     ] {
         props.remove(key);
     }
-    let mut support = json!({
-        "editable": editability.editable(),
-        "reason": editability.reason.as_str(),
-        "policy": policy_name(editability.policy),
-    });
-    if let Some(rule) = own_rule {
-        support["rule"] = json!(rule);
+    let shows_support_record = is_support_owner(at) || own_rule.is_some();
+    if shows_support_record {
+        let mut support = json!({
+            "editable": editability.editable(),
+            "reason": editability.reason.as_str(),
+            "policy": policy_name(editability.policy),
+        });
+        if let Some(rule) = own_rule {
+            support["rule"] = json!(rule);
+        }
+        if let Some(objects) = objects {
+            support["objects"] = objects;
+        }
+        props.insert("support".to_string(), support);
+    } else if props.is_empty() {
+        node.remove("props");
     }
-    if let Some(objects) = objects {
-        support["objects"] = objects;
-    }
-    props.insert("support".to_string(), support);
 
     let edit_blocked = (!editability.editable()).then_some(editability.reason);
+    if let (false, Some(reason)) = (shows_support_record, edit_blocked) {
+        let explanation = editability.detail.as_deref().unwrap_or(reason.as_str());
+        if let Some(limits) = node
+            .entry("limits")
+            .or_insert_with(|| json!([]))
+            .as_array_mut()
+        {
+            limits.push(json!(format!(
+                "Editing blocked by vendor support: {explanation}"
+            )));
+        }
+    }
     if let Some(Value::Array(entries)) = node.get_mut("can") {
         for entry in entries {
             let Some(op) = entry.get("op").and_then(Value::as_str) else {
@@ -439,8 +469,7 @@ pub(crate) fn own_rule(
             _ => None,
         };
     }
-    let is_owner = at.segments().len() == 1;
-    if is_owner {
+    if is_support_owner(at) {
         return owner.rule.and_then(rule_name);
     }
     // A nested node with its own record (a nested subsystem) names its own
@@ -502,6 +531,7 @@ mod tests {
         let editability = NodeEditability {
             reason: SupportReason::Unknown,
             policy: SupportPolicyMode::Deny,
+            detail: None,
             marker_unreadable: false,
         };
         attach_editability(
@@ -532,6 +562,7 @@ mod tests {
             let editability = NodeEditability {
                 reason: SupportReason::Unknown,
                 policy,
+                detail: None,
                 marker_unreadable: true,
             };
             assert_eq!(editability.editable(), editable, "{policy:?}");
@@ -551,6 +582,7 @@ mod tests {
             let editability = NodeEditability {
                 reason: SupportReason::Locked,
                 policy,
+                detail: None,
                 marker_unreadable: false,
             };
             attach_editability(&mut data, &catalog(), &editability, Some("locked"), None);
@@ -571,6 +603,7 @@ mod tests {
         let editability = NodeEditability {
             reason: SupportReason::EditableWithSupport,
             policy: SupportPolicyMode::Deny,
+            detail: None,
             marker_unreadable: false,
         };
         attach_editability(&mut data, &catalog(), &editability, None, None);

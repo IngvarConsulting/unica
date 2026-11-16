@@ -48,6 +48,15 @@ fn a_locked_form_is_closed_under_an_editable_object() {
             assert_eq!(blocked.as_deref(), Some("locked"), "{op}");
         }
     }
+    let module_at = "main:Catalog.Items.Form.Main.Module.Form";
+    let module = view(&runtime, &fixture, module_at);
+    assert!(module["props"].get("support").is_none());
+    assert!(module["limits"].as_array().unwrap().contains(&json!(
+        "Editing blocked by vendor support: `main:Catalog.Items.Form.Main` is a vendor object with the support rule `locked`"
+    )));
+    assert!(marks(&module)
+        .iter()
+        .any(|(op, blocked)| op == "code.insert" && blocked.as_deref() == Some("locked")));
     let message = refusal(
         &runtime,
         &fixture,
@@ -68,6 +77,10 @@ fn a_locked_form_is_closed_under_an_editable_object() {
     let form = view(&runtime, &fixture, "main:Catalog.Items.Form.Main");
     assert_eq!(support(&form)["reason"], "editableWithSupport");
     assert_eq!(support(&form)["editable"], true);
+    let module = view(&runtime, &fixture, module_at);
+    assert!(module["props"].get("support").is_none());
+    assert!(module.get("limits").is_none());
+    assert!(marks(&module).iter().all(|(_, blocked)| blocked.is_none()));
     let edited = call(
         &runtime,
         &fixture,

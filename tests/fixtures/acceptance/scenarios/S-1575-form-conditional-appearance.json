@@ -216,12 +216,7 @@
                   ]
                 }
               }
-            ],
-            "support": {
-              "editable": true,
-              "reason": "notSupported",
-              "policy": "deny"
-            }
+            ]
           }
         },
         {
