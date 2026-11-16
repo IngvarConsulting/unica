@@ -4071,6 +4071,30 @@ fn staged_code_effects_omit_a_module_restored_to_its_original_preimage() {
     fixture.cleanup();
 }
 
+/// rule: INV.SOURCE.CODE-REPLACE-TEXT-REVISION
+#[test]
+fn a_replacement_with_an_old_text_revision_preserves_an_external_edit() {
+    let original = b"Procedure Base()\nEndProcedure\n";
+    let fixture = staged_code_fixture("stale-text-revision", original);
+    let module = fixture.source.join("CommonModules/Sample/Ext/Module.bsl");
+    let old_revision = module_text_revision(original);
+    let external = b"Procedure Base()\r\nEndProcedure\r\n";
+    fs::write(&module, external).unwrap();
+    let args = json!({
+        "at": "main:CommonModule.Sample.Body",
+        "text": "Procedure Edited()\nEndProcedure\n",
+        "ifRev": old_revision,
+    });
+    let guarded = parse_code_plan_operation("code.replace", &args, 0, "main").unwrap();
+    let admission = staged_code_admission(&fixture, true);
+    let error = plan_admitted_code(&admission, &fixture.binding, &[guarded]).unwrap_err();
+    assert_eq!(error.kind(), ApplyPlanErrorKind::Conflict);
+    assert_eq!(error.path(), Some("ops[0].args.ifRev"));
+    assert_eq!(fs::read(&module).unwrap(), external);
+    drop(admission);
+    fixture.cleanup();
+}
+
 #[test]
 fn shared_apply_plan_error_and_effect_contract_is_complete() {
     let fixture = staged_code_fixture("error-projections", b"Procedure Base()\nEndProcedure\n");

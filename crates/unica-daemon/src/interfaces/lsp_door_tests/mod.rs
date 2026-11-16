@@ -496,6 +496,7 @@ fn a_document_notification_the_daemon_would_refuse_keeps_the_session() {
 /// Служба продукта: папка редактора и вызов MCP той же рабочей области
 /// приходят к одному актору; буфер редактора виден в его ответах и не
 /// попадает на диск.
+/// rule: INV.SOURCE.CODE-REPLACE-TEXT-REVISION
 #[test]
 fn the_product_service_serves_an_editor_folder_over_the_mcp_workspace_actor() {
     let daemon = LiveV5Daemon::start_with_product_lsp(canonical_v13_service());

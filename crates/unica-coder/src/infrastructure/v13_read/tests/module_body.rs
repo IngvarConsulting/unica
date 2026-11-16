@@ -86,6 +86,7 @@ fn module_body_returns_the_source_text_byte_for_byte() {
     }
 }
 
+/// rule: INV.SOURCE.CODE-REPLACE-TEXT-REVISION
 #[test]
 fn module_revision_follows_the_whole_text_of_a_body_or_range() {
     let fixture = RealReaderFixture::new();
