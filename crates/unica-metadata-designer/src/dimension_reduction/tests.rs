@@ -20,6 +20,7 @@ fn operation(name: &str, value: &str) -> MetaEditOperation {
             master: None,
             main_filter: None,
             deny_incomplete_values: None,
+            tabular_section_use: None,
             type_reduction_mode: Some(value.into()),
             color: None,
         }],

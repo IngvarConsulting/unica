@@ -231,8 +231,14 @@ impl unica_operations::FamilyOperation for MetadataOperation {
             .segments()
             .iter()
             .any(|segment| segment.kind() == unica_address::address::NodeKind::TabularSection);
-        let mut contract = self
-            .contract_at(owner.map(|owner| crate::contracts::MetadataSite { owner, in_section }));
+        let mut contract = self.contract_at(owner.map(|owner| crate::contracts::MetadataSite {
+            owner,
+            in_section,
+            tabular_section_properties: crate::tabular_section_properties_supported(
+                site.source().kind(),
+                site.source().exact_writable_profile(),
+            ),
+        }));
         if self == Self::EnumValueSet {
             let line = site.source().classification_profile().semantic_line();
             offer_enum_value_color(&mut contract.schema["properties"]["values"], line);
@@ -475,6 +481,7 @@ mod tests {
             (MetadataKind::Report, true),
         ] {
             let contract = MetadataOperation::TabularSectionAdd.contract_at(Some(MetadataSite {
+                tabular_section_properties: false,
                 owner,
                 in_section: false,
             }));
@@ -507,6 +514,7 @@ mod tests {
                 "{owner:?}"
             );
             let set = MetadataOperation::TabularSectionSet.contract_at(Some(MetadataSite {
+                tabular_section_properties: false,
                 owner,
                 in_section: true,
             }));
@@ -553,7 +561,11 @@ mod tests {
             for in_section in [false, true] {
                 assert_eq!(
                     MetadataOperation::CommandSet
-                        .contract_at(Some(MetadataSite { owner, in_section }))
+                        .contract_at(Some(MetadataSite {
+                            owner,
+                            in_section,
+                            tabular_section_properties: false
+                        }))
                         .details(),
                     contract.details(),
                 );
@@ -590,8 +602,11 @@ mod tests {
             (MetadataKind::Report, false, false),
             (MetadataKind::Report, true, true),
         ] {
-            let contract = MetadataOperation::AttributeSet
-                .contract_at(Some(MetadataSite { owner, in_section }));
+            let contract = MetadataOperation::AttributeSet.contract_at(Some(MetadataSite {
+                owner,
+                in_section,
+                tabular_section_properties: false,
+            }));
             let fields = &contract.schema["properties"]["values"]["properties"];
             assert_eq!(
                 fields.get("fillValue").is_some(),
@@ -644,7 +659,11 @@ mod tests {
             for in_section in [false, true] {
                 assert_eq!(
                     MetadataOperation::AttributeRemove
-                        .contract_at(Some(MetadataSite { owner, in_section }))
+                        .contract_at(Some(MetadataSite {
+                            owner,
+                            in_section,
+                            tabular_section_properties: false
+                        }))
                         .details(),
                     contract.details(),
                 );
@@ -660,8 +679,11 @@ mod tests {
             (MetadataKind::Report, false, false),
             (MetadataKind::Report, true, true),
         ] {
-            let contract = MetadataOperation::AttributeAdd
-                .contract_at(Some(MetadataSite { owner, in_section }));
+            let contract = MetadataOperation::AttributeAdd.contract_at(Some(MetadataSite {
+                owner,
+                in_section,
+                tabular_section_properties: false,
+            }));
             let fields = &contract.schema["properties"]["items"]["items"]["properties"];
             assert_eq!(
                 fields.get("fillValue").is_some(),
@@ -695,6 +717,7 @@ mod tests {
             for site in [
                 None,
                 Some(MetadataSite {
+                    tabular_section_properties: false,
                     owner: MetadataKind::InformationRegister,
                     in_section: true,
                 }),
@@ -723,6 +746,7 @@ mod tests {
                 (MetadataOperation::ResourceSet, true),
             ] {
                 let contract = operation.contract_at(Some(MetadataSite {
+                    tabular_section_properties: false,
                     owner,
                     in_section: false,
                 }));
@@ -754,6 +778,7 @@ mod tests {
         let field = |operation: MetadataOperation, owner| {
             operation
                 .contract_at(Some(MetadataSite {
+                    tabular_section_properties: false,
                     owner,
                     in_section: false,
                 }))
@@ -799,6 +824,7 @@ mod tests {
                         position: None,
                         indexing: None,
                         deny_incomplete_values: Some(true),
+                        tabular_section_use: None,
                         master: None,
                         main_filter: None,
                         type_reduction_mode: None,

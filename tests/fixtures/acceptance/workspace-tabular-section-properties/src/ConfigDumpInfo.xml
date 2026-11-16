@@ -1,0 +1,49 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<ConfigDumpInfo xmlns="http://v8.1c.ru/8.3/xcf/dumpinfo" xmlns:xen="http://v8.1c.ru/8.3/xcf/enums" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" format="Hierarchical" version="2.20">
+	<ConfigVersions>
+		<Metadata name="BusinessProcess.Process" id="5c135651-eb43-4234-9ae3-5dc393d407b5" configVersion="6ffc8d9b880dd943b686da4054c952e300000000">
+			<Metadata name="BusinessProcess.Process.TabularSection.Lines.Attribute.Text" id="2c26da40-802f-405d-8597-d8a7e1110455"/>
+			<Metadata name="BusinessProcess.Process.TabularSection.Lines" id="d27f5c21-d796-407d-a38e-69965c805852"/>
+			<Metadata name="BusinessProcess.Process.TabularSection.Lines.Attribute.Quantity" id="f4ab3af5-87bb-4c37-b1ad-02756b8c0148"/>
+		</Metadata>
+		<Metadata name="Catalog.FlatItems" id="b7ca49b4-ea86-42d2-9cd8-c66fc5dde1f7" configVersion="1eab2fb46e9f1c499ddd8bacaa6cb36500000000">
+			<Metadata name="Catalog.FlatItems.TabularSection.Lines.Attribute.Text" id="15a7ade6-a903-45f4-b25c-33b8f946016e"/>
+			<Metadata name="Catalog.FlatItems.TabularSection.Lines" id="7049af2c-e70d-4186-a37e-8d8398b2cc52"/>
+			<Metadata name="Catalog.FlatItems.TabularSection.Lines.Attribute.Quantity" id="d3902349-a3f6-440d-8c44-7808c029cf17"/>
+		</Metadata>
+		<Metadata name="Catalog.Items" id="d86dc456-60d3-4a1d-9aa9-b9989d273095" configVersion="9793c6999223264aa274de0027b46c3f00000000">
+			<Metadata name="Catalog.Items.TabularSection.Lines.Attribute.Quantity" id="23798a77-10a5-4948-b075-5a2dfc1e880f"/>
+			<Metadata name="Catalog.Items.TabularSection.Lines" id="306fdb61-b391-42d4-b501-ddec26ed55b3"/>
+			<Metadata name="Catalog.Items.TabularSection.Lines.Attribute.Text" id="b7f07b4a-522f-4e24-a373-ce20d8ff5135"/>
+		</Metadata>
+		<Metadata name="ChartOfCharacteristicTypes.Properties" id="3cab6611-b6ac-433c-b3e4-78408056903e" configVersion="598cec3f59dae641b2f9faadce3ba4fe00000000">
+			<Metadata name="ChartOfCharacteristicTypes.Properties.TabularSection.Lines.Attribute.Quantity" id="0c04fdd9-6b2e-4884-8ec2-276cab002187"/>
+			<Metadata name="ChartOfCharacteristicTypes.Properties.TabularSection.Lines" id="b57bfd29-1ed6-408c-b0a4-01a461141600"/>
+			<Metadata name="ChartOfCharacteristicTypes.Properties.TabularSection.Lines.Attribute.Text" id="be96783c-0afb-410c-a507-e0b9cc2850db"/>
+		</Metadata>
+		<Metadata name="Configuration.TabularSectionProperties" id="7cb2841c-5c2c-44bb-99e7-e6bead89faed" configVersion="e57e42f5577b1741a823a677e1d5405500000000"/>
+		<Metadata name="Configuration.TabularSectionProperties.ClientApplicationInterface" id="00000000-0000-0000-0000-000000000002.b" configVersion="5e9c76ee34bf0742a6adb7475738e7ea00000000"/>
+		<Metadata name="DataProcessor.Processor" id="edb8954d-2fce-4f9c-ae35-3d4bbf369788" configVersion="3b5a2e4156aeb74a86de954efd9e6e1400000000">
+			<Metadata name="DataProcessor.Processor.TabularSection.Lines" id="460624b2-ed1a-42e9-8f38-26bd053bacd2"/>
+			<Metadata name="DataProcessor.Processor.TabularSection.Lines.Attribute.Quantity" id="751c62e7-5da2-4231-a188-f7d571d0fc2d"/>
+			<Metadata name="DataProcessor.Processor.TabularSection.Lines.Attribute.Text" id="ff50c78e-9e62-492a-9f3a-a13e73058151"/>
+		</Metadata>
+		<Metadata name="Document.Order" id="84885081-cd9f-480c-af21-519d4fd815ec" configVersion="f73636678a57f94791e7b18fbb74082a00000000">
+			<Metadata name="Document.Order.TabularSection.Lines.Attribute.Quantity" id="1856b6aa-83b7-4849-8832-0f114c83d3c1"/>
+			<Metadata name="Document.Order.TabularSection.Lines" id="7e9ec3d9-accc-4445-a033-e7601437c3b2"/>
+			<Metadata name="Document.Order.TabularSection.Lines.Attribute.Text" id="c4498517-a801-4282-b106-b6e9de7b16d9"/>
+		</Metadata>
+		<Metadata name="ExchangePlan.Exchange" id="03128738-1f0b-4875-9c14-2ccc67468184" configVersion="5d2645ff4552d545b8a9c4a4326d00e500000000">
+			<Metadata name="ExchangePlan.Exchange.TabularSection.Lines.Attribute.Quantity" id="3b3fae4a-76fb-4e66-9273-8766ac683bea"/>
+			<Metadata name="ExchangePlan.Exchange.TabularSection.Lines.Attribute.Text" id="c551701c-7705-4fbb-be33-43d1d54f82f9"/>
+			<Metadata name="ExchangePlan.Exchange.TabularSection.Lines" id="cfa3c0fe-7e90-4c0c-8b6b-29e1fe290f57"/>
+		</Metadata>
+		<Metadata name="Language.Русский" id="00000000-0000-0000-0000-000000000001" configVersion="4a97e875432f34479caaad2edea768dd00000000"/>
+		<Metadata name="Report.Report" id="38b2ddd3-1eea-4961-b9e1-4e3e8a1666e6" configVersion="7c87c55d49677645b7174604d7bd227d00000000">
+			<Metadata name="Report.Report.TabularSection.Lines.Attribute.Text" id="2c000288-f40b-4da0-b2a6-3f33f341f8f6"/>
+			<Metadata name="Report.Report.TabularSection.Lines.Attribute.Quantity" id="3b8bbf5d-faae-45a2-91ae-3e861a5b42e0"/>
+			<Metadata name="Report.Report.TabularSection.Lines" id="62cfbbcb-ae47-43ef-9c83-86c5e495dadb"/>
+		</Metadata>
+		<Metadata name="Task.Tasks" id="4011aa6f-71cd-4ce4-b8fc-ea8098a55f80" configVersion="bc046cf7c74ec8418248f1aacfeeb8f200000000"/>
+	</ConfigVersions>
+</ConfigDumpInfo>

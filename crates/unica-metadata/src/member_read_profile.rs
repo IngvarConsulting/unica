@@ -8,6 +8,7 @@ use unica_source_contract::SourceSetKind;
 #[serde(rename_all = "camelCase")]
 pub enum MetaMemberReadProfile {
     CatalogTabularSection220,
+    ChartTabularSection,
     DocumentCommand220,
     InformationRegisterDimension220,
     AccumulationRegisterDimension220,
@@ -41,6 +42,13 @@ pub struct MetaMemberPropertySpec {
     kind: MetaMemberValueKind,
 }
 
+const TABULAR_SECTION_USE: MetaMemberPropertySpec = MetaMemberPropertySpec {
+    public_name: "Use",
+    name: "Use",
+    context: MetaMemberReadContext::TabularSection,
+    kind: MetaMemberValueKind::Text(crate::TABULAR_SECTION_USES),
+};
+
 const CATALOG_MEMBER_PROPERTIES: &[MetaMemberPropertySpec] = &[
     MetaMemberPropertySpec {
         name: "LineNumberLength",
@@ -48,12 +56,7 @@ const CATALOG_MEMBER_PROPERTIES: &[MetaMemberPropertySpec] = &[
         context: MetaMemberReadContext::TabularSection,
         kind: MetaMemberValueKind::UnsignedInteger,
     },
-    MetaMemberPropertySpec {
-        name: "Use",
-        public_name: "Use",
-        context: MetaMemberReadContext::TabularSection,
-        kind: MetaMemberValueKind::Text(&["ForItem", "ForFolder", "ForFolderAndItem"]),
-    },
+    TABULAR_SECTION_USE,
     MetaMemberPropertySpec {
         name: "Indexing",
         public_name: "Indexing",
@@ -167,6 +170,7 @@ impl MetaMemberReadProfile {
     pub fn owner_kind(self) -> MetadataKind {
         match self {
             Self::CatalogTabularSection220 => MetadataKind::Catalog,
+            Self::ChartTabularSection => MetadataKind::ChartOfCharacteristicTypes,
             Self::DocumentCommand220 => MetadataKind::Document,
             Self::InformationRegisterDimension220 => MetadataKind::InformationRegister,
             Self::AccumulationRegisterDimension220 => MetadataKind::AccumulationRegister,
@@ -180,6 +184,7 @@ impl MetaMemberReadProfile {
     ) -> impl Iterator<Item = &'static MetaMemberPropertySpec> {
         let properties = match self {
             Self::CatalogTabularSection220 => CATALOG_MEMBER_PROPERTIES,
+            Self::ChartTabularSection => &[TABULAR_SECTION_USE],
             Self::DocumentCommand220 => DOCUMENT_COMMAND_PROPERTIES,
             Self::InformationRegisterDimension220 => INFORMATION_DIMENSION_PROPERTIES,
             Self::AccumulationRegisterDimension220 => ACCUMULATION_DIMENSION_PROPERTIES,
@@ -192,7 +197,7 @@ impl MetaMemberReadProfile {
 
     pub fn context_for_field(self, field: &str) -> Option<MetaMemberReadContext> {
         let direct = match self {
-            Self::CatalogTabularSection220 => None,
+            Self::CatalogTabularSection220 | Self::ChartTabularSection => None,
             Self::DocumentCommand220 => Some((
                 "collections.commands[",
                 MetaMemberReadContext::DocumentCommand,
@@ -249,6 +254,7 @@ impl MetaMemberReadProfile {
                     MetaMemberReadContext::AccumulationRegisterDimension
                 }
                 Self::DocumentJournalColumn220 => MetaMemberReadContext::DocumentJournalColumn,
+                Self::ChartTabularSection => MetaMemberReadContext::TabularSection,
                 Self::CatalogTabularSection220 => unreachable!(),
             };
             return (context.xml_tag() == kind.as_str()).then_some(context);

@@ -26,6 +26,7 @@ mod tests {
                 [false, true].map(|in_section| {
                     Some(MetadataSite {
                         owner: *owner,
+                        tabular_section_properties: false,
                         in_section,
                     })
                 })
