@@ -19,6 +19,59 @@ fn chapter(name: &str) -> String {
     format!("<p class=\"V8SH_chapter\">{name}</p>")
 }
 
+#[test]
+fn a_legacy_guide_preserves_sections_paragraphs_and_list_items() {
+    // rule: INV.APP.DOCUMENTATION-ARTICLE-FIELDS
+    let html = page(concat!(
+        "<H1 class=V8SH_pagetitle>Строка (String)</H1>",
+        "<DIV class=V8SH_title>Строка (String)</DIV>",
+        "<P class=Usual><STRONG>Описание:</STRONG><BR>Текстовое значение.</P>",
+        "<P class=Usual><STRONG>Литералы:<BR></STRONG>Правила записи:</P>",
+        "<UL><LI>Первая форма.\r\n<LI>Вторая <STRONG>форма</STRONG>.</LI></UL>",
+        "<P class=Usual><STRONG>Доступность: </STRONG>Тонкий клиент, сервер.<BR>Можно передать по сети.</P>",
+        "<HR><P>Служебная ссылка.</P>",
+    ));
+    let article = parse("def_String", &html);
+    assert_eq!(article.name.ru, "Строка");
+    assert_eq!(article.name.en.as_deref(), Some("String"));
+    assert_eq!(
+        article.description,
+        Field::Parsed("Текстовое значение.".into())
+    );
+    assert_eq!(
+        article.other_sections,
+        [
+            (
+                "Литералы".into(),
+                "Правила записи:\n\n• Первая форма.\n• Вторая форма.".into(),
+            ),
+            (
+                "Доступность".into(),
+                "Тонкий клиент, сервер.\nМожно передать по сети.".into(),
+            ),
+        ]
+    );
+}
+
+#[test]
+fn a_legacy_guide_keeps_prose_before_its_first_labeled_paragraph() {
+    let html = page(concat!(
+        "<H1 class=V8SH_pagetitle>Число (Number)</H1>",
+        "<DIV class=V8SH_title>Число (Number)</DIV>",
+        "<P>Вводный абзац.</P><P>Следующий абзац.</P>",
+        "<P><STRONG>Литералы:</STRONG>Синтаксис значения.</P>",
+    ));
+    let article = parse("def_Number", &html);
+    assert_eq!(
+        article.description,
+        Field::Parsed("Вводный абзац.\n\nСледующий абзац.".into())
+    );
+    assert_eq!(
+        article.other_sections,
+        [("Литералы".into(), "Синтаксис значения.".into())]
+    );
+}
+
 /// Рубрика параметра: `<div>` без закрытия внутри, как пишет справка.
 fn rubric(name: &str, optional: bool) -> String {
     let kind = if optional {
