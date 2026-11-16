@@ -226,6 +226,7 @@ fn content(host: &UnicaLspHost, session: &V5LspSessionId, uri: &str) -> V5LspOut
 fn text(text: &str) -> V5LspOutcome {
     V5LspOutcome::Text {
         text: text.to_owned(),
+        rev: unica_bsl::text::module_text_revision(text.as_bytes()),
     }
 }
 

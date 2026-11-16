@@ -103,7 +103,10 @@ fn an_editor_folder_opens_an_extension_only_with_its_parent_configuration() {
     );
     assert_eq!(
         content(&host, &session, "unica://work/ext/CommonModule.Main.Body"),
-        V5LspOutcome::Text { text: DISK.into() }
+        V5LspOutcome::Text {
+            text: DISK.into(),
+            rev: unica_bsl::text::module_text_revision(DISK.as_bytes())
+        }
     );
 }
 

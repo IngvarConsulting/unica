@@ -86,6 +86,39 @@ fn module_body_returns_the_source_text_byte_for_byte() {
     }
 }
 
+#[test]
+fn module_revision_follows_the_whole_text_of_a_body_or_range() {
+    let fixture = RealReaderFixture::new();
+    let module = fixture
+        .source
+        .join("Reports/ParityReport/Forms/MainForm/Ext/Form/Module.bsl");
+    let owner = "main:Report.ParityReport.Form.MainForm.Module.Form";
+    let text = concat!(
+        "// Before\r\nПроцедура А()\r\n\tВозврат;\r\nКонецПроцедуры\r\n",
+        "\r\nПроцедура Б()\r\nКонецПроцедуры\r\n",
+    );
+    fs::write(&module, format!("\u{feff}{text}")).unwrap();
+    let service = fixture.view_service();
+    let whole = service.view(ViewRequest::new(&format!("{owner}.Body")).unwrap());
+    assert!(whole.ok, "{:?}", refusal_codes(&whole));
+    assert_eq!(
+        whole.rev.as_deref(),
+        Some(unica_bsl::text::module_text_revision(text.as_bytes()).as_str()),
+    );
+    for suffix in ["Body#L1-L1", "Method.А.Body"] {
+        let body = service.view(ViewRequest::new(&format!("{owner}.{suffix}")).unwrap());
+        assert!(body.ok, "{:?}", refusal_codes(&body));
+        assert_ne!(body.source_text, whole.source_text);
+        assert_eq!(body.rev, whole.rev);
+    }
+    fs::write(&module, text.replace("\r\n", "\n")).unwrap();
+    let lf = fixture
+        .view_service()
+        .view(ViewRequest::new(&format!("{owner}.Body")).unwrap());
+    assert!(lf.ok, "{:?}", refusal_codes(&lf));
+    assert_ne!(lf.rev, whole.rev);
+}
+
 /// rule: INV.WIRE.SOURCE-TEXT-RESPONSE-BUDGET
 #[test]
 fn view_never_returns_module_text_above_the_largest_host_budget() {
@@ -105,6 +138,7 @@ fn view_never_returns_module_text_above_the_largest_host_budget() {
     let refused = fixture.view_service().view(ViewRequest::new(at).unwrap());
     assert_eq!(refused.diagnostics[0]["code"], "result_too_large");
     assert!(refused.source_text.is_none());
+    assert!(refused.rev.is_none());
 }
 
 /// rule: INV.SOURCE.MODULE-COMPILATION-AND-BODY

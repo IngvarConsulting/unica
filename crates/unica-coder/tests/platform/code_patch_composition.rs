@@ -2038,6 +2038,7 @@ fn method_replacement_owns_supplied_documentation_and_repeats_without_duplicates
                 );
                 let expected = format!("{prefix}{expected_doc}&AtServer\nProcedure Base()\n    Value = 2;\nEndProcedure\n{suffix}").replace('\n', eol);
                 let operation = CodePlanOperation::Replace(CodeReplaceArgs {
+                    if_rev: None,
                     at: unica_address::address::QualifiedAddress::parse(
                         "main:CommonModule.Sample.Method.Base",
                     )
@@ -2122,6 +2123,7 @@ fn framed_method_body_text_replaces_its_closing_comment_and_repeats_as_noop() {
                 let before = format!("{read}{neighbor}");
                 let edited = read.replace("1;", "2;");
                 let operation = CodePlanOperation::Replace(CodeReplaceArgs {
+                    if_rev: None,
                     at: unica_address::address::QualifiedAddress::parse(
                         "main:CommonModule.Sample.Method.Base.Body",
                     )
@@ -2146,6 +2148,7 @@ fn method_body_replacement_keeps_executable_tail_on_its_closing_line() {
         let before =
             format!("Procedure Base() EndProcedure Procedure Neighbor() EndProcedure{eol}");
         let operation = CodePlanOperation::Replace(CodeReplaceArgs {
+            if_rev: None,
             at: unica_address::address::QualifiedAddress::parse(
                 "main:CommonModule.Sample.Method.Base.Body",
             )
@@ -4547,6 +4550,7 @@ fn staged_insert(
 
 fn staged_replace(at: &str, text: &str, anchor: Option<&str>) -> CodePlanOperation {
     CodePlanOperation::Replace(CodeReplaceArgs {
+        if_rev: None,
         at: unica_address::address::QualifiedAddress::parse(at).unwrap(),
         text: text.to_string(),
         anchor: anchor.map(str::to_string),

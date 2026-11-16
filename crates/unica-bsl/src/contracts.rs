@@ -44,8 +44,15 @@ impl CodeOperation {
         if self == Self::Insert && method {
             required.push("position");
         }
-        if self == Self::Replace && !addressed {
-            required.push("selector");
+        if self == Self::Replace {
+            fields.push(("ifRev", json!({
+                "type":"string",
+                "pattern":crate::input::MODULE_TEXT_REVISION_PATTERN,
+                "description":"Revision of the full module text from view or workspace/textDocumentContent. A changed module refuses the plan with conflict."
+            })));
+            if !addressed {
+                required.push("selector");
+            }
         }
         let mut schema = object(&fields, &required);
         if self == Self::Insert && !addressed {

@@ -1,5 +1,6 @@
 //! Исходный текст BSL, который `view` отдаёт по адресам `Body` модуля
 //! и `Method.<имя>.Body`, и предел его объёма.
+use sha2::{Digest, Sha256};
 use unica_address::address::BodyLineRange;
 #[cfg(test)]
 use unica_execution_contract::source_text_budget::complete_prefix;
@@ -28,13 +29,20 @@ pub const MAX_SOURCE_TEXT_BYTES: usize = unica_bootstrap::MAX_RESPONSE_BUDGET;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ModuleText {
     /// Файл без начальных U+FEFF; разделители строк — как в файле.
-    Text(String),
+    Text { text: String, revision: String },
     /// Текст длиннее [`MAX_SOURCE_TEXT_BYTES`]; `bytes` — его полный размер.
     TooLarge {
         bytes: u64,
         prefix: String,
         lines: usize,
     },
+}
+
+impl ModuleText {
+    pub fn whole(text: String) -> Self {
+        let revision = unica_bsl::text::module_text_revision(text.as_bytes());
+        Self::Text { text, revision }
+    }
 }
 
 /// Собирает текст модуля из потока байтов, не удерживая больше предела:
@@ -44,6 +52,7 @@ pub struct ModuleTextAccumulator {
     bom_prefix: usize,
     past_bom: bool,
     text: Vec<u8>,
+    revision: Sha256,
     bytes: u64,
     range: Option<BodyLineRange>,
     newlines: usize,
@@ -65,20 +74,30 @@ impl ModuleTextAccumulator {
     const BOM: [u8; 3] = [0xef, 0xbb, 0xbf];
 
     pub fn push(&mut self, chunk: &[u8]) {
-        for byte in chunk {
-            if !self.past_bom && *byte == Self::BOM[self.bom_prefix % 3] {
-                self.bom_prefix += 1;
-                continue;
-            }
-            if !self.past_bom {
+        let mut text = chunk;
+        if !self.past_bom {
+            let mut bytes = chunk.iter();
+            while let Some(byte) = bytes.next() {
+                if *byte == Self::BOM[self.bom_prefix % 3] {
+                    self.bom_prefix += 1;
+                    continue;
+                }
                 self.past_bom = true;
-                // Неполная последовательность U+FEFF в начале — уже текст.
+                // An incomplete BOM at the start is part of the text.
                 let partial = self.bom_prefix % 3;
-                self.bom_prefix -= partial;
+                self.revision.update(&Self::BOM[..partial]);
                 for bom_byte in &Self::BOM[..partial] {
                     self.keep(*bom_byte);
                 }
+                text = &chunk[chunk.len() - bytes.len() - 1..];
+                break;
             }
+            if !self.past_bom {
+                return;
+            }
+        }
+        self.revision.update(text);
+        for byte in text {
             self.keep(*byte);
         }
     }
@@ -110,6 +129,7 @@ impl ModuleTextAccumulator {
         if !self.past_bom {
             // Файл из одних U+FEFF пуст; хвост неполной метки — уже текст.
             let partial = self.bom_prefix % 3;
+            self.revision.update(&Self::BOM[..partial]);
             for bom_byte in &Self::BOM[..partial] {
                 self.keep(*bom_byte);
             }
@@ -126,9 +146,11 @@ impl ModuleTextAccumulator {
                 lines: self.line_count(),
             });
         }
-        String::from_utf8(self.text)
-            .map(ModuleText::Text)
-            .map_err(|_| ())
+        let text = String::from_utf8(self.text).map_err(|_| ())?;
+        Ok(ModuleText::Text {
+            text,
+            revision: format!("{:x}", self.revision.finalize()),
+        })
     }
 }
 
@@ -189,18 +211,23 @@ mod tests {
     /// rule: INV.SOURCE.MODULE-COMPILATION-AND-BODY
     #[test]
     fn streamed_module_text_strips_repeated_bom_across_chunks_and_keeps_a_partial_one() {
-        use super::ModuleText::Text;
         let bom = [0xef_u8, 0xbb, 0xbf];
         assert_eq!(
             accumulate(&[&bom[..2], &bom[2..], &bom, "а\r\n".as_bytes()]),
-            Ok(Text("а\r\n".into()))
+            Ok(super::ModuleText::whole("а\r\n".into()))
         );
-        assert_eq!(accumulate(&[&bom, &bom]), Ok(Text(String::new())));
+        assert_eq!(
+            accumulate(&[&bom, &bom]),
+            Ok(super::ModuleText::whole(String::new()))
+        );
         // Неполная метка — это байты текста, а не U+FEFF; такой текст не UTF-8.
         assert_eq!(accumulate(&[&bom, &bom[..2], b"a"]), Err(()));
         assert_eq!(accumulate(&[&bom[..1]]), Err(()));
         // Метка в середине текста остаётся текстом.
-        assert_eq!(accumulate(&[b"a", &bom]), Ok(Text("a\u{feff}".into())));
+        assert_eq!(
+            accumulate(&[b"a", &bom]),
+            Ok(super::ModuleText::whole("a\u{feff}".into()))
+        );
     }
 
     #[test]
@@ -209,7 +236,7 @@ mod tests {
         let exact = vec![b'a'; MAX_SOURCE_TEXT_BYTES];
         assert!(matches!(
             accumulate(&[&bom, &exact]),
-            Ok(super::ModuleText::Text(text)) if text.len() == MAX_SOURCE_TEXT_BYTES
+            Ok(super::ModuleText::Text { text, .. }) if text.len() == MAX_SOURCE_TEXT_BYTES
         ));
         assert_eq!(
             accumulate(&[&bom, &exact, b"a"]),

@@ -505,7 +505,18 @@ fn the_product_service_serves_an_editor_folder_over_the_mcp_workspace_actor() {
         .path()
         .join("src/CommonModules/Main/Ext/Module.bsl");
     std::fs::create_dir_all(module.parent().unwrap()).unwrap();
-    std::fs::write(&module, "Procedure Disk() EndProcedure\n").unwrap();
+    let registration = workspace.path().join("src/Configuration.xml");
+    let configuration = std::fs::read_to_string(&registration).unwrap().replace(
+        "</ChildObjects>",
+        "<CommonModule>Main</CommonModule></ChildObjects>",
+    );
+    std::fs::write(registration, configuration).unwrap();
+    std::fs::write(
+        workspace.path().join("src/CommonModules/Main.xml"),
+        r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><CommonModule uuid="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaab"><Properties><Name>Main</Name></Properties></CommonModule></MetaDataObject>"#,
+    ).unwrap();
+    let disk = "Procedure Disk() EndProcedure\r\n";
+    std::fs::write(&module, format!("\u{feff}{disk}")).unwrap();
     let root = std::fs::canonicalize(workspace.path()).unwrap();
     let folder: String = url::Url::from_file_path(&root).unwrap().into();
     // The document is the module body, as MCP `view` and `resolve` name it.
@@ -537,12 +548,27 @@ fn the_product_service_serves_an_editor_folder_over_the_mcp_workspace_actor() {
         editor.request(
             "workspace/textDocumentContent",
             json!({"uri": "unica://work/main/CommonModule.Main.Body"}),
-        )["result"]["text"]
+        )["result"]
             .clone()
     };
+    let body = InvocationRequest::new(
+        ToolIdentity::View,
+        json!({"at":"main:CommonModule.Main.Body"}),
+        root.to_string_lossy(),
+        7_000,
+    )
+    .unwrap();
+    let V5Submission::Direct(read) = daemon.submit(&owner, &body) else {
+        panic!("a warm Body view replies inline");
+    };
+    assert!(read.ok, "{read:?}");
+    assert_eq!(read.source_text.as_deref(), Some(disk));
+    let saved = content(&mut editor);
+    assert_eq!(saved["text"], disk);
+    assert_eq!(saved["rev"], json!(read.rev));
     assert_eq!(
-        content(&mut editor),
-        json!("Procedure Disk() EndProcedure\n")
+        saved["rev"],
+        unica_bsl::text::module_text_revision(disk.as_bytes())
     );
     editor.notify(
         "textDocument/didOpen",
@@ -551,13 +577,16 @@ fn the_product_service_serves_an_editor_folder_over_the_mcp_workspace_actor() {
             "text": "Procedure Buffer() EndProcedure\n",
         }}),
     );
+    let open = content(&mut editor);
+    assert_eq!(open["text"], "Procedure Buffer() EndProcedure\n");
+    assert_ne!(open["rev"], saved["rev"]);
     assert_eq!(
-        content(&mut editor),
-        json!("Procedure Buffer() EndProcedure\n")
+        open["rev"],
+        unica_bsl::text::module_text_revision("Procedure Buffer() EndProcedure\n".as_bytes())
     );
     assert_eq!(
         std::fs::read_to_string(&module).unwrap(),
-        "Procedure Disk() EndProcedure\n"
+        format!("\u{feff}{disk}")
     );
     let foreign = editor.request(
         "workspace/textDocumentContent",
@@ -587,11 +616,8 @@ fn the_product_service_serves_an_editor_folder_over_the_mcp_workspace_actor() {
         }}),
     );
     assert_eq!(
-        content(&mut editor),
-        json!(
-            "Procedure Reopened() EndProcedure
-"
-        )
+        content(&mut editor)["text"],
+        "Procedure Reopened() EndProcedure\n"
     );
     assert!(!editor.lost.load(Ordering::Acquire));
 }
@@ -883,9 +909,9 @@ impl LspHost for HeldHost {
     fn call(&self, _: &V5LspSessionId, call: V5LspCall, context: &LspCallContext) -> V5LspOutcome {
         match call {
             V5LspCall::TextDocumentContent { uri } => {
-                return V5LspOutcome::Text {
-                    text: format!("// {uri}"),
-                };
+                let text = format!("// {uri}");
+                let rev = unica_bsl::text::module_text_revision(text.as_bytes());
+                return V5LspOutcome::Text { text, rev };
             }
             V5LspCall::Definition { uri, position } => {
                 return V5LspOutcome::Locations {

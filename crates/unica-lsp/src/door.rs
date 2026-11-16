@@ -591,8 +591,8 @@ pub fn call_daemon(
             "id": id,
             "result": contents.map(|value| json!({"contents": {"kind": "markdown", "value": value}})),
         }),
-        Ok(V5LspOutcome::Text { text }) => {
-            json!({"jsonrpc": "2.0", "id": id, "result": {"text": text}})
+        Ok(V5LspOutcome::Text { text, rev }) => {
+            json!({"jsonrpc": "2.0", "id": id, "result": {"text": text, "rev": rev}})
         }
         Ok(V5LspOutcome::CompletionList { incomplete, items }) => json!({
             "jsonrpc": "2.0",

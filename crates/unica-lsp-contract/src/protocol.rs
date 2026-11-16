@@ -529,9 +529,10 @@ pub enum V5LspOutcome {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         contents: Option<String>,
     },
-    /// Текст документа.
+    /// Текст документа и ревизия того же текста.
     Text {
         text: String,
+        rev: String,
     },
     /// Места в документах соединения, которые редактор может открыть.
     Locations {

@@ -1,0 +1,336 @@
+{
+  "id": "S-2225-code-replace-text-revision",
+  "issue": 2225,
+  "area": "Код BSL",
+  "task": "Прочитать ревизию Body, сохранить чужую правку при конфликте и опубликовать две операции с актуальной ревизией одного исходного текста. Проверить запись без ifRev и прежнюю защиту сохранённого плана.",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule.GoogleПереводчик.Body"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "readRev": {
+          "pointer": "/rev"
+        },
+        "initial": {
+          "kind": "sha256",
+          "file": "src/CommonModules/GoogleПереводчик/Ext/Module.bsl"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule.GoogleПереводчик.Body#L1-L1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/rev",
+          "eq": "$capture.readRev"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule.GoogleПереводчик.Body.Can.code.replace"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/ifRev/type",
+          "eq": "string"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:CommonModule.GoogleПереводчик",
+        "ops": [
+          {
+            "op": "code.insert",
+            "args": {
+              "text": "// Чужая правка после чтения.\n"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/GoogleПереводчик/Ext/Module.bsl",
+          "eq": "$capture.initial"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "foreign": {
+          "kind": "sha256",
+          "file": "src/CommonModules/GoogleПереводчик/Ext/Module.bsl"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:CommonModule.GoogleПереводчик.Body",
+        "ops": [
+          {
+            "op": "code.replace",
+            "args": {
+              "text": "Procedure Editor()\nEndProcedure\n",
+              "ifRev": "$capture.readRev"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "conflict"
+        },
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.ifRev"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/GoogleПереводчик/Ext/Module.bsl",
+          "eq": "$capture.foreign"
+        }
+      ],
+      "refusal": "conflict: the module text changed since it was read; read its Body again"
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule.GoogleПереводчик.Body"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/rev",
+          "notEq": "$capture.readRev"
+        }
+      ],
+      "captures": {
+        "freshRev": {
+          "pointer": "/rev"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:CommonModule.GoogleПереводчик.Body",
+        "ops": [
+          {
+            "op": "code.replace",
+            "args": {
+              "text": "Procedure First()\nEndProcedure\n",
+              "ifRev": "$capture.freshRev"
+            }
+          },
+          {
+            "op": "code.replace",
+            "args": {
+              "text": "Procedure Second()\nEndProcedure\n",
+              "ifRev": "$capture.freshRev"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/GoogleПереводчик/Ext/Module.bsl",
+          "eq": "$capture.foreign"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "captures": {
+        "saved": {
+          "kind": "sha256",
+          "file": "src/CommonModules/GoogleПереводчик/Ext/Module.bsl"
+        }
+      },
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/GoogleПереводчик/Ext/Module.bsl",
+          "eq": "ec5ad42523209abbfa5e81ff345ee48103bafac4ac789df8a4e44ffe60ba57bf"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule.GoogleПереводчик.Body"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/rev",
+          "notEq": "$capture.freshRev"
+        }
+      ],
+      "captures": {
+        "savedRev": {
+          "pointer": "/rev"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:CommonModule.GoogleПереводчик.Body",
+        "ops": [
+          {
+            "op": "code.replace",
+            "args": {
+              "text": "Procedure Staged()\nEndProcedure\n",
+              "ifRev": "$capture.savedRev"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/GoogleПереводчик/Ext/Module.bsl",
+          "eq": "$capture.saved"
+        }
+      ],
+      "captures": {
+        "savedToken": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:CommonModule.GoogleПереводчик.Body",
+        "ops": [
+          {
+            "op": "code.replace",
+            "args": {
+              "text": "Procedure WithoutGuard()\nEndProcedure\n"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/GoogleПереводчик/Ext/Module.bsl",
+          "eq": "$capture.saved"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "another": {
+          "kind": "sha256",
+          "file": "src/CommonModules/GoogleПереводчик/Ext/Module.bsl"
+        }
+      },
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/GoogleПереводчик/Ext/Module.bsl",
+          "eq": "13c142aef0a80631874041c7bacb7a46fba95a41f433589ccd1e3d44574d44cc"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.savedToken"
+      },
+      "expect": [
+        "refused"
+      ],
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "stale_revision"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/GoogleПереводчик/Ext/Module.bsl",
+          "eq": "$capture.another"
+        }
+      ],
+      "refusal": "stale_revision: retained apply preimage changed: CommonModules/GoogleПереводчик/Ext/Module.bsl; input `CommonModules/GoogleПереводчик/Ext/Module.bsl`: source write target; the "
+    }
+  ]
+}

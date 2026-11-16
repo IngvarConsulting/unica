@@ -1804,6 +1804,12 @@ pub fn string_arg<'a>(args: &'a Map<String, Value>, name: &str) -> Result<&'a st
         .ok_or_else(|| format!("unica.code.patch requires non-empty `{name}`"))
 }
 
+/// Revision of the full module text presented to readers. Ignore the same
+/// leading UTF-8 markers as the module reader; keep line endings verbatim.
+pub fn module_text_revision(bytes: &[u8]) -> String {
+    hash(unica_xml_format::text::split_utf8_bom_prefix(bytes).1)
+}
+
 pub fn hash(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
@@ -2275,6 +2281,7 @@ mod tests {
             "Procedure Base()\n    Value = 1;\n    Value = 3; EndProcedure\n",
         ] {
             let operation = CodePlanOperation::Replace(CodeReplaceArgs {
+                if_rev: None,
                 at: unica_address::address::QualifiedAddress::parse(
                     "main:CommonModule.Sample.Method.Base.Body",
                 )

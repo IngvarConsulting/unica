@@ -235,6 +235,20 @@ fn plan_one_code_operation(
     let before = staged
         .read(&relative)
         .map_err(|error| staged_code_error(error, &at_path))?;
+    if let CodePlanOperation::Replace(replacement) = operation {
+        if let Some(expected) = &replacement.if_rev {
+            // Earlier operations can stage changes to this module. The
+            // editor read the original text shared by this whole plan.
+            let original = staged.original_image(&relative).unwrap_or_default();
+            if unica_bsl::text::module_text_revision(original) != *expected {
+                return Err(ApplyPlanError::new(
+                    ApplyPlanErrorKind::Conflict,
+                    "the module text changed since it was read; read its Body again",
+                )
+                .at_path(format!("ops[{op_index}].args.ifRev")));
+            }
+        }
+    }
     let postimage =
         plan_code_postimage(before.as_deref().unwrap_or_default(), operation, op_index)?;
     stage_borrowed_module_state(staged, effects, authority, &identity, &at_path)?;
