@@ -991,11 +991,17 @@ fn canonical_event_source_family_and_constant_manager_choice_round_trip() {
         assert!(view.ok, "{view:?}");
         view.data.unwrap()["items"].clone()
     };
+    let handler = json!({
+        "relation": "handler",
+        "title": "Handler",
+        "at": "main:CommonModule.EventHandlers.Method.OnBeforeWrite",
+        "kind": "Method",
+    });
     let family = json!({"kind":"family","sourceClass":"catalogObject"});
     publish(&runtime, &fixture, replace(family.clone()));
     assert_eq!(
         relation(&fixture),
-        json!([{"relation":"source","kind":"family","target":family}])
+        json!([{"relation":"source","kind":"family","target":family}, handler])
     );
     assert_eq!(
         subscription_source(&fixture),
@@ -1040,7 +1046,7 @@ fn canonical_event_source_family_and_constant_manager_choice_round_trip() {
         );
         assert_eq!(
             relation(&fixture),
-            json!([{"relation":"source","at":"main:Constant.Sample","kind":"Constant","target":target}]),
+            json!([{"relation":"source","at":"main:Constant.Sample","kind":"Constant","target":target}, handler]),
             "{class}"
         );
         assert_noop(target);

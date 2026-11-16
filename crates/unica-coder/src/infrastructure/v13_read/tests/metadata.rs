@@ -1140,7 +1140,13 @@ fn every_reference_of_an_object_answers_in_one_relation_branch() {
     );
     assert_eq!(
         sources("main:EventSubscription.ПриЗаписи.Relation"),
-        [("source".to_string(), "main:Catalog.Items".to_string())]
+        [
+            ("source".to_string(), "main:Catalog.Items".to_string()),
+            (
+                "handler".to_string(),
+                "main:CommonModule.РеактивныйСервер.Method.ПриЗаписи".to_string()
+            ),
+        ]
     );
     let subscription = service.view(ViewRequest::new("main:EventSubscription.ПриЗаписи").unwrap());
     let subscription = serde_json::to_value(subscription).unwrap();

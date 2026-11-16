@@ -29,6 +29,26 @@
     {
       "tool": "unica.view",
       "args": {
+        "at": "main:EventSubscription.CorpusEventSubscription.Relation"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "contains": {
+            "relation": "handler",
+            "title": "Handler",
+            "at": "main:CommonModule.EventHandlers.Method.OnBeforeWrite",
+            "kind": "Method"
+          }
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
         "at": "main:CommonModule.EventHandlers.Method.OnBeforeWrite"
       },
       "expect": [

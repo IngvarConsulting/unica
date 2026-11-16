@@ -661,7 +661,12 @@ impl QualifiedAddress {
                 && parts
                     .get(index + 1)
                     .is_some_and(|next| NodeKind::parse(next).is_err());
-            let name = if kind.takes_name() && !asks_dictionary {
+            let names_module_interface = kind == NodeKind::Interface
+                && crate::module_routes::module_route_for_segments(&segments).is_some()
+                && parts
+                    .get(index)
+                    .is_some_and(|name| NodeKind::parse(name).is_err());
+            let name = if (kind.takes_name() || names_module_interface) && !asks_dictionary {
                 let taken = parts.get(index).copied();
                 if taken.is_some() {
                     index += 1;
@@ -993,8 +998,8 @@ mod tests {
     ///
     /// `Configuration.Interface` неверен по смыслу: `Configuration` — узел, а
     /// не приставка пути, дети конфигурации адресуются от набора напрямую.
-    /// `Interface.main` неверен по форме: имени у интерфейса не бывает, и
-    /// `main` тут — выдуманный заполнитель. До правила безымянных видов вторая
+    /// `Interface.main` неверен по форме: у командного интерфейса нет имени,
+    /// а `main` тут — выдуманный заполнитель. До правила безымянных видов вторая
     /// форма молча разбиралась в «интерфейс по имени main», то есть негодный
     /// адрес принимался за годный.
     /// rule: CTR.SOURCE.QUALIFIED-LOGICAL-ADDRESS
@@ -1014,6 +1019,25 @@ mod tests {
         // А законная форма — вид сразу за безымянным видом — проходит.
         QualifiedAddress::parse("main:Subsystem.Sales.Interface.Command")
             .expect("вид за безымянным видом законен");
+    }
+
+    /// rule: CTR.SOURCE.QUALIFIED-LOGICAL-ADDRESS
+    #[test]
+    fn module_interface_slices_are_named_without_changing_command_interfaces() {
+        for at in [
+            "main:CommonModule.ZipАрхивы.Interface.Public",
+            "main:Module.ManagedApplication.Interface.Override",
+            "ext:Catalog.Items.Form.Edit.Module.Form.Interface.Library",
+        ] {
+            let address = QualifiedAddress::parse(at).unwrap();
+            assert_eq!(address.to_string(), at);
+            assert!(crate::module_routes::module_prefix_route(&address).is_some());
+        }
+        assert!(QualifiedAddress::parse("main:Subsystem.Sales.Interface.Public").is_err());
+        let nested =
+            QualifiedAddress::parse("main:CommonModule.ZipАрхивы.Interface.Public.Method.Создать")
+                .unwrap();
+        assert!(crate::module_routes::module_prefix_route(&nested).is_none());
     }
 
     /// Безымянный вид единственен у владельца, поэтому следующий сегмент —

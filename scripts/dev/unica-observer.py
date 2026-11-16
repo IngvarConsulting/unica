@@ -1551,13 +1551,13 @@ function markLeaf(row) {
   row.nextElementSibling.hidden = true;
 }
 
-function makeRow(label, at, meta) {
+function makeRow(label, at, meta, count) {
   const wrap = document.createElement("div");
   const row = document.createElement("div");
   row.className = "row";
   const tog = document.createElement("span");
   tog.className = "tog";
-  tog.textContent = at !== undefined ? "▸" : "·";
+  tog.textContent = at === undefined ? "·" : count === 0 ? "" : "▸";
   row.appendChild(tog);
   const name = document.createElement("span");
   name.textContent = label;
@@ -1631,14 +1631,14 @@ async function fill(container, at, cursor) {
     const badges = `<span class="cnt">${branch.count ?? ""}</span>` + (isGraph(branch.at) ? ' <span class="badge graph">граф вызовов</span>' : "");
     container.appendChild(makeRow(shortLabel(branch.at, parent), branch.at, " " + badges));
   }
-  const handler = data.props?.Handler;
-  if (data.kind === "EventSubscription" && typeof handler === "string" && /^[^:]+:CommonModule\.[^.]+\.Method\.[^.]+$/.test(handler)) {
-    container.appendChild(makeRow("Handler", handler, ` <span class="cnt">${esc(handler)}</span>`));
-  }
   for (const item of data.items || []) {
     if (item && typeof item.at === "string") {
       const meta = item.kind ? ` <span class="badge">${esc(item.kind)}</span>` : "";
-      container.appendChild(makeRow(shortLabel(item.at, parent), item.at, meta + (item.title && item.title !== item.at && item.title !== shortLabel(item.at, parent) ? ` <span class="cnt">${esc(item.title)}</span>` : "")));
+      const count = Number.isSafeInteger(item.count) && item.count >= 0 ? item.count : undefined;
+      const title = item.title && item.title !== item.at && item.title !== shortLabel(item.at, parent)
+        ? ` <span class="cnt">${esc(item.title)}</span>` : "";
+      const size = count === undefined ? "" : ` <span class="cnt">${count}</span>`;
+      container.appendChild(makeRow(shortLabel(item.at, parent), item.at, meta + title + size, count));
     } else {
       // Строка данных без адреса (например, строка исходника): адреса у неё нет.
       container.appendChild(makeRow(JSON.stringify(item).slice(0, 160)));

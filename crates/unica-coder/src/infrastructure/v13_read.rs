@@ -1561,9 +1561,6 @@ fn module_projection_view_data(
                 .map_err(|error| ViewError::new(RefusalCode::NotFound, error.to_string()))?;
             Ok(NodeViewData::Node(region_node(requested, region)))
         }
-        // Срез `Public`/`Library`/`Override` — элемент без адреса: у
-        // `Interface` нет имени, и `…Interface.Public` грамматика отвергает.
-        // Адресуются методы среза (#1467).
         (NodeKind::Interface, None, None) => module_collection(
             requested,
             NodeKind::Interface,
@@ -1572,15 +1569,41 @@ fn module_projection_view_data(
                 .iter()
                 .map(|interface| {
                     json!({
+                        "at": format!("{requested}.{}", interface.interface.as_str()),
                         "kind": NodeKind::Interface.as_str(),
                         "name": interface.interface.as_str(),
-                        "addressable": false,
                         "interface": interface.interface,
+                        "count": interface.methods.len(),
                         "methods": interface.methods,
                     })
                 })
                 .collect(),
         ),
+        (NodeKind::Interface, Some(name), None) => {
+            let interface = projections
+                .interfaces()
+                .iter()
+                .find(|interface| interface.interface.as_str() == name)
+                .ok_or_else(|| {
+                    ViewError::new(
+                        RefusalCode::NotFound,
+                        format!("module interface slice `{name}` was not found"),
+                    )
+                })?;
+            Ok(NodeViewData::Collection(CollectionView::new(
+                NodeView::new(
+                    requested.to_string(),
+                    NodeKind::Interface.as_str(),
+                    name,
+                    Map::new(),
+                ),
+                interface
+                    .methods
+                    .iter()
+                    .map(|at| json!({"at": at, "kind": NodeKind::Method.as_str()}))
+                    .collect(),
+            )))
+        }
         (NodeKind::Event, None, None) => module_collection(
             requested,
             NodeKind::Event,
