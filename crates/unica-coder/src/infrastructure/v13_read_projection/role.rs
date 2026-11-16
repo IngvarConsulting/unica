@@ -9,7 +9,7 @@ use unica_refusal::{RefusalCode, RefusalDetail};
 use unica_source_designer::layout::metadata_kind;
 
 /// Свойства роли под именами платформы; слева имя в сведениях читателя.
-const ROLE_PLATFORM_PROPS: &[(&str, &str)] = &[("synonym", "Synonym")];
+const ROLE_PLATFORM_PROPS: &[(&str, &str)] = &[("synonym", "Synonym"), ("comment", "Comment")];
 
 #[derive(Debug, Clone)]
 struct RoleObject {
@@ -27,11 +27,14 @@ pub(super) fn project_role(
     let objects = role_objects(payload)?;
     if suffix.is_empty() {
         let mut props = platform_scalar_props(payload, ROLE_PLATFORM_PROPS);
-        // Синоним длиннее предела не пропадает молча: предел называет
+        // Свойство длиннее предела не пропадает молча: предел называет
         // адрес, по которому он читается целиком.
-        let limits = dropped_by_size(payload, &props, address, |probe| {
+        let mut limits = dropped_by_size(payload, &props, address, |probe| {
             platform_scalar_props(probe, ROLE_PLATFORM_PROPS)
         });
+        if let Some(message) = payload.get("commentError").and_then(Value::as_str) {
+            limits.push(format!("Comment: {message}"));
+        }
         if let Some(totals) = payload.get("totals") {
             props.extend(
                 selected_scalar_props(totals, &["allowed", "denied"])

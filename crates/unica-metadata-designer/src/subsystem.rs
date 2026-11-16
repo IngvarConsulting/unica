@@ -904,6 +904,7 @@ pub fn build_subsystem_info_result(
         property_limits: data.property_limits,
         synonym: subsystem_optional(data.synonym),
         comment: data.comment,
+        include_help_in_contents: data.include_help_in_contents,
         explanation: data.explanation,
         picture: subsystem_optional(data.picture),
         include_in_command_interface: subsystem_optional(data.include_ci),
@@ -2195,6 +2196,19 @@ pub fn parse_subsystem_info_xml(
         .unwrap_or_default();
     let mut property_limits = Vec::new();
     let comment = subsystem_text_property(props, "Comment", false, &mut property_limits);
+    let include_help_in_contents =
+        subsystem_text_property(props, "IncludeHelpInContents", false, &mut property_limits)
+            .and_then(|value| match value.as_str() {
+                "true" => Some(true),
+                "false" => Some(false),
+                _ => {
+                    property_limits.push(
+                        "source_unreadable: Subsystem properties.IncludeHelpInContents must contain true or false"
+                            .to_string(),
+                    );
+                    None
+                }
+            });
     let include_ci = unica_xml_format::read::child_text(
         props,
         "IncludeInCommandInterface",
@@ -2230,6 +2244,7 @@ pub fn parse_subsystem_info_xml(
             name,
             synonym,
             comment,
+            include_help_in_contents,
             include_ci,
             use_one_command,
             explanation,
