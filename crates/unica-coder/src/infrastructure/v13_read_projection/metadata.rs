@@ -26,6 +26,7 @@ use relations::{metadata_missing_relation_limits, metadata_relation_limits, meta
 pub(super) const PAYLOAD_KEYS: &[&str] = &[
     "name",
     "synonym",
+    "synonymTranslations",
     "kind",
     "details",
     "support",
@@ -127,6 +128,17 @@ fn project_metadata(
         let mut limits = metadata_limits(payload);
         limits.extend(size_limits);
         props.extend(metadata_property_props(address, payload, &mut limits));
+        if let Some(value) = payload.get("synonymTranslations") {
+            place_prop(
+                &mut props,
+                &mut limits,
+                address,
+                "synonymTranslations",
+                value,
+                true,
+                "metadata synonym translations",
+            );
+        }
         // Синоним — свойство платформы и публикуется под её именем, тем же,
         // что принимает `props.set`. У видов, чей профиль не перечисляет
         // его среди свойств, значение берётся из сведений читателя; если

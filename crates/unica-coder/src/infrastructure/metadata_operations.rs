@@ -680,6 +680,7 @@ pub(crate) mod medium_tests {
                 details: unica_metadata::MetaInfoDetails::empty(MetadataKind::Catalog),
                 name: "Items".into(),
                 synonym: None,
+                localized_synonym: None,
                 support: unica_metadata::MetaSupportStatus::Supported,
                 properties: Vec::new(),
                 declarations: unica_metadata::MetaInfoDeclarations::default(),

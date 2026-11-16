@@ -148,6 +148,7 @@ pub struct MetaLocalInfo {
     pub details: MetaInfoDetails,
     pub name: String,
     pub synonym: Option<String>,
+    pub localized_synonym: Option<MetaObservedPropertyValue>,
     pub support: MetaSupportStatus,
     pub properties: Vec<MetaInfoPropertyData>,
     pub declarations: MetaInfoDeclarations,

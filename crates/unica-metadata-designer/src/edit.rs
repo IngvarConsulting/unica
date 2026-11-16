@@ -232,6 +232,47 @@ pub fn meta_edit_set_mltext_property(
     emit_meta_mltext(&mut lines, child_indent, tag, lang, value);
     meta_edit_replace_or_insert_property(properties, tag, &lines.join("\n"), child_indent)
 }
+/// Apply a batch in the original XML namespace context. Each replacement
+/// leaves the bytes of the other translations in the property intact.
+fn replace_translation_rows(
+    context: roxmltree::Node<'_, '_>,
+    existing: &str,
+    indent: &str,
+    rows: &[MetaLocalizedText],
+) -> Result<String, String> {
+    use std::fmt::Write as _;
+    let mut wrapper = String::from("<w");
+    for namespace in context.namespaces() {
+        let uri = unica_xml_format::text::escape_xml(namespace.uri());
+        if let Some(prefix) = namespace.name() {
+            write!(wrapper, " xmlns:{prefix}=\"{uri}\"").unwrap();
+        } else {
+            write!(wrapper, " xmlns=\"{uri}\"").unwrap();
+        }
+    }
+    wrapper.push('>');
+    let mut replacement = existing.to_owned();
+    for row in rows {
+        let wrapped = format!("{wrapper}{replacement}</w>");
+        let document = Document::parse(&wrapped).map_err(|error| error.to_string())?;
+        let property = document
+            .root_element()
+            .first_element_child()
+            .ok_or("missing localized property")?;
+        if super::info_projection::strict_localized_meta_info_property_value(property).is_none() {
+            return Err("malformed localized property".into());
+        }
+        replacement = unica_xml_format::localized::replace_language_value_exact(
+            &wrapped,
+            property,
+            indent,
+            &row.language,
+            &row.content,
+        );
+    }
+    Ok(replacement)
+}
+
 /// The namespace prefix of a `<Properties>` container text, with its colon:
 /// `md:` for `<md:Properties>`, empty for the default namespace or any other
 /// text. Its child properties are spelled with the same prefix.
@@ -678,15 +719,14 @@ const TYPED_COMMAND_STORAGE_PROFILE: TypedChildStorageProfile = TypedChildStorag
     resource: MetaPublicationResource::Command,
     descriptor: TypedChildDescriptorStorage::InlineOwner,
 };
-/// Whether applying `operations` writes a multilingual value: a synonym set
-/// through properties or an element update, or any new element, whose
-/// template always carries a synonym.
+/// Whether applying `operations` needs the default language for a scalar synonym.
 pub fn typed_operations_write_multilingual_text(operations: &[MetaEditOperation]) -> bool {
     operations.iter().any(|operation| match operation {
-        MetaEditOperation::SetProperties { values } => values
-            .entries()
-            .iter()
-            .any(|(key, _)| *key == MetaPropertyKey::Synonym),
+        MetaEditOperation::SetProperties { values } => {
+            values.entries().iter().any(|(key, value)| {
+                *key == MetaPropertyKey::Synonym && matches!(value, MetaPropertyValue::String(_))
+            })
+        }
         MetaEditOperation::Add { .. } => true,
         MetaEditOperation::Update { elements, .. } => {
             elements.iter().any(|element| element.synonym.is_some())
@@ -1000,7 +1040,7 @@ pub fn typed_operation_effect_value(
         MetaEditOperation::SetProperties { values } => {
             let observed = super::info::typed_properties(properties, kind);
             let mut selected = JsonMap::new();
-            for (key, _) in values.entries() {
+            for (key, requested) in values.entries() {
                 let public_key = serde_json::to_value(key)
                     .ok()
                     .and_then(|value| value.as_str().map(str::to_string))
@@ -1011,6 +1051,28 @@ pub fn typed_operation_effect_value(
                             Some("values"),
                         )
                     })?;
+                if matches!(requested, MetaPropertyValue::Translations(_)) {
+                    let value = properties
+                        .map(|properties| {
+                            super::info_projection::observe_localized_property(
+                                properties, "Synonym",
+                            )
+                        })
+                        .transpose()
+                        .map_err(|error| {
+                            typed_diagnostic(
+                                MetaDiagnosticCode::ProviderUnavailable,
+                                error.message,
+                                Some("values.Synonym"),
+                            )
+                        })?
+                        .flatten()
+                        .unwrap_or(MetaObservedPropertyValue::LocalizedString {
+                            values: Vec::new(),
+                        });
+                    selected.insert(public_key, serde_json::json!(value));
+                    continue;
+                }
                 if *key == MetaPropertyKey::Type {
                     let properties = properties.ok_or_else(|| {
                         typed_diagnostic(
@@ -1751,6 +1813,29 @@ pub fn apply_typed_properties(
                     "structured Type is only a Constant Type property",
                     Some("values.Type"),
                 ))
+            }
+            (MetaPropertyKey::Synonym, MetaPropertyValue::Translations(values)) => {
+                let replacement = replace_translation_rows(
+                    property,
+                    &parsed_body[property.range()],
+                    &indent,
+                    values,
+                )
+                .map_err(|error| {
+                    typed_diagnostic(
+                        MetaDiagnosticCode::ProviderUnavailable,
+                        error,
+                        Some("values.Synonym"),
+                    )
+                })?;
+                format!("{indent}{replacement}")
+            }
+            (_, MetaPropertyValue::Translations(_)) => {
+                return Err(typed_diagnostic(
+                    MetaDiagnosticCode::InvalidArguments,
+                    "property does not accept translations",
+                    Some("values"),
+                ));
             }
             (MetaPropertyKey::Synonym, MetaPropertyValue::String(value)) => {
                 unica_xml_format::localized::replace_language_value(
@@ -2548,12 +2633,96 @@ pub fn update_typed_element(
                 .map_or_else(|| color.clone(), |color| color.public_text()),
         ));
     }
+    let indent = meta_edit_property_child_indent(&properties_text);
+    let mut new_localized_properties = Vec::new();
+    if update.tooltip_translations.is_some()
+        && (collection != MetaCollection::Attributes
+            || scope.is_none()
+            || !meta_edit_object_identity(xml_text).is_ok_and(|(kind, _)| kind == "Catalog"))
+    {
+        return Err(typed_diagnostic(
+            MetaDiagnosticCode::UnsupportedKind,
+            "tooltipTranslations requires a catalog tabular-section attribute",
+            Some("tooltipTranslations"),
+        ));
+    }
+    if update.synonym_translations.is_some() || update.tooltip_translations.is_some() {
+        let original = xml_text.trim_start_matches('\u{feff}');
+        let document = Document::parse(original).map_err(|error| {
+            typed_diagnostic(
+                MetaDiagnosticCode::ProviderUnavailable,
+                error.to_string(),
+                None,
+            )
+        })?;
+        let properties = document
+            .descendants()
+            .find(|node| node.range() == range && node.is_element())
+            .and_then(|node| super::info_projection::direct_md_child(node, "Properties"))
+            .ok_or_else(|| {
+                typed_diagnostic(
+                    MetaDiagnosticCode::ProviderUnavailable,
+                    "metadata element has no Properties",
+                    None,
+                )
+            })?;
+        for (tag, field, changes) in [
+            (
+                "Synonym",
+                "synonymTranslations",
+                &update.synonym_translations,
+            ),
+            (
+                "ToolTip",
+                "tooltipTranslations",
+                &update.tooltip_translations,
+            ),
+        ] {
+            let Some(changes) = changes else { continue };
+            let existing = super::info_projection::direct_meta_info_property(
+                properties,
+                "metadata element",
+                tag,
+            )
+            .map_err(|error| typed_diagnostic(error.code, error.message, Some(field)))?;
+            let empty = format!("<{tag}/>");
+            let text = existing.map_or(empty.as_str(), |node| &original[node.range()]);
+            let replacement =
+                replace_translation_rows(existing.unwrap_or(properties), text, &indent, changes)
+                    .map_err(|error| {
+                        typed_diagnostic(
+                            MetaDiagnosticCode::ProviderUnavailable,
+                            error,
+                            Some(field),
+                        )
+                    })?;
+            if replacement != text {
+                if let Some(property) = existing {
+                    flag_edits.push((property.range(), replacement));
+                } else {
+                    new_localized_properties.push((tag, field, replacement));
+                }
+            }
+        }
+    }
     flag_edits.sort_by_key(|(range, _)| std::cmp::Reverse(range.start));
     for (range, value) in flag_edits {
         properties_text.replace_range(
             range.start - properties_start..range.end - properties_start,
             &value,
         );
+    }
+
+    for (tag, field, replacement) in new_localized_properties {
+        meta_edit_replace_or_insert_property(
+            &mut properties_text,
+            tag,
+            &format!("{indent}{replacement}"),
+            &indent,
+        )
+        .map_err(|error| {
+            typed_diagnostic(MetaDiagnosticCode::ProviderUnavailable, error, Some(field))
+        })?;
     }
 
     if let Some(metadata_type) = &update.r#type {
@@ -2580,7 +2749,6 @@ pub fn update_typed_element(
             MetaValueProfileContext::NewElement,
         )?;
     }
-    let indent = meta_edit_property_child_indent(&properties_text);
     if let Some(new_name) = &update.new_name {
         let replacement = format!(
             "{indent}<Name>{}</Name>",

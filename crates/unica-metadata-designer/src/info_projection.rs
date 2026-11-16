@@ -1574,6 +1574,22 @@ pub fn parsed_typed_meta_info_property_value(
     parse_typed_or_nil_value(node, "properties").ok()
 }
 
+pub(crate) fn observe_localized_property(
+    properties: roxmltree::Node<'_, '_>,
+    tag: &str,
+) -> Result<Option<MetaObservedPropertyValue>, ProjectionError> {
+    direct_meta_info_property(properties, "metadata object", tag)?
+        .map(|node| {
+            strict_localized_meta_info_property_value(node).ok_or_else(|| {
+                ProjectionError::malformed(
+                    format!("properties.{tag}"),
+                    format!("{tag} is malformed"),
+                )
+            })
+        })
+        .transpose()
+}
+
 pub fn parsed_localized_meta_info_property_value(
     node: roxmltree::Node<'_, '_>,
 ) -> MetaObservedPropertyValue {

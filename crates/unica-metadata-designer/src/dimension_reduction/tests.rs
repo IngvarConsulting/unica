@@ -11,6 +11,8 @@ fn operation(name: &str, value: &str) -> MetaEditOperation {
             name: name.into(),
             new_name: None,
             synonym: None,
+            synonym_translations: None,
+            tooltip_translations: None,
             comment: None,
             r#type: None,
             required: None,

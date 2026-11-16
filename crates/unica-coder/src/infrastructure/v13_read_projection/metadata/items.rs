@@ -155,6 +155,21 @@ pub(super) fn metadata_item_node(
             );
         }
     }
+    for property in item["properties"].as_array().into_iter().flatten() {
+        let Some(key @ ("synonymTranslations" | "tooltipTranslations")) = property["name"].as_str()
+        else {
+            continue;
+        };
+        place_prop(
+            &mut props,
+            &mut limits,
+            address,
+            key,
+            &property["value"],
+            true,
+            key,
+        );
+    }
     for key in [
         "accountingFlags",
         "extDimensionTypes",

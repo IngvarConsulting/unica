@@ -42,6 +42,11 @@ pub trait MetadataReadCodec: Send + Sync {
     /// Код языка из дескриптора `Language`.
     fn language_code(&self, descriptor: &[u8]) -> Result<String, String>;
 
+    fn language_synonym(
+        &self,
+        descriptor: &[u8],
+    ) -> Result<Option<crate::MetaObservedPropertyValue>, String>;
+
     /// Состав и режим функциональной опции `name`.
     fn functional_option(
         &self,

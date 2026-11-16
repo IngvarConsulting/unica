@@ -20,6 +20,7 @@ pub enum MetaPropertyValueKind {
 pub enum MetaPropertyValue {
     Type(MetadataType),
     String(String),
+    Translations(Vec<crate::MetaLocalizedText>),
     Boolean(bool),
     UnsignedInteger(u32),
 }
@@ -28,7 +29,7 @@ impl MetaPropertyValue {
     fn kind(&self) -> MetaPropertyValueKind {
         match self {
             Self::Type(_) => MetaPropertyValueKind::Type,
-            Self::String(_) => MetaPropertyValueKind::String,
+            Self::String(_) | Self::Translations(_) => MetaPropertyValueKind::String,
             Self::Boolean(_) => MetaPropertyValueKind::Boolean,
             Self::UnsignedInteger(_) => MetaPropertyValueKind::UnsignedInteger,
         }
@@ -265,6 +266,15 @@ impl MetaPropertyChanges {
                     format!("property `{}` has the wrong value kind", input.name),
                 )
                 .with_field(&field));
+            }
+            if let MetaPropertyValue::Translations(values) = &input.value {
+                if spec.key != MetaPropertyKey::Synonym {
+                    return Err(crate::request::invalid(
+                        &field,
+                        "property does not accept translations",
+                    ));
+                }
+                crate::request::validate_translation_changes(values, &field)?;
             }
             if let MetaPropertyValue::String(value) = &input.value {
                 if spec

@@ -24,6 +24,7 @@ pub fn replace_language_value(
         lang,
         text,
         EmptyTranslation::Remove,
+        LanguageMatch::Trim,
     )
 }
 
@@ -36,7 +37,39 @@ pub fn replace_language_value_keeping_empty(
     lang: &str,
     text: &str,
 ) -> String {
-    replace_language_value_with_empty(source, property, indent, lang, text, EmptyTranslation::Keep)
+    replace_language_value_with_empty(
+        source,
+        property,
+        indent,
+        lang,
+        text,
+        EmptyTranslation::Keep,
+        LanguageMatch::Trim,
+    )
+}
+
+/// Set a translation selected by the exact code from its Language descriptor.
+pub fn replace_language_value_exact(
+    source: &str,
+    property: roxmltree::Node<'_, '_>,
+    indent: &str,
+    lang: &str,
+    text: &str,
+) -> String {
+    replace_language_value_with_empty(
+        source,
+        property,
+        indent,
+        lang,
+        text,
+        EmptyTranslation::Remove,
+        LanguageMatch::Exact,
+    )
+}
+
+enum LanguageMatch {
+    Trim,
+    Exact,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -52,6 +85,7 @@ fn replace_language_value_with_empty(
     lang: &str,
     text: &str,
     empty: EmptyTranslation,
+    language_match: LanguageMatch,
 ) -> String {
     fn core_child<'a, 'input>(
         node: roxmltree::Node<'a, 'input>,
@@ -117,8 +151,8 @@ fn replace_language_value_with_empty(
     let existing = &source[range.clone()];
     let local = |inner: std::ops::Range<usize>| inner.start - range.start..inner.end - range.start;
     let qname = qualified_name(source, property);
-    let escaped = crate::text::escape_xml(text);
-    let lang_text = crate::text::escape_xml(lang);
+    let escaped = crate::text::escape_xml(text).replace('\r', "&#13;");
+    let lang_text = crate::text::escape_xml(lang).replace('\r', "&#13;");
     let items = property
         .children()
         .filter(|child| {
@@ -167,7 +201,14 @@ fn replace_language_value_with_empty(
         return with_inner(existing, qname, &format!("{inner}{item}"));
     }
     let target = items.iter().copied().find(|item| {
-        core_child(*item, "lang").is_some_and(|node| crate::read::direct_text(node).trim() == lang)
+        core_child(*item, "lang").is_some_and(|node| {
+            let code = crate::read::direct_text(node);
+            let observed = match language_match {
+                LanguageMatch::Trim => code.trim(),
+                LanguageMatch::Exact => code.as_str(),
+            };
+            observed == lang
+        })
     });
     let mut updated = existing.to_string();
     match target {

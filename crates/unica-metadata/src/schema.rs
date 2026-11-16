@@ -11,6 +11,20 @@ use serde_json::{json, Map, Value};
 use std::sync::OnceLock;
 use unica_address::source_target::{metadata_address_kind_spellings, RECALCULATION_KIND_SPELLINGS};
 
+pub fn translation_changes_schema() -> Value {
+    json!({
+        "type": "array", "minItems": 1,
+        "items": {
+            "type": "object", "additionalProperties": false,
+            "required": ["language", "content"],
+            "properties": {
+                "language": {"type": "string", "pattern": crate::language_code::LANGUAGE_CODE_PATTERN},
+                "content": {"type": "string"}
+            }
+        }
+    })
+}
+
 /// Project the existing property vocabulary, narrowed before merging any
 /// owner-specific enum. The legacy host consumes the kind-agnostic union.
 pub fn metadata_property_schemas(kind: Option<MetadataKind>) -> Map<String, Value> {
@@ -23,6 +37,9 @@ pub fn metadata_property_schemas(kind: Option<MetadataKind>) -> Map<String, Valu
             .entry(spec.public_name.to_string())
             .or_insert_with(|| match spec.value_kind {
                 MetaPropertyValueKind::Type => metadata_type_schema(),
+                MetaPropertyValueKind::String if spec.key == crate::MetaPropertyKey::Synonym => {
+                    json!({"oneOf":[{"type":"string"}, translation_changes_schema()]})
+                }
                 MetaPropertyValueKind::String => json!({"type": "string"}),
                 MetaPropertyValueKind::Boolean => json!({"type": "boolean"}),
                 MetaPropertyValueKind::UnsignedInteger => {

@@ -174,21 +174,35 @@ impl ProviderReadAuthority {
             .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error.message))?;
         let mut payload = identity_metadata_payload_from_evidence(target, &evidence)?;
         if evidence.artifact_kind() == "Language" {
-            match crate::infrastructure::family_codecs::metadata_read_codec()
-                .language_code(&descriptor)
-            {
+            let codec = crate::infrastructure::family_codecs::metadata_read_codec();
+            let mut properties = Vec::new();
+            let mut unreadable = Vec::new();
+            match codec.language_code(&descriptor) {
                 Ok(code) => {
-                    payload["properties"] = json!([{
+                    properties.push(json!({
                         "key": "LanguageCode",
                         "value": unica_metadata::MetaObservedPropertyValue::Text { value: code },
-                    }]);
+                    }));
                 }
                 Err(message) => {
-                    payload["unreadable"] = json!([{
-                        "field": "properties.LanguageCode",
-                        "message": message,
-                    }]);
+                    unreadable
+                        .push(json!({"field": "properties.LanguageCode", "message": message}));
                 }
+            }
+            match codec.language_synonym(&descriptor) {
+                Ok(Some(value)) => {
+                    properties.push(json!({"key": "Synonym", "value": value}));
+                }
+                Ok(None) => {}
+                Err(message) => {
+                    unreadable.push(json!({"field": "properties.Synonym", "message": message}));
+                }
+            }
+            if !properties.is_empty() {
+                payload["properties"] = json!(properties);
+            }
+            if !unreadable.is_empty() {
+                payload["unreadable"] = json!(unreadable);
             }
         }
         if evidence.artifact_kind() == "DocumentNumerator" {

@@ -1380,7 +1380,32 @@
                       "type": "string"
                     },
                     "Synonym": {
-                      "type": "string"
+                      "oneOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "content": {
+                                "type": "string"
+                              },
+                              "language": {
+                                "pattern": "^[^#*|\\\\:\"<>?/\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F\\uFFFE\\uFFFF]+$",
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "language",
+                              "content"
+                            ],
+                            "type": "object"
+                          },
+                          "minItems": 1,
+                          "type": "array"
+                        }
+                      ]
                     },
                     "Type": {
                       "additionalProperties": false,

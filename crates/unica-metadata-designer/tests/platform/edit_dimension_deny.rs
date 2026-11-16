@@ -18,6 +18,8 @@ fn deny(name: &str, value: bool) -> MetaEditOperation {
             name: name.to_string(),
             new_name: None,
             synonym: None,
+            synonym_translations: None,
+            tooltip_translations: None,
             comment: None,
             r#type: None,
             required: None,

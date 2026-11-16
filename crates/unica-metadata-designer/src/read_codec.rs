@@ -43,6 +43,13 @@ impl MetadataReadCodec for DesignerMetadataReadCodec {
         crate::language_code::read_code(descriptor)
     }
 
+    fn language_synonym(
+        &self,
+        descriptor: &[u8],
+    ) -> Result<Option<unica_metadata::MetaObservedPropertyValue>, String> {
+        crate::language_code::read_synonym(descriptor)
+    }
+
     fn functional_option(
         &self,
         descriptor: &str,

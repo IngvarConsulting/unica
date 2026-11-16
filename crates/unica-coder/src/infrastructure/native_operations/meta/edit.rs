@@ -1442,7 +1442,9 @@ pub(crate) mod tests {
                 });
 
                 let expected_xml = match value {
-                    MetaPropertyValue::Type(_) => unreachable!("scalar property test matrix"),
+                    MetaPropertyValue::Type(_) | MetaPropertyValue::Translations(_) => {
+                        unreachable!("scalar property test matrix")
+                    }
                     MetaPropertyValue::String(value) => {
                         format!(
                             "<{xml_tag}>{}</{xml_tag}>",
