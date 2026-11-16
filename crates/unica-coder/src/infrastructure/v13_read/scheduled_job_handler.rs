@@ -63,8 +63,7 @@ impl LogicalViewReadAuthority<'_> {
             Err(error)
                 if error.code() == RefusalCode::NotFound
                     || error.detail() == Some(RefusalDetail::SourceUnreadable)
-                    || (error.code().outcome_depends_on_detail()
-                        && error.detail().is_none()) =>
+                    || (error.code().outcome_depends_on_detail() && error.detail().is_none()) =>
             {
                 Ok(projected.with_additional_limits(vec![format!(
                     "scheduled job handler is unavailable: {error}"
