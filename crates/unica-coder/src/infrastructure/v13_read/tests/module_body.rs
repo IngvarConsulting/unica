@@ -1,5 +1,61 @@
 use super::*;
 
+/// rule: INV.SOURCE.MODULE-REGION-INTERFACE
+#[test]
+fn region_links_only_to_direct_children_and_unambiguous_methods() {
+    let fixture = RealReaderFixture::new();
+    let module = fixture
+        .source
+        .join("CommonModules/РеактивныйСервер/Ext/Module.bsl");
+    fs::write(
+        module,
+        r"#Область Outer
+Процедура Direct()
+КонецПроцедуры
+#Область Inner
+Процедура Nested()
+КонецПроцедуры
+#Если Сервер Тогда
+Процедура Duplicate()
+КонецПроцедуры
+#КонецЕсли
+#КонецОбласти
+#КонецОбласти
+#Если Клиент Тогда
+Процедура Duplicate()
+КонецПроцедуры
+#КонецЕсли
+",
+    )
+    .unwrap();
+    let service = fixture.view_service();
+    let base = "main:CommonModule.РеактивныйСервер";
+    let read = |suffix: &str| {
+        let result = service.view(ViewRequest::new(&format!("{base}.{suffix}")).unwrap());
+        assert!(result.ok, "{:?}", refusal_codes(&result));
+        result.data.unwrap()
+    };
+    let outer = read("Region.Outer");
+    assert_eq!(
+        outer["items"],
+        json!([
+            {"at": format!("{base}.Region.Outer.Region.Inner"), "kind": "Region"},
+            {"at": format!("{base}.Method.Direct"), "kind": "Method"}
+        ])
+    );
+    let inner = read("Region.Outer.Region.Inner");
+    assert_eq!(
+        inner["items"],
+        json!([{"at": format!("{base}.Method.Nested"), "kind": "Method"}])
+    );
+    assert_eq!(
+        inner["limits"],
+        json!([format!(
+            "method address `{base}.Method.Duplicate` is ambiguous"
+        )])
+    );
+}
+
 /// `Body` отдаёт исходные строки с их номерами: среза по контексту у `view`
 /// нет, и клиентский код формы остаётся в ответе.
 /// rule: INV.SOURCE.MODULE-COMPILATION-AND-BODY
