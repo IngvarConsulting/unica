@@ -176,8 +176,11 @@
         }
       ],
       "captures": {
-        "unlockArgs": {
-          "pointer": "/next/0/args"
+        "unlockAt": {
+          "pointer": "/next/0/args/at"
+        },
+        "unlockOperationArgs": {
+          "pointer": "/next/0/args/ops/0/args"
         }
       },
       "fileAssertions": [
@@ -206,7 +209,15 @@
     },
     {
       "tool": "unica.apply",
-      "args": "$capture.unlockArgs",
+      "args": {
+        "at": "$capture.unlockAt",
+        "ops": [
+          {
+            "op": "supportRule.set",
+            "args": "$capture.unlockOperationArgs"
+          }
+        ]
+      },
       "expect": [
         "ok"
       ],

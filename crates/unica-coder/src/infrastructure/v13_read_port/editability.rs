@@ -237,12 +237,12 @@ impl ProviderReadAuthority {
         Ok(self
             .read_optional_relative_whole(&relative)?
             .and_then(|bytes| {
+                let codec = crate::infrastructure::family_codecs::metadata_read_codec();
                 if owner == "Configuration" && self.source_set_kind == SourceSetKind::Configuration
                 {
-                    unica_metadata_designer::support::configuration_support_uuid(&bytes)
+                    codec.configuration_support_uuid(&bytes)
                 } else {
-                    crate::infrastructure::family_codecs::metadata_read_codec()
-                        .support_root_uuid(&bytes)
+                    codec.support_root_uuid(&bytes)
                 }
             })
             .and_then(|uuid| state.object_rule(&uuid)))

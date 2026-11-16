@@ -221,6 +221,10 @@ impl MetadataReadCodec for DesignerMetadataReadCodec {
         crate::support::support_root_uuid_from_bytes(descriptor)
     }
 
+    fn configuration_support_uuid(&self, descriptor: &[u8]) -> Option<String> {
+        crate::support::configuration_support_uuid(descriptor)
+    }
+
     fn support_stream(&self) -> Box<dyn SupportStateStream> {
         Box::<crate::support::SupportStateStreamParser>::default()
     }
