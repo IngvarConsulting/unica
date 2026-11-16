@@ -104,7 +104,7 @@ fn module_revision_follows_the_whole_text_of_a_body_or_range() {
     assert!(whole.ok, "{:?}", refusal_codes(&whole));
     assert_eq!(
         whole.rev.as_deref(),
-        Some(unica_bsl::text::module_text_revision(text.as_bytes()).as_str()),
+        Some(unica_source_contract::read::module_text_revision(text.as_bytes()).as_str()),
     );
     for suffix in ["Body#L1-L1", "Method.А.Body"] {
         let body = service.view(ViewRequest::new(&format!("{owner}.{suffix}")).unwrap());

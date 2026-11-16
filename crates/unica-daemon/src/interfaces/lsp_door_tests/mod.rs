@@ -572,7 +572,7 @@ fn the_product_service_serves_an_editor_folder_over_the_mcp_workspace_actor() {
     assert_eq!(saved["rev"], json!(read.rev));
     assert_eq!(
         saved["rev"],
-        unica_bsl::text::module_text_revision(disk.as_bytes())
+        unica_source_contract::read::module_text_revision(disk.as_bytes())
     );
     editor.notify(
         "textDocument/didOpen",
@@ -586,7 +586,9 @@ fn the_product_service_serves_an_editor_folder_over_the_mcp_workspace_actor() {
     assert_ne!(open["rev"], saved["rev"]);
     assert_eq!(
         open["rev"],
-        unica_bsl::text::module_text_revision("Procedure Buffer() EndProcedure\n".as_bytes())
+        unica_source_contract::read::module_text_revision(
+            "Procedure Buffer() EndProcedure\n".as_bytes()
+        )
     );
     assert_eq!(
         std::fs::read_to_string(&module).unwrap(),
@@ -914,8 +916,7 @@ impl LspHost for HeldHost {
         match call {
             V5LspCall::TextDocumentContent { uri } => {
                 let text = format!("// {uri}");
-                let rev = unica_bsl::text::module_text_revision(text.as_bytes());
-                return V5LspOutcome::Text { text, rev };
+                return V5LspOutcome::Text { text };
             }
             V5LspCall::Definition { uri, position } => {
                 return V5LspOutcome::Locations {

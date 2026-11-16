@@ -4,6 +4,7 @@ use sha2::{Digest, Sha256};
 use unica_address::address::BodyLineRange;
 #[cfg(test)]
 use unica_execution_contract::source_text_budget::complete_prefix;
+use unica_source_contract::read::{module_text_revision, MODULE_UTF8_BOM};
 
 /// Наибольший текст `Body` модуля и `Method.<имя>.Body`, который `view`
 /// вообще отдаёт: наибольший бюджет ответа среди известных хостов. Сколько
@@ -40,7 +41,7 @@ pub enum ModuleText {
 
 impl ModuleText {
     pub fn whole(text: String) -> Self {
-        let revision = unica_bsl::text::module_text_revision(text.as_bytes());
+        let revision = module_text_revision(text.as_bytes());
         Self::Text { text, revision }
     }
 }
@@ -71,22 +72,20 @@ impl ModuleTextAccumulator {
         self.newlines + usize::from(self.last.is_some_and(|last| last != b'\n'))
     }
 
-    const BOM: [u8; 3] = [0xef, 0xbb, 0xbf];
-
     pub fn push(&mut self, chunk: &[u8]) {
         let mut text = chunk;
         if !self.past_bom {
             let mut bytes = chunk.iter();
             while let Some(byte) = bytes.next() {
-                if *byte == Self::BOM[self.bom_prefix % 3] {
+                if *byte == MODULE_UTF8_BOM[self.bom_prefix % 3] {
                     self.bom_prefix += 1;
                     continue;
                 }
                 self.past_bom = true;
                 // Неполная последовательность U+FEFF в начале — уже текст.
                 let partial = self.bom_prefix % 3;
-                self.revision.update(&Self::BOM[..partial]);
-                for bom_byte in &Self::BOM[..partial] {
+                self.revision.update(&MODULE_UTF8_BOM[..partial]);
+                for bom_byte in &MODULE_UTF8_BOM[..partial] {
                     self.keep(*bom_byte);
                 }
                 text = &chunk[chunk.len() - bytes.len() - 1..];
@@ -129,8 +128,8 @@ impl ModuleTextAccumulator {
         if !self.past_bom {
             // Файл из одних U+FEFF пуст; хвост неполной метки — уже текст.
             let partial = self.bom_prefix % 3;
-            self.revision.update(&Self::BOM[..partial]);
-            for bom_byte in &Self::BOM[..partial] {
+            self.revision.update(&MODULE_UTF8_BOM[..partial]);
+            for bom_byte in &MODULE_UTF8_BOM[..partial] {
                 self.keep(*bom_byte);
             }
         }

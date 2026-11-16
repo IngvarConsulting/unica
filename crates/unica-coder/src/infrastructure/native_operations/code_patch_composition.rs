@@ -240,7 +240,7 @@ fn plan_one_code_operation(
             // Earlier operations can stage changes to this module. The
             // editor read the original text shared by this whole plan.
             let original = staged.original_image(&relative).unwrap_or_default();
-            if unica_bsl::text::module_text_revision(original) != *expected {
+            if unica_source_contract::read::module_text_revision(original) != *expected {
                 return Err(ApplyPlanError::new(
                     ApplyPlanErrorKind::Conflict,
                     "the module text changed since it was read; read its Body again",

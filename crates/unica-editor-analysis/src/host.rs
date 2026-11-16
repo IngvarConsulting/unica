@@ -466,11 +466,9 @@ impl Session {
 /// sees it: its open buffer, otherwise the file.
 fn answer(session: &Session, call: V5LspCall) -> Result<V5LspOutcome, V5LspFailure> {
     match call {
-        V5LspCall::TextDocumentContent { uri } => {
-            let text = document_text(session, &uri)?;
-            let rev = unica_bsl::text::module_text_revision(text.as_bytes());
-            Ok(V5LspOutcome::Text { text, rev })
-        }
+        V5LspCall::TextDocumentContent { uri } => Ok(V5LspOutcome::Text {
+            text: document_text(session, &uri)?,
+        }),
         V5LspCall::Hover { .. }
         | V5LspCall::Definition { .. }
         | V5LspCall::References { .. }

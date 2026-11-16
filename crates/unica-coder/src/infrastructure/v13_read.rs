@@ -1678,7 +1678,7 @@ fn module_text(
     let (text, revision) = if admit_text(text).is_ok() {
         (
             SourceText::Whole(text.to_string()),
-            Some(unica_bsl::text::module_text_revision(
+            Some(unica_source_contract::read::module_text_revision(
                 module_source.as_bytes(),
             )),
         )
