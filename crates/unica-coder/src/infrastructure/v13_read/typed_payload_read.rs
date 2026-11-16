@@ -781,15 +781,26 @@ impl<'a> LogicalViewReadAuthority<'a> {
             revision: admitted.revision.clone(),
         };
         let mut indexes = self.registered_owner_names.lock().map_err(|_| {
-            ViewError::detailed(RefusalDetail::CachePoisoned, "registration membership index is poisoned")
+            ViewError::detailed(
+                RefusalDetail::CachePoisoned,
+                "registration membership index is poisoned",
+            )
         })?;
         let names = match indexes.get(&key) {
             Some(names) => Arc::clone(names),
             None => {
                 let mut names = RegisteredOwnerNames::new();
-                for item in payload.get("registeredObjects").and_then(Value::as_array).into_iter().flatten() {
+                for item in payload
+                    .get("registeredObjects")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                {
                     self.read_checkpoint()?;
-                    if let (Some(kind), Some(name)) = (item.get("kind").and_then(Value::as_str), item.get("name").and_then(Value::as_str)) {
+                    if let (Some(kind), Some(name)) = (
+                        item.get("kind").and_then(Value::as_str),
+                        item.get("name").and_then(Value::as_str),
+                    ) {
                         names.insert((kind.to_owned(), name.to_owned()));
                     }
                 }
