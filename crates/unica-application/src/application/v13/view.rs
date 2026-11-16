@@ -397,7 +397,7 @@ impl<A: ViewReadAuthority> ViewService<A> {
                 None => self.authority.read_exact(&canonical_at, &snapshot)?,
             };
             text = view.take_text();
-            let serialized = serde_json::to_value(view).map_err(|error| {
+            let serialized = serialize_view_data(view).map_err(|error| {
                 ViewError::new(RefusalCode::ProviderUnavailable, error.to_string())
             })?;
             match project {
@@ -540,13 +540,14 @@ impl<A: ViewReadAuthority> ViewService<A> {
                             item.get("at")
                                 .and_then(Value::as_str)
                                 .and_then(|at| QualifiedAddress::parse(at).ok())
-                                .and_then(|at| {
+                                .is_some_and(|at| {
                                     at.segments()
                                         .last()
                                         .and_then(|segment| segment.name())
-                                        .map(str::to_owned)
+                                        .is_some_and(|name| {
+                                            name.to_lowercase().starts_with(&prefix)
+                                        })
                                 })
-                                .is_some_and(|name| name.to_lowercase().starts_with(&prefix))
                         })
                         .unwrap_or(items.len())
                 })
@@ -573,6 +574,22 @@ impl<A: ViewReadAuthority> ViewService<A> {
     }
 }
 
+fn serialize_view_data(view: NodeViewData) -> Result<Value, serde_json::Error> {
+    match view {
+        NodeViewData::Collection(collection) => {
+            let (node, items) = collection.into_parts();
+            let Value::Object(mut fields) = serde_json::to_value(node)? else {
+                return Err(serde::ser::Error::custom(
+                    "view node projection is not an object",
+                ));
+            };
+            fields.insert("items".into(), Value::Array(items));
+            Ok(Value::Object(fields))
+        }
+        view => serde_json::to_value(view),
+    }
+}
+
 fn shrink_projection_storage(value: &mut Value) {
     match value {
         Value::String(text) if text.capacity() != text.len() => {
@@ -587,15 +604,13 @@ fn shrink_projection_storage(value: &mut Value) {
             }
         }
         Value::Object(fields) => {
-            for value in fields.values_mut() {
-                shrink_projection_storage(value);
-            }
-            if fields.keys().any(|key| key.capacity() != key.len()) {
-                let original = std::mem::take(fields);
-                *fields = Map::with_capacity(original.len());
-                for (key, value) in original {
-                    fields.insert(key.into_boxed_str().into_string(), value);
-                }
+            // Map does not expose its capacity; rebuild its index while
+            // moving keys and values instead of cloning their contents.
+            let original = std::mem::take(fields);
+            *fields = Map::with_capacity(original.len());
+            for (key, mut value) in original {
+                shrink_projection_storage(&mut value);
+                fields.insert(key.into_boxed_str().into_string(), value);
             }
         }
         _ => {}
@@ -1107,6 +1122,43 @@ mod tests {
         assert_eq!(stale, second);
     }
 
+    #[test]
+    fn owned_collection_serialization_preserves_the_canonical_shape() {
+        use crate::domain::node_view::{BranchRef, SourceText, TextView};
+        use unica_operation_contract::OperationRef;
+        let node = NodeView::new(
+            "main:CommonModule",
+            "CommonModule",
+            "Общие модули",
+            Map::from_iter([
+                ("caption".into(), json!("Юникод")),
+                ("enabled".into(), json!(true)),
+            ]),
+        )
+        .with_branches(vec![BranchRef::new("main:CommonModule.Sample.Method", 2)])
+        .with_can(vec![OperationRef::new(
+            "meta.add",
+            Map::from_iter([("kind".into(), json!("CommonModule"))]),
+        )])
+        .with_limits(vec!["A visible limit".into()]);
+        for view in [
+            NodeViewData::Collection(CollectionView::new(node.clone(), vec![])),
+            NodeViewData::Collection(CollectionView::new(
+                node.clone(),
+                vec![
+                    json!(null),
+                    json!(42),
+                    json!({"name":"Имя","nested":[false,{"text":"Юникод"}]}),
+                ],
+            )),
+            NodeViewData::Node(node.clone()),
+            NodeViewData::Text(TextView::new(node, SourceText::Whole("// source".into()))),
+        ] {
+            let expected = serde_json::to_value(&view).unwrap();
+            assert_eq!(super::serialize_view_data(view).unwrap(), expected);
+        }
+    }
+
     /// rule: INV.APP.VIEW-CURSOR-CAPACITY
     #[test]
     fn a_supplied_collection_does_not_retain_its_providers_spare_capacity() {
@@ -1128,11 +1180,16 @@ mod tests {
                     key.push('x');
                     Value::Object(Map::from_iter([(key, Value::Null)]))
                 }
+                "map" => {
+                    let mut fields = Map::with_capacity(16 * 1024);
+                    fields.insert("x".into(), Value::Null);
+                    Value::Object(fields)
+                }
                 "outer" => Value::Null,
                 _ => unreachable!(),
             }
         }
-        for kind in ["outer", "string", "array", "key"] {
+        for kind in ["outer", "string", "array", "key", "map"] {
             let service =
                 ViewService::new(FixtureAuthority::new(), ViewCursorStore::new(16 * 1024));
             let owner = QualifiedAddress::parse("main:Document.Заказ.Module.Object").unwrap();

@@ -862,17 +862,20 @@ impl<'a> LogicalViewReadAuthority<'a> {
         let mut parent: Option<(MetadataAddress, Arc<PlatformXmlSourceSetOwnerEvidence>)> = None;
         for pair_count in 1..=parts.len() / 2 {
             let end = pair_count * 2;
-            let current_text = parts[..end].join(".");
-            let current = MetadataAddress::parse_logical(&current_text).map_err(|error| {
-                ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
-            })?;
+            let current = if end == parts.len() {
+                target.clone()
+            } else {
+                MetadataAddress::parse_logical(&parts[..end].join(".")).map_err(|error| {
+                    ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+                })?
+            };
             if let Some((parent_address, parent_evidence)) = &parent {
                 let child_kind = parts[end - 2];
                 let child_name = parts[end - 1];
                 let edge_key = OwnerEdgeCacheKey {
                     revision: revision.clone(),
                     parent: parent_address.as_str().to_string(),
-                    child: current_text.clone(),
+                    child: current.as_str().to_string(),
                 };
                 let mut edges = self.verified_owner_edges.lock().map_err(|_| {
                     ViewError::detailed(

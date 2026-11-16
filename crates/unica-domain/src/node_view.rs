@@ -152,6 +152,12 @@ impl CollectionView {
         Self { node, items }
     }
 
+    /// Moves the node and its already serialized rows to the response owner.
+    pub fn into_parts(self) -> (NodeView, Vec<Value>) {
+        let Self { node, items } = self;
+        (node, items)
+    }
+
     pub fn try_map_items<E>(
         mut self,
         map: impl FnMut(Value) -> Result<Value, E>,
