@@ -17,7 +17,7 @@
       "assertions": [
         {
           "pointer": "/data/sections/0/hits/0/documentId",
-          "eq": "platform-syntax-help:syntax-context:objects/Global context/methods/catalog27/ActiveWindow4049.html"
+          "eq": "platform-syntax-help:8.3.27.2074:syntax-context:objects/Global context/methods/catalog27/ActiveWindow4049.html"
         }
       ],
       "captures": {
@@ -42,7 +42,7 @@
       "assertions": [
         {
           "pointer": "/data/document/documentId",
-          "eq": "platform-syntax-help:syntax-context:objects/Global context/methods/catalog27/ActiveWindow4049.html"
+          "eq": "platform-syntax-help:8.3.27.2074:syntax-context:objects/Global context/methods/catalog27/ActiveWindow4049.html"
         },
         {
           "pointer": "/data/document/text",
@@ -73,7 +73,7 @@
         },
         {
           "pointer": "/data/sections/0/hits/0/documentId",
-          "eq": "platform-syntax-help:syntax-context:control/SearchControl.html"
+          "eq": "platform-syntax-help:8.3.27.2074:syntax-context:control/SearchControl.html"
         }
       ],
       "fileAssertions": [
