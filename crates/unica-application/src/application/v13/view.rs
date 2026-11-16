@@ -54,6 +54,7 @@ const MAX_LIMIT: usize = 50;
 // decision-source: arch/rules/mcp/read-page-budget.md
 pub const PREFERRED_PAGE_BYTES: usize = 64 * 1024;
 type ViewProjector<'a> = dyn Fn(&Value) -> Result<Value, ViewError> + 'a;
+type OwnedViewProjector<'a> = dyn Fn(Value) -> Result<Value, ViewError> + 'a;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ViewRequest {
@@ -250,6 +251,16 @@ impl<A: ViewReadAuthority> ViewService<A> {
         request: ViewRequest,
         project: &ViewProjector<'_>,
     ) -> DomainResult {
+        self.view_projected_owned(request, &|data| project(&data))
+    }
+
+    /// Enriches the owned fresh projection without copying its collection.
+    /// Cursor continuations use the saved result and do not run the projector.
+    pub fn view_projected_owned(
+        &self,
+        request: ViewRequest,
+        project: &OwnedViewProjector<'_>,
+    ) -> DomainResult {
         match self.try_view(&request, Some(project), None, None) {
             Ok(result) => result,
             Err(error) => error_result(Some(request.at.to_string()), error),
@@ -300,7 +311,7 @@ impl<A: ViewReadAuthority> ViewService<A> {
     fn try_view(
         &self,
         request: &ViewRequest,
-        project: Option<&ViewProjector<'_>>,
+        project: Option<&OwnedViewProjector<'_>>,
         supplied: Option<(&QualifiedAddress, &str, Option<Value>)>,
         continuation_source: Option<&QualifiedAddress>,
     ) -> Result<DomainResult, ViewError> {
@@ -390,7 +401,7 @@ impl<A: ViewReadAuthority> ViewService<A> {
                 ViewError::new(RefusalCode::ProviderUnavailable, error.to_string())
             })?;
             match project {
-                Some(project) => project(&serialized)?,
+                Some(project) => project(serialized)?,
                 None => serialized,
             }
         };
@@ -1299,6 +1310,8 @@ mod tests {
         assert!(serde_json::to_vec(&last).unwrap().len() <= super::PREFERRED_PAGE_BYTES);
     }
 
+    /// rule: INV.APP.DEFERRED-READ
+    /// rule: INV.WIRE.READ-PAGE-BUDGET
     #[test]
     fn projected_section_is_counted_before_publishing_a_replayable_cursor() {
         let at = "main:Document.Заказ.Module.Object.Body";
@@ -1314,13 +1327,14 @@ mod tests {
             )),
         );
         let service = ViewService::new(authority, ViewCursorStore::default());
-        let project = |data: &serde_json::Value| -> Result<serde_json::Value, ViewError> {
-            let mut projected = data.clone();
+        let calls = std::cell::Cell::new(0);
+        let project = |mut projected: serde_json::Value| -> Result<serde_json::Value, ViewError> {
+            calls.set(calls.get() + 1);
             projected["can"] = json!(["operation".repeat(1_000)]);
             Ok(projected)
         };
         let request = || ViewRequest::new(at).unwrap().with_limit(50).unwrap();
-        let first = service.view_projected(request(), &project);
+        let first = service.view_projected_owned(request(), &project);
         assert!(first.ok);
         assert_eq!(first.page.as_ref().unwrap()["stoppedBy"], "bytes");
         assert_eq!(
@@ -1332,14 +1346,15 @@ mod tests {
         );
         assert!(serde_json::to_vec(&first).unwrap().len() <= super::PREFERRED_PAGE_BYTES);
         let cursor = first.cursor.unwrap();
-        let next = service.view_projected(request().with_cursor(cursor.clone()), &project);
+        let next = service.view_projected_owned(request().with_cursor(cursor.clone()), &project);
         assert_eq!(
             next,
-            service.view_projected(request().with_cursor(cursor), &project)
+            service.view_projected_owned(request().with_cursor(cursor), &project)
         );
         assert_eq!(next.page.as_ref().unwrap()["stoppedBy"], "complete");
         assert!(next.cursor.is_none());
         assert!(serde_json::to_vec(&next).unwrap().len() <= super::PREFERRED_PAGE_BYTES);
+        assert_eq!(calls.get(), 1, "only the fresh request runs the projector");
     }
 
     #[test]

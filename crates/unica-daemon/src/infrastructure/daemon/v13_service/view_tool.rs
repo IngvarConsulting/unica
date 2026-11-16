@@ -360,8 +360,7 @@ impl CanonicalV13ReadService {
             authority.platform_profile(),
         );
         let service = ViewService::with_shared_cursors(authority, Arc::clone(&self.cursors));
-        let enrich_and_project = |data: &Value| -> Result<Value, ViewError> {
-            let mut data = data.clone();
+        let enrich_and_project = |mut data: Value| -> Result<Value, ViewError> {
             if source.source_kind() == unica_source_contract::SourceSetKind::Extension
                 && data
                     .get("props")
@@ -449,12 +448,12 @@ impl CanonicalV13ReadService {
         let mut result = match property.as_deref() {
             Some(name) => property_view(
                 crate::infrastructure::v13_read_projection::with_whole_prop(name, || {
-                    service.view_projected(request, &enrich_and_project)
+                    service.view_projected_owned(request, &enrich_and_project)
                 }),
                 at,
                 name,
             ),
-            None => service.view_projected(request, &enrich_and_project),
+            None => service.view_projected_owned(request, &enrich_and_project),
         };
         // Ответ операции адресован ею самой, а не узлом, который читался.
         if let Some(op) = operation.as_deref() {
