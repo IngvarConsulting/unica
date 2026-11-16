@@ -21,7 +21,7 @@ pub(super) fn platform_help_dir() -> PathBuf {
 }
 
 #[test]
-#[ignore = "vendor help: needs UNICA_PLATFORM_HELP_DIR=<1C platform installation>; run with --run-ignored only"]
+#[ignore = "vendor help: needs UNICA_PLATFORM_HELP_DIR=<1C platform installation>; run scripts/dev/check-platform-catalogs.py"]
 fn real_installation_answers_navigation_link_question() {
     let root = platform_help_dir();
     // Слот индекса общий на процесс: настоящая установка не должна
@@ -61,7 +61,7 @@ fn real_installation_answers_navigation_link_question() {
 /// ни один тест этого не видел. Здесь проверяется КАЖДЫЙ контейнер обоих
 /// корпусов установки.
 #[test]
-#[ignore = "vendor help: needs UNICA_PLATFORM_HELP_DIR=<1C platform installation>; run with --run-ignored only"]
+#[ignore = "vendor help: needs UNICA_PLATFORM_HELP_DIR=<1C platform installation>; run scripts/dev/check-platform-catalogs.py"]
 fn every_container_of_a_real_installation_parses() {
     let root = platform_help_dir();
     let corpora =
@@ -103,7 +103,7 @@ fn every_container_of_a_real_installation_parses() {
 /// `Unavailable { VersionMissing }`, `any_usable` оставался ложным и весь
 /// `unica.documentation.search` заканчивался отказом.
 #[test]
-#[ignore = "vendor help: needs UNICA_PLATFORM_HELP_DIR=<1C platform installation>; run with --run-ignored only"]
+#[ignore = "vendor help: needs UNICA_PLATFORM_HELP_DIR=<1C platform installation>; run scripts/dev/check-platform-catalogs.py"]
 fn real_installation_answers_a_locale_it_does_not_ship() {
     let root = platform_help_dir();
     // Слот индекса общий на процесс: настоящая установка не должна вытеснять

@@ -1,4 +1,5 @@
 //! Designer form parser, validator, compiler and in-memory editor.
+use crate::dialect::root_version::{self, RootVersionReport};
 use crate::event_context::context_from_root;
 use crate::root::{form_edit_opening_tag_end, require_form_root, FORM_LOGFORM_NS};
 use roxmltree::Document;
@@ -12,17 +13,17 @@ use unica_forms::facts::*;
 use unica_metadata::support_state::ObjectSupportData as DomainObjectSupportData;
 use unica_operation_contract::input::*;
 use unica_source_contract::discovery::ProjectDiscoveryRead;
+use unica_source_contract::format_identity::PlatformLine;
 use unica_source_contract::ScriptVariant;
-use unica_source_designer::format_profile::{
-    classify_root_version, format_compatibility_warning, FormatCompatibility,
-};
 use unica_source_designer::read::{path_exists, read_string, read_utf8_sig_snapshot};
 use unica_source_designer::roots::root_version_literal;
 use unica_xml_format::text::*;
 use unica_xml_format::text::{form_edit_line_indent, form_edit_line_indent_at};
 
+pub(crate) mod attribute_remove;
 mod command_properties;
 mod conditional_appearance;
+mod description_keys;
 mod dynamic_list;
 
 pub const FORM_V8_NS: &str = "http://v8.1c.ru/8.1/data/core";
@@ -564,7 +565,7 @@ impl<'reader> HandlerSignatureCheck<'reader> {
             .or_insert_with(|| {
                 let mut context = context.clone();
                 context.metadata_owner = metadata_owner;
-                form_owner_event_parameters_8_3_27(&context, owner, data_path)
+                form_owner_event_parameters(&context, owner, data_path)
             })
     }
 }
@@ -608,9 +609,10 @@ pub fn form_validate_events(
     root: roxmltree::Node<'_, '_>,
     signatures: Option<HandlerSignatureCheck<'_>>,
     metadata_owner: Option<unica_address::address::NodeKind>,
+    platform_line: Option<PlatformLine>,
     report: &mut FormValidationReporter,
 ) {
-    form_validate_events_inner(root, signatures, metadata_owner, report);
+    form_validate_events_inner(root, signatures, metadata_owner, platform_line, report);
 }
 
 /// Определяет необходимость модуля теми же правилами, что проверка событий.
@@ -618,6 +620,7 @@ pub fn form_validate_events(
 pub fn form_validation_requires_module(
     text: &str,
     metadata_owner: Option<unica_address::address::NodeKind>,
+    platform_line: Option<PlatformLine>,
 ) -> bool {
     let Ok(document) = Document::parse(text.trim_start_matches('\u{feff}')) else {
         return false;
@@ -630,6 +633,7 @@ pub fn form_validation_requires_module(
         root,
         None,
         metadata_owner,
+        platform_line,
         // Без предела ошибок обход видит каждую привязку при любом maxErrors проверки.
         &mut FormValidationReporter::new("", usize::MAX, false),
     )
@@ -639,6 +643,7 @@ fn form_validate_events_inner(
     root: roxmltree::Node<'_, '_>,
     signatures: Option<HandlerSignatureCheck<'_>>,
     metadata_owner: Option<unica_address::address::NodeKind>,
+    platform_line: Option<PlatformLine>,
     report: &mut FormValidationReporter,
 ) -> bool {
     struct EventValidationState<'report, 'reader> {
@@ -702,7 +707,7 @@ fn form_validate_events_inner(
                 .then(|| form_validation_child_text(owner_node, "DataPath"))
                 .flatten();
             let owner_events = check.owner_events(&self.context, owner, data_path.as_deref());
-            let message = match foreign_handler_signature_8_3_27(owner_events, binding.name, &parameters.iter().map(|parameter| (parameter.0.as_str(),parameter.1)).collect::<Vec<_>>())
+            let message = match foreign_handler_signature(owner_events, binding.name, &parameters.iter().map(|parameter| (parameter.0.as_str(),parameter.1)).collect::<Vec<_>>())
             {
                 None => return,
                 Some(HandlerSignatureFinding::ForeignEvent {
@@ -800,7 +805,7 @@ fn form_validate_events_inner(
     let base_form = form_validation_child(root, "BaseForm");
     // Вид владельца формы выбирает его каталог событий, как при планировании
     // привязки: иначе итоговая проверка отвергла бы принятое событие.
-    let mut context = context_from_root(root);
+    let mut context = context_from_root(root, platform_line);
     context.metadata_owner = metadata_owner;
     let mut state = EventValidationState {
         context,
@@ -1467,9 +1472,12 @@ fn form_info_commands(commands: roxmltree::Node<'_, '_>) -> Vec<FormInfoCommand>
         .collect()
 }
 
-fn form_event_evidence_from_root(root: roxmltree::Node<'_, '_>) -> FormEventEvidence {
+fn form_event_evidence_from_root(
+    root: roxmltree::Node<'_, '_>,
+    platform_line: Option<PlatformLine>,
+) -> FormEventEvidence {
     FormEventEvidence {
-        context: context_from_root(root),
+        context: context_from_root(root, platform_line),
         events: form_child(root, "Events")
             .map(form_info_events_section)
             .unwrap_or_default(),
@@ -1491,12 +1499,15 @@ pub fn parse_form_attributes_xml(text: &str) -> Result<Vec<FormInfoAttribute>, S
         .unwrap_or_default())
 }
 
-pub fn parse_form_event_evidence_xml(text: &str) -> Result<FormEventEvidence, String> {
+pub fn parse_form_event_evidence_xml(
+    text: &str,
+    platform_line: Option<PlatformLine>,
+) -> Result<FormEventEvidence, String> {
     let doc = Document::parse(text.trim_start_matches('\u{feff}'))
         .map_err(|err| format!("Form XML parse error: {err}"))?;
     let root = doc.root_element();
     require_form_root(root)?;
-    Ok(form_event_evidence_from_root(root))
+    Ok(form_event_evidence_from_root(root, platform_line))
 }
 
 /// The address kinds a form reader accepts: a nested `Catalog.X.Form.Y` and a
@@ -1508,6 +1519,7 @@ pub fn parse_form_info_xml(
     form_name: String,
     object_context: String,
     support: DomainObjectSupportData,
+    platform_line: Option<PlatformLine>,
 ) -> Result<FormInfoData, String> {
     let doc = Document::parse(text.trim_start_matches('\u{feff}'))
         .map_err(|err| format!("Form XML parse error: {err}"))?;
@@ -1542,7 +1554,7 @@ pub fn parse_form_info_xml(
     } else {
         Vec::new()
     };
-    let event_evidence = form_event_evidence_from_root(root);
+    let event_evidence = form_event_evidence_from_root(root, platform_line);
     Ok(FormInfoData {
         name: form_name,
         title: form_title,
@@ -2715,7 +2727,6 @@ pub fn form_compile_catalog_list_definition(meta: &FormCompileObjectMeta) -> Val
     if meta.hierarchical {
         if let Some(object) = table.as_object_mut() {
             object.insert("initialTreeView".to_string(), json!("ExpandTopLevel"));
-            object.insert("enableStartDrag".to_string(), json!(true));
             object.insert("enableDrag".to_string(), json!(true));
         }
     }
@@ -3087,7 +3098,12 @@ pub fn form_add_metadata_xml(
     } else {
         ""
     };
-    format!(
+    let format_properties: String =
+        crate::dialect::descriptor_properties_after_use_purposes(format_version)
+            .iter()
+            .map(|property| format!("\t\t\t{property}\r\n"))
+            .collect();
+    let descriptor = format!(
         concat!(
             "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n",
             "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\"",
@@ -3124,6 +3140,7 @@ pub fn form_add_metadata_xml(
             "\t\t\t\t<v8:Value xsi:type=\"app:ApplicationUsePurpose\">PlatformApplication</v8:Value>\r\n",
             "\t\t\t\t<v8:Value xsi:type=\"app:ApplicationUsePurpose\">MobilePlatformApplication</v8:Value>\r\n",
             "\t\t\t</UsePurposes>\r\n",
+            "{format_properties}",
             "{extended_presentation}",
             "\t\t</Properties>\r\n",
             "\t</Form>\r\n",
@@ -3134,7 +3151,17 @@ pub fn form_add_metadata_xml(
         form_name = unica_xml_format::text::escape_xml(form_name),
         synonym = unica_xml_format::text::escape_xml(synonym),
         extended_presentation = extended_presentation,
+        format_properties = format_properties,
         lang = unica_xml_format::text::escape_xml(lang),
+    );
+    unica_source_designer::layout::declare_format_namespaces(descriptor, format_version)
+}
+
+/// Namespace declarations of a `Form.xml` root in `format_version`.
+pub(crate) fn form_root_namespaces(format_version: &str) -> String {
+    unica_source_designer::layout::format_namespace_declarations(
+        FORM_ROOT_NAMESPACES,
+        format_version,
     )
 }
 
@@ -3166,9 +3193,10 @@ const FORM_ROOT_NAMESPACES: &str = concat!(
 /// into `callType="Before"` interceptors of the extension.
 pub fn borrowed_form_content_xml(format_version: &str) -> String {
     let version = unica_xml_format::text::escape_xml(format_version);
+    let namespaces = form_root_namespaces(format_version);
     [
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>".to_string(),
-        format!("<Form {FORM_ROOT_NAMESPACES} version=\"{version}\">"),
+        format!("<Form {namespaces} version=\"{version}\">"),
         "\t<AutoCommandBar name=\"\" id=\"-1\"/>".to_string(),
         "\t<Attributes/>".to_string(),
         format!("\t<BaseForm version=\"{version}\">"),
@@ -3202,12 +3230,21 @@ pub fn form_add_content_xml_with_variant(
     format_version: &str,
     script_variant: ScriptVariant,
 ) -> Result<String, String> {
-    let ns = FORM_ROOT_NAMESPACES;
+    let ns = form_root_namespaces(format_version);
     let names = FormEmissionContext::with_script_variant(script_variant);
     let command_bar = names.select("ФормаКоманднаяПанель", "FormCommandBar");
     if matches!(purpose, "List" | "Choice") {
         let list_name = names.select("Список", "List");
         let main_table = format!("{object_type}.{object_name}");
+        // A new dynamic list carries the settings the Designer writes for its
+        // own new list form, through the same emitter as a compiled one.
+        let mut settings = Vec::new();
+        emit_form_dynamic_list_attribute_settings(
+            &mut settings,
+            &Map::from_iter([("mainTable".to_string(), Value::String(main_table))]),
+            "\t\t\t",
+        );
+        let settings: String = settings.iter().map(|line| format!("{line}\r\n")).collect();
         return Ok(format!(
             concat!(
                 "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n",
@@ -3219,9 +3256,7 @@ pub fn form_add_content_xml_with_variant(
                 "\t\t\t\t<v8:Type>cfg:DynamicList</v8:Type>\r\n",
                 "\t\t\t</Type>\r\n",
                 "\t\t\t<MainAttribute>true</MainAttribute>\r\n",
-                "\t\t\t<Settings xsi:type=\"DynamicList\">\r\n",
-                "\t\t\t\t<MainTable>{main_table}</MainTable>\r\n",
-                "\t\t\t</Settings>\r\n",
+                "{settings}",
                 "\t\t</Attribute>\r\n",
                 "\t</Attributes>\r\n",
                 "</Form>"
@@ -3229,7 +3264,7 @@ pub fn form_add_content_xml_with_variant(
             ns = ns,
             command_bar = command_bar,
             format_version = unica_xml_format::text::escape_xml(format_version),
-            main_table = unica_xml_format::text::escape_xml(&main_table),
+            settings = settings,
             list_name = list_name,
         ));
     }
@@ -3608,6 +3643,7 @@ pub fn form_edit_apply_definition(
     form_path: &Path,
     form_root_start: usize,
     lang: Option<&str>,
+    platform_line: Option<PlatformLine>,
 ) -> Result<FormEditApplied, String> {
     form_edit_apply_definition_with_variant(
         xml_text,
@@ -3616,6 +3652,7 @@ pub fn form_edit_apply_definition(
         form_root_start,
         lang,
         ScriptVariant::Russian,
+        platform_line,
     )
 }
 
@@ -3626,6 +3663,7 @@ pub fn form_edit_apply_definition_with_variant(
     form_root_start: usize,
     lang: Option<&str>,
     script_variant: ScriptVariant,
+    platform_line: Option<PlatformLine>,
 ) -> Result<FormEditApplied, String> {
     // The fragments are built with LF. A platform export ends every line
     // with CRLF, so in such a form each bare LF after the edit is a new one
@@ -3639,6 +3677,7 @@ pub fn form_edit_apply_definition_with_variant(
         form_root_start,
         lang,
         script_variant,
+        platform_line,
     )?;
     if crlf_only && has_bare_lf(xml_text) {
         *xml_text = xml_text.replace("\r\n", "\n").replace('\n', "\r\n");
@@ -3663,6 +3702,7 @@ fn form_edit_apply_definition_lf(
     form_root_start: usize,
     lang: Option<&str>,
     script_variant: ScriptVariant,
+    platform_line: Option<PlatformLine>,
 ) -> Result<FormEditApplied, String> {
     if let Some(values) = defn.get("rootProperties").and_then(Value::as_object) {
         crate::form_root_properties::set_root_properties(xml_text, values, lang)?;
@@ -3685,7 +3725,12 @@ fn form_edit_apply_definition_lf(
     }
     let planned_removals = form_edit_plan_removals(defn, xml_text)?;
     form_edit_validate_removal_definition_conflicts(defn, &planned_removals)?;
-    let planned_events = form_edit_plan_events(defn, xml_text, form_metadata_owner(form_path))?;
+    let planned_events = form_edit_plan_events(
+        defn,
+        xml_text,
+        form_metadata_owner(form_path),
+        platform_line,
+    )?;
     form_edit_apply_planned_removals(xml_text, &planned_removals);
     let form_name = form_edit_form_name(form_path);
     let mut elem_ids = FormEmissionContext {
@@ -4324,13 +4369,14 @@ pub fn form_edit_plan_events(
     definition: &Value,
     xml_text: &str,
     metadata_owner: Option<unica_address::address::NodeKind>,
+    platform_line: Option<PlatformLine>,
 ) -> Result<Vec<FormEditPlannedEvent>, String> {
     let document = Document::parse(xml_text)
         .map_err(|err| format!("[ERROR] XML parse error while planning events: {err}"))?;
     let root = document.root_element();
     let direct_main_count = form_edit_direct_main_attribute_count(root);
     form_edit_validate_projected_main_attribute_count(direct_main_count, definition)?;
-    let mut context = context_from_root(root);
+    let mut context = context_from_root(root, platform_line);
     context.metadata_owner = metadata_owner;
     let context = form_project_event_context(context, direct_main_count, definition);
     let mut planner = FormEditEventPlanner::new(context.clone());
@@ -6351,7 +6397,89 @@ enum FormEditElementDefinitionKind {
     AutoCommandBar,
 }
 
+/// Element kinds of the form description that the compiler does not emit.
+const FORM_COMPILE_UNSUPPORTED_ELEMENT_KINDS: [&str; 17] = [
+    "radio",
+    "picture",
+    "picField",
+    "calendar",
+    "columnGroup",
+    "spreadsheet",
+    "formattedDoc",
+    "progressBar",
+    "trackBar",
+    "chart",
+    "ganttChart",
+    "graphicalSchema",
+    "planner",
+    "periodField",
+    "dendrogram",
+    "popup",
+    "buttonGroup",
+];
+
+/// Top-level keys of the form description that the compiler writes.
+const FORM_COMPILE_ROOT_KEYS: [&str; 7] = [
+    "title",
+    "properties",
+    "events",
+    "elements",
+    "attributes",
+    "parameters",
+    "commands",
+];
+
+/// Top-level keys the form description documents but the compiler does not write.
+const FORM_COMPILE_UNSUPPORTED_ROOT_KEYS: [&str; 4] = [
+    "excludedCommands",
+    "mobileCommandBarContent",
+    "commandInterface",
+    "conditionalAppearance",
+];
+
+/// A top-level key the compiler would skip is refused: skipping `elements`
+/// under another name leaves an empty form behind a successful call.
+fn form_compile_validate_root_keys(defn: &Value) -> Result<(), String> {
+    let Some(root) = defn.as_object() else {
+        return Ok(());
+    };
+    for key in root.keys() {
+        if FORM_COMPILE_ROOT_KEYS.contains(&key.as_str()) {
+            continue;
+        }
+        if FORM_COMPILE_UNSUPPORTED_ROOT_KEYS.contains(&key.as_str()) {
+            return Err(format!(
+                "form description key `{key}` is not supported by the form compiler"
+            ));
+        }
+        return Err(format!(
+            "unknown form description key `{key}`; expected one of: {}",
+            FORM_COMPILE_ROOT_KEYS.join(", ")
+        ));
+    }
+    Ok(())
+}
+
 impl FormEditElementDefinitionKind {
+    /// The description key that names the kind.
+    const fn dsl_key(self) -> &'static str {
+        match self {
+            Self::Table => "table",
+            Self::Label => "label",
+            Self::LabelField => "labelField",
+            Self::Button => "button",
+            Self::CommandBar => "cmdBar",
+            Self::Pages => "pages",
+            Self::Page => "page",
+            Self::Group => "group",
+            Self::CheckBox => "check",
+            Self::InputField => "input",
+            Self::HtmlDocumentField => "html",
+            Self::TextDocumentField => "textDoc",
+            Self::AutoCommandBar => "autoCmdBar",
+        }
+    }
+
     fn from_object(object: &Map<String, Value>) -> Result<Self, String> {
         // `commandBar` is also a nested Table property, and `group` is also a
         // Page layout property. Prefer unambiguous primary discriminators before
@@ -6388,6 +6516,16 @@ impl FormEditElementDefinitionKind {
         match primary_candidates.as_slice() {
             [(kind, _label)] => Ok(*kind),
             [] => {
+                // A kind the compiler does not emit would otherwise fall back to an
+                // input field by its `name` and lose every key of its own.
+                if let Some(kind) = FORM_COMPILE_UNSUPPORTED_ELEMENT_KINDS
+                    .iter()
+                    .find(|kind| object.contains_key(**kind))
+                {
+                    return Err(format!(
+                        "form element kind `{kind}` is not supported by the form compiler"
+                    ));
+                }
                 let command_bar =
                     object.contains_key("cmdBar") || object.contains_key("commandBar");
                 let group = object.contains_key("group");
@@ -6572,6 +6710,8 @@ pub fn form_compile_xml(
     if contains_text_document_field(defn) {
         return Err("unknown element key `textDoc`".to_string());
     }
+    form_compile_validate_root_keys(defn)?;
+    description_keys::check_root_item_keys(defn)?;
     if let Some(attributes) = defn.get("attributes").and_then(Value::as_array) {
         form_edit_validate_attribute_columns(attributes)?;
     }
@@ -6587,6 +6727,11 @@ pub fn form_compile_xml(
             main_attribute_provenance: MainAttributeProvenance::Missing,
             main_attribute_name: None,
             metadata_owner: None,
+            // Линия набора записана в самом формате выгрузки, который
+            // компилируется: 2.20 — 8.3.27, дальше линия своего выпуска.
+            platform_line: unica_source_contract::format_identity::export_format_line(
+                format_version,
+            ),
         },
         0,
         defn,
@@ -6692,7 +6837,10 @@ pub fn form_compile_xml(
 
     lines.push("</Form>".to_string());
     Ok((
-        format!("{}\n", lines.join("\n")),
+        unica_source_designer::layout::declare_format_namespaces(
+            format!("{}\n", lines.join("\n")),
+            format_version,
+        ),
         FormCompileStats {
             element_ids: ids.next,
             attributes,
@@ -7352,68 +7500,8 @@ fn form_root_xml_property(
 }
 
 #[cfg(any(test, feature = "test-support"))]
-pub fn form_8_3_27_enum_values_for_test(xml_name: &str) -> Option<&'static [&'static str]> {
-    form_8_3_27_enum_values(xml_name)
-}
-
-fn form_8_3_27_enum_values(xml_name: &str) -> Option<&'static [&'static str]> {
-    match xml_name {
-        "TableRepresentation" => Some(&["List", "HierarchicalList", "Tree"]),
-        "FormChildrenGroup" => Some(&[
-            "Horizontal",
-            "Vertical",
-            "HorizontalIfPossible",
-            "AlwaysHorizontal",
-        ]),
-        "UsualGroupBehavior" => Some(&["Usual", "Collapsible", "PopUp", "Auto"]),
-        "UsualGroupRepresentation" => Some(&[
-            "None",
-            "StrongSeparation",
-            "WeakSeparation",
-            "NormalSeparation",
-            "GroupBox",
-            "Line",
-            "Margin",
-        ]),
-        "PagesRepresentation" => Some(&[
-            "None",
-            "TabsOnTop",
-            "TabsOnBottom",
-            "TabsOnLeftHorizontal",
-            "TabsOnRightHorizontal",
-            "Swipe",
-            "Auto",
-        ]),
-        "CurrentRowUse" => Some(&["Use", "DontUse", "Auto"]),
-        "InitialTreeView" => Some(&["NoExpand", "ExpandTopLevel", "ExpandAllLevels"]),
-        "ChoiceFoldersAndItems" => Some(&["Items", "Folders", "FoldersAndItems"]),
-        "UpdateOnDataChange" => Some(&["Auto", "DontUpdate"]),
-        "CheckBoxType" => Some(&["Auto", "CheckBox", "Tumbler", "Switcher"]),
-        "FormElementTitleLocation" => Some(&["None", "Auto", "Left", "Top", "Right", "Bottom"]),
-        "ManagedFormButtonType" => Some(&[
-            "CommandBarButton",
-            "UsualButton",
-            "Hyperlink",
-            "CommandBarHyperlink",
-        ]),
-        "ButtonRepresentation" => Some(&["Text", "Picture", "PictureAndText", "Auto"]),
-        // `logform:FormCommand.Representation` is `DefaultRepresentation`,
-        // not the button set: 8.3.27 refuses `PictureAndText` on a command.
-        "DefaultRepresentation" => Some(&["Text", "Picture", "TextPicture", "Auto"]),
-        "ButtonLocationInCommandBar" => Some(&[
-            "Auto",
-            "InAdditionalSubmenu",
-            "InCommandBar",
-            "InCommandBarAndInAdditionalSubmenu",
-        ]),
-        // Свойства корня формы: перечисления общей таблицы 8.3.27.
-        _ => unica_forms::root_properties::root_property(xml_name).and_then(|(_, property)| {
-            match property.value {
-                unica_forms::root_properties::RootValue::Choice(choices) => Some(choices),
-                _ => None,
-            }
-        }),
-    }
+pub fn form_enum_values_for_test(xml_name: &str) -> Option<&'static [&'static str]> {
+    crate::dialect::enum_values(xml_name)
 }
 
 fn form_compile_validate_element_properties(defn: &Value) -> Result<(), String> {
@@ -7443,7 +7531,7 @@ fn form_compile_validate_commands(defn: &Value) -> Result<(), String> {
 }
 
 fn form_command_representation_error(name: &str, value: &str) -> String {
-    let allowed = form_8_3_27_enum_values("DefaultRepresentation")
+    let allowed = crate::dialect::enum_values("DefaultRepresentation")
         .expect("form command representation has an 8.3.27 contract");
     format!(
         "Command '{name}': Representation '{value}' is not valid for 8.3.27; expected one of {}",
@@ -7619,7 +7707,7 @@ fn form_compile_validate_element_enum(
     let text = value
         .as_str()
         .ok_or_else(|| format!("form element property {json_name} must be a string"))?;
-    let allowed = form_8_3_27_enum_values(xml_name)
+    let allowed = crate::dialect::enum_values(xml_name)
         .ok_or_else(|| format!("missing 8.3.27 enum contract for {json_name}"))?;
     if !allowed.contains(&text) {
         return Err(format!(
@@ -7642,7 +7730,7 @@ fn form_compile_validate_normalized_element_enum(
     let text = value
         .as_str()
         .ok_or_else(|| format!("form element property {json_name} must be a string"))?;
-    let allowed = form_8_3_27_enum_values(contract_name)
+    let allowed = crate::dialect::enum_values(contract_name)
         .ok_or_else(|| format!("missing 8.3.27 enum contract for {json_name}"))?;
     let normalized = normalize(text);
     if normalized.is_none_or(|value| !allowed.contains(&value)) {
@@ -7746,9 +7834,10 @@ fn emit_form_element_with_context(
     lang: Option<&str>,
 ) -> Result<(), String> {
     let Some(object) = element.as_object() else {
-        return Ok(());
+        return Err("a form element must be an object".to_string());
     };
     let kind = FormEditElementDefinitionKind::from_object(object)?;
+    description_keys::check_element_keys(kind.dsl_key(), kind.name(object)?, object)?;
     form_edit_validate_element_event_payload_types(object, kind, kind.name(object)?)?;
     match kind {
         FormEditElementDefinitionKind::Table => {
@@ -9331,10 +9420,11 @@ pub fn emit_form_dynamic_list_attribute_settings(
     } else {
         "false"
     };
+    // The Designer reads a new dynamic list dynamically: `true` unless set.
     let dynamic_data_read = if settings
         .get("dynamicDataRead")
         .and_then(Value::as_bool)
-        .unwrap_or(false)
+        .unwrap_or(true)
     {
         "true"
     } else {
@@ -9943,6 +10033,7 @@ pub fn validate_form_image(
     form_path: &Path,
     text: &str,
     signatures: HandlerSignatures,
+    platform_line: Option<PlatformLine>,
 ) -> Result<FormValidationRun, String> {
     validate_form_image_inner(
         args,
@@ -9951,6 +10042,7 @@ pub fn validate_form_image(
         form_metadata_owner(form_path),
         (signatures == HandlerSignatures::Check)
             .then(|| HandlerSignatureCheck::new(reader, form_path)),
+        platform_line,
         || form_is_config_context(reader, form_path),
     )
 }
@@ -9960,6 +10052,8 @@ pub struct FormValidationContext<'a> {
     pub config_context: bool,
     pub metadata_owner: Option<unica_address::address::NodeKind>,
     pub module: Option<&'a str>,
+    /// Линия набора: по ней выбирается каталог возможных событий.
+    pub platform_line: Option<PlatformLine>,
 }
 
 /// Проверяет сохранённые исходники; путь служит только для имени результата.
@@ -9978,6 +10072,7 @@ pub fn validate_form_image_with_context(
             context.module,
             context.metadata_owner,
         )),
+        context.platform_line,
         || context.config_context,
     )
 }
@@ -9988,6 +10083,7 @@ fn validate_form_image_inner(
     text: &str,
     metadata_owner: Option<unica_address::address::NodeKind>,
     signature_check: Option<HandlerSignatureCheck<'_>>,
+    platform_line: Option<PlatformLine>,
     config_context: impl FnOnce() -> bool,
 ) -> Result<FormValidationRun, String> {
     let form_path = form_path.to_path_buf();
@@ -10023,10 +10119,10 @@ fn validate_form_image_inner(
 
     let has_base_form = form_validation_child(root, "BaseForm").is_some();
     let version_literal = root_version_literal(source, root);
-    match classify_root_version(version_literal.as_deref()) {
-        Ok(FormatCompatibility::Supported { .. }) => report.ok("Export format: 2.20"),
-        Ok(compatibility) => report.warn(format_compatibility_warning(&compatibility)),
-        Err(error) => report.error(error.to_string()),
+    match root_version::report(version_literal.as_deref()) {
+        RootVersionReport::Ok(line) => report.ok(line),
+        RootVersionReport::Warn(line) => report.warn(line),
+        RootVersionReport::Error(line) => report.error(line),
     }
 
     if !report.stopped {
@@ -10173,7 +10269,7 @@ fn validate_form_image_inner(
         if let Some(element) = form_validation_child(*cmd, "Representation") {
             let representation = form_ml_text(element);
             let representation = representation.trim();
-            if form_8_3_27_enum_values("DefaultRepresentation")
+            if crate::dialect::enum_values("DefaultRepresentation")
                 .is_some_and(|allowed| !allowed.contains(&representation))
             {
                 report.error(form_command_representation_error(cmd_name, representation));
@@ -10206,7 +10302,13 @@ fn validate_form_image_inner(
         form_validate_button_commands(&elements, &cmd_map, &mut report);
     }
     if !report.stopped {
-        form_validate_events(root, signature_check, metadata_owner, &mut report);
+        form_validate_events(
+            root,
+            signature_check,
+            metadata_owner,
+            platform_line,
+            &mut report,
+        );
     }
     if !report.stopped {
         form_validate_command_actions(&cmd_nodes, &mut report);
@@ -10450,5 +10552,103 @@ pub fn form_validation_require_valid(
             Err(format!("form validation failed: {details}"))
         }
         Err(error) => Err(format!("form validation failed: {error}")),
+    }
+}
+
+#[cfg(test)]
+mod export_format_descriptor_tests {
+    const MD: &str = "http://v8.1c.ru/8.3/MDClasses";
+
+    fn document(xml: &str) -> roxmltree::Document<'_> {
+        roxmltree::Document::parse(xml.trim_start_matches('\u{feff}')).unwrap()
+    }
+
+    /// The root declarations and the property names of a form descriptor.
+    fn shape(xml: &str) -> (Vec<(Option<String>, String)>, Vec<String>) {
+        let document = document(xml);
+        let root = document.root_element();
+        let mut declared: Vec<_> = root
+            .namespaces()
+            .map(|namespace| {
+                (
+                    namespace.name().map(str::to_owned),
+                    namespace.uri().to_owned(),
+                )
+            })
+            .collect();
+        declared.sort();
+        let properties = root
+            .descendants()
+            .find(|node| node.has_tag_name((MD, "Properties")))
+            .unwrap()
+            .children()
+            .filter(|node| node.is_element())
+            .map(|node| node.tag_name().name().to_owned())
+            .collect();
+        (declared, properties)
+    }
+
+    /// rule: INV.SOURCE.WRITABLE-PROFILE
+    #[test]
+    fn a_new_form_descriptor_has_the_shape_of_its_set_format() {
+        for (version, corpus) in [
+            (
+                "2.20",
+                include_str!("../../../tests/fixtures/formats/platform_xml/2.20/all_kinds/src/DataProcessors/Обработка/Forms/Форма.xml"),
+            ),
+            (
+                "2.21",
+                include_str!("../../../tests/fixtures/formats/platform_xml/2.21/all_kinds/src/DataProcessors/Обработка/Forms/Форма.xml"),
+            ),
+            (
+                "2.22",
+                include_str!("../../../tests/fixtures/formats/platform_xml/2.22/all_kinds/src/DataProcessors/Обработка/Forms/Форма.xml"),
+            ),
+        ] {
+            let written = super::form_add_metadata_xml(
+                "Форма",
+                "Форма",
+                "DataProcessor",
+                version,
+                "00000000-0000-4000-8000-000000000003",
+                "ru",
+            );
+            assert_eq!(shape(&written), shape(corpus), "{version}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod export_format_content_tests {
+    /// The start tag of the `Form` root, as written.
+    fn root(xml: &str) -> &str {
+        let start = xml.find("<Form ").unwrap();
+        &xml[start..start + xml[start..].find('>').unwrap()]
+    }
+
+    /// rule: INV.SOURCE.WRITABLE-PROFILE
+    #[test]
+    fn a_new_form_content_declares_the_namespaces_of_its_set_format() {
+        for (version, corpus) in [
+            (
+                "2.20",
+                include_str!("../../../tests/fixtures/formats/platform_xml/2.20/all_kinds/src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml"),
+            ),
+            (
+                "2.21",
+                include_str!("../../../tests/fixtures/formats/platform_xml/2.21/all_kinds/src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml"),
+            ),
+            (
+                "2.22",
+                include_str!("../../../tests/fixtures/formats/platform_xml/2.22/all_kinds/src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml"),
+            ),
+        ] {
+            let added = super::form_add_content_xml("Catalog", "Валюты", "Item", version).unwrap();
+            assert_eq!(root(&added), root(corpus), "{version}");
+            let borrowed = super::borrowed_form_content_xml(version);
+            assert_eq!(root(&borrowed), root(corpus), "{version}");
+            let (compiled, _) = super::form_compile_xml(&serde_json::json!({}), version).unwrap();
+            assert_eq!(root(&compiled), root(corpus), "{version}");
+        }
     }
 }

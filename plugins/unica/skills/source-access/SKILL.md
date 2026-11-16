@@ -224,11 +224,17 @@ allowed-tools:
 Это не адреса новых узлов: используй только возвращённые `at`.
 Порядок групп и команд читается отдельно через `Group`.
 
-Поддержка поставщика приходит в `props.support` объекта — читай её перед любой
-правкой объекта на замке и решай через release-support, а не правкой напрямую.
-Значения: `locked`, `editableWithSupport`, `removedFromSupport`,
-`configurationReadOnly`, `notSupported`. Элемент коллекции несёт то же поле,
-если объект не `notSupported`, — замки видны без чтения каждого объекта.
+Возможность правки по поддержке поставщика приходит в `props.support` каждого
+узла объекта — корня, объекта, его подчинённых, модулей и методов, в том числе
+общего модуля: `editable`, причина `reason` и политика проекта `policy`
+(`deny`, `warn`, `off`). Причина — одно из `notSupported`,
+`editableWithSupport`, `removedFromSupport`, `locked`, `configurationReadOnly`,
+`extension`, `unknown`. Узел со своей записью поддержки (объект, форма)
+называет и своё правило в `rule`. При `editable: false` не правь напрямую, а
+решай через release-support: записи `can`, которые `apply` так не примет,
+помечены `blocked` с причиной; `supportCapability.set` и `supportRule.set`
+не помечаются. Элемент коллекции объектов несёт `support` — ту же причину,
+кроме `notSupported`, — замки видны без чтения каждого объекта.
 
 ## Страницы
 

@@ -19,7 +19,6 @@ use std::io::{self, Write};
 // problem: неизвестно
 // on-reach: текст обрезается по границе символа с маркером «[truncated; full diagnostics are in structuredContent]»; полные данные остаются в structuredContent
 // decision: закреплено правилом
-// decision-date: 2026-10-03
 // decision-source: arch/rules/mcp/native-task-projection.md
 pub const MAX_ERROR_DIAGNOSTIC_TEXT_BYTES: usize = 4_096;
 pub const ERROR_TEXT_TRUNCATED: &str = "\n[truncated; full diagnostics are in structuredContent]";

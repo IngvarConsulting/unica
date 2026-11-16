@@ -182,25 +182,6 @@ class RefreshFixture:
             json.dumps(baseline, indent=2) + "\n",
             encoding="utf-8",
         )
-        relation = {
-            "caseId": self.case_id,
-            "relation": "exact",
-            "contentDigest": contract.case_content_digest(
-                self.snapshot, self.case_id
-            ),
-        }
-        (self.fixtures_root / "donor-relations.json").write_text(
-            json.dumps(
-                {
-                    "schemaVersion": 1,
-                    "upstreamId": "cc-1c-skills",
-                    "relations": {self.case_id: relation},
-                },
-                indent=2,
-            )
-            + "\n",
-            encoding="utf-8",
-        )
 
     def provenance(self, commit: str) -> dict:
         entries = [
@@ -463,18 +444,7 @@ class RefreshCc1cParityTests(unittest.TestCase):
         )
         self.assertEqual(accepted["scopes"], baseline["scopes"])
 
-    def test_prepare_carries_only_unchanged_content_relations(self) -> None:
-        fixture = self.fixture()
-        target = fixture.change_unrelated()
-
-        result = fixture.prepare(target)
-
-        self.assertEqual(result.returncode, 0, result.stderr)
-        review = fixture.load_review()
-        self.assertEqual(review["carriedRelations"], [fixture.case_id])
-        self.assertEqual(review["needsReview"], [])
-
-    def test_prepare_invalidates_relation_when_script_changes(self) -> None:
+    def test_prepare_marks_a_case_changed_when_its_script_changes(self) -> None:
         fixture = self.fixture()
         target = fixture.change_script()
 
@@ -482,9 +452,8 @@ class RefreshCc1cParityTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         review = fixture.load_review()
-        self.assertEqual(review["carriedRelations"], [])
-        self.assertEqual(review["needsReview"], [fixture.case_id])
         self.assertEqual(review["changedCases"], [fixture.case_id])
+        self.assertEqual(review["unchangedCases"], [])
 
     def test_prepare_is_dry_and_rejects_unknown_selected_skill(self) -> None:
         fixture = self.fixture()
@@ -515,7 +484,7 @@ class RefreshCc1cParityTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         review = fixture.load_review()
         self.assertEqual(review["removedCases"], [fixture.case_id])
-        self.assertEqual(review["needsReview"], [fixture.case_id])
+        self.assertEqual(review["reviewStatus"], "needs-review")
 
     def test_apply_rejects_unresolved_review(self) -> None:
         fixture = self.fixture()
@@ -525,7 +494,7 @@ class RefreshCc1cParityTests(unittest.TestCase):
         result = fixture.apply()
 
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("unresolved donor relations", result.stderr)
+        self.assertIn("unreviewed donor refresh", result.stderr)
 
     def test_apply_rejects_target_that_moved_after_review(self) -> None:
         fixture = self.fixture()
@@ -542,26 +511,12 @@ class RefreshCc1cParityTests(unittest.TestCase):
         self.assertIn("target ref moved", result.stderr)
         self.assertNotEqual(target, fixture._git("rev-parse", "main"))
 
-    def test_apply_updates_snapshot_manifest_provenance_relations_and_review(self) -> None:
+    def test_apply_updates_snapshot_manifest_provenance_and_review(self) -> None:
         fixture = self.fixture()
         target = fixture.change_script()
         before = fixture.snapshot_digest()
         self.assertEqual(fixture.prepare(target).returncode, 0)
         review = fixture.load_review()
-        candidate_snapshot = (
-            fixture.repo_root / review["candidatePath"] / "cc-1c-skills"
-        )
-        relation = {
-            "caseId": fixture.case_id,
-            "relation": "exact",
-            "contentDigest": contract.case_content_digest(
-                candidate_snapshot, fixture.case_id
-            ),
-        }
-        review["caseDecisions"][fixture.case_id] = {
-            "status": "reviewed",
-            "relation": relation,
-        }
         review["reviewStatus"] = "reviewed"
         fixture.write_review(review)
 
@@ -573,17 +528,8 @@ class RefreshCc1cParityTests(unittest.TestCase):
             fixture.fixtures_root / "donor-baseline.json"
         )
         provenance = contract.load_json(fixture.provenance_path)
-        relations = contract.load_json(
-            fixture.fixtures_root / "donor-relations.json"
-        )
         self.assertEqual(
             contract.validate_baseline(fixture.snapshot, baseline, provenance),
-            [],
-        )
-        self.assertEqual(
-            contract.validate_relations(
-                fixture.repo_root, fixture.snapshot, relations
-            ),
             [],
         )
         self.assertEqual(

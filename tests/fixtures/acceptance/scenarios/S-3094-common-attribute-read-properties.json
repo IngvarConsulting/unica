@@ -1,0 +1,89 @@
+{
+  "id": "S-3094-common-attribute-read-properties",
+  "issue": 3094,
+  "area": "Чтение общего реквизита",
+  "workspace": "tests/fixtures/acceptance/workspace-common-attribute-read",
+  "task": "Прочитать из XML общего реквизита флаги индексирования, истории и ввода без изменения исходников. Дескриптор Probe взят без изменений из платформенного корпуса XML 2.20 all_kinds.",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonAttribute"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "descriptor": {
+          "file": "src/CommonAttributes/Probe.xml",
+          "kind": "sha256"
+        },
+        "configuration": {
+          "file": "src/Configuration.xml",
+          "kind": "sha256"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:CommonAttribute.Probe"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonAttribute.Probe"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Indexing",
+          "eq": "DontIndex"
+        },
+        {
+          "pointer": "/data/props/FullTextSearch",
+          "eq": "Use"
+        },
+        {
+          "pointer": "/data/props/DataHistory",
+          "eq": "Use"
+        },
+        {
+          "pointer": "/data/props/FillFromFillingValue",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/FillChecking",
+          "eq": "DontCheck"
+        },
+        {
+          "pointer": "/data/props/QuickChoice",
+          "eq": "Auto"
+        },
+        {
+          "pointer": "/data/props/CreateOnInput",
+          "eq": "Auto"
+        },
+        {
+          "pointer": "/data/props/ChoiceHistoryOnInput",
+          "eq": "Auto"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonAttributes/Probe.xml",
+          "kind": "sha256",
+          "eq": "$capture.descriptor"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.configuration"
+        }
+      ]
+    }
+  ]
+}

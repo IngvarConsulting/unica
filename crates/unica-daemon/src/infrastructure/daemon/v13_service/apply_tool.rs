@@ -56,7 +56,12 @@ impl CanonicalV13ReadService {
             );
         }
         let source_sets = invocation.admitted_source_set_names();
-        let mut planning_arguments = invocation.arguments().clone();
+        // A person's answer to the question about a vendor-support lock comes
+        // back as the same call with the door's confirmation mark.
+        let call =
+            unica_execution_contract::invocation::without_confirmation(invocation.arguments());
+        let answered = call.len() != invocation.arguments().len();
+        let mut planning_arguments = call.clone();
         planning_arguments.insert("dryRun".into(), json!(true));
         let request = match parse_apply_request(&planning_arguments, &source_sets) {
             Ok(request) => request,
@@ -160,7 +165,94 @@ impl CanonicalV13ReadService {
                 )
             }),
         );
-        let (staged, mut effects) = match plan_hidden_v13_apply(&request, &binding, &admission) {
+        // Each refusal the person answered is lifted in the same plan; the
+        // next one asks its own question, and the call keeps every answer.
+        use crate::infrastructure::native_operations::apply_families as families;
+        let source_set = request.at().source_set().to_string();
+        let mut mode_raise: Option<(
+            unica_source_contract::proposal::ReadOnlyMode,
+            crate::domain::apply::ApplyRequest,
+        )> = None;
+        let mut support: Vec<(
+            unica_source_contract::proposal::SupportLock,
+            Vec<crate::domain::apply::ApplyOp>,
+        )> = Vec::new();
+        let mut remove_support = false;
+        let planned = loop {
+            let planned = families::plan_hidden_v13_apply_with_person_choices(
+                &request,
+                &binding,
+                &admission,
+                families::PersonChosenChanges {
+                    mode_raise: mode_raise.as_ref().map(|(read_only, request)| {
+                        families::PersonChosenModeRaise { read_only, request }
+                    }),
+                    support: support
+                        .iter()
+                        .map(|(lock, operations)| families::PersonChosenSupportChange {
+                            lock,
+                            operations,
+                        })
+                        .collect(),
+                    remove_support,
+                },
+            );
+            let Err(error) = &planned else {
+                break planned;
+            };
+            if !answered {
+                break planned;
+            }
+            if let Some(read_only) = error.read_only_mode().filter(|_| mode_raise.is_none()) {
+                if support_choice::mode_raise_chosen(read_only, &source_set, invocation.arguments())
+                {
+                    let raise = support_choice::mode_raise_request(read_only, &source_set);
+                    match parse_apply_request(&raise, &source_sets) {
+                        Ok(raise) => mode_raise = Some((read_only.clone(), raise)),
+                        Err(error) => {
+                            return error_result(
+                                Some(error.location().to_string()),
+                                error.code(),
+                                error.to_string(),
+                            )
+                        }
+                    }
+                    continue;
+                }
+            }
+            if error.support_state_unreadable()
+                && !remove_support
+                && support_choice::remove_support_chosen(&source_set, invocation.arguments())
+            {
+                remove_support = true;
+                continue;
+            }
+            // Each lock is lifted once; a lock the answers leave asks anew.
+            if let Some(lock) = error
+                .support_lock()
+                .filter(|lock| support.iter().all(|(lifted, _)| lifted != *lock))
+            {
+                if let Some(answer) = support_choice::chosen_answer(lock, invocation.arguments()) {
+                    let mut operations = Vec::new();
+                    for change in support_choice::support_requests(lock, &answer) {
+                        match parse_apply_request(&change, &source_sets) {
+                            Ok(change) => operations.extend(change.ops().iter().cloned()),
+                            Err(error) => {
+                                return error_result(
+                                    Some(error.location().to_string()),
+                                    error.code(),
+                                    error.to_string(),
+                                )
+                            }
+                        }
+                    }
+                    support.push((lock.clone(), operations));
+                    continue;
+                }
+            }
+            break planned;
+        };
+        let (staged, mut effects) = match planned {
             Err(error)
                 if error.kind() == ApplyPlanErrorKind::ProviderUnavailable
                     && error.to_string().contains("not implemented") =>
@@ -179,7 +271,31 @@ impl CanonicalV13ReadService {
                     )
                 };
                 let refusal = with_missing_target_parent(refusal, &request, &error, &node_exists);
-                return with_unknown_argument_contract(refusal, &request, traits);
+                let refusal = with_unknown_argument_contract(refusal, &request, traits);
+                let mut refusal =
+                    with_argument_dictionary(refusal, &request, &error, traits, &node_exists);
+                // The question carries the answers the person already gave
+                // about this call, so the plan comes out once, with all of them.
+                let choice = match (error.read_only_mode(), error.support_lock()) {
+                    (Some(read_only), _) => Some(support_choice::mode_choice(
+                        read_only,
+                        &source_set,
+                        invocation.arguments(),
+                    )),
+                    (None, Some(lock)) => {
+                        support_choice::support_choice(lock, invocation.arguments())
+                    }
+                    (None, None) if error.support_state_unreadable() => Some(
+                        support_choice::remove_support_choice(&source_set, invocation.arguments()),
+                    ),
+                    (None, None) => error.format_reexport().map(|reexport| {
+                        support_choice::format_choice(reexport, invocation.arguments())
+                    }),
+                };
+                if let Some(choice) = choice {
+                    refusal.human_choice = Some(Box::new(choice));
+                }
+                return refusal;
             }
             Ok(planned) => planned,
         };
@@ -434,6 +550,62 @@ fn schema_branches(schema: &Value) -> Vec<&Value> {
         }
     }
     levels
+}
+
+/// Enum errors may need the full domain after a bounded preview. Keep
+/// a planner's more specific continuation and never point to an unknown node.
+pub(in crate::infrastructure::daemon) fn with_argument_dictionary(
+    result: DomainResult,
+    request: &crate::domain::apply::ApplyRequest,
+    error: &unica_source_contract::proposal::ApplyPlanError,
+    source: unica_source_contract::context::SourceSetTraits,
+    node_exists: &dyn Fn(&QualifiedAddress) -> Option<bool>,
+) -> DomainResult {
+    if error.kind() != ApplyPlanErrorKind::BadValue || !result.next.is_empty() {
+        return result;
+    }
+    let Some((index, tail)) = error.path().and_then(|path| {
+        let rest = path.strip_prefix("ops[")?;
+        let (index, tail) = rest.split_once(']')?;
+        Some((index.parse::<usize>().ok()?, tail))
+    }) else {
+        return result;
+    };
+    if tail != ".args" && !tail.starts_with(".args.") && !tail.starts_with(".args[") {
+        return result;
+    }
+    let Some(operation) = request.ops().get(index) else {
+        return result;
+    };
+    let Some(site) = crate::domain::apply::operation_site(operation.at(), source) else {
+        return result;
+    };
+    let Some(descriptor) =
+        crate::domain::apply::operation_registry().lookup_at(operation.name(), &site)
+    else {
+        return result;
+    };
+    let Some(contract) = descriptor.argument_contract_at(&site) else {
+        return result;
+    };
+    // Reuse the schema at the addressed node to distinguish enum failures
+    // from other bad values, such as a duplicate member name.
+    let cause = contract.normalize(
+        &Value::Object(operation.args().clone()),
+        &format!("ops[{index}].args"),
+    );
+    if !cause.is_err_and(|cause| cause.enum_value && Some(cause.path.as_str()) == error.path())
+        || node_exists(operation.at()) != Some(true)
+    {
+        return result;
+    }
+    let mut result = result;
+    result.next.push(json!({
+        "tool":"unica.view",
+        "args":{"at":format!("{}.Can.{}", operation.at(), operation.name())},
+        "reason":"полный контракт аргументов операции",
+    }));
+    result
 }
 
 #[cfg(test)]

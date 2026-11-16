@@ -691,6 +691,8 @@ pub(super) fn project_configuration_with_counts(
             "format",
             "name",
             "synonym",
+            "caption",
+            "shortCaption",
             "version",
             "vendor",
             "extensionPurpose",
@@ -730,7 +732,23 @@ pub(super) fn project_configuration_with_counts(
             _ => {}
         }
     }
-    let branches = root_branches(address, counts);
+    if let Some(roles) = props
+        .get_mut("properties")
+        .and_then(|properties| properties.get_mut("defaultRoles"))
+        .and_then(Value::as_array_mut)
+    {
+        for role in roles {
+            if let Some(reference) = role.as_str() {
+                *role = Value::String(format!("{}:{reference}", address.source_set()));
+            }
+        }
+    }
+    // Вид, которого нет в линии платформы набора, пустой ветви не получает.
+    let line = payload
+        .get("format")
+        .and_then(Value::as_str)
+        .and_then(unica_source_contract::format_identity::export_format_line);
+    let branches = root_branches(address, counts, line);
     Ok(NodeViewData::Node(
         NodeView::new(
             address.to_string(),
@@ -768,6 +786,9 @@ const CONFIGURATOR_ROOT_ORDER: &[NodeKind] = &[
     NodeKind::FilterCriterion,
     NodeKind::EventSubscription,
     NodeKind::ScheduledJob,
+    // Очереди: дерево Конфигуратора 8.5.4, между регламентными
+    // заданиями и ботами.
+    NodeKind::Queue,
     NodeKind::Bot,
     NodeKind::FunctionalOption,
     NodeKind::FunctionalOptionsParameter,
@@ -784,6 +805,9 @@ const CONFIGURATOR_ROOT_ORDER: &[NodeKind] = &[
     NodeKind::WsReference,
     NodeKind::WebSocketClient,
     NodeKind::IntegrationService,
+    // Цвета палитры: дерево Конфигуратора 8.5.4, между сервисами интеграции
+    // и элементами стиля.
+    NodeKind::PaletteColor,
     NodeKind::StyleItem,
     NodeKind::Style,
     NodeKind::Language,
@@ -811,9 +835,12 @@ const CONFIGURATOR_ROOT_ORDER: &[NodeKind] = &[
 /// в корне, в порядке дерева Конфигуратора, в том числе пустой (`count: 0`),
 /// чтобы «пусто» отличалось от «вид не поддержан» (#2153). Вид вне этого
 /// порядка идёт следом; зарегистрированный вне профиля сохраняет ветвь.
+/// Вид, который добавляет более поздняя линия, чем `line` набора, пустым
+/// не выдаётся.
 fn root_branches(
     address: &QualifiedAddress,
     mut counts: std::collections::BTreeMap<String, usize>,
+    line: Option<unica_source_contract::format_identity::PlatformLine>,
 ) -> Vec<BranchRef> {
     let source_set = address.source_set();
     // Корень внешней обработки или отчёта — опись своих владельцев: видов
@@ -835,14 +862,15 @@ fn root_branches(
         let kind = kind.as_str();
         let count = counts.remove(kind).unwrap_or(0);
         let at = format!("{source_set}:{kind}");
-        let admitted = QualifiedAddress::parse(&at).is_ok_and(|branch| {
-            is_root_branch_kind(&branch)
-                && crate::infrastructure::logical_tree::route_logical_address(
-                    &branch,
-                    unica_bsl::profile::PlatformProfile::v8_3_27(),
-                )
-                .is_ok()
-        });
+        let admitted = unica_source_contract::format_identity::metadata_kind_exists(line, kind)
+            && QualifiedAddress::parse(&at).is_ok_and(|branch| {
+                is_root_branch_kind(&branch)
+                    && crate::infrastructure::logical_tree::route_logical_address(
+                        &branch,
+                        unica_bsl::profile::PlatformProfile::for_line_or_base(line),
+                    )
+                    .is_ok()
+            });
         if count > 0 || admitted {
             branches.push(BranchRef::new(at, count));
         }
@@ -909,8 +937,9 @@ pub(super) fn project_registered_metadata_branch_names(
     )
 }
 
-/// Член коллекции несёт `props.support` только в состоянии, отличном от «не на
-/// поддержке»: замок в дереве виден без чтения каждого объекта (#2158).
+/// Член коллекции несёт `support` только в состоянии, отличном от «не на
+/// поддержке»: замок в дереве виден без чтения каждого объекта (#2158, #2877).
+/// Это состояние по правилу поставщика, без учёта политики проекта.
 fn project_registered_metadata_branch_names_inner<'a>(
     address: &QualifiedAddress,
     kind: NodeKind,
@@ -919,18 +948,17 @@ fn project_registered_metadata_branch_names_inner<'a>(
 ) -> Result<NodeViewData, ViewError> {
     let items = names
         .map(|name| {
-            let props = support
-                .states
-                .remove(name)
-                .map(|state| Map::from_iter([("support".to_string(), state)]))
-                .unwrap_or_default();
-            serde_json::to_value(NodeView::new(
+            let mut item = serde_json::to_value(NodeView::new(
                 member_address(address, name),
                 kind.as_str(),
                 name,
-                props,
+                Map::new(),
             ))
-            .expect("NodeView always serializes")
+            .expect("NodeView always serializes");
+            if let Some(state) = support.states.remove(name) {
+                item["support"] = state;
+            }
+            item
         })
         .collect();
     Ok(NodeViewData::Collection(CollectionView::new(
@@ -957,6 +985,8 @@ fn validate_reader_payload(reader: LogicalReader, payload: &Value) -> Result<(),
             "format",
             "name",
             "synonym",
+            "caption",
+            "shortCaption",
             "version",
             "vendor",
             "extensionPurpose",
@@ -974,6 +1004,8 @@ fn validate_reader_payload(reader: LogicalReader, payload: &Value) -> Result<(),
         LogicalReader::Role => &[
             "name",
             "synonym",
+            "comment",
+            "commentError",
             "support",
             "defaults",
             "allowed",
@@ -987,6 +1019,7 @@ fn validate_reader_payload(reader: LogicalReader, payload: &Value) -> Result<(),
             "name",
             "synonym",
             "comment",
+            "includeHelpInContents",
             "explanation",
             "picture",
             "includeInCommandInterface",
@@ -1022,6 +1055,8 @@ fn validate_reader_payload(reader: LogicalReader, payload: &Value) -> Result<(),
             "drawingCount",
         ],
         LogicalReader::Xdto => &[
+            "Synonym",
+            "synonymError",
             "Comment",
             "commentError",
             "sourceSet",
@@ -1634,6 +1669,20 @@ fn project_xdto(
             payload,
         );
         let mut limits = Vec::new();
+        if let Some(synonym) = payload.get("Synonym") {
+            place_prop(
+                &mut props,
+                &mut limits,
+                address,
+                "Synonym",
+                synonym,
+                false,
+                "metadata synonym",
+            );
+        }
+        if let Some(message) = payload.get("synonymError").and_then(Value::as_str) {
+            limits.push(format!("Synonym: {message}"));
+        }
         if let Some(comment) = payload.get("Comment") {
             place_prop(
                 &mut props,
@@ -2100,6 +2149,7 @@ fn observed_value(value: &Value) -> Option<Value> {
 const SUBSYSTEM_PLATFORM_PROPS: &[(&str, &str)] = &[
     ("synonym", "Synonym"),
     ("comment", "Comment"),
+    ("includeHelpInContents", "IncludeHelpInContents"),
     ("explanation", "Explanation"),
     ("picture", "Picture"),
     ("includeInCommandInterface", "IncludeInCommandInterface"),

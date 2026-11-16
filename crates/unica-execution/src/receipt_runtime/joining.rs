@@ -71,7 +71,6 @@ pub(super) const MAX_JOINED_HOLDERS: usize = 1024;
 // problem: Ошибка потерянного ответа доходит до агента примерно через 8 с; около четырёх таких окон хватает на повтор, а старый результат не выдаётся за свежий надолго.
 // on-reach: одинаковое чтение начинает свой обход
 // decision: закреплено правилом
-// decision-date: 2026-10-12
 // decision-source: arch/rules/runtime/read-call-joining.md
 pub(super) const JOIN_WINDOW: Duration = Duration::from_secs(30);
 
@@ -778,7 +777,6 @@ impl ReceiptHandles {
 // problem: Резерв квитанции ограничен бюджетом вызова до 7 с; десять минут перекрывают его с запасом (комментарий в joining.rs).
 // on-reach: преграда истекает; опоздавший кадр больше не останавливается
 // decision: закреплено правилом INV.WIRE.LOST-SUBMIT-TASK-ID
-// decision-date: 2026-10-12
 // decision-source: arch/rules/mcp/lost-submit-refusal.md
 pub(super) const SUBMIT_FENCE_RETENTION: Duration = Duration::from_secs(600);
 /// Сколько преград демон держит одновременно. Сверх этого преграда не

@@ -158,7 +158,9 @@ struct OwnerEdgeCacheKey {
 }
 
 mod diagnostic_scope;
+mod editability_view;
 mod form_payload;
+mod method_doc;
 mod module_body_read;
 mod typed_payload_read;
 mod validation_input;
@@ -198,12 +200,11 @@ impl<'a> LogicalViewReadAuthority<'a> {
         profile: PlatformProfile,
         deadline: ProviderDeadline,
     ) -> Self {
-        Self::with_read_authority_and_registration_cache(
+        Self::over_artifacts(
             cancellation,
-            read,
+            read.with_artifacts(Arc::new(RegistrationCache::default())),
             profile,
             deadline,
-            Arc::new(RegistrationCache::default()),
         )
     }
 
@@ -214,9 +215,23 @@ impl<'a> LogicalViewReadAuthority<'a> {
         deadline: ProviderDeadline,
         registration_cache: Arc<RegistrationCache>,
     ) -> Self {
+        let read = read.with_artifacts(registration_cache);
+        // The actor's retained artifacts: the first read of the set starts
+        // proving its top-level descriptors in the background, so a branch
+        // opened next finds them retained.
+        read.start_owner_warmup();
+        Self::over_artifacts(cancellation, read, profile, deadline)
+    }
+
+    fn over_artifacts(
+        cancellation: &'a CancellationToken,
+        read: ProviderReadAuthority,
+        profile: PlatformProfile,
+        deadline: ProviderDeadline,
+    ) -> Self {
         Self {
             cancellation,
-            read: read.with_artifacts(registration_cache),
+            read,
             profile,
             deadline,
             module_projections: Mutex::new(BTreeMap::new()),
@@ -623,6 +638,9 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
                 SourceSetKind::Configuration | SourceSetKind::Extension
             ) && self.read.configuration_xml_requires_streaming()
             {
+                // The branch proves every member: their stamps come from one
+                // pass over the kind directory.
+                self.read.stamp_descriptors_by_directory();
                 let index = self.streamed_configuration_registration_index(admitted)?;
                 let names =
                     index.names_for_kind(branch_kind.as_str(), &|| self.read_checkpoint())?;
@@ -650,6 +668,7 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
                     support,
                 )?
             } else {
+                self.read.stamp_descriptors_by_directory();
                 let payload = self.configuration_payload(admitted)?;
                 if branch_kind != NodeKind::WebSocketClient {
                     for item in payload
@@ -1721,6 +1740,9 @@ fn method_node(method: &MethodProjection) -> NodeView {
     ]);
     if let Some(doc) = &method.doc {
         props.insert("doc".to_string(), json!(doc));
+        // Поля комментария идут рядом с его текстом, а не вместо него:
+        // нестандартный комментарий доходит без потерь.
+        props.insert("docFields".to_string(), method_doc::doc_fields(doc));
     }
     if !method.handles.is_empty() {
         props.insert("handles".to_string(), json!(method.handles));

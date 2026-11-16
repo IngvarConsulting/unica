@@ -1,4 +1,5 @@
 //! Existing configuration Designer algorithms; publication stays with trusted composition.
+use crate::dialect::root_version::{self, RootVersionReport};
 use roxmltree::Document;
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, HashSet};
@@ -8,9 +9,6 @@ use unica_metadata::support_state::ConfigurationSupportData;
 use unica_metadata::MetadataKind;
 use unica_source_contract::discovery::ProjectDiscoveryRead;
 use unica_source_designer::configuration_layout::*;
-use unica_source_designer::format_profile::{
-    classify_root_version, FormatCompatibility, ACTIVE_FORMAT_PROFILE,
-};
 use unica_source_designer::layout::metadata_kind;
 use unica_source_designer::read::{path_exists, path_is_dir, read_string, read_utf8_sig};
 use unica_source_designer::roots::root_version_literal;
@@ -185,11 +183,14 @@ pub fn parse_cf_info_xml(
         format: version.to_string(),
         name: cf_prop_text(props, "Name"),
         synonym: optional(cf_prop_ml(props, "Synonym")),
+        caption: optional(cf_prop_ml(props, "Caption")),
+        short_caption: optional(cf_prop_ml(props, "ShortCaption")),
         version: optional(cf_prop_text(props, "Version")),
         vendor: optional(cf_prop_text(props, "Vendor")),
         support,
         extension_purpose,
         properties: CfInfoProperties {
+            purpose: read_cf_purpose_properties(props)?,
             compatibility_mode: optional(cf_prop_text(props, "CompatibilityMode")),
             default_run_mode: optional(cf_prop_text(props, "DefaultRunMode")),
             script_variant: optional(cf_prop_text(props, "ScriptVariant")),
@@ -214,9 +215,50 @@ pub fn parse_cf_info_xml(
                 "DatabaseTablespacesUseMode",
             )),
             main_window_mode: optional(cf_prop_text(props, "MainClientApplicationWindowMode")),
+            main_window_interface_variant: optional(cf_prop_text(
+                props,
+                "MainClientApplicationWindowInterfaceVariant",
+            )),
+            client_application_theme: optional(cf_prop_text(props, "ClientApplicationTheme")),
+            windows_open_variant: optional(cf_prop_text(
+                props,
+                "ClientApplicationWindowsOpenVariant",
+            )),
+            version85_interface_migration_mode: optional(cf_prop_text(
+                props,
+                "Version85InterfaceMigrationMode",
+            )),
+            action_on_configuration_object_missing: optional(cf_prop_text(
+                props,
+                "ActionOnConfigurationObjectMissing",
+            )),
+            default_extension_property_check_action: optional(cf_prop_text(
+                props,
+                "DefaultExtensionPropertyCheckAction",
+            )),
+            type_reduction_by_configuration_extension_mode: optional(cf_prop_text(
+                props,
+                "TypeReductionByConfigurationExtensionMode",
+            )),
+            action_on_extended_configuration_objects_missing: cf_prop_parts(
+                props,
+                "ActionOnExtendedConfigurationObjectsMissing",
+            ),
             comment: optional(cf_prop_text(props, "Comment")),
             name_prefix: optional(cf_prop_text(props, "NamePrefix")),
             update_catalog_address: optional(cf_prop_text(props, "UpdateCatalogAddress")),
+            forms: unica_metadata::configuration::root_form_slots(|name| {
+                props
+                    .children()
+                    .find(|node| {
+                        unica_xml_format::names::element_has_name(
+                            *node,
+                            name,
+                            Some("http://v8.1c.ru/8.3/MDClasses"),
+                        )
+                    })
+                    .map(|node| node.text().unwrap_or_default())
+            }),
         },
         child_objects: counts
             .into_iter()
@@ -231,6 +273,204 @@ pub fn parse_cf_info_xml(
         data,
         registered_objects,
     })
+}
+
+/// The four purpose properties share the same strict reader in DOM and streamed roots.
+pub fn read_cf_purpose_properties_xml(xml: &str) -> Result<CfPurposeProperties, String> {
+    let doc =
+        Document::parse(xml).map_err(|error| format!("Configuration properties XML: {error}"))?;
+    read_cf_purpose_properties(doc.root_element())
+}
+
+fn read_cf_purpose_properties(
+    props: roxmltree::Node<'_, '_>,
+) -> Result<CfPurposeProperties, String> {
+    fn scalar(node: roxmltree::Node<'_, '_>) -> Result<String, String> {
+        if node.children().any(|child| child.is_element()) {
+            return Err(format!(
+                "{} must contain scalar text",
+                node.tag_name().name()
+            ));
+        }
+        Ok(node
+            .children()
+            .filter(|child| child.is_text())
+            .filter_map(|child| child.text())
+            .collect::<String>()
+            .trim()
+            .to_string())
+    }
+    fn boolean(node: roxmltree::Node<'_, '_>) -> Result<bool, String> {
+        match scalar(node)?.as_str() {
+            "true" | "1" => Ok(true),
+            "false" | "0" => Ok(false),
+            _ => Err(format!(
+                "{} must contain an XML boolean",
+                node.tag_name().name()
+            )),
+        }
+    }
+    fn children<'a, 'input>(
+        node: roxmltree::Node<'a, 'input>,
+        name: &str,
+        namespace: &str,
+    ) -> Result<Vec<roxmltree::Node<'a, 'input>>, String> {
+        if node
+            .children()
+            .any(|child| child.is_text() && !child.text().unwrap_or_default().trim().is_empty())
+        {
+            return Err(format!(
+                "{} has unexpected scalar text",
+                node.tag_name().name()
+            ));
+        }
+        node.children()
+            .filter(|child| child.is_element())
+            .map(|child| {
+                if child.tag_name().name() == name
+                    && child.tag_name().namespace() == Some(namespace)
+                {
+                    Ok(child)
+                } else {
+                    Err(format!(
+                        "{} has an unexpected list member {}",
+                        node.tag_name().name(),
+                        child.tag_name().name()
+                    ))
+                }
+            })
+            .collect()
+    }
+    let section = |name: &str| -> Result<Option<roxmltree::Node<'_, '_>>, String> {
+        let mut matches = props.children().filter(|node| {
+            node.is_element()
+                && node.tag_name().name() == name
+                && node.tag_name().namespace() == Some(CF_MD_NS)
+        });
+        let first = matches.next();
+        if matches.next().is_some() {
+            return Err(format!("duplicate Configuration property {name}"));
+        }
+        Ok(first)
+    };
+    let use_purposes = section("UsePurposes")?
+        .map(|node| {
+            children(node, "Value", CF_V8_NS)?
+                .into_iter()
+                .map(|child| {
+                    let value = scalar(child)?;
+                    match value.as_str() {
+                        "PlatformApplication" | "MobilePlatformApplication" => Ok(value),
+                        _ => Err(format!("unknown ApplicationUsePurpose {value}")),
+                    }
+                })
+                .collect::<Result<Vec<_>, String>>()
+        })
+        .transpose()?;
+    let default_roles = section("DefaultRoles")?
+        .map(|node| {
+            children(node, "Item", CF_XR_NS)?
+                .into_iter()
+                .map(|child| {
+                    let value = scalar(child)?;
+                    if value.strip_prefix("Role.").is_some_and(|name| {
+                        !name.is_empty() && name.chars().all(|ch| ch.is_alphanumeric() || ch == '_')
+                    }) {
+                        Ok(value)
+                    } else {
+                        Err(format!("invalid default role reference {value}"))
+                    }
+                })
+                .collect::<Result<Vec<_>, String>>()
+        })
+        .transpose()?;
+    let used_mobile_application_functionalities = section("UsedMobileApplicationFunctionalities")?
+        .map(|node| {
+            children(node, "functionality", CF_CAI_NS)?
+                .into_iter()
+                .map(|item| {
+                    if item.children().any(|child| {
+                        child.is_text() && !child.text().unwrap_or_default().trim().is_empty()
+                    }) {
+                        return Err("mobile functionality has unexpected scalar text".to_string());
+                    }
+                    let mut functionality = None;
+                    let mut use_flag = None;
+                    for child in item.children().filter(|child| child.is_element()) {
+                        if child.tag_name().namespace() != Some(CF_CAI_NS) {
+                            return Err("mobile functionality has a foreign member".to_string());
+                        }
+                        match child.tag_name().name() {
+                            "functionality" if functionality.is_none() => {
+                                functionality = Some(scalar(child)?)
+                            }
+                            "use" if use_flag.is_none() => use_flag = Some(boolean(child)?),
+                            _ => {
+                                return Err(
+                                    "mobile functionality has an unexpected or duplicate member"
+                                        .to_string(),
+                                )
+                            }
+                        }
+                    }
+                    Ok(CfMobileFunctionality {
+                        functionality: functionality
+                            .filter(|value| !value.is_empty())
+                            .ok_or("mobile functionality has no name")?,
+                        r#use: use_flag.ok_or("mobile functionality has no use flag")?,
+                    })
+                })
+                .collect::<Result<Vec<_>, String>>()
+        })
+        .transpose()?;
+    Ok(CfPurposeProperties {
+        use_purposes,
+        default_roles,
+        used_mobile_application_functionalities,
+        include_help_in_contents: section("IncludeHelpInContents")?.map(boolean).transpose()?,
+    })
+}
+
+/// Whether the line of a dialect has a configuration root `value` of
+/// `property` that a line after the first adds (INV.SOURCE.PROFILE-CAPABILITIES).
+fn line_adds_root_value(platform_line: &str, property: &str, value: &str) -> bool {
+    use unica_source_contract::format_identity::{
+        configuration_root_additions_after, PlatformLine,
+    };
+    let added = |addition: &unica_source_contract::format_identity::LineAddition| {
+        addition.property == property && addition.value == Some(value)
+    };
+    configuration_root_additions_after(None).iter().any(added)
+        && !configuration_root_additions_after(PlatformLine::parse(platform_line))
+            .iter()
+            .any(added)
+}
+
+/// The parts of the first composite root property `local_name` by their
+/// camel-case names, each with its first text; `None` without the property
+/// or its parts.
+pub fn cf_prop_parts(
+    props: roxmltree::Node<'_, '_>,
+    local_name: &str,
+) -> Option<serde_json::Value> {
+    let property = props.children().find(|node| {
+        unica_xml_format::names::element_has_name(
+            *node,
+            local_name,
+            Some("http://v8.1c.ru/8.3/MDClasses"),
+        )
+    })?;
+    let mut parts = serde_json::Map::new();
+    for part in property.children().filter(roxmltree::Node::is_element) {
+        let mut chars = part.tag_name().name().chars();
+        let Some(first) = chars.next() else {
+            continue;
+        };
+        parts
+            .entry(format!("{}{}", first.to_lowercase(), chars.as_str()))
+            .or_insert_with(|| serde_json::json!(part.text().unwrap_or_default()));
+    }
+    (!parts.is_empty()).then_some(serde_json::Value::Object(parts))
 }
 
 pub fn cf_prop_text(props: roxmltree::Node<'_, '_>, local_name: &str) -> String {
@@ -736,6 +976,14 @@ pub fn cf_append_full_storages_and_forms(lines: &mut Vec<String>, props: roxmltr
         "DefaultDataHistoryVersionDataForm",
         "DefaultDataHistoryVersionDifferencesForm",
         "DefaultCollaborationSystemUsersChoiceForm",
+        "AuxiliaryReportForm",
+        "AuxiliaryReportVariantForm",
+        "AuxiliaryReportSettingsForm",
+        "AuxiliaryDynamicListSettingsForm",
+        "AuxiliaryDataHistoryChangeHistoryForm",
+        "AuxiliaryDataHistoryVersionDataForm",
+        "AuxiliaryDataHistoryVersionDifferencesForm",
+        "AuxiliaryCollaborationSystemUsersChoiceForm",
         "DefaultConstantsForm",
         "DefaultInterface",
         "DefaultStyle",
@@ -1407,6 +1655,7 @@ pub fn cf_edit_panel_entry_xml(
 pub fn cf_edit_set_home_page(
     value: &Value,
     config_dir: &Path,
+    format_version: &str,
 ) -> Result<CfEditExternalFilePlan, String> {
     let layout = cf_edit_json_object(value, "set-home-page value must be valid JSON object")?;
     if layout.is_empty() {
@@ -1454,7 +1703,6 @@ pub fn cf_edit_set_home_page(
          \t<WorkingAreaTemplate>{template}</WorkingAreaTemplate>\r\n\
          {columns_xml}\r\n\
          </HomePageWorkArea>",
-        format_version = ACTIVE_FORMAT_PROFILE.export_format
     );
     Ok(CfEditExternalFilePlan {
         path: config_dir.join("Ext/HomePageWorkArea.xml"),
@@ -1919,12 +2167,10 @@ pub fn validate_cf_source(
         check1_ok = false;
     }
     let version_literal = root_version_literal(source, root);
-    match classify_root_version(version_literal.as_deref()) {
-        Ok(FormatCompatibility::Supported { .. }) => report.ok("Export format: 2.20"),
-        Ok(compatibility) => report.warn(
-            unica_source_designer::format_profile::format_compatibility_warning(&compatibility),
-        ),
-        Err(error) => report.error(error.to_string()),
+    match root_version::report(version_literal.as_deref()) {
+        RootVersionReport::Ok(line) => report.ok(line),
+        RootVersionReport::Warn(line) => report.warn(line),
+        RootVersionReport::Error(line) => report.error(line),
     }
     let version = version_literal.as_deref().unwrap_or("");
 
@@ -2096,7 +2342,15 @@ pub fn validate_cf_source(
             let value = cf_validate_child_text(props_node, property, Some(MD_NS));
             if !value.is_empty() {
                 let allowed = cf_validate_enum_allowed(property);
-                if !allowed.contains(&value.as_str()) {
+                let dialect = crate::dialect::for_version(version_literal.as_deref());
+                let line_mode = matches!(
+                    *property,
+                    "CompatibilityMode" | "ConfigurationExtensionCompatibilityMode"
+                ) && dialect.knows_line_compatibility_mode(&value);
+                if !allowed.contains(&value.as_str())
+                    && !line_mode
+                    && !line_adds_root_value(dialect.platform_line, property, &value)
+                {
                     report.error(format!(
                         "4. Property '{property}' has invalid value '{value}'"
                     ));
@@ -2580,7 +2834,8 @@ pub fn cf_edit_plan_image(
                 artifacts.push(path);
             }
             "set-home-page" => {
-                let plan = cf_edit_set_home_page(&op_value, config_dir)?;
+                let plan =
+                    cf_edit_set_home_page(&op_value, config_dir, &root_version::of_set(&text))?;
                 let path = plan.path.clone();
                 external_files.insert(plan.path, plan.bytes);
                 modify_count += 1;
@@ -2639,7 +2894,7 @@ pub fn cf_init_images(
         );
     let mobile_xml = mobile_functionality_xml();
     let contained_objects = contained_objects_xml(&contained_object_ids);
-    let format_version = ACTIVE_FORMAT_PROFILE.export_format;
+    let format_version = root_version::writable();
 
     let config_xml = format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>

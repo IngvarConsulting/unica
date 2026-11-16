@@ -14,203 +14,47 @@ fn format_contract_object_node<'a>(document: &'a Document<'a>) -> Result<Node<'a
         .ok_or_else(|| "metadata object node was not found".to_string())
 }
 
-/// Whether platform 8.3.27 declares a root `ChildObjects` container.
-///
-/// The exact platform corpus proves a total split: a supported kind either
-/// always carries this container or rejects it even when the container is
-/// empty.
-pub fn meta_8_3_27_kind_declares_child_objects(kind: MetadataKind) -> bool {
-    unica_source_designer::layout::metadata_kind_requires_child_objects_8_3_27(kind.as_str())
-        .expect("every typed metadata kind has a physical ChildObjects profile")
+/// Whether a kind declares a root `ChildObjects` container in the export
+/// format the codec writes.
+pub fn kind_declares_child_objects(kind: MetadataKind) -> bool {
+    (crate::dialect::writable().kind_declares_child_objects)(kind)
 }
 
-pub fn meta_8_3_27_boolean_properties(object_type: &str) -> &'static [&'static str] {
-    match object_type {
-        "AccountingFlag" | "AddressingAttribute" | "Attribute" | "ExtDimensionAccountingFlag" => &[
-            "PasswordMode",
-            "MarkNegatives",
-            "MultiLine",
-            "ExtendedEdit",
-            "FillFromFillingValue",
-        ],
-        "AccountingRegister" => &[
-            "UseStandardCommands",
-            "IncludeHelpInContents",
-            "Correspondence",
-            "EnableTotalsSplitting",
-        ],
-        "AccumulationRegister" => &[
-            "UseStandardCommands",
-            "IncludeHelpInContents",
-            "EnableTotalsSplitting",
-        ],
-        "BusinessProcess" => &[
-            "UseStandardCommands",
-            "CheckUnique",
-            "Autonumbering",
-            "CreateTaskInPrivilegedMode",
-            "IncludeHelpInContents",
-            "UpdateDataHistoryImmediatelyAfterWrite",
-            "ExecuteAfterWriteDataHistoryVersionProcessing",
-        ],
-        "CalculationRegister" => &[
-            "UseStandardCommands",
-            "ActionPeriod",
-            "BasePeriod",
-            "IncludeHelpInContents",
-        ],
-        "Catalog" => &[
-            "Hierarchical",
-            "LimitLevelCount",
-            "FoldersOnTop",
-            "UseStandardCommands",
-            "CheckUnique",
-            "Autonumbering",
-            "QuickChoice",
-            "IncludeHelpInContents",
-            "UpdateDataHistoryImmediatelyAfterWrite",
-            "ExecuteAfterWriteDataHistoryVersionProcessing",
-        ],
-        "ChartOfAccounts" => &[
-            "UseStandardCommands",
-            "IncludeHelpInContents",
-            "CheckUnique",
-            "QuickChoice",
-            "AutoOrderByCode",
-            "UpdateDataHistoryImmediatelyAfterWrite",
-            "ExecuteAfterWriteDataHistoryVersionProcessing",
-        ],
-        "ChartOfCalculationTypes" => &[
-            "UseStandardCommands",
-            "QuickChoice",
-            "ActionPeriodUse",
-            "IncludeHelpInContents",
-            "UpdateDataHistoryImmediatelyAfterWrite",
-            "ExecuteAfterWriteDataHistoryVersionProcessing",
-        ],
-        "ChartOfCharacteristicTypes" => &[
-            "UseStandardCommands",
-            "IncludeHelpInContents",
-            "Hierarchical",
-            "FoldersOnTop",
-            "CheckUnique",
-            "Autonumbering",
-            "QuickChoice",
-            "UpdateDataHistoryImmediatelyAfterWrite",
-            "ExecuteAfterWriteDataHistoryVersionProcessing",
-        ],
-        "Command" => &["ModifiesData"],
-        "CommonModule" => &[
-            "Global",
-            "ClientManagedApplication",
-            "Server",
-            "ExternalConnection",
-            "ClientOrdinaryApplication",
-            "Client",
-            "ServerCall",
-            "Privileged",
-        ],
-        "Constant" => &[
-            "UseStandardCommands",
-            "PasswordMode",
-            "MarkNegatives",
-            "MultiLine",
-            "ExtendedEdit",
-            "UpdateDataHistoryImmediatelyAfterWrite",
-            "ExecuteAfterWriteDataHistoryVersionProcessing",
-        ],
-        "DataProcessor" | "DocumentJournal" | "Report" => {
-            &["UseStandardCommands", "IncludeHelpInContents"]
-        }
-        "Dimension" => &[
-            "PasswordMode",
-            "MarkNegatives",
-            "MultiLine",
-            "ExtendedEdit",
-            "DenyIncompleteValues",
-            "BaseDimension",
-            "UseInTotals",
-            "FillFromFillingValue",
-            "Master",
-            "MainFilter",
-            "Balance",
-        ],
-        "Document" => &[
-            "UseStandardCommands",
-            "CheckUnique",
-            "Autonumbering",
-            "PostInPrivilegedMode",
-            "UnpostInPrivilegedMode",
-            "IncludeHelpInContents",
-            "UpdateDataHistoryImmediatelyAfterWrite",
-            "ExecuteAfterWriteDataHistoryVersionProcessing",
-        ],
-        "Enum" => &["UseStandardCommands", "QuickChoice"],
-        "ExchangePlan" => &[
-            "UseStandardCommands",
-            "QuickChoice",
-            "DistributedInfoBase",
-            "IncludeConfigurationExtensions",
-            "IncludeHelpInContents",
-            "UpdateDataHistoryImmediatelyAfterWrite",
-            "ExecuteAfterWriteDataHistoryVersionProcessing",
-        ],
-        "InformationRegister" => &[
-            "UseStandardCommands",
-            "MainFilterOnPeriod",
-            "IncludeHelpInContents",
-            "EnableTotalsSliceFirst",
-            "EnableTotalsSliceLast",
-            "UpdateDataHistoryImmediatelyAfterWrite",
-            "ExecuteAfterWriteDataHistoryVersionProcessing",
-        ],
-        "Operation" => &["Nillable", "Transactioned"],
-        "Parameter" => &["Nillable"],
-        "Resource" => &[
-            "PasswordMode",
-            "MarkNegatives",
-            "MultiLine",
-            "ExtendedEdit",
-            "Balance",
-            "FillFromFillingValue",
-        ],
-        "ScheduledJob" => &["Use", "Predefined"],
-        "Task" => &[
-            "UseStandardCommands",
-            "CheckUnique",
-            "Autonumbering",
-            "IncludeHelpInContents",
-            "UpdateDataHistoryImmediatelyAfterWrite",
-            "ExecuteAfterWriteDataHistoryVersionProcessing",
-        ],
-        _ => &[],
-    }
+/// The dialect that reads `document`, by the version its root records.
+fn document_dialect(
+    source: &str,
+    document: &Document<'_>,
+) -> &'static crate::dialect::MetadataDialect {
+    crate::dialect::for_version(
+        unica_source_designer::roots::root_version_literal(source, document.root_element())
+            .as_deref(),
+    )
 }
 
-pub fn validate_meta_8_3_27_boolean_property_value(
+fn validate_boolean_property_value(
+    dialect: &crate::dialect::MetadataDialect,
     context: &str,
     object_type: &str,
     property_name: &str,
     value: &str,
 ) -> Result<(), String> {
-    if !meta_8_3_27_boolean_properties(object_type).contains(&property_name) {
+    if !(dialect.boolean_properties)(object_type).contains(&property_name) {
         return Ok(());
     }
     if matches!(value, "true" | "false") {
         Ok(())
     } else {
         Err(format!(
-            "{context} property {object_type}.{property_name} value '{value}' is not a canonical xs:boolean for the fixed 8.3.27 contract; expected true or false"
+            "{context} property {object_type}.{property_name} value '{value}' is not a canonical xs:boolean for the fixed {} contract; expected true or false",
+            dialect.platform_line
         ))
     }
 }
 
-pub fn validate_metadata_8_3_27_boolean_contract(
-    xml_text: &str,
-    context: &str,
-) -> Result<(), String> {
-    let document = Document::parse(xml_text.trim_start_matches('\u{feff}'))
-        .map_err(|error| format!("XML parse error: {error}"))?;
+pub fn validate_metadata_boolean_contract(xml_text: &str, context: &str) -> Result<(), String> {
+    let source = xml_text.trim_start_matches('\u{feff}');
+    let document = Document::parse(source).map_err(|error| format!("XML parse error: {error}"))?;
+    let dialect = document_dialect(source, &document);
     let root_object = format_contract_object_node(&document)?;
     if !meta_validate_valid_types().contains(&root_object.tag_name().name()) {
         return Ok(());
@@ -221,7 +65,7 @@ pub fn validate_metadata_8_3_27_boolean_contract(
         .filter(roxmltree::Node::is_element)
     {
         let object_type = object.tag_name().name();
-        let boolean_properties = meta_8_3_27_boolean_properties(object_type);
+        let boolean_properties = (dialect.boolean_properties)(object_type);
         if boolean_properties.is_empty() {
             continue;
         }
@@ -243,7 +87,8 @@ pub fn validate_metadata_8_3_27_boolean_contract(
                         ));
                     }
                 } else {
-                    validate_meta_8_3_27_boolean_property_value(
+                    validate_boolean_property_value(
+                        dialect,
                         context,
                         object_type,
                         property_name,
@@ -257,9 +102,10 @@ pub fn validate_metadata_8_3_27_boolean_contract(
     Ok(())
 }
 
-pub fn validate_metadata_8_3_27_enum_contract(xml_text: &str, context: &str) -> Result<(), String> {
-    let document = Document::parse(xml_text.trim_start_matches('\u{feff}'))
-        .map_err(|error| format!("XML parse error: {error}"))?;
+pub fn validate_metadata_enum_contract(xml_text: &str, context: &str) -> Result<(), String> {
+    let source = xml_text.trim_start_matches('\u{feff}');
+    let document = Document::parse(source).map_err(|error| format!("XML parse error: {error}"))?;
+    let dialect = document_dialect(source, &document);
     let root_object = format_contract_object_node(&document)?;
     if !meta_validate_valid_types().contains(&root_object.tag_name().name()) {
         return Ok(());
@@ -280,8 +126,9 @@ pub fn validate_metadata_8_3_27_enum_contract(xml_text: &str, context: &str) -> 
             };
             if !allowed.contains(&value.as_str()) {
                 return Err(format!(
-                    "{context} property {}.{property_name} value '{value}' is not valid for the fixed 8.3.27 contract; expected one of: {}",
+                    "{context} property {}.{property_name} value '{value}' is not valid for the fixed {} contract; expected one of: {}",
                     object.tag_name().name(),
+                    dialect.platform_line,
                     allowed.join(", ")
                 ));
             }

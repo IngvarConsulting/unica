@@ -48,6 +48,11 @@ impl ProviderReadAuthority {
         let mut payload = serde_json::to_value(data)
             .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()))?;
         if type_name.is_none() {
+            match unica_xdto_designer::descriptor::descriptor_synonym(&descriptor) {
+                Ok(Some(synonym)) => payload["Synonym"] = json!(synonym),
+                Ok(None) => {}
+                Err(message) => payload["synonymError"] = json!(message),
+            }
             match crate::infrastructure::family_codecs::metadata_read_codec()
                 .descriptor_comment(&descriptor, "XDTOPackage")
             {

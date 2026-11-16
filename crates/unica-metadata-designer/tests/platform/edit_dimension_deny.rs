@@ -28,6 +28,7 @@ fn deny(name: &str, value: bool) -> MetaEditOperation {
             master: None,
             main_filter: None,
             type_reduction_mode: None,
+            color: None,
         }],
     }
 }

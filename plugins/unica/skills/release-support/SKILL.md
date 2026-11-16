@@ -19,7 +19,7 @@ description: "Поддержка поставки и обновлений 1С. �
 - Use `unica.view` on the role node, `unica.view` on the schema node, or form/meta tools when release risk is localized to rights, reports, forms, or metadata objects.
 - Do not call internal package, metadata, analyzer, standards, or runtime adapters directly. They are hidden behind MCP `unica`.
 
-Support-state checks come from `unica.view` on the configuration root (`support`) and on the object node, which read `Ext/ParentConfigurations.bin` through Unica. Treat `Поддержка: на замке` or read-only as a release decision: prefer CFE or an explicit support-state change plan before direct mutation.
+Support-state checks come from `props.support {editable, reason, policy, rule}` of `unica.view` on any node of an object, which read `Ext/ParentConfigurations.bin` through Unica. A node is closed when its object or any node on the path to it with its own vendor record is `locked`: a form, template, command, attribute, tabular section and its attribute, dimension, resource or nested subsystem can carry its own rule. Treat `reason: locked` or `configurationReadOnly` as a release decision: prefer CFE or an explicit support-state change plan before direct mutation. `supportRule.set` changes the rule of exactly the addressed node with its own record (`<Kind>.<Name>[.Form.F|.Template.T|.Command.C|.Attribute.A|.TabularSection.T[.Attribute.A]|.Dimension.D|.Resource.R]`, `Subsystem.A[.Subsystem.B…]`); other nodes keep their rules. A node the vendor did not put on support has no record, and setting its rule changes nothing.
 
 ## References
 
@@ -62,12 +62,24 @@ Support-state checks come from `unica.view` on the configuration root (`support`
 Режим удаления нельзя совмещать с отправкой исходников. Выключение активности
 не равно удалению. Отдельного публичного создания пустого расширения нет:
 первая отправка `push` создаёт его из исходников. Если набор расширения
-объявлен после создания базы, `push` откажет `no_memory`: памяти об этом наборе
+объявлен после создания базы, `push` откажет `untracked_base`: памяти об этом наборе
 у рабочей копии нет. Тогда превью `push` с `sourceSet` этого набора и `force:true`
 покажет загрузку одного расширения; исполняй её после подтверждения человека.
 Загрузка CF/CFE (`upload`) и отдельные `apply`/`reset` сейчас недоступны
 ([#1246](https://github.com/IngvarConsulting/unica/issues/1246)): сообщай это
 как пробел контракта Unica MCP и не заменяй их прямым запуском раннера.
+
+## Old or mixed export format
+
+Набор, выгруженный старше записываемого формата `2.20` или с корнями в разных
+форматах, только читается: правка отказывает `formatMigrationAvailable` или
+`formatVersionMixed`. Клиенту, который умеет спрашивать, Unica задаёт вопрос и
+по выбору человека перевыгружает набор, затем повторяет правку. Без вопроса
+перевыгрузка — `unica.run` с `op: "source.reexport"`, `args: {"sourceSet": "<набор>",
+"format": "2.20"}` (`2.21` — платформа 8.5.1, `2.22` — 8.5.4), сначала
+`dryRun: true`, затем `dryRun: false`. Она заменяет файлы набора выгрузкой из
+временной файловой базы; база и файлы проекта не меняются. Несохранённые правки
+набора пропадут: перед исполнением сохрани их в git. Это долгий вызов.
 
 ## Review checklist
 

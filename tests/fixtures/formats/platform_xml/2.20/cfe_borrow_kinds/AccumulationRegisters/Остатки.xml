@@ -1,0 +1,38 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:app="http://v8.1c.ru/8.2/managed-application/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:cmi="http://v8.1c.ru/8.2/managed-application/cmi" xmlns:ent="http://v8.1c.ru/8.1/data/enterprise" xmlns:lf="http://v8.1c.ru/8.2/managed-application/logform" xmlns:style="http://v8.1c.ru/8.1/data/ui/style" xmlns:sys="http://v8.1c.ru/8.1/data/ui/fonts/system" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:v8ui="http://v8.1c.ru/8.1/data/ui" xmlns:web="http://v8.1c.ru/8.1/data/ui/colors/web" xmlns:win="http://v8.1c.ru/8.1/data/ui/colors/windows" xmlns:xen="http://v8.1c.ru/8.3/xcf/enums" xmlns:xpr="http://v8.1c.ru/8.3/xcf/predef" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.20">
+	<AccumulationRegister uuid="55d7a504-a8ff-812a-a2a1-6c45b62e05ef">
+		<InternalInfo>
+			<xr:GeneratedType name="AccumulationRegisterRecord.Остатки" category="Record">
+				<xr:TypeId>501e1033-5cee-8c79-9951-bb3b73fe5a38</xr:TypeId>
+				<xr:ValueId>7538b72f-9c83-824a-96f6-35b14b6d07d2</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="AccumulationRegisterManager.Остатки" category="Manager">
+				<xr:TypeId>afb9800a-eb84-8eb4-9d30-41d4db45d6ef</xr:TypeId>
+				<xr:ValueId>80edb510-4498-8807-a0b9-c5564aa15c4d</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="AccumulationRegisterSelection.Остатки" category="Selection">
+				<xr:TypeId>bec66448-50d5-802d-bb63-e43af19b7ef5</xr:TypeId>
+				<xr:ValueId>9a6c9cbd-2ffb-877d-b2ab-538ede6b8bfb</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="AccumulationRegisterList.Остатки" category="List">
+				<xr:TypeId>80eb70f2-2ec9-84e4-b31c-2b1e732c5010</xr:TypeId>
+				<xr:ValueId>4a487eac-4725-861f-ae25-faea3d3d5860</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="AccumulationRegisterRecordSet.Остатки" category="RecordSet">
+				<xr:TypeId>c9574016-8c72-84b8-9f59-b0e12a3e4d57</xr:TypeId>
+				<xr:ValueId>7ea33b6f-2914-8b88-9067-33a42436e77c</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="AccumulationRegisterRecordKey.Остатки" category="RecordKey">
+				<xr:TypeId>939a2fe1-6625-8284-9288-d8f53eaa6e73</xr:TypeId>
+				<xr:ValueId>56537a33-0219-8d7c-b345-f8f47d5fdcb7</xr:ValueId>
+			</xr:GeneratedType>
+		</InternalInfo>
+		<Properties>
+			<ObjectBelonging>Adopted</ObjectBelonging>
+			<Name>Остатки</Name>
+			<Comment/>
+			<ExtendedConfigurationObject>6d168f0f-5f4b-548b-ac10-a639df7dfaa7</ExtendedConfigurationObject>
+		</Properties>
+		<ChildObjects/>
+	</AccumulationRegister>
+</MetaDataObject>

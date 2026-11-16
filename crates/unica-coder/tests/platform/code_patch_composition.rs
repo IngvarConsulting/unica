@@ -743,12 +743,12 @@ fn canonical_code_insert_inside_older_source_set_is_refused_without_writes() {
                             "{case}: {error}"
                         );
                         // The refusal names the owner file, the version it
-                        // records, the writable profile and the remedy.
+                        // records, the writable formats and the remedy.
                         let message = error.to_string();
                         for part in [
                             relative,
                             version,
-                            "2.20 for 1C 8.3.27",
+                            "2.20",
                             "re-export the sources with the platform",
                         ] {
                             assert!(message.contains(part), "{case}: {part}: {message}");
@@ -790,6 +790,54 @@ fn object_and_manager_modules_report_owner_and_role() {
         assert_eq!(target.owner, "Catalog.Items");
         assert_eq!(target.module_role, role);
     }
+    fs::remove_dir_all(&context.workspace_root).unwrap();
+}
+
+/// Модуль менеджера очереди правится по общему маршруту прямых модулей,
+/// а модуля объекта у очереди нет: отсутствующий файл не считается
+/// пропущенным пустым и остаётся неадресуемым.
+/// rule: INV.SOURCE.PLATFORM-CAPABILITY-EXISTENCE
+#[test]
+fn the_queue_manager_module_is_patched_and_its_object_module_is_unaddressable() {
+    let context = temp_context("queue-module-roles");
+    let src = context.workspace_root.join("src");
+    fs::write(
+            src.join("Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.22"><Configuration/></MetaDataObject>"#,
+        )
+        .unwrap();
+    fs::create_dir_all(src.join("Queues/Probe/Ext")).unwrap();
+    fs::write(
+            src.join("Queues/Probe.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.22"><Queue><Properties><Name>Probe</Name></Properties></Queue></MetaDataObject>"#,
+        )
+        .unwrap();
+    let module = src.join("Queues/Probe/Ext/ManagerModule.bsl");
+    fs::write(&module, "Procedure Run()\nEndProcedure\n").unwrap();
+
+    let args = patch_args(
+        "main",
+        "Queue.Probe.ManagerModule",
+        "Run",
+        "Procedure Added()\nEndProcedure",
+    );
+    let preview = patch_inner(&args, &context, PatchMode::Preview);
+    assert!(preview.outcome.ok, "{:?}", preview.outcome.errors);
+    let target = preview.data.unwrap().affected_target;
+    assert_eq!(target.owner, "Queue.Probe");
+    assert_eq!(target.module_role, "ManagerModule");
+
+    let refused = patch_inner(
+        &tail_args(
+            "main",
+            "Queue.Probe.ObjectModule",
+            "Procedure Run()\nEndProcedure",
+        ),
+        &context,
+        PatchMode::Apply,
+    );
+    assert!(!refused.outcome.ok);
+    assert!(!src.join("Queues/Probe/Ext/ObjectModule.bsl").exists());
     fs::remove_dir_all(&context.workspace_root).unwrap();
 }
 
@@ -1399,7 +1447,7 @@ fn code_patch_rolls_back_if_v8project_changes_the_owner_source_set_before_commit
     fs::write(&module, before).unwrap();
     fs::write(
             context.workspace_root.join("src/CommonModules.xml"),
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.21"><ExternalDataProcessor/></MetaDataObject>"#,
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.23"><ExternalDataProcessor/></MetaDataObject>"#,
         )
         .unwrap();
     let args = patch_args(
@@ -3890,7 +3938,7 @@ fn staged_code_v12_parity_rejects_malformed_postimage_and_owner_evidence() {
                 "malformed" => fs::write(descriptor, b"<not-xml").unwrap(),
                 "wrong-format" => {
                     let before = fs::read_to_string(&descriptor).unwrap();
-                    fs::write(descriptor, before.replace("2.20", "2.21")).unwrap();
+                    fs::write(descriptor, before.replace("2.20", "2.23")).unwrap();
                 }
                 _ => unreachable!(),
             }

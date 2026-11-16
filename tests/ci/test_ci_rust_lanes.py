@@ -157,9 +157,11 @@ class RustLaneTests(unittest.TestCase):
         # A merge group never waits for a macOS runner; macOS runs nightly,
         # in `main`, in release and in `ci:full` pull requests.
         self.assertEqual(lanes.profile_hosts("queue"), ["ubuntu-latest"])
-        for profile in ("pr", "main", "release"):
+        for profile in ("pr", "main"):
             self.assertEqual(lanes.profile_hosts(profile), ["ubuntu-latest", "macos-15"])
-        self.assertEqual(lanes.profile_hosts("large"), ["ubuntu-latest", "macos-15", "windows-latest"])
+        # A release runs the night's runners: its inventory is the night's.
+        for profile in ("large", "release"):
+            self.assertEqual(lanes.profile_hosts(profile), ["ubuntu-latest", "macos-15", "windows-latest"])
 
     def test_inventory_verifier_requires_each_lane_and_result_for_the_same_revision(self):
         with tempfile.TemporaryDirectory() as temporary, patch.dict(lanes.os.environ, {}, clear=True):

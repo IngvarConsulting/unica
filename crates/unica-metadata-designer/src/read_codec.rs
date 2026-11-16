@@ -70,8 +70,20 @@ impl MetadataReadCodec for DesignerMetadataReadCodec {
         })
     }
 
+    fn common_attribute(&self, descriptor: &[u8], payload: &mut Value) -> Result<(), String> {
+        crate::common_attribute_read::enrich_common_attribute(descriptor, payload)
+    }
+
     fn style_item(&self, descriptor: &[u8], payload: &mut Value) -> Result<(), String> {
         crate::style_item_read::enrich_style_item(descriptor, payload)
+    }
+
+    fn palette_color(&self, descriptor: &[u8], payload: &mut Value) -> Result<(), String> {
+        crate::palette_color_read::enrich_palette_color(descriptor, payload)
+    }
+
+    fn queue(&self, descriptor: &[u8], payload: &mut Value) -> Result<(), String> {
+        crate::queue_read::enrich_queue(descriptor, payload)
     }
 
     fn style_properties(
@@ -82,6 +94,15 @@ impl MetadataReadCodec for DesignerMetadataReadCodec {
     ) -> Result<StyleItemPropertiesObservation, String> {
         crate::style_color::observe_properties(descriptor, name, relative)
             .map_err(|issue| issue.to_string())
+    }
+
+    fn settings_storage_forms(
+        &self,
+        descriptor: &[u8],
+        source_set: &str,
+        payload: &mut Value,
+    ) -> Result<(), String> {
+        crate::settings_storage_read::enrich_settings_storage_forms(descriptor, source_set, payload)
     }
 
     fn form_metadata(

@@ -792,7 +792,7 @@ where
                 .with_operation_index(operation_index),
             )
         })?;
-        validate_metadata_8_3_27_boolean_contract(&working, "meta.edit").map_err(|_| {
+        validate_metadata_boolean_contract(&working, "meta.edit").map_err(|_| {
             unica_metadata::request::MetaFailure::from(
                 typed_diagnostic(
                     MetaDiagnosticCode::ValidationFailed,
@@ -802,7 +802,7 @@ where
                 .with_operation_index(operation_index),
             )
         })?;
-        validate_metadata_8_3_27_enum_contract(&working, "meta.edit").map_err(|_| {
+        validate_metadata_enum_contract(&working, "meta.edit").map_err(|_| {
             unica_metadata::request::MetaFailure::from(
                 typed_diagnostic(
                     MetaDiagnosticCode::ValidationFailed,
@@ -1463,14 +1463,21 @@ pub fn apply_typed_properties(
             None,
         )
     })?;
-    let properties =
+    let changes_key = changes
+        .entries()
+        .iter()
+        .any(|(key, _)| *key == MetaPropertyKey::Key);
+    let properties = if changes_key {
+        super::scheduled_job_key::properties(object)?
+    } else {
         unica_xml_format::read::child_element(object, "Properties").ok_or_else(|| {
             typed_diagnostic(
                 MetaDiagnosticCode::ProviderUnavailable,
                 "metadata descriptor has no Properties",
                 None,
             )
-        })?;
+        })?
+    };
     let kind = MetadataKind::parse(object.tag_name().name()).map_err(|_| {
         typed_diagnostic(
             MetaDiagnosticCode::ProviderUnavailable,
@@ -1550,13 +1557,21 @@ pub fn apply_typed_properties(
             continue;
         }
         let tag = spec.xml_name;
-        let property = unica_xml_format::read::child_element(properties, tag).ok_or_else(|| {
-            typed_diagnostic(
-                MetaDiagnosticCode::InvalidArguments,
-                format!("property `{tag}` is not present on this metadata object"),
-                Some("values"),
-            )
-        })?;
+        let property = if *key == MetaPropertyKey::Key {
+            let (node, previous) = super::scheduled_job_key::leaf(properties)?;
+            if matches!(value, MetaPropertyValue::String(next) if next == &previous) {
+                continue;
+            }
+            node
+        } else {
+            unica_xml_format::read::child_element(properties, tag).ok_or_else(|| {
+                typed_diagnostic(
+                    MetaDiagnosticCode::InvalidArguments,
+                    format!("property `{tag}` is not present on this metadata object"),
+                    Some("values"),
+                )
+            })?
+        };
         if *key == MetaPropertyKey::DataHistory {
             let same_name_count = properties
                 .children()
@@ -1746,6 +1761,15 @@ pub fn apply_typed_properties(
                     value,
                 )
             }
+            (MetaPropertyKey::Key, MetaPropertyValue::String(value)) => {
+                // XML readers normalize literal CR; references preserve the requested value.
+                let escaped = unica_xml_format::text::escape_xml(value).replace('\r', "&#13;");
+                if value.is_empty() {
+                    format!("{indent}{opening}/>")
+                } else {
+                    format!("{indent}{opening}>{escaped}</{qname}>")
+                }
+            }
             (MetaPropertyKey::Comment, MetaPropertyValue::String(value)) if value.is_empty() => {
                 format!("{indent}{opening}/>")
             }
@@ -1778,6 +1802,21 @@ pub fn apply_typed_properties(
     xml_text.replace_range(range.start + prefix_len..range.end + prefix_len, &text);
     Ok(())
 }
+/// Closes the `Properties` of a new `tag` child with the properties the
+/// export format of its object adds (INV.SOURCE.WRITABLE-PROFILE).
+fn append_format_child_properties(object_xml: &str, tag: &str, lines: &mut Vec<String>) {
+    let version = crate::dialect::root_version::of_set(object_xml);
+    let added = (crate::dialect::for_version(Some(&version)).added_child_properties)(tag);
+    let Some(close) = lines.iter().position(|line| line.trim() == "</Properties>") else {
+        return;
+    };
+    let line = &lines[close];
+    let indent = format!("{}\t", &line[..line.len() - line.trim_start().len()]);
+    for (offset, property) in added.iter().enumerate() {
+        lines.insert(close + offset, format!("{indent}{property}"));
+    }
+}
+
 pub fn collection_tag(collection: MetaCollection) -> &'static str {
     match collection {
         MetaCollection::Attributes => "Attribute",
@@ -1833,6 +1872,7 @@ where
     ) {
         inherit_register_field_settings(xml_text, tag, &mut lines);
     }
+    append_format_child_properties(xml_text, tag, &mut lines);
     let lines = lines;
     let result = match scope {
         Some(section) => meta_edit_insert_tabular_child_object_with_position(
@@ -2479,8 +2519,36 @@ pub fn update_typed_element(
             flag_edits.push(edit);
         }
     }
-    flag_edits.sort_by_key(|(range, _)| std::cmp::Reverse(range.start));
     let properties_start = range.start + properties_range.start;
+    if let Some(color) = &update.color {
+        // The value of a set whose line has the color: its export carries it.
+        let open = properties_text.find("<Color>").ok_or_else(|| {
+            typed_diagnostic(
+                MetaDiagnosticCode::InvalidArguments,
+                "the enumeration value has no Color property to set",
+                Some("color"),
+            )
+        })?;
+        let value_start = open + "<Color>".len();
+        let value_end = value_start
+            + properties_text[value_start..]
+                .find("</Color>")
+                .ok_or_else(|| {
+                    typed_diagnostic(
+                        MetaDiagnosticCode::ProviderUnavailable,
+                        "the enumeration value has a malformed Color property",
+                        Some("color"),
+                    )
+                })?;
+        flag_edits.push((
+            properties_start + value_start..properties_start + value_end,
+            // The platform writes a color as its public text: `#RRGGBB` in
+            // upper case.
+            unica_metadata::style_color::StyleItemColor::parse_argument(color)
+                .map_or_else(|| color.clone(), |color| color.public_text()),
+        ));
+    }
+    flag_edits.sort_by_key(|(range, _)| std::cmp::Reverse(range.start));
     for (range, value) in flag_edits {
         properties_text.replace_range(
             range.start - properties_start..range.end - properties_start,
@@ -3797,14 +3865,17 @@ pub fn typed_child_descriptor_image(
     tag: &str,
     name: &str,
 ) -> Result<Vec<u8>, unica_metadata::request::MetaFailure> {
+    let version = crate::dialect::root_version::of_set(owner_xml);
     typed_child_element_xml(owner_xml, tag, name)
-        .map(|child_xml| wrap_standalone_descriptor(&child_xml))
+        .map(|child_xml| wrap_standalone_descriptor(&child_xml, &version))
 }
 
-pub fn wrap_standalone_descriptor(child_xml: &str) -> Vec<u8> {
+/// A standalone descriptor of one child in the format `version` of its set.
+pub fn wrap_standalone_descriptor(child_xml: &str, version: &str) -> Vec<u8> {
     format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<MetaDataObject {} version=\"2.20\">\n{}\n</MetaDataObject>",
-        crate::template_catalog::meta_xmlns_decl(),
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<MetaDataObject {} version=\"{}\">\n{}\n</MetaDataObject>",
+        crate::template_catalog::meta_xmlns_decl(version),
+        version,
         child_xml
     )
     .into_bytes()
@@ -4435,5 +4506,254 @@ mod prefixed_property_writer_tests {
             missing.is_empty(),
             "no owner template exercises {missing:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod export_format_tests {
+    use unica_metadata::{MetaCollection, MetaElementDefinition, MetadataKind};
+
+    const MD: &str = "http://v8.1c.ru/8.3/MDClasses";
+
+    fn document(xml: &str) -> roxmltree::Document<'_> {
+        roxmltree::Document::parse(xml.trim_start_matches('\u{feff}')).unwrap()
+    }
+
+    /// The property names of every enumeration value, in document order.
+    fn enum_value_properties(xml: &str) -> Vec<Vec<String>> {
+        document(xml)
+            .descendants()
+            .filter(|node| node.has_tag_name((MD, "EnumValue")))
+            .map(|value| {
+                let properties = value
+                    .children()
+                    .find(|node| node.has_tag_name((MD, "Properties")))
+                    .unwrap();
+                properties
+                    .children()
+                    .filter(|node| node.is_element())
+                    .map(|node| node.tag_name().name().to_owned())
+                    .collect()
+            })
+            .collect()
+    }
+
+    fn add_enum_value(enum_xml: &str) -> String {
+        let mut xml = enum_xml.trim_start_matches('\u{feff}').to_owned();
+        let element = MetaElementDefinition {
+            name: "Новое".into(),
+            synonym: None,
+            comment: None,
+            r#type: None,
+            required: None,
+            fill_value: None,
+            attributes: vec![],
+            position: None,
+            template_type: None,
+            indexing: None,
+            master: None,
+            main_filter: None,
+            deny_incomplete_values: None,
+        };
+        let mut next_uuid = || "00000000-0000-4000-8000-000000000001".to_owned();
+        super::add_typed_element(
+            &mut xml,
+            "Enum",
+            "СпособыУстановкиКурсаВалюты",
+            MetaCollection::EnumValues,
+            None,
+            &element,
+            "ru",
+            &mut next_uuid,
+        )
+        .unwrap();
+        xml
+    }
+
+    /// rule: INV.SOURCE.WRITABLE-PROFILE
+    #[test]
+    fn a_new_enumeration_value_has_the_properties_of_its_set_format() {
+        for corpus in [
+            include_str!("../../../tests/fixtures/formats/platform_xml/2.20/all_kinds/src/Enums/СпособыУстановкиКурсаВалюты.xml"),
+            include_str!("../../../tests/fixtures/formats/platform_xml/2.21/all_kinds/src/Enums/СпособыУстановкиКурсаВалюты.xml"),
+            include_str!("../../../tests/fixtures/formats/platform_xml/2.22/all_kinds/src/Enums/СпособыУстановкиКурсаВалюты.xml"),
+        ] {
+            let values = enum_value_properties(&add_enum_value(corpus));
+            let (new, existing) = values.split_last().unwrap();
+            assert_eq!(new, &existing[0], "{values:?}");
+        }
+        let written = add_enum_value(include_str!("../../../tests/fixtures/formats/platform_xml/2.21/all_kinds/src/Enums/СпособыУстановкиКурсаВалюты.xml"));
+        assert!(written.contains(
+            "\t\t\t\t\t<Comment/>\r\n\t\t\t\t\t<Color>auto</Color>\r\n\t\t\t\t</Properties>"
+        ));
+    }
+
+    /// rule: INV.SOURCE.WRITABLE-PROFILE
+    #[test]
+    fn a_new_object_declares_the_namespaces_of_its_set_format() {
+        for (version, corpus) in [
+            ("2.20", include_str!("../../../tests/fixtures/formats/platform_xml/2.20/all_kinds/src/Catalogs/Валюты.xml")),
+            ("2.21", include_str!("../../../tests/fixtures/formats/platform_xml/2.21/all_kinds/src/Catalogs/Валюты.xml")),
+            ("2.22", include_str!("../../../tests/fixtures/formats/platform_xml/2.22/all_kinds/src/Catalogs/Валюты.xml")),
+        ] {
+            let context = crate::template_catalog::MinimalTemplateContext::<()> {
+                chart_of_accounts: None,
+                chart_of_calculation_types: None,
+                task: None,
+                registered_documents: Vec::new(),
+                method_name: None,
+                event_source: None,
+                event_handler: None,
+                dependencies: Vec::new(),
+                language: "ru".to_owned(),
+            };
+            let (catalog, _) = crate::template_catalog::minimal_metadata_xml(
+                MetadataKind::Catalog,
+                "New",
+                version,
+                &context,
+                || "00000000-0000-4000-8000-000000000002".to_owned(),
+            )
+            .unwrap();
+            assert_eq!(
+                root_start_tag(&catalog),
+                root_start_tag(corpus),
+                "{version}"
+            );
+            let wrapped =
+                String::from_utf8(super::wrap_standalone_descriptor("<Template/>", version))
+                    .unwrap();
+            assert_eq!(
+                root_start_tag(&wrapped),
+                root_start_tag(corpus),
+                "{version}"
+            );
+        }
+    }
+
+    /// rule: INV.SOURCE.WRITABLE-PROFILE
+    #[test]
+    fn a_new_report_has_the_properties_of_its_set_format() {
+        // all_kinds 2.22 (Reports/АнализВерсийОбъектов.xml) writes the
+        // analytics schema right after the data composition schema.
+        // all_kinds 2.21 adds the auxiliary variant form right after the
+        // default variant form.
+        for (version, analytics, variant) in [
+            ("2.20", false, false),
+            ("2.21", false, true),
+            ("2.22", true, true),
+        ] {
+            let context = crate::template_catalog::MinimalTemplateContext::<()> {
+                chart_of_accounts: None,
+                chart_of_calculation_types: None,
+                task: None,
+                registered_documents: Vec::new(),
+                method_name: None,
+                event_source: None,
+                event_handler: None,
+                dependencies: Vec::new(),
+                language: "ru".to_owned(),
+            };
+            let (report, _) = crate::template_catalog::minimal_metadata_xml(
+                MetadataKind::Report,
+                "New",
+                version,
+                &context,
+                || "00000000-0000-4000-8000-000000000005".to_owned(),
+            )
+            .unwrap();
+            assert_eq!(
+                report.contains(
+                    "<MainDataCompositionSchema/>\r\n\t\t\t<MainAnalyticsSystemSchema/>\r\n"
+                ),
+                analytics,
+                "{version}: {report}"
+            );
+            assert_eq!(
+                report.matches("MainAnalyticsSystemSchema").count(),
+                usize::from(analytics)
+            );
+            assert_eq!(
+                report.contains("<DefaultVariantForm/>\r\n\t\t\t<AuxiliaryVariantForm/>\r\n"),
+                variant,
+                "{version}: {report}"
+            );
+            assert_eq!(
+                report.matches("AuxiliaryVariantForm").count(),
+                usize::from(variant)
+            );
+        }
+    }
+
+    /// The start tag of the root as written, declarations in their order.
+    fn root_start_tag(xml: &str) -> &str {
+        let start = xml.find("<MetaDataObject").unwrap();
+        &xml[start..start + xml[start..].find('>').unwrap()]
+    }
+
+    /// rule: INV.SOURCE.WRITABLE-PROFILE
+    #[test]
+    fn a_form_added_to_an_object_has_the_properties_of_its_set_format() {
+        for (corpus, mode) in [
+            (include_str!("../../../tests/fixtures/formats/platform_xml/2.20/all_kinds/src/Catalogs/Валюты.xml"), None),
+            (include_str!("../../../tests/fixtures/formats/platform_xml/2.21/all_kinds/src/Catalogs/Валюты.xml"), Some("Any")),
+            (include_str!("../../../tests/fixtures/formats/platform_xml/2.22/all_kinds/src/Catalogs/Валюты.xml"), Some("Any")),
+        ] {
+            let mut xml = corpus.trim_start_matches('\u{feff}').to_owned();
+            let element = MetaElementDefinition {
+                name: "НоваяФорма".into(),
+                synonym: None,
+                comment: None,
+                r#type: None,
+                required: None,
+                fill_value: None,
+                attributes: vec![],
+                position: None,
+                template_type: None,
+                indexing: None,
+                master: None,
+                main_filter: None,
+                deny_incomplete_values: None,
+            };
+            let mut next_uuid = || "00000000-0000-4000-8000-000000000004".to_owned();
+            super::add_typed_element(
+                &mut xml,
+                "Catalog",
+                "Валюты",
+                MetaCollection::Forms,
+                None,
+                &element,
+                "ru",
+                &mut next_uuid,
+            )
+            .unwrap();
+            let document = document(&xml);
+            let form = document
+                .descendants()
+                .find(|node| {
+                    node.has_tag_name((MD, "Form"))
+                        && node.descendants().any(|name| {
+                            name.has_tag_name((MD, "Name")) && name.text() == Some("НоваяФорма")
+                        })
+                })
+                .unwrap();
+            let properties: Vec<_> = form
+                .descendants()
+                .find(|node| node.has_tag_name((MD, "Properties")))
+                .unwrap()
+                .children()
+                .filter(|node| node.is_element())
+                .collect();
+            let last = properties.last().unwrap();
+            match mode {
+                Some(mode) => {
+                    assert_eq!(last.tag_name().name(), "UseInInterfaceCompatibilityMode");
+                    assert_eq!(last.text(), Some(mode));
+                    let before = properties[properties.len() - 2].tag_name().name();
+                    assert_eq!(before, "UsePurposes");
+                }
+                None => assert_eq!(last.tag_name().name(), "UsePurposes"),
+            }
+        }
     }
 }

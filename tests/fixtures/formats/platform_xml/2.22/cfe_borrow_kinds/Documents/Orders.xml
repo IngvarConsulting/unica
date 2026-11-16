@@ -1,0 +1,36 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:app="http://v8.1c.ru/8.2/managed-application/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:cmi="http://v8.1c.ru/8.2/managed-application/cmi" xmlns:ent="http://v8.1c.ru/8.1/data/enterprise" xmlns:lf="http://v8.1c.ru/8.2/managed-application/logform" xmlns:pal="http://v8.1c.ru/8.1/data/ui/colors/palette" xmlns:style="http://v8.1c.ru/8.1/data/ui/style" xmlns:sys="http://v8.1c.ru/8.1/data/ui/fonts/system" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:v8ui="http://v8.1c.ru/8.1/data/ui" xmlns:web="http://v8.1c.ru/8.1/data/ui/colors/web" xmlns:win="http://v8.1c.ru/8.1/data/ui/colors/windows" xmlns:xen="http://v8.1c.ru/8.3/xcf/enums" xmlns:xpr="http://v8.1c.ru/8.3/xcf/predef" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.22">
+	<Document uuid="c24ebe99-60ce-8026-9887-793a85e0cabf">
+		<InternalInfo>
+			<xr:GeneratedType name="DocumentObject.Orders" category="Object">
+				<xr:TypeId>1bd246b8-b26a-8ffd-bca7-863d71c0be92</xr:TypeId>
+				<xr:ValueId>93084991-6a4e-82d2-b02d-953cd0c7bced</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="DocumentRef.Orders" category="Ref">
+				<xr:TypeId>25721d71-8766-89b1-89a0-3a22c5297daf</xr:TypeId>
+				<xr:ValueId>89197f8d-37fd-8677-922d-e3ddd47dad37</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="DocumentSelection.Orders" category="Selection">
+				<xr:TypeId>02a4959c-ed77-8f28-bfd9-427a093ddba0</xr:TypeId>
+				<xr:ValueId>81c0cdb6-38b6-8b0f-ab19-f20dffdb84fd</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="DocumentList.Orders" category="List">
+				<xr:TypeId>307f5f13-7e5a-8e6d-8023-ace04f2e501e</xr:TypeId>
+				<xr:ValueId>74057e04-3dc2-8045-8891-de1cb1570ee8</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="DocumentManager.Orders" category="Manager">
+				<xr:TypeId>a1b920b7-bc99-8c68-b69c-95c2404e8fb5</xr:TypeId>
+				<xr:ValueId>7be5b1a9-a37a-8c2c-b988-d6881b971889</xr:ValueId>
+			</xr:GeneratedType>
+		</InternalInfo>
+		<Properties>
+			<ObjectBelonging>Adopted</ObjectBelonging>
+			<Name>Orders</Name>
+			<Comment/>
+			<ExtendedConfigurationObject>b5c088d1-b72e-52d5-a734-571833420af1</ExtendedConfigurationObject>
+			<ActionOnConfigurationObjectMissing>Auto</ActionOnConfigurationObjectMissing>
+			<RegisterRecords/>
+		</Properties>
+		<ChildObjects/>
+	</Document>
+</MetaDataObject>

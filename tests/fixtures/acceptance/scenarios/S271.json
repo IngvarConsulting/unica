@@ -1,7 +1,7 @@
 {
   "id": "S271",
   "area": "Проверки качества",
-  "task": "Проверить корень конфигурации без атрибута версии — формат считается 1.0 и проверка предупреждает о миграции",
+  "task": "Проверить корень конфигурации без атрибута версии — формат считается 1.0, проверка не читает его и называет известные форматы",
   "wire": [
     {
       "tool": "unica.check",
@@ -11,8 +11,8 @@
       "expect": [
         "ok"
       ],
-      "status": "passed",
-      "diagnostic": "formatMigrationAvailable",
+      "status": "failed",
+      "diagnostic": "formatVersionUnsupported",
       "validators": [
         "cf"
       ]
