@@ -1143,6 +1143,28 @@ pub fn parse_properties(
         op_index,
         binding.registry,
     )?;
+    if let PropertiesSite::Metadata {
+        kind: MetadataKind::EventSubscription,
+        ..
+    } = site
+    {
+        if let Some(handler) = payload
+            .get_mut("values")
+            .and_then(|values| values.get_mut("Handler"))
+        {
+            if let Some(at) = handler.as_str().filter(|value| value.contains(':')) {
+                let value = unica_metadata::subscription_handler_platform_value(target.source_set(), at)
+                    .ok_or_else(|| {
+                        ApplyPlanError::new(
+                            ApplyPlanErrorKind::BadValue,
+                            "Handler must be a CommonModule method address in the subscription's source set",
+                        )
+                        .at_path(format!("ops[{op_index}].args.values.Handler"))
+                    })?;
+                *handler = Value::String(value);
+            }
+        }
+    }
     let intent = unica_metadata::property_input::decode_properties(
         operation,
         site,

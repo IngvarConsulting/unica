@@ -265,6 +265,46 @@ fn metadata_parser_rejects_unknown_and_misplaced_fields_at_the_exact_operation_p
 }
 
 #[test]
+fn props_set_translates_canonical_subscription_handler_in_its_own_source_set() {
+    let fixture = MetadataFixture::new();
+    let plan = parse_metadata_plan_operation(
+        "props.set",
+        &json!({
+            "at": "main:EventSubscription.BeforeWrite",
+            "values": {"Handler": "main:CommonModule.Обработчики.Method.Записать"}
+        }),
+        3,
+        &fixture.binding,
+    )
+    .unwrap();
+    let unica_metadata_designer::decode::MetadataPlanKind::Edit {
+        operation: unica_metadata::MetaEditOperation::SetProperties { values },
+        ..
+    } = plan.kind
+    else {
+        panic!("expected properties operation");
+    };
+    assert_eq!(
+        values.entries(),
+        &[(
+            unica_metadata::MetaPropertyKey::Handler,
+            unica_metadata::MetaPropertyValue::String("CommonModule.Обработчики.Записать".into())
+        )]
+    );
+    let error = parse_metadata_plan_operation(
+        "props.set",
+        &json!({
+            "at": "main:EventSubscription.BeforeWrite",
+            "values": {"Handler": "ext:CommonModule.Обработчики.Method.Записать"}
+        }),
+        4,
+        &fixture.binding,
+    )
+    .unwrap_err();
+    assert_eq!(error.path(), Some("ops[4].args.values.Handler"));
+}
+
+#[test]
 fn properties_unknown_envelope_names_values_before_decoding_the_payload() {
     let fixture = MetadataFixture::new();
     for at in [
