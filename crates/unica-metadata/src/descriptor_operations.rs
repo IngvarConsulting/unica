@@ -585,6 +585,14 @@ impl PropertiesSite {
             }
             Self::Metadata { kind, source_kind } => {
                 properties = metadata_property_schemas(Some(kind));
+                if kind == MetadataKind::EventSubscription {
+                    properties["Handler"]["pattern"] = json!(
+                        r"^(?:[^:]+:CommonModule\.[^.]+\.Method\.[^.]+|CommonModule\.[^.]+\.[^.]+)$"
+                    );
+                    properties["Handler"]["description"] = json!(
+                        "Copy the Handler address from view. Use <set>:CommonModule.<module>.Method.<method> in the subscription's source set."
+                    );
+                }
                 // EditType is written only in a configuration's own objects.
                 if source_kind != SourceSetKind::Configuration {
                     properties.remove("EditType");

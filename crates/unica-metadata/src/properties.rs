@@ -304,18 +304,14 @@ impl MetaPropertyChanges {
                         )
                         .with_field(&field));
                     }
-                    MetaPropertyKey::Handler => {
-                        let parts = value.split('.').collect::<Vec<_>>();
-                        if !matches!(parts.as_slice(), ["CommonModule", module, procedure]
-                            if crate::identifier::is_1c_identifier(module)
-                                && crate::identifier::is_1c_identifier(procedure))
-                        {
-                            return Err(MetaDiagnostic::error(
-                                MetaDiagnosticCode::InvalidArguments,
-                                "Handler must use CommonModule.<Module>.<Procedure>",
-                            )
-                            .with_field(&field));
-                        }
+                    MetaPropertyKey::Handler
+                        if crate::event_subscription::platform_handler_parts(value).is_none() =>
+                    {
+                        return Err(MetaDiagnostic::error(
+                            MetaDiagnosticCode::InvalidArguments,
+                            "Handler must identify a common module method",
+                        )
+                        .with_field(&field));
                     }
                     _ => {}
                 }

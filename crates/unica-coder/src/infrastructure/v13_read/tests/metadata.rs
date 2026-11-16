@@ -1142,6 +1142,12 @@ fn every_reference_of_an_object_answers_in_one_relation_branch() {
         sources("main:EventSubscription.ПриЗаписи.Relation"),
         [("source".to_string(), "main:Catalog.Items".to_string())]
     );
+    let subscription = service.view(ViewRequest::new("main:EventSubscription.ПриЗаписи").unwrap());
+    let subscription = serde_json::to_value(subscription).unwrap();
+    assert_eq!(
+        subscription["data"]["props"]["Handler"],
+        "main:CommonModule.РеактивныйСервер.Method.ПриЗаписи"
+    );
     // Пакет XDTO бывает ссылкой и бывает пространством имён; в ветвь попадает
     // только адресуемый вариант, и это названная граница, а не потеря.
     assert_eq!(
