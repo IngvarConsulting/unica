@@ -2255,7 +2255,7 @@ fn form_compose_ops() -> Vec<Value> {
     let form = "main:Report.CorpusReport.Form.CorpusForm";
     vec![
         json!({"op": "props.set", "args": {"values": {
-            "Title": "Corpus form",
+            "Title": "ru = 'Corpus form'",
             "AutoTitle": false,
             "Width": 4_294_967_295_u64,
             "Height": 4_294_967_294_u64,
@@ -2272,7 +2272,7 @@ fn form_compose_ops() -> Vec<Value> {
             ]}
         ]}}),
         json!({"op": "command.add", "args": {"items": [
-            {"name": "CorpusAction", "title": "Corpus action"}
+            {"name": "CorpusAction", "title": "ru = 'Corpus action'"}
         ]}}),
         json!({"op": "item.add", "args": {"items": [
             {"name": "Header", "type": "Group", "orientation": "AlwaysHorizontal",

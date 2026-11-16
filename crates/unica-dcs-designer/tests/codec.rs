@@ -151,7 +151,10 @@ fn dcs_info_data_carries_sources_datasets_totals_parameters_and_variants() {
     // and the structure with its grouping fields.
     let variant = &data.variants[0];
     assert_eq!(variant.name, "Основной");
-    assert_eq!(variant.presentation.as_deref(), Some("Основной вариант"));
+    assert_eq!(
+        variant.presentation,
+        Some(serde_json::json!({"valueType":"xs:string","value":"Основной вариант"}))
+    );
     assert_eq!(variant.selection, vec!["Товар".to_string()]);
     assert_eq!(variant.filters, 1);
     assert_eq!(
@@ -251,4 +254,72 @@ fn native_dcs_validate_rejects_ref_type_bound_to_unexpected_namespace() {
         stdout.contains("uses prefix 'bad' bound to unexpected namespace 'http://example.com'"),
         "{stdout}"
     );
+}
+
+// rule: INV.SOURCE.LOCALIZED-STRING-NSTR
+#[test]
+fn dcs_localized_values_keep_all_languages_in_source_order() {
+    let source = r#"<DataCompositionSchema xmlns="http://v8.1c.ru/8.1/data-composition-system/schema"
+        xmlns:sets="http://v8.1c.ru/8.1/data-composition-system/settings"
+        xmlns:formats="http://v8.1c.ru/8.1/data-composition-system/core"
+        xmlns:v="http://v8.1c.ru/8.1/data/core"
+        xmlns:i="http://www.w3.org/2001/XMLSchema-instance"
+        xmlns:x="http://www.w3.org/2001/XMLSchema">
+        <parameter><name>Label</name><value i:type=" v:LocalStringType ">
+          <v:item><v:lang>en</v:lang><v:content>Don't&#13;trim</v:content></v:item>
+          <v:item><v:lang>ru</v:lang><v:content/></v:item>
+        </value></parameter>
+        <parameter><name>Empty</name><value i:type="x:string"/></parameter>
+        <parameter><name>Null</name><value i:type="x:string" i:nil="true"/></parameter>
+        <settingsVariant><sets:name>Variant</sets:name>
+          <sets:presentation i:type="v:LocalStringType">
+            <v:item><v:lang>en</v:lang><v:content>Revenue</v:content></v:item>
+            <v:item><v:lang>ru</v:lang><v:content>Выручка</v:content></v:item>
+          </sets:presentation>
+          <sets:settings><sets:outputParameters>
+            <formats:item><formats:parameter>Label</formats:parameter>
+              <formats:value i:type="v:LocalStringType">
+                <v:item><v:lang>en</v:lang><v:content>Revenue</v:content></v:item>
+                <v:item><v:lang>ru</v:lang><v:content>Выручка</v:content></v:item>
+              </formats:value>
+            </formats:item>
+          </sets:outputParameters></sets:settings>
+        </settingsVariant>
+    </DataCompositionSchema>"#;
+    let facts = read(source);
+    let parameter = &facts.parameters[0];
+    assert_eq!(parameter.value_type, Some("v8:LocalStringType"));
+    assert_eq!(
+        parameter.value.as_ref().and_then(serde_json::Value::as_str),
+        Some("en = 'Don''t\rtrim'; ru = ''")
+    );
+    assert_eq!(facts.parameters[1].value_type, Some("xs:string"));
+    assert_eq!(facts.parameters[1].value, Some(json!("")));
+    assert_eq!(facts.parameters[2].value_type, Some("xs:string"));
+    assert_eq!(facts.parameters[2].value, Some(serde_json::Value::Null));
+    let variant = &facts.variants[0];
+    let expected = "en = 'Revenue'; ru = 'Выручка'";
+    assert_eq!(
+        variant
+            .presentation
+            .as_ref()
+            .and_then(serde_json::Value::as_str),
+        Some(expected)
+    );
+    let setting = &variant.setting_items[0];
+    assert_eq!(setting["valueType"], "v8:LocalStringType");
+    assert_eq!(setting["value"], expected);
+
+    for invalid in [
+        "<v:item><v:content>Missing language</v:content></v:item>",
+        "<v:item><v:lang>en</v:lang><v:content>Duplicate</v:content></v:item>",
+        "<v:item><v:lang>de</v:lang></v:item>",
+        "<sets:item/>",
+    ] {
+        let malformed = source.replace(
+            "</sets:presentation>",
+            &format!("{invalid}</sets:presentation>"),
+        );
+        assert_eq!(read(&malformed).variants[0].presentation, None);
+    }
 }

@@ -1736,7 +1736,7 @@ fn canonical_template_read_warns_while_writes_keep_the_exact_owner_profile() {
             };
             let arguments = serde_json::json!({
                 "at": format!("{at}.DataSet.НаборДанных1"),
-                "ops": [{"op": "field.add", "args": {"items": [{"dataPath": "Other", "title": "Other"}]}}]
+                "ops": [{"op": "field.add", "args": {"items": [{"dataPath": "Other", "title": "ru = 'Other'"}]}}]
             });
             let preview = call(ToolIdentity::Apply, arguments.clone());
             // External source sets have read/check support; the existing

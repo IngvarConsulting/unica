@@ -1,8 +1,5 @@
 ---
 id: INV.SOURCE.LOCALIZED-STRING-NSTR
-gap:
-  - https://github.com/IngvarConsulting/unica/issues/3115
-  - https://github.com/IngvarConsulting/unica/issues/3116
 ---
 
 # Многоязычная строка передаётся в форме НСтр

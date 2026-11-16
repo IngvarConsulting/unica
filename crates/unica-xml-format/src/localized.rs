@@ -288,9 +288,7 @@ pub fn replace_language_values(
             let language = crate::read::direct_text(core_child(item, "lang")?)
                 .trim()
                 .to_string();
-            let content = core_child(item, "content")
-                .map(crate::read::direct_text)
-                .unwrap_or_default();
+            let content = core_child(item, "content").map(crate::read::direct_text);
             Some((language, content))
         })
         .collect::<Vec<_>>();
@@ -320,7 +318,7 @@ pub fn replace_language_values(
         let unchanged = in_place
             && existing
                 .iter()
-                .any(|(present, content)| present == language && content == text);
+                .any(|(present, content)| present == language && content.as_ref() == Some(text));
         if !unchanged {
             steps.push((language.clone(), Some(text.clone())));
         }

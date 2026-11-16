@@ -155,6 +155,10 @@ pub(super) fn read(command: roxmltree::Node<'_, '_>) -> FormInfoCommand {
             })
             .collect(),
         title: form_child_text(command, "Title"),
+        localized: form_localized_properties(
+            command,
+            &[("Title", "title"), ("ToolTip", "tooltip")],
+        ),
         tooltip: form_child_text(command, "ToolTip"),
         shortcut: form_child_text(command, "Shortcut"),
         picture: picture_ref,

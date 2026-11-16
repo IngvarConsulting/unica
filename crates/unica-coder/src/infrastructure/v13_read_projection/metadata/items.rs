@@ -155,6 +155,22 @@ pub(super) fn metadata_item_node(
             );
         }
     }
+    if kind == NodeKind::StandardTabularSection {
+        for (field, key) in [("synonym", "Synonym"), ("toolTip", "ToolTip")] {
+            if let Some(values) = item.get(field) {
+                let observed = serde_json::json!({"kind": "localizedString", "values": values});
+                place_prop(
+                    &mut props,
+                    &mut limits,
+                    address,
+                    key,
+                    &observed,
+                    true,
+                    &format!("metadata standard tabular section property {key}"),
+                );
+            }
+        }
+    }
     for key in [
         "accountingFlags",
         "extDimensionTypes",

@@ -108,10 +108,7 @@
                     "ЦветТекста": "web:Red",
                     "Формат": {
                       "valueType": "v8:LocalStringType",
-                      "value": {
-                        "ru": "ЧДЦ=2",
-                        "en": "ND=2"
-                      }
+                      "value": "ru = 'ЧДЦ=2'; en = 'ND=2'"
                     }
                   }
                 }
@@ -123,7 +120,7 @@
             "args": {
               "values": {
                 "name": "Заголовок",
-                "value": "Отчёт",
+                "value": "ru = 'Отчёт'",
                 "use": false
               }
             }
@@ -293,10 +290,7 @@
               "values": {
                 "name": "Заголовок",
                 "valueType": "v8:LocalStringType",
-                "value": {
-                  "ru": "Новый отчёт",
-                  "en": "New report"
-                }
+                "value": "ru = 'Новый отчёт'; en = 'New report'"
               }
             }
           },
@@ -413,6 +407,32 @@
       },
       "expect": [
         "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/name",
+          "eq": "Заголовок"
+        },
+        {
+          "pointer": "/data/items/0/valueType",
+          "eq": "v8:LocalStringType"
+        },
+        {
+          "pointer": "/data/items/0/value",
+          "eq": "ru = 'Новый отчёт'; en = 'New report'"
+        },
+        {
+          "pointer": "/data/items/2/name",
+          "eq": "МакетОформления"
+        },
+        {
+          "pointer": "/data/items/2/valueType",
+          "eq": "xs:string"
+        },
+        {
+          "pointer": "/data/items/2/value",
+          "eq": "ОформлениеОтчетовЧерноБелый"
+        }
       ]
     }
   ]
