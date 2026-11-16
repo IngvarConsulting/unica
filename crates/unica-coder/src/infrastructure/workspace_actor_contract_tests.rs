@@ -589,7 +589,6 @@ fn prepared_apply_effects_are_retained_from_planner_to_result() {
     unica_workspace::actor::event_contract_tests::prepared_apply_effects_are_retained_from_planner_to_result(policies(), plan_events);
 }
 
-/// rule: INV.CACHE.REPORTED-EFFECTS
 /// rule: INV.CACHE.RETAINED-APPLY-EFFECT-RESULT
 /// rule: INV.SOURCE.RETAINED-APPLY-WRITE-FREE
 #[test]

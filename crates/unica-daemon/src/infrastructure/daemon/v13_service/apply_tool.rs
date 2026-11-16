@@ -380,7 +380,6 @@ impl CanonicalV13ReadService {
             "operationCount": request.ops().len(),
             "planHash": plan_hash,
             "effects": publication.effects().events().len(),
-            "cache": publication.effects().cache(),
         }));
         if !operations.is_empty() {
             result.data.as_mut().expect("apply data exists")["operations"] =
