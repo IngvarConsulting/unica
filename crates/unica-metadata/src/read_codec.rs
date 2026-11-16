@@ -38,6 +38,12 @@ pub trait MetadataReadCodec: Send + Sync {
 
     /// Комментарий объекта вида `kind`. Комментария нет — `None`.
     fn descriptor_comment(&self, descriptor: &[u8], kind: &str) -> Result<Option<String>, String>;
+    fn descriptor_localized_property(
+        &self,
+        descriptor: &str,
+        kind: &str,
+        name: &str,
+    ) -> Result<Option<String>, String>;
 
     /// Код языка из дескриптора `Language`.
     fn language_code(&self, descriptor: &[u8]) -> Result<String, String>;

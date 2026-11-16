@@ -106,7 +106,7 @@ fn configuration_root_shows_the_properties_of_its_line() {
         let root = service.view(ViewRequest::new("main:Configuration").unwrap());
         let props = root.data.as_ref().unwrap()["props"].as_object().unwrap();
         assert_eq!(props["format"], format);
-        assert!(props["caption"].is_null(), "{format}");
+        assert!(props.get("caption").is_none(), "{format}");
         let properties = &props["properties"];
         let observed = [
             "mainWindowInterfaceVariant",
@@ -227,7 +227,7 @@ fn a_palette_color_is_shown_in_the_lines_that_have_it() {
         );
         let props = &color.data.as_ref().unwrap()["props"];
         assert_eq!(props["kind"], "PaletteColor", "{line}");
-        assert_eq!(props["Synonym"], "Проба", "{line}");
+        assert_eq!(props["Synonym"], "ru = 'Проба'", "{line}");
         assert_eq!(props["Color"], "#1A2B3C", "{line}");
         assert_eq!(props["Comment"], "all_kinds", "{line}");
     }
@@ -292,7 +292,7 @@ fn a_queue_is_shown_in_the_line_that_has_it() {
         );
         let data = queue.data.as_ref().unwrap();
         assert_eq!(data["props"]["kind"], "Queue", "{line}");
-        assert_eq!(data["props"]["Synonym"], "Проба", "{line}");
+        assert_eq!(data["props"]["Synonym"], "ru = 'Проба'", "{line}");
         assert_eq!(data["props"]["Transactioned"], true, "{line}");
         assert_eq!(data["props"]["ProcessingPortionSize"], 1000, "{line}");
         assert_eq!(data["props"]["AutoProcessing"], true, "{line}");

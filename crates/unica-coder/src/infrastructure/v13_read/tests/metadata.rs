@@ -98,14 +98,18 @@ fn catalog_standard_attribute_properties_reach_collection_and_detail() {
                                 .text()
                                 .unwrap_or("")
                         };
-                        json!({"language":text("lang"),"content":text("content")})
+                        format!(
+                            "{} = '{}'",
+                            text("lang"),
+                            text("content").replace('\'', "''")
+                        )
                     })
                     .collect::<Vec<_>>();
                 assert!(
                     !expected.is_empty(),
                     "the fixture must carry {key} translations"
                 );
-                assert_eq!(value, json!(expected));
+                assert_eq!(value, json!(expected.join("; ")));
             }
         }
     }
@@ -343,7 +347,7 @@ fn metadata_long_type_read_preserves_other_facts_and_names_the_size_limit() {
         && limit.as_str().unwrap().contains("2048")));
     assert!(data["props"].get("type").is_none());
     assert_eq!(data["props"]["required"], false);
-    assert_eq!(data["props"]["synonym"], "Long");
+    assert_eq!(data["props"]["synonym"], "ru = 'Long'");
     let control = service
         .view(ViewRequest::new("main:AccumulationRegister.Movements.Dimension.Small").unwrap());
     assert!(control.ok, "the call failed");

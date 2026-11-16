@@ -230,8 +230,9 @@ pub(super) fn metadata_item_node(
         kind.as_str(),
         item.get("synonym")
             .and_then(Value::as_str)
-            .or_else(|| item.get("name").and_then(Value::as_str))
-            .unwrap_or(kind.as_str()),
+            .and_then(super::super::localized_display_text)
+            .or_else(|| item.get("name").and_then(Value::as_str).map(str::to_string))
+            .unwrap_or_else(|| kind.as_str().to_string()),
         props,
     )
     .with_branches(branches)

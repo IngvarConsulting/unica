@@ -117,7 +117,7 @@ fn replace_language_value_with_empty(
     let existing = &source[range.clone()];
     let local = |inner: std::ops::Range<usize>| inner.start - range.start..inner.end - range.start;
     let qname = qualified_name(source, property);
-    let escaped = crate::text::escape_xml(text);
+    let escaped = crate::text::escape_xml(text).replace('\r', "&#13;");
     let lang_text = crate::text::escape_xml(lang);
     let items = property
         .children()
@@ -250,6 +250,102 @@ fn replace_language_value_with_empty(
         }
     }
     updated
+}
+
+/// The replacement of a multilingual `property` of `source` that holds exactly
+/// `values` (language, text) in the given order: items of other languages are
+/// removed, items of listed languages are set and new ones appended. Items
+/// whose text stays keep their bytes, so the order is kept as long as the
+/// listed order agrees with the source; otherwise the items are rewritten in
+/// the listed order. An empty text keeps its language with empty content; an
+/// empty `values` empties the property. Languages must be distinct and
+/// non-empty.
+pub fn replace_language_values(
+    source: &str,
+    property: roxmltree::Node<'_, '_>,
+    indent: &str,
+    values: &[(String, String)],
+) -> String {
+    fn core_child<'a, 'input>(
+        node: roxmltree::Node<'a, 'input>,
+        name: &str,
+    ) -> Option<roxmltree::Node<'a, 'input>> {
+        node.children().find(|child| {
+            child.is_element()
+                && child.tag_name().namespace() == Some(DATA_CORE_NS)
+                && child.tag_name().name() == name
+        })
+    }
+    let start = property.range().start;
+    let existing = property
+        .children()
+        .filter(|child| {
+            child.is_element()
+                && child.tag_name().namespace() == Some(DATA_CORE_NS)
+                && child.tag_name().name() == "item"
+        })
+        .filter_map(|item| {
+            let language = crate::read::direct_text(core_child(item, "lang")?)
+                .trim()
+                .to_string();
+            let content = core_child(item, "content")
+                .map(crate::read::direct_text)
+                .unwrap_or_default();
+            Some((language, content))
+        })
+        .collect::<Vec<_>>();
+    let listed = |language: &str| values.iter().any(|(listed, _)| listed == language);
+    let present = |language: &str| existing.iter().any(|(present, _)| present == language);
+    // Kept items keep their place only when the listed order agrees with the
+    // source and every new language comes after them.
+    let kept = existing
+        .iter()
+        .map(|(language, _)| language.as_str())
+        .filter(|language| listed(language));
+    let in_place = kept.eq(values
+        .iter()
+        .map(|(language, _)| language.as_str())
+        .filter(|language| present(language)))
+        && values
+            .iter()
+            .skip_while(|(language, _)| present(language))
+            .all(|(language, _)| !present(language));
+    let mut steps: Vec<(String, Option<String>)> = Vec::new();
+    for (language, _) in &existing {
+        if !in_place || !listed(language) {
+            steps.push((language.clone(), None));
+        }
+    }
+    for (language, text) in values {
+        let unchanged = in_place
+            && existing
+                .iter()
+                .any(|(present, content)| present == language && content == text);
+        if !unchanged {
+            steps.push((language.clone(), Some(text.clone())));
+        }
+    }
+    let mut current = source.to_string();
+    let mut end = property.range().end;
+    for (language, text) in &steps {
+        let document = roxmltree::Document::parse(&current)
+            .expect("a replacement of a parsed property stays well-formed");
+        let node = document
+            .descendants()
+            .find(|node| node.is_element() && node.range().start == start)
+            .expect("the property keeps its start");
+        let replacement = match text {
+            Some(text) => {
+                replace_language_value_keeping_empty(&current, node, indent, language, text)
+            }
+            None => replace_language_value(&current, node, indent, language, ""),
+        };
+        let range = node.range();
+        end = range.start + replacement.len();
+        drop(document);
+        current.replace_range(range, &replacement);
+    }
+    current[start..end].to_string()
 }
 
 #[cfg(test)]
