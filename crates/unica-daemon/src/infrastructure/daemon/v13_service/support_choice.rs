@@ -16,9 +16,8 @@ const APPLY_TOOL: &str = "unica.apply";
 const EDITABLE: &str = "editable";
 const OFF_SUPPORT: &str = "off-support";
 
-/// The question about `lock` for the refused `call`, or none when no
-/// support operation can lift it: a rule addresses a top-level object, never
-/// the configuration root.
+/// The question about a vendor object's lock. The configuration root
+/// offers an explicit support operation in the refusal.
 pub(super) fn support_choice(lock: &SupportLock, call: &Map<String, Value>) -> Option<HumanChoice> {
     if lock.owner == "Configuration" {
         return None;

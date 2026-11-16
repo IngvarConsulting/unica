@@ -174,6 +174,9 @@ pub trait MetadataReadCodec: Send + Sync {
     /// UUID корневого объекта в дескрипторе: по нему ищется правило поддержки.
     fn support_root_uuid(&self, descriptor: &[u8]) -> Option<String>;
 
+    /// UUID самого корня конфигурации, чья запись поддержки проверяется.
+    fn configuration_support_uuid(&self, descriptor: &[u8]) -> Option<String>;
+
     /// Потоковый разбор `Ext/ParentConfigurations.bin`. Файл читает
     /// вызывающий и отдаёт его частями.
     fn support_stream(&self) -> Box<dyn SupportStateStream>;
