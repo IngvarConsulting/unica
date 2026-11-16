@@ -182,6 +182,10 @@ pub(crate) fn properties(reader: LogicalReader, kind: NodeKind) -> &'static [Pro
         (LogicalReader::Xdto, NodeKind::XdtoPackage) => {
             const {
                 &[
+                    special(observed(
+                        "Synonym",
+                        "Preferred-language text from the package metadata descriptor; no synonym writer",
+                    )),
                     special(write("Comment", "props.set")),
                     observed(
                         "targetNamespace",

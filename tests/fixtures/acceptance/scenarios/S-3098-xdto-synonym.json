@@ -1,0 +1,196 @@
+{
+  "id": "S-3098-xdto-synonym",
+  "issue": 3098,
+  "area": "Навигация по исходникам",
+  "task": "Прочитать Synonym пакета XDTO из XML: многоязычный текст, пустое и отсутствующее значение, длинное свойство целиком без изменения дескриптора и Package.bin",
+  "workspace": "tests/fixtures/acceptance/workspace-xdto-synonym",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage.Localized"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Synonym",
+          "eq": "Договоры & акты"
+        },
+        {
+          "pointer": "/data/props/Comment",
+          "eq": "Package comment"
+        },
+        {
+          "pointer": "/data/props/targetNamespace",
+          "eq": "urn:unica:anonymous"
+        }
+      ],
+      "captures": {
+        "Localized_descriptor": {
+          "kind": "sha256",
+          "file": "src/XDTOPackages/Localized.xml"
+        },
+        "Localized_package": {
+          "kind": "sha256",
+          "file": "src/XDTOPackages/Localized/Ext/Package.bin"
+        },
+        "Empty_descriptor": {
+          "kind": "sha256",
+          "file": "src/XDTOPackages/Empty.xml"
+        },
+        "Empty_package": {
+          "kind": "sha256",
+          "file": "src/XDTOPackages/Empty/Ext/Package.bin"
+        },
+        "Absent_descriptor": {
+          "kind": "sha256",
+          "file": "src/XDTOPackages/Absent.xml"
+        },
+        "Absent_package": {
+          "kind": "sha256",
+          "file": "src/XDTOPackages/Absent/Ext/Package.bin"
+        },
+        "Long_descriptor": {
+          "kind": "sha256",
+          "file": "src/XDTOPackages/Long.xml"
+        },
+        "Long_package": {
+          "kind": "sha256",
+          "file": "src/XDTOPackages/Long/Ext/Package.bin"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage.Empty"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Synonym",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/props/Comment",
+          "eq": "Package comment"
+        },
+        {
+          "pointer": "/data/props/targetNamespace",
+          "eq": "urn:unica:anonymous"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage.Absent"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Synonym",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/Comment",
+          "eq": "Package comment"
+        },
+        {
+          "pointer": "/data/props/targetNamespace",
+          "eq": "urn:unica:anonymous"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage.Long"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Synonym",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/Comment",
+          "eq": "Package comment"
+        },
+        {
+          "pointer": "/data/props/targetNamespace",
+          "eq": "urn:unica:anonymous"
+        },
+        {
+          "pointer": "/data/limits",
+          "contains": "metadata synonym exceeds the compact property limit of 2048 bytes; read it whole at main:XDTOPackage.Long.Props.Synonym"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage.Long.Props.Synonym"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Synonym",
+          "eq": "ЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯ"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/XDTOPackages/Localized.xml",
+          "eq": "$capture.Localized_descriptor"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/XDTOPackages/Localized/Ext/Package.bin",
+          "eq": "$capture.Localized_package"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/XDTOPackages/Empty.xml",
+          "eq": "$capture.Empty_descriptor"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/XDTOPackages/Empty/Ext/Package.bin",
+          "eq": "$capture.Empty_package"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/XDTOPackages/Absent.xml",
+          "eq": "$capture.Absent_descriptor"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/XDTOPackages/Absent/Ext/Package.bin",
+          "eq": "$capture.Absent_package"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/XDTOPackages/Long.xml",
+          "eq": "$capture.Long_descriptor"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/XDTOPackages/Long/Ext/Package.bin",
+          "eq": "$capture.Long_package"
+        }
+      ]
+    }
+  ]
+}
