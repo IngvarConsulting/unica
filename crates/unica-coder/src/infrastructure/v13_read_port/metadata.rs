@@ -225,6 +225,16 @@ impl ProviderReadAuthority {
                 }
             }
         }
+        if evidence.artifact_kind() == "CommonAttribute" {
+            if let Err(message) = crate::infrastructure::family_codecs::metadata_read_codec()
+                .common_attribute(&descriptor, &mut payload)
+            {
+                payload["unreadable"] = json!([{
+                    "field": "properties",
+                    "message": message,
+                }]);
+            }
+        }
         if evidence.artifact_kind() == "WSReference" {
             match crate::infrastructure::family_codecs::metadata_read_codec()
                 .ws_reference_location(&descriptor)

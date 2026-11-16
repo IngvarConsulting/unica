@@ -70,6 +70,10 @@ impl MetadataReadCodec for DesignerMetadataReadCodec {
         })
     }
 
+    fn common_attribute(&self, descriptor: &[u8], payload: &mut Value) -> Result<(), String> {
+        crate::common_attribute_read::enrich_common_attribute(descriptor, payload)
+    }
+
     fn style_item(&self, descriptor: &[u8], payload: &mut Value) -> Result<(), String> {
         crate::style_item_read::enrich_style_item(descriptor, payload)
     }

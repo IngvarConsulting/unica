@@ -53,6 +53,10 @@ pub trait MetadataReadCodec: Send + Sync {
     /// чтение остальных и попадает в `unreadable`.
     fn numerator(&self, descriptor: &[u8]) -> Result<NumeratorFacts, String>;
 
+    /// Флаги индексирования, истории и ввода общего реквизита.
+    /// Нечитаемые поля попадают в `unreadable`, остальные сохраняются.
+    fn common_attribute(&self, descriptor: &[u8], payload: &mut Value) -> Result<(), String>;
+
     /// Дополняет ответ чтения элемента стиля его видом и значением.
     fn style_item(&self, descriptor: &[u8], payload: &mut Value) -> Result<(), String>;
 
