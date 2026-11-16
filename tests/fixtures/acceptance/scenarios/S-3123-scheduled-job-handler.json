@@ -97,74 +97,74 @@
       ],
       "fileAssertions": [
         {
-          "file": "other/CommonModules/MonthClose/Ext/Module.bsl",
           "kind": "sha256",
-          "eq": "$capture.file0"
+          "eq": "$capture.file0",
+          "path": "other/CommonModules/MonthClose/Ext/Module.bsl"
         },
         {
-          "file": "other/CommonModules/MonthClose.xml",
           "kind": "sha256",
-          "eq": "$capture.file1"
+          "eq": "$capture.file1",
+          "path": "other/CommonModules/MonthClose.xml"
         },
         {
-          "file": "other/Configuration.xml",
           "kind": "sha256",
-          "eq": "$capture.file2"
+          "eq": "$capture.file2",
+          "path": "other/Configuration.xml"
         },
         {
-          "file": "other/ScheduledJobs/Foreign.xml",
           "kind": "sha256",
-          "eq": "$capture.file3"
+          "eq": "$capture.file3",
+          "path": "other/ScheduledJobs/Foreign.xml"
         },
         {
-          "file": "src/CommonModules/MonthClose/Ext/Module.bsl",
           "kind": "sha256",
-          "eq": "$capture.file4"
+          "eq": "$capture.file4",
+          "path": "src/CommonModules/MonthClose/Ext/Module.bsl"
         },
         {
-          "file": "src/CommonModules/MonthClose.xml",
           "kind": "sha256",
-          "eq": "$capture.file5"
+          "eq": "$capture.file5",
+          "path": "src/CommonModules/MonthClose.xml"
         },
         {
-          "file": "src/Configuration.xml",
           "kind": "sha256",
-          "eq": "$capture.file6"
+          "eq": "$capture.file6",
+          "path": "src/Configuration.xml"
         },
         {
-          "file": "src/ScheduledJobs/Foreign.xml",
           "kind": "sha256",
-          "eq": "$capture.file7"
+          "eq": "$capture.file7",
+          "path": "src/ScheduledJobs/Foreign.xml"
         },
         {
-          "file": "src/ScheduledJobs/Market/Ext/Schedule.xml",
           "kind": "sha256",
-          "eq": "$capture.file8"
+          "eq": "$capture.file8",
+          "path": "src/ScheduledJobs/Market/Ext/Schedule.xml"
         },
         {
-          "file": "src/ScheduledJobs/Market.xml",
           "kind": "sha256",
-          "eq": "$capture.file9"
+          "eq": "$capture.file9",
+          "path": "src/ScheduledJobs/Market.xml"
         },
         {
-          "file": "src/ScheduledJobs/Missing.xml",
           "kind": "sha256",
-          "eq": "$capture.file10"
+          "eq": "$capture.file10",
+          "path": "src/ScheduledJobs/Missing.xml"
         },
         {
-          "file": "src/ScheduledJobs/MonthClose/Ext/Schedule.xml",
           "kind": "sha256",
-          "eq": "$capture.file11"
+          "eq": "$capture.file11",
+          "path": "src/ScheduledJobs/MonthClose/Ext/Schedule.xml"
         },
         {
-          "file": "src/ScheduledJobs/MonthClose.xml",
           "kind": "sha256",
-          "eq": "$capture.file12"
+          "eq": "$capture.file12",
+          "path": "src/ScheduledJobs/MonthClose.xml"
         },
         {
-          "file": "v8project.yaml",
           "kind": "sha256",
-          "eq": "$capture.file13"
+          "eq": "$capture.file13",
+          "path": "v8project.yaml"
         }
       ]
     },
@@ -184,74 +184,74 @@
       ],
       "fileAssertions": [
         {
-          "file": "other/CommonModules/MonthClose/Ext/Module.bsl",
           "kind": "sha256",
-          "eq": "$capture.file0"
+          "eq": "$capture.file0",
+          "path": "other/CommonModules/MonthClose/Ext/Module.bsl"
         },
         {
-          "file": "other/CommonModules/MonthClose.xml",
           "kind": "sha256",
-          "eq": "$capture.file1"
+          "eq": "$capture.file1",
+          "path": "other/CommonModules/MonthClose.xml"
         },
         {
-          "file": "other/Configuration.xml",
           "kind": "sha256",
-          "eq": "$capture.file2"
+          "eq": "$capture.file2",
+          "path": "other/Configuration.xml"
         },
         {
-          "file": "other/ScheduledJobs/Foreign.xml",
           "kind": "sha256",
-          "eq": "$capture.file3"
+          "eq": "$capture.file3",
+          "path": "other/ScheduledJobs/Foreign.xml"
         },
         {
-          "file": "src/CommonModules/MonthClose/Ext/Module.bsl",
           "kind": "sha256",
-          "eq": "$capture.file4"
+          "eq": "$capture.file4",
+          "path": "src/CommonModules/MonthClose/Ext/Module.bsl"
         },
         {
-          "file": "src/CommonModules/MonthClose.xml",
           "kind": "sha256",
-          "eq": "$capture.file5"
+          "eq": "$capture.file5",
+          "path": "src/CommonModules/MonthClose.xml"
         },
         {
-          "file": "src/Configuration.xml",
           "kind": "sha256",
-          "eq": "$capture.file6"
+          "eq": "$capture.file6",
+          "path": "src/Configuration.xml"
         },
         {
-          "file": "src/ScheduledJobs/Foreign.xml",
           "kind": "sha256",
-          "eq": "$capture.file7"
+          "eq": "$capture.file7",
+          "path": "src/ScheduledJobs/Foreign.xml"
         },
         {
-          "file": "src/ScheduledJobs/Market/Ext/Schedule.xml",
           "kind": "sha256",
-          "eq": "$capture.file8"
+          "eq": "$capture.file8",
+          "path": "src/ScheduledJobs/Market/Ext/Schedule.xml"
         },
         {
-          "file": "src/ScheduledJobs/Market.xml",
           "kind": "sha256",
-          "eq": "$capture.file9"
+          "eq": "$capture.file9",
+          "path": "src/ScheduledJobs/Market.xml"
         },
         {
-          "file": "src/ScheduledJobs/Missing.xml",
           "kind": "sha256",
-          "eq": "$capture.file10"
+          "eq": "$capture.file10",
+          "path": "src/ScheduledJobs/Missing.xml"
         },
         {
-          "file": "src/ScheduledJobs/MonthClose/Ext/Schedule.xml",
           "kind": "sha256",
-          "eq": "$capture.file11"
+          "eq": "$capture.file11",
+          "path": "src/ScheduledJobs/MonthClose/Ext/Schedule.xml"
         },
         {
-          "file": "src/ScheduledJobs/MonthClose.xml",
           "kind": "sha256",
-          "eq": "$capture.file12"
+          "eq": "$capture.file12",
+          "path": "src/ScheduledJobs/MonthClose.xml"
         },
         {
-          "file": "v8project.yaml",
           "kind": "sha256",
-          "eq": "$capture.file13"
+          "eq": "$capture.file13",
+          "path": "v8project.yaml"
         }
       ]
     },
@@ -271,74 +271,74 @@
       ],
       "fileAssertions": [
         {
-          "file": "other/CommonModules/MonthClose/Ext/Module.bsl",
           "kind": "sha256",
-          "eq": "$capture.file0"
+          "eq": "$capture.file0",
+          "path": "other/CommonModules/MonthClose/Ext/Module.bsl"
         },
         {
-          "file": "other/CommonModules/MonthClose.xml",
           "kind": "sha256",
-          "eq": "$capture.file1"
+          "eq": "$capture.file1",
+          "path": "other/CommonModules/MonthClose.xml"
         },
         {
-          "file": "other/Configuration.xml",
           "kind": "sha256",
-          "eq": "$capture.file2"
+          "eq": "$capture.file2",
+          "path": "other/Configuration.xml"
         },
         {
-          "file": "other/ScheduledJobs/Foreign.xml",
           "kind": "sha256",
-          "eq": "$capture.file3"
+          "eq": "$capture.file3",
+          "path": "other/ScheduledJobs/Foreign.xml"
         },
         {
-          "file": "src/CommonModules/MonthClose/Ext/Module.bsl",
           "kind": "sha256",
-          "eq": "$capture.file4"
+          "eq": "$capture.file4",
+          "path": "src/CommonModules/MonthClose/Ext/Module.bsl"
         },
         {
-          "file": "src/CommonModules/MonthClose.xml",
           "kind": "sha256",
-          "eq": "$capture.file5"
+          "eq": "$capture.file5",
+          "path": "src/CommonModules/MonthClose.xml"
         },
         {
-          "file": "src/Configuration.xml",
           "kind": "sha256",
-          "eq": "$capture.file6"
+          "eq": "$capture.file6",
+          "path": "src/Configuration.xml"
         },
         {
-          "file": "src/ScheduledJobs/Foreign.xml",
           "kind": "sha256",
-          "eq": "$capture.file7"
+          "eq": "$capture.file7",
+          "path": "src/ScheduledJobs/Foreign.xml"
         },
         {
-          "file": "src/ScheduledJobs/Market/Ext/Schedule.xml",
           "kind": "sha256",
-          "eq": "$capture.file8"
+          "eq": "$capture.file8",
+          "path": "src/ScheduledJobs/Market/Ext/Schedule.xml"
         },
         {
-          "file": "src/ScheduledJobs/Market.xml",
           "kind": "sha256",
-          "eq": "$capture.file9"
+          "eq": "$capture.file9",
+          "path": "src/ScheduledJobs/Market.xml"
         },
         {
-          "file": "src/ScheduledJobs/Missing.xml",
           "kind": "sha256",
-          "eq": "$capture.file10"
+          "eq": "$capture.file10",
+          "path": "src/ScheduledJobs/Missing.xml"
         },
         {
-          "file": "src/ScheduledJobs/MonthClose/Ext/Schedule.xml",
           "kind": "sha256",
-          "eq": "$capture.file11"
+          "eq": "$capture.file11",
+          "path": "src/ScheduledJobs/MonthClose/Ext/Schedule.xml"
         },
         {
-          "file": "src/ScheduledJobs/MonthClose.xml",
           "kind": "sha256",
-          "eq": "$capture.file12"
+          "eq": "$capture.file12",
+          "path": "src/ScheduledJobs/MonthClose.xml"
         },
         {
-          "file": "v8project.yaml",
           "kind": "sha256",
-          "eq": "$capture.file13"
+          "eq": "$capture.file13",
+          "path": "v8project.yaml"
         }
       ]
     },
@@ -363,74 +363,74 @@
       },
       "fileAssertions": [
         {
-          "file": "other/CommonModules/MonthClose/Ext/Module.bsl",
           "kind": "sha256",
-          "eq": "$capture.file0"
+          "eq": "$capture.file0",
+          "path": "other/CommonModules/MonthClose/Ext/Module.bsl"
         },
         {
-          "file": "other/CommonModules/MonthClose.xml",
           "kind": "sha256",
-          "eq": "$capture.file1"
+          "eq": "$capture.file1",
+          "path": "other/CommonModules/MonthClose.xml"
         },
         {
-          "file": "other/Configuration.xml",
           "kind": "sha256",
-          "eq": "$capture.file2"
+          "eq": "$capture.file2",
+          "path": "other/Configuration.xml"
         },
         {
-          "file": "other/ScheduledJobs/Foreign.xml",
           "kind": "sha256",
-          "eq": "$capture.file3"
+          "eq": "$capture.file3",
+          "path": "other/ScheduledJobs/Foreign.xml"
         },
         {
-          "file": "src/CommonModules/MonthClose/Ext/Module.bsl",
           "kind": "sha256",
-          "eq": "$capture.file4"
+          "eq": "$capture.file4",
+          "path": "src/CommonModules/MonthClose/Ext/Module.bsl"
         },
         {
-          "file": "src/CommonModules/MonthClose.xml",
           "kind": "sha256",
-          "eq": "$capture.file5"
+          "eq": "$capture.file5",
+          "path": "src/CommonModules/MonthClose.xml"
         },
         {
-          "file": "src/Configuration.xml",
           "kind": "sha256",
-          "eq": "$capture.file6"
+          "eq": "$capture.file6",
+          "path": "src/Configuration.xml"
         },
         {
-          "file": "src/ScheduledJobs/Foreign.xml",
           "kind": "sha256",
-          "eq": "$capture.file7"
+          "eq": "$capture.file7",
+          "path": "src/ScheduledJobs/Foreign.xml"
         },
         {
-          "file": "src/ScheduledJobs/Market/Ext/Schedule.xml",
           "kind": "sha256",
-          "eq": "$capture.file8"
+          "eq": "$capture.file8",
+          "path": "src/ScheduledJobs/Market/Ext/Schedule.xml"
         },
         {
-          "file": "src/ScheduledJobs/Market.xml",
           "kind": "sha256",
-          "eq": "$capture.file9"
+          "eq": "$capture.file9",
+          "path": "src/ScheduledJobs/Market.xml"
         },
         {
-          "file": "src/ScheduledJobs/Missing.xml",
           "kind": "sha256",
-          "eq": "$capture.file10"
+          "eq": "$capture.file10",
+          "path": "src/ScheduledJobs/Missing.xml"
         },
         {
-          "file": "src/ScheduledJobs/MonthClose/Ext/Schedule.xml",
           "kind": "sha256",
-          "eq": "$capture.file11"
+          "eq": "$capture.file11",
+          "path": "src/ScheduledJobs/MonthClose/Ext/Schedule.xml"
         },
         {
-          "file": "src/ScheduledJobs/MonthClose.xml",
           "kind": "sha256",
-          "eq": "$capture.file12"
+          "eq": "$capture.file12",
+          "path": "src/ScheduledJobs/MonthClose.xml"
         },
         {
-          "file": "v8project.yaml",
           "kind": "sha256",
-          "eq": "$capture.file13"
+          "eq": "$capture.file13",
+          "path": "v8project.yaml"
         }
       ]
     },
@@ -450,74 +450,74 @@
       ],
       "fileAssertions": [
         {
-          "file": "other/CommonModules/MonthClose/Ext/Module.bsl",
           "kind": "sha256",
-          "eq": "$capture.file0"
+          "eq": "$capture.file0",
+          "path": "other/CommonModules/MonthClose/Ext/Module.bsl"
         },
         {
-          "file": "other/CommonModules/MonthClose.xml",
           "kind": "sha256",
-          "eq": "$capture.file1"
+          "eq": "$capture.file1",
+          "path": "other/CommonModules/MonthClose.xml"
         },
         {
-          "file": "other/Configuration.xml",
           "kind": "sha256",
-          "eq": "$capture.file2"
+          "eq": "$capture.file2",
+          "path": "other/Configuration.xml"
         },
         {
-          "file": "other/ScheduledJobs/Foreign.xml",
           "kind": "sha256",
-          "eq": "$capture.file3"
+          "eq": "$capture.file3",
+          "path": "other/ScheduledJobs/Foreign.xml"
         },
         {
-          "file": "src/CommonModules/MonthClose/Ext/Module.bsl",
           "kind": "sha256",
-          "eq": "$capture.file4"
+          "eq": "$capture.file4",
+          "path": "src/CommonModules/MonthClose/Ext/Module.bsl"
         },
         {
-          "file": "src/CommonModules/MonthClose.xml",
           "kind": "sha256",
-          "eq": "$capture.file5"
+          "eq": "$capture.file5",
+          "path": "src/CommonModules/MonthClose.xml"
         },
         {
-          "file": "src/Configuration.xml",
           "kind": "sha256",
-          "eq": "$capture.file6"
+          "eq": "$capture.file6",
+          "path": "src/Configuration.xml"
         },
         {
-          "file": "src/ScheduledJobs/Foreign.xml",
           "kind": "sha256",
-          "eq": "$capture.file7"
+          "eq": "$capture.file7",
+          "path": "src/ScheduledJobs/Foreign.xml"
         },
         {
-          "file": "src/ScheduledJobs/Market/Ext/Schedule.xml",
           "kind": "sha256",
-          "eq": "$capture.file8"
+          "eq": "$capture.file8",
+          "path": "src/ScheduledJobs/Market/Ext/Schedule.xml"
         },
         {
-          "file": "src/ScheduledJobs/Market.xml",
           "kind": "sha256",
-          "eq": "$capture.file9"
+          "eq": "$capture.file9",
+          "path": "src/ScheduledJobs/Market.xml"
         },
         {
-          "file": "src/ScheduledJobs/Missing.xml",
           "kind": "sha256",
-          "eq": "$capture.file10"
+          "eq": "$capture.file10",
+          "path": "src/ScheduledJobs/Missing.xml"
         },
         {
-          "file": "src/ScheduledJobs/MonthClose/Ext/Schedule.xml",
           "kind": "sha256",
-          "eq": "$capture.file11"
+          "eq": "$capture.file11",
+          "path": "src/ScheduledJobs/MonthClose/Ext/Schedule.xml"
         },
         {
-          "file": "src/ScheduledJobs/MonthClose.xml",
           "kind": "sha256",
-          "eq": "$capture.file12"
+          "eq": "$capture.file12",
+          "path": "src/ScheduledJobs/MonthClose.xml"
         },
         {
-          "file": "v8project.yaml",
           "kind": "sha256",
-          "eq": "$capture.file13"
+          "eq": "$capture.file13",
+          "path": "v8project.yaml"
         }
       ]
     }
