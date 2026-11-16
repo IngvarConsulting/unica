@@ -2,12 +2,10 @@ name: PR metadata
 
 # Обязательная проверка: пропущенный условием `Unica CI` ruleset считает пройденным,
 # поэтому вливание без отметки владельца блокирует она. Правило допуска то же, что
-# у ворот `admission` в `ci.yml`: тест держит шаги равными.
+# у ворот `admission` в `ci.yml`. Предел рабочей вехи касается только слияния.
 # `pull_request_target` берёт этот файл из main: PR не может поправить его и получить
 # зелёную проверку. Поэтому здесь нет checkout, права только на чтение, а данные PR идут
 # через `env`. Запись очереди читает файл из своего дерева, это видно по CODEOWNERS.
-# Веха на issue значит «вычитано»: чужую снимает `issue-milestone-guard.yml`, поэтому
-# её автора не проверяем. Веху на PR без issue сторож не видит, её автор читается здесь.
 on:
   pull_request_target: # zizmor: ignore[dangerous-triggers] кода PR нет: ни checkout, ни запуска его файлов, права только на чтение
     types: [opened, reopened, ready_for_review, edited, milestoned, demilestoned, assigned, unassigned, synchronize]
@@ -39,6 +37,7 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           MILESTONE_OWNER: zeegin
           STRICT: "true"
+          WORKING_MILESTONE: v0.16
         run: |
           set -euo pipefail
           # Запись очереди называется gh-readonly-queue/<база>/pr-<номер>-<sha>.
@@ -50,23 +49,56 @@ jobs:
           json="$(gh api graphql -F owner="${GITHUB_REPOSITORY%/*}" -F name="${GITHUB_REPOSITORY#*/}" -F number="$number" -f query='
             query($owner: String!, $name: String!, $number: Int!) {
               repository(owner: $owner, name: $name) {
+                id
                 pullRequest(number: $number) {
                   isDraft
-                  milestone { number }
+                  milestone { id title }
                   assignees { totalCount }
                   timelineItems(itemTypes: [MILESTONED_EVENT], last: 1) { nodes { ... on MilestonedEvent { actor { login } } } }
-                  closingIssuesReferences(first: 100) { nodes { number milestone { number } } }
+                  closingIssuesReferences(first: 100) {
+                    pageInfo { hasNextPage }
+                    nodes {
+                      number
+                      repository { id }
+                      milestone { id title }
+                      timelineItems(itemTypes: [MILESTONED_EVENT], last: 1) { nodes { ... on MilestonedEvent { actor { login } } } }
+                    }
+                  }
                 }
               }
             }')"
-          problems="$(jq -r --arg owner "$MILESTONE_OWNER" '
-            .data.repository.pullRequest as $pr | $pr.closingIssuesReferences.nodes as $issues
-            | ($pr.timelineItems.nodes[-1].actor.login // "неизвестно") as $actor
-            | (if $pr.milestone == null then
-                 (if ($issues | length) > 0 then "Поставьте веху: скопируйте её с issue" else "Поставьте веху: на PR без issue её ставит \($owner)" end)
-               elif ($issues | length) == 0 and $actor != $owner then "Веху на PR поставил \($actor), нужна от \($owner)"
+          problems="$(jq -r --arg owner "$MILESTONE_OWNER" --arg working "${WORKING_MILESTONE:-}" --arg strict "$STRICT" '
+            def milestone_actor: .timelineItems.nodes[-1].actor.login // "неизвестно";
+            def version:
+              if test("^v[0-9]+[.][0-9]+$") then ltrimstr("v") | split(".") | map(tonumber)
+              else null end;
+            def check_limit($label; $title; $limit):
+              ($title | version) as $number
+              | if $number == null then "У вехи \($label) \($title) нужен формат vN.N"
+                elif $number > $limit then "Веха \($label) \($title) выше рабочей \($working)"
+                else empty end;
+            .data.repository as $repo | $repo.pullRequest as $pr
+            | $pr.closingIssuesReferences.nodes as $issues
+            | [$issues[] | select(.repository.id == $repo.id)] as $local
+            | ($pr | milestone_actor) as $actor
+            | (if $pr.closingIssuesReferences.pageInfo.hasNextPage then
+                 "Не удалось проверить все закрываемые issue"
                else empty end),
-              ($issues[] | select(.milestone == null) | "Issue #\(.number) без вехи, PR не рассматривается")' <<<"$json")"
+              (if $pr.milestone == null then
+                 (if ($local | length) > 0 then "Поставьте веху: скопируйте её с issue" else "Поставьте веху: на PR без issue её ставит \($owner)" end)
+               elif ($local | length) == 0 and $actor != $owner then "Веху на PR поставил \($actor), нужна от \($owner)"
+               elif ($local | length) > 0 and (any($local[]; .milestone.id == $pr.milestone.id) | not) then
+                 "Веха PR должна совпадать с вехой одной из закрываемых задач этого репозитория"
+               else empty end),
+              ($issues[] | select(.milestone == null) | "Issue #\(.number) без вехи, PR не рассматривается"),
+              ($local[] | select(.milestone != null and milestone_actor != $owner) | "Веху issue #\(.number) должен подтвердить \($owner)"),
+              (if $strict == "true" then
+                 ($working | version) as $limit
+                 | if $limit == null then "Рабочая веха должна быть задана в формате vN.N"
+                   else ($pr.milestone | select(. != null) | check_limit("PR"; .title; $limit)),
+                        ($local[] | select(.milestone != null) | check_limit("issue #\(.number)"; .milestone.title; $limit))
+                   end
+               else empty end)' <<<"$json")"
           assignees="$(jq -r '.data.repository.pullRequest.assignees.totalCount' <<<"$json")"
           # Черновик не занимает раннер. Признак берётся у GitHub, а не из события
           # прогона: при push и снятии с черновика вплотную выжить может прогон
