@@ -1559,7 +1559,11 @@ fn module_projection_view_data(
             let region = projections
                 .region(&requested.to_string())
                 .map_err(|error| ViewError::new(RefusalCode::NotFound, error.to_string()))?;
-            Ok(NodeViewData::Node(region_node(requested, region)))
+            Ok(NodeViewData::Collection(region_contents(
+                requested,
+                region,
+                projections.methods(),
+            )))
         }
         (NodeKind::Interface, None, None) => module_collection(
             requested,
@@ -1797,6 +1801,36 @@ fn region_node(requested: &QualifiedAddress, region: &RegionProjection) -> NodeV
             ("children".to_string(), json!(region.children)),
         ]),
     )
+}
+
+fn region_contents(
+    requested: &QualifiedAddress,
+    region: &RegionProjection,
+    methods: &[MethodProjection],
+) -> CollectionView {
+    let mut items = region
+        .children
+        .iter()
+        .map(|at| json!({"at": at, "kind": NodeKind::Region.as_str()}))
+        .collect::<Vec<_>>();
+    let node = region_node(requested, region);
+    if region.methods.is_empty() {
+        return CollectionView::new(node, items);
+    }
+
+    let mut counts = BTreeMap::new();
+    for method in methods {
+        *counts.entry(method.at.as_str()).or_insert(0usize) += 1;
+    }
+    let mut limits = BTreeSet::new();
+    for at in &region.methods {
+        if counts.get(at.as_str()) == Some(&1) {
+            items.push(json!({"at": at, "kind": NodeKind::Method.as_str()}));
+        } else {
+            limits.insert(format!("method address `{at}` is ambiguous"));
+        }
+    }
+    CollectionView::new(node.with_limits(limits.into_iter().collect()), items)
 }
 
 fn region_item_value(region: &RegionProjection) -> Value {

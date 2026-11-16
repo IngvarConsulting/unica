@@ -138,9 +138,8 @@ impl BranchRef {
     }
 }
 
-/// A branch is itself addressable, but its data rows are not. In particular a
-/// source line has only `line` and `text`; it must never acquire a fabricated
-/// logical address.
+/// An addressable collection. Rows that refer to existing nodes can carry
+/// their logical addresses. A source line has only `line` and `text`.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct CollectionView {
     #[serde(flatten)]
