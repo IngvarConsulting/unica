@@ -373,7 +373,7 @@ impl<A: ViewReadAuthority> ViewService<A> {
         let binding = request.binding(&canonical_at, &snapshot);
 
         let mut text = None;
-        let serialized = if let Some((_, _, data)) = supplied {
+        let mut serialized = if let Some((_, _, data)) = supplied {
             data.ok_or_else(|| {
                 ViewError::new(
                     RefusalCode::InvalidState,
@@ -400,12 +400,15 @@ impl<A: ViewReadAuthority> ViewService<A> {
                 "reader returned a projection for another logical address",
             ));
         }
-        let mut object = serialized.as_object().cloned().ok_or_else(|| {
-            ViewError::new(
+        // Preserve the former clone's compact storage even for supplied or
+        // projected JSON, without copying the rows' owned contents.
+        shrink_projection_storage(&mut serialized);
+        let Value::Object(mut object) = serialized else {
+            return Err(ViewError::new(
                 RefusalCode::ProviderUnavailable,
                 "typed node projection is not an object",
-            )
-        })?;
+            ));
+        };
         if let Some(text) = text {
             // Проекция может ответить на другой вопрос о том же узле
             // (контракт операции `.Can.<op>`): текст несёт только сам `Body`.
@@ -490,12 +493,12 @@ impl<A: ViewReadAuthority> ViewService<A> {
             }
             return node_result(&canonical_at, object, snapshot.revision);
         };
-        let items = items.as_array().cloned().ok_or_else(|| {
-            ViewError::new(
+        let Value::Array(items) = items else {
+            return Err(ViewError::new(
                 RefusalCode::ProviderUnavailable,
                 "typed collection items are not an array",
-            )
-        })?;
+            ));
+        };
         let node = Value::Object(object);
         let current = self.authority.snapshot(source_at)?;
         if current != snapshot {
@@ -556,6 +559,35 @@ impl<A: ViewReadAuthority> ViewService<A> {
             )
         };
         collection_result(&page_node, first.items, cursor, first.stopped_by, &binding)
+    }
+}
+
+fn shrink_projection_storage(value: &mut Value) {
+    match value {
+        Value::String(text) if text.capacity() != text.len() => {
+            *text = std::mem::take(text).into_boxed_str().into_string();
+        }
+        Value::Array(items) => {
+            for item in items.iter_mut() {
+                shrink_projection_storage(item);
+            }
+            if items.capacity() != items.len() {
+                *items = std::mem::take(items).into_boxed_slice().into_vec();
+            }
+        }
+        Value::Object(fields) => {
+            for value in fields.values_mut() {
+                shrink_projection_storage(value);
+            }
+            if fields.keys().any(|key| key.capacity() != key.len()) {
+                let original = std::mem::take(fields);
+                *fields = Map::with_capacity(original.len());
+                for (key, value) in original {
+                    fields.insert(key.into_boxed_str().into_string(), value);
+                }
+            }
+        }
+        _ => {}
     }
 }
 
@@ -1062,6 +1094,75 @@ mod tests {
         );
         assert!(stale.ok);
         assert_eq!(stale, second);
+    }
+
+    /// rule: INV.APP.VIEW-CURSOR-CAPACITY
+    #[test]
+    fn a_supplied_collection_does_not_retain_its_providers_spare_capacity() {
+        use serde_json::Value;
+        fn payload(kind: &str) -> Value {
+            match kind {
+                "string" => {
+                    let mut text = String::with_capacity(1024 * 1024);
+                    text.push('x');
+                    Value::String(text)
+                }
+                "array" => {
+                    let mut items = Vec::with_capacity(16 * 1024);
+                    items.push(Value::Null);
+                    Value::Array(items)
+                }
+                "key" => {
+                    let mut key = String::with_capacity(1024 * 1024);
+                    key.push('x');
+                    Value::Object(Map::from_iter([(key, Value::Null)]))
+                }
+                "outer" => Value::Null,
+                _ => unreachable!(),
+            }
+        }
+        for kind in ["outer", "string", "array", "key"] {
+            let service =
+                ViewService::new(FixtureAuthority::new(), ViewCursorStore::new(16 * 1024));
+            let owner = QualifiedAddress::parse("main:Document.Заказ.Module.Object").unwrap();
+            let branch = "main:Document.Заказ.Module.Object.Method.Проба.Caller";
+            let mut items = Vec::with_capacity(16 * 1024);
+            for line in 0..3 {
+                items.push(Value::Object(Map::from_iter([
+                    ("line".into(), json!(line)),
+                    ("payload".into(), payload(kind)),
+                ])));
+            }
+            let expected = serde_json::to_value(&items).unwrap();
+            let data = Value::Object(Map::from_iter([
+                ("at".into(), json!(branch)),
+                ("kind".into(), json!("Caller")),
+                ("title".into(), json!("Caller")),
+                ("items".into(), Value::Array(items)),
+            ]));
+            let request = || ViewRequest::new(branch).unwrap().with_limit(1).unwrap();
+            let mut page =
+                service.view_preloaded_collection(request(), &owner, "rev-1", Some(data));
+            for line in 0..3 {
+                assert!(page.ok, "{kind}: {page:?}");
+                assert_eq!(
+                    page.data.as_ref().unwrap()["items"],
+                    json!([expected[line]]),
+                    "{kind}"
+                );
+                if let Some(cursor) = page.cursor.take() {
+                    assert!(line < 2);
+                    page = service.view_preloaded_collection(
+                        request().with_cursor(cursor),
+                        &owner,
+                        "rev-1",
+                        None,
+                    );
+                } else {
+                    assert_eq!(line, 2);
+                }
+            }
+        }
     }
 
     /// rule: INV.APP.DEFERRED-READ

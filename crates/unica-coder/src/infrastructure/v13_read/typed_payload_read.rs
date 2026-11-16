@@ -1031,10 +1031,9 @@ impl<'a> LogicalViewReadAuthority<'a> {
         if let Some(evidence) = cache.get(&key) {
             return Ok(Arc::clone(evidence));
         }
-        let evidence = Arc::new(
-            self.read
-                .metadata_owner_evidence(target, &mut || self.read_checkpoint())?,
-        );
+        let evidence = self
+            .read
+            .metadata_owner_evidence(target, &mut || self.read_checkpoint())?;
         cache.insert(key, Arc::clone(&evidence));
         Ok(evidence)
     }
