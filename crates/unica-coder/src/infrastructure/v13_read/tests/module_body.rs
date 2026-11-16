@@ -316,3 +316,57 @@ fn an_open_buffer_is_read_in_place_of_its_module_file_and_the_file_is_untouched(
         .join("Ext/Module.bsl")
         .exists());
 }
+
+#[test]
+fn method_view_reports_declaration_and_name_without_changing_body_start() {
+    for newline in ["\n", "\r\n"] {
+        for (declaration, closing, name, column) in [
+            (
+                "\tПроцедура Проверка() Экспорт",
+                "КонецПроцедуры",
+                "Проверка",
+                12,
+            ),
+            ("  Function Check() Export", "EndFunction", "Check", 12),
+            (
+                "\tАсинх Процедура Проверка()",
+                "КонецПроцедуры",
+                "Проверка",
+                18,
+            ),
+            ("  Async Function Check()", "EndFunction", "Check", 18),
+        ] {
+            for (prefix, line, declaration_line) in [
+                ("// Описание 😀\n\n&НаСервере\n", 3, 4),
+                ("// Описание 😀\n&НаСервере\n", 1, 3),
+                ("// Описание 😀\n\n&НаСервере\n&Перед(\"Original\")\n", 3, 5),
+                ("", 1, 1),
+            ] {
+                let fixture = RealReaderFixture::new();
+                let module = fixture
+                    .source
+                    .join("CommonModules/РеактивныйСервер/Ext/Module.bsl");
+                let source = format!("{prefix}{declaration}\n{closing}\n").replace('\n', newline);
+                fs::write(module, &source).unwrap();
+                let at = format!("main:CommonModule.РеактивныйСервер.Method.{name}");
+                let result = fixture.view_service().view(ViewRequest::new(&at).unwrap());
+                assert!(result.ok, "{source:?}: {:?}", refusal_codes(&result));
+                let data = result.data.unwrap();
+                assert_eq!(data["props"]["line"], line, "{source:?}");
+                assert_eq!(
+                    data["props"]["declarationLine"], declaration_line,
+                    "{source:?}"
+                );
+                assert_eq!(data["props"]["nameColumn"], column, "{source:?}");
+                let body = fixture
+                    .view_service()
+                    .view(ViewRequest::new(&format!("{at}.Body")).unwrap());
+                let expected = source
+                    .split_inclusive(newline)
+                    .skip(line - 1)
+                    .collect::<String>();
+                assert_eq!(body.source_text.as_deref(), Some(expected.as_str()));
+            }
+        }
+    }
+}
