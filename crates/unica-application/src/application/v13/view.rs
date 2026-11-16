@@ -184,6 +184,15 @@ pub trait ViewReadAuthority: Send + Sync {
     ) -> Result<Option<ModuleText>, ViewError> {
         Ok(None)
     }
+
+    fn read_module_body(
+        &self,
+        at: &QualifiedAddress,
+        admitted: &ViewSourceSnapshot,
+    ) -> Result<Option<super::source_text::ModuleTextObservation>, ViewError> {
+        self.read_module_text(at, admitted)
+            .map(|text| text.map(super::source_text::ModuleTextObservation::new))
+    }
 }
 
 pub struct ViewService<A> {
@@ -328,6 +337,7 @@ impl<A: ViewReadAuthority> ViewService<A> {
         let binding = request.binding(&canonical_at, &snapshot);
 
         let mut text = None;
+        let mut body_diagnostics = Vec::new();
         let serialized = if let Some((_, _, data)) = supplied {
             data.ok_or_else(|| {
                 ViewError::new(
@@ -336,8 +346,14 @@ impl<A: ViewReadAuthority> ViewService<A> {
                 )
             })?
         } else {
-            let mut view = match self.authority.read_module_text(&canonical_at, &snapshot)? {
-                Some(text) => module_body_view(&canonical_at, text)?,
+            let mut view = match self.authority.read_module_body(&canonical_at, &snapshot)? {
+                Some(observation) => {
+                    body_diagnostics = observation.diagnostics;
+                    observation.limits.into_iter().fold(
+                        module_body_view(&canonical_at, observation.text)?,
+                        |view, limit| view.with_limit(limit),
+                    )
+                }
                 None => self.authority.read_exact(&canonical_at, &snapshot)?,
             };
             text = view.take_text();
@@ -388,6 +404,7 @@ impl<A: ViewReadAuthority> ViewService<A> {
                     );
                 }
                 let mut result = body_text_result(&canonical_at, object, Some(snapshot.revision));
+                result.diagnostics = body_diagnostics;
                 match text {
                     SourceText::Whole(text) => {
                         result.source_text = Some(text);

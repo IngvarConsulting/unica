@@ -481,7 +481,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
                     _ => PlatformEventWriteCapability::Proven,
                 },
             })
-            .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error))?,
+            .map_err(|error| self.module_projection_failure(module_at, source.as_deref(), error))?,
         );
         cache.insert(key, Arc::clone(&projection));
         Ok(projection)

@@ -37,6 +37,24 @@ pub enum ModuleText {
     },
 }
 
+/// Text and syntax facts from the same admitted source observation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModuleTextObservation {
+    pub text: ModuleText,
+    pub diagnostics: Vec<serde_json::Value>,
+    pub limits: Vec<String>,
+}
+
+impl ModuleTextObservation {
+    pub fn new(text: ModuleText) -> Self {
+        Self {
+            text,
+            diagnostics: Vec::new(),
+            limits: Vec::new(),
+        }
+    }
+}
+
 /// Собирает текст модуля из потока байтов, не удерживая больше предела:
 /// начальные U+FEFF снимаются, после предела считается только размер.
 #[derive(Debug, Default)]

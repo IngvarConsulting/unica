@@ -1,0 +1,340 @@
+{
+  "id": "S-944-broken-bsl-body",
+  "issue": 944,
+  "area": "BSL",
+  "task": "Прочитать исходный Body с первой локализованной ошибкой, отказать недоказанной структуре и изменению, сохранить здоровый модуль и все исходники.",
+  "workspace": "tests/fixtures/acceptance/workspace-broken-bsl-body",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule.Probe.Body"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "file0": {
+          "file": "README.md",
+          "kind": "sha256"
+        },
+        "file1": {
+          "file": "src/CommonModules/Healthy/Ext/Module.bsl",
+          "kind": "sha256"
+        },
+        "file2": {
+          "file": "src/CommonModules/Healthy.xml",
+          "kind": "sha256"
+        },
+        "file3": {
+          "file": "src/CommonModules/Probe/Ext/Module.bsl",
+          "kind": "sha256"
+        },
+        "file4": {
+          "file": "src/CommonModules/Probe.xml",
+          "kind": "sha256"
+        },
+        "file5": {
+          "file": "src/Configuration.xml",
+          "kind": "sha256"
+        },
+        "file6": {
+          "file": "v8project.yaml",
+          "kind": "sha256"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/sourceText",
+          "eq": "// selected\r\nProcedure Broken(\r\n"
+        },
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bsl-parse-error"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule.Probe.Body#L1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/sourceText",
+          "eq": "// selected\r\n"
+        },
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bsl-parse-error"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "eq": "$capture.file0",
+          "path": "README.md"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file1",
+          "path": "src/CommonModules/Healthy/Ext/Module.bsl"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file2",
+          "path": "src/CommonModules/Healthy.xml"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file3",
+          "path": "src/CommonModules/Probe/Ext/Module.bsl"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file4",
+          "path": "src/CommonModules/Probe.xml"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file5",
+          "path": "src/Configuration.xml"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file6",
+          "path": "v8project.yaml"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule.Probe.Method"
+      },
+      "expect": [
+        "provider"
+      ],
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/detailCode",
+          "eq": "source_unreadable"
+        },
+        {
+          "pointer": "/next/0/args/at",
+          "eq": "main:CommonModule.Probe.Body"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "eq": "$capture.file0",
+          "path": "README.md"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file1",
+          "path": "src/CommonModules/Healthy/Ext/Module.bsl"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file2",
+          "path": "src/CommonModules/Healthy.xml"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file3",
+          "path": "src/CommonModules/Probe/Ext/Module.bsl"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file4",
+          "path": "src/CommonModules/Probe.xml"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file5",
+          "path": "src/Configuration.xml"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file6",
+          "path": "v8project.yaml"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule.Probe.Event"
+      },
+      "expect": [
+        "provider"
+      ],
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/detailCode",
+          "eq": "source_unreadable"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "eq": "$capture.file0",
+          "path": "README.md"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file1",
+          "path": "src/CommonModules/Healthy/Ext/Module.bsl"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file2",
+          "path": "src/CommonModules/Healthy.xml"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file3",
+          "path": "src/CommonModules/Probe/Ext/Module.bsl"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file4",
+          "path": "src/CommonModules/Probe.xml"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file5",
+          "path": "src/Configuration.xml"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file6",
+          "path": "v8project.yaml"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:CommonModule.Probe",
+        "ops": [
+          {
+            "op": "code.insert",
+            "args": {
+              "at": "main:CommonModule.Probe",
+              "text": "// unrelated"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "invalid_source"
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "eq": "$capture.file0",
+          "path": "README.md"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file1",
+          "path": "src/CommonModules/Healthy/Ext/Module.bsl"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file2",
+          "path": "src/CommonModules/Healthy.xml"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file3",
+          "path": "src/CommonModules/Probe/Ext/Module.bsl"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file4",
+          "path": "src/CommonModules/Probe.xml"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file5",
+          "path": "src/Configuration.xml"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file6",
+          "path": "v8project.yaml"
+        }
+      ],
+      "refusal": "invalid_source: original BSL module does not parse: Ожидалось ')', встречено конец файла at line 3, column 1; 2 syntax errors in all"
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule.Healthy.Method.Good"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Method"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "eq": "$capture.file0",
+          "path": "README.md"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file1",
+          "path": "src/CommonModules/Healthy/Ext/Module.bsl"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file2",
+          "path": "src/CommonModules/Healthy.xml"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file3",
+          "path": "src/CommonModules/Probe/Ext/Module.bsl"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file4",
+          "path": "src/CommonModules/Probe.xml"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file5",
+          "path": "src/Configuration.xml"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file6",
+          "path": "v8project.yaml"
+        }
+      ]
+    }
+  ]
+}
