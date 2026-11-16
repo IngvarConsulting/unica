@@ -773,15 +773,34 @@ impl<'a> LogicalViewReadAuthority<'a> {
                 });
         }
         let payload = self.configuration_payload(admitted)?;
-        let registered = payload
-            .get("registeredObjects")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .any(|item| {
-                item.get("kind").and_then(Value::as_str) == Some(owner_kind)
-                    && item.get("name").and_then(Value::as_str) == Some(owner_name)
-            });
+        // All members of a kind ask this same membership question. Index
+        // the admitted payload once instead of scanning it for each member;
+        // a new operation still obtains its own current configuration facts.
+        let key = RevisionCacheKey {
+            source_set_identity: admitted.source_set_identity.clone(),
+            revision: admitted.revision.clone(),
+        };
+        let mut indexes = self.registered_owner_names.lock().map_err(|_| {
+            ViewError::detailed(RefusalDetail::CachePoisoned, "registration membership index is poisoned")
+        })?;
+        let names = match indexes.get(&key) {
+            Some(names) => Arc::clone(names),
+            None => {
+                let mut names = RegisteredOwnerNames::new();
+                for item in payload.get("registeredObjects").and_then(Value::as_array).into_iter().flatten() {
+                    self.read_checkpoint()?;
+                    if let (Some(kind), Some(name)) = (item.get("kind").and_then(Value::as_str), item.get("name").and_then(Value::as_str)) {
+                        names.insert((kind.to_owned(), name.to_owned()));
+                    }
+                }
+                let names = Arc::new(names);
+                indexes.insert(key, Arc::clone(&names));
+                names
+            }
+        };
+        drop(indexes);
+        self.read_checkpoint()?;
+        let registered = names.contains(&(owner_kind.to_owned(), owner_name.to_owned()));
         registered.then_some(()).ok_or_else(|| {
             ViewError::new(
                 RefusalCode::NotFound,

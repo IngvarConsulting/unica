@@ -113,6 +113,7 @@ pub struct LogicalViewReadAuthority<'a> {
     deadline: ProviderDeadline,
     module_projections: Mutex<BTreeMap<ModuleProjectionCacheKey, Arc<ModuleProjectionSet>>>,
     configuration_payloads: Mutex<BTreeMap<RevisionCacheKey, Arc<Value>>>,
+    registered_owner_names: Mutex<BTreeMap<RevisionCacheKey, Arc<RegisteredOwnerNames>>>,
     verified_owners: Mutex<BTreeSet<OwnerProofCacheKey>>,
     owner_evidence: Mutex<BTreeMap<OwnerProofCacheKey, Arc<PlatformXmlSourceSetOwnerEvidence>>>,
     verified_owner_edges: Mutex<BTreeSet<OwnerEdgeCacheKey>>,
@@ -143,6 +144,8 @@ struct RevisionCacheKey {
     source_set_identity: String,
     revision: String,
 }
+
+type RegisteredOwnerNames = BTreeSet<(String, String)>;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct OwnerProofCacheKey {
@@ -236,6 +239,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
             deadline,
             module_projections: Mutex::new(BTreeMap::new()),
             configuration_payloads: Mutex::new(BTreeMap::new()),
+            registered_owner_names: Mutex::new(BTreeMap::new()),
             verified_owners: Mutex::new(BTreeSet::new()),
             owner_evidence: Mutex::new(BTreeMap::new()),
             verified_owner_edges: Mutex::new(BTreeSet::new()),

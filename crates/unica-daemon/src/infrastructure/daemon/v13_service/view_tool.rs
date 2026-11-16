@@ -35,7 +35,7 @@ impl CanonicalV13ReadService {
                 let (owner, name) = address.property_query().expect("checked above");
                 // A property is one value: like any single node it accepts a
                 // page size it does not need, but it has no continuation.
-                if arguments.contains_key("cursor") {
+                if ["cursor", "offset", "from"].iter().any(|key| arguments.contains_key(*key)) {
                     return error_result(
                         Some(at.to_string()),
                         RefusalCode::BadValue,
@@ -49,7 +49,7 @@ impl CanonicalV13ReadService {
                 Some((owner, Some(op))) => {
                     // A contract is one node: like a source node it accepts a
                     // page size it does not need, but it has no continuation.
-                    if arguments.contains_key("cursor") {
+                    if ["cursor", "offset", "from"].iter().any(|key| arguments.contains_key(*key)) {
                         return error_result(
                             Some(at.to_string()),
                             RefusalCode::BadValue,
@@ -89,6 +89,24 @@ impl CanonicalV13ReadService {
                 );
             };
             request = match request.with_limit(limit) {
+                Ok(request) => request,
+                Err(error) => return view_error_result(Some(at.to_string()), error),
+            };
+        }
+        if let Some(offset) = arguments.get("offset") {
+            let Some(offset) = offset.as_u64().and_then(|value| usize::try_from(value).ok()) else {
+                return error_result(Some(at.to_string()), RefusalCode::BadValue, "view offset must be a nonnegative integer");
+            };
+            request = match request.with_offset(offset) {
+                Ok(request) => request,
+                Err(error) => return view_error_result(Some(at.to_string()), error),
+            };
+        }
+        if let Some(from) = arguments.get("from") {
+            let Some(from) = from.as_str() else {
+                return error_result(Some(at.to_string()), RefusalCode::BadValue, "view from must be a string");
+            };
+            request = match request.with_from(from.to_owned()) {
                 Ok(request) => request,
                 Err(error) => return view_error_result(Some(at.to_string()), error),
             };

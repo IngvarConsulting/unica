@@ -14,7 +14,7 @@ use {
 use serde_json::{json, Map, Value};
 use std::io::{self, Write};
 use std::sync::Arc;
-use unica_address::address::QualifiedAddress;
+use unica_address::address::{NodeKind, QualifiedAddress};
 use unica_execution_contract::invocation::DomainResult;
 use unica_refusal::RefusalCode;
 
@@ -60,6 +60,8 @@ pub struct ViewRequest {
     at: QualifiedAddress,
     limit: usize,
     cursor: Option<String>,
+    offset: Option<usize>,
+    from: Option<String>,
 }
 
 impl ViewRequest {
@@ -70,6 +72,8 @@ impl ViewRequest {
             at,
             limit: DEFAULT_LIMIT,
             cursor: None,
+            offset: None,
+            from: None,
         })
     }
 
@@ -99,6 +103,32 @@ impl ViewRequest {
     pub fn with_cursor(mut self, cursor: String) -> Self {
         self.cursor = Some(cursor);
         self
+    }
+
+    pub fn with_offset(mut self, offset: usize) -> Result<Self, ViewError> {
+        self.offset = Some(offset);
+        self.validate_selector()?;
+        Ok(self)
+    }
+
+    pub fn with_from(mut self, from: String) -> Result<Self, ViewError> {
+        self.from = Some(from);
+        self.validate_selector()?;
+        Ok(self)
+    }
+
+    fn validate_selector(&self) -> Result<(), ViewError> {
+        if usize::from(self.offset.is_some())
+            + usize::from(self.from.is_some())
+            + usize::from(self.cursor.is_some())
+            > 1
+        {
+            return Err(ViewError::new(
+                RefusalCode::BadValue,
+                "view accepts only one of offset, from and cursor",
+            ));
+        }
+        Ok(())
     }
 
     fn continuation_question(&self, source_set_identity: String) -> ViewCursorQuestion {
@@ -274,6 +304,19 @@ impl<A: ViewReadAuthority> ViewService<A> {
         supplied: Option<(&QualifiedAddress, &str, Option<Value>)>,
         continuation_source: Option<&QualifiedAddress>,
     ) -> Result<DomainResult, ViewError> {
+        request.validate_selector()?;
+        if (request.offset.is_some() || request.from.is_some())
+            && request
+                .at
+                .segments()
+                .last()
+                .is_some_and(|part| part.kind() == NodeKind::Body)
+        {
+            return Err(ViewError::new(
+                RefusalCode::BadValue,
+                "offset and from select a collection page, not Body text",
+            ));
+        }
         let source_at = supplied
             .as_ref()
             .map_or(continuation_source.unwrap_or(&request.at), |(at, _, _)| *at);
@@ -281,6 +324,8 @@ impl<A: ViewReadAuthority> ViewService<A> {
         if let Some(cursor) = request.cursor.as_deref() {
             let question = request.continuation_question(snapshot.source_set_identity.clone());
             let stored = self.cursors.read(cursor, &question).map_err(cursor_error)?;
+            let page_node =
+                collection_metadata(stored.snapshot.node(), stored.offset, stored.snapshot.len());
             // The window holds one item past the page: its presence alone
             // tells the page whether a continuation follows.
             let window = stored
@@ -288,7 +333,7 @@ impl<A: ViewReadAuthority> ViewService<A> {
                 .read_items(stored.offset, request.limit.saturating_add(1))
                 .map_err(cursor_error)?;
             let page = prepare_page(
-                stored.snapshot.node(),
+                &page_node,
                 &window,
                 0,
                 request.limit,
@@ -304,7 +349,7 @@ impl<A: ViewReadAuthority> ViewService<A> {
                 None
             };
             return collection_result(
-                stored.snapshot.node(),
+                &page_node,
                 page.items,
                 next_cursor,
                 page.stopped_by,
@@ -437,6 +482,12 @@ impl<A: ViewReadAuthority> ViewService<A> {
             }
         }
         let Some(items) = object.remove("items") else {
+            if request.offset.is_some() || request.from.is_some() {
+                return Err(ViewError::new(
+                    RefusalCode::BadValue,
+                    "offset and from select a collection page, not a single node",
+                ));
+            }
             return node_result(&canonical_at, object, snapshot.revision);
         };
         let items = items.as_array().cloned().ok_or_else(|| {
@@ -446,7 +497,6 @@ impl<A: ViewReadAuthority> ViewService<A> {
             )
         })?;
         let node = Value::Object(object);
-        preflight_collection(&node, &items, &binding)?;
         let current = self.authority.snapshot(source_at)?;
         if current != snapshot {
             return Err(ViewError::new(
@@ -464,7 +514,38 @@ impl<A: ViewReadAuthority> ViewService<A> {
         request: &ViewRequest,
         binding: ViewCursorBinding,
     ) -> Result<DomainResult, ViewError> {
-        let first = prepare_page(&node, &items, 0, request.limit, &binding)?;
+        let start = request
+            .offset
+            .map(|offset| offset.min(items.len()))
+            .unwrap_or_else(|| {
+                request.from.as_ref().map_or(0, |prefix| {
+                    let prefix = prefix.to_lowercase();
+                    items
+                        .iter()
+                        .position(|item| {
+                            item.get("at")
+                                .and_then(Value::as_str)
+                                .and_then(|at| QualifiedAddress::parse(at).ok())
+                                .and_then(|at| {
+                                    at.segments()
+                                        .last()
+                                        .and_then(|segment| segment.name())
+                                        .map(str::to_owned)
+                                })
+                                .is_some_and(|name| name.to_lowercase().starts_with(&prefix))
+                        })
+                        .unwrap_or(items.len())
+                })
+            });
+        // Every continuation must fit even when its absolute offset has as
+        // many digits as the total. Both fields belong to all byte probes.
+        preflight_collection(
+            &collection_metadata(&node, items.len(), items.len()),
+            &items,
+            &binding,
+        )?;
+        let page_node = collection_metadata(&node, start, items.len());
+        let first = prepare_page(&page_node, &items, start, request.limit, &binding)?;
         let cursor = if first.next_offset == items.len() {
             None
         } else {
@@ -474,8 +555,15 @@ impl<A: ViewReadAuthority> ViewService<A> {
                     .map_err(cursor_error)?,
             )
         };
-        collection_result(&node, first.items, cursor, first.stopped_by, &binding)
+        collection_result(&page_node, first.items, cursor, first.stopped_by, &binding)
     }
+}
+
+fn collection_metadata(node: &Value, offset: usize, total: usize) -> Value {
+    let mut node = node.clone();
+    node["offset"] = json!(offset);
+    node["total"] = json!(total);
+    node
 }
 
 /// `Body` модуля из его текста. Текст сверх предела отказывает лишь там,
@@ -1664,5 +1752,168 @@ mod tests {
         let title = metadata["title"].as_str().unwrap().to_owned() + "!";
         metadata["title"] = json!(title);
         assert!(super::preflight_collection(&metadata, &items, &binding).is_err());
+    }
+}
+
+#[cfg(test)]
+mod collection_selection_tests {
+    use super::*;
+    use crate::domain::node_view::CollectionView;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Mutex,
+    };
+
+    struct Authority {
+        items: Arc<Mutex<Vec<Value>>>,
+        reads: Arc<AtomicUsize>,
+    }
+    impl ViewReadAuthority for Authority {
+        fn snapshot(&self, _at: &QualifiedAddress) -> Result<ViewSourceSnapshot, ViewError> {
+            Ok(ViewSourceSnapshot {
+                source_set_identity: "selected-source".into(),
+                revision: "admitted".into(),
+            })
+        }
+        fn read_exact(
+            &self,
+            at: &QualifiedAddress,
+            _snapshot: &ViewSourceSnapshot,
+        ) -> Result<NodeViewData, ViewError> {
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            let node = NodeView::new(at.to_string(), "CommonModule", "Common modules", Map::new());
+            if at.segments().last().unwrap().name().is_some() {
+                return Ok(NodeViewData::Node(node));
+            }
+            Ok(NodeViewData::Collection(CollectionView::new(
+                node,
+                self.items.lock().unwrap().clone(),
+            )))
+        }
+    }
+    fn fixture() -> (
+        ViewService<Authority>,
+        Arc<Mutex<Vec<Value>>>,
+        Arc<AtomicUsize>,
+    ) {
+        let items = Arc::new(Mutex::new(["Zulu", "общийМодуль", "Other", "ОбщийСервер", "Alpha"].map(|name| json!({"at":format!("main:CommonModule.{name}"), "title":"Alias", "kind":"CommonModule"})).to_vec()));
+        let reads = Arc::new(AtomicUsize::new(0));
+        (
+            ViewService::new(
+                Authority {
+                    items: Arc::clone(&items),
+                    reads: Arc::clone(&reads),
+                },
+                ViewCursorStore::default(),
+            ),
+            items,
+            reads,
+        )
+    }
+    fn request() -> ViewRequest {
+        ViewRequest::new("main:CommonModule")
+            .unwrap()
+            .with_limit(2)
+            .unwrap()
+    }
+
+    #[test]
+    // rule: INV.APP.VIEW-CURSOR-CAPACITY
+    fn different_start_pages_share_the_same_immutable_collection_payload() {
+        let (service, _, _) = fixture();
+        let first = service.view(request().with_offset(0).unwrap());
+        let second = service.view(request().with_from("ОБЩ".into()).unwrap());
+        assert!(first.ok && second.ok);
+        assert!(first.cursor.is_some() && second.cursor.is_some());
+        let usage = service.cursors.retained_usage_for_test();
+        assert_eq!(usage.records, 1);
+        assert_eq!(usage.unique_payloads, 1);
+    }
+
+    #[test]
+    fn collection_offset_and_prefix_keep_registration_order_and_report_empty_position() {
+        let (service, _, _) = fixture();
+        for (request, offset, first) in [
+            (
+                request().with_offset(3).unwrap(),
+                3,
+                Some("main:CommonModule.ОбщийСервер"),
+            ),
+            (
+                request().with_offset(0).unwrap(),
+                0,
+                Some("main:CommonModule.Zulu"),
+            ),
+            (
+                request().with_from("ОБЩ".into()).unwrap(),
+                1,
+                Some("main:CommonModule.общийМодуль"),
+            ),
+            (request().with_from("absent".into()).unwrap(), 5, None),
+            (request().with_offset(usize::MAX).unwrap(), 5, None),
+        ] {
+            let result = service.view(request);
+            assert!(result.ok, "{result:?}");
+            let data = result.data.unwrap();
+            assert_eq!(data["offset"], offset);
+            assert_eq!(data["total"], 5);
+            assert_eq!(data["items"][0]["at"].as_str(), first);
+        }
+    }
+
+    #[test]
+    // rule: INV.APP.DEFERRED-READ
+    // rule: INV.APP.VIEW-CURSOR-CAPACITY
+    fn selected_page_cursor_repeats_its_saved_snapshot_while_new_questions_read_fresh() {
+        let (service, items, reads) = fixture();
+        let first = service.view(request().with_from("ОБЩ".into()).unwrap());
+        assert!(first.ok, "{first:?}");
+        let cursor = first.cursor.unwrap();
+        let before = reads.load(Ordering::SeqCst);
+        items.lock().unwrap().clear();
+        let next = service.view(request().with_cursor(cursor.clone()));
+        let repeated = service.view(request().with_cursor(cursor));
+        assert!(next.ok && repeated.ok);
+        assert_eq!(next.data, repeated.data);
+        assert_eq!(next.cursor, repeated.cursor);
+        assert_eq!(next.data.as_ref().unwrap()["offset"], 3);
+        assert_eq!(next.data.as_ref().unwrap()["total"], 5);
+        assert_eq!(reads.load(Ordering::SeqCst), before);
+        let fresh = service.view(request().with_offset(3).unwrap());
+        assert!(fresh.ok);
+        assert_eq!(fresh.data.unwrap()["total"], 0);
+        assert_eq!(reads.load(Ordering::SeqCst), before + 1);
+    }
+
+    #[test]
+    fn page_selectors_are_exclusive_and_do_not_apply_to_nodes_or_text() {
+        let (service, _, reads) = fixture();
+        assert!(request()
+            .with_offset(0)
+            .unwrap()
+            .with_from("a".into())
+            .is_err());
+        let mixed = service.view(
+            request()
+                .with_offset(0)
+                .unwrap()
+                .with_cursor("forged".into()),
+        );
+        assert!(!mixed.ok);
+        assert_eq!(reads.load(Ordering::SeqCst), 0);
+        let node = service.view(
+            ViewRequest::new("main:CommonModule.Zulu")
+                .unwrap()
+                .with_offset(0)
+                .unwrap(),
+        );
+        assert!(!node.ok);
+        let text = service.view(
+            ViewRequest::new("main:CommonModule.Zulu.Body")
+                .unwrap()
+                .with_from("a".into())
+                .unwrap(),
+        );
+        assert!(!text.ok);
     }
 }
