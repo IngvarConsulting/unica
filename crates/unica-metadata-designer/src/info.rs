@@ -305,7 +305,7 @@ pub fn typed_element(
     diagnostics: &mut Vec<MetaDiagnostic>,
     member_profile: Option<unica_metadata::MetaMemberReadProfile>,
 ) -> Option<MetaElementData> {
-    let mut properties_readback =
+    let properties_readback =
         match crate::info_projection::project_optional_collection_item_properties(node, field) {
             Ok(properties) => properties,
             Err(error) => {
@@ -353,9 +353,21 @@ pub fn typed_element(
         crate::info_projection::direct_md_child_text(properties, "Name").unwrap_or_default();
     let mut incomplete = raw_name.trim().is_empty();
     let name = if incomplete { String::new() } else { raw_name };
-    let synonym = crate::info_projection::direct_md_child(properties, "Synonym")
-        .map(crate::xml_model::meta_info_ml_text)
-        .filter(|value| !value.is_empty());
+    let synonym = match crate::info_projection::localized_property_as_nstr(
+        properties,
+        "metadata collection item",
+        "Synonym",
+    ) {
+        Ok(value) => value,
+        Err(error) => {
+            diagnostics.push(
+                MetaDiagnostic::error(MetaDiagnosticCode::ProviderUnavailable, error)
+                    .with_metadata_path(target.clone())
+                    .with_field(format!("{field}.synonym")),
+            );
+            None
+        }
+    };
     let comment = match crate::info_projection::observe_collection_item_comment(properties) {
         Ok(comment) => comment,
         Err(error) => {
@@ -508,33 +520,6 @@ pub fn typed_element(
             )
         ),
     );
-    let mut localized_limits = Vec::new();
-    for (tag, key) in [
-        ("Synonym", "synonymTranslations"),
-        ("ToolTip", "tooltipTranslations"),
-    ] {
-        if tag == "ToolTip"
-            && !(node.tag_name().name() == "Attribute"
-                && node
-                    .parent()
-                    .and_then(|parent| parent.parent())
-                    .is_some_and(|parent| parent.tag_name().name() == "TabularSection")
-                && target.segments().next() == Some("Catalog"))
-        {
-            continue;
-        }
-        match crate::info_projection::observe_localized_property(properties, tag) {
-            Ok(Some(value)) => properties_readback.push(MetaObservedProperty {
-                name: key.into(),
-                value,
-            }),
-            Ok(None) => {}
-            Err(error) => localized_limits.push(format!(
-                "source_unreadable: {field}.properties.{key}: {}",
-                error.message
-            )),
-        }
-    }
     let own_limits = diagnostics[own_diagnostics..]
         .iter()
         .map(element_diagnostic_limit)
@@ -578,12 +563,8 @@ pub fn typed_element(
         || (Vec::new(), Vec::new()),
         |profile| super::member_properties::observe(node, profile, field, target, diagnostics),
     );
-    incomplete |= !property_limits.is_empty() || !localized_limits.is_empty();
-    let property_limits = own_limits
-        .into_iter()
-        .chain(property_limits)
-        .chain(localized_limits)
-        .collect();
+    incomplete |= !property_limits.is_empty();
+    let property_limits = own_limits.into_iter().chain(property_limits).collect();
     let properties_readback = properties_readback
         .into_iter()
         .chain(profile_properties)
@@ -763,24 +744,25 @@ pub fn parse_typed_meta_local_info_inner(
         .with_metadata_path(target.clone())
         .into());
     }
-    let synonym = properties.and_then(|properties| {
-        let nodes = crate::info_projection::direct_children_with_namespace(
-            properties,
-            super::info_projection::MD_CLASSES_NAMESPACE,
-            "Synonym",
-        );
-        let [node] = nodes.as_slice() else {
-            return None;
-        };
-        crate::info_projection::meta_info_property_value_is_valid(
-            *node,
-            MetaInfoPropertyValueKind::LegacyLocalizedString,
-        )
-        .then(|| crate::xml_model::meta_info_ml_text(*node))
-        .filter(|value| !value.is_empty())
-    });
-
     let mut diagnostics = Vec::new();
+    let synonym =
+        properties.and_then(
+            |properties| match crate::info_projection::localized_property_as_nstr(
+                properties,
+                kind.as_str(),
+                "Synonym",
+            ) {
+                Ok(value) => value,
+                Err(error) => {
+                    diagnostics.push(
+                        MetaDiagnostic::error(MetaDiagnosticCode::ProviderUnavailable, error)
+                            .with_metadata_path(target.clone())
+                            .with_field("properties.Synonym"),
+                    );
+                    None
+                }
+            },
+        );
     for error in crate::info_projection::meta_info_profile_errors(kind, properties, child_objects) {
         diagnostics.push(
             MetaDiagnostic::error(error.code, error.message)
@@ -812,25 +794,6 @@ pub fn parse_typed_meta_local_info_inner(
     let collection_route = |tag, nested_attributes, field| {
         TypedRootCollectionRoute::new(kind, tag, nested_attributes, field)
     };
-    let localized_synonym = if let Some(properties) = properties.filter(|_| {
-        METADATA_PROPERTY_SPECS
-            .iter()
-            .any(|spec| spec.key == MetaPropertyKey::Synonym && spec.allowed_kinds.contains(&kind))
-    }) {
-        match crate::info_projection::observe_localized_property(properties, "Synonym") {
-            Ok(value) => value,
-            Err(error) => {
-                diagnostics.push(
-                    MetaDiagnostic::error(error.code, error.message)
-                        .with_metadata_path(target.clone())
-                        .with_field("properties.synonymTranslations"),
-                );
-                None
-            }
-        }
-    } else {
-        None
-    };
     let mut local = unica_metadata::validation_subject::MetaLocalInfo {
         member_read_profile,
         metadata_path: target.clone(),
@@ -838,7 +801,6 @@ pub fn parse_typed_meta_local_info_inner(
         details,
         name,
         synonym,
-        localized_synonym,
         support,
         properties: crate::info::typed_properties(properties, kind),
         declarations,

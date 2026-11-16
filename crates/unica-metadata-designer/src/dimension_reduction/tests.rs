@@ -8,11 +8,10 @@ fn operation(name: &str, value: &str) -> MetaEditOperation {
         collection: MetaCollection::Dimensions,
         scope: None,
         elements: vec![MetaElementUpdate {
+            tool_tip: None,
             name: name.into(),
             new_name: None,
             synonym: None,
-            synonym_translations: None,
-            tooltip_translations: None,
             comment: None,
             r#type: None,
             required: None,

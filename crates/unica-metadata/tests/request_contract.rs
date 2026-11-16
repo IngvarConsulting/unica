@@ -1134,7 +1134,7 @@ fn schema_and_parser_accept_every_registered_kind_collection_and_operation_tag()
     fn add_element(kind: MetadataKind, collection: MetaCollection) -> Value {
         let mut element = json!({
             "name": "Element",
-            "synonym": "Element synonym",
+            "synonym": "ru = 'Element synonym'",
             "comment": "Element comment",
             "position": {"after": "Previous"},
         })
@@ -1194,7 +1194,7 @@ fn schema_and_parser_accept_every_registered_kind_collection_and_operation_tag()
         let mut element = json!({
             "name": "Element",
             "newName": "Renamed",
-            "synonym": "Replacement synonym",
+            "synonym": "ru = 'Replacement synonym'",
             "comment": "Replacement comment",
             "position": {"before": "Next"},
         })

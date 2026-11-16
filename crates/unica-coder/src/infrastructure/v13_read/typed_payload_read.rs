@@ -544,9 +544,6 @@ impl<'a> LogicalViewReadAuthority<'a> {
         let mut payload = Map::new();
         payload.insert("name".to_string(), json!(local.name));
         payload.insert("synonym".to_string(), json!(local.synonym));
-        if let Some(value) = &local.localized_synonym {
-            insert_serialized(&mut payload, "synonymTranslations", value)?;
-        }
         insert_serialized(&mut payload, "kind", &local.kind)?;
         insert_serialized(&mut payload, "details", &local.details)?;
         // Карточка и элемент коллекции говорят одним словарём состояний (#2158).

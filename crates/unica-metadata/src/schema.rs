@@ -11,20 +11,6 @@ use serde_json::{json, Map, Value};
 use std::sync::OnceLock;
 use unica_address::source_target::{metadata_address_kind_spellings, RECALCULATION_KIND_SPELLINGS};
 
-pub fn translation_changes_schema() -> Value {
-    json!({
-        "type": "array", "minItems": 1,
-        "items": {
-            "type": "object", "additionalProperties": false,
-            "required": ["language", "content"],
-            "properties": {
-                "language": {"type": "string", "pattern": crate::language_code::LANGUAGE_CODE_PATTERN},
-                "content": {"type": "string"}
-            }
-        }
-    })
-}
-
 /// Project the existing property vocabulary, narrowed before merging any
 /// owner-specific enum. The legacy host consumes the kind-agnostic union.
 pub fn metadata_property_schemas(kind: Option<MetadataKind>) -> Map<String, Value> {
@@ -37,9 +23,6 @@ pub fn metadata_property_schemas(kind: Option<MetadataKind>) -> Map<String, Valu
             .entry(spec.public_name.to_string())
             .or_insert_with(|| match spec.value_kind {
                 MetaPropertyValueKind::Type => metadata_type_schema(),
-                MetaPropertyValueKind::String if spec.key == crate::MetaPropertyKey::Synonym => {
-                    json!({"oneOf":[{"type":"string"}, translation_changes_schema()]})
-                }
                 MetaPropertyValueKind::String => json!({"type": "string"}),
                 MetaPropertyValueKind::Boolean => json!({"type": "boolean"}),
                 MetaPropertyValueKind::UnsignedInteger => {
@@ -84,6 +67,14 @@ pub fn metadata_property_schemas(kind: Option<MetadataKind>) -> Map<String, Valu
             .as_object_mut()
             .expect("root property schema is always an object")
             .remove("unconstrained");
+    }
+    for spec in METADATA_PROPERTY_SPECS
+        .iter()
+        .filter(|spec| spec.key == crate::MetaPropertyKey::Synonym)
+    {
+        if let Some(entry) = root_properties.get_mut(spec.public_name) {
+            *entry = crate::properties::localized_value_schema();
+        }
     }
     root_properties
 }

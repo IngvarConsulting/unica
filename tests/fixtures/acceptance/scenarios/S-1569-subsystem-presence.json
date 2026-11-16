@@ -72,7 +72,7 @@
         },
         {
           "pointer": "/data/props/Explanation",
-          "eq": ""
+          "absent": true
         }
       ],
       "captures": {
@@ -184,7 +184,7 @@
         },
         {
           "pointer": "/data/props/Explanation",
-          "eq": ""
+          "absent": true
         }
       ],
       "captures": {
@@ -222,7 +222,7 @@
         },
         {
           "pointer": "/data/props/Explanation",
-          "eq": "Пояснение"
+          "eq": "ru = 'Пояснение'"
         }
       ]
     },
@@ -241,7 +241,7 @@
         },
         {
           "pointer": "/data/props/Explanation",
-          "eq": null
+          "absent": true
         }
       ]
     },
@@ -260,7 +260,7 @@
         },
         {
           "pointer": "/data/props/Explanation",
-          "eq": null
+          "absent": true
         },
         {
           "pointer": "/data/limits/0",

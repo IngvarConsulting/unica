@@ -39,15 +39,20 @@ impl MetadataReadCodec for DesignerMetadataReadCodec {
         crate::descriptor_comment::read_comment(descriptor, kind)
     }
 
-    fn language_code(&self, descriptor: &[u8]) -> Result<String, String> {
-        crate::language_code::read_code(descriptor)
+    fn descriptor_localized_property(
+        &self,
+        descriptor: &str,
+        kind: &str,
+        name: &str,
+    ) -> Result<Option<String>, String> {
+        let document = roxmltree::Document::parse(descriptor.trim_start_matches('\u{feff}'))
+            .map_err(|error| error.to_string())?;
+        let properties = crate::descriptor_comment::descriptor_properties(&document, kind)?;
+        crate::info_projection::localized_property_as_nstr(properties, kind, name)
     }
 
-    fn language_synonym(
-        &self,
-        descriptor: &[u8],
-    ) -> Result<Option<unica_metadata::MetaObservedPropertyValue>, String> {
-        crate::language_code::read_synonym(descriptor)
+    fn language_code(&self, descriptor: &[u8]) -> Result<String, String> {
+        crate::language_code::read_code(descriptor)
     }
 
     fn functional_option(

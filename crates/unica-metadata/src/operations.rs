@@ -511,7 +511,8 @@ impl Serialize for MetaFillValue {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct MetaElementInput {
     pub name: String,
-    pub synonym: Option<String>,
+    /// Every language of the synonym, from its NStr form (#2163).
+    pub synonym: Option<Vec<crate::LocalizedItem>>,
     pub comment: Option<String>,
     pub r#type: Option<MetadataType>,
     pub required: Option<bool>,
@@ -538,7 +539,7 @@ impl MetaElementInput {
 #[derive(Clone, PartialEq, Eq)]
 pub struct MetaElementDefinition {
     pub name: String,
-    pub synonym: Option<String>,
+    pub synonym: Option<Vec<crate::LocalizedItem>>,
     pub comment: Option<String>,
     pub r#type: Option<MetadataType>,
     pub required: Option<bool>,
@@ -584,10 +585,9 @@ impl std::fmt::Debug for MetaElementDefinition {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct MetaElementUpdateInput {
     pub name: String,
+    pub tool_tip: Option<Vec<crate::LocalizedItem>>,
     pub new_name: Option<String>,
-    pub synonym: Option<String>,
-    pub synonym_translations: Option<Vec<crate::MetaLocalizedText>>,
-    pub tooltip_translations: Option<Vec<crate::MetaLocalizedText>>,
+    pub synonym: Option<Vec<crate::LocalizedItem>>,
     pub comment: Option<String>,
     pub r#type: Option<MetadataType>,
     pub required: Option<bool>,
@@ -606,10 +606,9 @@ pub struct MetaElementUpdateInput {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MetaElementUpdate {
     pub name: String,
+    pub tool_tip: Option<Vec<crate::LocalizedItem>>,
     pub new_name: Option<String>,
-    pub synonym: Option<String>,
-    pub synonym_translations: Option<Vec<crate::MetaLocalizedText>>,
-    pub tooltip_translations: Option<Vec<crate::MetaLocalizedText>>,
+    pub synonym: Option<Vec<crate::LocalizedItem>>,
     pub comment: Option<String>,
     pub r#type: Option<MetadataType>,
     pub required: Option<bool>,
@@ -946,6 +945,14 @@ impl MetaElementDefinition {
     }
 }
 
+pub(crate) fn metadata_tool_tip_is_allowed(
+    owner: MetadataKind,
+    collection: MetaCollection,
+    in_section: bool,
+) -> bool {
+    owner == MetadataKind::Catalog && collection == MetaCollection::Attributes && in_section
+}
+
 impl MetaElementUpdate {
     fn convert_at(
         collection: MetaCollection,
@@ -956,28 +963,13 @@ impl MetaElementUpdate {
         if let Some(new_name) = &input.new_name {
             validate_name(new_name, &format!("{field}.newName"))?;
         }
-        if input.synonym.is_some() && input.synonym_translations.is_some() {
-            return Err(invalid_operation(
-                format!("{field}.synonymTranslations"),
-                "use either synonym or synonymTranslations",
-            ));
-        }
-        for (key, values) in [
-            ("synonymTranslations", &input.synonym_translations),
-            ("tooltipTranslations", &input.tooltip_translations),
-        ] {
-            if let Some(values) = values {
-                crate::request::validate_translation_changes(values, &format!("{field}.{key}"))?;
-            }
-        }
         let renames = input
             .new_name
             .as_ref()
             .is_some_and(|new_name| new_name != &input.name);
         if !renames
             && input.synonym.is_none()
-            && input.synonym_translations.is_none()
-            && input.tooltip_translations.is_none()
+            && input.tool_tip.is_none()
             && input.comment.is_none()
             && input.r#type.is_none()
             && input.required.is_none()
@@ -1043,9 +1035,8 @@ impl MetaElementUpdate {
         Ok(Self {
             name: input.name,
             new_name: input.new_name,
+            tool_tip: input.tool_tip,
             synonym: input.synonym,
-            synonym_translations: input.synonym_translations,
-            tooltip_translations: input.tooltip_translations,
             comment: input.comment,
             r#type: input.r#type,
             required: input.required,
@@ -1891,6 +1882,14 @@ pub fn validate_metadata_operation_capabilities(
                 MetaElementScope::TopLevel
             };
             for (index, element) in elements.iter().enumerate() {
+                if element.tool_tip.is_some()
+                    && !metadata_tool_tip_is_allowed(owner_kind, *collection, scope.is_some())
+                {
+                    return Err(invalid_operation(
+                        format!("elements[{index}].toolTip"),
+                        "toolTip is available only for catalog tabular-section attributes",
+                    ));
+                }
                 if element.fill_value.is_some()
                     && !metadata_fill_value_is_allowed(owner_kind, *collection, context)
                 {

@@ -52,7 +52,7 @@ fn a_set_of_line_8_5_1_edits_the_root_properties_that_line_adds() {
                 "ClientApplicationWindowsOpenVariant":"OpenDataInTabs",
                 "Version85InterfaceMigrationMode":"Use",
                 "InterfaceCompatibilityMode":"Version8_5",
-                "Caption":"Учёт",
+                "Caption":"ru = 'Учёт'",
             }}),
         )],
     )
@@ -213,7 +213,7 @@ fn an_extension_of_line_8_5_1_sets_its_caption() {
         &fixture,
         &[(
             "props.set",
-            json!({"at":"main:Configuration","values":{"Caption":"Доработки","shortCaption":"Д"}}),
+            json!({"at":"main:Configuration","values":{"Caption":"ru = 'Доработки'","shortCaption":"ru = 'Д'"}}),
         )],
     )
     .unwrap();

@@ -189,18 +189,22 @@ impl ProviderReadAuthority {
                         .push(json!({"field": "properties.LanguageCode", "message": message}));
                 }
             }
-            match codec.language_synonym(&descriptor) {
+            let synonym = std::str::from_utf8(&descriptor)
+                .map_err(|error| error.to_string())
+                .and_then(|text| codec.descriptor_localized_property(text, "Language", "Synonym"));
+            match synonym {
                 Ok(Some(value)) => {
-                    properties.push(json!({"key": "Synonym", "value": value}));
+                    properties.push(json!({
+                        "key": "Synonym",
+                        "value": unica_metadata::MetaObservedPropertyValue::Text { value },
+                    }));
                 }
                 Ok(None) => {}
                 Err(message) => {
                     unreadable.push(json!({"field": "properties.Synonym", "message": message}));
                 }
             }
-            if !properties.is_empty() {
-                payload["properties"] = json!(properties);
-            }
+            payload["properties"] = json!(properties);
             if !unreadable.is_empty() {
                 payload["unreadable"] = json!(unreadable);
             }

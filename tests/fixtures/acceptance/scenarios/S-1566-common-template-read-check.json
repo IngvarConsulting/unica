@@ -148,7 +148,7 @@
         },
         {
           "pointer": "/data/props/Synonym",
-          "eq": "Общий Print"
+          "eq": "ru = 'Общий Print'"
         }
       ],
       "captures": {
@@ -482,7 +482,7 @@
         },
         {
           "pointer": "/data/props/Synonym",
-          "eq": "Общий Html"
+          "eq": "ru = 'Общий Html'"
         },
         {
           "pointer": "/data/branches",

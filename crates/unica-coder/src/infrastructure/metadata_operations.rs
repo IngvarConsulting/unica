@@ -680,7 +680,6 @@ pub(crate) mod medium_tests {
                 details: unica_metadata::MetaInfoDetails::empty(MetadataKind::Catalog),
                 name: "Items".into(),
                 synonym: None,
-                localized_synonym: None,
                 support: unica_metadata::MetaSupportStatus::Supported,
                 properties: Vec::new(),
                 declarations: unica_metadata::MetaInfoDeclarations::default(),
@@ -3948,7 +3947,7 @@ pub(crate) mod medium_tests {
                 None,
                 vec![MetaElementUpdateInput {
                     name: "Print".into(),
-                    synonym: Some("Print".into()),
+                    synonym: Some(vec![unica_metadata::LocalizedItem::new("ru", "Print")]),
                     ..MetaElementUpdateInput::default()
                 }],
             )
@@ -3970,7 +3969,10 @@ pub(crate) mod medium_tests {
             None,
             vec![MetaElementUpdateInput {
                 name: "Print".into(),
-                synonym: Some("Печатная форма".into()),
+                synonym: Some(vec![unica_metadata::LocalizedItem::new(
+                    "ru",
+                    "Печатная форма",
+                )]),
                 ..MetaElementUpdateInput::default()
             }],
         )
@@ -4041,7 +4043,10 @@ pub(crate) mod medium_tests {
             None,
             vec![MetaElementUpdateInput {
                 name: "Print".into(),
-                synonym: Some("Печатная форма".into()),
+                synonym: Some(vec![unica_metadata::LocalizedItem::new(
+                    "ru",
+                    "Печатная форма",
+                )]),
                 ..MetaElementUpdateInput::default()
             }],
         )
@@ -5328,7 +5333,10 @@ pub(crate) mod medium_tests {
                         None,
                         vec![MetaElementUpdateInput {
                             name: "Missing".into(),
-                            synonym: Some("must not upsert".into()),
+                            synonym: Some(vec![unica_metadata::LocalizedItem::new(
+                                "ru",
+                                "must not upsert",
+                            )]),
                             ..MetaElementUpdateInput::default()
                         }],
                     )

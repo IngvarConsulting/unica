@@ -2494,11 +2494,11 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "documentId",
-        "Stable locator of a documentation hit, minted by the canonical documentation query and passed verbatim to unica.documentation.get to fetch the full document text: configuration-help:<source-set>:<path> for the workspace configuration's embedded help, platform-syntax-help:<corpus>:<path> for the installed platform's help, and an https://v8std.ru/... address for a development standard; the provider that minted the locator is the only one that resolves it.",
+        "Stable locator of a documentation hit, minted by the canonical documentation query and passed verbatim to unica.documentation.get to fetch the full document text: configuration-help:<source-set>:<path> for the workspace configuration's embedded help, platform-syntax-help:<platform-build>:<corpus>:<path> for the exact installed platform build's help, and an https://v8std.ru/... address for a development standard; the provider that minted the locator is the only one that resolves it.",
     ),
     (
         "platformVersion",
-        "Requested platform installation version for unica.documentation.get, matched against an installation directory name exactly, for example 8.3.27.2074; when omitted the project's own tools.platform.version constrains the choice, and without that the numerically newest installation found under a configured platform root wins; a tools.platform.path pin names the installation directly instead of walking the roots, with the same version constraints applied to it.",
+        "Requested platform installation version for unica.documentation.get. It must agree with the build in a versioned platform-help documentId. For an older locator without a build the version is matched against an installation directory name exactly, for example 8.3.27.2074; when omitted the project's own tools.platform.version constrains the choice, and without that the numerically newest installation found under a configured platform root wins; a tools.platform.path pin names the installation directly instead of walking the roots, with the same version constraints applied to it.",
     ),
     (
         "detail",

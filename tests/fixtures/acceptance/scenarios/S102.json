@@ -11,7 +11,7 @@
             "op": "attribute.set",
             "args": {
               "values": {
-                "synonym": "Проверка диффа"
+                "synonym": "ru = 'Проверка диффа'"
               }
             }
           }

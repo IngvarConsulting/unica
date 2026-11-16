@@ -712,10 +712,13 @@ pub fn parse_property_changes(
             MetaPropertyValueKind::Type => {
                 MetaPropertyValue::Type(parse_metadata_type(value, &field)?)
             }
-            MetaPropertyValueKind::String
-                if spec.key == MetaPropertyKey::Synonym && value.is_array() =>
-            {
-                MetaPropertyValue::Translations(parse_translation_changes(value, &field)?)
+            MetaPropertyValueKind::String if spec.key == crate::MetaPropertyKey::Synonym => {
+                let text = value
+                    .as_str()
+                    .ok_or_else(|| invalid(&field, crate::LOCALIZED_VALUE_FORM))?;
+                MetaPropertyValue::Localized(
+                    crate::parse_nstr(text).map_err(|message| invalid(&field, message))?,
+                )
             }
             MetaPropertyValueKind::String => value
                 .as_str()
@@ -735,69 +738,6 @@ pub fn parse_property_changes(
     }
     MetaPropertyChanges::convert(kind, inputs)
 }
-fn parse_translation_changes(
-    value: &Value,
-    field: &str,
-) -> Result<Vec<MetaLocalizedText>, MetaDiagnostic> {
-    let rows = value
-        .as_array()
-        .ok_or_else(|| invalid(field, "expected translation rows"))?;
-    rows.iter()
-        .enumerate()
-        .map(|(index, row)| {
-            let field = format!("{field}[{index}]");
-            let object = row
-                .as_object()
-                .ok_or_else(|| invalid(&field, "translation must be an object"))?;
-            if let Some(key) = object
-                .keys()
-                .find(|key| !matches!(key.as_str(), "language" | "content"))
-            {
-                return Err(invalid(
-                    format!("{field}.{key}"),
-                    "unknown translation field",
-                ));
-            }
-            Ok(MetaLocalizedText {
-                language: object
-                    .get("language")
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| {
-                        invalid(format!("{field}.language"), "language must be a string")
-                    })?
-                    .to_owned(),
-                content: object
-                    .get("content")
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| invalid(format!("{field}.content"), "content must be a string"))?
-                    .to_owned(),
-            })
-        })
-        .collect()
-}
-
-pub(crate) fn validate_translation_changes(
-    values: &[MetaLocalizedText],
-    field: &str,
-) -> Result<(), MetaDiagnostic> {
-    if values.is_empty() {
-        return Err(invalid(field, "translation rows must not be empty"));
-    }
-    let mut seen = std::collections::HashSet::new();
-    for (index, row) in values.iter().enumerate() {
-        let path = format!("{field}[{index}].language");
-        crate::language_code::validate_language_code(&row.language)
-            .map_err(|error| invalid(&path, error))?;
-        if !seen.insert(&row.language) {
-            return Err(invalid(path, "duplicate translation language"));
-        }
-        if !row.content.chars().all(|ch| matches!(ch, '\u{9}' | '\u{A}' | '\u{D}' | '\u{20}'..='\u{D7FF}' | '\u{E000}'..='\u{FFFD}' | '\u{10000}'..='\u{10FFFF}')) {
-            return Err(invalid(format!("{field}[{index}].content"), "content must contain only XML 1.0 characters"));
-        }
-    }
-    Ok(())
-}
-
 pub fn reject_unknown_shape_fields(
     object: &Map<String, Value>,
     shape: ArgumentShape<'_>,
@@ -849,7 +789,7 @@ pub fn parse_element_input(
     })?;
     Ok(MetaElementInput {
         name: reader.read("name", required_string_at)?,
-        synonym: reader.read("synonym", optional_string_at)?,
+        synonym: reader.read("synonym", optional_localized_at)?,
         comment: reader.read("comment", optional_string_at)?,
         r#type: reader.read("type", |object, key, field| {
             object
@@ -900,27 +840,16 @@ pub fn parse_element_update(
         MetadataArgumentReader::new(object, metadata_element_input_schema(true, false), field);
     reader.reject_unknown()?;
     Ok(MetaElementUpdateInput {
+        tool_tip: reader.read("toolTip", optional_localized_at)?,
         indexing: reader.read("indexing", optional_string_at)?,
         master: reader.read("master", optional_bool_at)?,
         main_filter: reader.read("mainFilter", optional_bool_at)?,
         deny_incomplete_values: reader.read("denyIncompleteValues", optional_bool_at)?,
         type_reduction_mode: reader.read("typeReductionMode", optional_string_at)?,
         color: reader.read("color", optional_string_at)?,
-        synonym_translations: reader.read("synonymTranslations", |object, key, field| {
-            object
-                .get(key)
-                .map(|value| parse_translation_changes(value, field))
-                .transpose()
-        })?,
-        tooltip_translations: reader.read("tooltipTranslations", |object, key, field| {
-            object
-                .get(key)
-                .map(|value| parse_translation_changes(value, field))
-                .transpose()
-        })?,
         name: reader.read("name", required_string_at)?,
         new_name: reader.read("newName", optional_string_at)?,
-        synonym: reader.read("synonym", optional_string_at)?,
+        synonym: reader.read("synonym", optional_localized_at)?,
         comment: reader.read("comment", optional_string_at)?,
         r#type: reader.read("type", |object, key, field| {
             object
@@ -1375,6 +1304,22 @@ pub fn nonempty_string(value: &Value, field: &str) -> Result<String, MetaDiagnos
         ));
     }
     Ok(value.to_string())
+}
+/// An optional multilingual field in NStr form (#2163).
+pub fn optional_localized_at(
+    object: &Map<String, Value>,
+    key: &str,
+    field: &str,
+) -> Result<Option<Vec<crate::LocalizedItem>>, MetaDiagnostic> {
+    object
+        .get(key)
+        .map(|value| {
+            let text = value
+                .as_str()
+                .ok_or_else(|| invalid(field, crate::LOCALIZED_VALUE_FORM))?;
+            crate::parse_nstr(text).map_err(|message| invalid(field, message))
+        })
+        .transpose()
 }
 pub fn optional_string_at(
     object: &Map<String, Value>,

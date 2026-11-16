@@ -96,17 +96,6 @@ pub fn read_code(bytes: &[u8]) -> Result<String, String> {
     inspect(text).map(|language| language.code)
 }
 
-pub fn read_synonym(
-    bytes: &[u8],
-) -> Result<Option<unica_metadata::MetaObservedPropertyValue>, String> {
-    let text = std::str::from_utf8(bytes).map_err(|error| error.to_string())?;
-    let document =
-        Document::parse(text.trim_start_matches('\u{feff}')).map_err(|error| error.to_string())?;
-    let properties = child(owner(&document, "Language")?, "Properties")?;
-    crate::info_projection::observe_localized_property(properties, "Synonym")
-        .map_err(|error| error.message)
-}
-
 pub(crate) fn replace(text: &str, name: &str, code: &str) -> Result<String, String> {
     let language = inspect(text)?;
     if language.name != name {

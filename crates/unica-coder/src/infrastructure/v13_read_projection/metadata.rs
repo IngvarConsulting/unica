@@ -26,7 +26,6 @@ use relations::{metadata_missing_relation_limits, metadata_relation_limits, meta
 pub(super) const PAYLOAD_KEYS: &[&str] = &[
     "name",
     "synonym",
-    "synonymTranslations",
     "kind",
     "details",
     "support",
@@ -128,17 +127,6 @@ fn project_metadata(
         let mut limits = metadata_limits(payload);
         limits.extend(size_limits);
         props.extend(metadata_property_props(address, payload, &mut limits));
-        if let Some(value) = payload.get("synonymTranslations") {
-            place_prop(
-                &mut props,
-                &mut limits,
-                address,
-                "synonymTranslations",
-                value,
-                true,
-                "metadata synonym translations",
-            );
-        }
         // Синоним — свойство платформы и публикуется под её именем, тем же,
         // что принимает `props.set`. У видов, чей профиль не перечисляет
         // его среди свойств, значение берётся из сведений читателя; если
@@ -229,13 +217,20 @@ fn project_metadata(
         let title = payload
             .get("synonym")
             .and_then(Value::as_str)
-            .or_else(|| payload.get("name").and_then(Value::as_str))
+            .and_then(super::localized_display_text)
+            .or_else(|| {
+                payload
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
             .unwrap_or_else(|| {
                 address
                     .segments()
                     .last()
                     .and_then(AddressSegment::name)
                     .unwrap_or("Metadata")
+                    .to_string()
             });
         return Ok(NodeViewData::Node(
             NodeView::new(
@@ -517,7 +512,7 @@ mod tabular_standard_attribute_property_tests {
                 let at = QualifiedAddress::parse(raw).unwrap();
                 let node = serde_json::to_value(metadata_item_node(&at, NodeKind::StandardAttribute, &item, None)).unwrap();
                 assert!(node["props"].get("UnknownProviderKey").is_none());
-                assert_eq!(node["props"]["Synonym"], synonym, "{raw}: {node}");
+                assert_eq!(node["props"]["Synonym"], "ru = 'Номер строки'", "{raw}: {node}");
                 // An empty translation set is no value: no key and no limit.
                 assert!(node["props"].get("ToolTip").is_none(), "{raw}: {node}");
                 assert!(!node["limits"].to_string().contains("ToolTip"));

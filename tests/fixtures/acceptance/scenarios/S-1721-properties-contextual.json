@@ -1163,7 +1163,7 @@
             "op": "props.set",
             "args": {
               "values": {
-                "synonym": "Properties1721 role",
+                "synonym": "ru = 'Properties1721 role'",
                 "Comment": "Properties1721 role comment"
               }
             }
@@ -1385,7 +1385,7 @@
             "op": "props.set",
             "args": {
               "values": {
-                "Synonym": "Properties1721 subsystem",
+                "Synonym": "ru = 'Properties1721 subsystem'",
                 "comment": "Properties1721 subsystem comment",
                 "explanation": "",
                 "IncludeInCommandInterface": false
@@ -2514,8 +2514,8 @@
             "op": "props.set",
             "args": {
               "values": {
-                "Synonym": "same",
-                "synonym": "same"
+                "Synonym": "ru = 'same'",
+                "synonym": "ru = 'same'"
               }
             }
           }
@@ -5011,7 +5011,7 @@
         },
         {
           "pointer": "/data/props/Synonym",
-          "eq": "Контроль работы пользователей"
+          "eq": "ru = 'Контроль работы пользователей'"
         }
       ],
       "fileAssertions": [

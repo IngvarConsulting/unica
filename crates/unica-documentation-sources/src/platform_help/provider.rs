@@ -1,3 +1,4 @@
+use super::locator::{LocatorScope, PlatformHelpLocator, PROVIDER_ID};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -394,12 +395,7 @@ fn rank_pages(
     corpus: &IndexedCorpus,
     query: &str,
     limit: usize,
-    version: &str,
-    // Идентификатор поставщика приходит от вызывающего (`self.id()`), а не
-    // повторяется здесь литералом: переименование поставщика иначе молча
-    // разошлось бы с префиксом `document_id`.
-    provider: &str,
-    corpus_id: &str,
+    scope: LocatorScope<'_>,
     language: &str,
 ) -> Vec<DocumentationHit> {
     corpus
@@ -412,14 +408,14 @@ fn rank_pages(
             DocumentationHit {
                 rank: index as u32 + 1,
                 provider_score: scored.score,
-                document_id: format!("{provider}:{corpus_id}:{}", page.path),
+                document_id: scope.document_id(&page.path),
                 title: page.title.clone(),
                 signature: page
                     .signature
                     .as_ref()
                     .and_then(|value| signature_in(value, language)),
                 snippet: page.header.summary.clone(),
-                applicable_version: version.to_string(),
+                applicable_version: scope.version.to_string(),
                 kind: Some(page.header.kind.as_str().to_string()),
                 // Владелец есть у члена типа; у страницы типа и у понятия
                 // его нет, и ключа в находке тоже нет.
@@ -469,7 +465,7 @@ impl PlatformSyntaxHelpProvider {
 
 impl DocumentationProvider for PlatformSyntaxHelpProvider {
     fn id(&self) -> DocumentationProviderId {
-        DocumentationProviderId::new("platform-syntax-help")
+        DocumentationProviderId::new(PROVIDER_ID)
     }
 
     fn corpora(&self) -> Vec<DocumentationCorpus> {
@@ -487,7 +483,7 @@ impl DocumentationProvider for PlatformSyntaxHelpProvider {
         false
     }
 
-    /// Страница целиком по локатору `platform-syntax-help:<корпус>:<путь>` —
+    /// Страница целиком по локатору справки —
     /// текст прочитанной страницы, а не фрагмент. Индекс полного текста
     /// не держит (он экономит память под поиск), поэтому страница
     /// перечитывается из контейнеров выбранной установки; `get` редок, и цена
@@ -498,16 +494,17 @@ impl DocumentationProvider for PlatformSyntaxHelpProvider {
         language: &str,
         context: &DocumentationContext,
     ) -> Option<Result<unica_documentation::model::DocumentationDocument, String>> {
-        let rest = document_id.strip_prefix("platform-syntax-help:")?;
-        // Префикс наш — дальнейшие неожиданности отвечаются отказом
-        // владельца, а не тихим None: другой владелец у локатора невозможен.
-        let Some((corpus_id, path)) = rest.split_once(':') else {
-            return Some(Err(format!(
-                "локатор {document_id:?} не несёт корпуса и пути"
-            )));
+        let locator = match PlatformHelpLocator::parse(document_id) {
+            Ok(locator) => locator?,
+            Err(error) => return Some(Err(error)),
         };
+        let PlatformHelpLocator {
+            version,
+            corpus: corpus_id,
+            path,
+        } = locator;
         let Some(root) = context.installation_root.as_ref() else {
-            let detail = match context.platform_version.as_deref() {
+            let detail = match version.or(context.platform_version.as_deref()) {
                 Some(version) => {
                     format!("установка платформы {version} не разрешена для рабочего пространства")
                 }
@@ -518,6 +515,18 @@ impl DocumentationProvider for PlatformSyntaxHelpProvider {
         let corpora = match discover(root, language) {
             Ok(value) => value,
             Err(error) => return Some(Err(format!("установка не разобрана: {error:?}"))),
+        };
+        if let Some(version) = version {
+            if version != corpora.version {
+                return Some(Err(format!(
+                    "локатор требует сборку {version}, выбрана установка {}",
+                    corpora.version
+                )));
+            }
+        }
+        let scope = LocatorScope {
+            version: &corpora.version,
+            corpus: corpus_id,
         };
         let source = match corpus_id {
             "syntax-context" => &corpora.syntax_context,
@@ -556,7 +565,7 @@ impl DocumentationProvider for PlatformSyntaxHelpProvider {
                     authority: Authority::Vendor,
                     // Локаль, которой корпус реально прочитан, — как у поиска.
                     language: source.language.clone(),
-                    document_id: document_id.to_string(),
+                    document_id: scope.document_id(path),
                     title: page.title.clone(),
                     signature: page
                         .signature
@@ -567,7 +576,7 @@ impl DocumentationProvider for PlatformSyntaxHelpProvider {
                     // Статья полями разбирается из разметки той же записи;
                     // плоский текст остаётся рядом запасным путём.
                     article: Some(super::article_fields::public_article(
-                        corpus_id,
+                        scope,
                         &unica_bsl_types::article::parse(path, &markup),
                     )),
                 }));
@@ -662,7 +671,6 @@ impl DocumentationProvider for PlatformSyntaxHelpProvider {
             }
         };
         let index = indexed(IndexKey::for_corpora(root, &corpora), &corpora);
-        let provider_id = self.id().to_string();
         // По секции на корпус: поле `corpus` обязано описывать именно свои
         // попадания, поэтому корпуса не смешиваются в одну секцию.
         CORPUS_SPECS
@@ -673,9 +681,10 @@ impl DocumentationProvider for PlatformSyntaxHelpProvider {
                     corpus,
                     &request.query,
                     request.limit,
-                    &index.version,
-                    &provider_id,
-                    spec.id,
+                    LocatorScope {
+                        version: &index.version,
+                        corpus: spec.id,
+                    },
                     // Локаль КОРПУСА, а не запроса: сигнатура печатается рядом
                     // с заголовком и фрагментом его страницы (см. `signature_in`).
                     &corpus.language,
@@ -1022,9 +1031,10 @@ mod tests {
             &corpus,
             "ЭлементыФормы",
             20,
-            "8.3.27.2074",
-            "platform-syntax-help",
-            "syntax-context",
+            LocatorScope {
+                version: "8.3.27.2074",
+                corpus: "syntax-context",
+            },
             "ru",
         );
         assert_eq!(hits.len(), 2, "оба попадания сохраняются");
@@ -1061,9 +1071,10 @@ mod tests {
                 &corpus,
                 query,
                 5,
-                "8.3.27.2074",
-                "platform-syntax-help",
-                "syntax-context",
+                LocatorScope {
+                    version: "8.3.27.2074",
+                    corpus: "syntax-context",
+                },
                 "ru",
             )
         };
@@ -1094,9 +1105,10 @@ mod tests {
                 &corpus,
                 query,
                 5,
-                "8.3.27.2074",
-                "platform-syntax-help",
-                "syntax-context",
+                LocatorScope {
+                    version: "8.3.27.2074",
+                    corpus: "syntax-context",
+                },
                 "ru",
             )
             .first()
@@ -1125,9 +1137,10 @@ mod tests {
             &corpus,
             "ValueTable GroupBy",
             5,
-            "8.3.27.2074",
-            "platform-syntax-help",
-            "syntax-context",
+            LocatorScope {
+                version: "8.3.27.2074",
+                corpus: "syntax-context",
+            },
             "ru",
         );
         assert!(
@@ -1164,9 +1177,10 @@ mod tests {
                 &corpus,
                 "GetURL",
                 20,
-                "8.3.27.2074",
-                "platform-syntax-help",
-                "syntax-context",
+                LocatorScope {
+                    version: "8.3.27.2074",
+                    corpus: "syntax-context",
+                },
                 locale,
             )[0]
             .signature
@@ -1245,7 +1259,7 @@ mod tests {
         );
         assert_eq!(
             syntax_section.hits[0].document_id,
-            "platform-syntax-help:syntax-context:alpha/from-syntax.html",
+            "platform-syntax-help:8.3.27.2074:syntax-context:alpha/from-syntax.html",
             "попадание секции syntax-context обязано прийти из корпуса syntax-context"
         );
 
@@ -1260,7 +1274,7 @@ mod tests {
         );
         assert_eq!(
             guides_section.hits[0].document_id,
-            "platform-syntax-help:platform-guides:alpha/from-guides.html",
+            "platform-syntax-help:8.3.27.2074:platform-guides:alpha/from-guides.html",
             "попадание секции platform-guides обязано прийти из корпуса platform-guides"
         );
         // `both_name_collisions_are_returned` вызывает `rank_pages` напрямую и
@@ -1544,6 +1558,7 @@ mod tests {
     /// 8.3.27 и 8.5.4 расходятся сотни имён API). Остальные тесты обращаются
     /// к одной установке, поэтому ветку перестройки не различают. Здесь две
     /// РАЗНЫЕ установленные версии опрашиваются подряд через общий индекс.
+    /// rule: INV.APP.DOCUMENTATION-VERSION-SELECTION
     #[test]
     fn second_installation_does_not_answer_from_the_first_ones_index() {
         // Слот индекса общий на процесс — тесты, которые его пишут, идут по одному.
@@ -1555,7 +1570,7 @@ mod tests {
         std::fs::write(
             first_root.join("shcntx_ru.hbk"),
             hbk_bytes(&[(
-                "first.html",
+                "objects/shared.html",
                 "<html><body><h1>ОбщийРеквизитПервойВерсии</h1><p>текст</p></body></html>",
             )]),
         )
@@ -1566,7 +1581,7 @@ mod tests {
         std::fs::write(
             second_root.join("shcntx_ru.hbk"),
             hbk_bytes(&[(
-                "second.html",
+                "objects/shared.html",
                 "<html><body><h1>ОбщийРеквизитВторойВерсии</h1><p>текст</p></body></html>",
             )]),
         )
@@ -1601,10 +1616,39 @@ mod tests {
             "второй ответ обязан содержать только страницы второй версии"
         );
         assert_eq!(
-            second_syntax.hits[0].document_id, "platform-syntax-help:syntax-context:second.html",
+            second_syntax.hits[0].document_id,
+            "platform-syntax-help:8.5.4.1306:syntax-context:objects/shared.html",
             "попадание не должно быть страницей первой версии"
         );
         assert_eq!(second_syntax.hits[0].applicable_version, "8.5.4.1306");
+
+        let first_id = &first_syntax.hits[0].document_id;
+        assert_ne!(first_id, &second_syntax.hits[0].document_id);
+        let first = provider
+            .get(first_id, "ru", &first_context)
+            .unwrap()
+            .unwrap();
+        assert_eq!(first.document_id, *first_id);
+        assert_eq!(first.title, "ОбщийРеквизитПервойВерсии");
+        let error = provider
+            .get(first_id, "ru", &second_context)
+            .unwrap()
+            .unwrap_err();
+        assert!(
+            error.contains("8.3.27.2074") && error.contains("8.5.4.1306"),
+            "{error}"
+        );
+
+        let legacy = provider
+            .get(
+                "platform-syntax-help:syntax-context:objects/shared.html",
+                "ru",
+                &second_context,
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(legacy.document_id, second_syntax.hits[0].document_id);
+        assert_eq!(legacy.title, "ОбщийРеквизитВторойВерсии");
     }
 
     /// Установка, у которой Синтакс-помощник лежит в двух локалях. Одноимённые
@@ -1655,7 +1699,8 @@ mod tests {
             syntax.status
         );
         assert_eq!(
-            syntax.hits[0].document_id, "platform-syntax-help:syntax-context:en/alpha.html",
+            syntax.hits[0].document_id,
+            "platform-syntax-help:8.3.27.2074:syntax-context:en/alpha.html",
             "язык запроса обязан выбирать контейнер, а не только локаль сигнатуры"
         );
         assert_eq!(
@@ -1706,7 +1751,8 @@ mod tests {
             syntax.status
         );
         assert_eq!(
-            syntax.hits[0].document_id, "platform-syntax-help:syntax-context:root/alpha.html",
+            syntax.hits[0].document_id,
+            "platform-syntax-help:8.3.27.2074:syntax-context:root/alpha.html",
             "ответить обязан английский контейнер, а не русский"
         );
         assert_eq!(
@@ -1783,14 +1829,15 @@ mod tests {
         let first = PlatformSyntaxHelpProvider::new().search(&request_in("Alpha", "ru"), &context);
         assert_eq!(
             syntax_section(&first).hits[0].document_id,
-            "platform-syntax-help:syntax-context:ru/alpha.html",
+            "platform-syntax-help:8.3.27.2074:syntax-context:ru/alpha.html",
             "первый вызов строит индекс русских контейнеров"
         );
 
         let second = PlatformSyntaxHelpProvider::new().search(&request_in("Alpha", "en"), &context);
         let syntax = syntax_section(&second);
         assert_eq!(
-            syntax.hits[0].document_id, "platform-syntax-help:syntax-context:en/alpha.html",
+            syntax.hits[0].document_id,
+            "platform-syntax-help:8.3.27.2074:syntax-context:en/alpha.html",
             "смена языка при том же каталоге обязана перестраивать индекс"
         );
         assert_eq!(syntax.language, "en");
@@ -1846,7 +1893,7 @@ mod tests {
         );
         assert_eq!(
             second_syntax.hits[0].document_id,
-            "platform-syntax-help:syntax-context:root/alpha.html"
+            "platform-syntax-help:8.3.27.2074:syntax-context:root/alpha.html"
         );
         assert_eq!(second_syntax.language, "root");
     }
@@ -2085,7 +2132,7 @@ mod tests {
             syntax.status
         );
         assert_eq!(
-            syntax.hits[0].document_id, "platform-syntax-help:syntax-context:new.html",
+            syntax.hits[0].document_id, "platform-syntax-help:8.3.27.2074:syntax-context:new.html",
             "ответ обязан прийти из новой сборки, а не из устаревшего индекса"
         );
     }
