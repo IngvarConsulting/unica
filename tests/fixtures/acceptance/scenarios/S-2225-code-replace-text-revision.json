@@ -49,6 +49,14 @@
         {
           "pointer": "/data/props/contract/argsSchema/properties/ifRev/type",
           "eq": "string"
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/ifRev/minLength",
+          "eq": 64
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/ifRev/maxLength",
+          "eq": 64
         }
       ]
     },

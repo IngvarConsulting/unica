@@ -23,6 +23,7 @@ pub struct CodeInsertArgs {
     pub position: Option<CodePosition>,
 }
 
+pub(crate) const MODULE_TEXT_REVISION_HEX_LEN: usize = 64;
 pub(crate) const MODULE_TEXT_REVISION_PATTERN: &str = r"^[0-9a-f]{64}$";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -160,7 +161,7 @@ pub fn parse_code_plan_operation(
                     value
                         .as_str()
                         .filter(|value| {
-                            value.len() == 64
+                            value.len() == MODULE_TEXT_REVISION_HEX_LEN
                                 && value.bytes().all(|byte| {
                                     byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)
                                 })

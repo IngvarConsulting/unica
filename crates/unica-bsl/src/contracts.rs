@@ -48,6 +48,8 @@ impl CodeOperation {
             fields.push(("ifRev", json!({
                 "type":"string",
                 "pattern":crate::input::MODULE_TEXT_REVISION_PATTERN,
+                "minLength":crate::input::MODULE_TEXT_REVISION_HEX_LEN,
+                "maxLength":crate::input::MODULE_TEXT_REVISION_HEX_LEN,
                 "description":"Revision of the full module text from view or workspace/textDocumentContent. A changed module refuses the plan with conflict."
             })));
             if !addressed {

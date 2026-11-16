@@ -4077,7 +4077,7 @@ fn a_replacement_with_an_old_text_revision_preserves_an_external_edit() {
     let original = b"Procedure Base()\nEndProcedure\n";
     let fixture = staged_code_fixture("stale-text-revision", original);
     let module = fixture.source.join("CommonModules/Sample/Ext/Module.bsl");
-    let old_revision = module_text_revision(original);
+    let old_revision = unica_bsl::text::module_text_revision(original);
     let external = b"Procedure Base()\r\nEndProcedure\r\n";
     fs::write(&module, external).unwrap();
     let args = json!({

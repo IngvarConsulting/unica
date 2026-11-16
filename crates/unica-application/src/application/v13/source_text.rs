@@ -45,8 +45,8 @@ impl ModuleText {
     }
 }
 
-/// Собирает текст модуля из потока байтов, не удерживая больше предела:
-/// начальные U+FEFF снимаются, после предела считается только размер.
+/// Считает ревизию полного модуля без начальных U+FEFF. Хранит в памяти
+/// лишь текст выбранного диапазона до предела ответа.
 #[derive(Debug, Default)]
 pub struct ModuleTextAccumulator {
     bom_prefix: usize,
@@ -83,7 +83,7 @@ impl ModuleTextAccumulator {
                     continue;
                 }
                 self.past_bom = true;
-                // An incomplete BOM at the start is part of the text.
+                // Неполная последовательность U+FEFF в начале — уже текст.
                 let partial = self.bom_prefix % 3;
                 self.revision.update(&Self::BOM[..partial]);
                 for bom_byte in &Self::BOM[..partial] {
