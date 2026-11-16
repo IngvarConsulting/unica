@@ -100,6 +100,39 @@ async function check(at, kind, expected, message) {
         )
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_http_handler_tree_row_uses_only_the_proven_address(self):
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("Node.js is required for Observer tree checks")
+        script = r"""
+const assert = require("node:assert/strict");
+const vm = require("node:vm");
+const page = require("node:fs").readFileSync(0, "utf8");
+const source = page.slice(page.indexOf("async function fill("), page.indexOf("function highlightTreeRow"));
+let data;
+const context = vm.createContext({
+  document: {createElement: () => ({remove() {}})},
+  ticking: () => () => {},
+  view: async () => ({result: {ok: true, data}}),
+  makeRow: (label, at) => ({label, at}),
+  markLeaf: () => {}, shortLabel: () => "", isGraph: () => false,
+});
+vm.runInContext(source, context);
+(async () => {
+  for (const target of ["main:CommonModule.MonthClose.Method.RunScheduled", undefined]) {
+    data = {kind: "Method", at: "main:HTTPService.ExternalAPI.URLTemplate.Metrics.Method.Get", props: {implementationAt: target}};
+    const rows = [];
+    const container = {appendChild: row => rows.push(row), childElementCount: 1};
+    await context.fill(container, "main:ScheduledJob.MonthClose");
+    const handlers = rows.filter(row => row.label === "Handler");
+    assert.equal(handlers.length, target ? 1 : 0);
+    if (target) assert.equal(handlers[0].at, target);
+  }
+})().catch(error => {console.error(error); process.exitCode = 1;});
+"""
+        result = subprocess.run([node, "-e", script], input=observer.PAGE, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_source_text_preserves_the_envelope_and_exact_text(self):
         for text in ["// Текст\r\nФункция Read()\r\n\tВозврат 1;\r\nКонецФункции", "", "\n\nВозврат 1;\n", '{"ok":false}']:
             with self.subTest(text=text):

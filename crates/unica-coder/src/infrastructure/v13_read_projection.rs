@@ -2436,7 +2436,7 @@ fn known_reader_branches(
         .collect()
 }
 
-fn safe_prop(key: &str, value: &Value) -> bool {
+pub(super) fn safe_prop(key: &str, value: &Value) -> bool {
     match value {
         Value::Null | Value::Bool(_) | Value::Number(_) => true,
         Value::String(text) => text.len() <= prop_limit(key),

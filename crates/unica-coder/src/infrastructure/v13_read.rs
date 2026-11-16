@@ -160,6 +160,7 @@ struct OwnerEdgeCacheKey {
 mod diagnostic_scope;
 mod editability_view;
 mod form_payload;
+mod http_service_handler;
 mod method_doc;
 mod module_body_read;
 mod typed_payload_read;
@@ -717,12 +718,7 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
             self.form_view(&route, admitted)?
         } else {
             let payload = self.typed_payload_for(&route, admitted)?;
-            let projected =
-                crate::infrastructure::v13_read_projection::project_typed_payload_for_source(
-                    &route,
-                    payload,
-                    self.read.source_set_kind(),
-                )?;
+            let projected = self.http_service_view(&route, payload, admitted)?;
             self.with_template_body_branches(projected, &route)?
         };
         let projected = match projected {

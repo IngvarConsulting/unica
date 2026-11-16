@@ -1,0 +1,322 @@
+{
+  "id": "S-3125-http-handler",
+  "issue": 3125,
+  "area": "Метаданные",
+  "task": "Открыть реализацию по адресу коллекции и отдельного узла без изменения исходников.",
+  "workspace": "tests/fixtures/acceptance/workspace-http-handler",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:HTTPService.ExternalAPI.URLTemplate.Metrics.Method"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "file0": {
+          "file": "other/Configuration.xml",
+          "kind": "sha256"
+        },
+        "file1": {
+          "file": "other/HTTPServices/ExternalAPI/Ext/Module.bsl",
+          "kind": "sha256"
+        },
+        "file2": {
+          "file": "other/HTTPServices/ExternalAPI.xml",
+          "kind": "sha256"
+        },
+        "file3": {
+          "file": "src/Configuration.xml",
+          "kind": "sha256"
+        },
+        "file4": {
+          "file": "src/HTTPServices/ExternalAPI/Ext/Module.bsl",
+          "kind": "sha256"
+        },
+        "file5": {
+          "file": "src/HTTPServices/ExternalAPI.xml",
+          "kind": "sha256"
+        },
+        "file6": {
+          "file": "v8project.yaml",
+          "kind": "sha256"
+        },
+        "handler": {
+          "pointer": "/data/items/0/props/implementationAt"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/items/0/props/implementationAt",
+          "eq": "main:HTTPService.ExternalAPI.Module.HTTPService.Method.MetricsGet"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.handler"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Method"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "file": "other/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.file0"
+        },
+        {
+          "file": "other/HTTPServices/ExternalAPI/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.file1"
+        },
+        {
+          "file": "other/HTTPServices/ExternalAPI.xml",
+          "kind": "sha256",
+          "eq": "$capture.file2"
+        },
+        {
+          "file": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.file3"
+        },
+        {
+          "file": "src/HTTPServices/ExternalAPI/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.file4"
+        },
+        {
+          "file": "src/HTTPServices/ExternalAPI.xml",
+          "kind": "sha256",
+          "eq": "$capture.file5"
+        },
+        {
+          "file": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "$capture.file6"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:HTTPService.ExternalAPI.URLTemplate.Metrics.Method.Get"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/implementationAt",
+          "eq": "$capture.handler"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "file": "other/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.file0"
+        },
+        {
+          "file": "other/HTTPServices/ExternalAPI/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.file1"
+        },
+        {
+          "file": "other/HTTPServices/ExternalAPI.xml",
+          "kind": "sha256",
+          "eq": "$capture.file2"
+        },
+        {
+          "file": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.file3"
+        },
+        {
+          "file": "src/HTTPServices/ExternalAPI/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.file4"
+        },
+        {
+          "file": "src/HTTPServices/ExternalAPI.xml",
+          "kind": "sha256",
+          "eq": "$capture.file5"
+        },
+        {
+          "file": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "$capture.file6"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:HTTPService.ExternalAPI.URLTemplate.Metrics.Method.Missing"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/implementationAt",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "file": "other/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.file0"
+        },
+        {
+          "file": "other/HTTPServices/ExternalAPI/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.file1"
+        },
+        {
+          "file": "other/HTTPServices/ExternalAPI.xml",
+          "kind": "sha256",
+          "eq": "$capture.file2"
+        },
+        {
+          "file": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.file3"
+        },
+        {
+          "file": "src/HTTPServices/ExternalAPI/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.file4"
+        },
+        {
+          "file": "src/HTTPServices/ExternalAPI.xml",
+          "kind": "sha256",
+          "eq": "$capture.file5"
+        },
+        {
+          "file": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "$capture.file6"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "other:HTTPService.ExternalAPI.URLTemplate.Metrics.Method.Missing"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "otherHandler": {
+          "pointer": "/data/props/implementationAt"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/props/implementationAt",
+          "eq": "other:HTTPService.ExternalAPI.Module.HTTPService.Method.OtherOnly"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "file": "other/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.file0"
+        },
+        {
+          "file": "other/HTTPServices/ExternalAPI/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.file1"
+        },
+        {
+          "file": "other/HTTPServices/ExternalAPI.xml",
+          "kind": "sha256",
+          "eq": "$capture.file2"
+        },
+        {
+          "file": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.file3"
+        },
+        {
+          "file": "src/HTTPServices/ExternalAPI/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.file4"
+        },
+        {
+          "file": "src/HTTPServices/ExternalAPI.xml",
+          "kind": "sha256",
+          "eq": "$capture.file5"
+        },
+        {
+          "file": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "$capture.file6"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.otherHandler"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Method"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "file": "other/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.file0"
+        },
+        {
+          "file": "other/HTTPServices/ExternalAPI/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.file1"
+        },
+        {
+          "file": "other/HTTPServices/ExternalAPI.xml",
+          "kind": "sha256",
+          "eq": "$capture.file2"
+        },
+        {
+          "file": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.file3"
+        },
+        {
+          "file": "src/HTTPServices/ExternalAPI/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.file4"
+        },
+        {
+          "file": "src/HTTPServices/ExternalAPI.xml",
+          "kind": "sha256",
+          "eq": "$capture.file5"
+        },
+        {
+          "file": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "$capture.file6"
+        }
+      ]
+    }
+  ]
+}
