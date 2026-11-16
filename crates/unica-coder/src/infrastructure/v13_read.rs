@@ -1470,8 +1470,7 @@ fn module_projection_view(
         .as_ref()
         .is_some_and(|common| !common.execution_environment_known());
     let view = module_projection_view_data(requested, prefix_len, projections)?;
-    // `null` в контекстах — ответ «неизвестно»; предел называет причину на
-    // уровне узла, чтобы её видел и тот, кто контексты не читает (#1364).
+    // Предел сообщает, что для заимствованного модуля известны не все флаги среды.
     Ok(if unknown {
         view.with_limit(UNKNOWN_CONTEXTS_LIMIT)
     } else {
