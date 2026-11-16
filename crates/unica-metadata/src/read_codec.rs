@@ -72,6 +72,15 @@ pub trait MetadataReadCodec: Send + Sync {
         relative: &Path,
     ) -> Result<StyleItemPropertiesObservation, String>;
 
+    /// Основные формы сохранения и загрузки хранилища настроек как адреса
+    /// текущего набора. Повреждённые назначения попадают в `unreadable`.
+    fn settings_storage_forms(
+        &self,
+        descriptor: &[u8],
+        source_set: &str,
+        payload: &mut Value,
+    ) -> Result<(), String>;
+
     /// Свойства формы и ограничения чтения, которые не прерывают его.
     fn form_metadata(
         &self,

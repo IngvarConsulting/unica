@@ -242,6 +242,16 @@ impl ProviderReadAuthority {
                 }
             }
         }
+        if evidence.artifact_kind() == "SettingsStorage" {
+            if let Err(message) = crate::infrastructure::family_codecs::metadata_read_codec()
+                .settings_storage_forms(&descriptor, &self.source_set, &mut payload)
+            {
+                payload["unreadable"] = json!([{
+                    "field": "properties",
+                    "message": message,
+                }]);
+            }
+        }
         if evidence.artifact_kind() == "FunctionalOption" {
             let name = target.as_str().split('.').nth(1).unwrap_or_default();
             match std::str::from_utf8(&descriptor)

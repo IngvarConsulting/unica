@@ -92,6 +92,15 @@ impl MetadataReadCodec for DesignerMetadataReadCodec {
             .map_err(|issue| issue.to_string())
     }
 
+    fn settings_storage_forms(
+        &self,
+        descriptor: &[u8],
+        source_set: &str,
+        payload: &mut Value,
+    ) -> Result<(), String> {
+        crate::settings_storage_read::enrich_settings_storage_forms(descriptor, source_set, payload)
+    }
+
     fn form_metadata(
         &self,
         descriptor: &[u8],
