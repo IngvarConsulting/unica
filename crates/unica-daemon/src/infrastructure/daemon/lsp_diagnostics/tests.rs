@@ -1,10 +1,10 @@
 use super::*;
 use unica_address::source_target::TargetKind;
 use unica_diagnostics::model::{
-    DiagnosticContext, DiagnosticError, DiagnosticFocusKind, DiagnosticProvider,
-    DiagnosticProviderDescriptor, DiagnosticProviderId, DiagnosticProviderOutcome,
-    DiagnosticProviderRequest, DiagnosticProviderSection, DiagnosticRange, DiagnosticResultState,
-    DiagnosticSelection, EditorFinding,
+    generic_editor_message, DiagnosticContext, DiagnosticError, DiagnosticFocusKind,
+    DiagnosticProvider, DiagnosticProviderDescriptor, DiagnosticProviderId,
+    DiagnosticProviderOutcome, DiagnosticProviderRequest, DiagnosticProviderSection,
+    DiagnosticRange, DiagnosticResultState, DiagnosticSelection,
 };
 use unica_source_contract::location::SourceLocation;
 
@@ -33,13 +33,10 @@ impl DiagnosticProvider for Provider {
         unreachable!("the translation does not run the provider")
     }
 
-    fn editor_finding(&self, code: &str, severity: DiagnosticSeverity) -> EditorFinding {
+    fn editor_message(&self, code: &str, severity: DiagnosticSeverity) -> &'static str {
         match code {
-            "ProviderRuleName" => EditorFinding {
-                code: "bsl.code.known",
-                message: "Текст Unica",
-            },
-            _ => EditorFinding::generic(severity),
+            "ProviderRuleName" => "Текст Unica",
+            _ => generic_editor_message(severity),
         }
     }
 }
@@ -113,23 +110,20 @@ fn registry() -> DiagnosticProviderRegistry {
 
 /// rule: INV.LSP.PROVIDER-HIDDEN
 #[test]
-fn provider_findings_reach_the_editor_in_unica_words_only() {
+fn provider_findings_keep_rule_codes_and_use_unica_messages() {
     let analysis = provider_analysis(
         &result(DiagnosticProviderStatus::Completed, None),
         &registry(),
     );
     assert!(analysis.gaps.is_empty());
-    assert_eq!(analysis.findings[0].code, "bsl.code.known");
+    assert_eq!(analysis.findings[0].code, "ProviderRuleName");
     assert_eq!(analysis.findings[0].message, "Текст Unica");
     assert_eq!(analysis.findings[0].severity, LspSeverity::Warning);
-    assert_eq!(analysis.findings[1].code, EditorFinding::GENERIC_CODE);
+    assert_eq!(analysis.findings[1].code, "UnlistedRule");
+    assert_eq!(analysis.findings[1].message, "Предупреждение анализа кода");
+    assert_eq!(analysis.findings[1].severity, LspSeverity::Warning);
     let told = format!("{analysis:?}");
-    for provider in [
-        PROVIDER,
-        "ProviderRuleName",
-        "UnlistedRule",
-        "provider wording",
-    ] {
+    for provider in [PROVIDER, "provider wording"] {
         assert!(!told.contains(provider), "{provider} reached the editor");
     }
 }
