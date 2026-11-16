@@ -85,7 +85,7 @@ fn form_content() -> Value {
         ]}
     }, {
         "op": "command.add",
-        "args": {"items": [{"name": "Заполнить", "title": "Заполнить"}]}
+        "args": {"items": [{"name": "Заполнить", "title": "ru = 'Заполнить'"}]}
     }, {
         "op": "item.add",
         "args": {"items": [
