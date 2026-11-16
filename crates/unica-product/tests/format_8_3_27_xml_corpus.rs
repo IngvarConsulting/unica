@@ -1632,7 +1632,7 @@ fn dcs_component_ops(template: &str) -> Vec<Value> {
         "",
         "calculatedField.add",
         json!({"items":[{
-            "name":"CalculatedAmount","expression":"Amount * 2","title":"Calculated amount","type":"decimal(15,2)",
+            "name":"CalculatedAmount","expression":"Amount * 2","title":"ru = 'Calculated amount'","type":"decimal(15,2)",
             "useRestriction":{"condition":true,"group":true,"field":true,"order":true}
         }]}),
     );
@@ -1641,11 +1641,11 @@ fn dcs_component_ops(template: &str) -> Vec<Value> {
         "parameter.add",
         json!({"items":[
             {"name":"Период","type":"StandardPeriod","value":"LastMonth"},
-            {"name":"ДатаНачала","title":"Начало периода","type":"dateTime","value":"0001-01-01T00:00:00","expression":"&Период.ДатаНачала","useRestriction":true},
-            {"name":"ДатаОкончания","title":"Конец периода","type":"dateTime","value":"0001-01-01T00:00:00","expression":"&Период.ДатаОкончания","useRestriction":true},
+            {"name":"ДатаНачала","title":"ru = 'Начало периода'","type":"dateTime","value":"0001-01-01T00:00:00","expression":"&Период.ДатаНачала","useRestriction":true},
+            {"name":"ДатаОкончания","title":"ru = 'Конец периода'","type":"dateTime","value":"0001-01-01T00:00:00","expression":"&Период.ДатаОкончания","useRestriction":true},
             {"name":"ТипКорпуса","type":"string(16)","availableAsField":false,"use":"Always"},
-            {"name":"Режим","title":"Mode","type":"string(16)","value":"A","useRestriction":true,"expression":"&Source.Mode",
-             "availableValues":[{"value":"A","presentation":"Alpha"},{"value":"B","presentation":"Beta"}],
+            {"name":"Режим","title":"ru = 'Mode'","type":"string(16)","value":"A","useRestriction":true,"expression":"&Source.Mode",
+             "availableValues":[{"value":"A","presentation":"ru = 'Alpha'"},{"value":"B","presentation":"ru = 'Beta'"}],
              "valueListAllowed":true,"availableAsField":false,"denyIncompleteValues":true,"use":"Always"}
         ]}),
     );
@@ -1653,7 +1653,7 @@ fn dcs_component_ops(template: &str) -> Vec<Value> {
     add(
         "",
         "variant.add",
-        json!({"items":[{"name":"Main","presentation":"Corpus settings"}]}),
+        json!({"items":[{"name":"Main","presentation":"ru = 'Corpus settings'"}]}),
     );
     add(
         ".Setting.Main",
@@ -1690,7 +1690,7 @@ fn dcs_component_ops(template: &str) -> Vec<Value> {
         add(
             container,
             "outputParameter.set",
-            json!({"values":{"name":"Заголовок","value":if container.ends_with("group"){"Corpus group"}else{"Corpus report"}}}),
+            json!({"values":{"name":"Заголовок","value":if container.ends_with("group"){"ru = 'Corpus group'"}else{"ru = 'Corpus report'"}}}),
         );
     }
     add(
@@ -1720,14 +1720,14 @@ fn dcs_mutation_ops(case_id: &str) -> Vec<Value> {
         ],
         "dcs-edit-add-parameter-after-settings" => {
             vec![json!({"op":"parameter.add","args":{"items":[{
-                "name":"ПериодРедактирования","title":"Edit period","type":"StandardPeriod","value":"LastMonth","useRestriction":true,"use":"Always"
+                "name":"ПериодРедактирования","title":"ru = 'Edit period'","type":"StandardPeriod","value":"LastMonth","useRestriction":true,"use":"Always"
             }]}})]
         }
         "dcs-edit-set-structure-after-settings" => vec![
             json!({"at":format!("{base}.Setting.Main"),"op":"structure.set","args":{"values":{"name":"Edited","groupBy":["Value"],"details":true}}}),
         ],
         "dcs-edit-modify-field-role-restriction" => vec![
-            json!({"at":format!("{base}.DataSet.CatalogObject.Field.Description"),"op":"field.set","args":{"values":{"title":"Updated","type":"String","useRestriction":{"field":true,"order":true}}}}),
+            json!({"at":format!("{base}.DataSet.CatalogObject.Field.Description"),"op":"field.set","args":{"values":{"title":"ru = 'Updated'","type":"String","useRestriction":{"field":true,"order":true}}}}),
             json!({"at":format!("{base}.DataSet.CatalogObject.Field.Description"),"op":"fieldRole.set","args":{"values":{"role":{"required":true,"dimension":true}}}}),
         ],
         _ => unreachable!("unknown DCS mutation case {case_id}"),

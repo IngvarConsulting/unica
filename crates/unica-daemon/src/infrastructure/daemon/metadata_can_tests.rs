@@ -2573,6 +2573,7 @@ fn an_oversized_synonym_leaves_a_bounded_marked_title() {
 
 /// A form item title longer than the property limit leaves a bounded
 /// marked title and a limit naming the address it reads whole at.
+/// rule: INV.SOURCE.LOCALIZED-STRING-NSTR
 #[test]
 fn an_oversized_form_item_title_is_named_by_a_limit() {
     let fixture = Fixture::new("workspace");
@@ -2609,8 +2610,9 @@ fn an_oversized_form_item_title_is_named_by_a_limit() {
         "a limit names the title address"
     );
     let whole = view(&runtime, &fixture, &format!("{at}.Props.title"));
-    assert!(
-        whole["props"]["title"] == title,
-        "the title reads whole at its address"
+    assert_eq!(
+        whole["props"]["title"],
+        format!("ru = '{title}'"),
+        "the full title retains its NStr form at the property address"
     );
 }
