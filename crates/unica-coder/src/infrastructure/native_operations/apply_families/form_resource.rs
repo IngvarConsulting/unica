@@ -2628,6 +2628,14 @@ mod tests {
         };
         assert_eq!(definition, &json!({"commands": [expected]}));
 
+        parse_form_resource_plan_operation(
+            "command.add",
+            &json!({"at": at, "items": [{"name": "Refresh", "title": "", "tooltip": ""}]}),
+            0,
+            &fixture.binding,
+        )
+        .expect("empty NStr explicitly supplies no translations");
+
         for (field, value) in [
             ("use", json!(false)),
             ("functionalOptions", json!(["FunctionalOption.X"])),
@@ -2640,14 +2648,14 @@ mod tests {
             ("picture", json!({"src": "StdPicture.Refresh"})),
             ("picture", json!("abs:picture.png")),
             ("title", json!({"ru": "Обновить"})),
-            ("title", json!("")),
+            ("title", json!("Обновить")),
             ("callType", json!("Before")),
             (
                 "actions",
                 json!([{"callType": "Before", "handler": "RefreshBefore"}]),
             ),
             ("tooltip", json!({"ru": "Обновить"})),
-            ("tooltip", json!("")),
+            ("tooltip", json!("Обновить список")),
             ("shortcut", json!("")),
         ] {
             let error = parse_form_resource_plan_operation(
