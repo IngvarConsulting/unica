@@ -3,6 +3,30 @@ use crate::infrastructure::v13_large_configuration::RegistrationCache;
 
 const MODULE: &str = "main:CommonModule.РеактивныйСервер";
 
+/// A filtered batch is an optimization, never proof of an absent file.
+/// rule: INV.SOURCE.CONFIGURATION-ROOT-CACHE-REUSE
+#[test]
+fn a_name_outside_the_descriptor_batch_keeps_the_per_file_fallback() {
+    let fixture = RealReaderFixture::new();
+    let artifacts = Arc::new(RegistrationCache::default());
+    let read = operation(&fixture, &artifacts);
+    read.stamp_descriptors_by_directory();
+    assert!(read
+        .descriptor_stamp(std::path::Path::new("Catalogs/Items.xml"))
+        .is_some());
+    let relative = std::path::Path::new("Catalogs/Fallback.XML");
+    write(
+        &fixture.source.join(relative),
+        "late file outside the filtered batch",
+    );
+    let root = unica_workspace::read::open_source_directory(&fixture.source).unwrap();
+    assert_eq!(
+        read.descriptor_stamp(relative),
+        root.relative_file_stamp(relative).unwrap()
+    );
+    assert!(read.descriptor_stamp(relative).is_some());
+}
+
 /// One operation of the actor: a read authority over the fixture sharing the
 /// actor's retained artifacts.
 fn operation(

@@ -1561,6 +1561,26 @@ impl RetainedDirectoryCapability {
         &self,
         relative: &Path,
     ) -> io::Result<Option<Vec<(std::ffi::OsString, FileStamp)>>> {
+        self.relative_directory_file_stamps_matching(relative, |_| true)
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn relative_directory_file_stamps_with_extension(
+        &self,
+        relative: &Path,
+        extension: &std::ffi::OsStr,
+    ) -> io::Result<Option<Vec<(std::ffi::OsString, FileStamp)>>> {
+        self.relative_directory_file_stamps_matching(relative, |name| {
+            Path::new(name).extension() == Some(extension)
+        })
+    }
+
+    #[cfg(unix)]
+    fn relative_directory_file_stamps_matching(
+        &self,
+        relative: &Path,
+        selected: impl Fn(&std::ffi::OsStr) -> bool,
+    ) -> io::Result<Option<Vec<(std::ffi::OsString, FileStamp)>>> {
         use std::path::Component;
 
         let mut directory = self.retained.directory.try_clone()?;
@@ -1581,7 +1601,7 @@ impl RetainedDirectoryCapability {
         retained_read_probe::record(|| {
             retained_read_probe::RetainedRead::Listed(self.path.join(relative))
         });
-        directory_regular_file_stamps(&directory).map(Some)
+        directory_regular_file_stamps(&directory, selected).map(Some)
     }
 
     /// Elsewhere stamps are taken from each opened file. On Windows a
@@ -1592,6 +1612,15 @@ impl RetainedDirectoryCapability {
     pub(crate) fn relative_directory_file_stamps(
         &self,
         _relative: &Path,
+    ) -> io::Result<Option<Vec<(std::ffi::OsString, FileStamp)>>> {
+        Ok(None)
+    }
+
+    #[cfg(not(unix))]
+    pub(crate) fn relative_directory_file_stamps_with_extension(
+        &self,
+        _relative: &Path,
+        _extension: &std::ffi::OsStr,
     ) -> io::Result<Option<Vec<(std::ffi::OsString, FileStamp)>>> {
         Ok(None)
     }
@@ -2667,6 +2696,7 @@ pub(crate) fn read_directory_names_with_limit(
 #[cfg(unix)]
 fn directory_regular_file_stamps(
     directory: &fs::File,
+    selected: impl Fn(&std::ffi::OsStr) -> bool,
 ) -> io::Result<Vec<(std::ffi::OsString, FileStamp)>> {
     use std::os::unix::ffi::OsStrExt;
     use std::os::unix::io::AsRawFd;
@@ -2674,6 +2704,9 @@ fn directory_regular_file_stamps(
     let mut stamps = Vec::new();
     for entry in cap_primitives::fs::read_base_dir(directory)? {
         let name = entry?.file_name();
+        if !selected(&name) {
+            continue;
+        }
         let Ok(c_name) = std::ffi::CString::new(name.as_bytes()) else {
             continue;
         };
@@ -8980,6 +9013,57 @@ mod host_path_comparison_tests {
 mod directory_stamp_tests {
     use crate::read::open_source_directory;
     use std::path::Path;
+
+    /// Selecting descriptor names preserves each file's physical stamp and
+    /// still excludes links and directories even when they have that suffix.
+    /// rule: INV.SOURCE.CONFIGURATION-ROOT-CACHE-REUSE
+    #[cfg(unix)]
+    #[test]
+    fn selected_directory_stamps_keep_regular_file_identity_and_extension() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(directory.path()).unwrap();
+        std::fs::create_dir_all(root.join("CommonModules/Directory.xml")).unwrap();
+        std::fs::write(root.join("CommonModules/First.xml"), b"descriptor").unwrap();
+        std::fs::write(root.join("CommonModules/Other.bsl"), b"unselected").unwrap();
+        std::os::unix::fs::symlink(
+            root.join("CommonModules/First.xml"),
+            root.join("CommonModules/Linked.xml"),
+        )
+        .unwrap();
+        let source = open_source_directory(&root).unwrap();
+        let stamps = source
+            .relative_directory_file_stamps_with_extension(
+                Path::new("CommonModules"),
+                std::ffi::OsStr::new("xml"),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(stamps.len(), 1);
+        assert_eq!(stamps[0].0, "First.xml");
+        assert_eq!(
+            Some(stamps[0].1),
+            source
+                .relative_file_stamp(Path::new("CommonModules/First.xml"))
+                .unwrap()
+        );
+        assert!(source
+            .relative_directory_file_stamps_with_extension(
+                Path::new("Absent"),
+                std::ffi::OsStr::new("xml")
+            )
+            .unwrap()
+            .is_none());
+        std::fs::create_dir(root.join("Empty")).unwrap();
+        std::fs::write(root.join("Empty/Other.bsl"), b"unselected").unwrap();
+        assert!(source
+            .relative_directory_file_stamps_with_extension(
+                Path::new("Empty"),
+                std::ffi::OsStr::new("xml")
+            )
+            .unwrap()
+            .unwrap()
+            .is_empty());
+    }
 
     /// On Unix one pass over a directory gives each regular file the stamp
     /// its own open gives, so retained proofs compare equal whichever way the

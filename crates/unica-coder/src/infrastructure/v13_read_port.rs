@@ -140,7 +140,7 @@ pub struct ProviderReadAuthority {
     /// Open editor buffers of the session this read serves; a module with a
     /// buffer is read from it, never from its file.
     documents: Option<SessionDocuments>,
-    /// Stamps of the descriptors of one kind directory, taken in one pass per
+    /// Stamps of the `xml` descriptors of one kind directory, taken in one pass per
     /// operation (`None`: the directory could not be listed that way).
     descriptor_stamps:
         std::sync::Mutex<std::collections::HashMap<PathBuf, Option<DirectoryStamps>>>,
@@ -322,7 +322,10 @@ impl ProviderReadAuthority {
                         .entry(parent.to_path_buf())
                         .or_insert_with(|| {
                             self.root
-                                .relative_directory_file_stamps(parent)
+                                .relative_directory_file_stamps_with_extension(
+                                    parent,
+                                    std::ffi::OsStr::new("xml"),
+                                )
                                 .ok()
                                 .flatten()
                                 .map(|stamps| Arc::new(stamps.into_iter().collect()))
