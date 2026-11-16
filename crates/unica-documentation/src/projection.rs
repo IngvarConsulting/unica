@@ -917,6 +917,7 @@ mod tests {
             collection_element: ArticleField::Empty,
             member_lists: Vec::new(),
             links: Vec::new(),
+            see_also: Vec::new(),
             other_sections: Vec::new(),
         });
         let registry = DocumentationRegistry::new(vec![Arc::new(GetStub {

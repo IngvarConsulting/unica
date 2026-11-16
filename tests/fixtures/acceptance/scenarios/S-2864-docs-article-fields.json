@@ -17,7 +17,7 @@
       "assertions": [
         {
           "pointer": "/data/document/schemaVersion",
-          "eq": 1
+          "eq": 2
         },
         {
           "pointer": "/data/document/article/kind",

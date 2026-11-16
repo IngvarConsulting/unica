@@ -95,6 +95,21 @@ pub struct ArticleLink {
     pub path: String,
 }
 
+/// A row of the platform's See also section.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SeeAlsoEntry {
+    Document(ArticleLink),
+    Member {
+        owner: String,
+        kind: ArticleKind,
+        link: ArticleLink,
+    },
+    Unparsed {
+        text: String,
+        links: Vec<ArticleLink>,
+    },
+}
+
 /// Список членов на странице типа: «Свойства», «Методы», «Конструкторы»,
 /// «События».
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -132,9 +147,8 @@ pub struct Article {
     pub collection_element: Field<Vec<TypeRef>>,
     pub member_lists: Vec<MemberList>,
     /// Ссылки статьи на другие статьи в порядке появления, без повторов.
-    /// Отдельного раздела «См. также» у статей платформы нет: связанные
-    /// статьи названы ссылками внутри текста.
     pub links: Vec<ArticleLink>,
+    pub see_also: Vec<SeeAlsoEntry>,
     /// Разделы, которым разбор не знает места: заголовок и сырой текст.
     /// Статья не теряет их молча.
     pub other_sections: Vec<(String, String)>,
@@ -162,6 +176,11 @@ const ARRAY_ELEMENT_WINDOW: usize = 200;
 /// платформы или его член.
 pub(crate) fn classify(path: &str) -> Option<(String, ArticleKind, Option<String>)> {
     let id = path.strip_suffix(".html")?;
+    let (kind, owner) = classify_id(id)?;
+    Some((id.to_owned(), kind, owner))
+}
+
+fn classify_id(id: &str) -> Option<(ArticleKind, Option<String>)> {
     if !id.starts_with("objects/") {
         return None;
     }
@@ -194,9 +213,9 @@ pub(crate) fn classify(path: &str) -> Option<(String, ArticleKind, Option<String
             Some((index, kind))
         });
     match member {
-        Some((index, Some(kind))) => Some((id.to_owned(), kind, Some(parts[..index].join("/")))),
+        Some((index, Some(kind))) => Some((kind, Some(parts[..index].join("/")))),
         Some((_, None)) => None,
-        None => Some((id.to_owned(), ArticleKind::Type, None)),
+        None => Some((ArticleKind::Type, None)),
     }
 }
 
@@ -385,6 +404,7 @@ pub fn parse(path: &str, html: &str) -> Article {
         collection_element: Field::Empty,
         member_lists: Vec::new(),
         links: Vec::new(),
+        see_also: Vec::new(),
         other_sections: Vec::new(),
     };
 
@@ -538,6 +558,13 @@ pub fn parse(path: &str, html: &str) -> Article {
                     title: title.clone(),
                     members: article_links(content, &base),
                 });
+            }
+            "См. также" | "See also" => {
+                article.see_also.extend(see_also(content, &base));
+                let body = text(content);
+                if !body.is_empty() {
+                    article.other_sections.push((title.clone(), body));
+                }
             }
             _ => {
                 let body = text(content);
@@ -914,8 +941,15 @@ pub(crate) fn links(markup: &str) -> Vec<TypeName> {
 /// страницы: относительные ссылки разрешаются от него, иначе путь из списка
 /// членов типа не открывает статью.
 fn article_links(markup: &str, base: &str) -> Vec<ArticleLink> {
+    article_links_from(hrefs(markup), base)
+}
+
+fn article_links_from<'a>(
+    hrefs: impl IntoIterator<Item = (&'a str, &'a str)>,
+    base: &str,
+) -> Vec<ArticleLink> {
     let mut found: Vec<ArticleLink> = Vec::new();
-    for (href, label) in hrefs(markup) {
+    for (href, label) in hrefs {
         let absolute;
         let path = match href.strip_prefix("v8help://SyntaxHelperContext/") {
             Some(path) => path,
@@ -935,6 +969,60 @@ fn article_links(markup: &str, base: &str) -> Vec<ArticleLink> {
         found.push(ArticleLink { label, path });
     }
     found
+}
+
+fn see_also(content: &str, base: &str) -> Vec<SeeAlsoEntry> {
+    let mut rows = Vec::new();
+    let mut start = 0;
+    for (at, _) in content.match_indices('<') {
+        let Some(end) = content[at..].find('>') else {
+            break;
+        };
+        let end = at + end;
+        let tag = content[at + 1..end]
+            .split_ascii_whitespace()
+            .next()
+            .unwrap_or_default()
+            .trim_end_matches('/');
+        // A final chapter can be followed by the page's methodical links.
+        if tag.eq_ignore_ascii_case("hr") {
+            see_also_row(&content[start..at], base, &mut rows);
+            return rows;
+        }
+        if ["br", "/p", "/li"]
+            .iter()
+            .any(|name| tag.eq_ignore_ascii_case(name))
+        {
+            see_also_row(&content[start..at], base, &mut rows);
+            start = end + 1;
+        }
+    }
+    see_also_row(&content[start..], base, &mut rows);
+    rows
+}
+
+fn see_also_row(markup: &str, base: &str, rows: &mut Vec<SeeAlsoEntry>) {
+    let body = text(markup);
+    if body.is_empty() {
+        return;
+    }
+    let page_links = hrefs(markup)
+        .into_iter()
+        .filter(|(href, _)| href.ends_with(".html") && !href.contains(['#', '?']));
+    let links = article_links_from(page_links, base);
+    let entry = match links.as_slice() {
+        [link] if body == link.label => SeeAlsoEntry::Document(link.clone()),
+        [owner, link] => match classify_id(&link.path) {
+            Some((kind, Some(path))) if path == owner.path => SeeAlsoEntry::Member {
+                owner: owner.label.clone(),
+                kind,
+                link: link.clone(),
+            },
+            _ => SeeAlsoEntry::Unparsed { text: body, links },
+        },
+        _ => SeeAlsoEntry::Unparsed { text: body, links },
+    };
+    rows.push(entry);
 }
 
 /// Адрес и разметка подписи каждой ссылки.
