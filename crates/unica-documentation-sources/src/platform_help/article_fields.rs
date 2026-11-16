@@ -205,6 +205,28 @@ pub fn public_article(corpus: &str, value: &source::Article) -> public::HelpArti
             })
             .collect(),
         links: value.links.iter().map(|item| link(corpus, item)).collect(),
+        see_also: value
+            .see_also
+            .iter()
+            .map(|entry| match entry {
+                source::SeeAlsoEntry::Document(item) => {
+                    public::SeeAlsoEntry::Document(link(corpus, item))
+                }
+                source::SeeAlsoEntry::Member {
+                    owner,
+                    kind: member_kind,
+                    link: item,
+                } => public::SeeAlsoEntry::Member {
+                    owner: owner.clone(),
+                    kind: kind(*member_kind),
+                    link: link(corpus, item),
+                },
+                source::SeeAlsoEntry::Unparsed { text, links } => public::SeeAlsoEntry::Unparsed {
+                    text: text.clone(),
+                    links: links.iter().map(|item| link(corpus, item)).collect(),
+                },
+            })
+            .collect(),
         other_sections: value.other_sections.clone(),
     }
 }

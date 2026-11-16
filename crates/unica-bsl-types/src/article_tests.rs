@@ -386,9 +386,7 @@ fn a_page_that_is_neither_a_type_nor_a_member_is_still_an_article() {
     );
 }
 
-/// Отдельного раздела «См. также» у статей платформы нет: связанные статьи
-/// названы ссылками внутри текста, и ссылка несёт путь, по которому статья
-/// открывается.
+/// Общий список включает ссылки внутри текста статьи.
 #[test]
 fn links_inside_the_text_address_other_articles() {
     let article = parse(COPY_PATH, &copy_article());
@@ -407,6 +405,84 @@ fn links_inside_the_text_address_other_articles() {
         "ссылка на тип языка страницей не адресуется и в список не идёт"
     );
     assert_eq!(article.links[0].label, "Массив");
+}
+
+/// rule: INV.APP.DOCUMENTATION-ARTICLE-FIELDS
+#[test]
+fn see_also_preserves_rows_and_keeps_the_flat_links() {
+    let html = page(&format!(
+        "{}<a href=A.html>Первый</a>, свойство <a href=A/properties/Value1.html>Значение</a><BR />
+         <a href=A.html>Первый</a><br>
+         <a href=B.html>Второй</a>, метод <a href=B/methods/Value2.html>Значение</a><br>
+         <a href=B.html>Второй</a>, событие <a href=B/events/Changed3.html>Изменение</a><br>
+         <a href=B.html>Второй</a>, конструктор <a href=B/ctors/ctor4.html>Из строки</a><br>
+         <a href=A.html>Первый</a> и <a href=B.html>Второй</a><br>
+         <a href=#details>Подробнее</a><br>
+         <HR><p><a href=https://example.org>Методическая информация</a></p>",
+        chapter("См. также:"),
+    ));
+    let article = parse("objects/Sample.html", &html);
+    fn link(label: &str, path: &str) -> ArticleLink {
+        ArticleLink {
+            label: label.to_owned(),
+            path: format!("objects/{path}"),
+        }
+    }
+    assert_eq!(
+        article.see_also,
+        vec![
+            SeeAlsoEntry::Member {
+                owner: "Первый".into(),
+                kind: ArticleKind::Property,
+                link: link("Значение", "A/properties/Value1")
+            },
+            SeeAlsoEntry::Document(link("Первый", "A")),
+            SeeAlsoEntry::Member {
+                owner: "Второй".into(),
+                kind: ArticleKind::Method,
+                link: link("Значение", "B/methods/Value2")
+            },
+            SeeAlsoEntry::Member {
+                owner: "Второй".into(),
+                kind: ArticleKind::Event,
+                link: link("Изменение", "B/events/Changed3")
+            },
+            SeeAlsoEntry::Member {
+                owner: "Второй".into(),
+                kind: ArticleKind::Constructor,
+                link: link("Из строки", "B/ctors/ctor4")
+            },
+            SeeAlsoEntry::Unparsed {
+                text: "Первый и Второй".into(),
+                links: vec![link("Первый", "A"), link("Второй", "B")]
+            },
+            SeeAlsoEntry::Unparsed {
+                text: "Подробнее".into(),
+                links: Vec::new(),
+            },
+        ]
+    );
+    assert_eq!(
+        article.links,
+        vec![
+            link("Первый", "A"),
+            link("Значение", "A/properties/Value1"),
+            link("Второй", "B"),
+            link("Значение", "B/methods/Value2"),
+            link("Изменение", "B/events/Changed3"),
+            link("Из строки", "B/ctors/ctor4"),
+            link("Подробнее", "#details"),
+        ]
+    );
+    assert_eq!(article.other_sections[0].0, "См. также");
+    assert!(article.other_sections[0]
+        .1
+        .contains("Методическая информация"));
+    let english = html.replace("См. также:", "See also:");
+    assert_eq!(
+        parse("objects/Sample.html", &english).see_also,
+        article.see_also
+    );
 }
 
 /// Адрес ссылки в справке бывает без кавычек: он кончается скобкой тега,
