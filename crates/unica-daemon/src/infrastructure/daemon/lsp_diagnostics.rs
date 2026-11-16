@@ -1,10 +1,10 @@
 //! Диагностики редактора на стороне продукта: те же проверки Unica и тот же
 //! поставщик анализа, что у `check`, в словах Unica.
 //!
-//! Поставщик анализа переводит свои находки в код и текст Unica
-//! ([`unica_diagnostics::model::DiagnosticProvider::editor_finding`]):
-//! имя правила, текст и имя поставщика в редактор не попадают. Поставщик,
-//! который не закончил, оставляет пробел, а не пустой полный ответ.
+//! В редактор приходит исходный код правила и сообщение Unica
+//! ([`unica_diagnostics::model::DiagnosticProvider::editor_message`]).
+//! Имя поставщика и его текст не передаются. Незавершённый анализ
+//! отмечается как неполный, даже если находок пока нет.
 
 use super::v13_service::CanonicalV13ReadService;
 use crate::infrastructure::v13_read::LogicalViewReadAuthority;
@@ -446,9 +446,9 @@ pub(super) fn provider_analysis(
         else {
             continue;
         };
-        let finding = port.editor_finding(code, *severity);
+        let message = port.editor_message(code, *severity);
         analysis.findings.push(LspFinding {
-            code: finding.code.to_owned(),
+            code: code.clone(),
             severity: match severity {
                 DiagnosticSeverity::Error => LspSeverity::Error,
                 DiagnosticSeverity::Warning => LspSeverity::Warning,
@@ -459,7 +459,7 @@ pub(super) fn provider_analysis(
             start_column: range.start_column,
             end_line: range.end_line,
             end_column: range.end_column,
-            message: finding.message.to_owned(),
+            message: message.to_owned(),
         });
     }
     analysis

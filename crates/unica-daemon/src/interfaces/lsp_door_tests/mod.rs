@@ -363,7 +363,7 @@ fn capabilities_follow_what_the_lsp_service_declares() {
         json!({"kind": "full", "items": [{
             "range": {"start": {"line": 1, "character": 2}, "end": {"line": 1, "character": 2}},
             "severity": 2,
-            "code": "bsl.code.known",
+            "code": "UnusedLocalMethod",
             "source": "unica",
             "message": "Текст Unica",
         }]})
@@ -912,7 +912,7 @@ impl LspHost for HeldHost {
                     items: vec![V5LspDiagnostic {
                         range: V5LspRange { start, end: start },
                         severity: V5LspSeverity::Warning,
-                        code: "bsl.code.known".into(),
+                        code: "UnusedLocalMethod".into(),
                         message: "Текст Unica".into(),
                         reasons: Vec::new(),
                     }],
