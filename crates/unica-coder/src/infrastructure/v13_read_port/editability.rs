@@ -228,7 +228,7 @@ impl ProviderReadAuthority {
     /// and the owner's descriptor; `None` without one.
     fn owner_record_rule(&self, at: &QualifiedAddress) -> Result<Option<u8>, ViewError> {
         use crate::infrastructure::native_operations::apply_families::support_owner_relative;
-        let Some((_, relative)) = support_owner_relative(at, self.source_set_kind) else {
+        let Some((owner, relative)) = support_owner_relative(at, self.source_set_kind) else {
             return Ok(None);
         };
         let Some(state) = self.support_marker(&mut || Ok(()))? else {
@@ -237,8 +237,13 @@ impl ProviderReadAuthority {
         Ok(self
             .read_optional_relative_whole(&relative)?
             .and_then(|bytes| {
-                crate::infrastructure::family_codecs::metadata_read_codec()
-                    .support_root_uuid(&bytes)
+                if owner == "Configuration" && self.source_set_kind == SourceSetKind::Configuration
+                {
+                    unica_metadata_designer::support::configuration_support_uuid(&bytes)
+                } else {
+                    crate::infrastructure::family_codecs::metadata_read_codec()
+                        .support_root_uuid(&bytes)
+                }
             })
             .and_then(|uuid| state.object_rule(&uuid)))
     }

@@ -111,6 +111,7 @@ pub(crate) fn parse_form_resource_plan_operation_in(
                         object,
                         op_index,
                         binding.source_set_name(),
+                        binding.source_kind(),
                     )?)
                 }
                 None => return Err(hidden_apply_family_unimplemented(op_index)),
