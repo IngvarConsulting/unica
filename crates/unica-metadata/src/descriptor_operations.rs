@@ -234,12 +234,12 @@ macro_rules! descriptor_properties {
 
 // Columns: subsystem, role, configuration root, extension root. The root
 // profile names scalar properties, and the parts of one composite property,
-// with a published value set; names,
-// languages, roles, storages, forms and the script variant stay outside it.
+// with a published value set.
 // An extension root changes only its own identity (#1644). The platform
 // re-export of 8.3.27 resets a configuration's own
 // `ConfigurationExtensionCompatibilityMode`, so only an extension sets it.
 descriptor_properties!(
+    Name => ("Name", "name", String, false, false, true, false),
     LocationUrl => ("LocationURL", "locationURL", String, false, false, false, false),
     Location => ("Location", "location", String, false, false, false, false),
     PrivilegedGetMode => ("PrivilegedGetMode", "privilegedGetMode", Boolean, false, false, false, false),
@@ -629,6 +629,13 @@ impl PropertiesSite {
                         continue;
                     }
                     let schema = match field.kind() {
+                        DescriptorPropertyKind::String if field == DescriptorProperty::Name => {
+                            json!({
+                                "type": "string",
+                                "pattern": r"^[^\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFE\uFFFF]*$",
+                                "description": "Configuration name as XML 1.0 text. Changing it preserves the root address and UUID."
+                            })
+                        }
                         DescriptorPropertyKind::String if field.localized() => {
                             crate::localized_value_schema()
                         }
