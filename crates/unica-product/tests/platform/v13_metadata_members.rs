@@ -103,9 +103,10 @@ fn execute(mcp: &mut McpProcess, id: u64, plan: &Value) -> Value {
 
 fn assert_metadata_event(result: &Value) {
     assert_eq!(result["ok"], true, "{result:#}");
+    assert!(result["data"].get("cache").is_none(), "{result:#}");
+    assert_eq!(result["changed"].as_array().unwrap().len(), 1, "{result:#}");
     assert_eq!(
-        result["data"]["cache"]["events"],
-        json!(["MetadataChanged"]),
+        result["changed"][0]["event"], "MetadataChanged",
         "{result:#}"
     );
 }
@@ -134,6 +135,7 @@ fn member_range(text: &str, leaf: &str, name: &str) -> std::ops::Range<usize> {
     shift + range.start..shift + range.end
 }
 
+/// rule: INV.APP.APPLY-CHANGE-RESULT
 #[test]
 fn public_metadata_members_keep_new_identity_neighbors_and_exact_rename_bytes() {
     for case in cases() {
@@ -254,17 +256,14 @@ fn public_metadata_member_cancelled_batch_has_no_source_or_cache_effects() {
         })));
         assert_eq!(plan["ok"], true, "{}: {plan:#}", case.family);
         assert_eq!(plan["data"]["effects"], 0, "{plan:#}");
-        assert_eq!(plan["data"]["cache"]["events"], json!([]), "{plan:#}");
+        assert!(plan.get("changed").is_none(), "{plan:#}");
         assert_eq!(snapshot(&source), original, "{} no-op preview", case.family);
 
         let applied = execute(&mut mcp, 3, &plan);
 
         assert_eq!(applied["ok"], true, "{applied:#}");
         assert_eq!(applied["data"]["effects"], 0, "{applied:#}");
-        assert_eq!(
-            applied["data"]["cache"], plan["data"]["cache"],
-            "{applied:#}"
-        );
+        assert!(applied.get("changed").is_none(), "{applied:#}");
         assert_eq!(snapshot(&source), original, "{} no-op execute", case.family);
         mcp.finish();
     }
