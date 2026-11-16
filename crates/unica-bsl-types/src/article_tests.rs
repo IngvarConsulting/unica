@@ -19,9 +19,9 @@ fn chapter(name: &str) -> String {
     format!("<p class=\"V8SH_chapter\">{name}</p>")
 }
 
+/// rule: INV.APP.DOCUMENTATION-ARTICLE-FIELDS
 #[test]
 fn a_legacy_guide_preserves_sections_paragraphs_and_list_items() {
-    // rule: INV.APP.DOCUMENTATION-ARTICLE-FIELDS
     let html = page(concat!(
         "<H1 class=V8SH_pagetitle>Строка (String)</H1>",
         "<DIV class=V8SH_title>Строка (String)</DIV>",
