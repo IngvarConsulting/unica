@@ -46,15 +46,23 @@ impl BslBackend for HeldPreparation {
 }
 
 struct RunningStartup {
-    context: WorkspaceContext,
+    context: Option<WorkspaceContext>,
     identity: WorkspaceServiceIdentity,
     preparation: Arc<HeldPreparation>,
     done: mpsc::Receiver<Result<(), String>>,
     server: Option<thread::JoinHandle<()>>,
     callers: Vec<(thread::JoinHandle<()>, mpsc::Receiver<()>)>,
+    cleanup_started: Option<mpsc::Sender<()>>,
 }
 impl RunningStartup {
     fn start(finite: bool) -> (Self, mpsc::Receiver<SourceImage>, mpsc::Receiver<bool>) {
+        Self::start_after(finite, None)
+    }
+
+    fn start_after(
+        finite: bool,
+        startup_gate: Option<mpsc::Receiver<()>>,
+    ) -> (Self, mpsc::Receiver<SourceImage>, mpsc::Receiver<bool>) {
         let context = test_context(&format!(
             "readiness-preparation-{finite}-{}",
             Uuid::new_v4()
@@ -98,6 +106,9 @@ impl RunningStartup {
         let backend = Arc::clone(&preparation);
         let (completion, done) = mpsc::channel();
         let server = thread::spawn(move || {
+            if let Some(gate) = startup_gate {
+                let _ = gate.recv();
+            }
             let result = unica_analysis_services::run_workspace_service_from_args(
                 &args,
                 backend,
@@ -107,12 +118,13 @@ impl RunningStartup {
         });
         (
             Self {
-                context,
+                context: Some(context),
                 identity,
                 preparation,
                 done,
                 server: Some(server),
                 callers: Vec::new(),
+                cleanup_started: None,
             },
             entries,
             completions,
@@ -152,52 +164,113 @@ impl RunningStartup {
         assert!(service_response_is_alive(&response), "{response:?}");
     }
 }
+struct StartupCleanup {
+    context: WorkspaceContext,
+    identity: WorkspaceServiceIdentity,
+    done: mpsc::Receiver<Result<(), String>>,
+    server: Option<thread::JoinHandle<()>>,
+    callers: Vec<(thread::JoinHandle<()>, mpsc::Receiver<()>)>,
+    started: Option<mpsc::Sender<()>>,
+}
+impl StartupCleanup {
+    fn finish(mut self) -> Result<(), String> {
+        // Startup may publish its record after Drop begins. Keep trying to
+        // deliver shutdown while retaining the fixture and all thread handles.
+        let server_result = loop {
+            if let Some(record) = read_record(&self.identity) {
+                let _ = SYSTEM_SERVICE_CONNECTOR.send(
+                    &record,
+                    ServiceRequest {
+                        token: record.token.clone(),
+                        kind: ServiceRequestKind::Shutdown,
+                    },
+                    &CancellationToken::new(),
+                    Duration::from_secs(2),
+                );
+            }
+            if let Some(started) = self.started.take() {
+                let _ = started.send(());
+            }
+            match self.done.recv_timeout(Duration::from_millis(20)) {
+                Ok(result) => break result,
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    break Err("owned server completion channel disconnected".to_string());
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+            }
+        };
+        let mut cleanup_error = server_result.err();
+        if let Some(server) = self.server.take() {
+            if server.join().is_err() {
+                cleanup_error = Some("owned server panicked".to_string());
+            }
+        }
+        for (caller, done) in self.callers.drain(..) {
+            let completed = done.recv();
+            if caller.join().is_err() {
+                cleanup_error = Some("owned caller panicked".to_string());
+            } else if completed.is_err() {
+                cleanup_error = Some("owned caller completion channel disconnected".to_string());
+            }
+        }
+        cleanup(&self.context);
+        cleanup_error.map_or(Ok(()), Err)
+    }
+}
 impl Drop for RunningStartup {
     fn drop(&mut self) {
         self.preparation.abort.store(true, Ordering::Release);
         self.preparation.wake.notify_all();
-        if let Some(record) = read_record(&self.identity) {
-            let _ = SYSTEM_SERVICE_CONNECTOR.send(
-                &record,
-                ServiceRequest {
-                    token: record.token.clone(),
-                    kind: ServiceRequestKind::Shutdown,
-                },
-                &CancellationToken::new(),
-                Duration::from_secs(2),
-            );
-        }
-        let mut cleanup_error = None;
-        match self.done.recv_timeout(Duration::from_secs(10)) {
+        let resources = StartupCleanup {
+            context: self.context.take().unwrap(),
+            identity: self.identity.clone(),
+            done: std::mem::replace(&mut self.done, mpsc::channel().1),
+            server: self.server.take(),
+            callers: std::mem::take(&mut self.callers),
+            started: self.cleanup_started.take(),
+        };
+        let (finished, completion) = mpsc::channel();
+        let cleanup_thread = thread::spawn(move || {
+            let _ = finished.send(resources.finish());
+        });
+        // A failed observation must not delete files underneath live resources.
+        // On timeout the cleanup thread retains ownership until every join.
+        let cleanup_error = match completion.recv_timeout(Duration::from_secs(15)) {
             Ok(result) => {
-                if let Some(server) = self.server.take() {
-                    if server.join().is_err() {
-                        cleanup_error = Some("owned server panicked".to_string());
-                    }
-                }
-                if let Err(error) = result {
-                    cleanup_error = Some(error);
+                if cleanup_thread.join().is_err() {
+                    Some("owned cleanup thread panicked".to_string())
+                } else {
+                    result.err()
                 }
             }
-            Err(error) => cleanup_error = Some(format!("owned server did not terminate: {error}")),
-        }
-        for (caller, done) in self.callers.drain(..) {
-            match done.recv_timeout(Duration::from_secs(5)) {
-                Ok(()) => {
-                    if caller.join().is_err() {
-                        cleanup_error = Some("owned caller panicked".to_string());
-                    }
-                }
-                Err(error) => {
-                    cleanup_error = Some(format!("owned caller did not terminate: {error}"))
-                }
-            }
-        }
-        cleanup(&self.context);
+            Err(error) => Some(format!("owned startup cleanup did not finish: {error}")),
+        };
         if !thread::panicking() {
             assert!(cleanup_error.is_none(), "{cleanup_error:?}");
         }
     }
+}
+
+#[test]
+fn startup_cleanup_retains_fixture_until_a_late_server_is_stopped() {
+    let (release, startup_gate) = mpsc::channel();
+    let (mut server, _, _) = RunningStartup::start_after(false, Some(startup_gate));
+    let workspace = server.context.as_ref().unwrap().workspace_root.clone();
+    let (started, cleanup_started) = mpsc::channel();
+    server.cleanup_started = Some(started);
+    thread::scope(|scope| {
+        let dropper = scope.spawn(move || drop(server));
+        cleanup_started
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap();
+        assert!(
+            workspace.exists(),
+            "cleanup removed the fixture before startup"
+        );
+        release.send(()).unwrap();
+        dropper.join().unwrap();
+    });
+    assert!(!workspace.exists(), "the stopped fixture was not removed");
 }
 
 /// rule: INV.PERF.SERVICE-READINESS-WITHOUT-SOURCE-SCAN
@@ -314,7 +387,7 @@ fn production_service_readiness_does_not_wait_for_provider_source_preparation() 
             "provider was released by fixture cleanup rather than real cancellation"
         );
         assert_eq!(
-            testing::tree_snapshot(&server.context.workspace_root.join("src")),
+            testing::tree_snapshot(&server.context.as_ref().unwrap().workspace_root.join("src")),
             expected
         );
         RunningStartup::ping(&record);
