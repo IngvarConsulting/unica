@@ -112,6 +112,35 @@ fn medium_completed_post_and_detached_body_survive_connection_close() {
 }
 
 #[test]
+fn medium_the_same_client_reconnects_after_a_clean_connection_close() {
+    let (listener, base) = listener();
+    let server = thread::spawn(move || {
+        for (path, payload) in [("/first", "body"), ("/next", "done")] {
+            let mut stream = accept(&listener);
+            assert!(read_request(&mut stream).starts_with(&format!("GET {path} ")));
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\n{payload}"
+            )
+            .unwrap();
+            stream.shutdown(std::net::Shutdown::Write).unwrap();
+        }
+    });
+    let client = client_with_timeout(READ_TIMEOUT);
+    for (path, payload) in [("/first", "body"), ("/next", "done")] {
+        assert_eq!(
+            client
+                .get(&format!("{base}{path}"), &[], None)
+                .unwrap()
+                .into_string()
+                .unwrap(),
+            payload,
+        );
+    }
+    server.join().unwrap();
+}
+
+#[test]
 fn medium_post_that_may_have_been_delivered_is_not_replayed() {
     let (listener, base) = listener();
     let server = thread::spawn(move || {
