@@ -1623,6 +1623,14 @@ function shortLabel(at, parent) {
   return at;
 }
 
+function formHandlerTarget(data) {
+  const entry = data.props;
+  if (data.kind === "Event" && entry?.binding === "property" &&
+      entry.state === "implemented" && typeof entry.implementationAt === "string") {
+    return entry.implementationAt;
+  }
+}
+
 async function fill(container, at, cursor) {
   const loading = document.createElement("div");
   loading.className = "cnt";
@@ -1655,6 +1663,10 @@ async function fill(container, at, cursor) {
     const badges = `<span class="cnt">${branch.count ?? ""}</span>` + (isGraph(branch.at) ? ' <span class="badge graph">граф вызовов</span>' : "");
     container.appendChild(makeRow(shortLabel(branch.at, parent), branch.at, " " + badges));
   }
+  const handler = formHandlerTarget(data);
+  if (handler) {
+    container.appendChild(makeRow("Handler", handler, ` <span class="cnt">${esc(handler)}</span>`));
+  }
   for (const item of data.items || []) {
     if (item && typeof item.at === "string") {
       const meta = item.kind ? ` <span class="badge">${esc(item.kind)}</span>` : "";
@@ -1662,7 +1674,9 @@ async function fill(container, at, cursor) {
       const title = item.title && item.title !== item.at && item.title !== shortLabel(item.at, parent)
         ? ` <span class="cnt">${esc(item.title)}</span>` : "";
       const size = count === undefined ? "" : ` <span class="cnt">${count}</span>`;
-      container.appendChild(makeRow(shortLabel(item.at, parent), item.at, meta + title + size, count));
+      const state = data.kind === "Binding" && item.state === "invalid"
+        ? ' <span class="badge">недопустимая привязка</span>' : "";
+      container.appendChild(makeRow(shortLabel(item.at, parent), item.at, meta + title + size + state, count));
     } else {
       // Строка данных без адреса (например, строка исходника): адреса у неё нет.
       container.appendChild(makeRow(JSON.stringify(item).slice(0, 160)));
@@ -1811,7 +1825,8 @@ async function select(at, row, fresh) {
     renderNode(at, answer);
     const result = answer.result || {};
     const data = result.data || {};
-    if (result.ok && !result.cursor && !["branches", "items", "sourceSets"].some((key) => (data[key] || []).length)) markLeaf(row);
+    if (result.ok && !result.cursor && !formHandlerTarget(data) &&
+        !["branches", "items", "sourceSets"].some((key) => (data[key] || []).length)) markLeaf(row);
   }
   catch (error) {
     stop();
