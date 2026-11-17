@@ -19,6 +19,59 @@ fn chapter(name: &str) -> String {
     format!("<p class=\"V8SH_chapter\">{name}</p>")
 }
 
+/// rule: INV.APP.DOCUMENTATION-ARTICLE-FIELDS
+#[test]
+fn a_legacy_guide_preserves_sections_paragraphs_and_list_items() {
+    let html = page(concat!(
+        "<H1 class=V8SH_pagetitle>Строка (String)</H1>",
+        "<DIV class=V8SH_title>Строка (String)</DIV>",
+        "<P class=Usual><STRONG>Описание:</STRONG><BR>Текстовое значение.</P>",
+        "<P class=Usual><STRONG>Литералы:<BR></STRONG>Правила записи:</P>",
+        "<UL><LI>Первая форма.\r\n<LI>Вторая <STRONG>форма</STRONG>.</LI></UL>",
+        "<P class=Usual><STRONG>Доступность: </STRONG>Тонкий клиент, сервер.<BR>Можно передать по сети.</P>",
+        "<HR><P>Служебная ссылка.</P>",
+    ));
+    let article = parse("def_String", &html);
+    assert_eq!(article.name.ru, "Строка");
+    assert_eq!(article.name.en.as_deref(), Some("String"));
+    assert_eq!(
+        article.description,
+        Field::Parsed("Текстовое значение.".into())
+    );
+    assert_eq!(
+        article.other_sections,
+        [
+            (
+                "Литералы".into(),
+                "Правила записи:\n\n• Первая форма.\n• Вторая форма.".into(),
+            ),
+            (
+                "Доступность".into(),
+                "Тонкий клиент, сервер.\nМожно передать по сети.".into(),
+            ),
+        ]
+    );
+}
+
+#[test]
+fn a_legacy_guide_keeps_prose_before_its_first_labeled_paragraph() {
+    let html = page(concat!(
+        "<H1 class=V8SH_pagetitle>Число (Number)</H1>",
+        "<DIV class=V8SH_title>Число (Number)</DIV>",
+        "<P>Вводный абзац.</P><P>Следующий абзац.</P>",
+        "<P><STRONG>Литералы:</STRONG>Синтаксис значения.</P>",
+    ));
+    let article = parse("def_Number", &html);
+    assert_eq!(
+        article.description,
+        Field::Parsed("Вводный абзац.\n\nСледующий абзац.".into())
+    );
+    assert_eq!(
+        article.other_sections,
+        [("Литералы".into(), "Синтаксис значения.".into())]
+    );
+}
+
 /// Рубрика параметра: `<div>` без закрытия внутри, как пишет справка.
 fn rubric(name: &str, optional: bool) -> String {
     let kind = if optional {
@@ -386,9 +439,7 @@ fn a_page_that_is_neither_a_type_nor_a_member_is_still_an_article() {
     );
 }
 
-/// Отдельного раздела «См. также» у статей платформы нет: связанные статьи
-/// названы ссылками внутри текста, и ссылка несёт путь, по которому статья
-/// открывается.
+/// Общий список включает ссылки внутри текста статьи.
 #[test]
 fn links_inside_the_text_address_other_articles() {
     let article = parse(COPY_PATH, &copy_article());
@@ -407,6 +458,84 @@ fn links_inside_the_text_address_other_articles() {
         "ссылка на тип языка страницей не адресуется и в список не идёт"
     );
     assert_eq!(article.links[0].label, "Массив");
+}
+
+/// rule: INV.APP.DOCUMENTATION-ARTICLE-FIELDS
+#[test]
+fn see_also_preserves_rows_and_keeps_the_flat_links() {
+    let html = page(&format!(
+        "{}<a href=A.html>Первый</a>, свойство <a href=A/properties/Value1.html>Значение</a><BR />
+         <a href=A.html>Первый</a><br>
+         <a href=B.html>Второй</a>, метод <a href=B/methods/Value2.html>Значение</a><br>
+         <a href=B.html>Второй</a>, событие <a href=B/events/Changed3.html>Изменение</a><br>
+         <a href=B.html>Второй</a>, конструктор <a href=B/ctors/ctor4.html>Из строки</a><br>
+         <a href=A.html>Первый</a> и <a href=B.html>Второй</a><br>
+         <a href=#details>Подробнее</a><br>
+         <HR><p><a href=https://example.org>Методическая информация</a></p>",
+        chapter("См. также:"),
+    ));
+    let article = parse("objects/Sample.html", &html);
+    fn link(label: &str, path: &str) -> ArticleLink {
+        ArticleLink {
+            label: label.to_owned(),
+            path: format!("objects/{path}"),
+        }
+    }
+    assert_eq!(
+        article.see_also,
+        vec![
+            SeeAlsoEntry::Member {
+                owner: "Первый".into(),
+                kind: ArticleKind::Property,
+                link: link("Значение", "A/properties/Value1")
+            },
+            SeeAlsoEntry::Document(link("Первый", "A")),
+            SeeAlsoEntry::Member {
+                owner: "Второй".into(),
+                kind: ArticleKind::Method,
+                link: link("Значение", "B/methods/Value2")
+            },
+            SeeAlsoEntry::Member {
+                owner: "Второй".into(),
+                kind: ArticleKind::Event,
+                link: link("Изменение", "B/events/Changed3")
+            },
+            SeeAlsoEntry::Member {
+                owner: "Второй".into(),
+                kind: ArticleKind::Constructor,
+                link: link("Из строки", "B/ctors/ctor4")
+            },
+            SeeAlsoEntry::Unparsed {
+                text: "Первый и Второй".into(),
+                links: vec![link("Первый", "A"), link("Второй", "B")]
+            },
+            SeeAlsoEntry::Unparsed {
+                text: "Подробнее".into(),
+                links: Vec::new(),
+            },
+        ]
+    );
+    assert_eq!(
+        article.links,
+        vec![
+            link("Первый", "A"),
+            link("Значение", "A/properties/Value1"),
+            link("Второй", "B"),
+            link("Значение", "B/methods/Value2"),
+            link("Изменение", "B/events/Changed3"),
+            link("Из строки", "B/ctors/ctor4"),
+            link("Подробнее", "#details"),
+        ]
+    );
+    assert_eq!(article.other_sections[0].0, "См. также");
+    assert!(article.other_sections[0]
+        .1
+        .contains("Методическая информация"));
+    let english = html.replace("См. также:", "See also:");
+    assert_eq!(
+        parse("objects/Sample.html", &english).see_also,
+        article.see_also
+    );
 }
 
 /// Адрес ссылки в справке бывает без кавычек: он кончается скобкой тега,

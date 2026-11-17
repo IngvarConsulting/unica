@@ -279,7 +279,7 @@
           "pointer": "/data/props/homePage/left",
           "eq": [
             {
-              "form": "Document.CorpusDocument.Form.MainExtra",
+              "form": "main:Document.CorpusDocument.Form.MainExtra",
               "height": 15,
               "common": false,
               "roles": []

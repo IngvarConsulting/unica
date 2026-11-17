@@ -5,7 +5,7 @@
 use crate::operations::FormOperation;
 use serde_json::{json, Map, Value};
 use unica_metadata::event::FormCallType;
-use unica_operation_contract::{object, text, OperationContract};
+use unica_operation_contract::{object, text, FormatValidator, OperationContract};
 use unica_source_contract::format_identity::{
     member_property_exists, member_property_since, PlatformLine,
 };
@@ -400,9 +400,21 @@ pub fn form_element_enum(kind: &str, key: &str) -> Option<&'static [&'static str
     })
 }
 
-fn language_map() -> Value {
-    json!({"type":"object","minProperties":1,"additionalProperties":{"type":"string"},
-        "description":"Text by language code, e.g. {\"ru\": \"…\", \"en\": \"…\"}."})
+const NSTR_FORMAT: &str = "localized-nstr";
+const FORM_FORMAT_VALIDATORS: &[FormatValidator] = &[FormatValidator {
+    name: NSTR_FORMAT,
+    validate: |value| {
+        let text = value
+            .as_str()
+            .ok_or_else(|| unica_metadata::LOCALIZED_VALUE_FORM.to_owned())?;
+        unica_metadata::parse_nstr(text).map(|_| ())
+    },
+}];
+
+fn nstr() -> Value {
+    let mut schema = unica_metadata::localized_value_schema();
+    schema["format"] = json!(NSTR_FORMAT);
+    schema
 }
 
 fn element_key_schema(kind: &str, key: &str) -> Value {
@@ -411,19 +423,11 @@ fn element_key_schema(kind: &str, key: &str) -> Value {
     }
     match key {
         "title" if kind == "Label" => json!({"anyOf":[
-            {"type":"string"},
-            language_map(),
-            object(&[("text", json!({"anyOf":[{"type":"string"}, language_map()]})),
-                ("formatted", json!({"type":"boolean"}))], &["text"]),
+            nstr(),
+            object(&[("text", nstr()), ("formatted", json!({"type":"boolean"}))], &["text"]),
         ],
-        "description":"Decoration text: a string in the configuration language, a language map, or {text, formatted}. Without a title the decoration shows its name."}),
-        "title" => json!({"type":"string",
-            "description":"Title in the configuration language."}),
-        "inputHint" => {
-            json!({"type":"string","description":"Input hint in the configuration language."})
-        }
-        "tooltip" => json!({"anyOf":[{"type":"string"}, language_map()],
-            "description":"Tooltip: a string in the configuration language or a language map."}),
+        "description":"Decoration text in NStr form, optionally with its formatting flag. Without a title the decoration shows its name."}),
+        "title" | "inputHint" | "tooltip" => nstr(),
         "width" | "height" => json!({"type":"integer","minimum":0,
             "description":"Integer in 0..=4294967295."}),
         "autoRefreshPeriod" => json!({"type":"integer","minimum":0}),
@@ -528,7 +532,7 @@ fn column_item_schema() -> Value {
     object(
         &[
             ("name", text(true)),
-            ("title", json!({"type":"string"})),
+            ("title", nstr()),
             ("type", text(true)),
         ],
         &["name", "type"],
@@ -543,10 +547,7 @@ fn attribute_item_schema() -> Value {
                 json!({"type":"string","pattern":r"\S",
                     "description":"New attribute name, unused in the form."}),
             ),
-            (
-                "title",
-                json!({"type":"string","description":"Title in the configuration language."}),
-            ),
+            ("title", nstr()),
             (
                 "type",
                 json!({"type":"string","pattern":r"\S",
@@ -778,7 +779,7 @@ pub fn form_set_in(kind: Option<&str>, line: Option<PlatformLine>) -> OperationC
             .map(|key| {
                 let mut field=slot.clone();
                 if kind == Some("Configuration") {
-                    field["description"]=json!("The name or logical address of a common form of this source set (`Name`, `CommonForm.Name`); an empty string clears the slot.");
+                    field["description"]=json!("The name or logical address of a common form of this source set (`<set>:CommonForm.Name`, `CommonForm.Name` or `Name`); an empty string clears the slot.");
                 } else if kind.is_some_and(|kind| crate::default_forms::common_form_slot(kind, FORM_SLOTS.iter().find(|(name,_)|name == key).map_or("",|(_,property)|*property))) {
                     field["description"]=json!("A form name or logical address of this owner, or the logical address of a compatible Managed CommonForm in the same source set. An empty string clears the slot. Report CommonForm requires a generic ReportObject main attribute and matching Main/Settings/Variant purpose (an absent ReportFormType means Main); Constant requires ConstantsSet.");
                 }
@@ -881,7 +882,7 @@ pub fn form(operation: FormOperation) -> OperationContract {
         notes,
         example_args,
         help: FORM_HELP,
-        format_validators: &[],
+        format_validators: FORM_FORMAT_VALIDATORS,
     }
 }
 
@@ -901,14 +902,7 @@ pub fn form_column_type_set() -> OperationContract {
 pub fn form_props_set() -> OperationContract {
     use crate::root_properties::{writable_root_properties, RootValue};
     let mut values = Map::new();
-    values.insert(
-        "Title".to_string(),
-        json!({"anyOf":[
-            {"type":"string","description":"Text in the default language of the source set; other translations stay. An empty string removes the title."},
-            {"type":"object","additionalProperties":{"type":"string"},"minProperties":1,
-                "description":"Every translation by language code: {\"ru\": \"…\", \"en\": \"…\"}."}
-        ]}),
-    );
+    values.insert("Title".to_string(), nstr());
     for property in writable_root_properties() {
         let schema = match property.value {
             RootValue::Flag => json!({"type":"boolean"}),
@@ -925,9 +919,9 @@ pub fn form_props_set() -> OperationContract {
         target: "The form itself: <source-set>:<Kind>.<Name>.Form.<Form>.",
         effect: "Set the supplied root properties of the form, in the order 1C writes them. A value equal to the platform default is not written, as 1C does not export it. Other properties and the form content stay.",
         notes: "Names are the ones view shows for the form. AutoTitle is not changed with Title: set AutoTitle false to show only the title. AutoTime, UsePostingMode and RepostOnWrite belong to a document form, UseForFoldersAndItems to a catalog form, report properties to a report form; on another form they are refused. ReportResult, DetailsData, VariantAppearance, CustomSettingsFolder, SettingsStorage and GroupList are not written by this operation.",
-        example_args: json!({"values":{"Title":"Products","AutoTitle":false,"Width":60}}),
+        example_args: json!({"values":{"Title":"en = 'Products'","AutoTitle":false,"Width":60}}),
         help: FORM_HELP,
-        format_validators: &[],
+        format_validators: FORM_FORMAT_VALIDATORS,
     }
 }
 
@@ -936,10 +930,10 @@ pub fn form_column_add() -> OperationContract {
         schema: object(&[("at", text(true)), ("items", json!({"type":"array","minItems":1,"items":column_item_schema()}))], &["items"]),
         target: "The existing ValueTable attribute: <set>:<Kind>.<Name>.Form.<Form>.Attribute.<Attribute>. Read its Column branch before choosing new names.",
         effect: "Append the listed data columns, preserving existing columns, attribute identity and form bindings. The operation assigns new column IDs.",
-        notes: "Each name must be unused in the addressed attribute. type uses the form type DSL; title is optional text in the source set's default language. The attribute must be a ValueTable. Visual elements are added separately with item.add. Preview writes nothing; execute the saved token and read the new columns.",
+        notes: "Each name must be unused in the addressed attribute. type uses the form type DSL; title is optional NStr. The attribute must be a ValueTable. Visual elements are added separately with item.add. Preview writes nothing; execute the saved token and read the new columns.",
         example_args: json!({"items":[{"name":"Additional","type":"String"}]}),
         help: FORM_HELP,
-        format_validators: &[],
+        format_validators: FORM_FORMAT_VALIDATORS,
     }
 }
 
@@ -958,7 +952,7 @@ pub fn form_attribute_add() -> OperationContract {
         notes,
         example_args,
         help: FORM_HELP,
-        format_validators: &[],
+        format_validators: FORM_FORMAT_VALIDATORS,
     }
 }
 
@@ -972,10 +966,8 @@ pub fn form_command_add() -> OperationContract {
                     json!({"type":"array","minItems":1,"items":object(&[
                         ("name",json!({"type":"string","pattern":r"\S",
                             "description":"New command name, unused in the form."})),
-                        ("title",json!({"type":"string","pattern":r"\S",
-                            "description":"Title in the configuration language."})),
-                        ("tooltip",json!({"type":"string","pattern":r"\S",
-                            "description":"Tooltip in the configuration language."})),
+                        ("title", nstr()),
+                        ("tooltip", nstr()),
                         ("action",json!({"type":"string","pattern":r"\S",
                             "description":"Handler procedure in the form module; defaults to the command name."})),
                         ("shortcut",json!({"type":"string","pattern":r"\S",
@@ -992,7 +984,7 @@ pub fn form_command_add() -> OperationContract {
         "The form itself: <source-set>:<Kind>.<Name>.Form.<Form>. Read its Command branch before choosing names.",
         "Add form commands with the listed properties, written in the platform's FormCommand order. Place a button bound to the command with item.add.",
         "A property outside this schema is refused before any write; use, functionalOptions, currentRowUse, modifiesSavedData and the associated table are not written by this operation.",
-        json!({"items":[{"name":"Refresh","title":"Refresh","tooltip":"Refresh the list","shortcut":"F5","picture":"StdPicture.Refresh","representation":"TextPicture"}]}),
+        json!({"items":[{"name":"Refresh","title":"en = 'Refresh'","tooltip":"en = 'Refresh the list'","shortcut":"F5","picture":"StdPicture.Refresh","representation":"TextPicture"}]}),
     );
     OperationContract {
         schema,
@@ -1001,7 +993,7 @@ pub fn form_command_add() -> OperationContract {
         notes,
         example_args,
         help: FORM_HELP,
-        format_validators: &[],
+        format_validators: FORM_FORMAT_VALIDATORS,
     }
 }
 
@@ -1159,7 +1151,7 @@ mod tests {
         for item in [
             json!({"name":"A"}),
             json!({"name":"A","type":"Button","backColor":"web:Red","font":{"bold":true}}),
-            json!({"name":"A","type":"Label","title":{"text":"A","formatted":true}}),
+            json!({"name":"A","type":"Label","title":{"text":"en = 'A'","formatted":true}}),
             json!({"name":"A","type":"Table","_dynList":true,"autoRefresh":true}),
         ] {
             assert!(

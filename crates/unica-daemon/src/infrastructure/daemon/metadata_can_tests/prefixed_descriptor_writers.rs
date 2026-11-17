@@ -86,7 +86,7 @@ fn relation_and_member_writers_keep_the_owner_prefix() {
             {"op":"relation.add","args":{"values":{"relation":"basedOn","targets":[{"metadataPath":"Catalog.A"}]}}}
         ]}),
         json!({"at":"main:Catalog.A.Attribute.Text","ops":[
-            {"op":"attribute.set","args":{"values":{"synonym":"Подпись","comment":"Note","newName":"Label"}}}
+            {"op":"attribute.set","args":{"values":{"synonym":"ru = 'Подпись'","comment":"Note","newName":"Label"}}}
         ]}),
         json!({"at":"main:Document.D.Attribute.Text","ops":[
             {"op":"attribute.set","args":{"values":{"comment":"Note"}}}

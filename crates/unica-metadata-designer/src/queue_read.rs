@@ -156,7 +156,7 @@ mod tests {
     fn a_queue_of_the_platform_export_shows_its_properties_and_children() {
         let mut payload = json!({});
         enrich_queue(EXPORT.as_bytes(), &mut payload).unwrap();
-        assert_eq!(payload["synonym"], "Проба");
+        assert_eq!(payload["synonym"], "ru = 'Проба'");
         assert_eq!(
             payload["properties"],
             json!([
@@ -170,7 +170,7 @@ mod tests {
         let dimensions = payload["collections"]["dimensions"].as_array().unwrap();
         assert_eq!(dimensions.len(), 1);
         assert_eq!(dimensions[0]["name"], "Измерение");
-        assert_eq!(dimensions[0]["synonym"], "Измерение");
+        assert_eq!(dimensions[0]["synonym"], "ru = 'Измерение'");
         assert_eq!(dimensions[0]["type"]["variants"][0]["kind"], "string");
         let attributes = payload["collections"]["attributes"].as_array().unwrap();
         assert_eq!(attributes.len(), 1);

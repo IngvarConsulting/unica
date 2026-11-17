@@ -13,6 +13,7 @@ use crate::infrastructure::support_state::{
     SupportStateReaderFactory, WorkspaceSupportStateReaderFactory,
 };
 use unica_adapter_bsl_analyzer::adapter::BslAnalyzerMcpAdapter;
+use unica_documentation_sources::platform_help::PlatformHelpLocator;
 
 use serde_json::{json, Map, Value};
 use std::borrow::Cow;
@@ -602,11 +603,12 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                     .to_string();
                 let registry = documentation_registry(context, cancellation, false)?;
                 let requested_version = args.get("platformVersion").and_then(Value::as_str);
-                let context = documentation_context(
+                let context = documentation_page_context(
                     &unica_adapter_v8_runner::full_dump::default_platform_roots(),
+                    document_id,
                     requested_version,
                     context,
-                );
+                )?;
                 let data = unica_documentation::projection::get(
                     &registry,
                     document_id,
@@ -975,11 +977,12 @@ fn open_documentation_page(
 ) -> unica_execution_contract::invocation::DomainResult {
     let opened = (|| {
         let registry = documentation_registry(workspace, cancellation, false)?;
-        let context = documentation_context(
+        let context = documentation_page_context(
             &unica_adapter_v8_runner::full_dump::default_platform_roots(),
+            document_id,
             None,
             workspace,
-        );
+        )?;
         unica_documentation::projection::get(&registry, document_id, "ru", &context)
     })();
     match opened {
@@ -1283,6 +1286,33 @@ fn documentation_context(
     }
 }
 
+fn documentation_page_context(
+    roots: &[std::path::PathBuf],
+    document_id: &str,
+    requested: Option<&str>,
+    workspace: &WorkspaceContext,
+) -> Result<unica_documentation::model::DocumentationContext, String> {
+    let version = PlatformHelpLocator::parse(document_id)?.and_then(|locator| locator.version);
+    let Some(version) = version else {
+        return Ok(documentation_context(roots, requested, workspace));
+    };
+    if let Some(requested) = requested.filter(|requested| *requested != version) {
+        return Err(format!(
+            "локатор требует сборку {version}, запрошена {requested}"
+        ));
+    }
+    if let Some(line) = project_platform_version(workspace).filter(|line| {
+        !version_components(version)
+            .zip(version_components(line))
+            .is_some_and(|(build, family)| build.starts_with(&family))
+    }) {
+        return Err(format!(
+            "локатор требует сборку {version}, проект закреплён за {line}"
+        ));
+    }
+    Ok(documentation_context(roots, Some(version), workspace))
+}
+
 /// The platform installation `unica.docs` reads for `workspace`: the
 /// project's pin, otherwise the newest installation found.
 pub fn platform_installation_root(workspace: &WorkspaceContext) -> Option<std::path::PathBuf> {
@@ -1432,8 +1462,8 @@ fn code_intelligence_context(
 #[cfg(test)]
 mod medium_tests {
     use super::{
-        canonical_v13_docs_search, documentation_context, documentation_registry,
-        normalize_code_intelligence_read_request, project_platform_version,
+        canonical_v13_docs_search, documentation_context, documentation_page_context,
+        documentation_registry, normalize_code_intelligence_read_request, project_platform_version,
         select_installation_root, select_platform_version,
     };
 
@@ -2667,6 +2697,55 @@ mod medium_tests {
             Some(machine.path().join("8.5.4.1306"))
         );
         assert_eq!(requested.platform_version.as_deref(), Some("8.5.4.1306"));
+    }
+
+    /// rule: INV.APP.DOCUMENTATION-VERSION-SELECTION
+    #[test]
+    fn versioned_page_locator_selects_an_exact_build_within_project_constraints() {
+        let installations = tempfile::tempdir().unwrap();
+        let requested_root = installations.path().join("8.3.27.2074");
+        std::fs::create_dir(&requested_root).unwrap();
+        std::fs::create_dir(installations.path().join("8.3.27.2214")).unwrap();
+        let roots = [installations.path().to_path_buf()];
+        let project = tempfile::tempdir().unwrap();
+        let workspace = WorkspaceContext {
+            cwd: project.path().to_path_buf(),
+            workspace_root: project.path().to_path_buf(),
+            cache_root: project.path().join(".build/unica"),
+            workspace_epoch: 1,
+        };
+        let locator = "platform-syntax-help:8.3.27.2074:platform-guides:def_String";
+        let selected = documentation_page_context(&roots, locator, None, &workspace).unwrap();
+        assert_eq!(
+            selected.installation_root.as_deref(),
+            Some(requested_root.as_path())
+        );
+        let absent = documentation_page_context(
+            &roots,
+            "platform-syntax-help:8.3.27.9999:platform-guides:def_String",
+            None,
+            &workspace,
+        )
+        .unwrap();
+        assert!(absent.installation_root.is_none());
+        assert!(
+            documentation_page_context(&roots, locator, Some("8.3.27.2214"), &workspace).is_err()
+        );
+
+        let config = project.path().join("v8project.yaml");
+        std::fs::write(&config, "tools:\n  platform:\n    version: '8.3.27'\n").unwrap();
+        let selected = documentation_page_context(&roots, locator, None, &workspace).unwrap();
+        assert_eq!(
+            selected.installation_root.as_deref(),
+            Some(requested_root.as_path())
+        );
+
+        std::fs::write(config, "tools:\n  platform:\n    version: '8.3.27.2214'\n").unwrap();
+        let error = documentation_page_context(&roots, locator, None, &workspace).unwrap_err();
+        assert!(
+            error.contains("8.3.27.2074") && error.contains("8.3.27.2214"),
+            "{error}"
+        );
     }
 
     /// Записывающий поставщик: единственный способ увидеть, ЧТО именно ветка

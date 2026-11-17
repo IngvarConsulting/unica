@@ -205,7 +205,7 @@
       "assertions": [
         {
           "pointer": "/data/props/Synonym",
-          "eq": "Agent1721 role"
+          "eq": "ru = 'Agent1721 role'"
         }
       ],
       "fileAssertions": [
@@ -412,7 +412,7 @@
       "assertions": [
         {
           "pointer": "/data/props/Synonym",
-          "eq": "Agent1721 subsystem"
+          "eq": "ru = 'Agent1721 subsystem'"
         },
         {
           "pointer": "/data/props/Comment",
@@ -420,7 +420,7 @@
         },
         {
           "pointer": "/data/props/Explanation",
-          "eq": ""
+          "absent": true
         },
         {
           "pointer": "/data/props/IncludeInCommandInterface",

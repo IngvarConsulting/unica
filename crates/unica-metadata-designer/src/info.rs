@@ -353,9 +353,21 @@ pub fn typed_element(
         crate::info_projection::direct_md_child_text(properties, "Name").unwrap_or_default();
     let mut incomplete = raw_name.trim().is_empty();
     let name = if incomplete { String::new() } else { raw_name };
-    let synonym = crate::info_projection::direct_md_child(properties, "Synonym")
-        .map(crate::xml_model::meta_info_ml_text)
-        .filter(|value| !value.is_empty());
+    let synonym = match crate::info_projection::localized_property_as_nstr(
+        properties,
+        "metadata collection item",
+        "Synonym",
+    ) {
+        Ok(value) => value,
+        Err(error) => {
+            diagnostics.push(
+                MetaDiagnostic::error(MetaDiagnosticCode::ProviderUnavailable, error)
+                    .with_metadata_path(target.clone())
+                    .with_field(format!("{field}.synonym")),
+            );
+            None
+        }
+    };
     let comment = match crate::info_projection::observe_collection_item_comment(properties) {
         Ok(comment) => comment,
         Err(error) => {
@@ -732,24 +744,25 @@ pub fn parse_typed_meta_local_info_inner(
         .with_metadata_path(target.clone())
         .into());
     }
-    let synonym = properties.and_then(|properties| {
-        let nodes = crate::info_projection::direct_children_with_namespace(
-            properties,
-            super::info_projection::MD_CLASSES_NAMESPACE,
-            "Synonym",
-        );
-        let [node] = nodes.as_slice() else {
-            return None;
-        };
-        crate::info_projection::meta_info_property_value_is_valid(
-            *node,
-            MetaInfoPropertyValueKind::LegacyLocalizedString,
-        )
-        .then(|| crate::xml_model::meta_info_ml_text(*node))
-        .filter(|value| !value.is_empty())
-    });
-
     let mut diagnostics = Vec::new();
+    let synonym =
+        properties.and_then(
+            |properties| match crate::info_projection::localized_property_as_nstr(
+                properties,
+                kind.as_str(),
+                "Synonym",
+            ) {
+                Ok(value) => value,
+                Err(error) => {
+                    diagnostics.push(
+                        MetaDiagnostic::error(MetaDiagnosticCode::ProviderUnavailable, error)
+                            .with_metadata_path(target.clone())
+                            .with_field("properties.Synonym"),
+                    );
+                    None
+                }
+            },
+        );
     for error in crate::info_projection::meta_info_profile_errors(kind, properties, child_objects) {
         diagnostics.push(
             MetaDiagnostic::error(error.code, error.message)

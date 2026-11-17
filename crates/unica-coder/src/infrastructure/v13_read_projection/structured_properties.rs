@@ -117,7 +117,12 @@ pub(crate) fn properties(reader: LogicalReader, kind: NodeKind) -> &'static [Pro
             const {
                 &[
                     write("type", "parameter.set"),
+                    write("title", "parameter.set"),
                     write("value", "parameter.set"),
+                    observed(
+                        "valueType",
+                        "Platform type of the default value; pass it with value in parameter.set",
+                    ),
                     write("expression", "parameter.set"),
                     write("availableAsField", "parameter.set"),
                     input(write("useRestriction", "parameter.set"), "restricted"),
@@ -291,11 +296,14 @@ pub(super) fn direct_props(
         .filter_map(|spec| {
             value
                 .get(spec.input?)
-                .and_then(|value| {
-                    if reader == LogicalReader::Xdto && kind == NodeKind::Property {
-                        bounded_prop(spec.name, value)
+                .and_then(|property| {
+                    if reader == LogicalReader::Xdto && kind == NodeKind::Property
+                        || reader == LogicalReader::Dcs
+                            && matches!(spec.name, "title" | "presentation")
+                    {
+                        bounded_prop(spec.name, property)
                     } else {
-                        safe_prop(spec.name, value).then(|| value.clone())
+                        safe_prop(spec.name, property).then(|| property.clone())
                     }
                 })
                 .map(|value| (spec.name.to_string(), value))

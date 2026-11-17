@@ -11,7 +11,7 @@
             "op": "props.set",
             "args": {
               "values": {
-                "Synonym": "Анализ версий"
+                "Synonym": "ru = 'Анализ версий'"
               }
             }
           }

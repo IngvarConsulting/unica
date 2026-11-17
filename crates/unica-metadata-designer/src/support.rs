@@ -434,6 +434,20 @@ pub fn is_uuid_text(value: &str) -> bool {
         })
 }
 
+/// The UUID of the Configuration element, never the wrapper or a nested object.
+pub fn configuration_support_uuid(raw: &[u8]) -> Option<String> {
+    let owner = unica_source_designer::owner::prove_already_read_source_set_owner(
+        std::path::Path::new("Configuration.xml"),
+        raw,
+        unica_source_contract::SourceSetKind::Configuration,
+    )
+    .ok()?;
+    owner
+        .artifact_uuid()
+        .filter(|uuid| is_uuid_text(uuid))
+        .map(str::to_owned)
+}
+
 pub fn support_root_uuid_from_bytes(raw: &[u8]) -> Option<String> {
     let text = std::str::from_utf8(raw).ok()?;
     let doc = Document::parse(text.trim_start_matches('\u{feff}')).ok()?;

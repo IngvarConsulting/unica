@@ -143,15 +143,7 @@
               {
                 "type": "SettingsParameterValue",
                 "parameter": "Текст",
-                "value": {
-                  "kind": "localizedString",
-                  "values": [
-                    {
-                      "language": "ru",
-                      "content": "Все контрагенты"
-                    }
-                  ]
-                }
+                "value": "ru = 'Все контрагенты'"
               }
             ]
           }
@@ -206,15 +198,7 @@
               {
                 "type": "SettingsParameterValue",
                 "parameter": "Текст",
-                "value": {
-                  "kind": "localizedString",
-                  "values": [
-                    {
-                      "language": "ru",
-                      "content": "Все контрагенты"
-                    }
-                  ]
-                }
+                "value": "ru = 'Все контрагенты'"
               }
             ]
           }

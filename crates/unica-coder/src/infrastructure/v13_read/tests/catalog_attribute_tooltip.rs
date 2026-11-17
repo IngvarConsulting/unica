@@ -38,8 +38,8 @@ fn member_views(fixture: &RealReaderFixture, at: &str) -> [Value; 2] {
 fn localized(node: &Value) -> Value {
     let tooltip = node["props"]["ToolTip"].clone();
     assert!(
-        tooltip.is_array(),
-        "public ToolTip must preserve localized XML as a nested array of translations"
+        tooltip.is_string(),
+        "public ToolTip must arrive as one string in NStr form"
     );
     tooltip
 }
@@ -56,10 +56,7 @@ fn assert_no_tooltip(node: &Value) {
 }
 
 fn expected_tooltip() -> Value {
-    json!([
-        {"language": "ru", "content": "Настройки представления суммы прописью"},
-        {"language": "en", "content": "Amount spelling settings & presentation"}
-    ])
+    json!("ru = 'Настройки представления суммы прописью'; en = 'Amount spelling settings & presentation'")
 }
 
 fn has_tooltip_limit(node: &Value) -> bool {
@@ -81,7 +78,7 @@ fn assert_type(node: &Value, length: u64) {
 
 fn assert_spelling_facts(node: &Value) {
     assert_eq!(node["at"], SPELLING);
-    assert_eq!(node["props"]["synonym"], "Параметры прописи");
+    assert_eq!(node["props"]["synonym"], "ru = 'Параметры прописи'");
     assert_eq!(node["props"]["required"], false);
     assert_eq!(node["props"]["Indexing"], "DontIndex");
     assert_eq!(node["props"]["FullTextSearch"], "Use");
@@ -118,7 +115,7 @@ fn catalog_attribute_tooltip_completes_six_facts_in_public_collection_and_detail
         assert_eq!(language["props"]["Indexing"], "Index");
         assert_eq!(language["props"]["FullTextSearch"], "Use");
         assert_eq!(language["props"]["DataHistory"], "Use");
-        assert_eq!(language["props"]["synonym"], "Код языка");
+        assert_eq!(language["props"]["synonym"], "ru = 'Код языка'");
         assert_eq!(language["props"]["required"], false);
         assert_type(&language, 10);
         assert_no_tooltip(&language);
@@ -126,7 +123,7 @@ fn catalog_attribute_tooltip_completes_six_facts_in_public_collection_and_detail
     for section in member_views(&fixture, SECTION) {
         assert_eq!(section["props"]["LineNumberLength"], 5);
         assert_eq!(section["props"]["Use"], "ForItem");
-        assert_eq!(section["props"]["synonym"], "Представления");
+        assert_eq!(section["props"]["synonym"], "ru = 'Представления'");
         assert_eq!(section["props"]["required"], false);
         let attributes = section["branches"]
             .as_array()
@@ -151,7 +148,7 @@ fn catalog_attribute_tooltip_empty_set_reads_as_absence_but_an_empty_translation
         ("<ToolTip> \n\t </ToolTip>", None),
         (
             "<ToolTip><v8:item><v8:lang>ru</v8:lang><v8:content/></v8:item></ToolTip>",
-            Some(json!([{"language": "ru", "content": ""}])),
+            Some(json!("ru = ''")),
         ),
     ] {
         let fixture = fixture_with_catalog(&replace_spelling_tooltip(CATALOG, replacement));
@@ -285,7 +282,7 @@ fn catalog_attribute_tooltip_never_inherits_section_header_or_sibling_values() {
     }
     assert_eq!(
         localized(&read(&fixture, LANGUAGE)),
-        json!([{"language": "ru", "content": "Подсказка соседа"}])
+        json!("ru = 'Подсказка соседа'")
     );
     assert_eq!(tree_snapshot(&fixture.source), before);
 }

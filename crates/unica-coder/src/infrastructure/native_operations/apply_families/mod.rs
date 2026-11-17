@@ -467,6 +467,10 @@ fn refuse_target_on_locked_vendor_object(
             "{}; the project support policy `warn` permits this edit",
             lock.reason
         ),
+        (SupportLockKind::ObjectLocked, true) if lock.owner == "Configuration" => format!(
+            "{}; set `supportRule.set` with rule `editable` on `{source_set}:Configuration` in a separate apply before ordinary edits",
+            lock.reason
+        ),
         (_, true) => format!(
             "{}; allow editing with `supportRule.set` in a separate apply before ordinary edits",
             lock.reason
@@ -478,11 +482,23 @@ fn refuse_target_on_locked_vendor_object(
             scope: lock.scope,
         }));
     }
-    Err(
-        ApplyPlanError::new(ApplyPlanErrorKind::InvalidState, message)
-            .at_path(at)
-            .with_support_lock(support_lock),
-    )
+    let mut error = ApplyPlanError::new(ApplyPlanErrorKind::InvalidState, message)
+        .at_path(at)
+        .with_support_lock(support_lock);
+    if lock.kind == SupportLockKind::ObjectLocked
+        && lock.owner == "Configuration"
+        && binding.source_kind() == SourceSetKind::Configuration
+    {
+        error = error.with_next(serde_json::json!({
+            "tool": "unica.apply",
+            "args": {
+                "at": format!("{source_set}:Configuration"),
+                "ops": [{"op": "supportRule.set", "args": {"values": {"rule": "editable"}}}],
+            },
+            "reason": "preview the separate change of the configuration root support rule before retrying the edit",
+        }));
+    }
+    Err(error)
 }
 
 /// Reads one source file relative to the source root: `None` when absent.
@@ -552,7 +568,7 @@ pub(crate) fn support_gate_facts<E>(
     enumerate: &mut GateEnumerate<'_, E>,
 ) -> Result<SupportGateFacts, E> {
     use unica_metadata_designer::support::{
-        parse_support_state_strict_bytes, support_root_uuid_from_bytes,
+        configuration_support_uuid, parse_support_state_strict_bytes, support_root_uuid_from_bytes,
     };
 
     let free = |marker, owner_rule| SupportGateFacts {
@@ -619,7 +635,11 @@ pub(crate) fn support_gate_facts<E>(
     let Some(bytes) = read(&owner_relative)? else {
         return Ok(free(marker, None));
     };
-    let owner_uuid = support_root_uuid_from_bytes(&bytes);
+    let owner_uuid = if owner == "Configuration" && source_kind == SourceSetKind::Configuration {
+        configuration_support_uuid(&bytes)
+    } else {
+        support_root_uuid_from_bytes(&bytes)
+    };
     let owner_uuid_missing = owner_uuid.is_none();
     if owner_uuid_missing {
         // An owner whose descriptor names no uuid has a rule nobody can look
@@ -702,9 +722,14 @@ pub(crate) fn support_gate_facts<E>(
     // the first `locked` record on the path closes the target.
     let path = support_records_on_path(at, &owner, &owner_relative, &bytes, &state, read)?;
     if support_rule == Some(0) {
+        let subject = if owner == "Configuration" {
+            "has its own vendor support rule `locked`"
+        } else {
+            "is a vendor object with the support rule `locked`"
+        };
         let mut facts = locked(
             SupportLockKind::ObjectLocked,
-            format!("`{source_set}:{owner}` is a vendor object with the support rule `locked`"),
+            format!("`{source_set}:{owner}` {subject}"),
         );
         facts.node_rule = path.node_rule;
         return Ok(facts);

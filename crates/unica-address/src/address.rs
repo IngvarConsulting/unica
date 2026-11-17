@@ -95,6 +95,7 @@ pub enum NodeKind {
     Group,
     Module,
     Method,
+    Binding,
     Body,
     Region,
     Interface,
@@ -224,6 +225,7 @@ const V13_KIND_SPELLINGS: &[V13KindSpelling] = &[
     spelling(NodeKind::Area, &["Область"]),
     spelling(NodeKind::Module, &["Модуль"]),
     spelling(NodeKind::Method, &["Метод"]),
+    spelling(NodeKind::Binding, &[]),
     spelling(NodeKind::Body, &["Тело"]),
     spelling(NodeKind::Region, &["ОбластьКода"]),
     spelling(NodeKind::Interface, &["Интерфейс"]),
@@ -282,6 +284,7 @@ impl NodeKind {
         !matches!(
             self,
             Self::Configuration
+                | Self::Binding
                 | Self::Interface
                 | Self::Metadata
                 | Self::Schedule
@@ -437,6 +440,7 @@ impl NodeKind {
             Self::Group => "Group",
             Self::Module => "Module",
             Self::Method => "Method",
+            Self::Binding => "Binding",
             Self::Body => "Body",
             Self::Region => "Region",
             Self::Interface => "Interface",

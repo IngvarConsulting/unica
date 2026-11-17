@@ -106,7 +106,7 @@ fn configuration_root_shows_the_properties_of_its_line() {
         let root = service.view(ViewRequest::new("main:Configuration").unwrap());
         let props = root.data.as_ref().unwrap()["props"].as_object().unwrap();
         assert_eq!(props["format"], format);
-        assert!(props["caption"].is_null(), "{format}");
+        assert!(props.get("caption").is_none(), "{format}");
         let properties = &props["properties"];
         let observed = [
             "mainWindowInterfaceVariant",
@@ -227,7 +227,7 @@ fn a_palette_color_is_shown_in_the_lines_that_have_it() {
         );
         let props = &color.data.as_ref().unwrap()["props"];
         assert_eq!(props["kind"], "PaletteColor", "{line}");
-        assert_eq!(props["Synonym"], "Проба", "{line}");
+        assert_eq!(props["Synonym"], "ru = 'Проба'", "{line}");
         assert_eq!(props["Color"], "#1A2B3C", "{line}");
         assert_eq!(props["Comment"], "all_kinds", "{line}");
     }
@@ -292,7 +292,7 @@ fn a_queue_is_shown_in_the_line_that_has_it() {
         );
         let data = queue.data.as_ref().unwrap();
         assert_eq!(data["props"]["kind"], "Queue", "{line}");
-        assert_eq!(data["props"]["Synonym"], "Проба", "{line}");
+        assert_eq!(data["props"]["Synonym"], "ru = 'Проба'", "{line}");
         assert_eq!(data["props"]["Transactioned"], true, "{line}");
         assert_eq!(data["props"]["ProcessingPortionSize"], 1000, "{line}");
         assert_eq!(data["props"]["AutoProcessing"], true, "{line}");
@@ -947,20 +947,23 @@ fn configuration_root_shows_the_form_slots_of_its_line() {
         let source_root = Arc::new(unica_workspace::read::open_source_directory(&source).unwrap());
         let authority = LogicalViewReadAuthority::new(
             &cancellation,
-            "main",
-            "actor-fixture-main",
+            "cf",
+            "actor-fixture-cf",
             SourceSetKind::Configuration,
             source_root,
             PlatformProfile::for_line(line).unwrap(),
         );
         let service = ViewService::new(authority, ViewCursorStore::default());
-        let root = service.view(ViewRequest::new("main:Configuration").unwrap());
+        let root = service.view(ViewRequest::new("cf:Configuration").unwrap());
         let forms = root.data.as_ref().unwrap()["props"]["properties"]["forms"]
             .as_object()
             .unwrap()
             .clone();
         assert_eq!(forms.len(), count, "{format}");
-        assert_eq!(forms["defaultSearchForm"], "CommonForm.MainA", "{format}");
+        assert_eq!(
+            forms["defaultSearchForm"], "cf:CommonForm.MainA",
+            "{format}"
+        );
         assert!(forms["defaultReportForm"].is_null(), "{format}");
         assert_eq!(forms.contains_key("auxiliaryReportForm"), count == 18);
     }

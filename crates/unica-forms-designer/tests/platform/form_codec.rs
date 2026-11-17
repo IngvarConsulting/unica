@@ -792,11 +792,32 @@ fn form_command_keys_are_written_like_the_platform_dump() {
             name,
             id,
             "\t\t",
-            Some("ru"),
+            FormTextMode::Legacy(Some("ru")),
         )
         .unwrap();
         assert_eq!(lines.join("\n"), expected, "{name}");
     }
+}
+
+#[test]
+fn legacy_form_compiler_preserves_nstr_looking_caption_as_literal_text() {
+    let definition = json!({"title": "en = 'Help'"});
+    let mut lines = Vec::new();
+    emit_form_command(
+        &mut lines,
+        definition.as_object().unwrap(),
+        "Help",
+        1,
+        "",
+        FormTextMode::Legacy(Some("ru")),
+    )
+    .unwrap();
+    let xml = lines.join("\n");
+    assert!(xml.contains("<v8:lang>ru</v8:lang>"), "{xml}");
+    assert!(
+        xml.contains("<v8:content>en = 'Help'</v8:content>"),
+        "{xml}"
+    );
 }
 
 /// The form compiler and `command.add` share one command writer:
@@ -817,7 +838,14 @@ fn form_compile_writes_the_same_command_block_as_form_command_add() {
         ..Default::default()
     };
     let mut lines = Vec::new();
-    emit_form_commands(&mut lines, Some(&commands), "\t", &mut ids, Some("ru")).unwrap();
+    emit_form_commands(
+        &mut lines,
+        Some(&commands),
+        "\t",
+        &mut ids,
+        FormTextMode::Legacy(Some("ru")),
+    )
+    .unwrap();
     assert_eq!(
         lines.join("\n"),
         format!("\t<Commands>\n{DUMP_SHAPED_REFRESH_COMMAND}\n\t</Commands>")
@@ -2236,7 +2264,7 @@ fn form_element_emitters_escape_enum_text_when_preflight_is_bypassed() {
         "Check",
         "\t",
         &mut ids,
-        Some("ru"),
+        FormTextMode::Legacy(Some("ru")),
     )
     .unwrap();
     let input = json!({"titleLocation": "</TitleLocation><Injected/>"});
@@ -2246,7 +2274,7 @@ fn form_element_emitters_escape_enum_text_when_preflight_is_bypassed() {
         "Input",
         "\t",
         &mut ids,
-        Some("ru"),
+        FormTextMode::Legacy(Some("ru")),
     )
     .unwrap();
     lines.push("</Form>".to_string());
@@ -3483,7 +3511,7 @@ fn english_companions_preserve_existing_names_and_repeat_without_changes() {
         &definition,
         Path::new("Form.xml"),
         root_start,
-        None,
+        FormTextMode::Legacy(None),
         ScriptVariant::English,
         None,
     )
@@ -3515,7 +3543,7 @@ fn english_companions_preserve_existing_names_and_repeat_without_changes() {
         &definition,
         Path::new("Form.xml"),
         root_start,
-        None,
+        FormTextMode::Legacy(None),
         ScriptVariant::English,
         None,
     )
@@ -3534,7 +3562,14 @@ fn english_table_companions_match_the_platform_dump_in_both_command_bar_modes() 
         }
         let mut lines = Vec::new();
         let mut context = FormEmissionContext::with_script_variant(ScriptVariant::English);
-        emit_form_element(&mut lines, &table, "", &mut context, None).unwrap();
+        emit_form_element(
+            &mut lines,
+            &table,
+            "",
+            &mut context,
+            FormTextMode::Legacy(None),
+        )
+        .unwrap();
         let fragment = format!("<Form {FORM_ROOT_NAMESPACES}>{}</Form>", lines.join("\n"));
         let doc = roxmltree::Document::parse(&fragment).unwrap();
         let names = doc

@@ -38,6 +38,12 @@ pub trait MetadataReadCodec: Send + Sync {
 
     /// Комментарий объекта вида `kind`. Комментария нет — `None`.
     fn descriptor_comment(&self, descriptor: &[u8], kind: &str) -> Result<Option<String>, String>;
+    fn descriptor_localized_property(
+        &self,
+        descriptor: &str,
+        kind: &str,
+        name: &str,
+    ) -> Result<Option<String>, String>;
 
     /// Код языка из дескриптора `Language`.
     fn language_code(&self, descriptor: &[u8]) -> Result<String, String>;
@@ -167,6 +173,9 @@ pub trait MetadataReadCodec: Send + Sync {
 
     /// UUID корневого объекта в дескрипторе: по нему ищется правило поддержки.
     fn support_root_uuid(&self, descriptor: &[u8]) -> Option<String>;
+
+    /// UUID самого корня конфигурации, чья запись поддержки проверяется.
+    fn configuration_support_uuid(&self, descriptor: &[u8]) -> Option<String>;
 
     /// Потоковый разбор `Ext/ParentConfigurations.bin`. Файл читает
     /// вызывающий и отдаёт его частями.

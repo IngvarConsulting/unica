@@ -10,8 +10,8 @@ use unica_source_contract::SourceSetKind;
 use unica_source_designer::layout::attached_resource_relative;
 
 /// Applies one DCS edit to `xml_text`. The default language of the source
-/// set is read only when the edit writes a plain-string multilingual value,
-/// so edits without such text do not depend on `Configuration.xml` (#1257).
+/// set is read only when adding a variant without an explicit presentation.
+/// A supplied NStr names its languages and needs no default language.
 fn apply_dcs_edit(
     staged: &mut ApplyProposal<'_>,
     authority: &dyn ApplySourceAuthority,
