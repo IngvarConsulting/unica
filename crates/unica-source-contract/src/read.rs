@@ -1,11 +1,23 @@
 //! Owned source observations and read-only ports. Opening ambient paths and
 //! every mutation remain responsibilities of the issuing workspace owner.
+use sha2::{Digest, Sha256};
 use std::ffi::{OsStr, OsString};
 use std::fmt::Debug;
 use std::io::{self, Read, Seek, SeekFrom};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
+
+pub const MODULE_UTF8_BOM: [u8; 3] = [0xef, 0xbb, 0xbf];
+
+/// Ревизия полного текста модуля. Начальные BOM исключаются, переводы строк
+/// учитываются побайтно.
+pub fn module_text_revision(mut bytes: &[u8]) -> String {
+    while let Some(content) = bytes.strip_prefix(&MODULE_UTF8_BOM) {
+        bytes = content;
+    }
+    format!("{:x}", Sha256::digest(bytes))
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct FileIdentity {
@@ -242,6 +254,17 @@ pub trait SourceDirectoryReadPort: Debug + Send + Sync {
         maximum_bytes: usize,
     ) -> io::Result<Vec<u8>>;
     fn relative_file_stamp(&self, relative: &Path) -> io::Result<Option<FileStamp>>;
+    /// The stamps of the regular files directly in the relative directory,
+    /// taken in one pass over it: the same facts [`Self::relative_file_stamp`]
+    /// gives each file, without opening it. `None` when the directory is
+    /// absent or the port does not list stamps this way; links and other
+    /// non-regular entries are left out.
+    fn relative_directory_file_stamps(
+        &self,
+        _relative: &Path,
+    ) -> io::Result<Option<Vec<(OsString, FileStamp)>>> {
+        Ok(None)
+    }
     fn open_relative_regular_nofollow(&self, relative: &Path) -> io::Result<ReadFile>;
     fn read_immediate_names_with_limit(
         &self,
@@ -311,6 +334,12 @@ impl SourceDirectory {
     }
     pub fn relative_file_stamp(&self, relative: &Path) -> io::Result<Option<FileStamp>> {
         self.0.relative_file_stamp(relative)
+    }
+    pub fn relative_directory_file_stamps(
+        &self,
+        relative: &Path,
+    ) -> io::Result<Option<Vec<(OsString, FileStamp)>>> {
+        self.0.relative_directory_file_stamps(relative)
     }
     pub fn open_relative_regular_nofollow(&self, relative: &Path) -> io::Result<ReadFile> {
         self.0.open_relative_regular_nofollow(relative)
@@ -459,8 +488,6 @@ pub trait SourceArtifactClassifier: Send + Sync {
         source_profile: crate::SourceProfile,
     ) -> Result<Arc<dyn BoundSourceArtifactPolicy>, String>;
 }
-
-pub mod full_dump;
 
 /// How deep a secure tree read may descend. The number of entries, files
 /// and bytes is not limited; file bytes are held one file at a time (#1119).

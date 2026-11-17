@@ -1478,14 +1478,20 @@ pub fn concurrent_registration_commits_serialize_before_preflight(
 
 pub fn symlink_targets_are_rejected(
     registrar: fn(&mut String, &str, &str) -> Result<bool, String>,
-) {
+) -> Result<(), crate::test_support::CapabilitySkip> {
     let root = temp_root("symlink");
     let real = root.join("real.xml");
     let link = root.join("Configuration.xml");
     fs::write(&real, configuration_bytes()).expect("fixture must be written");
     let symlink = testing::create_file_symlink_for_test(&real, &link)
         .expect("symlink fixtures exist on Unix and Windows");
-    symlink.expect("symlink must be created");
+    if symlink.is_err() {
+        fs::remove_dir_all(root).expect("temporary root must be removed");
+        return Err(crate::test_support::CapabilitySkip {
+            capability: "symlink",
+            reason: "the registration target of the test is a symbolic link",
+        });
+    }
     let mut transaction = CompileTransaction::new();
 
     let error = transaction
@@ -1495,4 +1501,5 @@ pub fn symlink_targets_are_rejected(
     assert!(error.contains("symbolic link"), "{error}");
     assert_eq!(fs::read(&real).unwrap(), configuration_bytes());
     fs::remove_dir_all(root).expect("temporary root must be removed");
+    Ok(())
 }

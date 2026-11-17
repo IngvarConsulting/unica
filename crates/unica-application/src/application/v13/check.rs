@@ -643,6 +643,16 @@ impl CheckDiagnostic {
         }
     }
 
+    /// An error that decides the verdict: the export format guard refuses to
+    /// read the sources, so no validator finding follows it.
+    pub fn error(code: impl Into<String>, message: &str) -> Self {
+        Self {
+            severity: "error".to_string(),
+            code: code.into(),
+            message: sanitize_message(message),
+        }
+    }
+
     pub fn severity(&self) -> &str {
         &self.severity
     }
@@ -719,6 +729,15 @@ impl NativeCheckOutcome {
     pub fn with_leading_diagnostic(mut self, diagnostic: CheckDiagnostic) -> Self {
         self.diagnostics.insert(0, diagnostic);
         self
+    }
+
+    /// A check that did not read the sources: its one diagnostic says why.
+    pub fn refused(diagnostic: CheckDiagnostic) -> Self {
+        Self {
+            ok: false,
+            diagnostics: vec![diagnostic],
+            unavailable: false,
+        }
     }
 
     pub fn unavailable(_detail: &str) -> Self {

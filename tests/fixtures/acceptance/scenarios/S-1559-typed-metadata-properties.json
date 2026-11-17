@@ -2,7 +2,7 @@
   "id": "S-1559-typed-metadata-properties",
   "issue": 1559,
   "area": "Метаданные",
-  "task": "Прочитать все шесть фактов #1559 из независимой XML-фикстуры: табличная часть → КодЯзыка → ПараметрыПрописи. Коллекция и детали сохраняют LineNumberLength/Use, Indexing/FullTextSearch/DataHistory, локализованный ToolTip ru/en, типы строк 10/200 переменной длины, synonym, required:false и адреса. Повреждение подсказки локально; чтение сохраняет исходники и разрешения attribute.set.",
+  "task": "Прочитать все шесть фактов #1559 из независимой XML-фикстуры: табличная часть → КодЯзыка → ПараметрыПрописи. Коллекция и детали сохраняют LineNumberLength/Use, Indexing/FullTextSearch/DataHistory, локализованный ToolTip ru/en, типы строк 10/200 переменной длины, synonym, required:false и адреса. Повреждение подсказки локально; чтение сохраняет исходники и разрешения attribute.set. Изменение и очистка ToolTip сохраняют исходный язык, синоним и соседний реквизит.",
   "workspace": "tests/fixtures/acceptance/catalog-attribute-tooltip",
   "wire": [
     {
@@ -27,31 +27,25 @@
           "eq": "ForItem"
         }
       ],
-      "fileAssertions": [
-        {
-          "kind": "sha256",
-          "path": "src/Catalogs/Damaged.xml",
-          "eq": "f92949846b1337c5fb30afa050ac0b3976e517400ca97992ac44870ca420a7b5"
-        },
-        {
-          "kind": "sha256",
-          "path": "src/Catalogs/Items.xml",
-          "eq": "8b4ad689ffd245abd664ec2cffdd812579c9f2bdd46ffa9c24a273caff8f300f"
-        },
-        {
-          "kind": "sha256",
-          "path": "src/Configuration.xml",
-          "eq": "38bf48a5b8eeaaf10825c7fe7bfc2a3528c195a796e96299be9552b917e732aa"
-        },
-        {
-          "kind": "sha256",
-          "path": "v8project.yaml",
-          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
-        }
-      ],
       "captures": {
         "section": {
           "pointer": "/data/items/0/at"
+        },
+        "unchanged1": {
+          "file": "src/Catalogs/Damaged.xml",
+          "kind": "sha256"
+        },
+        "unchanged2": {
+          "file": "src/Catalogs/Items.xml",
+          "kind": "sha256"
+        },
+        "unchanged3": {
+          "file": "src/Configuration.xml",
+          "kind": "sha256"
+        },
+        "unchanged4": {
+          "file": "v8project.yaml",
+          "kind": "sha256"
         }
       }
     },
@@ -85,22 +79,22 @@
         {
           "kind": "sha256",
           "path": "src/Catalogs/Damaged.xml",
-          "eq": "f92949846b1337c5fb30afa050ac0b3976e517400ca97992ac44870ca420a7b5"
+          "eq": "$capture.unchanged1"
         },
         {
           "kind": "sha256",
           "path": "src/Catalogs/Items.xml",
-          "eq": "8b4ad689ffd245abd664ec2cffdd812579c9f2bdd46ffa9c24a273caff8f300f"
+          "eq": "$capture.unchanged2"
         },
         {
           "kind": "sha256",
           "path": "src/Configuration.xml",
-          "eq": "38bf48a5b8eeaaf10825c7fe7bfc2a3528c195a796e96299be9552b917e732aa"
+          "eq": "$capture.unchanged3"
         },
         {
           "kind": "sha256",
           "path": "v8project.yaml",
-          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+          "eq": "$capture.unchanged4"
         }
       ],
       "captures": {
@@ -160,24 +154,15 @@
         },
         {
           "pointer": "/data/items/1/props/ToolTip",
-          "eq": [
-            {
-              "language": "ru",
-              "content": "Настройки представления суммы прописью"
-            },
-            {
-              "language": "en",
-              "content": "Amount spelling settings & presentation"
-            }
-          ]
+          "eq": "ru = 'Настройки представления суммы прописью'; en = 'Amount spelling settings & presentation'"
         },
         {
           "pointer": "/data/items/0/props/synonym",
-          "eq": "Код языка"
+          "eq": "ru = 'Код языка'"
         },
         {
           "pointer": "/data/items/1/props/synonym",
-          "eq": "Параметры прописи"
+          "eq": "ru = 'Параметры прописи'"
         },
         {
           "pointer": "/data/items/1/props/required",
@@ -192,22 +177,22 @@
         {
           "kind": "sha256",
           "path": "src/Catalogs/Damaged.xml",
-          "eq": "f92949846b1337c5fb30afa050ac0b3976e517400ca97992ac44870ca420a7b5"
+          "eq": "$capture.unchanged1"
         },
         {
           "kind": "sha256",
           "path": "src/Catalogs/Items.xml",
-          "eq": "8b4ad689ffd245abd664ec2cffdd812579c9f2bdd46ffa9c24a273caff8f300f"
+          "eq": "$capture.unchanged2"
         },
         {
           "kind": "sha256",
           "path": "src/Configuration.xml",
-          "eq": "38bf48a5b8eeaaf10825c7fe7bfc2a3528c195a796e96299be9552b917e732aa"
+          "eq": "$capture.unchanged3"
         },
         {
           "kind": "sha256",
           "path": "v8project.yaml",
-          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+          "eq": "$capture.unchanged4"
         }
       ],
       "captures": {
@@ -250,7 +235,7 @@
         },
         {
           "pointer": "/data/props/synonym",
-          "eq": "Код языка"
+          "eq": "ru = 'Код языка'"
         },
         {
           "pointer": "/data/props/type/variants/0/length",
@@ -277,22 +262,22 @@
         {
           "kind": "sha256",
           "path": "src/Catalogs/Damaged.xml",
-          "eq": "f92949846b1337c5fb30afa050ac0b3976e517400ca97992ac44870ca420a7b5"
+          "eq": "$capture.unchanged1"
         },
         {
           "kind": "sha256",
           "path": "src/Catalogs/Items.xml",
-          "eq": "8b4ad689ffd245abd664ec2cffdd812579c9f2bdd46ffa9c24a273caff8f300f"
+          "eq": "$capture.unchanged2"
         },
         {
           "kind": "sha256",
           "path": "src/Configuration.xml",
-          "eq": "38bf48a5b8eeaaf10825c7fe7bfc2a3528c195a796e96299be9552b917e732aa"
+          "eq": "$capture.unchanged3"
         },
         {
           "kind": "sha256",
           "path": "v8project.yaml",
-          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+          "eq": "$capture.unchanged4"
         }
       ]
     },
@@ -327,7 +312,7 @@
         },
         {
           "pointer": "/data/props/synonym",
-          "eq": "Параметры прописи"
+          "eq": "ru = 'Параметры прописи'"
         },
         {
           "pointer": "/data/props/type/variants/0/length",
@@ -339,38 +324,29 @@
         },
         {
           "pointer": "/data/props/ToolTip",
-          "eq": [
-            {
-              "language": "ru",
-              "content": "Настройки представления суммы прописью"
-            },
-            {
-              "language": "en",
-              "content": "Amount spelling settings & presentation"
-            }
-          ]
+          "eq": "ru = 'Настройки представления суммы прописью'; en = 'Amount spelling settings & presentation'"
         }
       ],
       "fileAssertions": [
         {
           "kind": "sha256",
           "path": "src/Catalogs/Damaged.xml",
-          "eq": "f92949846b1337c5fb30afa050ac0b3976e517400ca97992ac44870ca420a7b5"
+          "eq": "$capture.unchanged1"
         },
         {
           "kind": "sha256",
           "path": "src/Catalogs/Items.xml",
-          "eq": "8b4ad689ffd245abd664ec2cffdd812579c9f2bdd46ffa9c24a273caff8f300f"
+          "eq": "$capture.unchanged2"
         },
         {
           "kind": "sha256",
           "path": "src/Configuration.xml",
-          "eq": "38bf48a5b8eeaaf10825c7fe7bfc2a3528c195a796e96299be9552b917e732aa"
+          "eq": "$capture.unchanged3"
         },
         {
           "kind": "sha256",
           "path": "v8project.yaml",
-          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+          "eq": "$capture.unchanged4"
         }
       ]
     },
@@ -392,22 +368,22 @@
         {
           "kind": "sha256",
           "path": "src/Catalogs/Damaged.xml",
-          "eq": "f92949846b1337c5fb30afa050ac0b3976e517400ca97992ac44870ca420a7b5"
+          "eq": "$capture.unchanged1"
         },
         {
           "kind": "sha256",
           "path": "src/Catalogs/Items.xml",
-          "eq": "8b4ad689ffd245abd664ec2cffdd812579c9f2bdd46ffa9c24a273caff8f300f"
+          "eq": "$capture.unchanged2"
         },
         {
           "kind": "sha256",
           "path": "src/Configuration.xml",
-          "eq": "38bf48a5b8eeaaf10825c7fe7bfc2a3528c195a796e96299be9552b917e732aa"
+          "eq": "$capture.unchanged3"
         },
         {
           "kind": "sha256",
           "path": "v8project.yaml",
-          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+          "eq": "$capture.unchanged4"
         }
       ]
     },
@@ -437,22 +413,22 @@
         {
           "kind": "sha256",
           "path": "src/Catalogs/Damaged.xml",
-          "eq": "f92949846b1337c5fb30afa050ac0b3976e517400ca97992ac44870ca420a7b5"
+          "eq": "$capture.unchanged1"
         },
         {
           "kind": "sha256",
           "path": "src/Catalogs/Items.xml",
-          "eq": "8b4ad689ffd245abd664ec2cffdd812579c9f2bdd46ffa9c24a273caff8f300f"
+          "eq": "$capture.unchanged2"
         },
         {
           "kind": "sha256",
           "path": "src/Configuration.xml",
-          "eq": "38bf48a5b8eeaaf10825c7fe7bfc2a3528c195a796e96299be9552b917e732aa"
+          "eq": "$capture.unchanged3"
         },
         {
           "kind": "sha256",
           "path": "v8project.yaml",
-          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+          "eq": "$capture.unchanged4"
         }
       ],
       "captures": {
@@ -483,22 +459,22 @@
         {
           "kind": "sha256",
           "path": "src/Catalogs/Damaged.xml",
-          "eq": "f92949846b1337c5fb30afa050ac0b3976e517400ca97992ac44870ca420a7b5"
+          "eq": "$capture.unchanged1"
         },
         {
           "kind": "sha256",
           "path": "src/Catalogs/Items.xml",
-          "eq": "8b4ad689ffd245abd664ec2cffdd812579c9f2bdd46ffa9c24a273caff8f300f"
+          "eq": "$capture.unchanged2"
         },
         {
           "kind": "sha256",
           "path": "src/Configuration.xml",
-          "eq": "38bf48a5b8eeaaf10825c7fe7bfc2a3528c195a796e96299be9552b917e732aa"
+          "eq": "$capture.unchanged3"
         },
         {
           "kind": "sha256",
           "path": "v8project.yaml",
-          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+          "eq": "$capture.unchanged4"
         }
       ],
       "captures": {
@@ -561,22 +537,22 @@
         {
           "kind": "sha256",
           "path": "src/Catalogs/Damaged.xml",
-          "eq": "f92949846b1337c5fb30afa050ac0b3976e517400ca97992ac44870ca420a7b5"
+          "eq": "$capture.unchanged1"
         },
         {
           "kind": "sha256",
           "path": "src/Catalogs/Items.xml",
-          "eq": "8b4ad689ffd245abd664ec2cffdd812579c9f2bdd46ffa9c24a273caff8f300f"
+          "eq": "$capture.unchanged2"
         },
         {
           "kind": "sha256",
           "path": "src/Configuration.xml",
-          "eq": "38bf48a5b8eeaaf10825c7fe7bfc2a3528c195a796e96299be9552b917e732aa"
+          "eq": "$capture.unchanged3"
         },
         {
           "kind": "sha256",
           "path": "v8project.yaml",
-          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+          "eq": "$capture.unchanged4"
         }
       ],
       "captures": {
@@ -624,7 +600,7 @@
         },
         {
           "pointer": "/data/props/synonym",
-          "eq": "Параметры прописи"
+          "eq": "ru = 'Параметры прописи'"
         },
         {
           "pointer": "/data/props/type/variants/0/length",
@@ -635,22 +611,22 @@
         {
           "kind": "sha256",
           "path": "src/Catalogs/Damaged.xml",
-          "eq": "f92949846b1337c5fb30afa050ac0b3976e517400ca97992ac44870ca420a7b5"
+          "eq": "$capture.unchanged1"
         },
         {
           "kind": "sha256",
           "path": "src/Catalogs/Items.xml",
-          "eq": "8b4ad689ffd245abd664ec2cffdd812579c9f2bdd46ffa9c24a273caff8f300f"
+          "eq": "$capture.unchanged2"
         },
         {
           "kind": "sha256",
           "path": "src/Configuration.xml",
-          "eq": "38bf48a5b8eeaaf10825c7fe7bfc2a3528c195a796e96299be9552b917e732aa"
+          "eq": "$capture.unchanged3"
         },
         {
           "kind": "sha256",
           "path": "v8project.yaml",
-          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+          "eq": "$capture.unchanged4"
         }
       ]
     },
@@ -672,8 +648,8 @@
           ]
         },
         {
-          "pointer": "/data/props/contract/argsSchema/properties/values/properties/toolTip",
-          "absent": true
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/toolTip/type",
+          "eq": "string"
         },
         {
           "pointer": "/data/props/contract/argsSchema/properties/values/properties/fullTextSearch",
@@ -688,22 +664,161 @@
         {
           "kind": "sha256",
           "path": "src/Catalogs/Damaged.xml",
-          "eq": "f92949846b1337c5fb30afa050ac0b3976e517400ca97992ac44870ca420a7b5"
+          "eq": "$capture.unchanged1"
         },
         {
           "kind": "sha256",
           "path": "src/Catalogs/Items.xml",
-          "eq": "8b4ad689ffd245abd664ec2cffdd812579c9f2bdd46ffa9c24a273caff8f300f"
+          "eq": "$capture.unchanged2"
         },
         {
           "kind": "sha256",
           "path": "src/Configuration.xml",
-          "eq": "38bf48a5b8eeaaf10825c7fe7bfc2a3528c195a796e96299be9552b917e732aa"
+          "eq": "$capture.unchanged3"
         },
         {
           "kind": "sha256",
           "path": "v8project.yaml",
-          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+          "eq": "$capture.unchanged4"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Items.TabularSection.Представления.Attribute.ПараметрыПрописи",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "toolTip": "ru = 'Настройки представления суммы прописью'; en = 'Amount''s display'"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "toolTipUpdate": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ]
+    },
+    {
+      "tool": "unica.diff",
+      "args": {
+        "executionToken": "$capture.toolTipUpdate"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/chunks/0/content",
+          "contains": "Amount spelling settings &amp; presentation"
+        },
+        {
+          "pointer": "/data/chunks/1/content",
+          "contains": "Amount's display"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Items.xml",
+          "eq": "$capture.unchanged2"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.toolTipUpdate"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.TabularSection.Представления.Attribute.ПараметрыПрописи.Props.ToolTip"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/ToolTip",
+          "eq": "ru = 'Настройки представления суммы прописью'; en = 'Amount''s display'"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Items.TabularSection.Представления.Attribute.ПараметрыПрописи",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "toolTip": ""
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "toolTipClear": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.toolTipClear"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.TabularSection.Представления.Attribute.ПараметрыПрописи"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/ToolTip",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/synonym",
+          "eq": "ru = 'Параметры прописи'"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Damaged.xml",
+          "eq": "$capture.unchanged1"
         }
       ]
     }

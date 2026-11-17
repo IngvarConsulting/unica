@@ -1633,6 +1633,14 @@ pub(crate) mod medium_typed_add_publication_tests {
         let owner_before = fs::read(&owner).unwrap();
         let module_directory = fixture.root.join("src/CommonModules/Proof");
         let outside_directory = fixture.root.join("outside-handler");
+        // The link is made inside the hook, where a skip cannot return from
+        // the test: probe the privilege first.
+        let probe = fixture.root.join("link-probe");
+        if !crate::infrastructure::test_fixtures::dir_link_or_skip(fixture.root.join("src"), &probe)
+        {
+            return;
+        }
+        unica_workspace::test_support::remove_dir_symlink_for_test(&probe).unwrap();
         let module_directory_for_hook = module_directory.clone();
         let outside_directory_for_hook = outside_directory.clone();
         let request = unica_metadata::request::MetaAddRequest {
@@ -1712,12 +1720,12 @@ pub(crate) mod medium_typed_add_publication_tests {
         let module_directory = fixture.root.join("src/CommonModules/Proof");
         let outside_directory = fixture.root.join("outside-handler");
         fs::rename(&module_directory, &outside_directory).unwrap();
-        unica_workspace::test_support::create_dir_symlink_for_test(
+        if !crate::infrastructure::test_fixtures::dir_link_or_skip(
             &outside_directory,
             &module_directory,
-        )
-        .expect("directory symlinks are supported by the test platform")
-        .unwrap();
+        ) {
+            return;
+        }
 
         let failure = match prepared.publish(&cancellation) {
             Ok(_) => panic!("post-prepare handler symlink unexpectedly published metadata"),

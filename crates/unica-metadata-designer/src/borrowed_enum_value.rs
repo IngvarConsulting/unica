@@ -1,5 +1,6 @@
 //! Точечное заимствование EnumValue из описания перечисления-владельца.
 
+use crate::dialect::root_version;
 use roxmltree::{Document, Node};
 use std::collections::BTreeMap;
 
@@ -35,8 +36,13 @@ fn guid(value: &str) -> Result<(), String> {
 
 fn owner<'a, 'input>(document: &'a Document<'input>) -> Result<Node<'a, 'input>, String> {
     let root = document.root_element();
-    if !root.has_tag_name((MD, "MetaDataObject")) || root.attribute("version") != Some("2.20") {
-        return Err("Enum borrowing requires a 2.20 metadata descriptor".to_string());
+    if !root.has_tag_name((MD, "MetaDataObject"))
+        || !root_version::is_writable(root.attribute("version"))
+    {
+        return Err(format!(
+            "Enum borrowing requires a {} metadata descriptor",
+            root_version::writable_formats()
+        ));
     }
     let elements = root
         .children()
@@ -295,6 +301,10 @@ pub fn plan_borrow_enum_value(
         .trim_start_matches('\u{feff}');
     let parent_doc = Document::parse(parent_text).map_err(|e| e.to_string())?;
     let existing_doc = Document::parse(existing_text).map_err(|e| e.to_string())?;
+    let existing_doc_version = existing_doc
+        .root_element()
+        .attribute("version")
+        .unwrap_or_default();
     let parent_owner = owner(&parent_doc)?;
     let destination_owner = owner(&existing_doc)?;
     let source = selected(parent_owner, name)?;
@@ -400,9 +410,21 @@ pub fn plan_borrow_enum_value(
             "\t\t\t\t\t<ExtendedConfigurationObject>{}</ExtendedConfigurationObject>",
             unica_xml_format::text::escape_xml(source_uuid)
         ),
+    ]
+    .into_iter()
+    .chain(
+        crate::dialect::adopted_properties(
+            existing_doc_version,
+            crate::dialect::AdoptedNode::Object,
+        )
+        .iter()
+        .map(|property| format!("\t\t\t\t\t{property}")),
+    )
+    .chain([
         "\t\t\t\t</Properties>".to_string(),
         "\t\t\t</EnumValue>".to_string(),
-    ]
+    ])
+    .collect::<Vec<_>>()
     .join(newline);
     if let Some(offset) =
         unica_source_designer::registration::platform_child_object_insertion_offset(

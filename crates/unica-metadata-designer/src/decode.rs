@@ -19,6 +19,9 @@ pub struct MetadataDecodeContext<'a> {
     pub source_set_name: &'a str,
     /// The addressed source set's kind selects the root property profile.
     pub source_kind: unica_source_contract::SourceSetKind,
+    /// The platform line of the set's format: which root properties and
+    /// values exist (INV.SOURCE.PROFILE-CAPABILITIES).
+    pub source_line: Option<unica_source_contract::format_identity::PlatformLine>,
     pub registry: OperationRegistry,
 }
 impl MetadataDecodeContext<'_> {
@@ -98,11 +101,29 @@ pub enum DescriptorPropertyChanges {
     },
     DocumentNumerator(unica_metadata::document_numerator::DocumentNumeratorChanges),
     StyleItem(unica_metadata::property_input::StyleItemPropertyChanges),
+    PaletteColor(unica_metadata::property_input::PaletteColorPropertyChanges),
+    Queue(unica_metadata::property_input::QueuePropertyChanges),
     FunctionalOption(unica_metadata::property_input::FunctionalOptionPropertyChanges),
     Role(unica_metadata::property_input::RolePropertyChanges),
     WSReference(unica_metadata::property_input::WsReferencePropertyChanges),
     Subsystem(unica_metadata::property_input::SubsystemPropertyChanges),
     Configuration(unica_metadata::property_input::ConfigurationPropertyChanges),
+    FormDescriptor(FormDescriptorTarget),
+}
+
+/// The descriptor of a form `props.set` edits, with what proves it is
+/// registered: the owner registers the form, and the set root the owner.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FormDescriptorTarget {
+    /// The logical address of the form, `CommonForm.N` or `Kind.O.Form.F`.
+    pub form: String,
+    /// The owner descriptor that registers a form of an object; `None` for
+    /// a common form, which the set root registers.
+    pub owner_relative: Option<PathBuf>,
+    /// The kind and name the set root registers: the common form, or the
+    /// owner object.
+    pub registered: Option<(String, String)>,
+    pub values: unica_metadata::property_input::FormDescriptorPropertyChanges,
 }
 /// Where the caller wrote the fields of an addressed typed edit: the typed
 /// writer names them in its own request (`elements[0]`, `names[0]`, `scope`).
@@ -708,6 +729,11 @@ pub fn parse_template_set(
                     .at_path(location.clone())
             })?;
         }
+        if field == "synonym" {
+            unica_metadata::parse_nstr(text).map_err(|message| {
+                ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message).at_path(location.clone())
+            })?;
+        }
         check_input_field(values_shape, field, value, &location)?;
     }
     Ok(MetadataPlanKind::TemplateSet {
@@ -1071,9 +1097,10 @@ pub fn parse_properties(
         target.segments(),
         [root] if root.kind() == NodeKind::Configuration && root.name().is_none()
     ) {
-        PropertiesSite::root_of(binding.source_kind)
+        PropertiesSite::root_of(binding.source_kind, binding.source_line)
     } else {
         PropertiesSite::from_address(&target, binding.source_kind)
+            .map(|site| site.at_line(binding.source_line))
     }
     .ok_or_else(|| {
         ApplyPlanError::new(
@@ -1101,6 +1128,18 @@ pub fn parse_properties(
     // internal carrier key, not part of the published property arguments.
     let mut payload = args.clone();
     payload.remove("at");
+    if let Some((name, reason)) =
+        payload
+            .get("values")
+            .and_then(Value::as_object)
+            .and_then(|values| {
+                site.unwritten_refusal(values)
+                    .or_else(|| site.later_line_refusal(binding.source_set_name(), values))
+            })
+    {
+        return Err(ApplyPlanError::new(ApplyPlanErrorKind::BadValue, reason)
+            .at_path(format!("ops[{op_index}].args.values.{name}")));
+    }
     let contract = operation.contract(site);
     reject_unknown_input_args(
         operation.name(),
@@ -1109,6 +1148,28 @@ pub fn parse_properties(
         op_index,
         binding.registry,
     )?;
+    if let PropertiesSite::Metadata {
+        kind: MetadataKind::EventSubscription,
+        ..
+    } = site
+    {
+        if let Some(handler) = payload
+            .get_mut("values")
+            .and_then(|values| values.get_mut("Handler"))
+        {
+            if let Some(at) = handler.as_str().filter(|value| value.contains(':')) {
+                let value = unica_metadata::subscription_handler_platform_value(target.source_set(), at)
+                    .ok_or_else(|| {
+                        ApplyPlanError::new(
+                            ApplyPlanErrorKind::BadValue,
+                            "Handler must be a CommonModule method address in the subscription's source set",
+                        )
+                        .at_path(format!("ops[{op_index}].args.values.Handler"))
+                    })?;
+                *handler = Value::String(value);
+            }
+        }
+    }
     let intent = unica_metadata::property_input::decode_properties(
         operation,
         site,
@@ -1172,6 +1233,13 @@ pub fn parse_properties(
         unica_metadata::property_input::PropertiesIntent::StyleItem(value) => {
             ("StyleItems", DescriptorPropertyChanges::StyleItem(value))
         }
+        unica_metadata::property_input::PropertiesIntent::PaletteColor(values) => (
+            "PaletteColors",
+            DescriptorPropertyChanges::PaletteColor(values),
+        ),
+        unica_metadata::property_input::PropertiesIntent::Queue(values) => {
+            ("Queues", DescriptorPropertyChanges::Queue(values))
+        }
         unica_metadata::property_input::PropertiesIntent::Role(values) => {
             ("Roles", DescriptorPropertyChanges::Role(values))
         }
@@ -1188,6 +1256,9 @@ pub fn parse_properties(
                     .to_string(),
                 changes: DescriptorPropertyChanges::Subsystem(values),
             });
+        }
+        unica_metadata::property_input::PropertiesIntent::FormDescriptor(values) => {
+            return form_descriptor_properties(&target, values, op_index, binding);
         }
         unica_metadata::property_input::PropertiesIntent::Configuration(values) => {
             return Ok(MetadataPlanKind::DescriptorProperties {
@@ -1207,6 +1278,80 @@ pub fn parse_properties(
         changes,
     })
 }
+/// The plan of a form descriptor edit: its file by the platform layout of
+/// the set, and the registrations that make it a form of the set.
+fn form_descriptor_properties(
+    target: &QualifiedAddress,
+    values: unica_metadata::property_input::FormDescriptorPropertyChanges,
+    op_index: usize,
+    binding: &MetadataDecodeContext<'_>,
+) -> Result<MetadataPlanKind, ApplyPlanError> {
+    let at = || format!("ops[{op_index}].args.at");
+    let owner = target.form_metadata_owner().ok_or_else(|| {
+        ApplyPlanError::new(
+            ApplyPlanErrorKind::BadValue,
+            "address names no form descriptor",
+        )
+        .at_path(at())
+    })?;
+    let parts = owner
+        .segments()
+        .iter()
+        .map(|segment| {
+            segment
+                .name()
+                .map(|name| format!("{}.{name}", segment.kind().as_str()))
+                .ok_or_else(|| {
+                    ApplyPlanError::new(ApplyPlanErrorKind::BadValue, "form owner has no name")
+                        .at_path(at())
+                })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let form = parts.join(".");
+    let address = MetadataAddress::parse_logical(&form).map_err(|error| {
+        ApplyPlanError::new(ApplyPlanErrorKind::BadValue, error.to_string()).at_path(at())
+    })?;
+    let relative =
+        unica_source_designer::layout::metadata_descriptor_relative(&address, binding.source_kind)
+            .map_err(|message| {
+                ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message).at_path(at())
+            })?;
+    let segment = &owner.segments()[0];
+    let first = (
+        segment.kind().as_str().to_string(),
+        segment.name().expect("named form owner").to_string(),
+    );
+    let (owner_relative, registered) = if values.common {
+        (None, Some(first))
+    } else {
+        let owner_address = MetadataAddress::parse_logical(&parts[0]).map_err(|error| {
+            ApplyPlanError::new(ApplyPlanErrorKind::BadValue, error.to_string()).at_path(at())
+        })?;
+        let owner_relative = unica_source_designer::layout::metadata_descriptor_relative(
+            &owner_address,
+            binding.source_kind,
+        )
+        .map_err(|message| {
+            ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message).at_path(at())
+        })?;
+        (Some(owner_relative), Some(first))
+    };
+    let name = target.segments()[target.segments().len() - 2]
+        .name()
+        .expect("named form")
+        .to_string();
+    Ok(MetadataPlanKind::DescriptorProperties {
+        relative,
+        name,
+        changes: DescriptorPropertyChanges::FormDescriptor(FormDescriptorTarget {
+            form,
+            owner_relative,
+            registered,
+            values,
+        }),
+    })
+}
+
 /// `attribute.add` on the owner adds header attributes; on
 /// `Owner.Name.TabularSection.T` it adds attributes of that tabular section.
 pub fn parse_attribute_add(
@@ -1278,6 +1423,15 @@ pub fn parse_attribute_set(
             "attribute.set values must not repeat the target name",
         )
         .at_path(format!("ops[{op_index}].args.values.name")));
+    }
+    if values.contains_key("toolTip")
+        && binding.source_kind != unica_source_contract::SourceSetKind::Configuration
+    {
+        return Err(ApplyPlanError::new(
+            ApplyPlanErrorKind::BadValue,
+            "toolTip requires a catalog tabular-section attribute in an ordinary configuration",
+        )
+        .at_path(format!("ops[{op_index}].args.values.toolTip")));
     }
     let mut legacy = json!({"op": "update", "collection": "attributes", "elements": [values]});
     if let Some(section) = scope {
@@ -1457,6 +1611,31 @@ pub fn parse_addressed_member_change(
             format!("`{operation}` values must change at least one field"),
         )
         .at_path(format!("ops[{op_index}].args.values")));
+    }
+    // A property a later line adds is refused with the reason `can` marks
+    // it with (INV.SOURCE.PROFILE-CAPABILITIES).
+    if values.contains_key("color")
+        && !unica_source_contract::format_identity::member_property_exists(
+            binding.source_line,
+            member_kind.as_str(),
+            "Color",
+        )
+    {
+        let since = unica_source_contract::format_identity::member_property_since(
+            member_kind.as_str(),
+            "Color",
+        )
+        .expect("a later line adds the color");
+        return Err(ApplyPlanError::new(
+            ApplyPlanErrorKind::BadValue,
+            unica_metadata::descriptor_operations::later_line_reason(
+                "Property `Color`",
+                since,
+                binding.source_set_name(),
+                binding.source_line,
+            ),
+        )
+        .at_path(format!("ops[{op_index}].args.values.color")));
     }
     values.insert("name".to_string(), Value::String(name));
     Ok(addressed_edit(

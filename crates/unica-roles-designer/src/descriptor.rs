@@ -11,10 +11,14 @@ pub fn validate_role_edit_descriptor(raw: &[u8], role_name: &str) -> Result<(), 
     let root = document.root_element();
     if root.tag_name().name() != "MetaDataObject"
         || root.tag_name().namespace() != Some(ROLE_METADATA_NAMESPACE)
-        || unica_source_designer::roots::root_version_literal(&text, root).as_deref()
-            != Some("2.20")
+        || !crate::dialect::root_version::is_writable(
+            unica_source_designer::roots::root_version_literal(&text, root).as_deref(),
+        )
     {
-        return Err("role descriptor must use exact MDClasses format 2.20".to_string());
+        return Err(format!(
+            "role descriptor must use exact MDClasses format {}",
+            crate::dialect::root_version::writable_formats()
+        ));
     }
     let roles = direct_role_children(root, "Role", ROLE_METADATA_NAMESPACE);
     if roles.len() != 1 {
@@ -91,5 +95,51 @@ pub fn role_metadata_xml(
     lines.push("        </Properties>".to_string());
     lines.push("    </Role>".to_string());
     lines.push("</MetaDataObject>".to_string());
-    format!("{}\n", lines.join("\n"))
+    unica_source_designer::layout::declare_format_namespaces(
+        format!("{}\n", lines.join("\n")),
+        format_version,
+    )
+}
+
+#[cfg(test)]
+mod format_tests {
+    /// The namespaces a root declares, as roxmltree reads them.
+    fn declarations(xml: &str) -> Vec<(Option<String>, String)> {
+        let document = roxmltree::Document::parse(xml.trim_start_matches('\u{feff}')).unwrap();
+        let mut declared: Vec<_> = document
+            .root_element()
+            .namespaces()
+            .map(|namespace| {
+                (
+                    namespace.name().map(str::to_owned),
+                    namespace.uri().to_owned(),
+                )
+            })
+            .collect();
+        declared.sort();
+        declared
+    }
+
+    /// rule: INV.SOURCE.WRITABLE-PROFILE
+    #[test]
+    fn a_new_role_declares_the_namespaces_of_its_set_format() {
+        // The writer puts one declaration on a line; the platform, all on one.
+        let role = |version| super::role_metadata_xml("Role", "Role", "", version, "uuid", "ru");
+        for (version, corpus) in [
+            (
+                "2.20",
+                include_str!("../../../tests/fixtures/formats/platform_xml/2.20/all_kinds/src/Roles/SalesReader.xml"),
+            ),
+            (
+                "2.21",
+                include_str!("../../../tests/fixtures/formats/platform_xml/2.21/all_kinds/src/Roles/SalesReader.xml"),
+            ),
+            (
+                "2.22",
+                include_str!("../../../tests/fixtures/formats/platform_xml/2.22/all_kinds/src/Roles/SalesReader.xml"),
+            ),
+        ] {
+            assert_eq!(declarations(&role(version)), declarations(corpus), "{version}");
+        }
+    }
 }

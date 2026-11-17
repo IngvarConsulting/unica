@@ -82,6 +82,45 @@ fn form_item_bindings_reach_nested_collection_and_detail_with_exact_targets() {
     assert_eq!(fs::read(&path).unwrap(), before);
 }
 
+/// rule: INV.SOURCE.LOCALIZED-STRING-NSTR
+#[test]
+fn form_item_titles_expose_translations_even_when_first_matches_item_name() {
+    let fixture = RealReaderFixture::new();
+    install(
+        &fixture,
+        concat!(
+            r#"<LabelDecoration xmlns:v8="http://v8.1c.ru/8.1/data/core" name="Пример" id="9"><Title formatted="false">"#,
+            "<v8:item><v8:lang>ru</v8:lang><v8:content>Пример</v8:content></v8:item>",
+            "<v8:item><v8:lang>en</v8:lang><v8:content>'Example'</v8:content></v8:item>",
+            "<v8:item><v8:lang>de</v8:lang><v8:content/></v8:item>",
+            "</Title><ToolTip/></LabelDecoration>",
+        ),
+    );
+    let service = fixture.view_service();
+    let collection = format!("{FORM}.Item.Группа.Item");
+    let at = format!("{collection}.Пример");
+    let result = service.view(ViewRequest::new(&at).unwrap());
+    assert!(result.ok, "{result:?}");
+    let detail = result.data.unwrap();
+    let collection = service.view(ViewRequest::new(&collection).unwrap());
+    assert!(collection.ok, "{collection:?}");
+    let rows = collection.data.unwrap();
+    let row = rows["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["at"] == at)
+        .unwrap();
+    for node in [row, &detail] {
+        assert_eq!(node["title"], "Пример");
+        assert_eq!(
+            node["props"]["title"],
+            "ru = 'Пример'; en = '''Example'''; de = ''"
+        );
+        assert!(node["props"].get("tooltip").is_none());
+    }
+}
+
 #[test]
 fn form_item_bindings_distinguish_absence_empty_and_local_damage() {
     for (raw, damaged) in [
@@ -187,7 +226,10 @@ fn form_item_bindings_preserve_baseline_size_limits_with_both_targets() {
         service.view(ViewRequest::new(&at).unwrap())
     });
     assert!(whole.ok);
-    assert_eq!(whole.data.as_ref().unwrap()["props"]["title"], title);
+    assert_eq!(
+        whole.data.as_ref().unwrap()["props"]["title"],
+        format!("ru = '{title}'")
+    );
     assert_eq!(
         whole.data.as_ref().unwrap()["props"]["DataPath"],
         "Объект.Code"

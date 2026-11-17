@@ -56,7 +56,7 @@ impl ValueAtom {
     }
 }
 
-/// A plain string or an explicit language-to-text value.
+/// NStr or an explicitly typed scalar caption.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LocalizedText(pub Value);
 impl LocalizedText {
@@ -181,7 +181,7 @@ pub struct TotalPatch {
 #[derive(Debug, Clone)]
 pub struct VariantSpec {
     pub name: String,
-    pub title: LocalizedText,
+    pub title: Option<LocalizedText>,
 }
 #[derive(Debug, Clone)]
 pub struct QueryPatch {
@@ -315,6 +315,7 @@ type DecodeResult<T> = Result<T, ContractError>;
 
 fn invalid(path: &str, message: &str) -> ContractError {
     ContractError {
+        enum_value: false,
         path: path.into(),
         message: message.into(),
     }
@@ -359,7 +360,11 @@ impl<'a> DcsArgumentReader<'a> {
         self.object
             .get(key)
             .map(|value| {
-                shape.validate_field(value, &path)?;
+                shape.validate_field_with_formats(
+                    value,
+                    &path,
+                    crate::contracts::DCS_FORMAT_VALIDATORS,
+                )?;
                 convert(value, shape, &path)
             })
             .transpose()
@@ -694,9 +699,7 @@ fn total_patch(reader: &mut DcsArgumentReader<'_>) -> DecodeResult<TotalPatch> {
 }
 fn variant(reader: &mut DcsArgumentReader<'_>) -> DecodeResult<VariantSpec> {
     let name = reader.required_string("name")?;
-    let title = reader
-        .localized("title")?
-        .unwrap_or_else(|| LocalizedText(Value::String(name.clone())));
+    let title = reader.localized("title")?;
     Ok(VariantSpec { name, title })
 }
 fn string_meta(reader: &mut DcsArgumentReader<'_>) -> DecodeResult<SettingsMeta<String>> {
@@ -704,7 +707,13 @@ fn string_meta(reader: &mut DcsArgumentReader<'_>) -> DecodeResult<SettingsMeta<
         use_flag: reader.boolean("use")?,
         view_mode: reader.enumeration("viewMode", ViewMode::parse)?,
         user_setting_id: reader.string("userSettingID")?,
-        user_setting_presentation: reader.string("userSettingPresentation")?,
+        user_setting_presentation: reader.read("userSettingPresentation", |value, _, path| {
+            value
+                .as_str()
+                .or_else(|| value["value"].as_str())
+                .map(str::to_owned)
+                .ok_or_else(|| invalid(path, "scalar setting presentation must be text"))
+        })?,
     })
 }
 fn localized_meta(reader: &mut DcsArgumentReader<'_>) -> DecodeResult<SettingsMeta> {

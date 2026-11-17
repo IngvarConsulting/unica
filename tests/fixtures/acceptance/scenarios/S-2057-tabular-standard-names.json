@@ -6,6 +6,25 @@
   "workspace": "tests/fixtures/acceptance/workspace-tabular-attribute-copy",
   "wire": [
     {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Валюты"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "initialConfiguration": {
+          "file": "src/Configuration.xml",
+          "kind": "sha256"
+        },
+        "initialCatalog": {
+          "file": "src/Catalogs/Валюты.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
       "tool": "unica.apply",
       "args": {
         "at": "main:Catalog.Валюты",
@@ -56,6 +75,18 @@
         {
           "pointer": "/data",
           "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialConfiguration"
+        },
+        {
+          "path": "src/Catalogs/Валюты.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialCatalog"
         }
       ]
     },
@@ -111,6 +142,18 @@
           "pointer": "/data",
           "absent": true
         }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialConfiguration"
+        },
+        {
+          "path": "src/Catalogs/Валюты.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialCatalog"
+        }
       ]
     },
     {
@@ -164,6 +207,18 @@
         {
           "pointer": "/data",
           "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialConfiguration"
+        },
+        {
+          "path": "src/Catalogs/Валюты.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialCatalog"
         }
       ]
     },
@@ -236,12 +291,12 @@
         {
           "path": "src/Configuration.xml",
           "kind": "sha256",
-          "eq": "89e101dadd071ab8517f77c3f721db71a864db976a5a856d4de6335137a17813"
+          "eq": "$capture.initialConfiguration"
         },
         {
           "path": "src/Catalogs/Валюты.xml",
           "kind": "sha256",
-          "eq": "397fa990376bfe9c06321cf8d708cdaa4f38f13498bc1dc15b883a1f4834047a"
+          "eq": "$capture.initialCatalog"
         }
       ]
     },
@@ -291,12 +346,12 @@
         {
           "path": "src/Configuration.xml",
           "kind": "sha256",
-          "eq": "89e101dadd071ab8517f77c3f721db71a864db976a5a856d4de6335137a17813"
+          "eq": "$capture.initialConfiguration"
         },
         {
           "path": "src/Catalogs/Валюты.xml",
           "kind": "sha256",
-          "eq": "397fa990376bfe9c06321cf8d708cdaa4f38f13498bc1dc15b883a1f4834047a"
+          "eq": "$capture.initialCatalog"
         }
       ]
     },
@@ -346,12 +401,12 @@
         {
           "path": "src/Configuration.xml",
           "kind": "sha256",
-          "eq": "89e101dadd071ab8517f77c3f721db71a864db976a5a856d4de6335137a17813"
+          "eq": "$capture.initialConfiguration"
         },
         {
           "path": "src/Catalogs/Валюты.xml",
           "kind": "sha256",
-          "eq": "397fa990376bfe9c06321cf8d708cdaa4f38f13498bc1dc15b883a1f4834047a"
+          "eq": "$capture.initialCatalog"
         }
       ]
     },
@@ -424,12 +479,12 @@
         {
           "path": "src/Configuration.xml",
           "kind": "sha256",
-          "eq": "89e101dadd071ab8517f77c3f721db71a864db976a5a856d4de6335137a17813"
+          "eq": "$capture.initialConfiguration"
         },
         {
           "path": "src/Catalogs/Валюты.xml",
           "kind": "sha256",
-          "eq": "397fa990376bfe9c06321cf8d708cdaa4f38f13498bc1dc15b883a1f4834047a"
+          "eq": "$capture.initialCatalog"
         }
       ]
     },
@@ -479,12 +534,12 @@
         {
           "path": "src/Configuration.xml",
           "kind": "sha256",
-          "eq": "89e101dadd071ab8517f77c3f721db71a864db976a5a856d4de6335137a17813"
+          "eq": "$capture.initialConfiguration"
         },
         {
           "path": "src/Catalogs/Валюты.xml",
           "kind": "sha256",
-          "eq": "397fa990376bfe9c06321cf8d708cdaa4f38f13498bc1dc15b883a1f4834047a"
+          "eq": "$capture.initialCatalog"
         }
       ]
     },
@@ -534,12 +589,12 @@
         {
           "path": "src/Configuration.xml",
           "kind": "sha256",
-          "eq": "89e101dadd071ab8517f77c3f721db71a864db976a5a856d4de6335137a17813"
+          "eq": "$capture.initialConfiguration"
         },
         {
           "path": "src/Catalogs/Валюты.xml",
           "kind": "sha256",
-          "eq": "397fa990376bfe9c06321cf8d708cdaa4f38f13498bc1dc15b883a1f4834047a"
+          "eq": "$capture.initialCatalog"
         }
       ]
     },
@@ -612,12 +667,12 @@
         {
           "path": "src/Configuration.xml",
           "kind": "sha256",
-          "eq": "89e101dadd071ab8517f77c3f721db71a864db976a5a856d4de6335137a17813"
+          "eq": "$capture.initialConfiguration"
         },
         {
           "path": "src/Catalogs/Валюты.xml",
           "kind": "sha256",
-          "eq": "397fa990376bfe9c06321cf8d708cdaa4f38f13498bc1dc15b883a1f4834047a"
+          "eq": "$capture.initialCatalog"
         }
       ]
     },
@@ -667,12 +722,12 @@
         {
           "path": "src/Configuration.xml",
           "kind": "sha256",
-          "eq": "89e101dadd071ab8517f77c3f721db71a864db976a5a856d4de6335137a17813"
+          "eq": "$capture.initialConfiguration"
         },
         {
           "path": "src/Catalogs/Валюты.xml",
           "kind": "sha256",
-          "eq": "397fa990376bfe9c06321cf8d708cdaa4f38f13498bc1dc15b883a1f4834047a"
+          "eq": "$capture.initialCatalog"
         }
       ]
     },
@@ -722,12 +777,12 @@
         {
           "path": "src/Configuration.xml",
           "kind": "sha256",
-          "eq": "89e101dadd071ab8517f77c3f721db71a864db976a5a856d4de6335137a17813"
+          "eq": "$capture.initialConfiguration"
         },
         {
           "path": "src/Catalogs/Валюты.xml",
           "kind": "sha256",
-          "eq": "397fa990376bfe9c06321cf8d708cdaa4f38f13498bc1dc15b883a1f4834047a"
+          "eq": "$capture.initialCatalog"
         }
       ]
     },
@@ -800,12 +855,12 @@
         {
           "path": "src/Configuration.xml",
           "kind": "sha256",
-          "eq": "89e101dadd071ab8517f77c3f721db71a864db976a5a856d4de6335137a17813"
+          "eq": "$capture.initialConfiguration"
         },
         {
           "path": "src/Catalogs/Валюты.xml",
           "kind": "sha256",
-          "eq": "397fa990376bfe9c06321cf8d708cdaa4f38f13498bc1dc15b883a1f4834047a"
+          "eq": "$capture.initialCatalog"
         }
       ]
     },
@@ -855,12 +910,12 @@
         {
           "path": "src/Configuration.xml",
           "kind": "sha256",
-          "eq": "89e101dadd071ab8517f77c3f721db71a864db976a5a856d4de6335137a17813"
+          "eq": "$capture.initialConfiguration"
         },
         {
           "path": "src/Catalogs/Валюты.xml",
           "kind": "sha256",
-          "eq": "397fa990376bfe9c06321cf8d708cdaa4f38f13498bc1dc15b883a1f4834047a"
+          "eq": "$capture.initialCatalog"
         }
       ]
     },
@@ -910,12 +965,12 @@
         {
           "path": "src/Configuration.xml",
           "kind": "sha256",
-          "eq": "89e101dadd071ab8517f77c3f721db71a864db976a5a856d4de6335137a17813"
+          "eq": "$capture.initialConfiguration"
         },
         {
           "path": "src/Catalogs/Валюты.xml",
           "kind": "sha256",
-          "eq": "397fa990376bfe9c06321cf8d708cdaa4f38f13498bc1dc15b883a1f4834047a"
+          "eq": "$capture.initialCatalog"
         }
       ]
     },
@@ -970,12 +1025,12 @@
         {
           "path": "src/Configuration.xml",
           "kind": "sha256",
-          "eq": "89e101dadd071ab8517f77c3f721db71a864db976a5a856d4de6335137a17813"
+          "eq": "$capture.initialConfiguration"
         },
         {
           "path": "src/Catalogs/Валюты.xml",
           "kind": "sha256",
-          "eq": "397fa990376bfe9c06321cf8d708cdaa4f38f13498bc1dc15b883a1f4834047a"
+          "eq": "$capture.initialCatalog"
         }
       ]
     },
@@ -1018,12 +1073,12 @@
         {
           "path": "src/Configuration.xml",
           "kind": "sha256",
-          "eq": "89e101dadd071ab8517f77c3f721db71a864db976a5a856d4de6335137a17813"
+          "eq": "$capture.initialConfiguration"
         },
         {
           "path": "src/Catalogs/Валюты.xml",
           "kind": "sha256",
-          "eq": "397fa990376bfe9c06321cf8d708cdaa4f38f13498bc1dc15b883a1f4834047a"
+          "eq": "$capture.initialCatalog"
         }
       ]
     },
@@ -1066,12 +1121,12 @@
         {
           "path": "src/Configuration.xml",
           "kind": "sha256",
-          "eq": "89e101dadd071ab8517f77c3f721db71a864db976a5a856d4de6335137a17813"
+          "eq": "$capture.initialConfiguration"
         },
         {
           "path": "src/Catalogs/Валюты.xml",
           "kind": "sha256",
-          "eq": "397fa990376bfe9c06321cf8d708cdaa4f38f13498bc1dc15b883a1f4834047a"
+          "eq": "$capture.initialCatalog"
         }
       ]
     }

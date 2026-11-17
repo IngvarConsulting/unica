@@ -134,7 +134,10 @@ fn dcs_info_structure_properties(
             unica_xml_format::read::child_element_in_namespace(node, key, DCS_SETTINGS_NS)
         {
             let value = if key == "userSettingPresentation" {
-                serde_json::json!(dcs_info_multilang_or_inner_text(child))
+                let Some(text) = dcs_info_caption(child) else {
+                    continue;
+                };
+                text
             } else if key == "use" {
                 serde_json::json!(dcs_text_of(child) == "true")
             } else {
@@ -232,10 +235,9 @@ fn dcs_info_setting_rows(settings: roxmltree::Node<'_, '_>) -> Vec<serde_json::V
                         "lwsTitle",
                         DCS_SETTINGS_NS,
                     ) {
-                        row.insert(
-                            "title".into(),
-                            serde_json::json!(dcs_info_multilang_or_inner_text(title)),
-                        );
+                        if let Some(title) = dcs_info_caption(title) {
+                            row.insert("title".into(), title);
+                        }
                     }
                     if let Some(kind) = item.attribute((XML_SCHEMA_INSTANCE_NS, "type")) {
                         row.insert(
@@ -273,7 +275,35 @@ fn dcs_info_setting_rows(settings: roxmltree::Node<'_, '_>) -> Vec<serde_json::V
                                     )
                                 });
                         if let Some(child) = child {
-                            row.insert(output.into(), serde_json::json!(dcs_text_of(child)));
+                            let text_type = dcs_info_text_type(child);
+                            if let Some(kind) = text_type.filter(|_| output == "value") {
+                                row.insert("valueType".into(), serde_json::json!(kind));
+                            }
+                            let value = if output == "value" && dcs_info_nil(child) {
+                                Some(serde_json::Value::Null)
+                            } else if output == "userSettingPresentation" {
+                                dcs_info_caption(child)
+                            } else {
+                                match text_type {
+                                    Some("v8:LocalStringType") => {
+                                        dcs_info_nstr(child).map(serde_json::Value::String)
+                                    }
+                                    Some("xs:string") => {
+                                        dcs_info_plain_caption(child).map(serde_json::Value::String)
+                                    }
+                                    None if crate::primitives::has_value_type(
+                                        child,
+                                        "xs:string",
+                                    ) =>
+                                    {
+                                        None
+                                    }
+                                    _ => Some(serde_json::json!(dcs_text_of(child))),
+                                }
+                            };
+                            if let Some(value) = value {
+                                row.insert(output.into(), value);
+                            }
                         }
                     }
                     if kind == "ConditionalAppearance" {
@@ -404,8 +434,7 @@ fn dcs_info_data_set(data_set: roxmltree::Node<'_, '_>, ns_schema: &str) -> DcsI
                     title: unica_xml_format::read::child_element_in_namespace(
                         field, "title", ns_schema,
                     )
-                    .map(dcs_info_multilang_or_inner_text)
-                    .and_then(dcs_info_opt),
+                    .and_then(dcs_info_caption),
                 })
             })
             .collect(),
@@ -492,8 +521,7 @@ fn dcs_info_collect(
                 title: unica_xml_format::read::child_element_in_namespace(
                     field, "title", ns_schema,
                 )
-                .map(dcs_info_multilang_or_inner_text)
-                .and_then(dcs_info_opt),
+                .and_then(dcs_info_caption),
                 restrictions: dcs_info_restrictions(field, "useRestriction", ns_schema),
             })
         })
@@ -535,9 +563,26 @@ fn dcs_info_collect(
             )
             .map(dcs_info_compact_type)
             .and_then(dcs_info_opt),
+            title: unica_xml_format::read::child_element_in_namespace(param, "title", ns_schema)
+                .and_then(dcs_info_caption),
+            value_type: unica_xml_format::read::child_element_in_namespace(
+                param, "value", ns_schema,
+            )
+            .and_then(dcs_info_text_type),
             value: unica_xml_format::read::child_element_in_namespace(param, "value", ns_schema)
-                .map(dcs_info_param_default)
-                .and_then(dcs_info_opt),
+                .map_or(Some(serde_json::Value::Null), |node| {
+                    let text_type = dcs_info_text_type(node);
+                    if dcs_info_nil(node) && text_type.is_some() {
+                        return Some(serde_json::Value::Null);
+                    }
+                    let text = match text_type {
+                        Some("v8:LocalStringType") => dcs_info_nstr(node),
+                        Some("xs:string") => dcs_info_plain_caption(node),
+                        None if crate::primitives::has_value_type(node, "xs:string") => None,
+                        _ => dcs_info_opt(dcs_info_param_default(node)),
+                    };
+                    text.map(serde_json::Value::String)
+                }),
             expression: unica_xml_format::read::child_element_in_namespace(
                 param,
                 "expression",
@@ -584,8 +629,7 @@ fn dcs_info_collect(
                     "presentation",
                     ns_settings,
                 )
-                .map(dcs_info_multilang_or_inner_text)
-                .and_then(dcs_info_opt),
+                .and_then(dcs_info_caption),
                 // `dcs_info_selection_fields` descends into `selection`
                 // itself, so it takes the settings node, not the selection.
                 selection: settings
@@ -1815,6 +1859,83 @@ pub fn dcs_info_structure_item_type(item: roxmltree::Node<'_, '_>) -> &'static s
     .into_iter()
     .find_map(|(xml, kind)| xsi_type_matches(item, DCS_SETTINGS_NS, xml).then_some(kind))
     .unwrap_or("Unknown")
+}
+
+pub(super) fn dcs_info_nil(node: roxmltree::Node<'_, '_>) -> bool {
+    matches!(
+        node.attribute((XML_SCHEMA_INSTANCE_NS, "nil")),
+        Some("true" | "1")
+    )
+}
+
+fn dcs_info_text_type(node: roxmltree::Node<'_, '_>) -> Option<&'static str> {
+    if crate::primitives::has_value_type(node, "xs:string")
+        && (dcs_info_nil(node) || dcs_info_plain_caption(node).is_some())
+    {
+        return Some("xs:string");
+    }
+    crate::primitives::has_value_type(node, "v8:LocalStringType").then_some("v8:LocalStringType")
+}
+
+pub(super) fn dcs_info_plain_caption(node: roxmltree::Node<'_, '_>) -> Option<String> {
+    if dcs_info_nil(node) || node.children().any(|child| child.is_element()) {
+        return None;
+    }
+    let text = unica_xml_format::read::direct_text(node);
+    if crate::primitives::has_value_type(node, "xs:string") {
+        return Some(text);
+    }
+    // Older writers emitted this setting without the optional xsi:type.
+    (node.has_tag_name((DCS_SETTINGS_NS, "userSettingPresentation"))
+        && node.attribute((XML_SCHEMA_INSTANCE_NS, "type")).is_none()
+        && !text.trim().is_empty())
+    .then_some(text)
+}
+
+fn dcs_info_caption(node: roxmltree::Node<'_, '_>) -> Option<serde_json::Value> {
+    if let Some(value) = dcs_info_plain_caption(node) {
+        return Some(serde_json::json!({"valueType": "xs:string", "value": value}));
+    }
+    if node.attribute((XML_SCHEMA_INSTANCE_NS, "type")).is_some()
+        && !crate::primitives::has_value_type(node, "v8:LocalStringType")
+    {
+        return None;
+    }
+    dcs_info_nstr(node).map(serde_json::Value::String)
+}
+
+fn dcs_info_nstr(node: roxmltree::Node<'_, '_>) -> Option<String> {
+    use unica_xml_format::localized::DATA_CORE_NS;
+    use unica_xml_format::read::direct_text;
+
+    if dcs_info_nil(node) || !direct_text(node).trim().is_empty() {
+        return None;
+    }
+    let mut values = Vec::new();
+    for item in node.children().filter(|child| child.is_element()) {
+        if !item.has_tag_name((DATA_CORE_NS, "item")) || !direct_text(item).trim().is_empty() {
+            return None;
+        }
+        let mut fields = item.children().filter(|child| child.is_element());
+        let lang = fields.next()?;
+        let content = fields.next()?;
+        if !lang.has_tag_name((DATA_CORE_NS, "lang"))
+            || !content.has_tag_name((DATA_CORE_NS, "content"))
+            || fields.next().is_some()
+            || lang.children().any(|child| child.is_element())
+            || content.children().any(|child| child.is_element())
+        {
+            return None;
+        }
+        values.push(unica_metadata::LocalizedItem::new(
+            direct_text(lang).trim(),
+            direct_text(content),
+        ));
+    }
+    if values.is_empty() {
+        return None;
+    }
+    unica_metadata::format_nstr(&values)
 }
 
 pub fn dcs_info_multilang_or_inner_text(node: roxmltree::Node<'_, '_>) -> String {

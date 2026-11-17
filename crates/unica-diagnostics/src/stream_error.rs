@@ -7,6 +7,7 @@ pub enum StreamErrorKind {
     AfterDone,
     DuplicateStart,
     EmptyVersion,
+    CoordinateBase,
     FileBeforeStart,
     DuplicateFile,
     EmptyFileError,
@@ -41,6 +42,10 @@ const KINDS: &[(StreamErrorKind, &str)] = &[
     (AfterDone, "event appeared after terminal done"),
     (DuplicateStart, "duplicate start event"),
     (EmptyVersion, "start.version must be non-empty"),
+    (
+        CoordinateBase,
+        "start.line_base and start.column_base must be 0",
+    ),
     (FileBeforeStart, "file event appeared before start"),
     (DuplicateFile, "duplicate normalized file path"),
     (EmptyFileError, "file.error must be non-empty"),

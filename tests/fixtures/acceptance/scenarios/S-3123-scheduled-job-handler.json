@@ -1,0 +1,525 @@
+{
+  "id": "S-3123-scheduled-job-handler",
+  "issue": 3123,
+  "area": "Метаданные",
+  "task": "Открыть обработчик задания по адресу из ответа и сохранить расписание и исходники.",
+  "workspace": "tests/fixtures/acceptance/workspace-job-schedule",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ScheduledJob.MonthClose"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/implementationAt",
+          "eq": "main:CommonModule.MonthClose.Method.RunScheduled"
+        }
+      ],
+      "captures": {
+        "file0": {
+          "file": "other/CommonModules/MonthClose/Ext/Module.bsl",
+          "kind": "sha256"
+        },
+        "file1": {
+          "file": "other/CommonModules/MonthClose.xml",
+          "kind": "sha256"
+        },
+        "file2": {
+          "file": "other/Configuration.xml",
+          "kind": "sha256"
+        },
+        "file3": {
+          "file": "other/ScheduledJobs/Foreign.xml",
+          "kind": "sha256"
+        },
+        "file4": {
+          "file": "src/CommonModules/MonthClose/Ext/Module.bsl",
+          "kind": "sha256"
+        },
+        "file5": {
+          "file": "src/CommonModules/MonthClose.xml",
+          "kind": "sha256"
+        },
+        "file6": {
+          "file": "src/Configuration.xml",
+          "kind": "sha256"
+        },
+        "file7": {
+          "file": "src/ScheduledJobs/Foreign.xml",
+          "kind": "sha256"
+        },
+        "file8": {
+          "file": "src/ScheduledJobs/Market/Ext/Schedule.xml",
+          "kind": "sha256"
+        },
+        "file9": {
+          "file": "src/ScheduledJobs/Market.xml",
+          "kind": "sha256"
+        },
+        "file10": {
+          "file": "src/ScheduledJobs/Missing.xml",
+          "kind": "sha256"
+        },
+        "file11": {
+          "file": "src/ScheduledJobs/MonthClose/Ext/Schedule.xml",
+          "kind": "sha256"
+        },
+        "file12": {
+          "file": "src/ScheduledJobs/MonthClose.xml",
+          "kind": "sha256"
+        },
+        "file13": {
+          "file": "v8project.yaml",
+          "kind": "sha256"
+        },
+        "handler": {
+          "pointer": "/data/props/implementationAt"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.handler"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Method"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "eq": "$capture.file0",
+          "path": "other/CommonModules/MonthClose/Ext/Module.bsl"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file1",
+          "path": "other/CommonModules/MonthClose.xml"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file2",
+          "path": "other/Configuration.xml"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file3",
+          "path": "other/ScheduledJobs/Foreign.xml"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file4",
+          "path": "src/CommonModules/MonthClose/Ext/Module.bsl"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file5",
+          "path": "src/CommonModules/MonthClose.xml"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file6",
+          "path": "src/Configuration.xml"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file7",
+          "path": "src/ScheduledJobs/Foreign.xml"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file8",
+          "path": "src/ScheduledJobs/Market/Ext/Schedule.xml"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file9",
+          "path": "src/ScheduledJobs/Market.xml"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file10",
+          "path": "src/ScheduledJobs/Missing.xml"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file11",
+          "path": "src/ScheduledJobs/MonthClose/Ext/Schedule.xml"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file12",
+          "path": "src/ScheduledJobs/MonthClose.xml"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file13",
+          "path": "v8project.yaml"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ScheduledJob.MonthClose.Schedule"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/state",
+          "eq": "present"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "eq": "$capture.file0",
+          "path": "other/CommonModules/MonthClose/Ext/Module.bsl"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file1",
+          "path": "other/CommonModules/MonthClose.xml"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file2",
+          "path": "other/Configuration.xml"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file3",
+          "path": "other/ScheduledJobs/Foreign.xml"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file4",
+          "path": "src/CommonModules/MonthClose/Ext/Module.bsl"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file5",
+          "path": "src/CommonModules/MonthClose.xml"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file6",
+          "path": "src/Configuration.xml"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file7",
+          "path": "src/ScheduledJobs/Foreign.xml"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file8",
+          "path": "src/ScheduledJobs/Market/Ext/Schedule.xml"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file9",
+          "path": "src/ScheduledJobs/Market.xml"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file10",
+          "path": "src/ScheduledJobs/Missing.xml"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file11",
+          "path": "src/ScheduledJobs/MonthClose/Ext/Schedule.xml"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file12",
+          "path": "src/ScheduledJobs/MonthClose.xml"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file13",
+          "path": "v8project.yaml"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ScheduledJob.Foreign"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/implementationAt",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "eq": "$capture.file0",
+          "path": "other/CommonModules/MonthClose/Ext/Module.bsl"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file1",
+          "path": "other/CommonModules/MonthClose.xml"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file2",
+          "path": "other/Configuration.xml"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file3",
+          "path": "other/ScheduledJobs/Foreign.xml"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file4",
+          "path": "src/CommonModules/MonthClose/Ext/Module.bsl"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file5",
+          "path": "src/CommonModules/MonthClose.xml"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file6",
+          "path": "src/Configuration.xml"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file7",
+          "path": "src/ScheduledJobs/Foreign.xml"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file8",
+          "path": "src/ScheduledJobs/Market/Ext/Schedule.xml"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file9",
+          "path": "src/ScheduledJobs/Market.xml"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file10",
+          "path": "src/ScheduledJobs/Missing.xml"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file11",
+          "path": "src/ScheduledJobs/MonthClose/Ext/Schedule.xml"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file12",
+          "path": "src/ScheduledJobs/MonthClose.xml"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file13",
+          "path": "v8project.yaml"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "other:ScheduledJob.Foreign"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/implementationAt",
+          "eq": "other:CommonModule.MonthClose.Method.OtherOnly"
+        }
+      ],
+      "captures": {
+        "otherHandler": {
+          "pointer": "/data/props/implementationAt"
+        }
+      },
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "eq": "$capture.file0",
+          "path": "other/CommonModules/MonthClose/Ext/Module.bsl"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file1",
+          "path": "other/CommonModules/MonthClose.xml"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file2",
+          "path": "other/Configuration.xml"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file3",
+          "path": "other/ScheduledJobs/Foreign.xml"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file4",
+          "path": "src/CommonModules/MonthClose/Ext/Module.bsl"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file5",
+          "path": "src/CommonModules/MonthClose.xml"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file6",
+          "path": "src/Configuration.xml"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file7",
+          "path": "src/ScheduledJobs/Foreign.xml"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file8",
+          "path": "src/ScheduledJobs/Market/Ext/Schedule.xml"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file9",
+          "path": "src/ScheduledJobs/Market.xml"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file10",
+          "path": "src/ScheduledJobs/Missing.xml"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file11",
+          "path": "src/ScheduledJobs/MonthClose/Ext/Schedule.xml"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file12",
+          "path": "src/ScheduledJobs/MonthClose.xml"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file13",
+          "path": "v8project.yaml"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.otherHandler"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Method"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "eq": "$capture.file0",
+          "path": "other/CommonModules/MonthClose/Ext/Module.bsl"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file1",
+          "path": "other/CommonModules/MonthClose.xml"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file2",
+          "path": "other/Configuration.xml"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file3",
+          "path": "other/ScheduledJobs/Foreign.xml"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file4",
+          "path": "src/CommonModules/MonthClose/Ext/Module.bsl"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file5",
+          "path": "src/CommonModules/MonthClose.xml"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file6",
+          "path": "src/Configuration.xml"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file7",
+          "path": "src/ScheduledJobs/Foreign.xml"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file8",
+          "path": "src/ScheduledJobs/Market/Ext/Schedule.xml"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file9",
+          "path": "src/ScheduledJobs/Market.xml"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file10",
+          "path": "src/ScheduledJobs/Missing.xml"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file11",
+          "path": "src/ScheduledJobs/MonthClose/Ext/Schedule.xml"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file12",
+          "path": "src/ScheduledJobs/MonthClose.xml"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.file13",
+          "path": "v8project.yaml"
+        }
+      ]
+    }
+  ]
+}

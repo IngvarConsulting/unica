@@ -1,0 +1,56 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:ns1="http://v8.1c.ru/8.1/data/core" xmlns:tns="http://v8.1c.ru/8.3/data/entext" xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="http://v8.1c.ru/8.3/data/entext" attributeFormDefault="unqualified" elementFormDefault="qualified">
+	<xs:import namespace="http://v8.1c.ru/8.1/data/core"/>
+	<xs:simpleType name="AppearanceAreaType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Field"/>
+			<xs:enumeration value="Group"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ReportBuilderDimensionType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Items"/>
+			<xs:enumeration value="Hierarchy"/>
+			<xs:enumeration value="HierarchyOnly"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:complexType name="AppearanceArea">
+		<xs:sequence>
+			<xs:element name="item" type="tns:AppearanceAreaItem" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="AppearanceAreaItem">
+		<xs:sequence>
+			<xs:element name="fullPath" type="xs:string"/>
+			<xs:element name="presentation" type="xs:string"/>
+			<xs:element name="type" type="tns:AppearanceAreaType"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="AppearanceSetting">
+		<xs:sequence>
+			<xs:element name="item" type="tns:AppearanceSettingItem" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="AppearanceSettingItem">
+		<xs:sequence>
+			<xs:element name="title" type="xs:string"/>
+			<xs:element name="value"/>
+			<xs:element name="name" type="xs:string"/>
+			<xs:element name="use" type="xs:boolean"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="ConditionalAppearance">
+		<xs:sequence>
+			<xs:element name="item" type="tns:ConditionalAppearanceItem" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="ConditionalAppearanceItem">
+		<xs:sequence>
+			<xs:element name="title" type="xs:string"/>
+			<xs:element name="name" type="xs:string"/>
+			<xs:element name="use" type="xs:boolean"/>
+			<xs:element name="area" type="tns:AppearanceArea"/>
+			<xs:element name="appearance" type="tns:AppearanceSetting"/>
+		</xs:sequence>
+	</xs:complexType>
+</xs:schema>

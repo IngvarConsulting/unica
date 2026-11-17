@@ -1,0 +1,210 @@
+{
+  "id": "S-3095-settings-storage-read-forms",
+  "issue": 3095,
+  "area": "Чтение назначений форм хранилища настроек",
+  "workspace": "tests/fixtures/acceptance/workspace-settings-storage-read",
+  "task": "Прочитать из XML DefaultSaveForm и DefaultLoadForm как логические адреса форм; различить отсутствие, пустоту и повреждённый слот, сохранив другой. Исходники и файлы форм не изменяются. Дескрипторы производные от платформенного SettingsStorage XML 2.20 и существующей фикстуры формы.",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:SettingsStorage.Probe"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/DefaultSaveForm",
+          "eq": "main:SettingsStorage.Probe.Form.Save"
+        },
+        {
+          "pointer": "/data/props/DefaultLoadForm",
+          "eq": "main:SettingsStorage.Probe.Form.Load"
+        }
+      ],
+      "captures": {
+        "file0": {
+          "file": "src/Configuration.xml",
+          "kind": "sha256"
+        },
+        "file1": {
+          "file": "src/Languages/Русский.xml",
+          "kind": "sha256"
+        },
+        "file2": {
+          "file": "src/SettingsStorages/Absent.xml",
+          "kind": "sha256"
+        },
+        "file3": {
+          "file": "src/SettingsStorages/Damaged.xml",
+          "kind": "sha256"
+        },
+        "file4": {
+          "file": "src/SettingsStorages/Empty.xml",
+          "kind": "sha256"
+        },
+        "file5": {
+          "file": "src/SettingsStorages/Probe.xml",
+          "kind": "sha256"
+        },
+        "file6": {
+          "file": "src/SettingsStorages/Probe/Forms/Load.xml",
+          "kind": "sha256"
+        },
+        "file7": {
+          "file": "src/SettingsStorages/Probe/Forms/Load/Ext/Form.xml",
+          "kind": "sha256"
+        },
+        "file8": {
+          "file": "src/SettingsStorages/Probe/Forms/Load/Ext/Form/Module.bsl",
+          "kind": "sha256"
+        },
+        "file9": {
+          "file": "src/SettingsStorages/Probe/Forms/Save.xml",
+          "kind": "sha256"
+        },
+        "file10": {
+          "file": "src/SettingsStorages/Probe/Forms/Save/Ext/Form.xml",
+          "kind": "sha256"
+        },
+        "file11": {
+          "file": "src/SettingsStorages/Probe/Forms/Save/Ext/Form/Module.bsl",
+          "kind": "sha256"
+        },
+        "file12": {
+          "file": "v8project.yaml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:SettingsStorage.Empty"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/DefaultSaveForm",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/DefaultLoadForm",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:SettingsStorage.Absent"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/DefaultSaveForm",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/DefaultLoadForm",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:SettingsStorage.Damaged"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/DefaultSaveForm",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/DefaultLoadForm",
+          "eq": "main:SettingsStorage.Probe.Form.Load"
+        },
+        {
+          "pointer": "/data/limits/0",
+          "contains": "DefaultSaveForm"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.file0"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "$capture.file1"
+        },
+        {
+          "path": "src/SettingsStorages/Absent.xml",
+          "kind": "sha256",
+          "eq": "$capture.file2"
+        },
+        {
+          "path": "src/SettingsStorages/Damaged.xml",
+          "kind": "sha256",
+          "eq": "$capture.file3"
+        },
+        {
+          "path": "src/SettingsStorages/Empty.xml",
+          "kind": "sha256",
+          "eq": "$capture.file4"
+        },
+        {
+          "path": "src/SettingsStorages/Probe.xml",
+          "kind": "sha256",
+          "eq": "$capture.file5"
+        },
+        {
+          "path": "src/SettingsStorages/Probe/Forms/Load.xml",
+          "kind": "sha256",
+          "eq": "$capture.file6"
+        },
+        {
+          "path": "src/SettingsStorages/Probe/Forms/Load/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.file7"
+        },
+        {
+          "path": "src/SettingsStorages/Probe/Forms/Load/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.file8"
+        },
+        {
+          "path": "src/SettingsStorages/Probe/Forms/Save.xml",
+          "kind": "sha256",
+          "eq": "$capture.file9"
+        },
+        {
+          "path": "src/SettingsStorages/Probe/Forms/Save/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.file10"
+        },
+        {
+          "path": "src/SettingsStorages/Probe/Forms/Save/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.file11"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "$capture.file12"
+        }
+      ]
+    }
+  ]
+}

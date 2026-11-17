@@ -54,6 +54,18 @@ class EventDataEvidenceAuditTests(unittest.TestCase):
         _, calls = driver.audit(transcript())
         self.assertEqual(len(calls), 4)
 
+    def test_versioned_page_addresses_match_their_observed_build(self):
+        records = transcript()
+        for record in records[5::2]:
+            document = record["payload"]["result"]["structuredContent"]["data"]["document"]
+            document["documentId"] = document["documentId"].replace(
+                "platform-syntax-help:", "platform-syntax-help:8.3.27.2214:", 1,
+            )
+        driver.audit(records)
+        document["documentId"] = document["documentId"].replace("8.3.27.2214", "8.3.27.2222")
+        with self.assertRaisesRegex(ValueError, "open the event"):
+            driver.audit(records)
+
     def test_literal_body_content_is_read_without_structured_content(self):
         records = transcript()
         original = records[3]["payload"]["result"].pop("structuredContent")

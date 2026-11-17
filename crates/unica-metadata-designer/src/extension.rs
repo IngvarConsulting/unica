@@ -1,5 +1,6 @@
 //! Existing extension Designer algorithms; publication stays with trusted composition.
 use crate::configuration::*;
+use crate::dialect::root_version::{self, RootVersionReport};
 use crate::property_states::{
     cfe_patch_direct_md_child, cfe_patch_exact_md_child, cfe_patch_precondition_error,
 };
@@ -14,12 +15,7 @@ use unica_metadata::extension::*;
 use unica_source_contract::discovery::ProjectDiscoveryRead;
 use unica_source_contract::proposal::TrackedSourceProposal;
 use unica_source_designer::configuration_layout::*;
-use unica_source_designer::format_profile::{
-    classify_root_version, FormatCompatibility, ACTIVE_FORMAT_PROFILE,
-};
-use unica_source_designer::read::{
-    path_exists, path_is_dir, read_bytes, read_string, read_utf8_sig,
-};
+use unica_source_designer::read::{path_exists, path_is_dir, read_string, read_utf8_sig};
 use unica_source_designer::roots::root_version_literal;
 use unica_xml_format::text::{
     cfe_borrow_ensure_namespace_declaration, cfe_borrow_find_start_tag, cfe_borrow_start_tag_at,
@@ -385,7 +381,7 @@ pub fn cfe_borrow_object_xml(
     lines.push("<?xml version=\"1.0\" encoding=\"UTF-8\"?>".to_string());
     lines.push(format!(
         "<MetaDataObject {} version=\"{}\">",
-        cfe_borrow_xmlns_decl(),
+        cfe_borrow_xmlns_decl(format_version),
         unica_xml_format::text::escape_xml(format_version)
     ));
     lines.push(format!(
@@ -410,6 +406,16 @@ pub fn cfe_borrow_object_xml(
         "\t\t\t<ExtendedConfigurationObject>{}</ExtendedConfigurationObject>",
         unica_xml_format::text::escape_xml(source_uuid)
     ));
+    for property in
+        crate::dialect::adopted_properties(format_version, crate::dialect::AdoptedNode::Object)
+    {
+        lines.push(format!("\t\t\t{property}"));
+    }
+    if type_name == "Document" {
+        // A borrowed document names its own register records, empty when
+        // borrowed, as 8.3.27 and 8.5 export it (#2996).
+        lines.push("\t\t\t<RegisterRecords/>".to_string());
+    }
     if type_name == "CommonModule" {
         for prop_name in [
             "Global",
@@ -434,6 +440,28 @@ pub fn cfe_borrow_object_xml(
             "\t\t\t<ReturnValuesReuse>{}</ReturnValuesReuse>",
             unica_xml_format::text::escape_xml(&return_values_reuse)
         ));
+    }
+    if type_name == "CommonTemplate" {
+        // The kind of the template is the parent's; 8.3.27 and 8.5.4 export it.
+        if let Some(template_type) = source_props
+            .and_then(|props| unica_xml_format::read::child_direct_text(props, "TemplateType"))
+        {
+            lines.push(format!(
+                "\t\t\t<TemplateType>{}</TemplateType>",
+                unica_xml_format::text::escape_xml(&template_type)
+            ));
+        }
+    }
+    if type_name == "Subsystem" {
+        // A borrowed subsystem starts with no content of its own.
+        lines.push("\t\t\t<Content/>".to_string());
+    }
+    if matches!(type_name, "CommonForm" | "CommonTemplate") {
+        for property in
+            crate::dialect::adopted_properties(format_version, crate::dialect::AdoptedNode::Content)
+        {
+            lines.push(format!("\t\t\t{property}"));
+        }
     }
     if type_name == "DefinedType" {
         if let Some(type_xml) = source_props
@@ -464,10 +492,17 @@ pub fn cfe_borrow_internal_info_xml(
             "Type '{type_name}' has no proven cfe.borrow InternalInfo profile for platform 1C 8.3.27"
         )
     })?;
-    if types.is_empty() {
+    let extended = cfe_borrow_extended_property(type_name);
+    if types.is_empty() && extended.is_none() {
         return Ok(format!("{indent}<InternalInfo/>"));
     }
     let mut lines = vec![format!("{indent}<InternalInfo>")];
+    if let Some(property) = extended {
+        lines.push(format!("{indent}\t<xr:PropertyState>"));
+        lines.push(format!("{indent}\t\t<xr:Property>{property}</xr:Property>"));
+        lines.push(format!("{indent}\t\t<xr:State>Extended</xr:State>"));
+        lines.push(format!("{indent}\t</xr:PropertyState>"));
+    }
     if type_name == "ExchangePlan" {
         lines.push(format!(
             "{indent}\t<xr:ThisNode>{}</xr:ThisNode>",
@@ -488,6 +523,19 @@ pub fn cfe_borrow_internal_info_xml(
     }
     lines.push(format!("{indent}</InternalInfo>"));
     Ok(lines.join("\n"))
+}
+
+/// The property a borrowed object of `type_name` extends from the moment it
+/// is borrowed: 8.3.27 and 8.5.4 export it as `Extended` in `InternalInfo`
+/// of a borrowed common form, role and subsystem
+/// (`tests/fixtures/formats/platform_xml/*/cfe_borrow_kinds/`).
+pub(crate) fn cfe_borrow_extended_property(type_name: &str) -> Option<&'static str> {
+    match type_name {
+        "CommonForm" => Some("Form"),
+        "Role" => Some("Rights"),
+        "Subsystem" => Some("CommandInterface"),
+        _ => None,
+    }
 }
 
 pub fn cfe_borrow_generated_types(
@@ -761,16 +809,25 @@ pub fn cfe_borrow_merge_resolved_into_object(
 ) -> Result<(), String> {
     let mut object_text = write_plan.read_utf8_sig(object_file)?;
     let existing_names = cfe_borrow_existing_names(&object_text);
+    let format_version = cfe_borrow_descriptor_version(&object_text)?;
     let mut child_xml = Vec::<String>::new();
     for attr in &resolved.attributes {
         if !existing_names.contains(&attr.name) {
-            child_xml.push(cfe_borrow_adopted_attribute_xml(attr, "\t\t\t", fresh_uuid));
+            child_xml.push(cfe_borrow_adopted_attribute_xml(
+                attr,
+                "\t\t\t",
+                &format_version,
+                fresh_uuid,
+            ));
         }
     }
     for section in &resolved.tabular_sections {
         if !existing_names.contains(&section.name) {
             child_xml.push(cfe_borrow_adopted_tabular_section_xml(
-                section, "\t\t\t", fresh_uuid,
+                section,
+                "\t\t\t",
+                &format_version,
+                fresh_uuid,
             ));
         }
     }
@@ -814,9 +871,30 @@ pub fn cfe_borrow_insert_child_objects(
     Err("Cannot merge attributes: <ChildObjects> not found".to_string())
 }
 
+/// The export format a borrowed descriptor records in its root.
+fn cfe_borrow_descriptor_version(text: &str) -> Result<String, String> {
+    let document = roxmltree::Document::parse(text.trim_start_matches('\u{feff}'))
+        .map_err(|error| format!("Borrowed descriptor is not well formed: {error}"))?;
+    document
+        .root_element()
+        .attribute("version")
+        .map(str::to_string)
+        .ok_or_else(|| "Borrowed descriptor has no version".to_string())
+}
+
+/// The properties a borrowed member of export `format_version` writes after
+/// its parent link, at `indent`.
+fn cfe_borrow_adopted_lines(format_version: &str, indent: &str) -> Vec<String> {
+    crate::dialect::adopted_properties(format_version, crate::dialect::AdoptedNode::Object)
+        .iter()
+        .map(|property| format!("{indent}{property}"))
+        .collect()
+}
+
 pub fn cfe_borrow_adopted_attribute_xml(
     attr: &CfeBorrowSourceAttribute,
     indent: &str,
+    format_version: &str,
     fresh_uuid: fn() -> String,
 ) -> String {
     let mut lines = vec![
@@ -834,6 +912,10 @@ pub fn cfe_borrow_adopted_attribute_xml(
             unica_xml_format::text::escape_xml(&attr.source_uuid)
         ),
     ];
+    lines.extend(cfe_borrow_adopted_lines(
+        format_version,
+        &format!("{indent}\t\t"),
+    ));
     if !attr.type_xml.is_empty() {
         lines.push(format!("{indent}\t\t{}", attr.type_xml));
     }
@@ -845,6 +927,7 @@ pub fn cfe_borrow_adopted_attribute_xml(
 pub fn cfe_borrow_adopted_tabular_section_xml(
     section: &CfeBorrowSourceTabularSection,
     indent: &str,
+    format_version: &str,
     fresh_uuid: fn() -> String,
 ) -> String {
     let mut lines = vec![format!(
@@ -886,6 +969,10 @@ pub fn cfe_borrow_adopted_tabular_section_xml(
         "{indent}\t\t<ExtendedConfigurationObject>{}</ExtendedConfigurationObject>",
         unica_xml_format::text::escape_xml(&section.source_uuid)
     ));
+    lines.extend(cfe_borrow_adopted_lines(
+        format_version,
+        &format!("{indent}\t\t"),
+    ));
     lines.push(format!("{indent}\t</Properties>"));
     if section.attributes.is_empty() {
         lines.push(format!("{indent}\t<ChildObjects/>"));
@@ -895,6 +982,7 @@ pub fn cfe_borrow_adopted_tabular_section_xml(
             lines.push(cfe_borrow_adopted_attribute_xml(
                 attr,
                 &format!("{indent}\t\t"),
+                format_version,
                 fresh_uuid,
             ));
         }
@@ -1253,7 +1341,8 @@ pub fn cfe_borrow_form_shell(
             source_form_content
         }
     };
-    let borrowed_form_xml = cfe_borrow_form_xml(
+    let borrowed_form_xml = cfe_borrow_form_xml_in(
+        format_version,
         reader,
         &source_form_content,
         cfg_dir,
@@ -1291,12 +1380,16 @@ pub fn cfe_borrow_form_metadata_xml(
     format_version: &str,
 ) -> String {
     format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<MetaDataObject {} version=\"{}\">\n\t<Form uuid=\"{}\">\n\t\t<InternalInfo>\n\t\t\t<xr:PropertyState>\n\t\t\t\t<xr:Property>Form</xr:Property>\n\t\t\t\t<xr:State>Extended</xr:State>\n\t\t\t</xr:PropertyState>\n\t\t</InternalInfo>\n\t\t<Properties>\n\t\t\t<ObjectBelonging>Adopted</ObjectBelonging>\n\t\t\t<Name>{}</Name>\n\t\t\t<Comment/>\n\t\t\t<ExtendedConfigurationObject>{}</ExtendedConfigurationObject>\n\t\t\t<FormType>Managed</FormType>\n\t\t</Properties>\n\t</Form>\n</MetaDataObject>",
-        cfe_borrow_xmlns_decl(),
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<MetaDataObject {} version=\"{}\">\n\t<Form uuid=\"{}\">\n\t\t<InternalInfo>\n\t\t\t<xr:PropertyState>\n\t\t\t\t<xr:Property>Form</xr:Property>\n\t\t\t\t<xr:State>Extended</xr:State>\n\t\t\t</xr:PropertyState>\n\t\t</InternalInfo>\n\t\t<Properties>\n\t\t\t<ObjectBelonging>Adopted</ObjectBelonging>\n\t\t\t<Name>{}</Name>\n\t\t\t<Comment/>\n\t\t\t<ExtendedConfigurationObject>{}</ExtendedConfigurationObject>\n{}\t\t\t<FormType>Managed</FormType>\n\t\t</Properties>\n\t</Form>\n</MetaDataObject>",
+        cfe_borrow_xmlns_decl(format_version),
         unica_xml_format::text::escape_xml(format_version),
         unica_xml_format::text::escape_xml(wrapper_uuid),
         unica_xml_format::text::escape_xml(form_name),
-        unica_xml_format::text::escape_xml(source_uuid)
+        unica_xml_format::text::escape_xml(source_uuid),
+        crate::dialect::adopted_properties(format_version, crate::dialect::AdoptedNode::Form)
+            .iter()
+            .map(|property| format!("\t\t\t{property}\n"))
+            .collect::<String>()
     )
 }
 
@@ -1309,20 +1402,49 @@ pub fn cfe_borrow_form_xml(
     borrow_main_attr: bool,
     log: &mut CfeBorrowLog,
 ) -> String {
+    cfe_borrow_form_xml_in(
+        root_version::writable(),
+        reader,
+        source_form_content,
+        cfg_dir,
+        type_name,
+        object_name,
+        borrow_main_attr,
+        log,
+    )
+}
+
+/// The borrowed form in the export format `version` of the extension.
+#[allow(clippy::too_many_arguments)]
+pub fn cfe_borrow_form_xml_in(
+    version: &str,
+    reader: &dyn ProjectDiscoveryRead,
+    source_form_content: &str,
+    cfg_dir: &Path,
+    type_name: &str,
+    object_name: &str,
+    borrow_main_attr: bool,
+    log: &mut CfeBorrowLog,
+) -> String {
     let source = source_form_content.trim_start_matches('\u{feff}');
-    let version = ACTIVE_FORMAT_PROFILE.export_format.to_string();
     let blocks = cfe_borrow_form_top_level_blocks(source);
     if blocks.is_empty() {
-        return cfe_borrow_form_xml_fallback(source, type_name, object_name, borrow_main_attr);
+        return cfe_borrow_form_xml_fallback(
+            source,
+            type_name,
+            object_name,
+            borrow_main_attr,
+            version,
+        );
     }
 
     let xml_decl = cfe_borrow_xml_declaration(source)
         .unwrap_or("<?xml version=\"1.0\" encoding=\"UTF-8\"?>")
         .to_string();
-    let form_tag = cfe_borrow_form_open_tag(source).unwrap_or_else(|| {
+    let form_tag = cfe_borrow_form_open_tag(source, version).unwrap_or_else(|| {
         format!(
             "<Form version=\"{}\">",
-            unica_xml_format::text::escape_xml(&version)
+            unica_xml_format::text::escape_xml(version)
         )
     });
 
@@ -1480,7 +1602,7 @@ pub fn cfe_borrow_form_xml(
     parts.push("\r\n".to_string());
     parts.push(format!(
         "\t<BaseForm version=\"{}\">\r\n",
-        unica_xml_format::text::escape_xml(&version)
+        unica_xml_format::text::escape_xml(version)
     ));
     for prop_xml in &form_props {
         parts.push(format!("\t\t{prop_xml}\r\n"));
@@ -1702,9 +1824,9 @@ pub fn cfe_borrow_form_xml_fallback(
     type_name: &str,
     object_name: &str,
     borrow_main_attr: bool,
+    version: &str,
 ) -> String {
-    let version = ACTIVE_FORMAT_PROFILE.export_format.to_string();
-    let mut content = cfe_borrow_normalize_form_root_version(source);
+    let mut content = cfe_borrow_normalize_form_root_version(source, version);
     if !borrow_main_attr {
         content = cfe_borrow_strip_simple_data_paths(&content);
     }
@@ -1730,7 +1852,7 @@ pub fn cfe_borrow_form_xml_fallback(
             "</Form>",
             &format!(
                 "\t<BaseForm version=\"{}\">\n\t\t{}\n\t</BaseForm>\n</Form>",
-                unica_xml_format::text::escape_xml(&version),
+                unica_xml_format::text::escape_xml(version),
                 main_attr
             ),
             1,
@@ -1757,25 +1879,27 @@ pub fn cfe_borrow_xml_declaration(source: &str) -> Option<&str> {
     }
 }
 
-pub fn cfe_borrow_form_open_tag(source: &str) -> Option<String> {
+pub fn cfe_borrow_form_open_tag(source: &str, version: &str) -> Option<String> {
     let start = cfe_borrow_find_start_tag(source, "Form", 0)?;
     let end = source[start..].find('>')? + start + 1;
-    Some(cfe_borrow_normalize_form_open_tag(&source[start..end]))
+    Some(cfe_borrow_normalize_form_open_tag(
+        &source[start..end],
+        version,
+    ))
 }
 
-pub fn cfe_borrow_normalize_form_root_version(source: &str) -> String {
+pub fn cfe_borrow_normalize_form_root_version(source: &str, version: &str) -> String {
     let Some(start) = cfe_borrow_find_start_tag(source, "Form", 0) else {
         return source.to_string();
     };
     let Some(end) = source[start..].find('>').map(|offset| start + offset + 1) else {
         return source.to_string();
     };
-    let normalized = cfe_borrow_normalize_form_open_tag(&source[start..end]);
+    let normalized = cfe_borrow_normalize_form_open_tag(&source[start..end], version);
     format!("{}{}{}", &source[..start], normalized, &source[end..])
 }
 
-pub fn cfe_borrow_normalize_form_open_tag(open_tag: &str) -> String {
-    let active = ACTIVE_FORMAT_PROFILE.export_format;
+pub fn cfe_borrow_normalize_form_open_tag(open_tag: &str, active: &str) -> String {
     let normalized = match cfe_borrow_version_value_range(open_tag) {
         Ok(Some((value_start, value_end))) => format!(
             "{}{}{}",
@@ -2250,8 +2374,9 @@ pub fn cfe_borrow_register_form(
     Ok(())
 }
 
-pub fn cfe_borrow_xmlns_decl() -> &'static str {
-    "xmlns=\"http://v8.1c.ru/8.3/MDClasses\" xmlns:app=\"http://v8.1c.ru/8.2/managed-application/core\" xmlns:cfg=\"http://v8.1c.ru/8.1/data/enterprise/current-config\" xmlns:cmi=\"http://v8.1c.ru/8.2/managed-application/cmi\" xmlns:ent=\"http://v8.1c.ru/8.1/data/enterprise\" xmlns:lf=\"http://v8.1c.ru/8.2/managed-application/logform\" xmlns:style=\"http://v8.1c.ru/8.1/data/ui/style\" xmlns:sys=\"http://v8.1c.ru/8.1/data/ui/fonts/system\" xmlns:v8=\"http://v8.1c.ru/8.1/data/core\" xmlns:v8ui=\"http://v8.1c.ru/8.1/data/ui\" xmlns:web=\"http://v8.1c.ru/8.1/data/ui/colors/web\" xmlns:win=\"http://v8.1c.ru/8.1/data/ui/colors/windows\" xmlns:xen=\"http://v8.1c.ru/8.3/xcf/enums\" xmlns:xpr=\"http://v8.1c.ru/8.3/xcf/predef\" xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\""
+/// The namespace declarations of a borrowed object's root in `format_version`.
+pub fn cfe_borrow_xmlns_decl(format_version: &str) -> String {
+    unica_source_designer::layout::full_md_namespace_declarations(format_version)
 }
 
 pub fn cfe_borrow_existing_metadata_uuid(
@@ -3077,7 +3202,12 @@ pub fn cfe_validate_enum_properties(
         if let Some(value) = unica_xml_format::read::child_direct_text(props_node, property)
             .filter(|value| !value.is_empty())
         {
-            if !allowed.contains(&value.as_str()) {
+            let line_mode = *property == "ConfigurationExtensionCompatibilityMode"
+                && crate::dialect::for_version(
+                    props_node.document().root_element().attribute("version"),
+                )
+                .knows_line_compatibility_mode(&value);
+            if !allowed.contains(&value.as_str()) && !line_mode {
                 report.error(format!(
                     "4. Property '{property}' has invalid value '{value}'"
                 ));
@@ -3673,12 +3803,6 @@ pub fn cfe_capture_refs(raw: &str, prefix: &str, suffix: &str) -> Vec<String> {
     values
 }
 
-pub fn cfe_init_name_prefix(args: &Map<String, Value>, name: &str) -> String {
-    unica_operation_contract::input::string_arg(args, &["namePrefix", "NamePrefix"])
-        .map(ToOwned::to_owned)
-        .unwrap_or_else(|| format!("{name}_"))
-}
-
 pub fn cfe_patch_module_target(
     extension_path: &Path,
     module_path: &str,
@@ -3798,12 +3922,8 @@ pub fn cfe_patch_supported_document<'a>(
     let document = Document::parse(source)
         .map_err(|error| format!("failed to parse platform XML {}: {error}", path.display()))?;
     let version_literal = root_version_literal(source, document.root_element());
-    match classify_root_version(version_literal.as_deref()).map_err(|error| error.to_string())? {
-        FormatCompatibility::Supported { .. } => Ok(document),
-        compatibility => {
-            Err(unica_source_designer::format_profile::format_compatibility_warning(&compatibility))
-        }
-    }
+    root_version::require_supported(version_literal.as_deref())?;
+    Ok(document)
 }
 
 pub fn cfe_patch_exact_md_text(
@@ -4109,14 +4229,14 @@ pub fn cfe_patch_validate_form_xml(
         .collect::<Vec<_>>();
     if base_forms.len() != 1
         || base_forms[0].tag_name().namespace() != Some(CFE_PATCH_FORM_NAMESPACE)
-        || base_forms[0].attribute("version") != Some(ACTIVE_FORMAT_PROFILE.export_format)
+        || !root_version::is_writable(base_forms[0].attribute("version"))
     {
         return Err(cfe_patch_precondition_error(
             module_path,
             format!(
                 "borrowed Form.xml {} must contain exactly one direct BaseForm version=\"{}\"",
                 path.display(),
-                ACTIVE_FORMAT_PROFILE.export_format
+                root_version::writable_formats()
             ),
         ));
     }
@@ -4239,14 +4359,6 @@ pub struct CfeBorrowFormBlock {
 pub struct CfeBorrowedForm {
     pub raw_text: String,
     pub context: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct CfeInitPlannedXml {
-    pub output_dir: PathBuf,
-    pub configuration: PathBuf,
-    pub language: PathBuf,
-    pub role: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -4394,6 +4506,15 @@ impl CfeBorrowIdentity {
         Ok(identity)
     }
 
+    /// The identities the borrowed `child_name` in `text` already has, any
+    /// other drawn as this plan draws them.
+    pub(crate) fn with_existing(&self, text: &str, child_name: &str) -> Result<Self, String> {
+        Ok(Self {
+            plan_seed: self.plan_seed,
+            ..Self::read(text, child_name)?
+        })
+    }
+
     pub fn wrapper_uuid(&self, fresh_uuid: fn() -> String) -> String {
         self.wrapper_uuid
             .clone()
@@ -4497,12 +4618,10 @@ pub fn validate_cfe_source(
         check1_ok = false;
     }
     let version_literal = root_version_literal(source, root);
-    match classify_root_version(version_literal.as_deref()) {
-        Ok(FormatCompatibility::Supported { .. }) => report.ok("Export format: 2.20"),
-        Ok(compatibility) => report.warn(
-            unica_source_designer::format_profile::format_compatibility_warning(&compatibility),
-        ),
-        Err(error) => report.error(error.to_string()),
+    match root_version::report(version_literal.as_deref()) {
+        RootVersionReport::Ok(line) => report.ok(line),
+        RootVersionReport::Warn(line) => report.warn(line),
+        RootVersionReport::Error(line) => report.error(line),
     }
     let version = version_literal.as_deref().unwrap_or("");
 
@@ -4604,150 +4723,6 @@ pub fn validate_cfe_source(
     cfe_validation_finish(report, resolved_path)
 }
 
-pub struct CfeInitImageInput<'a> {
-    pub args: &'a Map<String, Value>,
-    pub name: &'a str,
-    pub synonym: &'a str,
-    pub name_prefix: &'a str,
-    pub purpose: &'a str,
-    pub compatibility: &'a str,
-    pub interface_mode: &'a str,
-    pub base_lang_uuid: &'a str,
-    pub role_name: &'a str,
-    pub no_role: bool,
-}
-pub struct CfeInitImages {
-    pub configuration: String,
-    pub language: String,
-    pub role: Option<String>,
-}
-pub fn cfe_init_images(input: CfeInitImageInput<'_>) -> CfeInitImages {
-    let CfeInitImageInput {
-        args,
-        name,
-        synonym,
-        name_prefix,
-        purpose,
-        compatibility,
-        interface_mode,
-        base_lang_uuid,
-        role_name,
-        no_role,
-    } = input;
-    let uuid_cfg = unica_xml_format::names::stable_uuid(20);
-    let uuid_lang = unica_xml_format::names::stable_uuid(21);
-    let uuid_role = unica_xml_format::names::stable_uuid(22);
-    let contained_object_ids = (23..30)
-        .map(unica_xml_format::names::stable_uuid)
-        .collect::<Vec<_>>();
-    let contained_objects = contained_objects_xml(&contained_object_ids);
-    let format_version_xml = ACTIVE_FORMAT_PROFILE.export_format;
-    let purpose_xml = unica_xml_format::text::escape_xml(purpose);
-    let compatibility_xml = unica_xml_format::text::escape_xml(compatibility);
-    let interface_mode_xml = unica_xml_format::text::escape_xml(interface_mode);
-    let vendor_xml = unica_operation_contract::input::string_arg(args, &["vendor", "Vendor"])
-        .map(unica_xml_format::text::escape_xml)
-        .unwrap_or_default();
-    let version_xml = unica_operation_contract::input::string_arg(args, &["version", "Version"])
-        .map(unica_xml_format::text::escape_xml)
-        .unwrap_or_default();
-    let synonym_xml = format!(
-            "\r\n\t\t\t\t<v8:item>\r\n\t\t\t\t\t<v8:lang>ru</v8:lang>\r\n\t\t\t\t\t<v8:content>{}</v8:content>\r\n\t\t\t\t</v8:item>\r\n\t\t\t",
-            unica_xml_format::text::escape_xml(synonym)
-        );
-    let default_roles_xml = if no_role {
-        String::new()
-    } else {
-        format!(
-            "\r\n\t\t\t\t<xr:Item xsi:type=\"xr:MDObjectRef\">Role.{}</xr:Item>\r\n\t\t\t",
-            unica_xml_format::text::escape_xml(role_name)
-        )
-    };
-    let mut child_objects_xml = "\r\n\t\t\t<Language>Русский</Language>".to_string();
-    if !no_role {
-        child_objects_xml.push_str(&format!(
-            "\r\n\t\t\t<Role>{}</Role>",
-            unica_xml_format::text::escape_xml(role_name)
-        ));
-    }
-    child_objects_xml.push_str("\r\n\t\t");
-
-    let configuration_xml = format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?>
-<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:app="http://v8.1c.ru/8.2/managed-application/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:cmi="http://v8.1c.ru/8.2/managed-application/cmi" xmlns:ent="http://v8.1c.ru/8.1/data/enterprise" xmlns:lf="http://v8.1c.ru/8.2/managed-application/logform" xmlns:style="http://v8.1c.ru/8.1/data/ui/style" xmlns:sys="http://v8.1c.ru/8.1/data/ui/fonts/system" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:v8ui="http://v8.1c.ru/8.1/data/ui" xmlns:web="http://v8.1c.ru/8.1/data/ui/colors/web" xmlns:win="http://v8.1c.ru/8.1/data/ui/colors/windows" xmlns:xen="http://v8.1c.ru/8.3/xcf/enums" xmlns:xpr="http://v8.1c.ru/8.3/xcf/predef" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="{format_version_xml}">
-	<Configuration uuid="{uuid_cfg}">
-		<InternalInfo>
-{contained_objects}		</InternalInfo>
-		<Properties>
-			<ObjectBelonging>Adopted</ObjectBelonging>
-			<Name>{name}</Name>
-			<Synonym>{synonym_xml}</Synonym>
-			<Comment/>
-			<ConfigurationExtensionPurpose>{purpose_xml}</ConfigurationExtensionPurpose>
-			<KeepMappingToExtendedConfigurationObjectsByIDs>true</KeepMappingToExtendedConfigurationObjectsByIDs>
-			<NamePrefix>{name_prefix}</NamePrefix>
-			<ConfigurationExtensionCompatibilityMode>{compatibility_xml}</ConfigurationExtensionCompatibilityMode>
-			<DefaultRunMode>ManagedApplication</DefaultRunMode>
-			<UsePurposes>
-				<v8:Value xsi:type="app:ApplicationUsePurpose">PlatformApplication</v8:Value>
-			</UsePurposes>
-			<ScriptVariant>Russian</ScriptVariant>
-			<DefaultRoles>{default_roles_xml}</DefaultRoles>
-			<Vendor>{vendor_xml}</Vendor>
-			<Version>{version_xml}</Version>
-			<DefaultLanguage>Language.Русский</DefaultLanguage>
-			<BriefInformation/>
-			<DetailedInformation/>
-			<Copyright/>
-			<VendorInformationAddress/>
-			<ConfigurationInformationAddress/>
-			<InterfaceCompatibilityMode>{interface_mode_xml}</InterfaceCompatibilityMode>
-		</Properties>
-		<ChildObjects>{child_objects_xml}</ChildObjects>
-	</Configuration>
-</MetaDataObject>"#,
-        name = unica_xml_format::text::escape_xml(name),
-        name_prefix = unica_xml_format::text::escape_xml(name_prefix),
-    );
-    let language_xml = format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?>
-<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:app="http://v8.1c.ru/8.2/managed-application/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:cmi="http://v8.1c.ru/8.2/managed-application/cmi" xmlns:ent="http://v8.1c.ru/8.1/data/enterprise" xmlns:lf="http://v8.1c.ru/8.2/managed-application/logform" xmlns:style="http://v8.1c.ru/8.1/data/ui/style" xmlns:sys="http://v8.1c.ru/8.1/data/ui/fonts/system" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:v8ui="http://v8.1c.ru/8.1/data/ui" xmlns:web="http://v8.1c.ru/8.1/data/ui/colors/web" xmlns:win="http://v8.1c.ru/8.1/data/ui/colors/windows" xmlns:xen="http://v8.1c.ru/8.3/xcf/enums" xmlns:xpr="http://v8.1c.ru/8.3/xcf/predef" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="{format_version_xml}">
-	<Language uuid="{uuid_lang}">
-		<InternalInfo/>
-		<Properties>
-			<ObjectBelonging>Adopted</ObjectBelonging>
-			<Name>Русский</Name>
-			<Comment/>
-			<ExtendedConfigurationObject>{base_lang_uuid}</ExtendedConfigurationObject>
-			<LanguageCode>ru</LanguageCode>
-		</Properties>
-	</Language>
-</MetaDataObject>"#
-    );
-    let role_xml = if no_role {
-        None
-    } else {
-        Some(format!(
-            r#"<?xml version="1.0" encoding="UTF-8"?>
-<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:app="http://v8.1c.ru/8.2/managed-application/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:cmi="http://v8.1c.ru/8.2/managed-application/cmi" xmlns:ent="http://v8.1c.ru/8.1/data/enterprise" xmlns:lf="http://v8.1c.ru/8.2/managed-application/logform" xmlns:style="http://v8.1c.ru/8.1/data/ui/style" xmlns:sys="http://v8.1c.ru/8.1/data/ui/fonts/system" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:v8ui="http://v8.1c.ru/8.1/data/ui" xmlns:web="http://v8.1c.ru/8.1/data/ui/colors/web" xmlns:win="http://v8.1c.ru/8.1/data/ui/colors/windows" xmlns:xen="http://v8.1c.ru/8.3/xcf/enums" xmlns:xpr="http://v8.1c.ru/8.3/xcf/predef" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="{format_version_xml}">
-	<Role uuid="{uuid_role}">
-		<Properties>
-			<Name>{role_name}</Name>
-			<Synonym/>
-			<Comment/>
-		</Properties>
-	</Role>
-</MetaDataObject>"#,
-            role_name = unica_xml_format::text::escape_xml(role_name),
-        ))
-    };
-    CfeInitImages {
-        configuration: configuration_xml,
-        language: language_xml,
-        role: role_xml,
-    }
-}
-
 pub struct CfeBorrowImageInput<'a> {
     pub ext_text: String,
     pub cfg_dir: &'a Path,
@@ -4792,7 +4767,7 @@ pub fn cfe_borrow_plan_image(
     let format_version = ext_doc
         .root_element()
         .attribute("version")
-        .unwrap_or(ACTIVE_FORMAT_PROFILE.export_format)
+        .unwrap_or(root_version::writable())
         .to_string();
 
     let items = object_spec
@@ -4995,141 +4970,6 @@ pub fn cfe_borrow_validate_planned_xml<'a>(
             .map_err(|error| format!("XML parse error in {}: {error}", path.display()))?;
     }
     Ok(())
-}
-
-pub struct CfeBaseDerivation {
-    pub language_uuid: String,
-    pub compatibility: String,
-    pub interface_mode: String,
-    pub derived: Vec<CfeInitDerivedProperty>,
-    pub warnings: Vec<String>,
-    pub language_preimage: Option<(PathBuf, Vec<u8>)>,
-}
-pub fn cfe_init_derive_base(
-    reader: &dyn ProjectDiscoveryRead,
-    config_path: &Path,
-    cfg_dir: &Path,
-    base_raw: &[u8],
-    mut compatibility: String,
-) -> Result<CfeBaseDerivation, String> {
-    let mut base_lang_uuid = "00000000-0000-0000-0000-000000000000".to_string();
-    let mut derived = Vec::new();
-    let mut init_warnings = Vec::new();
-    let mut base_language_preimage = None;
-    let base_text = std::str::from_utf8(base_raw).map_err(|error| {
-        format!(
-            "failed to read base config {} as UTF-8: {error}",
-            config_path.display()
-        )
-    })?;
-    let base_document =
-        Document::parse(base_text.trim_start_matches('\u{feff}')).map_err(|error| {
-            format!(
-                "failed to parse base config {}: {error}",
-                config_path.display()
-            )
-        })?;
-    let base_root = base_document.root_element();
-    if base_root.tag_name().name() != "MetaDataObject" {
-        return Err(format!(
-            "base config root must be MetaDataObject, got {}",
-            base_root.tag_name().name()
-        ));
-    }
-    if base_root.tag_name().namespace() != Some("http://v8.1c.ru/8.3/MDClasses") {
-        return Err("base config root must use the MDClasses namespace".to_string());
-    }
-    // The base config only gates whether this is emitted; the value
-    // itself is this build's active profile, so `baseConfig` would be
-    // a false provenance.
-    derived.push(CfeInitDerivedProperty::defaulted(
-        "mdClassesFormatVersion",
-        ACTIVE_FORMAT_PROFILE.export_format,
-    ));
-    let base_lang_file = cfg_dir.join("Languages").join("Русский.xml");
-    if path_exists(reader, &base_lang_file) {
-        match read_bytes(reader, &base_lang_file) {
-            Ok(raw) => {
-                base_language_preimage = Some((base_lang_file.clone(), raw.clone()));
-                match std::str::from_utf8(&raw)
-                    .ok()
-                    .and_then(|text| Document::parse(text.trim_start_matches('\u{feff}')).ok())
-                {
-                    Some(doc) => {
-                        if let Some(uuid) = doc
-                            .descendants()
-                            .find(|node| node.is_element() && node.tag_name().name() == "Language")
-                            .and_then(|node| node.attribute("uuid"))
-                        {
-                            if !unica_xml_format::names::is_valid_uuid(uuid)
-                                || uuid == "00000000-0000-0000-0000-000000000000"
-                            {
-                                return Err(format!(
-                                    "Base language {} has invalid UUID {uuid:?}",
-                                    base_lang_file.display()
-                                ));
-                            }
-                            base_lang_uuid = uuid.to_string();
-                            derived.push(CfeInitDerivedProperty::from_base(
-                                "baseLanguageUuid",
-                                &base_lang_uuid,
-                            ));
-                        }
-                    }
-                    None => {
-                        init_warnings
-                            .push(format!("не удалось разобрать {}", base_lang_file.display()));
-                    }
-                }
-            }
-            Err(_) => {
-                init_warnings.push(format!("не удалось прочитать {}", base_lang_file.display()));
-            }
-        }
-    } else {
-        init_warnings.push(format!(
-            "язык базовой конфигурации не найден: {}",
-            base_lang_file.display()
-        ));
-    }
-
-    if let Some(value) = unica_xml_format::read::first_text(&base_document, "CompatibilityMode") {
-        compatibility = value;
-        derived.push(CfeInitDerivedProperty::from_base(
-            "compatibilityMode",
-            &compatibility,
-        ));
-    } else {
-        derived.push(CfeInitDerivedProperty::defaulted(
-            "compatibilityMode",
-            &compatibility,
-        ));
-    }
-    let interface_mode = if let Some(value) =
-        unica_xml_format::read::first_text(&base_document, "InterfaceCompatibilityMode")
-    {
-        derived.push(CfeInitDerivedProperty::from_base(
-            "interfaceCompatibilityMode",
-            &value,
-        ));
-        value
-    } else {
-        let value = "TaxiEnableVersion8_2".to_string();
-        derived.push(CfeInitDerivedProperty::defaulted(
-            "interfaceCompatibilityMode",
-            &value,
-        ));
-        value
-    };
-
-    Ok(CfeBaseDerivation {
-        language_uuid: base_lang_uuid,
-        compatibility,
-        interface_mode,
-        derived,
-        warnings: init_warnings,
-        language_preimage: base_language_preimage,
-    })
 }
 
 pub fn cfe_patch_context_annotation(

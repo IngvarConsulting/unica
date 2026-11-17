@@ -1,0 +1,42 @@
+{
+  "id": "S-2730-empty-set-write-refused",
+  "issue": 2730,
+  "area": "Форматы выгрузки",
+  "task": "Создать справочник в объявленном наборе, каталог которого пуст: отказ до планирования, формат по умолчанию не подставляется и файлы не появляются.",
+  "workspace": "tests/fixtures/acceptance/workspace-empty-set",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "object.create",
+            "args": {
+              "values": {
+                "kind": "Catalog",
+                "name": "Пробный"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: sourceSet `main` is outside the supported Platform XML format profile",
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Пробный.xml",
+          "kind": "exists",
+          "eq": false
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "exists",
+          "eq": false
+        }
+      ]
+    }
+  ]
+}

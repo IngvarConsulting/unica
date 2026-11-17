@@ -10,7 +10,7 @@
     {
       "variant": "Set",
       "operation": "form.set",
-      "applicability": "MetadataForms",
+      "applicability": "FormSlots",
       "skeleton": "Values"
     },
     {
@@ -42,6 +42,12 @@
       "operation": "attribute.add",
       "applicability": "Form",
       "skeleton": "Items"
+    },
+    {
+      "variant": "AttributeRemove",
+      "operation": "attribute.remove",
+      "applicability": "FormAttribute",
+      "skeleton": "Target"
     },
     {
       "variant": "ColumnAdd",

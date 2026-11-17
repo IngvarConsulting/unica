@@ -47,6 +47,22 @@
       "captures": {
         "cursor1": {
           "pointer": "/cursor"
+        },
+        "unchanged1": {
+          "file": "src/CommonModules/SearchProbe/Ext/Module.bsl",
+          "kind": "sha256"
+        },
+        "unchanged2": {
+          "file": "src/CommonModules/SearchProbe.xml",
+          "kind": "sha256"
+        },
+        "unchanged3": {
+          "file": "src/Configuration.xml",
+          "kind": "sha256"
+        },
+        "unchanged4": {
+          "file": "v8project.yaml",
+          "kind": "sha256"
         }
       }
     },
@@ -181,22 +197,22 @@
         {
           "path": "src/CommonModules/SearchProbe/Ext/Module.bsl",
           "kind": "sha256",
-          "eq": "2277f37008ec3c204fb6125c0f0d6ecb755cebc9b483b30a585850a8d19fa390"
+          "eq": "$capture.unchanged1"
         },
         {
           "path": "src/CommonModules/SearchProbe.xml",
           "kind": "sha256",
-          "eq": "595f1b1af4c4eef8ed6473405aaffe9cae1068f08dec5c0178210a9fc293229e"
+          "eq": "$capture.unchanged2"
         },
         {
           "path": "src/Configuration.xml",
           "kind": "sha256",
-          "eq": "112e3bf2cdd0b0d3807a7f5a0d0e1d26d8e420b5f433ce4055ac33d0f6c4fd2c"
+          "eq": "$capture.unchanged3"
         },
         {
           "path": "v8project.yaml",
           "kind": "sha256",
-          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+          "eq": "$capture.unchanged4"
         }
       ]
     }

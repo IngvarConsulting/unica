@@ -98,6 +98,25 @@
         {
           "pointer": "/data/props/LanguageCode",
           "eq": "en"
+        },
+        {
+          "pointer": "/data/props/Synonym",
+          "eq": "ru = 'English'"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Language.English.Props.Synonym"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Synonym",
+          "eq": "ru = 'English'"
         }
       ]
     },
