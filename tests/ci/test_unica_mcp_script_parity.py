@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from scripts.ci.prepared_binary import binary_path, ensure_binary
+from scripts.ci.provider_fixture import provider_fixture_environment
 
 import dataclasses
 import hashlib
@@ -22,6 +23,7 @@ import xml.etree.ElementTree as ET
 import zipfile
 from collections.abc import Callable, Iterable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from contextlib import ExitStack
 from pathlib import Path
 from typing import Any
 from unittest import mock
@@ -36,7 +38,7 @@ if str(MODULE_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(MODULE_REPO_ROOT))
 
 from scripts.ci import donor_parity_contract as donor_contract
-from scripts.ci.temp_tree import temp_tree
+from scripts.ci.temp_tree import remove_tree, temp_tree
 
 
 REPO_ROOT = MODULE_REPO_ROOT
@@ -476,13 +478,17 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
         self.assertEqual(errors, [])
 
     def assert_parity(self, scenario: ParityScenario) -> None:
-        with tempfile.TemporaryDirectory(prefix=f"unica-parity-{scenario.name}-") as temp:
+        with (
+            tempfile.TemporaryDirectory(prefix=f"unica-parity-{scenario.name}-") as temp,
+            ExitStack() as provider_resources,
+        ):
             temp_root = Path(temp)
             direct_ws = temp_root / "direct"
             mcp_ws = temp_root / "mcp"
             direct_ws.mkdir()
             mcp_ws.mkdir()
             mcp_cache = temp_root / "mcp-cache"
+            provider_resources.callback(remove_tree, mcp_cache / "provider-state")
             self.prepare_workspace(direct_ws, scenario, setup_mode="reference")
             self.prepare_workspace(mcp_ws, scenario, setup_mode="mcp", cache_dir=mcp_cache)
 
@@ -601,15 +607,9 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
             "method": "tools/call",
             "params": {"name": tool, "arguments": arguments},
         }
-        env = os.environ.copy()
-        env["UNICA_PLUGIN_ROOT"] = str(PLUGIN_ROOT)
-        env["UNICA_CACHE_DIR"] = str(cache_dir)
-        # Демон переживает вызов: без назначенной паузы он остаётся на
-        # четверть часа и накапливается за прогон набора.
-        env["UNICA_DAEMON_IDLE_GRACE_MS"] = "5000"
-        responses = self.run_mcp_messages([message], env)
+        responses = self.call_mcp_messages([message], cache_dir)
         self.assertEqual(len(responses), 1, responses)
-        response = responses[0]
+        response = responses[message["id"]]
         if "error" in response:
             raise AssertionError(json.dumps(response["error"], ensure_ascii=False, indent=2))
         return json.loads(response["result"]["content"][0]["text"])
@@ -751,11 +751,9 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
         env = os.environ.copy()
         env["UNICA_PLUGIN_ROOT"] = str(PLUGIN_ROOT)
         env["UNICA_CACHE_DIR"] = str(cache_dir)
-        # Демон переживает вызов: без назначенной паузы он остаётся на
-        # четверть часа и накапливается за прогон набора.
-        env["UNICA_DAEMON_IDLE_GRACE_MS"] = "5000"
         if extra_env is not None:
             env.update(extra_env)
+        env = provider_fixture_environment(env, cache_dir / "provider-state")
         responses = []
         for start in range(0, len(messages), 32):
             batch = messages[start : start + 32]
