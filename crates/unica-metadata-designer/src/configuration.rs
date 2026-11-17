@@ -1,4 +1,7 @@
 //! Existing configuration Designer algorithms; publication stays with trusted composition.
+mod mobile_functionalities;
+pub(crate) use mobile_functionalities::set_enabled as set_mobile_functionalities;
+
 use crate::dialect::root_version::{self, RootVersionReport};
 use roxmltree::Document;
 use serde_json::{Map, Value};
@@ -200,6 +203,7 @@ pub fn parse_cf_info_xml(
             .filter(|(_, key)| !matches!(*key, "synonym" | "caption" | "shortCaption"))
             .filter_map(|(tag, key)| localized(tag).map(|value| (key.to_string(), value.into())))
             .collect();
+    let purpose = read_cf_purpose_properties(props, version, extension_purpose.is_some())?;
     let data = CfInfoData {
         format: version.to_string(),
         name: cf_prop_text(props, "Name"),
@@ -213,7 +217,7 @@ pub fn parse_cf_info_xml(
         extension_purpose,
         properties: CfInfoProperties {
             localized_properties,
-            purpose: read_cf_purpose_properties(props)?,
+            purpose,
             compatibility_mode: optional(cf_prop_text(props, "CompatibilityMode")),
             default_run_mode: optional(cf_prop_text(props, "DefaultRunMode")),
             script_variant: optional(cf_prop_text(props, "ScriptVariant")),
@@ -299,40 +303,47 @@ pub fn parse_cf_info_xml(
 }
 
 /// The four purpose properties share the same strict reader in DOM and streamed roots.
-pub fn read_cf_purpose_properties_xml(xml: &str) -> Result<CfPurposeProperties, String> {
+pub fn read_cf_purpose_properties_xml(
+    xml: &str,
+    version: &str,
+    extension: bool,
+) -> Result<CfPurposeProperties, String> {
     let doc =
         Document::parse(xml).map_err(|error| format!("Configuration properties XML: {error}"))?;
-    read_cf_purpose_properties(doc.root_element())
+    read_cf_purpose_properties(doc.root_element(), version, extension)
+}
+
+fn cf_scalar_text(node: roxmltree::Node<'_, '_>) -> Result<String, String> {
+    if node.children().any(|child| child.is_element()) {
+        return Err(format!(
+            "{} must contain scalar text",
+            node.tag_name().name()
+        ));
+    }
+    Ok(node
+        .children()
+        .filter(|child| child.is_text())
+        .filter_map(|child| child.text())
+        .collect::<String>()
+        .trim()
+        .to_string())
+}
+fn cf_boolean(node: roxmltree::Node<'_, '_>) -> Result<bool, String> {
+    match cf_scalar_text(node)?.as_str() {
+        "true" | "1" => Ok(true),
+        "false" | "0" => Ok(false),
+        _ => Err(format!(
+            "{} must contain an XML boolean",
+            node.tag_name().name()
+        )),
+    }
 }
 
 fn read_cf_purpose_properties(
     props: roxmltree::Node<'_, '_>,
+    version: &str,
+    extension: bool,
 ) -> Result<CfPurposeProperties, String> {
-    fn scalar(node: roxmltree::Node<'_, '_>) -> Result<String, String> {
-        if node.children().any(|child| child.is_element()) {
-            return Err(format!(
-                "{} must contain scalar text",
-                node.tag_name().name()
-            ));
-        }
-        Ok(node
-            .children()
-            .filter(|child| child.is_text())
-            .filter_map(|child| child.text())
-            .collect::<String>()
-            .trim()
-            .to_string())
-    }
-    fn boolean(node: roxmltree::Node<'_, '_>) -> Result<bool, String> {
-        match scalar(node)?.as_str() {
-            "true" | "1" => Ok(true),
-            "false" | "0" => Ok(false),
-            _ => Err(format!(
-                "{} must contain an XML boolean",
-                node.tag_name().name()
-            )),
-        }
-    }
     fn children<'a, 'input>(
         node: roxmltree::Node<'a, 'input>,
         name: &str,
@@ -381,7 +392,7 @@ fn read_cf_purpose_properties(
             children(node, "Value", CF_V8_NS)?
                 .into_iter()
                 .map(|child| {
-                    let value = scalar(child)?;
+                    let value = cf_scalar_text(child)?;
                     match value.as_str() {
                         "PlatformApplication" | "MobilePlatformApplication" => Ok(value),
                         _ => Err(format!("unknown ApplicationUsePurpose {value}")),
@@ -395,7 +406,7 @@ fn read_cf_purpose_properties(
             children(node, "Item", CF_XR_NS)?
                 .into_iter()
                 .map(|child| {
-                    let value = scalar(child)?;
+                    let value = cf_scalar_text(child)?;
                     if value.strip_prefix("Role.").is_some_and(|name| {
                         !name.is_empty() && name.chars().all(|ch| ch.is_alphanumeric() || ch == '_')
                     }) {
@@ -407,50 +418,20 @@ fn read_cf_purpose_properties(
                 .collect::<Result<Vec<_>, String>>()
         })
         .transpose()?;
-    let used_mobile_application_functionalities = section("UsedMobileApplicationFunctionalities")?
-        .map(|node| {
-            children(node, "functionality", CF_CAI_NS)?
-                .into_iter()
-                .map(|item| {
-                    if item.children().any(|child| {
-                        child.is_text() && !child.text().unwrap_or_default().trim().is_empty()
-                    }) {
-                        return Err("mobile functionality has unexpected scalar text".to_string());
-                    }
-                    let mut functionality = None;
-                    let mut use_flag = None;
-                    for child in item.children().filter(|child| child.is_element()) {
-                        if child.tag_name().namespace() != Some(CF_CAI_NS) {
-                            return Err("mobile functionality has a foreign member".to_string());
-                        }
-                        match child.tag_name().name() {
-                            "functionality" if functionality.is_none() => {
-                                functionality = Some(scalar(child)?)
-                            }
-                            "use" if use_flag.is_none() => use_flag = Some(boolean(child)?),
-                            _ => {
-                                return Err(
-                                    "mobile functionality has an unexpected or duplicate member"
-                                        .to_string(),
-                                )
-                            }
-                        }
-                    }
-                    Ok(CfMobileFunctionality {
-                        functionality: functionality
-                            .filter(|value| !value.is_empty())
-                            .ok_or("mobile functionality has no name")?,
-                        r#use: use_flag.ok_or("mobile functionality has no use flag")?,
-                    })
-                })
-                .collect::<Result<Vec<_>, String>>()
-        })
-        .transpose()?;
+    let section_mobile = section("UsedMobileApplicationFunctionalities")?;
+    let line = mobile_functionalities::export_line(version);
+    let used_mobile_application_functionalities = if extension && section_mobile.is_none() {
+        None
+    } else {
+        mobile_functionalities::enabled(section_mobile, line)?
+    };
     Ok(CfPurposeProperties {
         use_purposes,
         default_roles,
         used_mobile_application_functionalities,
-        include_help_in_contents: section("IncludeHelpInContents")?.map(boolean).transpose()?,
+        include_help_in_contents: section("IncludeHelpInContents")?
+            .map(cf_boolean)
+            .transpose()?,
     })
 }
 
@@ -1930,49 +1911,9 @@ pub fn cf_init_post_validation_dependency_paths(planned: &CfInitPlannedXml) -> V
 }
 
 pub fn mobile_functionality_xml() -> String {
-    const MOBILE_FUNCTIONS: &[(&str, &str)] = &[
-        ("Biometrics", "true"),
-        ("Location", "false"),
-        ("BackgroundLocation", "false"),
-        ("BluetoothPrinters", "false"),
-        ("WiFiPrinters", "false"),
-        ("Contacts", "false"),
-        ("Calendars", "false"),
-        ("PushNotifications", "false"),
-        ("LocalNotifications", "false"),
-        ("InAppPurchases", "false"),
-        ("PersonalComputerFileExchange", "false"),
-        ("Ads", "false"),
-        ("NumberDialing", "false"),
-        ("CallProcessing", "false"),
-        ("CallLog", "false"),
-        ("AutoSendSMS", "false"),
-        ("ReceiveSMS", "false"),
-        ("SMSLog", "false"),
-        ("Camera", "false"),
-        ("Microphone", "false"),
-        ("MusicLibrary", "false"),
-        ("PictureAndVideoLibraries", "false"),
-        ("AudioPlaybackAndVibration", "false"),
-        ("BackgroundAudioPlaybackAndVibration", "false"),
-        ("InstallPackages", "false"),
-        ("OSBackup", "true"),
-        ("ApplicationUsageStatistics", "false"),
-        ("BarcodeScanning", "false"),
-        ("BackgroundAudioRecording", "false"),
-        ("AllFilesAccess", "false"),
-        ("Videoconferences", "false"),
-        ("NFC", "false"),
-        ("DocumentScanning", "false"),
-        ("SpeechToText", "false"),
-        ("Geofences", "false"),
-        ("IncomingShareRequests", "false"),
-        ("AllIncomingShareRequestsTypesProcessing", "false"),
-        ("TextToSpeech", "false"),
-    ];
-
     let mut xml = String::new();
-    for (name, enabled) in MOBILE_FUNCTIONS {
+    for name in MOBILE_FUNCTIONALITIES {
+        let enabled = mobile_functionality_default(name);
         xml.push_str(&format!(
             "\r\n\t\t\t\t<app:functionality>\r\n\t\t\t\t\t<app:functionality>{name}</app:functionality>\r\n\t\t\t\t\t<app:use>{enabled}</app:use>\r\n\t\t\t\t</app:functionality>"
         ));

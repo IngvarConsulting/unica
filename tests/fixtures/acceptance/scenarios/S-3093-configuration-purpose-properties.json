@@ -3,7 +3,7 @@
   "issue": 3093,
   "area": "Свойства конфигурации",
   "workspace": "tests/fixtures/acceptance/workspace-configuration-purpose",
-  "task": "Прочитать назначения использования, роли по умолчанию, мобильные функциональности и включение справки корня Configuration: порядок списков, логические ссылки и false сохраняются без изменения XML.",
+  "task": "Прочитать свойства назначения Configuration, затем изменить полный набор мобильных возможностей и очистить его. Проверить схему значений, неизменность XML до исполнения, результаты view и сохранение сообщений для разрешений.",
   "wire": [
     {
       "tool": "unica.view",
@@ -31,19 +31,255 @@
         {
           "pointer": "/data/props/properties/usedMobileApplicationFunctionalities",
           "eq": [
-            {
-              "functionality": "Location",
-              "use": false
-            },
-            {
-              "functionality": "Biometrics",
-              "use": true
-            }
+            "Biometrics",
+            "OSBackup"
           ]
         },
         {
           "pointer": "/data/props/properties/includeHelpInContents",
           "eq": false
+        }
+      ],
+      "captures": {
+        "before": {
+          "kind": "sha256",
+          "file": "src/Configuration.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Configuration.Can.props.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/UsedMobileApplicationFunctionalities/type",
+          "eq": "array"
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/UsedMobileApplicationFunctionalities/items/type",
+          "eq": "string"
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/UsedMobileApplicationFunctionalities/items/enum",
+          "contains": "TextToSpeech"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "usedMobileApplicationFunctionalities": [
+                  "Camera"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "awaitTask": true,
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "$capture.before"
+        }
+      ],
+      "captures": {
+        "firstToken": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.firstToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "awaitTask": true,
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Configuration"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/properties/usedMobileApplicationFunctionalities",
+          "eq": [
+            "Camera"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "usedMobileApplicationFunctionalities": []
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "awaitTask": true,
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "captures": {
+        "clearToken": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.clearToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "awaitTask": true,
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Configuration"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/properties/usedMobileApplicationFunctionalities",
+          "eq": []
+        }
+      ],
+      "captures": {
+        "cleared": {
+          "kind": "sha256",
+          "file": "src/Configuration.xml"
+        }
+      },
+      "fileAssertions": [
+        {
+          "kind": "xml",
+          "path": "src/Configuration.xml",
+          "select": ".//{*}UsedMobileApplicationFunctionalities/{*}permissionMessage/{*}permission",
+          "eq": [
+            "Camera"
+          ]
+        },
+        {
+          "kind": "xml",
+          "path": "src/Configuration.xml",
+          "select": ".//{*}UsedMobileApplicationFunctionalities/{*}permissionMessage/{*}description/{*}item/{*}content",
+          "eq": [
+            "Камера",
+            "Camera"
+          ]
+        },
+        {
+          "kind": "xmlTags",
+          "path": "src/Configuration.xml",
+          "select": ".//{*}RequiredMobileApplicationPermissions",
+          "eq": [
+            "RequiredMobileApplicationPermissions"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "usedMobileApplicationFunctionalities": []
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "awaitTask": true,
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 0
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "$capture.cleared"
         }
       ]
     }
