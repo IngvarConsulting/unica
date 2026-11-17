@@ -52,6 +52,43 @@ fn client_with_timeout(read_timeout: Duration) -> NetworkClient {
 }
 
 #[test]
+fn medium_download_reads_trusted_tls_body_through_connect_proxy() {
+    use crate::test_support::{ConnectProxy, TestRoot, TlsStand};
+
+    let root = TestRoot::generate("Unica migration test root");
+    let expected = vec![0x5a; 128 * 1024];
+    let stand = TlsStand::start(&root, expected.clone(), "application/octet-stream");
+    let proxy = ConnectProxy::start();
+    let settings = ProxySettings::from_lookup(&|name| (name == "https_proxy").then(|| proxy.url()));
+    let mut roots = rustls::RootCertStore::empty();
+    let pem = root.pem();
+    let cert = rustls::pki_types::pem::PemObject::from_pem_slice(pem.as_bytes()).unwrap();
+    roots.add(cert).unwrap();
+    let tls = rustls::ClientConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .unwrap()
+    .with_root_certificates(roots)
+    .with_no_client_auth();
+    let client = NetworkClient::build(
+        settings,
+        Arc::new(tls),
+        TrustSource::OperatingSystem,
+        READ_TIMEOUT,
+    )
+    .unwrap();
+
+    let response = client.get(&stand.url("archive"), &[], None).unwrap();
+    assert_eq!(response.status(), 200);
+    let mut received = Vec::new();
+    response.into_reader().read_to_end(&mut received).unwrap();
+    assert_eq!(received, expected);
+    assert_eq!(proxy.targets(), vec![stand.authority()]);
+    assert_eq!(stand.requests().len(), 1);
+}
+
+#[test]
 fn medium_completed_post_and_detached_body_survive_connection_close() {
     let (listener, base) = listener();
     let (finish, ack) = std::sync::mpsc::sync_channel(1);
