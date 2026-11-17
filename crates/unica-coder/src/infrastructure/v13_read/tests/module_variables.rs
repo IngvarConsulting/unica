@@ -8,7 +8,15 @@ fn module_variables_are_current_named_declarations_with_truthful_branch_count() 
     let path = fixture
         .source
         .join("CommonModules/РеактивныйСервер/Ext/Module.bsl");
-    fs::write(&path, "#Область Vars\r\nПерем А Экспорт, Б;\r\n#КонецОбласти\r\nПроцедура П()\r\nПерем Локальная;\r\nКонецПроцедуры").unwrap();
+    fs::write(
+        &path,
+        concat!(
+            "#Область Vars\r\nПерем А Экспорт, Б;\r\n#КонецОбласти\r\n",
+            "// Документация метода\r\n&НаСервере\r\nПроцедура П()\r\n",
+            "Перем Локальная;\r\nКонецПроцедуры",
+        ),
+    )
+    .unwrap();
     let service = fixture.view_service();
     let read = |at: &str| {
         let result = service.view(ViewRequest::new(at).unwrap());
@@ -37,6 +45,13 @@ fn module_variables_are_current_named_declarations_with_truthful_branch_count() 
         read(&format!("{branch}.А"))["props"],
         items["items"][0]["props"]
     );
+    let method_at = format!("{MODULE}.Method.П");
+    let method = read(&method_at);
+    assert_eq!(method["props"]["line"], 4);
+    assert_eq!(method["props"]["declarationLine"], 6);
+    assert_eq!(method["props"]["nameColumn"], 11);
+    let methods = read(&format!("{MODULE}.Method"));
+    assert_eq!(methods["items"][0]["props"], method["props"]);
     fs::write(&path, "Перем Новая;").unwrap();
     // A new question owns a new authority; the prior one retains its snapshot.
     let current = fixture

@@ -1,0 +1,55 @@
+{
+  "id": "S-2870-method-position",
+  "issue": 2870,
+  "area": "Навигация и чтение",
+  "task": "Перейти к объявлению и началу имени метода по view, сохранив координаты текста Body.",
+  "workspace": "tests/fixtures/acceptance/workspace-method-position",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule.Probe.Method.Проверка"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/line",
+          "eq": 3
+        },
+        {
+          "pointer": "/data/props/declarationLine",
+          "eq": 4
+        },
+        {
+          "pointer": "/data/props/nameColumn",
+          "eq": 18
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule.Probe.Method.Check"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/line",
+          "eq": 7
+        },
+        {
+          "pointer": "/data/props/declarationLine",
+          "eq": 9
+        },
+        {
+          "pointer": "/data/props/nameColumn",
+          "eq": 18
+        }
+      ]
+    }
+  ]
+}

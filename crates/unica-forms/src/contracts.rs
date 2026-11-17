@@ -779,7 +779,7 @@ pub fn form_set_in(kind: Option<&str>, line: Option<PlatformLine>) -> OperationC
             .map(|key| {
                 let mut field=slot.clone();
                 if kind == Some("Configuration") {
-                    field["description"]=json!("The name or logical address of a common form of this source set (`Name`, `CommonForm.Name`); an empty string clears the slot.");
+                    field["description"]=json!("The name or logical address of a common form of this source set (`<set>:CommonForm.Name`, `CommonForm.Name` or `Name`); an empty string clears the slot.");
                 } else if kind.is_some_and(|kind| crate::default_forms::common_form_slot(kind, FORM_SLOTS.iter().find(|(name,_)|name == key).map_or("",|(_,property)|*property))) {
                     field["description"]=json!("A form name or logical address of this owner, or the logical address of a compatible Managed CommonForm in the same source set. An empty string clears the slot. Report CommonForm requires a generic ReportObject main attribute and matching Main/Settings/Variant purpose (an absent ReportFormType means Main); Constant requires ConstantsSet.");
                 }

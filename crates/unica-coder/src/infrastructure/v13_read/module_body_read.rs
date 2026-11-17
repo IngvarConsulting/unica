@@ -363,7 +363,8 @@ impl<'a> LogicalViewReadAuthority<'a> {
             return Ok(NodeViewData::Node(event_node(&event)));
         }
         let projections = self.module_projection(&module_at, capability, admitted)?;
-        let binding_items = match &route.at().segments()[prefix_len..] {
+        let suffix = &route.at().segments()[prefix_len..];
+        let mut binding_items = match suffix {
             [method, rest @ ..]
                 if capability.role() == ModuleRole::Form
                     && method.kind() == NodeKind::Method
@@ -378,6 +379,20 @@ impl<'a> LogicalViewReadAuthority<'a> {
             }
             _ => BTreeMap::new(),
         };
+        if let [method, binding] = suffix {
+            if method.kind() == NodeKind::Method && binding.kind() == NodeKind::Binding {
+                let method = find_method(&projections, method.name().unwrap_or_default())?;
+                let declarative = binding_items.remove(&method.at).unwrap_or_default();
+                return self.method_binding_view(
+                    route.at(),
+                    &module_at,
+                    &projections,
+                    method,
+                    declarative,
+                    admitted,
+                );
+            }
+        }
         let mut view = module_projection_view(route.at(), prefix_len, &projections, binding_items)?;
         if capability.role() == ModuleRole::Common && route.at() == &module_at {
             let (synonym, limits) = self.common_module_synonym(&module_at)?;

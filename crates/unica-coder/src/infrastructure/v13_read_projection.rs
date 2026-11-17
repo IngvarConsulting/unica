@@ -774,6 +774,26 @@ pub(super) fn project_configuration_with_counts(
             }
         }
     }
+    if let Some(forms) = props
+        .get_mut("properties")
+        .and_then(|properties| properties.get_mut("forms"))
+        .and_then(Value::as_object_mut)
+    {
+        for form in forms.values_mut() {
+            qualify_configuration_form(form, address.source_set(), false);
+        }
+    }
+    if let Some(home_page) = props.get_mut("homePage") {
+        for column in ["left", "right"] {
+            if let Some(items) = home_page.get_mut(column).and_then(Value::as_array_mut) {
+                for item in items {
+                    if let Some(form) = item.get_mut("form") {
+                        qualify_configuration_form(form, address.source_set(), true);
+                    }
+                }
+            }
+        }
+    }
     // Вид, которого нет в линии платформы набора, пустой ветви не получает.
     let line = payload
         .get("format")
@@ -800,6 +820,33 @@ pub(super) fn project_configuration_with_counts(
         .with_branches(branches)
         .with_limits(limits),
     ))
+}
+
+/// Идентификаторы, записанные платформой вместо имени формы, сохраняются для apply.
+fn qualify_configuration_form(form: &mut Value, source_set: &str, allow_nested: bool) {
+    let Some(reference) = form.as_str() else {
+        return;
+    };
+    let Ok(metadata) = unica_address::source_target::MetadataAddress::parse_logical(reference)
+    else {
+        return;
+    };
+    let Ok(address) = QualifiedAddress::parse(&format!("{source_set}:{metadata}")) else {
+        return;
+    };
+    let is_form = match address.segments() {
+        [common] => common.kind() == NodeKind::CommonForm && common.name().is_some(),
+        [owner, nested] => {
+            allow_nested
+                && owner.name().is_some()
+                && nested.kind() == NodeKind::Form
+                && nested.name().is_some()
+        }
+        _ => false,
+    };
+    if is_form {
+        *form = Value::String(address.to_string());
+    }
 }
 
 /// Состояние поддержки членов коллекции: значение `props.support` члена,

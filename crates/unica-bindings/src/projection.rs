@@ -696,6 +696,11 @@ fn method_projections(
                 from_line,
                 to_line: closing_line,
                 text_from_line,
+                declaration_line: header_line,
+                name_column: node
+                    .name_range
+                    .as_ref()
+                    .map(|range| lines.utf16_column(range.start)),
                 body_from_line,
                 body_to_line,
                 area: None,
@@ -1715,6 +1720,14 @@ impl<'a> LineIndex<'a> {
         }
     }
 
+    fn utf16_column(&self, offset: usize) -> usize {
+        let line = self.line_of(offset as u32);
+        self.text[self.starts[line - 1]..offset]
+            .encode_utf16()
+            .count()
+            + 1
+    }
+
     fn text(&self, line: usize) -> Option<&'a str> {
         let start = *self.starts.get(line.checked_sub(1)?)?;
         let end = self
@@ -1724,5 +1737,19 @@ impl<'a> LineIndex<'a> {
             .unwrap_or(self.text.len())
             .saturating_sub(usize::from(line < self.starts.len()));
         self.text.get(start..end)
+    }
+}
+
+#[cfg(test)]
+mod position_tests {
+    use super::LineIndex;
+
+    #[test]
+    fn name_column_counts_utf16_units_from_current_line() {
+        let source = "// Earlier 😀\r\n\tЯ😀 Name";
+        let lines = LineIndex::new(source);
+        let name = source.find("Name").unwrap();
+        assert_eq!(lines.line_of(name as u32), 2);
+        assert_eq!(lines.utf16_column(name), 6);
     }
 }

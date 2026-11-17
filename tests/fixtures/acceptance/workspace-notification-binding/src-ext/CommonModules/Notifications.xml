@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
+    <CommonModule uuid="f697151d-6097-50da-a97f-396a7dc94ed4">
+        <Properties>
+            <Name>Notifications</Name><Global>false</Global>
+            <ClientManagedApplication>true</ClientManagedApplication><Server>false</Server>
+            <ExternalConnection>false</ExternalConnection><ClientOrdinaryApplication>false</ClientOrdinaryApplication>
+            <ServerCall>false</ServerCall><Privileged>false</Privileged><ReturnValuesReuse>DontUse</ReturnValuesReuse>
+        </Properties>
+    </CommonModule>
+</MetaDataObject>

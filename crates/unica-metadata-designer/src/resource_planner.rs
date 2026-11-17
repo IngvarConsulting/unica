@@ -327,6 +327,7 @@ fn parse_panels_operation(
 fn parse_home_page_operation(
     args: &Map<String, Value>,
     op_index: usize,
+    source_set: &str,
 ) -> Result<MetadataResourcePlan, ApplyPlanError> {
     let values = values_object(args, op_index)?;
     let template = values
@@ -350,7 +351,14 @@ fn parse_home_page_operation(
         items
             .iter()
             .enumerate()
-            .map(|(index, item)| home_page_item(item, &format!("values.{key}[{index}]"), op_index))
+            .map(|(index, item)| {
+                home_page_item(
+                    item,
+                    &format!("values.{key}[{index}]"),
+                    op_index,
+                    source_set,
+                )
+            })
             .collect()
     };
     let page = HomePage {
@@ -374,6 +382,7 @@ fn home_page_item(
     item: &Value,
     path: &str,
     op_index: usize,
+    source_set: &str,
 ) -> Result<HomePageItem, ApplyPlanError> {
     let item = item
         .as_object()
@@ -382,6 +391,22 @@ fn home_page_item(
         .get("form")
         .and_then(Value::as_str)
         .ok_or_else(|| bad(op_index, &format!("{path}.form"), "`form` is required"))?;
+    let form = if form.contains(':') {
+        QualifiedAddress::parse(form)
+            .ok()
+            .filter(|address| address.source_set() == source_set)
+            .map(|address| address.logical_path())
+            .filter(|logical| home_page_reference(logical, false).is_some())
+            .ok_or_else(|| {
+                bad(
+                    op_index,
+                    &format!("{path}.form"),
+                    format!("expected a qualified form address in source set `{source_set}`"),
+                )
+            })?
+    } else {
+        form.to_string()
+    };
     let height = match item.get("height") {
         None => 10,
         Some(height) => height
@@ -423,7 +448,7 @@ fn home_page_item(
         roles.push((name.to_string(), visible));
     }
     Ok(HomePageItem {
-        form: form.to_string(),
+        form,
         height,
         common,
         roles,
@@ -689,7 +714,7 @@ pub fn parse_subsystem_operation(
         return if operation == "panels.set" {
             parse_panels_operation(args, op_index)
         } else {
-            parse_home_page_operation(args, op_index)
+            parse_home_page_operation(args, op_index, target.source_set())
         };
     }
     if operation == "subsystem.create" {

@@ -213,6 +213,10 @@ pub struct MethodProjection {
     /// Первая строка текста `Method.<имя>.Body`: начало документирующего
     /// комментария непосредственно над методом, иначе `from_line`.
     pub text_from_line: usize,
+    /// One-based physical line of the procedure/function keyword.
+    pub declaration_line: usize,
+    /// One-based UTF-16 column of the AST name token, when recovered.
+    pub name_column: Option<usize>,
     pub body_from_line: usize,
     pub body_to_line: usize,
     /// Ближайшая нормативная область, охватывающая метод
@@ -852,6 +856,8 @@ mod tests {
             from_line: 5,
             to_line: 9,
             text_from_line: 4,
+            declaration_line: 6,
+            name_column: Some(11),
             body_from_line: 7,
             body_to_line: 8,
             area: None,
@@ -1111,6 +1117,8 @@ mod tests {
             from_line: 1,
             to_line: 1,
             text_from_line: 1,
+            declaration_line: 1,
+            name_column: Some(11),
             body_from_line: 1,
             body_to_line: 0,
             area: None,
