@@ -120,6 +120,9 @@ pub struct ProviderReadAuthority {
     source_set_kind: SourceSetKind,
     root: Arc<SourceDirectory>,
     snapshot_identity: String,
+    /// The same admitted Configuration.xml selects one reader strategy for
+    /// this operation, including every owner proof within its collection.
+    configuration_streaming: std::sync::OnceLock<bool>,
     /// A physical-path lookup may prove one external owner without enumerating
     /// unrelated artifacts. It never supplies a partial inventory payload.
     point_external_artifact:
@@ -137,7 +140,7 @@ pub struct ProviderReadAuthority {
     /// Open editor buffers of the session this read serves; a module with a
     /// buffer is read from it, never from its file.
     documents: Option<SessionDocuments>,
-    /// Stamps of the descriptors of one kind directory, taken in one pass per
+    /// Stamps of the `xml` descriptors of one kind directory, taken in one pass per
     /// operation (`None`: the directory could not be listed that way).
     descriptor_stamps:
         std::sync::Mutex<std::collections::HashMap<PathBuf, Option<DirectoryStamps>>>,
@@ -185,6 +188,7 @@ impl ProviderReadAuthority {
             source_set_kind,
             root,
             snapshot_identity,
+            configuration_streaming: std::sync::OnceLock::new(),
             point_external_artifact: None,
             artifacts: Arc::new(RegistrationCache::default()),
             support_state: std::sync::Mutex::new(None),
@@ -318,7 +322,10 @@ impl ProviderReadAuthority {
                         .entry(parent.to_path_buf())
                         .or_insert_with(|| {
                             self.root
-                                .relative_directory_file_stamps(parent)
+                                .relative_directory_file_stamps_with_extension(
+                                    parent,
+                                    std::ffi::OsStr::new("xml"),
+                                )
                                 .ok()
                                 .flatten()
                                 .map(|stamps| Arc::new(stamps.into_iter().collect()))
@@ -489,10 +496,12 @@ impl ProviderReadAuthority {
     /// for files that already fit the ordinary read. The streaming route is
     /// selected only when that read would refuse the file by total size.
     pub(crate) fn configuration_xml_requires_streaming(&self) -> bool {
-        self.root
-            .open_relative_regular_nofollow(Path::new("Configuration.xml"))
-            .and_then(|file| file.metadata())
-            .is_ok_and(|metadata| metadata.len() > CONFIGURATION_STREAMING_THRESHOLD_BYTES)
+        *self.configuration_streaming.get_or_init(|| {
+            self.root
+                .open_relative_regular_nofollow(Path::new("Configuration.xml"))
+                .and_then(|file| file.metadata())
+                .is_ok_and(|metadata| metadata.len() > CONFIGURATION_STREAMING_THRESHOLD_BYTES)
+        })
     }
 
     /// Заимствование объекта, чей сопутствующий файл расширение не несёт;

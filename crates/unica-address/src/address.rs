@@ -564,6 +564,28 @@ impl QualifiedAddress {
         }
     }
 
+    /// Matches the final applied name of a valid address. Bulk callers pass
+    /// a prefix already normalized with `str::to_lowercase`.
+    pub fn last_name_starts_with(raw: &str, lowercase_prefix: &str) -> bool {
+        // Escaped dots and Can's dotted operation name require the parser.
+        // If Can gains aliases, their spellings must also bypass this filter.
+        if !raw.contains('\\') && !raw.contains("Can.") {
+            if let Some((_, last)) = raw.rsplit_once('.') {
+                if !last.to_lowercase().starts_with(lowercase_prefix) {
+                    return false;
+                }
+            }
+        }
+        // The quick test only rejects: every possible match still proves
+        // its complete grammar, source-set spelling and terminal name.
+        Self::parse(raw).ok().is_some_and(|at| {
+            at.segments()
+                .last()
+                .and_then(|segment| segment.name())
+                .is_some_and(|name| name.to_lowercase().starts_with(lowercase_prefix))
+        })
+    }
+
     pub fn parse(raw: &str) -> Result<Self, AddressError> {
         // A free-text DCS Item can itself end in #L1. Only a proven nameless
         // Body treats # as a selector; other names retain their old grammar.
@@ -1741,5 +1763,84 @@ mod retired_compilation_tests {
             );
         }
         assert!(QualifiedAddress::parse("main:CommonModule.Sample.Method.Compilation").is_ok());
+    }
+}
+
+#[cfg(test)]
+mod prefix_tests {
+    use super::{NodeKind, QualifiedAddress};
+
+    #[test]
+    fn last_name_prefix_matches_the_full_parser_including_escaping_and_unicode() {
+        let mut addresses = [
+            "main:CommonModule.Zulu",
+            "main:CommonModule.РеактивныйСервер",
+            "main:CommonModule.Σ",
+            "main:CommonModule.ΑΣ",
+            "main:CommonModule.Alpha.Method.Run",
+            "main:CommonModule.Alpha.Body",
+            "main:CommonModule.Alpha.Body#L1",
+            "main:CommonModule",
+            "main:Can",
+            "main:Can.props.set",
+            "main:Catalog.Can",
+            "main:Catalog.Things.Props.Synonym",
+            r"main:Report.R.Template.T.Setting.V.Item.First\.Second",
+            r"main:Report.R.Template.T.Setting.V.Item.Bad\q",
+            r"main:Catalog.Bad\\.Name",
+            "main:Unknown.Alpha",
+            "bad source:CommonModule.Alpha",
+            "CommonModule.Alpha",
+            "main:CommonModule..Alpha",
+            "main:",
+            "",
+        ]
+        .map(str::to_owned)
+        .to_vec();
+        for spelling in super::V13_KIND_SPELLINGS
+            .iter()
+            .filter(|entry| entry.kind == NodeKind::Can)
+        {
+            for token in
+                std::iter::once(spelling.kind.as_str()).chain(spelling.aliases.iter().copied())
+            {
+                addresses.push(format!("main:Catalog.Things.{token}.props.set"));
+            }
+        }
+        for address in &addresses {
+            for prefix in [
+                "", "z", "AL", "реак", "Σ", "σ", "ας", "props", "props.", "first.s", "Run",
+                "Synonym", "can", "missing",
+            ] {
+                let prefix = prefix.to_lowercase();
+                let expected = QualifiedAddress::parse(address).ok().is_some_and(|at| {
+                    at.segments()
+                        .last()
+                        .and_then(|segment| segment.name())
+                        .is_some_and(|name| name.to_lowercase().starts_with(&prefix))
+                });
+                assert_eq!(
+                    QualifiedAddress::last_name_starts_with(address, &prefix),
+                    expected,
+                    "{address:?} prefix {prefix:?}"
+                );
+            }
+        }
+        assert!(QualifiedAddress::last_name_starts_with(
+            "main:CommonModule.Σ",
+            "σ"
+        ));
+        assert!(QualifiedAddress::last_name_starts_with(
+            "main:Can.props.set",
+            "props."
+        ));
+        assert!(QualifiedAddress::last_name_starts_with(
+            r"main:Report.R.Template.T.Setting.V.Item.First\.Second",
+            "first.s"
+        ));
+        assert!(!QualifiedAddress::last_name_starts_with(
+            "main:Unknown.Alpha",
+            "al"
+        ));
     }
 }

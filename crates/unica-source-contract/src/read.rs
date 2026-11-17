@@ -265,6 +265,23 @@ pub trait SourceDirectoryReadPort: Debug + Send + Sync {
     ) -> io::Result<Option<Vec<(OsString, FileStamp)>>> {
         Ok(None)
     }
+    /// Like the full batch, restricted to names whose extension exactly
+    /// equals `extension` (without the dot, for example `xml`). A missing
+    /// entry still requires the caller's ordinary per-file lookup.
+    fn relative_directory_file_stamps_with_extension(
+        &self,
+        relative: &Path,
+        extension: &OsStr,
+    ) -> io::Result<Option<Vec<(OsString, FileStamp)>>> {
+        self.relative_directory_file_stamps(relative).map(|batch| {
+            batch.map(|entries| {
+                entries
+                    .into_iter()
+                    .filter(|(name, _)| Path::new(name).extension() == Some(extension))
+                    .collect()
+            })
+        })
+    }
     fn open_relative_regular_nofollow(&self, relative: &Path) -> io::Result<ReadFile>;
     fn read_immediate_names_with_limit(
         &self,
@@ -340,6 +357,14 @@ impl SourceDirectory {
         relative: &Path,
     ) -> io::Result<Option<Vec<(OsString, FileStamp)>>> {
         self.0.relative_directory_file_stamps(relative)
+    }
+    pub fn relative_directory_file_stamps_with_extension(
+        &self,
+        relative: &Path,
+        extension: &OsStr,
+    ) -> io::Result<Option<Vec<(OsString, FileStamp)>>> {
+        self.0
+            .relative_directory_file_stamps_with_extension(relative, extension)
     }
     pub fn open_relative_regular_nofollow(&self, relative: &Path) -> io::Result<ReadFile> {
         self.0.open_relative_regular_nofollow(relative)

@@ -773,15 +773,45 @@ impl<'a> LogicalViewReadAuthority<'a> {
                 });
         }
         let payload = self.configuration_payload(admitted)?;
-        let registered = payload
-            .get("registeredObjects")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .any(|item| {
-                item.get("kind").and_then(Value::as_str) == Some(owner_kind)
-                    && item.get("name").and_then(Value::as_str) == Some(owner_name)
-            });
+        // All members of a kind ask this same membership question. Index
+        // the admitted payload once instead of scanning it for each member;
+        // a new operation still obtains its own current configuration facts.
+        let key = RevisionCacheKey {
+            source_set_identity: admitted.source_set_identity.clone(),
+            revision: admitted.revision.clone(),
+        };
+        let mut indexes = self.registered_owner_names.lock().map_err(|_| {
+            ViewError::detailed(
+                RefusalDetail::CachePoisoned,
+                "registration membership index is poisoned",
+            )
+        })?;
+        let names = match indexes.get(&key) {
+            Some(names) => Arc::clone(names),
+            None => {
+                let mut names = RegisteredOwnerNames::new();
+                for item in payload
+                    .get("registeredObjects")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                {
+                    self.read_checkpoint()?;
+                    if let (Some(kind), Some(name)) = (
+                        item.get("kind").and_then(Value::as_str),
+                        item.get("name").and_then(Value::as_str),
+                    ) {
+                        names.insert((kind.to_owned(), name.to_owned()));
+                    }
+                }
+                let names = Arc::new(names);
+                indexes.insert(key, Arc::clone(&names));
+                names
+            }
+        };
+        drop(indexes);
+        self.read_checkpoint()?;
+        let registered = names.contains(&(owner_kind.to_owned(), owner_name.to_owned()));
         registered.then_some(()).ok_or_else(|| {
             ViewError::new(
                 RefusalCode::NotFound,
@@ -832,17 +862,20 @@ impl<'a> LogicalViewReadAuthority<'a> {
         let mut parent: Option<(MetadataAddress, Arc<PlatformXmlSourceSetOwnerEvidence>)> = None;
         for pair_count in 1..=parts.len() / 2 {
             let end = pair_count * 2;
-            let current_text = parts[..end].join(".");
-            let current = MetadataAddress::parse_logical(&current_text).map_err(|error| {
-                ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
-            })?;
+            let current = if end == parts.len() {
+                target.clone()
+            } else {
+                MetadataAddress::parse_logical(&parts[..end].join(".")).map_err(|error| {
+                    ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+                })?
+            };
             if let Some((parent_address, parent_evidence)) = &parent {
                 let child_kind = parts[end - 2];
                 let child_name = parts[end - 1];
                 let edge_key = OwnerEdgeCacheKey {
                     revision: revision.clone(),
                     parent: parent_address.as_str().to_string(),
-                    child: current_text.clone(),
+                    child: current.as_str().to_string(),
                 };
                 let mut edges = self.verified_owner_edges.lock().map_err(|_| {
                     ViewError::detailed(
@@ -1001,10 +1034,9 @@ impl<'a> LogicalViewReadAuthority<'a> {
         if let Some(evidence) = cache.get(&key) {
             return Ok(Arc::clone(evidence));
         }
-        let evidence = Arc::new(
-            self.read
-                .metadata_owner_evidence(target, &mut || self.read_checkpoint())?,
-        );
+        let evidence = self
+            .read
+            .metadata_owner_evidence(target, &mut || self.read_checkpoint())?;
         cache.insert(key, Arc::clone(&evidence));
         Ok(evidence)
     }
