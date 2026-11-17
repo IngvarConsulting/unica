@@ -4,7 +4,8 @@
 //! Writers spell MDClasses elements without a prefix, in the default
 //! namespace. A descriptor written as `<md:MetaDataObject xmlns:md=…>` is
 //! brought into that form before writing and back afterwards, so every writer
-//! keeps the owner's spelling without knowing it. The conversion is used only
+//! keeps the owner's spelling without knowing it. The original prefix binding
+//! remains available to QName values. The conversion is used only
 //! when it restores the original bytes exactly.
 
 /// The MDClasses namespace of 1C metadata descriptors.
@@ -17,15 +18,18 @@ pub enum PrefixForm {
     Default,
     /// Every MDClasses element uses this prefix, declared on the root.
     Prefixed(String),
+    /// Prefixed elements with an original lexical default namespace value.
+    PrefixedWithDefault {
+        prefix: String,
+        default_value: String,
+    },
 }
 
 impl PrefixForm {
-    /// Bring `source` into the default-namespace spelling. Returns the text the
-    /// writers work on and the form that restores the original spelling.
+    /// Normalize element spelling without replacing the original prefix binding.
     pub fn normalize(source: &str) -> Result<(String, PrefixForm), String> {
         let body = source.trim_start_matches('\u{feff}');
         let Ok(document) = roxmltree::Document::parse(body) else {
-            // Writers report the invalid XML themselves.
             return Ok((source.to_string(), PrefixForm::Default));
         };
         let root = document.root_element();
@@ -34,51 +38,164 @@ impl PrefixForm {
         {
             return Ok((source.to_string(), PrefixForm::Default));
         }
-        let Some(prefix) = root
-            .namespaces()
-            .find(|namespace| namespace.uri() == MDCLASSES)
-            .and_then(|namespace| namespace.name())
-            .map(str::to_string)
-        else {
+        let start = source.len() - body.len() + root.range().start;
+        let opening = opening_range(source, start)?;
+        let tag = &source[opening];
+        let Some((prefix, _)) = tag[1..name_end(tag)].split_once(':') else {
             return Ok((source.to_string(), PrefixForm::Default));
         };
         let refused = || {
-            format!(
-                "the descriptor spells MDClasses elements with the `{prefix}:` prefix \
-                 in a form that cannot be preserved; use one `{prefix}:` prefix declared \
-                 on the root for every MDClasses element"
-            )
+            format!("the descriptor spells MDClasses elements with the `{prefix}:` prefix in a form that cannot be preserved; use one `{prefix}:` prefix declared on the root for every MDClasses element")
         };
-        // Unprefixed elements would join MDClasses once it becomes the default.
-        if document.descendants().any(|node| {
-            node.is_element() && node.tag_name().namespace().is_none()
-                || node.is_element()
-                    && node.tag_name().namespace() == Some(MDCLASSES)
-                    && !body[node.range()].starts_with(&format!("<{prefix}:"))
-        }) {
+        if root.lookup_namespace_uri(Some(prefix)) != Some(MDCLASSES)
+            || document.descendants().any(|node| {
+                node.is_element() && node.tag_name().namespace().is_none()
+                    || node.is_element()
+                        && node.tag_name().namespace() == Some(MDCLASSES)
+                        && !body[node.range()].starts_with(&format!("<{prefix}:"))
+            })
+        {
             return Err(refused());
         }
-        let normalized = rename(source, &document, &prefix, Direction::Strip);
-        let form = PrefixForm::Prefixed(prefix.clone());
-        if form.restore(&normalized).ok().as_deref() != Some(source) {
+        let form = match default_value(tag)? {
+            Some((begin, end)) => PrefixForm::PrefixedWithDefault {
+                prefix: prefix.to_string(),
+                default_value: tag[begin..end].to_string(),
+            },
+            None => PrefixForm::Prefixed(prefix.to_string()),
+        };
+        let mut normalized = rename(source, &document, prefix, Direction::Strip);
+        set_default(&mut normalized, start, Some(MDCLASSES))?;
+        let normalized_document =
+            roxmltree::Document::parse(normalized.trim_start_matches('\u{feff}'))
+                .map_err(|_| refused())?;
+        if !same_expanded_names(&document, &normalized_document)
+            || form.restore(&normalized).ok().as_deref() != Some(source)
+        {
             return Err(refused());
         }
         Ok((normalized, form))
     }
 
-    /// Restore the original spelling on text written in the default form.
+    /// Restore namespace spelling and verify that expanded XML names survive.
     pub fn restore(&self, written: &str) -> Result<String, String> {
-        let PrefixForm::Prefixed(prefix) = self else {
-            return Ok(written.to_string());
+        let (prefix, original_default) = match self {
+            PrefixForm::Default => return Ok(written.to_string()),
+            PrefixForm::Prefixed(prefix) => (prefix, None),
+            PrefixForm::PrefixedWithDefault {
+                prefix,
+                default_value,
+            } => (prefix, Some(default_value.as_str())),
         };
         let body = written.trim_start_matches('\u{feff}');
         let document = roxmltree::Document::parse(body)
             .map_err(|error| format!("written descriptor is not valid XML: {error}"))?;
-        if document.root_element().lookup_namespace_uri(None) != Some(MDCLASSES) {
-            return Err("written descriptor lost its MDClasses namespace".to_string());
+        let root = document.root_element();
+        if root.lookup_namespace_uri(None) != Some(MDCLASSES)
+            || root.lookup_namespace_uri(Some(prefix)) != Some(MDCLASSES)
+        {
+            return Err("written descriptor lost its MDClasses namespace binding".to_string());
         }
-        Ok(rename(written, &document, prefix, Direction::Add))
+        let start = written.len() - body.len() + root.range().start;
+        let mut restored = rename(written, &document, prefix, Direction::Add);
+        set_default(&mut restored, start, original_default)?;
+        let restored_document = roxmltree::Document::parse(restored.trim_start_matches('\u{feff}'))
+            .map_err(|error| format!("restored descriptor is not valid XML: {error}"))?;
+        if !same_expanded_names(&document, &restored_document) {
+            return Err("restoring the descriptor would change an expanded XML name".to_string());
+        }
+        Ok(restored)
     }
+}
+
+fn name_end(opening: &str) -> usize {
+    opening
+        .as_bytes()
+        .iter()
+        .enumerate()
+        .skip(1)
+        .find(|(_, byte)| byte.is_ascii_whitespace() || matches!(byte, b'/' | b'>'))
+        .map_or(opening.len(), |(index, _)| index)
+}
+
+// Only inspect the actual root opening, respecting quoted `>` characters.
+fn opening_range(source: &str, start: usize) -> Result<std::ops::Range<usize>, String> {
+    let mut quote = None;
+    for (offset, byte) in source.as_bytes()[start..].iter().copied().enumerate() {
+        match (quote, byte) {
+            (Some(current), value) if current == value => quote = None,
+            (None, b'\'' | b'"') => quote = Some(byte),
+            (None, b'>') => return Ok(start..start + offset + 1),
+            _ => {}
+        }
+    }
+    Err("the root opening tag is incomplete".to_string())
+}
+
+fn default_value(opening: &str) -> Result<Option<(usize, usize)>, String> {
+    crate::text::cfe_borrow_xml_attribute_value_range(opening, "xmlns")
+        .map_err(|_| "the default namespace declaration is malformed".to_string())
+}
+
+fn set_default(source: &mut String, start: usize, value: Option<&str>) -> Result<(), String> {
+    let opening = opening_range(source, start)?;
+    let tag = &source[opening];
+    match (default_value(tag)?, value) {
+        (Some((begin, end)), Some(value)) => {
+            source.replace_range(start + begin..start + end, value)
+        }
+        (None, Some(value)) => {
+            let at = start + name_end(tag);
+            source.insert_str(at, &format!(" xmlns=\"{value}\""));
+        }
+        (Some((begin, end)), None) => {
+            // Remove the real assignment identified by the existing lexer,
+            // including the whitespace owned by the inserted declaration.
+            let mut at = begin - 1;
+            let bytes = tag.as_bytes();
+            while at > 0 && bytes[at - 1].is_ascii_whitespace() {
+                at -= 1;
+            }
+            if at == 0 || bytes[at - 1] != b'=' {
+                return Err("invalid default namespace assignment".to_string());
+            }
+            at -= 1;
+            while at > 0 && bytes[at - 1].is_ascii_whitespace() {
+                at -= 1;
+            }
+            if at < 5 || &tag[at - 5..at] != "xmlns" {
+                return Err("invalid default namespace name".to_string());
+            }
+            at -= 5;
+            while at > 0 && bytes[at - 1].is_ascii_whitespace() {
+                at -= 1;
+            }
+            source.replace_range(start + at..start + end + 1, "");
+        }
+        (None, None) => {}
+    }
+    Ok(())
+}
+
+fn same_expanded_names(left: &roxmltree::Document<'_>, right: &roxmltree::Document<'_>) -> bool {
+    let left = left.descendants().filter(|node| node.is_element());
+    let right = right.descendants().filter(|node| node.is_element());
+    left.map(|node| {
+        (
+            node.tag_name(),
+            node.attributes()
+                .map(|attribute| (attribute.namespace(), attribute.name()))
+                .collect::<Vec<_>>(),
+        )
+    })
+    .eq(right.map(|node| {
+        (
+            node.tag_name(),
+            node.attributes()
+                .map(|attribute| (attribute.namespace(), attribute.name()))
+                .collect::<Vec<_>>(),
+        )
+    }))
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -87,8 +204,7 @@ enum Direction {
     Add,
 }
 
-/// Remove or add `prefix:` on every MDClasses element and swap the root's
-/// MDClasses declaration between `xmlns:prefix` and `xmlns`.
+/// Remove or add `prefix:` on MDClasses element names; bindings stay in place.
 fn rename(
     source: &str,
     document: &roxmltree::Document<'_>,
@@ -123,17 +239,7 @@ fn rename(
             Direction::Add => text.insert_str(at, &qualified),
         }
     }
-    let (from, to) = match direction {
-        Direction::Strip => (
-            format!("xmlns:{prefix}=\"{MDCLASSES}\""),
-            format!("xmlns=\"{MDCLASSES}\""),
-        ),
-        Direction::Add => (
-            format!("xmlns=\"{MDCLASSES}\""),
-            format!("xmlns:{prefix}=\"{MDCLASSES}\""),
-        ),
-    };
-    text.replacen(&from, &to, 1)
+    text
 }
 
 #[cfg(test)]
@@ -189,5 +295,86 @@ mod tests {
             "<m:Comment xmlns:m=\"http://v8.1c.ru/8.3/MDClasses\"/>",
         );
         assert!(PrefixForm::normalize(&mixed).is_err());
+    }
+    #[test]
+    fn foreign_default_namespace_round_trips_without_duplicate_declarations() {
+        for declarations in [
+            r#"xmlns:md="http://v8.1c.ru/8.3/MDClasses" xmlns="urn:unrelated""#,
+            "xmlns = 'urn:unrelated' xmlns:md = 'http://v8.1c.ru/8.3/MDClasses'",
+        ] {
+            let source = format!("\u{feff}<?xml version=\"1.0\"?>\r\n<md:MetaDataObject {declarations}><md:Catalog><md:Properties><md:Name>A</md:Name><md:Comment/></md:Properties></md:Catalog></md:MetaDataObject>");
+            let (normalized, form) = PrefixForm::normalize(&source).unwrap();
+            let document =
+                roxmltree::Document::parse(normalized.trim_start_matches('\u{feff}')).unwrap();
+            assert_eq!(
+                document.root_element().lookup_namespace_uri(Some("md")),
+                Some(MDCLASSES)
+            );
+            assert_eq!(form.restore(&normalized).unwrap(), source);
+            let written = normalized.replace("<Comment/>", "<Comment>Note</Comment>");
+            assert_eq!(
+                form.restore(&written).unwrap(),
+                source.replace("<md:Comment/>", "<md:Comment>Note</md:Comment>")
+            );
+        }
+    }
+
+    #[test]
+    fn namespace_spelling_outside_the_root_declaration_is_never_rewritten() {
+        let source = concat!(
+            "<!-- xmlns:md=\"http://v8.1c.ru/8.3/MDClasses\" -->",
+            "<?probe xmlns=\"not-a-binding\"?>",
+            "<md:MetaDataObject note='xmlns:md=\"http://v8.1c.ru/8.3/MDClasses\" >' xmlns:md = 'http://v8.1c.ru/8.3/MDClasses' xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">",
+            "<md:Catalog xsi:type=\"md:Catalog\"><md:Properties><md:Name>A</md:Name><md:Comment>md:Catalog</md:Comment></md:Properties></md:Catalog></md:MetaDataObject>"
+        );
+        let (normalized, form) = PrefixForm::normalize(source).unwrap();
+        let document = roxmltree::Document::parse(&normalized).unwrap();
+        assert_eq!(
+            document.root_element().lookup_namespace_uri(Some("md")),
+            Some(MDCLASSES)
+        );
+        assert!(normalized.contains("xsi:type=\"md:Catalog\""));
+        assert!(normalized.contains("<Comment>md:Catalog</Comment>"));
+        assert_eq!(form.restore(&normalized).unwrap(), source);
+    }
+
+    #[test]
+    fn foreign_elements_keep_their_expanded_names_or_are_refused() {
+        let prefix = r#"<md:MetaDataObject xmlns:md="http://v8.1c.ru/8.3/MDClasses" xmlns="urn:foreign" xmlns:f="urn:foreign">"#;
+        let foreign = format!("{prefix}<f:Foreign/><md:Catalog/></md:MetaDataObject>");
+        let (normalized, form) = PrefixForm::normalize(&foreign).unwrap();
+        assert_eq!(form.restore(&normalized).unwrap(), foreign);
+        let unprefixed = foreign.replace("<f:Foreign/>", "<Foreign/>");
+        assert!(PrefixForm::normalize(&unprefixed).is_err());
+    }
+    #[test]
+    fn an_existing_mdclasses_default_keeps_the_previous_unchanged_route() {
+        let source = PREFIXED
+            .replace("xmlns:md=", &format!("xmlns=\"{MDCLASSES}\" xmlns:md="))
+            .replace("<md:Comment/>", "<Comment/>");
+        assert_eq!(
+            PrefixForm::normalize(&source).unwrap(),
+            (source, PrefixForm::Default)
+        );
+    }
+
+    #[test]
+    fn restore_checks_new_elements_and_namespace_binding_changes() {
+        let (normalized, form) = PrefixForm::normalize(PREFIXED).unwrap();
+        let written = normalized.replace("<Comment/>", "<Comment/><Added/>");
+        assert_eq!(
+            form.restore(&written).unwrap(),
+            PREFIXED.replace("<md:Comment/>", "<md:Comment/><md:Added/>")
+        );
+        let changed_binding = normalized.replace(
+            &format!("xmlns:md=\"{MDCLASSES}\""),
+            "xmlns:md=\"urn:wrong\"",
+        );
+        assert!(form.restore(&changed_binding).is_err());
+        let rebound = normalized.replace(
+            "<Comment/>",
+            "<Container xmlns:md=\"urn:wrong\"><Added/></Container>",
+        );
+        assert!(form.restore(&rebound).is_err());
     }
 }

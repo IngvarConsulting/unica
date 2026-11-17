@@ -1,0 +1,43 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:app="http://v8.1c.ru/8.2/managed-application/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:cmi="http://v8.1c.ru/8.2/managed-application/cmi" xmlns:ent="http://v8.1c.ru/8.1/data/enterprise" xmlns:lf="http://v8.1c.ru/8.2/managed-application/logform" xmlns:pal="http://v8.1c.ru/8.1/data/ui/colors/palette" xmlns:style="http://v8.1c.ru/8.1/data/ui/style" xmlns:sys="http://v8.1c.ru/8.1/data/ui/fonts/system" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:v8ui="http://v8.1c.ru/8.1/data/ui" xmlns:web="http://v8.1c.ru/8.1/data/ui/colors/web" xmlns:win="http://v8.1c.ru/8.1/data/ui/colors/windows" xmlns:xen="http://v8.1c.ru/8.3/xcf/enums" xmlns:xpr="http://v8.1c.ru/8.3/xcf/predef" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.22">
+	<InformationRegister uuid="0cd6ad86-dacd-82b3-a955-ef41ee98a8bd">
+		<InternalInfo>
+			<xr:GeneratedType name="InformationRegisterRecord.АдминистративнаяИерархия" category="Record">
+				<xr:TypeId>0654b429-076e-828d-9a9e-10f7da1335b9</xr:TypeId>
+				<xr:ValueId>9335a76c-8896-8645-abbb-a2a7efe23556</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="InformationRegisterManager.АдминистративнаяИерархия" category="Manager">
+				<xr:TypeId>f9b6ee02-732a-8778-9867-1d6e3a4c3d2e</xr:TypeId>
+				<xr:ValueId>18c13242-b8f2-897f-b7c3-0933b8177dce</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="InformationRegisterSelection.АдминистративнаяИерархия" category="Selection">
+				<xr:TypeId>76cc9670-a9df-80b9-9e63-f6f6bbc39899</xr:TypeId>
+				<xr:ValueId>3d26ba98-f3ee-8f59-9293-f858a22fe165</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="InformationRegisterList.АдминистративнаяИерархия" category="List">
+				<xr:TypeId>9c9ef8ef-9fea-8086-a456-cc22b076469e</xr:TypeId>
+				<xr:ValueId>50ddd931-064b-807f-a6b8-d7b7cf8f0b6a</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="InformationRegisterRecordSet.АдминистративнаяИерархия" category="RecordSet">
+				<xr:TypeId>f06ad5d9-0b21-8150-bb1f-772097bdf5e9</xr:TypeId>
+				<xr:ValueId>241b9f11-b845-8cdb-8206-999325cb97e8</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="InformationRegisterRecordKey.АдминистративнаяИерархия" category="RecordKey">
+				<xr:TypeId>b327bba6-7159-84b2-b044-afe513062c19</xr:TypeId>
+				<xr:ValueId>d7f1cd0e-94a8-8832-83a7-5b54907e2f9a</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="InformationRegisterRecordManager.АдминистративнаяИерархия" category="RecordManager">
+				<xr:TypeId>e91c5061-180c-89c5-9835-524deae14eb8</xr:TypeId>
+				<xr:ValueId>9e964fdc-4d09-8731-82b3-5e43f62281c8</xr:ValueId>
+			</xr:GeneratedType>
+		</InternalInfo>
+		<Properties>
+			<ObjectBelonging>Adopted</ObjectBelonging>
+			<Name>АдминистративнаяИерархия</Name>
+			<Comment/>
+			<ExtendedConfigurationObject>ab4dbaff-cee6-47b3-9d69-13ac5c906f95</ExtendedConfigurationObject>
+			<ActionOnConfigurationObjectMissing>Auto</ActionOnConfigurationObjectMissing>
+		</Properties>
+		<ChildObjects/>
+	</InformationRegister>
+</MetaDataObject>

@@ -99,14 +99,11 @@
                   "availableValues": [
                     {
                       "value": "Перечисление.Округления.Окр1",
-                      "presentation": {
-                        "ru": "Рубли",
-                        "en": "Rubles"
-                      }
+                      "presentation": "ru = 'Рубли'; en = 'Rubles'"
                     },
                     {
                       "value": "Перечисление.Округления.Окр1000",
-                      "presentation": "Тысячи"
+                      "presentation": "ru = 'Тысячи'"
                     }
                   ]
                 },

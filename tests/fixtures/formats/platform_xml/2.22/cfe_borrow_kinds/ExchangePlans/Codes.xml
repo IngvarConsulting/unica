@@ -1,0 +1,36 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:app="http://v8.1c.ru/8.2/managed-application/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:cmi="http://v8.1c.ru/8.2/managed-application/cmi" xmlns:ent="http://v8.1c.ru/8.1/data/enterprise" xmlns:lf="http://v8.1c.ru/8.2/managed-application/logform" xmlns:pal="http://v8.1c.ru/8.1/data/ui/colors/palette" xmlns:style="http://v8.1c.ru/8.1/data/ui/style" xmlns:sys="http://v8.1c.ru/8.1/data/ui/fonts/system" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:v8ui="http://v8.1c.ru/8.1/data/ui" xmlns:web="http://v8.1c.ru/8.1/data/ui/colors/web" xmlns:win="http://v8.1c.ru/8.1/data/ui/colors/windows" xmlns:xen="http://v8.1c.ru/8.3/xcf/enums" xmlns:xpr="http://v8.1c.ru/8.3/xcf/predef" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.22">
+	<ExchangePlan uuid="34dc2c62-a1e9-880e-9147-3ec58b560324">
+		<InternalInfo>
+			<xr:ThisNode>343b675b-0288-822f-8180-4a49832e32ca</xr:ThisNode>
+			<xr:GeneratedType name="ExchangePlanObject.Codes" category="Object">
+				<xr:TypeId>372004af-4374-8e74-8967-301654055cce</xr:TypeId>
+				<xr:ValueId>99bc5fbc-4ca8-8850-8459-1be05be5678a</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="ExchangePlanRef.Codes" category="Ref">
+				<xr:TypeId>4f6e24f2-2873-865c-ba4f-54694562653c</xr:TypeId>
+				<xr:ValueId>5591d7d2-0bef-8378-a2ab-1ca6a639a1e6</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="ExchangePlanSelection.Codes" category="Selection">
+				<xr:TypeId>b39032fe-1954-88e8-aa9c-218a06df2ce5</xr:TypeId>
+				<xr:ValueId>a846bd1f-fd94-8c8b-b634-73a544edd88d</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="ExchangePlanList.Codes" category="List">
+				<xr:TypeId>2bb8dc21-7ce2-87e8-87cd-a4f4e5eb13ae</xr:TypeId>
+				<xr:ValueId>6700bb2a-9d6c-832f-bf36-d3edc4fff42a</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="ExchangePlanManager.Codes" category="Manager">
+				<xr:TypeId>9b84ff95-4ce3-8aa5-85cf-daad9b5c5f80</xr:TypeId>
+				<xr:ValueId>dff17f02-87ab-8c60-819f-24131c0ad4d2</xr:ValueId>
+			</xr:GeneratedType>
+		</InternalInfo>
+		<Properties>
+			<ObjectBelonging>Adopted</ObjectBelonging>
+			<Name>Codes</Name>
+			<Comment/>
+			<ExtendedConfigurationObject>88836e71-134d-5216-a9d6-be45490e94c4</ExtendedConfigurationObject>
+			<ActionOnConfigurationObjectMissing>Auto</ActionOnConfigurationObjectMissing>
+		</Properties>
+		<ChildObjects/>
+	</ExchangePlan>
+</MetaDataObject>

@@ -1287,6 +1287,15 @@ fn a_value_error_gets_no_next_and_an_unknown_key_leads_to_the_contract() {
         &request,
         traits,
     );
+    let error = unica_source_contract::proposal::ApplyPlanError::new(
+        unica_source_contract::proposal::ApplyPlanErrorKind::BadValue,
+        "attribute `Код` already exists",
+    )
+    .at_path("ops[0].args.items[0].name");
+    let duplicate =
+        super::v13_service::with_argument_dictionary(duplicate, &request, &error, traits, &|_| {
+            Some(true)
+        });
     assert_eq!(duplicate.next, Vec::<Value>::new());
     let unknown = super::v13_service::with_unknown_argument_contract(
         refusal(
@@ -1805,9 +1814,7 @@ fn header_and_catalog_attributes_still_add_at_the_owner() {
     }
 }
 
-/// Срезы `Interface` модуля — элементы без адреса: `…Interface.Public`
-/// грамматика отвергает, и `view` его больше не выдаёт. Каждый `at` ответа
-/// открывается, а методы среза — адреса, которые `view` читает.
+/// Срезы `Interface` модуля и ссылки на их методы читаются через `view`.
 /// rule: CTR.SOURCE.QUALIFIED-LOGICAL-ADDRESS
 #[test]
 fn interface_slices_publish_only_addresses_view_opens() {
@@ -1824,13 +1831,26 @@ fn interface_slices_publish_only_addresses_view_opens() {
     assert_eq!(names, ["Public", "Library", "Override"]);
     let mut opened = Vec::new();
     for item in items {
-        assert_eq!(item["addressable"], json!(false), "{item}");
-        if let Some(at) = item.get("at").and_then(Value::as_str) {
-            opened.push(at.to_string());
-        }
-        for method in item["methods"].as_array().into_iter().flatten() {
-            opened.push(method.as_str().expect("method address").to_string());
-        }
+        let slice_at = item["at"].as_str().expect("addressable interface slice");
+        assert_eq!(
+            slice_at,
+            format!("{at}.{}", item["interface"].as_str().unwrap())
+        );
+        let slice = invoke(
+            &fixture.workspace,
+            ToolIdentity::View,
+            json!({"at": slice_at}),
+        );
+        assert!(slice.ok, "{slice_at}: {}", slice.summary);
+        let slice = slice.data.unwrap();
+        let methods = slice["items"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|method| method["at"].as_str().expect("method address").to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(json!(methods), item["methods"], "{slice_at}");
+        opened.extend(methods);
     }
     assert!(
         opened.contains(&"main:Catalog.Валюты.Module.Manager.Method.ВалютаПоКоду".to_string()),
@@ -1847,6 +1867,23 @@ fn interface_slices_publish_only_addresses_view_opens() {
     let data = checked.data.expect("check verdict");
     assert_eq!(data["status"], "readable", "{data}");
     assert_eq!(data["validators"], json!([]), "{data}");
+    let public_at = format!("{at}.Public");
+    let checked = invoke(
+        &fixture.workspace,
+        ToolIdentity::Check,
+        json!({"at": public_at}),
+    );
+    assert!(checked.ok, "{}", checked.summary);
+    let data = checked.data.expect("slice check verdict");
+    assert_eq!(data["status"], "readable", "{data}");
+    assert_eq!(data["validators"], json!([]), "{data}");
+    let unknown_at = format!("{at}.Unknown");
+    let unknown = invoke(
+        &fixture.workspace,
+        ToolIdentity::View,
+        json!({"at": unknown_at}),
+    );
+    assert!(!unknown.ok);
     assert_eq!(
         walk(&fixture.workspace, at).unroutable,
         Vec::<String>::new()
@@ -2345,6 +2382,127 @@ fn object_remove_skeleton_previews_with_only_the_outer_target() {
     );
     assert!(preview.ok, "{preview:?}");
     assert_eq!(tree_digest(&fixture.workspace.join("src")), before);
+}
+
+/// The enum continuation belongs to the failing operation, and
+/// cannot replace a narrower recovery or promise an unavailable contract.
+#[test]
+fn argument_refusals_route_to_the_contextual_contract_without_overriding_recovery() {
+    use unica_source_contract::proposal::{ApplyPlanError, ApplyPlanErrorKind};
+    let traits = crate::domain::apply::source_set_traits_for_read(
+        SourceSetKind::Configuration,
+        PlatformProfile::v8_3_27(),
+    );
+    let input = json!({"at":"cf:Document.Order","dryRun":true,"ops":[
+        {"op":"props.set","args":{"values":{"Comment":"x"}}},
+        {"op":"attribute.set","args":{"at":"cf:Document.Order.Attribute.Probe","values":{"indexing":"wrong"}}}
+    ]});
+    let request = ApplyRequest::parse(input.as_object().unwrap(), &["cf"]).unwrap();
+    let error = |path: &str| {
+        ApplyPlanError::new(ApplyPlanErrorKind::BadValue, "invalid argument").at_path(path)
+    };
+    let refusal = || {
+        DomainResult::canonical_rejection(
+            None,
+            unica_refusal::RefusalCode::BadValue,
+            "invalid argument",
+        )
+    };
+    let route = |path: &str, exists, mut next: Vec<Value>| {
+        let mut result = refusal();
+        result.next.append(&mut next);
+        super::v13_service::with_argument_dictionary(
+            result,
+            &request,
+            &error(path),
+            traits,
+            &|at| {
+                assert_eq!(at.to_string(), "cf:Document.Order.Attribute.Probe");
+                exists
+            },
+        )
+    };
+    assert_eq!(
+        route("ops[1].args.values.indexing", Some(true), vec![]).next[0]["args"]["at"],
+        "cf:Document.Order.Attribute.Probe.Can.attribute.set"
+    );
+    for exists in [None, Some(false)] {
+        assert!(route("ops[1].args.values.indexing", exists, vec![])
+            .next
+            .is_empty());
+    }
+    let specific =
+        vec![json!({"tool":"unica.view","args":{"at":"cf:ExchangePlan.Sync.Can.content.set"}})];
+    assert_eq!(
+        route("ops[1].args.values.indexing", Some(true), specific.clone()).next,
+        specific
+    );
+    for path in [
+        "ops[1].argsExtra",
+        "ops[1].at",
+        "ops[2].args.mode",
+        "ops[bad].args.mode",
+    ] {
+        assert!(route(path, Some(true), vec![]).next.is_empty(), "{path}");
+    }
+}
+
+/// Real source-backed nodes, beyond the Configuration root, retain
+/// a reachable continuation when the enum preview omits values.
+#[test]
+fn dcs_and_metadata_member_enum_refusals_open_source_backed_contracts() {
+    for (workspace, at, op, args, path, suffix) in [
+        (
+            "workspace-dcs",
+            "cf:Report.F05Report.Template.F05Schema.Setting.F05Variant",
+            "filter.add",
+            json!({"items":[{"field":"Amount","comparison":"wrong","value":0}]}),
+            "ops[0].args.items[0].comparison",
+            "list shortened",
+        ),
+        (
+            "workspace",
+            "main:Catalog.Валюты.Attribute.Наценка",
+            "attribute.set",
+            json!({"values":{"indexing":"wrong"}}),
+            "ops[0].args.values.indexing",
+            "IndexWithAdditionalOrder",
+        ),
+    ] {
+        let fixture = fixture(workspace);
+        let before = tree_digest(&fixture.workspace.join("src"));
+        let refused = invoke(
+            &fixture.workspace,
+            ToolIdentity::Apply,
+            json!({"at":at,"ops":[{"op":op,"args":args}]}),
+        );
+        assert!(!refused.ok, "{refused:?}");
+        assert_eq!(refused.at.as_deref(), Some(path));
+        assert!(
+            refused.diagnostics[0]["message"]
+                .as_str()
+                .unwrap()
+                .contains(suffix),
+            "{refused:?}"
+        );
+        assert_eq!(refused.next[0]["args"]["at"], format!("{at}.Can.{op}"));
+        let opened = invoke(
+            &fixture.workspace,
+            ToolIdentity::View,
+            refused.next[0]["args"].clone(),
+        );
+        assert!(opened.ok, "{opened:?}");
+        if op == "filter.add" {
+            assert!(
+                opened.data.unwrap()["props"]["contract"]["argsSchema"]["properties"]["items"]
+                    ["items"]["properties"]["comparison"]["enum"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&json!("NotFilled"))
+            );
+        }
+        assert_eq!(tree_digest(&fixture.workspace.join("src")), before);
+    }
 }
 
 #[test]

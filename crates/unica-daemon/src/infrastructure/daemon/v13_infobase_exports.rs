@@ -3,7 +3,7 @@
 // that value intact avoids a second error model at this adapter boundary.
 
 use super::protocol::InvocationRequest;
-use super::runner_015::Runner015ProcessRunner;
+use super::v13_source_import::INFOBASE_NAME;
 use crate::domain::engine::MissingEngineRefusal;
 use crate::infrastructure::bundled_tools::{bundled_tool_version, resolve_bundled_tool};
 use crate::infrastructure::plugin_runtime::find_plugin_root;
@@ -17,7 +17,9 @@ use unica_artifact_delivery::engine::BundledTool;
 use unica_artifact_delivery::engine::BundledToolError;
 use unica_artifact_delivery::engine::MissingEngine;
 use unica_execution::invocation_store::ToolIdentity;
-use unica_execution_contract::invocation::{DomainResult, SafeIdentityHash};
+use unica_execution_contract::invocation::{
+    DomainResult, HumanChoice, HumanChoiceOption, SafeIdentityHash,
+};
 use unica_process::runner::{ProcessCommand, ProcessOutput, ProcessRunner, ProcessStreamFailure};
 use unica_redaction::redactor;
 use unica_refusal::{RefusalCode, RefusalDetail};
@@ -152,6 +154,8 @@ pub(super) struct PreparedInfobaseExport {
     arguments: ExportArguments,
     dry_run: bool,
     context: WorkspaceContext,
+    /// The call as made: a question about the busy infobase repeats it.
+    call: Map<String, Value>,
 }
 
 pub(super) enum Preparation {
@@ -215,11 +219,31 @@ impl PreparedInfobaseExport {
                 )
             })?;
         let arguments = parse_export_arguments(operation, args, &context)?;
+        // Замена данных базы исполняется только с согласия человека. Вопрос
+        // задаётся до допуска: вызов, ушедший в фоновую задачу, спросить уже
+        // не может. Превью базу не меняет и не спрашивает.
+        if operation == ExportOperation::Restore
+            && arguments.restore_mode == Some(RestoreMode::Replace)
+            && !dry_run
+        {
+            let file = dt_file_name(&arguments.named_file_relative);
+            if !HumanChoice::is_confirmed(
+                &restore_replace_question(&file),
+                "unica.run",
+                request.arguments(),
+            ) {
+                return Err(restore_replace_unconfirmed(
+                    &arguments.named_file_relative,
+                    request.arguments(),
+                ));
+            }
+        }
         Ok(Self {
             operation,
             arguments,
             dry_run,
             context,
+            call: request.arguments().clone(),
         })
     }
 
@@ -231,7 +255,14 @@ impl PreparedInfobaseExport {
     }
 
     pub(super) fn execute(&self, cancellation: CancellationToken) -> DomainResult {
-        execute_with_runner(self, &Runner015ProcessRunner, cancellation)
+        let result = super::runner::with_bundled_runner(
+            &self.context.workspace_root,
+            &self.context.cwd,
+            self.operation.name(),
+            cancellation,
+            |runner, cancellation| execute_with_runner(self, runner, cancellation),
+        );
+        super::v13_infobase_sessions::bind_to_call(result, &self.call)
     }
 }
 
@@ -606,30 +637,30 @@ fn execute_with_resolved_runner(
         Ok(inputs) => inputs,
         Err(result) => return result,
     };
-    let preview = match invoke_runner(prepared, tool, runner, &cancellation, true) {
-        Ok(envelope) => envelope,
-        Err(result) => return result,
-    };
-    let plan = match validate_preview(prepared, &preview) {
-        Ok(plan) => plan,
-        Err(result) => return result,
-    };
-    let after = match capture_inputs(prepared) {
-        Ok(inputs) => inputs,
-        Err(result) => return result,
-    };
-    if before != after {
-        return reject(
-            prepared.operation,
-            RefusalCode::ConcurrentChange,
-            format!(
-                "{} inputs changed during preview; run dryRun: true again",
-                prepared.operation.name()
-            ),
-        );
-    }
-
     if prepared.dry_run {
+        let preview = match invoke_runner(prepared, tool, runner, &cancellation, true) {
+            Ok(envelope) => envelope,
+            Err(result) => return result,
+        };
+        let plan = match validate_preview(prepared, &preview) {
+            Ok(plan) => plan,
+            Err(result) => return result,
+        };
+        let after = match capture_inputs(prepared) {
+            Ok(inputs) => inputs,
+            Err(result) => return result,
+        };
+        if before != after {
+            return reject(
+                prepared.operation,
+                RefusalCode::ConcurrentChange,
+                format!(
+                    "{} inputs changed during preview; run dryRun: true again",
+                    prepared.operation.name()
+                ),
+            );
+        }
+
         let mut result = DomainResult::success(format!(
             "{} planned without changing the infobase or workspace files",
             prepared.operation.name()
@@ -650,7 +681,7 @@ fn execute_with_resolved_runner(
             },
             "reason": "execute with the current arguments plan"
         }));
-        note_another_copy(&mut result, &preview);
+        note_runner_warnings(&mut result, &preview);
         return result;
     }
     if cancellation.is_cancelled() {
@@ -663,13 +694,32 @@ fn execute_with_resolved_runner(
             ),
         );
     }
+    if prepared.operation == ExportOperation::Restore
+        && super::v13_infobase_another_copy::needs_preview(
+            &prepared.context.workspace_root,
+            &prepared.call,
+        )
+    {
+        if let Ok(preview) = invoke_runner(prepared, tool, runner, &cancellation, true) {
+            if let Some(refusal) = super::v13_infobase_another_copy::refusal_for(
+                prepared.operation.name(),
+                &preview,
+                &prepared.call,
+            ) {
+                return refusal;
+            }
+        }
+    }
     let applied = match invoke_runner(prepared, tool, runner, &cancellation, false) {
         Ok(envelope) => envelope,
         Err(result) => return result,
     };
-    if let Err(result) = validate_apply(prepared, &plan, &applied) {
-        return result;
-    }
+    // Исполнение не повторяет preview раннера: исполнитель и его квитанция
+    // берутся из ответа исполнения.
+    let provider = match validate_apply(prepared, &applied) {
+        Ok(provider) => provider,
+        Err(result) => return result,
+    };
     let (sha256, size) = match digest_optional_workspace_file(
         &prepared.context.workspace_root,
         &prepared.arguments.named_file_relative,
@@ -722,7 +772,7 @@ fn execute_with_resolved_runner(
         result.data = Some(json!({
             "op": prepared.operation.name(),
             "dryRun": false,
-            "provider": plan.provider,
+            "provider": provider,
             "source": {
                 "kind": prepared.operation.artifact_kind(None),
                 "path": path_text(&prepared.arguments.named_file_relative),
@@ -742,7 +792,7 @@ fn execute_with_resolved_runner(
             "infobase": true,
             "kind": applied["data"]["target_state"],
         }));
-        note_another_copy(&mut result, &applied);
+        note_runner_warnings(&mut result, &applied);
 
         return result;
     }
@@ -753,7 +803,7 @@ fn execute_with_resolved_runner(
     result.data = Some(json!({
         "op": prepared.operation.name(),
         "dryRun": false,
-        "provider": plan.provider,
+        "provider": provider,
         "artifact": {
             "kind": prepared.operation.artifact_kind(prepared.arguments.extension.as_deref()),
             "path": path_text(&prepared.arguments.named_file_relative),
@@ -816,7 +866,7 @@ fn invoke_runner(
                     return Err(reject(
                         prepared.operation,
                         RefusalCode::UnsupportedOperation,
-                        format!("download of the main configuration is unavailable with v8-runner 0.14 in a project that declares extension source sets but no configuration source set: the runner writes the main configuration into one file only by the name of its configuration source set; declare one in {CONFIG_NAME}"),
+                        format!("download of the main configuration is unavailable with the pinned v8-runner in a project that declares extension source sets but no configuration source set: the runner writes the main configuration into one file only by the name of its configuration source set; declare one in {CONFIG_NAME}"),
                     ));
                 }
                 args.extend(source_set);
@@ -885,7 +935,125 @@ fn invoke_runner(
             ));
         }
     };
-    parse_runner_output(prepared.operation, output, dry_run)
+    // `mode: create` над базой, которая уже есть: выбрать замену её данных
+    // может только человек. Спрашивает только исполнение: превью отдаёт
+    // прежний отказ.
+    let target_exists = !dry_run
+        && prepared.operation == ExportOperation::Restore
+        && prepared.arguments.restore_mode == Some(RestoreMode::Create)
+        && !output.status_success
+        && restore_target_exists(&output.stdout);
+    parse_runner_output(prepared.operation, output, dry_run).map_err(|mut rejection| {
+        if target_exists {
+            rejection.human_choice = Some(Box::new(restore_exists_choice(prepared)));
+        }
+        rejection
+    })
+}
+
+/// Код вопроса о замене данных базы: по нему клиент рисует свой экран.
+const RESTORE_REPLACE_CODE: &str = "infobase.restore_replace";
+/// Код вопроса о загрузке с `mode: create` в базу, которая уже есть.
+const RESTORE_EXISTS_CODE: &str = "infobase.restore_exists";
+
+/// Устойчивая часть отказа раннера 0.15 на `infobase restore --create`, когда
+/// база уже есть. Кода у этого отказа нет: это ошибка проверки
+/// `invalid_argument`, и опознаётся она по этой части текста, как
+/// предупреждение о базе другой копии. Тест на конверте раннера упадёт, если
+/// раннер сменит прозу.
+const RESTORE_TARGET_EXISTS_FRAGMENT: &str =
+    "--create was requested but the target infobase already exists";
+
+fn restore_target_exists(stdout: &str) -> bool {
+    serde_json::from_str::<Value>(stdout).is_ok_and(|envelope| {
+        envelope["error"]["code"] == "invalid_argument"
+            && envelope["error"]["message"]
+                .as_str()
+                .is_some_and(|message| message.contains(RESTORE_TARGET_EXISTS_FRAGMENT))
+    })
+}
+
+/// Имя DT без пути: в тексте вопроса путей проекта нет.
+fn dt_file_name(relative: &Path) -> String {
+    relative
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path_text(relative))
+}
+
+/// Факты вопроса для экрана клиента: база, имя DT и его путь от корня проекта.
+fn restore_facts(relative: &Path) -> Value {
+    json!({
+        "infobase": INFOBASE_NAME,
+        "file": dt_file_name(relative),
+        "input": path_text(relative),
+    })
+}
+
+/// Согласованный текст вопроса о замене данных базы.
+fn restore_replace_question(file: &str) -> String {
+    format!("Заменить данные базы «{INFOBASE_NAME}» данными из «{file}»?")
+}
+
+/// Подтверждение замены данных базы этим же вызовом: надпись варианта и то,
+/// что пропадёт, согласованы и закреплены тестом.
+fn restore_replace_confirmation(relative: &Path, call: &Map<String, Value>) -> HumanChoice {
+    HumanChoice::confirmation(
+        RESTORE_REPLACE_CODE,
+        restore_replace_question(&dt_file_name(relative)),
+        "Заменить данные",
+        "данные и конфигурация базы пропадут",
+        "unica.run",
+        call,
+    )
+    .with_data(restore_facts(relative))
+}
+
+/// Отказ `cancelled` без согласия человека: база не тронута. Клиенту, который
+/// умеет спрашивать, дверь задаёт вопрос; остальным исполняет вызов как прежде.
+fn restore_replace_unconfirmed(relative: &Path, call: &Map<String, Value>) -> DomainResult {
+    let mut rejection = reject(
+        ExportOperation::Restore,
+        RefusalCode::Cancelled,
+        "infobase.restore with mode: replace discards the data of the infobase and runs only with the person's confirmation; it was not given, and the infobase is unchanged",
+    );
+    rejection.human_choice = Some(Box::new(restore_replace_confirmation(relative, call)));
+    rejection
+}
+
+/// Вопрос исполняемой загрузки с `mode: create` в базу, которая уже есть.
+/// Вариант — тот же вызов с `mode: replace`, и он уже несёт согласие на
+/// замену данных: второй вопрос тот же вызов не задаёт.
+fn restore_exists_choice(prepared: &PreparedInfobaseExport) -> HumanChoice {
+    let relative = &prepared.arguments.named_file_relative;
+    let mut args = public_arguments(prepared);
+    args["mode"] = json!(RestoreMode::Replace.as_str());
+    let mut call = Map::new();
+    call.insert("op".to_string(), json!(prepared.operation.name()));
+    call.insert("args".to_string(), args);
+    call.insert("dryRun".to_string(), Value::Bool(false));
+    let arguments = restore_replace_confirmation(relative, &call)
+        .options
+        .remove(0)
+        .arguments;
+    HumanChoice {
+        code: RESTORE_EXISTS_CODE.to_string(),
+        question: format!("База «{INFOBASE_NAME}» уже существует."),
+        data: Some(restore_facts(relative)),
+        options: vec![HumanChoiceOption {
+            id: "replace".to_string(),
+            title: format!(
+                "Заменить данные базы данными из «{}»",
+                dt_file_name(relative)
+            ),
+            description: "данные и конфигурация базы пропадут".to_string(),
+            tool: "unica.run".to_string(),
+            arguments,
+            then: Vec::new(),
+        }],
+        cancel_description: None,
+        proceeds_unasked: false,
+    }
 }
 
 fn parse_runner_output(
@@ -946,23 +1114,60 @@ fn parse_runner_output(
             .as_str()
             .map(redactor)
             .unwrap_or_else(|| "v8-runner failed without a typed message".to_string());
-        return Err(runner_rejection(
-            Some(operation.name().to_string()),
-            code,
-            message,
+        return Err(runner_envelope_refusal(
+            runner_rejection(
+                Some(operation.name().to_string()),
+                code,
+                envelope["error"]["layer"].as_str(),
+                message,
+            ),
+            &envelope,
         ));
     }
     Ok(envelope)
 }
 
+/// Расхождение памяти рабочей копии о базе с самой базой: база ушла вперёд
+/// записанного поколения или памяти о ней нет. Выбирать между выгрузкой базы
+/// и её перезаписью должен человек. Имена кодов раннера живут только здесь:
+/// с конверта 5 (раннер 0.17) отказ без памяти о базе называется
+/// `untracked_base`, как ветка без слежения в git.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum BaseDivergence {
+    /// `non_fast_forward`: база ушла вперёд записанного поколения.
+    MovedAhead,
+    /// `untracked_base`: памяти рабочей копии о базе нет.
+    Untracked,
+}
+
+impl BaseDivergence {
+    const MOVED_AHEAD: &'static str = "non_fast_forward";
+    const UNTRACKED: &'static str = "untracked_base";
+
+    pub(super) fn from_runner_code(code: &str) -> Option<Self> {
+        match code {
+            Self::MOVED_AHEAD => Some(Self::MovedAhead),
+            Self::UNTRACKED => Some(Self::Untracked),
+            _ => None,
+        }
+    }
+
+    pub(super) fn runner_code(self) -> &'static str {
+        match self {
+            Self::MovedAhead => Self::MOVED_AHEAD,
+            Self::Untracked => Self::UNTRACKED,
+        }
+    }
+}
+
 /// Полный словарь кодов, которые раннер кладёт в `error.code`.
 ///
-/// Он закрытый: шестнадцать значений `ErrorCode` конверта раннера 0.14, одни и те же
-/// у CLI и у его MCP-поверхности. Набор существует только для стража ниже: в
+/// Он закрытый: двадцать пять значений `ErrorCode` конверта раннера 0.17, одни и те
+/// же у CLI и у его MCP-поверхности. Набор существует только для стража ниже: в
 /// продуктовом пути отображение обязано иметь запасную ветку на случай кода, которого
 /// мы ещё не знаем, поэтому сам список ему не нужен.
 #[cfg(test)]
-const RUNNER_WIRE_CODES: [&str; 16] = [
+const RUNNER_WIRE_CODES: [&str; 25] = [
     "capability_unavailable",
     "subject",
     "target",
@@ -977,8 +1182,17 @@ const RUNNER_WIRE_CODES: [&str; 16] = [
     "timed_out",
     "workspace_busy",
     "infobase_busy",
-    "non_fast_forward",
-    "no_memory",
+    "infobase_sessions",
+    "infobase_designer_busy",
+    "agent_command_abandoned",
+    "agent_limit",
+    "live_agent_off",
+    "live_agent_job",
+    "source_set_ignored_by_git",
+    "work_path_on_another_volume",
+    PLATFORM_RELEASE_MISSING,
+    BaseDivergence::MOVED_AHEAD,
+    BaseDivergence::UNTRACKED,
 ];
 
 /// Отображает код раннера в наш отказ, а значит и в исход для агента.
@@ -989,16 +1203,23 @@ const RUNNER_WIRE_CODES: [&str; 16] = [
 /// ни один из трёх не решается ни повтором, ни правкой вызова — нужен человек.
 /// Поэтому прав мы заранее не проверяем: факта отказа платформы достаточно.
 ///
-/// `environment_unavailable` раннер 0.14 отдаёт за любой отказ среды: агент
+/// `environment_unavailable` раннер отдаёт за любой отказ среды: агент
 /// конфигуратора не принял пользователя ИБ, точка входа агента не ответила,
-/// платформа или агент не стартовали. Кода у этих слоёв раннер не различает,
-/// поэтому слой опознаётся по устойчивой части собственного текста раннера
-/// (`AgentError` 0.14), как и предупреждение о базе другой копии. Нераспознанный
-/// текст остаётся средой раннера: «поставщик не готов», а не отказ учётных
-/// данных (#1333).
-pub(super) fn map_runner_detail(code: &str, message: &str) -> Option<RunnerLayer> {
+/// платформа или агент не стартовали. Слой раннер 0.17.2 называет полем
+/// `error.layer` (`layer`); поля нет у отказа неопределённого слоя, и тогда
+/// это среда раннера: «поставщик не готов», а не отказ учётных данных (#1333).
+/// Раннер без поля слоя опознаётся по устойчивой части его текста
+/// ([`RunnerLayer::of_environment_message`]).
+pub(super) fn map_runner_detail(
+    code: &str,
+    layer: Option<&str>,
+    message: &str,
+) -> Option<RunnerLayer> {
     match code {
-        "environment_unavailable" => Some(RunnerLayer::of_environment_message(message)),
+        "environment_unavailable" => Some(match layer {
+            Some(layer) => RunnerLayer::of_runner_layer(layer),
+            None => RunnerLayer::of_environment_message(message),
+        }),
         _ => None,
     }
 }
@@ -1011,24 +1232,41 @@ pub(super) enum RunnerLayer {
     InfobaseUser,
     /// Точка входа агента не ответила или назвалась чужим ключом хоста.
     AgentEndpoint,
-    /// Прочая среда раннера: платформа, запуск агента, порт.
+    /// Управляемый агент не запустился или его хранитель недоступен.
+    AgentStart,
+    /// Прочая среда раннера: платформа, порт, слой не определён.
     RunnerEnvironment,
 }
 
 /// Устойчивые части текста `AgentError` раннера 0.14 — по одной на слой.
 ///
-/// Временная мера: слой опознаётся по тексту, пока раннер не отдаёт его
-/// полем. Типизированное поле слоя запрошено в
-/// IngvarConsulting/v8-runner-rust#485; когда оно появится, эти маркеры
-/// заменяются чтением поля, а не дополняются.
+/// Запасной путь на один цикл выпуска для раннера без поля `error.layer`
+/// (до 0.17.2, IngvarConsulting/v8-runner-rust#485). Удалить вместе с
+/// [`RunnerLayer::of_environment_message`] в следующем цикле.
 const RUNNER_CREDENTIALS_REJECTED: &str = " rejected the credentials of user ";
-const RUNNER_ENDPOINT_FAILURES: [&str; 3] = [
+const RUNNER_ENDPOINT_FAILURES: [&str; 5] = [
     " is unreachable: ",
     "SSH handshake with the agent at ",
     " as its host key, but ",
+    // Another SSH server on the port of the managed agent.
+    ": another SSH server holds the port",
+    " did not open a shell channel: ",
 ];
 
 impl RunnerLayer {
+    /// Слой по полю `error.layer` раннера. Значение вне закрытого набора —
+    /// среда раннера, как и отказ без поля.
+    fn of_runner_layer(layer: &str) -> Self {
+        match layer {
+            "infobase_user" => Self::InfobaseUser,
+            "agent_endpoint" => Self::AgentEndpoint,
+            "agent_start" => Self::AgentStart,
+            _ => Self::RunnerEnvironment,
+        }
+    }
+
+    /// Слой по тексту раннера без поля `error.layer`. Удалить в следующем
+    /// цикле выпуска вместе с маркерами.
     fn of_environment_message(message: &str) -> Self {
         if message.contains(RUNNER_CREDENTIALS_REJECTED) {
             Self::InfobaseUser
@@ -1046,7 +1284,7 @@ impl RunnerLayer {
         match self {
             Self::InfobaseUser => "infobase_user",
             Self::AgentEndpoint => "agent_endpoint",
-            Self::RunnerEnvironment => "runner_environment",
+            Self::AgentStart | Self::RunnerEnvironment => "runner_environment",
         }
     }
 
@@ -1054,7 +1292,7 @@ impl RunnerLayer {
         match self {
             Self::InfobaseUser => RefusalDetail::CredentialsRejected,
             Self::AgentEndpoint => RefusalDetail::EndpointUnreachable,
-            Self::RunnerEnvironment => RefusalDetail::ProviderAbsent,
+            Self::AgentStart | Self::RunnerEnvironment => RefusalDetail::ProviderAbsent,
         }
     }
 
@@ -1062,7 +1300,10 @@ impl RunnerLayer {
     const fn advice(self) -> &'static str {
         match self {
             Self::InfobaseUser => {
-                "the designer agent rejected the infobase user: set the infobase user and password in the project's infobase connection settings; an infobase without users takes an empty user"
+                "the designer agent did not accept the infobase user or password, or found no 1C license: check the infobase user and password in the project's infobase connection settings (an infobase without users takes an empty user) and that a 1C license is available on this machine"
+            }
+            Self::AgentStart => {
+                "the designer agent did not start or its keeper is unavailable: check that the 1C platform can start its designer agent on this machine"
             }
             Self::AgentEndpoint => {
                 "the designer agent endpoint did not answer or presented another host key: check that the 1C platform can start its designer agent on this machine and that local ports are not blocked"
@@ -1112,7 +1353,7 @@ pub(super) fn resolve_bundled_runner(cwd: &Path) -> Result<BundledRunner, Runner
         })?;
     let version =
         bundled_tool_version(&plugin_root, RUNNER_TOOL).map_err(|error| redactor(&error))?;
-    super::runner_015::check_version(&version)?;
+    super::runner::check_version(&version)?;
     Ok(BundledRunner { tool, version })
 }
 
@@ -1131,12 +1372,10 @@ pub(super) fn missing_runner_rejection(at: Option<String>, absence: RunnerAbsenc
     }
 }
 
-/// Отказ, когда раннер не дал ответа: отмена, отказ проектного файла, раннер
-/// не стартовал или сбой после старта.
+/// Отказ, когда раннер не дал ответа: отмена, раннер не стартовал или сбой
+/// после старта.
 ///
-/// Маршрут один на все операции `run`: проектный файл, который адаптер 0.14 не может
-/// передать раннеру, правится человеком или агентом в рабочем пространстве, и отказ
-/// говорит об этом, а не о пропавшем поставщике. Отказом «нет движка» становится
+/// Маршрут один на все операции `run`. Отказом «нет движка» становится
 /// только то, что тип называет запуском: процесс раннера не возник. Раннер к
 /// этому месту уже прошёл полную проверку поставки, поэтому это шаг `start`.
 /// Сбой после старта движок не теряет и отвечает своим кодом.
@@ -1154,9 +1393,6 @@ pub(super) fn runner_start_rejection(
             RefusalCode::Cancelled,
             "cancelled before provider launch",
         );
-    }
-    if let Some(reason) = super::runner_015::config_refusal(error) {
-        return DomainResult::canonical_rejection(at, RefusalCode::InvalidSource, redactor(reason));
     }
     let cause = runner_failure_cause(error, program);
     match failure {
@@ -1184,13 +1420,16 @@ fn runner_failure_cause(error: &str, program: &Path) -> String {
 ///
 /// Отказ среды называет слой в `data.layer` вместе с кодом раннера и шаг
 /// исправления настройки; текст раннера остаётся уликой после него.
+///
+/// `layer` — поле `error.layer` конверта раннера, если оно есть.
 pub(super) fn runner_rejection(
     at: Option<String>,
     code: &str,
+    layer: Option<&str>,
     message: impl Into<String>,
 ) -> DomainResult {
     let message = message.into();
-    match map_runner_detail(code, &message) {
+    match map_runner_detail(code, layer, &message) {
         Some(layer) => {
             let mut result = DomainResult::canonical_rejection_detailed(
                 at,
@@ -1200,31 +1439,134 @@ pub(super) fn runner_rejection(
             result.data = Some(json!({"layer": layer.as_str(), "runnerCode": code}));
             result
         }
-        None => DomainResult::canonical_rejection(at, map_runner_code(code), message),
+        None => match runner_code_detail(code) {
+            Some(detail) => DomainResult::canonical_rejection_detailed(at, detail, message),
+            None => DomainResult::canonical_rejection(at, map_runner_code(code), message),
+        },
     }
 }
 
-/// Код предупреждения Unica о записи в файловую базу другой рабочей копии.
+/// Уточнение отказа по коду раннера, где код сам называет причину: нужной
+/// установки платформы или живого агента нет. Исход — за человеком, повтор не
+/// поможет.
+pub(super) fn runner_code_detail(code: &str) -> Option<RefusalDetail> {
+    match code {
+        // Строгий выбор платформы (раннер 0.17): выпуска, который пишет формат
+        // исходников, среди установок нет.
+        PLATFORM_RELEASE_MISSING => Some(RefusalDetail::ProviderAbsent),
+        // Удержание живого агента (`agent hold`) Unica не вызывает; его отказы
+        // называют настройку или среду, которые правит человек: агент выключен,
+        // в этом задании невозможен или их предел исчерпан.
+        "agent_limit" | "live_agent_off" | "live_agent_job" => Some(RefusalDetail::ProviderAbsent),
+        _ => None,
+    }
+}
+
+/// Отказ раннера 0.17 в строгом выборе платформы (#593): выпуска, который
+/// пишет формат исходников, среди установок нет.
+pub(super) const PLATFORM_RELEASE_MISSING: &str = "platform_release_missing";
+
+/// Отказ строгого выбора платформы Unica называет `platformLineNotInstalled`:
+/// линия формата и найденные установки других линий. Из описи раннера наружу
+/// идут только версии: каталоги установок не публикуются. Прочие отказы
+/// проходят как есть.
+/// Отказ раннера по его конверту: строка платформы названа, а предупреждения
+/// о прежних ключах конфигурации идут с отказом, как и с успехом.
+pub(super) fn runner_envelope_refusal(result: DomainResult, envelope: &Value) -> DomainResult {
+    let mut result = with_platform_release(result, &envelope["error"]);
+    note_config_warnings(&mut result, envelope);
+    // Занятую базу освобождает человек: вопрос о ней привязывается к вызову
+    // при исполнении (INV.RUNTIME.INFOBASE-SESSIONS-QUESTION).
+    if let Some(choice) = super::v13_infobase_sessions::choice_for(envelope) {
+        result.human_choice = Some(Box::new(choice));
+    }
+    result
+}
+
+pub(super) fn with_platform_release(mut result: DomainResult, error: &Value) -> DomainResult {
+    if error["code"] != PLATFORM_RELEASE_MISSING {
+        return result;
+    }
+    let release = &error["platform_release"];
+    let line = release["source_format"]["release"].as_str();
+    let format = release["source_format"]["version"].as_str();
+    let installations: Vec<String> = release["installations"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|installation| installation["version"].as_str())
+        .map(redactor)
+        .collect();
+    let named_line = match (line, format) {
+        (Some(line), Some(format)) => format!("platform line {line} (source format {format})"),
+        (None, Some(format)) => format!("the platform line of source format {format}"),
+        _ => "the platform line of the sources".to_string(),
+    };
+    let found = if installations.is_empty() {
+        "none".to_string()
+    } else {
+        installations.join(", ")
+    };
+    let message = format!(
+        "platformLineNotInstalled: {named_line} is not installed; installations found: {found}"
+    );
+    result.summary = message.clone();
+    if let Some(diagnostic) = result.diagnostics.first_mut() {
+        diagnostic["message"] = Value::String(message);
+    }
+    let detail = json!({
+        "line": line,
+        "sourceFormat": format,
+        "installations": installations,
+    });
+    match result.data.as_mut().and_then(Value::as_object_mut) {
+        Some(data) => {
+            data.insert("platformLineNotInstalled".into(), detail);
+        }
+        None => {
+            result.data = Some(json!({
+                "runnerCode": PLATFORM_RELEASE_MISSING,
+                "platformLineNotInstalled": detail,
+            }))
+        }
+    }
+    result
+}
+
+/// Код предупреждения Unica о записи в файловую базу другой рабочей копии. Тем
+/// же кодом раннер 0.17.2 называет своё предупреждение в `warning_details`.
 pub(super) const ANOTHER_COPY_WARNING_CODE: &str = "infobase_of_another_copy";
 
-/// Устойчивая часть предупреждения раннера 0.14 о базе другой рабочей копии
+/// Устойчивая часть предупреждения раннера о базе другой рабочей копии
 /// (`use_cases::infobase_owner`: «<команда> writes the infobase '<путь>' of
-/// another working copy: it is held by …»). Машинного кода у предупреждения
-/// нет: опознание по этой части — решение владельца, оно закреплено тестами на
-/// живых конвертах push, pull, extensions и infobase.restore. Сменит раннер
-/// прозу — тесты на конвертах упадут при следующем переходе.
+/// another working copy: it is held by …»).
+///
+/// Запасной путь на один цикл выпуска для раннера без поля `warning_details`
+/// (до 0.17.2, IngvarConsulting/v8-runner-rust#460): его держат тесты на
+/// живых конвертах 0.14 и 0.15. Удалить в следующем цикле.
 const ANOTHER_COPY_RUNNER_FRAGMENT: &str = " of another working copy: it is held by ";
 
+/// Раннер предупредил о записи в базу другой рабочей копии: кодом в
+/// `warning_details`, а раннер без этого поля — прозой в `warnings`.
+fn runner_warns_of_another_copy(envelope: &Value) -> bool {
+    match envelope["warning_details"].as_array() {
+        Some(details) => details
+            .iter()
+            .any(|detail| detail["code"] == ANOTHER_COPY_WARNING_CODE),
+        None => envelope["warnings"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .any(|text| text.contains(ANOTHER_COPY_RUNNER_FRAGMENT)),
+    }
+}
+
 /// Своё предупреждение Unica вместо прозы раннера: без путей чужой копии, без
-/// метки владельца и без команд раннера. Прочие предупреждения раннера наружу
-/// не идут.
+/// метки владельца и без команд раннера. Наружу идут ещё только предупреждения
+/// о прежних ключах конфигурации ([`note_config_warnings`]).
 pub(super) fn another_copy_warning(envelope: &Value) -> Option<Value> {
-    envelope["warnings"]
-        .as_array()?
-        .iter()
-        .filter_map(Value::as_str)
-        .any(|text| text.contains(ANOTHER_COPY_RUNNER_FRAGMENT))
-        .then(|| {
+    runner_warns_of_another_copy(envelope).then(|| {
             json!({
                 "code": ANOTHER_COPY_WARNING_CODE,
                 "message": "this command writes a file infobase that another working copy holds: it changes that copy's infobase, and when it changes the configuration, that copy's next load into it may be refused as moved ahead. Give this working copy an infobase of its own: declare infobases.origin with its own connection in v8project.local.yaml, then create it with infobase.create",
@@ -1232,9 +1574,36 @@ pub(super) fn another_copy_warning(envelope: &Value) -> Option<Value> {
         })
 }
 
-/// Добавляет к ответу предупреждение о базе другой копии и выход к своей базе —
-/// превью `infobase.create`, — если раннер о ней предупредил.
-pub(super) fn note_another_copy(result: &mut DomainResult, envelope: &Value) {
+/// Код предупреждения раннера о прежнем написании ключа конфигурации.
+pub(super) const CONFIG_SYNONYM_WARNING_CODE: &str = "runner_config_synonym";
+
+/// Устойчивая часть предупреждения раннера 0.17 о прежнем ключе, который он
+/// принимает ещё один цикл выпуска (`config::loader`: «`build:` in
+/// v8project.yaml is a one-cycle synonym for `push:`; rename the key»).
+const CONFIG_SYNONYM_RUNNER_FRAGMENT: &str = " is a one-cycle synonym for ";
+
+/// Передаёт предупреждения раннера о прежних ключах конфигурации как есть:
+/// они называют файл и ключ, без путей, и своего текста у Unica для них нет.
+pub(super) fn note_config_warnings(result: &mut DomainResult, envelope: &Value) {
+    for text in envelope["warnings"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .filter(|text| text.contains(CONFIG_SYNONYM_RUNNER_FRAGMENT))
+    {
+        let warning = json!({"code": CONFIG_SYNONYM_WARNING_CODE, "message": text});
+        if !result.warnings.contains(&warning) {
+            result.warnings.push(warning);
+        }
+    }
+}
+
+/// Добавляет к ответу предупреждения раннера о прежних ключах конфигурации и
+/// предупреждение о базе другой копии с выходом к своей базе — превью
+/// `infobase.create`, — если раннер о ней предупредил.
+pub(super) fn note_runner_warnings(result: &mut DomainResult, envelope: &Value) {
+    note_config_warnings(result, envelope);
     let Some(warning) = another_copy_warning(envelope) else {
         return;
     };
@@ -1254,6 +1623,16 @@ pub(super) fn note_another_copy(result: &mut DomainResult, envelope: &Value) {
 }
 
 pub(super) fn map_runner_code(code: &str) -> RefusalCode {
+    // Память копии о базе и сама база разошлись: база ушла вперёд записанного
+    // поколения или памяти о ней нет. Правкой вызова это не снять, повтором —
+    // тоже: выбрать между выгрузкой базы и её перезаписью должен тот, кто
+    // знает, чья правка верна.
+    if BaseDivergence::from_runner_code(code).is_some() {
+        return RefusalCode::InvalidState;
+    }
+    if let Some(detail) = runner_code_detail(code) {
+        return detail.code();
+    }
     match code {
         // Платформа сказала нет: авторизация, права, лицензия, занятая база.
         "platform_failure" => RefusalCode::ProviderUnavailable,
@@ -1266,14 +1645,18 @@ pub(super) fn map_runner_code(code: &str) -> RefusalCode {
         "subject" | "target" | "soon" => RefusalCode::UnsupportedOperation,
         // Значение названо верно по форме, но раннер его не принимает.
         "unsupported_value" => RefusalCode::BadValue,
-        // Рабочий каталог или файловую базу держит другая команда: занятость
-        // проходит, тот же вызов можно повторить, когда та закончит.
-        "workspace_busy" | "infobase_busy" => RefusalCode::ConcurrentChange,
-        // Память копии о базе и сама база разошлись: база ушла вперёд записанного
-        // поколения или памяти о ней нет. Правкой вызова это не снять, повтором —
-        // тоже: выбрать между выгрузкой базы и её перезаписью должен тот, кто
-        // знает, чья правка верна.
-        "non_fast_forward" | "no_memory" => RefusalCode::InvalidState,
+        // Рабочий каталог или файловую базу держит другая команда, чужие
+        // сеансы или чужой Конфигуратор, или ещё идёт брошенная команда агента:
+        // занятость проходит, тот же вызов можно повторить, когда та закончит.
+        "workspace_busy"
+        | "infobase_busy"
+        | "infobase_sessions"
+        | "infobase_designer_busy"
+        | "agent_command_abandoned" => RefusalCode::ConcurrentChange,
+        // Рабочее пространство так не годится: набор скрыт правилом git или
+        // `workPath` лежит на другом томе, чем набор. Правит человек, текст
+        // отказа раннера называет, что именно.
+        "source_set_ignored_by_git" | "work_path_on_another_volume" => RefusalCode::InvalidState,
         "invalid_argument" => RefusalCode::BadValue,
         // Раннер отдал негодный результат: аргументы вызывающего тут не виноваты.
         "invalid_output" => RefusalCode::InvalidResult,
@@ -1288,7 +1671,6 @@ pub(super) fn map_runner_code(code: &str) -> RefusalCode {
 #[derive(Debug, Clone)]
 struct PreviewPlan {
     provider: String,
-    output: String,
     receipt: Value,
 }
 
@@ -1378,19 +1760,17 @@ fn validate_preview(
             format!("v8-runner preview resolved a different {plan_path_key}"),
         ));
     }
-    Ok(PreviewPlan {
-        provider,
-        output,
-        receipt,
-    })
+    Ok(PreviewPlan { provider, receipt })
 }
 
 /// Validate the pinned runner's structured receipt. Prose and absolute override paths
 /// stay private; the public receipt exposes only the validated provider facts.
 ///
 /// Runner 0.12 adds `endpoint` once an agent session was opened, so an apply may
-/// carry it and its preview may not. It is validated and left out of the returned
-/// receipt: the preview and apply receipts compare by the selected provider.
+/// carry it and its preview may not. Runner 0.17 adds `live` to the endpoint of a
+/// managed agent: whether the command took a live agent and whether it stays. It
+/// is validated and left out of the returned receipt with the endpoint: the
+/// preview and apply receipts compare by the selected provider.
 pub(super) fn validate_provider_receipt(value: &Value) -> Result<Value, &'static str> {
     let object = value
         .as_object()
@@ -1404,15 +1784,15 @@ pub(super) fn validate_provider_receipt(value: &Value) -> Result<Value, &'static
     }
     if let Some(endpoint) = object.get("endpoint") {
         let valid = endpoint.as_object().is_some_and(|endpoint| {
-            endpoint.len() == 2
-                && matches!(
-                    endpoint.get("mode").and_then(Value::as_str),
-                    Some("managed" | "attached" | "gate")
-                )
+            let mode = endpoint.get("mode").and_then(Value::as_str);
+            let live = endpoint.get("live");
+            endpoint.len() == 2 + usize::from(live.is_some())
+                && matches!(mode, Some("managed" | "attached" | "gate"))
                 && endpoint
                     .get("address")
                     .and_then(Value::as_str)
                     .is_some_and(|address| !address.is_empty() && address.len() <= 512)
+                && live.is_none_or(|live| mode == Some("managed") && valid_live_receipt(live))
         });
         if !valid {
             return Err("v8-runner returned an invalid provider endpoint");
@@ -1457,6 +1837,24 @@ pub(super) fn validate_provider_receipt(value: &Value) -> Result<Value, &'static
     Ok(receipt)
 }
 
+/// `endpoint.live` of runner 0.17: `reused` and `kept`, the holders, and the
+/// reason an agent did not stay.
+fn valid_live_receipt(live: &Value) -> bool {
+    live.as_object().is_some_and(|live| {
+        live.keys()
+            .all(|key| ["reused", "kept", "holders", "reason"].contains(&key.as_str()))
+            && live.get("reused").is_some_and(Value::is_boolean)
+            && live.get("kept").is_some_and(Value::is_boolean)
+            && live
+                .get("holders")
+                .and_then(Value::as_array)
+                .is_some_and(|holders| holders.len() <= 64 && holders.iter().all(Value::is_object))
+            && live
+                .get("reason")
+                .is_none_or(|reason| reason.as_str().is_some_and(|reason| reason.len() <= 64))
+    })
+}
+
 fn valid_provider_id(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 64
@@ -1469,10 +1867,13 @@ fn valid_provider_id(value: &str) -> bool {
 
 fn validate_apply(
     prepared: &PreparedInfobaseExport,
-    preview: &PreviewPlan,
     envelope: &Value,
-) -> Result<(), DomainResult> {
+) -> Result<String, DomainResult> {
     let data = &envelope["data"];
+    let provider = validate_provider_receipt(&data["provider"])
+        .ok()
+        .and_then(|receipt| receipt["selected"].as_str().map(str::to_owned))
+        .filter(|provider| valid_provider_id(provider));
     let applied = if prepared.operation.writes_named_file() {
         data["published"] == true
     } else {
@@ -1485,14 +1886,14 @@ fn validate_apply(
             != prepared
                 .operation
                 .artifact_kind(prepared.arguments.extension.as_deref())
-        || validate_provider_receipt(&data["provider"]).ok().as_ref() != Some(&preview.receipt)
+        || provider.is_none()
         || !matches!(data["target_state"].as_str(), Some("created" | "replaced"))
         || !runner_subject_matches(prepared, data)
     {
         return Err(reject(
             prepared.operation,
             RefusalCode::InvalidResult,
-            "v8-runner apply result does not match the previewed export contract",
+            "v8-runner apply result does not match the export contract",
         ));
     }
     let applied_path_key = if prepared.operation.writes_named_file() {
@@ -1522,14 +1923,14 @@ fn validate_apply(
                 format!("failed to resolve the expected output: {error}"),
             )
         })?;
-    if applied_output != expected_output || output != preview.output {
+    if applied_output != expected_output {
         return Err(reject(
             prepared.operation,
             RefusalCode::InvalidResult,
-            "v8-runner apply published a different output than the previewed target",
+            "v8-runner apply published a different output than the requested target",
         ));
     }
-    Ok(())
+    Ok(provider.unwrap_or_default())
 }
 
 fn runner_subject_matches(prepared: &PreparedInfobaseExport, data: &Value) -> bool {
@@ -1674,14 +2075,34 @@ mod tests {
             ("capability_unavailable", Outcome::GoElsewhere),
             ("workspace_busy", Outcome::RetryAsIs),
             ("infobase_busy", Outcome::RetryAsIs),
+            ("infobase_sessions", Outcome::RetryAsIs),
+            ("work_path_on_another_volume", Outcome::NeedsHuman),
+            ("source_set_ignored_by_git", Outcome::NeedsHuman),
             ("non_fast_forward", Outcome::NeedsHuman),
-            ("no_memory", Outcome::NeedsHuman),
+            ("untracked_base", Outcome::NeedsHuman),
             ("timed_out", Outcome::RetryAsIs),
             ("invalid_argument", Outcome::FixCall),
             ("invalid_output", Outcome::DeadEnd),
             ("cancelled", Outcome::DeadEnd),
         ] {
             assert_eq!(map_runner_code(code).outcome(), expected, "{code}");
+        }
+        // Нужной установки платформы или живого агента нет: отказ уточнён.
+        for code in [
+            "platform_release_missing",
+            "agent_limit",
+            "live_agent_off",
+            "live_agent_job",
+        ] {
+            let refused = runner_rejection(None, code, None, "m");
+            assert_eq!(
+                refused.diagnostics[0]["code"], "provider_unavailable",
+                "{code}"
+            );
+            assert_eq!(
+                refused.diagnostics[0]["detailCode"], "provider_absent",
+                "{code}"
+            );
         }
     }
 
@@ -1708,7 +2129,7 @@ mod tests {
             plugin.join("third-party/tools.lock.json"),
             r#"{"schemaVersion":1,
   "targets":{"darwin-arm64":{"exe":""},"linux-x64":{"exe":""},"win-x64":{"exe":".exe"}},
-  "tools":[{"name":"v8-runner","version":"0.15.3","binaryName":"v8-runner"}]}"#,
+  "tools":[{"name":"v8-runner","version":"0.17.4","binaryName":"v8-runner"}]}"#,
         )
         .unwrap();
 
@@ -1724,7 +2145,7 @@ mod tests {
         assert_eq!(diagnostic["outcome"], "needsHuman");
         let data = rejection.data.as_ref().expect("поля движка в data");
         assert_eq!(data["tool"], "v8-runner");
-        assert_eq!(data["pinnedVersion"], "0.15.3");
+        assert_eq!(data["pinnedVersion"], "0.17.4");
         assert_eq!(data["stage"], "manifest");
         assert_eq!(data["retryable"], false);
         assert_eq!(
@@ -1756,7 +2177,7 @@ mod tests {
     /// rule: INV.RUNTIME.RUNNER-ENVIRONMENT-LAYER
     #[test]
     fn runner_environment_refusals_name_the_layer_that_refused() {
-        // Тексты — `AgentError` раннера 0.14 дословно, с контекстом, который
+        // Тексты — `AgentError` раннеров 0.14–0.17 дословно, с контекстом, который
         // раннер дописывает перед ним.
         for (message, detail, layer) in [
             (
@@ -1785,6 +2206,16 @@ mod tests {
                 "agent_endpoint",
             ),
             (
+                "127.0.0.1:56018 answered with host key SHA256:a, not with the key the runner handed to the agent it launched (SHA256:b): another SSH server holds the port, and the runner does not talk to it",
+                "endpoint_unreachable",
+                "agent_endpoint",
+            ),
+            (
+                "agent at 127.0.0.1:56018 did not open a shell channel: Disconnect",
+                "endpoint_unreachable",
+                "agent_endpoint",
+            ),
+            (
                 "no 1C platform 8.3.27 is installed on this machine",
                 "provider_absent",
                 "runner_environment",
@@ -1793,6 +2224,7 @@ mod tests {
             let rejection = runner_rejection(
                 Some("push".to_string()),
                 "environment_unavailable",
+                None,
                 message,
             );
             let diagnostic = &rejection.diagnostics[0];
@@ -1836,7 +2268,7 @@ mod tests {
             let redacted = redactor(message);
             assert!(!redacted.contains("secret-1333"), "{redacted}");
             assert_eq!(
-                map_runner_detail("environment_unavailable", &redacted),
+                map_runner_detail("environment_unavailable", None, &redacted),
                 Some(layer),
                 "{redacted}"
             );
@@ -1846,10 +2278,202 @@ mod tests {
         let platform = runner_rejection(
             Some("push".to_string()),
             "platform_failure",
+            None,
             "agent at 127.0.0.1:1 rejected the credentials of user ''",
         );
         assert!(platform.diagnostics[0].get("detailCode").is_none());
         assert!(platform.data.is_none());
+    }
+
+    /// Раннер 0.17.2 называет слой полем `error.layer`, и поле решает слой
+    /// прежде текста: текст другого слоя его не переспорит, а текст без
+    /// маркеров не нужен. Запуск агента и утилита платформы — среда раннера,
+    /// у запуска агента свой шаг исправления. Значение вне набора — среда
+    /// раннера, как и отказ без поля.
+    /// rule: INV.RUNTIME.RUNNER-ENVIRONMENT-LAYER
+    #[test]
+    fn the_layer_field_of_the_runner_decides_the_layer() {
+        let endpoint_text = "agent at 127.0.0.1:56018 is unreachable: Connection refused";
+        for (field, message, detail, layer, advice) in [
+            (
+                "infobase_user",
+                endpoint_text,
+                "credentials_rejected",
+                "infobase_user",
+                "or found no 1C license",
+            ),
+            (
+                "agent_endpoint",
+                "m",
+                "endpoint_unreachable",
+                "agent_endpoint",
+                "endpoint did not answer",
+            ),
+            (
+                "agent_start",
+                "m",
+                "provider_absent",
+                "runner_environment",
+                "its keeper is unavailable",
+            ),
+            (
+                "platform",
+                endpoint_text,
+                "provider_absent",
+                "runner_environment",
+                "installed 1C platform version",
+            ),
+            (
+                "unknown_layer",
+                endpoint_text,
+                "provider_absent",
+                "runner_environment",
+                "installed 1C platform version",
+            ),
+        ] {
+            let rejection = runner_rejection(
+                Some("push".to_string()),
+                "environment_unavailable",
+                Some(field),
+                message,
+            );
+            let diagnostic = &rejection.diagnostics[0];
+            assert_eq!(diagnostic["code"], "provider_unavailable", "{field}");
+            assert_eq!(diagnostic["detailCode"], detail, "{field}");
+            assert_eq!(diagnostic["outcome"], "needsHuman", "{field}");
+            assert_eq!(
+                rejection.data,
+                Some(json!({"layer": layer, "runnerCode": "environment_unavailable"})),
+                "{field}"
+            );
+            let text = diagnostic["message"].as_str().unwrap();
+            assert!(text.contains(advice), "{field}: {text}");
+            assert!(text.ends_with(message), "{field}: {text}");
+        }
+
+        // Поле слоя у другого кода раннера слоя не выбирает.
+        let busy = runner_rejection(None, "agent_busy", Some("agent_start"), "m");
+        assert!(busy.data.is_none());
+    }
+
+    /// rule: INV.RUNTIME.PLATFORM-LINE
+    #[test]
+    fn a_missing_platform_release_names_the_line_and_hides_installation_paths() {
+        // Ответ раннера 0.17 на строгий выбор (#593): формат 2.20 пишет 8.3.27,
+        // установлены 8.3.24 и 8.5.1.
+        let error = json!({
+            "code": "platform_release_missing",
+            "kind": "environment",
+            "message": "platform release 8.3.27 required by source format 2.20 \
+                        (C:/work/src/Configuration.xml) is not installed",
+            "platform_release": {
+                "source_format": {
+                    "version": "2.20",
+                    "file": "C:/work/src/Configuration.xml",
+                    "release": "8.3.27"
+                },
+                "installations": [
+                    {"version": "8.5.1.100", "root": "C:/Program Files/1cv8/8.5.1.100",
+                     "components": ["designer", "ibcmd"]},
+                    {"version": "8.3.24.1691", "root": "C:/Program Files/1cv8/8.3.24.1691",
+                     "components": ["designer"]}
+                ]
+            }
+        });
+        let result = with_platform_release(
+            runner_rejection(
+                Some("source.export".to_string()),
+                error["code"].as_str().unwrap(),
+                error["layer"].as_str(),
+                error["message"].as_str().unwrap(),
+            ),
+            &error,
+        );
+        assert!(!result.ok);
+        assert_eq!(result.diagnostics[0]["code"], "provider_unavailable");
+        assert_eq!(result.diagnostics[0]["detailCode"], "provider_absent");
+        assert!(
+            result.summary.starts_with(
+                "platformLineNotInstalled: platform line 8.3.27 (source format 2.20) is not installed"
+            ),
+            "{}",
+            result.summary
+        );
+        assert!(result.summary.contains("8.5.1.100, 8.3.24.1691"));
+        assert_eq!(result.diagnostics[0]["message"], result.summary.as_str());
+        let data = result.data.expect("refusal data");
+        assert_eq!(data["runnerCode"], "platform_release_missing");
+        assert_eq!(
+            data["platformLineNotInstalled"],
+            json!({
+                "line": "8.3.27",
+                "sourceFormat": "2.20",
+                "installations": ["8.5.1.100", "8.3.24.1691"]
+            })
+        );
+        let published = serde_json::to_string(&data).unwrap() + &result.summary;
+        assert!(!published.contains("Program Files"), "{published}");
+        assert!(!published.contains("Configuration.xml"), "{published}");
+
+        // Формат, неизвестный раннеру: линии нет, формат назван.
+        let unknown = json!({
+            "code": "platform_release_missing",
+            "platform_release": {
+                "source_format": {"version": "2.99", "file": "x", "release": null},
+                "installations": []
+            }
+        });
+        let result = with_platform_release(
+            runner_rejection(None, "platform_release_missing", None, "m"),
+            &unknown,
+        );
+        assert_eq!(
+            result.summary,
+            "platformLineNotInstalled: the platform line of source format 2.99 is not installed; \
+             installations found: none"
+        );
+
+        // Прочие отказы проходят как есть.
+        let other = json!({"code": "environment_unavailable", "message": "m"});
+        let untouched = with_platform_release(
+            runner_rejection(None, "environment_unavailable", None, "m"),
+            &other,
+        );
+        let plain = runner_rejection(None, "environment_unavailable", None, "m");
+        assert_eq!(untouched.summary, plain.summary);
+        assert_eq!(untouched.data, plain.data);
+    }
+
+    /// Предупреждение раннера о прежнем ключе конфигурации доходит как есть и
+    /// один раз; прочая проза раннера наружу не идёт.
+    #[test]
+    fn a_former_config_key_warning_of_the_runner_passes_as_is() {
+        let synonym =
+            "`build:` in v8project.yaml is a one-cycle synonym for `push:`; rename the key";
+        let envelope = json!({"warnings": [
+            synonym,
+            "provider designer wrote C:/work/private/log.txt",
+            synonym,
+        ]});
+        let mut result = DomainResult::success("done");
+        note_runner_warnings(&mut result, &envelope);
+        assert_eq!(
+            result.warnings,
+            vec![json!({"code": "runner_config_synonym", "message": synonym})]
+        );
+        assert!(result.next.is_empty());
+
+        // Отказ раннера несёт то же предупреждение.
+        let mut refused = envelope.clone();
+        refused["error"] = json!({"code": "invalid_config", "message": "m"});
+        let refusal = runner_envelope_refusal(
+            runner_rejection(None, "invalid_config", None, "m".to_string()),
+            &refused,
+        );
+        assert_eq!(
+            refusal.warnings,
+            vec![json!({"code": "runner_config_synonym", "message": synonym})]
+        );
     }
 
     #[test]
@@ -1941,6 +2565,7 @@ mod tests {
             workspace_epoch: 1,
         };
         PreparedInfobaseExport {
+            call: Map::new(),
             operation: ExportOperation::Configuration,
             arguments: ExportArguments {
                 state: Some("working".to_string()),
@@ -1962,6 +2587,7 @@ mod tests {
             workspace_epoch: 1,
         };
         PreparedInfobaseExport {
+            call: Map::new(),
             operation: ExportOperation::Restore,
             arguments: ExportArguments {
                 state: None,
@@ -2192,10 +2818,9 @@ mod tests {
         assert!(preview_result.rev.is_none());
 
         let apply = prepared_restore(root.path(), false, RestoreMode::Replace);
-        let runner = SequenceRunner::new(vec![
-            process(restore_preview_envelope(&input, "replace")),
-            process(restore_apply_envelope(&input, "replace", "replaced")),
-        ]);
+        let runner = SequenceRunner::new(vec![process(restore_apply_envelope(
+            &input, "replace", "replaced",
+        ))]);
         let result =
             execute_with_resolved_runner(&apply, &runner, CancellationToken::new(), &tool, "0.8.1");
 
@@ -2210,8 +2835,8 @@ mod tests {
         assert_eq!(result.changed[0]["infobase"], true);
         assert!(result.changed[0].get("path").is_none());
         assert!(result.artifacts.is_empty());
-        // Превью повторяется перед применением, то есть два вызова раннера.
-        assert_eq!(runner.calls.lock().unwrap().len(), 2);
+        // Исполнение не повторяет превью: один вызов раннера.
+        assert_eq!(runner.calls.lock().unwrap().len(), 1);
         // Источник обязан дойти неизменным.
         assert_eq!(
             fs::read(root.path().join("transfer/base.dt")).unwrap(),
@@ -2224,6 +2849,94 @@ mod tests {
             .join("tests/fixtures/v8_runner_014")
             .join(name);
         serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
+    }
+
+    fn captured_017_4(name: &str) -> Value {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/v8_runner_017_4")
+            .join(name);
+        serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
+    }
+
+    /// Живые конверты раннера 0.17.4: недоступная точка входа агента и чужой
+    /// SSH-сервер на его порту — слой `agent_endpoint` из поля, а не
+    /// несовместимость и не прочая среда раннера.
+    /// rule: INV.RUNTIME.RUNNER-ENVIRONMENT-LAYER
+    #[test]
+    fn captured_endpoint_refusals_of_the_runner_name_the_agent_endpoint() {
+        for name in ["attach-unreachable.json", "attach-foreign-ssh-server.json"] {
+            let envelope = captured_017_4(name);
+            let error = &envelope["error"];
+            let rejection = runner_envelope_refusal(
+                runner_rejection(
+                    Some("pull".to_string()),
+                    error["code"].as_str().unwrap(),
+                    error["layer"].as_str(),
+                    redactor(error["message"].as_str().unwrap()),
+                ),
+                &envelope,
+            );
+            let diagnostic = &rejection.diagnostics[0];
+            assert_eq!(diagnostic["code"], "provider_unavailable", "{name}");
+            assert_eq!(diagnostic["detailCode"], "endpoint_unreachable", "{name}");
+            assert_eq!(diagnostic["outcome"], "needsHuman", "{name}");
+            assert_eq!(
+                rejection.data.as_ref().unwrap()["layer"],
+                "agent_endpoint",
+                "{name}"
+            );
+        }
+    }
+
+    /// Живые конверты раннера 0.17.4: запись в базу другой копии несёт код в
+    /// `warning_details`, и ответ Unica называет её своим предупреждением даже
+    /// без прозы раннера; взятие базы без владельца предупреждения не даёт.
+    /// rule: INV.RUNTIME.RUNNER-BASE-REFUSALS
+    #[test]
+    fn captured_warning_codes_of_the_runner_name_the_infobase_of_another_copy() {
+        let mut preview = captured_017_4("push-other-copy-force-preview.json");
+        assert!(another_copy_warning(&preview).is_some());
+        // The code alone decides: the prose may change.
+        preview["warnings"] = json!(["reworded by a later runner"]);
+        preview["warning_details"][0]["message"] = json!("reworded by a later runner");
+        let warning = another_copy_warning(&preview).expect("the code names it");
+        assert_eq!(warning["code"], ANOTHER_COPY_WARNING_CODE);
+        assert!(!warning["message"].as_str().unwrap().contains("workspace"));
+
+        let taken = captured_017_4("pull-takes-unowned-infobase.json");
+        assert!(another_copy_warning(&taken).is_none());
+    }
+
+    /// Раннер 0.17.2 называет базу другой копии кодом в `warning_details`, и
+    /// код решает прежде текста: проза без кода предупреждения не даёт, а код
+    /// не требует прозы. Раннер без поля опознаётся по тексту.
+    /// rule: INV.RUNTIME.RUNNER-BASE-REFUSALS
+    #[test]
+    fn the_warning_code_of_the_runner_names_the_infobase_of_another_copy() {
+        let prose = "push writes the infobase '/x/ib' of another working copy: it is held by /y";
+        let coded = json!({
+            "warnings": ["reworded by the runner"],
+            "warning_details": [{
+                "code": "infobase_of_another_copy",
+                "message": "reworded by the runner",
+                "name": "origin",
+                "address": "file:/x/ib",
+                "owners": [{"project": "/y", "host": "h", "since": "2026-11-13T00:00:00Z",
+                            "this_copy": false, "this_machine": true}]
+            }]
+        });
+        let warning = another_copy_warning(&coded).expect("код назвал базу другой копии");
+        assert_eq!(warning["code"], ANOTHER_COPY_WARNING_CODE);
+        assert!(!warning["message"].as_str().unwrap().contains("/y"));
+
+        let uncoded = json!({"warnings": [prose], "warning_details": [
+            {"code": "some_other_code", "message": prose}
+        ]});
+        assert!(another_copy_warning(&uncoded).is_none());
+
+        let older = json!({"warnings": [prose]});
+        assert!(another_copy_warning(&older).is_some());
+        assert!(another_copy_warning(&json!({"warnings": []})).is_none());
     }
 
     /// Живые конверты раннера 0.14.0: загрузка `.dt` в базу другой рабочей
@@ -2271,7 +2984,7 @@ mod tests {
         assert!(result.ok, "{result:?}");
         super::super::v13_source_import::tests::assert_another_copy_is_named(&result);
 
-        let runner = SequenceRunner::new(vec![process(preview), process(applied)]);
+        let runner = SequenceRunner::new(vec![process(applied)]);
         let result = execute_with_resolved_runner(
             &prepared_restore(root.path(), false, RestoreMode::Replace),
             &runner,
@@ -2281,6 +2994,30 @@ mod tests {
         );
         assert!(result.ok, "{result:?}");
         super::super::v13_source_import::tests::assert_another_copy_is_named(&result);
+
+        // Над файловой базой исполнение без согласия человека сначала
+        // сверяется с превью и отменяется с вопросом.
+        fs::write(
+            root.path().join(CONFIG_NAME),
+            "format: DESIGNER
+infobase:
+  connection: 'File=build/ib'
+",
+        )
+        .unwrap();
+        let runner = SequenceRunner::new(vec![process(preview)]);
+        let refused = execute_with_resolved_runner(
+            &prepared_restore(root.path(), false, RestoreMode::Replace),
+            &runner,
+            CancellationToken::new(),
+            &tool,
+            "0.14.0",
+        );
+        assert_eq!(refused.diagnostics[0]["code"], "cancelled", "{refused:?}");
+        assert_eq!(
+            refused.human_choice.as_deref().expect("a question").code,
+            "infobase.another_copy"
+        );
     }
 
     /// rule: INV.RUNTIME.RUNNER-MUTATION-CANCELLATION
@@ -2461,7 +3198,7 @@ mod tests {
 
     /// rule: INV.RUNTIME.V13-INFOBASE-EXPORTS
     #[test]
-    fn apply_repeats_preflight_and_returns_an_independent_file_receipt() {
+    fn apply_runs_the_runner_once_and_returns_an_independent_file_receipt() {
         for published in [Some(&b"verified cf"[..]), None, Some(&b""[..])] {
             let root = tempfile::tempdir().unwrap();
             fs::write(root.path().join(CONFIG_NAME), "format: DESIGNER\n").unwrap();
@@ -2483,10 +3220,7 @@ mod tests {
             assert!(preview_result.ok);
             assert!(preview_result.rev.is_none());
             let apply = prepared(root.path(), false);
-            let responses = vec![
-                process(preview_envelope(&output)),
-                process(apply_envelope(&output)),
-            ];
+            let responses = vec![process(apply_envelope(&output))];
             let runner = match published {
                 Some(bytes) => SequenceRunner::publishing(responses, bytes),
                 None => SequenceRunner::new(responses),
@@ -2500,11 +3234,8 @@ mod tests {
                 "0.7.0",
             );
 
-            assert_eq!(runner.calls.lock().unwrap().len(), 2);
-            assert!(runner.calls.lock().unwrap()[0]
-                .args
-                .contains(&"--dry-run".to_string()));
-            assert!(!runner.calls.lock().unwrap()[1]
+            assert_eq!(runner.calls.lock().unwrap().len(), 1);
+            assert!(!runner.calls.lock().unwrap()[0]
                 .args
                 .contains(&"--dry-run".to_string()));
             if published.is_none_or(|bytes| bytes.is_empty()) {
@@ -2548,19 +3279,14 @@ mod tests {
             warnings: vec![],
             missing: None,
         };
-        let runner = SequenceRunner::publishing(
-            vec![
-                process(preview_envelope(&output)),
-                process(apply_envelope(&output)),
-            ],
-            b"verified cf",
-        );
+        let runner =
+            SequenceRunner::publishing(vec![process(apply_envelope(&output))], b"verified cf");
         assert!(!apply.arguments.named_file.exists());
         let result =
             execute_with_resolved_runner(&apply, &runner, CancellationToken::new(), &tool, "0.7.0");
         assert!(result.ok, "{result:?}");
         assert!(result.rev.is_none());
-        assert_eq!(runner.calls.lock().unwrap().len(), 2);
+        assert_eq!(runner.calls.lock().unwrap().len(), 1);
         assert_eq!(
             fs::read(&apply.arguments.named_file).unwrap(),
             b"verified cf"
@@ -2568,38 +3294,54 @@ mod tests {
         assert_eq!(result.data.as_ref().unwrap()["artifact"]["size"], 11);
     }
 
-    /// Раннер 0.12 называет в квитанции применения точку входа сессии агента, а в
-    /// квитанции превью её нет: сессия на превью не открывается. Это та же
-    /// квитанция, а неверная точка входа — негодный ответ.
+    /// Раннер 0.12 называет в квитанции применения точку входа сессии агента:
+    /// годная точка входа принимается, неверная — негодный ответ. Исполнение
+    /// не повторяет preview, поэтому исполнитель берётся из этой квитанции.
     #[test]
-    fn apply_receipt_with_a_session_endpoint_matches_its_preview() {
+    fn apply_receipt_accepts_a_session_endpoint_and_rejects_a_malformed_one() {
         let root = tempfile::tempdir().unwrap();
         let prepared = prepared(root.path(), false);
         let output = normalize_path_identity(&prepared.arguments.named_file).unwrap();
-        let plan = validate_preview(&prepared, &preview_envelope(&output)).unwrap();
         for mode in ["managed", "attached", "gate"] {
             let mut applied = apply_envelope(&output);
             applied["data"]["provider"]["endpoint"] =
                 json!({"mode": mode, "address": "127.0.0.1:1543"});
-            assert!(validate_apply(&prepared, &plan, &applied).is_ok(), "{mode}");
+            assert_eq!(
+                validate_apply(&prepared, &applied).as_deref(),
+                Ok("designer"),
+                "{mode}"
+            );
+        }
+        // Раннер 0.17 у управляемого агента называет, был ли агент живым.
+        for live in [
+            json!({"reused": true, "kept": true,
+                   "holders": [{"pid": 4242, "started_at": "2026-11-13T08:00:00Z"}]}),
+            json!({"reused": false, "kept": false, "holders": [], "reason": "job"}),
+        ] {
+            let mut applied = apply_envelope(&output);
+            applied["data"]["provider"]["endpoint"] =
+                json!({"mode": "managed", "address": "127.0.0.1:1543", "live": live});
+            assert_eq!(
+                validate_apply(&prepared, &applied).as_deref(),
+                Ok("designer"),
+                "{live}"
+            );
         }
         for endpoint in [
             json!({"mode": "remote", "address": "127.0.0.1:1543"}),
             json!({"mode": "managed", "address": ""}),
             json!({"mode": "managed", "address": "h:1", "user": "admin"}),
             json!("127.0.0.1:1543"),
+            json!({"mode": "attached", "address": "h:1",
+                   "live": {"reused": true, "kept": true, "holders": []}}),
+            json!({"mode": "managed", "address": "h:1", "live": {"kept": true}}),
+            json!({"mode": "managed", "address": "h:1",
+                   "live": {"reused": true, "kept": true, "holders": [], "pid": 1}}),
         ] {
             let mut applied = apply_envelope(&output);
             applied["data"]["provider"]["endpoint"] = endpoint.clone();
-            assert!(
-                validate_apply(&prepared, &plan, &applied).is_err(),
-                "{endpoint}"
-            );
+            assert!(validate_apply(&prepared, &applied).is_err(), "{endpoint}");
         }
-        let mut other = apply_envelope(&output);
-        other["data"]["provider"] = json!({"selected": "ibcmd", "origin": {"kind": "default"},
-            "endpoint": {"mode": "gate", "address": "127.0.0.1:1543"}});
-        assert!(validate_apply(&prepared, &plan, &other).is_err());
     }
 
     /// Раннер 0.14 без имени набора обходит все наборы в каталог и путь к одному
@@ -2683,38 +3425,6 @@ mod tests {
         );
     }
 
-    /// Проектный файл, который адаптер не передаёт раннеру, — отказ источника с
-    /// причиной, а не «поставщика нет».
-    /// rule: INV.RUNTIME.RUNNER-011-CONFIG-PROJECTION
-    #[test]
-    fn a_refused_project_config_is_not_reported_as_an_absent_runner() {
-        let root = tempfile::tempdir().unwrap();
-        fs::write(
-            root.path().join(CONFIG_NAME),
-            "format: DESIGNER\nworkPath: build\nexecution_timeout: 300000\n",
-        )
-        .unwrap();
-        let prepared = prepared(root.path(), true);
-        let tool = BundledTool {
-            program: root.path().join("v8-runner-that-must-not-start"),
-            warnings: Vec::new(),
-            missing: None,
-        };
-        let error = invoke_runner(
-            &prepared,
-            &tool,
-            &Runner015ProcessRunner,
-            &CancellationToken::new(),
-            true,
-        )
-        .unwrap_err();
-        let diagnostic = &error.diagnostics[0];
-        assert_eq!(diagnostic["code"], "invalid_source", "{error:?}");
-        assert!(diagnostic.get("detailCode").is_none(), "{error:?}");
-        assert!(error.summary.contains("execution_timeout"), "{error:?}");
-        assert!(!error.summary.contains("failed to start"), "{error:?}");
-    }
-
     /// «нет движка» — только когда процесс раннера не возник.
     /// Настоящий запуск несуществующего файла даёт сбой запуска, и отказ
     /// называет шаг `start` вместе с причиной ОС, но без пути к движку. Сбой
@@ -2789,11 +3499,10 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let prepared = prepared(root.path(), false);
         let output = normalize_path_identity(&prepared.arguments.named_file).unwrap();
-        let plan = validate_preview(&prepared, &preview_envelope(&output)).unwrap();
         let mut applied = apply_envelope(&output);
         applied["data"]["output"] = json!(root.path().join("dist/other.cf"));
 
-        let rejection = validate_apply(&prepared, &plan, &applied).unwrap_err();
+        let rejection = validate_apply(&prepared, &applied).unwrap_err();
 
         assert_eq!(rejection.diagnostics[0]["code"], "invalid_result");
 
@@ -2855,6 +3564,7 @@ mod tests {
             ("output".to_string(), json!("dist/sales.cfe")),
         ]);
         let cfe = PreparedInfobaseExport {
+            call: Map::new(),
             operation: ExportOperation::Configuration,
             arguments: parse_export_arguments(ExportOperation::Configuration, &cfe_args, &context)
                 .unwrap(),
@@ -2890,6 +3600,7 @@ mod tests {
 
         let dt_args = Map::from_iter([("output".to_string(), json!("dist/base.dt"))]);
         let dt = PreparedInfobaseExport {
+            call: Map::new(),
             operation: ExportOperation::Infobase,
             arguments: parse_export_arguments(ExportOperation::Infobase, &dt_args, &context)
                 .unwrap(),
@@ -2964,5 +3675,213 @@ mod tests {
         assert!(!prepared.arguments.named_file.exists());
         let encoded = serde_json::to_string(&result).unwrap();
         assert!(!encoded.contains("provider details remain private"));
+    }
+
+    fn restore_workspace() -> tempfile::TempDir {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join(CONFIG_NAME), "format: DESIGNER\n").unwrap();
+        fs::create_dir_all(root.path().join("transfer")).unwrap();
+        fs::write(root.path().join("transfer/base.dt"), b"transfer bytes").unwrap();
+        fs::write(root.path().join("transfer/other.dt"), b"other bytes").unwrap();
+        root
+    }
+
+    fn restore_request(root: &Path, arguments: Value) -> InvocationRequest {
+        InvocationRequest::new(
+            ToolIdentity::Run,
+            arguments,
+            root.display().to_string(),
+            7000,
+        )
+        .unwrap()
+    }
+
+    /// Отказ раннера 0.15 на `infobase restore --create`, когда база уже есть:
+    /// код проверки и проза, по которой Unica его опознаёт.
+    fn restore_target_exists_envelope(dry_run: bool) -> Value {
+        json!({
+            "command": "infobase.restore",
+            "data": {
+                "mode": if dry_run { "preview" } else { "apply" },
+                "provider_dispatched": if dry_run { json!(false) } else { Value::Null },
+                "subject": "infobase",
+                "artifact_kind": "dt",
+                "target_mode": "create",
+                "restored": false,
+                "target_state": "unchanged",
+                "execution": {"status": "failed"}
+            },
+            "error": {
+                "code": "invalid_argument",
+                "message": "--create was requested but the target infobase already exists; pass --replace to discard its data"
+            }
+        })
+    }
+
+    /// Исполняемый `infobase.restore` с `mode: replace` идёт только с согласия
+    /// человека. Без него — отказ `cancelled` с вопросом-подтверждением по
+    /// согласованному тексту: база и имя DT без пути. Подтверждение годится
+    /// только для того же вызова. Превью и `mode: create` не спрашивают.
+    /// rule: INV.RUNTIME.DESTRUCTIVE-CONFIRMATION
+    /// rule: INV.MCP.HUMAN-CHOICE
+    #[test]
+    fn an_executing_restore_with_replace_runs_only_with_the_persons_confirmation() {
+        let root = restore_workspace();
+        let call = json!({
+            "op": "infobase.restore",
+            "args": {"input": "transfer/base.dt", "mode": "replace"},
+            "dryRun": false
+        });
+
+        let refused = PreparedInfobaseExport::parse(
+            &restore_request(root.path(), call.clone()),
+            ExportOperation::Restore,
+        )
+        .expect_err("replace without a confirmation is not executed");
+        assert_eq!(refused.diagnostics[0]["code"], "cancelled");
+        let choice = refused.human_choice.as_deref().expect("a confirmation");
+        // Надписи согласованы: менять их — только вместе с этим тестом.
+        assert_eq!(choice.code, "infobase.restore_replace");
+        assert_eq!(
+            choice.question,
+            "Заменить данные базы «origin» данными из «base.dt»?"
+        );
+        assert!(choice.proceeds_unasked);
+        assert_eq!(choice.options.len(), 1);
+        assert_eq!(choice.options[0].title, "Заменить данные");
+        assert_eq!(
+            choice.options[0].description,
+            "данные и конфигурация базы пропадут"
+        );
+        assert_eq!(
+            choice.data,
+            Some(json!({"infobase": "origin", "file": "base.dt", "input": "transfer/base.dt"}))
+        );
+        assert_eq!(
+            Value::Object(unica_execution_contract::invocation::without_confirmation(
+                &choice.options[0].arguments
+            )),
+            call
+        );
+
+        let confirmed = choice.options[0].arguments.clone();
+        let executed = PreparedInfobaseExport::parse(
+            &restore_request(root.path(), Value::Object(confirmed.clone())),
+            ExportOperation::Restore,
+        )
+        .expect("a confirmed replace is executed");
+        assert_eq!(executed.arguments.restore_mode, Some(RestoreMode::Replace));
+        assert!(!executed.dry_run);
+
+        // Согласие на один файл не загружает в базу другой.
+        let mut other = confirmed;
+        other["args"]["input"] = json!("transfer/other.dt");
+        assert!(PreparedInfobaseExport::parse(
+            &restore_request(root.path(), Value::Object(other)),
+            ExportOperation::Restore,
+        )
+        .is_err());
+
+        for unasked in [
+            json!({"op": "infobase.restore", "args": {"input": "transfer/base.dt", "mode": "replace"}, "dryRun": true}),
+            json!({"op": "infobase.restore", "args": {"input": "transfer/base.dt", "mode": "create"}, "dryRun": false}),
+        ] {
+            PreparedInfobaseExport::parse(
+                &restore_request(root.path(), unasked.clone()),
+                ExportOperation::Restore,
+            )
+            .unwrap_or_else(|refused| panic!("{unasked} is not asked: {refused:?}"));
+        }
+    }
+
+    /// Исполняемый `mode: create` над базой, которая уже есть, отказывает
+    /// вопросом человеку с согласованными надписями. Вариант — тот же вызов с
+    /// `mode: replace`, и он уже несёт согласие на замену данных. Превью и
+    /// другой отказ раннера вопроса не несут.
+    /// rule: INV.RUNTIME.INFOBASE-IMPORT-MODE
+    /// rule: INV.MCP.HUMAN-CHOICE
+    #[test]
+    fn restore_create_over_an_existing_infobase_offers_to_replace_its_data() {
+        let root = restore_workspace();
+        let tool = BundledTool {
+            program: root.path().join("v8-runner"),
+            warnings: Vec::new(),
+            missing: None,
+        };
+        {
+            let prepared = prepared_restore(root.path(), false, RestoreMode::Create);
+            let runner =
+                SequenceRunner::new(vec![failed_process(restore_target_exists_envelope(false))]);
+            let result = execute_with_resolved_runner(
+                &prepared,
+                &runner,
+                CancellationToken::new(),
+                &tool,
+                "0.17.4",
+            );
+            assert!(!result.ok, "{result:?}");
+            let choice = result.human_choice.as_deref().expect("a question");
+            // Надписи согласованы: менять их — только вместе с этим тестом.
+            assert_eq!(choice.code, "infobase.restore_exists");
+            assert_eq!(choice.question, "База «origin» уже существует.");
+            assert!(!choice.proceeds_unasked);
+            assert_eq!(choice.options.len(), 1);
+            let option = &choice.options[0];
+            assert_eq!(option.title, "Заменить данные базы данными из «base.dt»");
+            assert_eq!(option.description, "данные и конфигурация базы пропадут");
+            assert_eq!(option.tool, "unica.run");
+            assert_eq!(
+                choice.data,
+                Some(json!({"infobase": "origin", "file": "base.dt", "input": "transfer/base.dt"}))
+            );
+            let replace = json!({
+                "op": "infobase.restore",
+                "args": {"input": "transfer/base.dt", "mode": "replace"},
+                "dryRun": false
+            });
+            assert_eq!(
+                Value::Object(unica_execution_contract::invocation::without_confirmation(
+                    &option.arguments
+                )),
+                replace
+            );
+            // Выбор варианта уже согласие на замену: второй вопрос не задаётся.
+            assert!(HumanChoice::is_confirmed(
+                &restore_replace_question("base.dt"),
+                "unica.run",
+                &option.arguments
+            ));
+            PreparedInfobaseExport::parse(
+                &restore_request(root.path(), Value::Object(option.arguments.clone())),
+                ExportOperation::Restore,
+            )
+            .expect("the chosen call is admitted without a second question");
+        }
+
+        // Превью спрашивать не может: оно отдаёт прежний отказ.
+        let preview = execute_with_resolved_runner(
+            &prepared_restore(root.path(), true, RestoreMode::Create),
+            &SequenceRunner::new(vec![failed_process(restore_target_exists_envelope(true))]),
+            CancellationToken::new(),
+            &tool,
+            "0.17.4",
+        );
+        assert!(!preview.ok);
+        assert!(preview.human_choice.is_none(), "{preview:?}");
+
+        let prepared = prepared_restore(root.path(), false, RestoreMode::Create);
+        let mut other = restore_target_exists_envelope(false);
+        other["error"]["message"] =
+            json!("--input 'transfer/base.dt' is not a non-empty regular file");
+        let runner = SequenceRunner::new(vec![failed_process(other)]);
+        let result = execute_with_resolved_runner(
+            &prepared,
+            &runner,
+            CancellationToken::new(),
+            &tool,
+            "0.17.4",
+        );
+        assert!(!result.ok);
+        assert!(result.human_choice.is_none(), "{result:?}");
     }
 }

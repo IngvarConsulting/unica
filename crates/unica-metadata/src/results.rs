@@ -130,6 +130,9 @@ pub struct MetaElementData {
     pub fill_value: Option<MetaFillValue>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub addressing_dimension: Option<String>,
+    /// `Color` of an enumeration value of a set whose line has it (8.5.1+).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub properties: Vec<MetaObservedProperty>,
     #[serde(skip_serializing_if = "Option::is_none")]

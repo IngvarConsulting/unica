@@ -13,7 +13,53 @@
       },
       "expect": [
         "ok"
-      ]
+      ],
+      "captures": {
+        "unchanged1": {
+          "file": "src/cf/Reports/F06Report/Templates/UnsafeOutsideRow/Ext/Template.xml",
+          "kind": "sha256"
+        },
+        "unchanged2": {
+          "file": "src/cf/Reports/F06Report/Templates/UnsafeOverlappingAreas/Ext/Template.xml",
+          "kind": "sha256"
+        },
+        "unchanged3": {
+          "file": "src/cf/Reports/F06Report/Templates/UnsafePhysicalAreaOrder/Ext/Template.xml",
+          "kind": "sha256"
+        },
+        "unchanged4": {
+          "file": "src/cf/Reports/F06Report/Templates/UnsafeCellTranslations/Ext/Template.xml",
+          "kind": "sha256"
+        },
+        "unchanged5": {
+          "file": "src/cf/Reports/F06Report/Templates/UnsafeMultipleColumnSets/Ext/Template.xml",
+          "kind": "sha256"
+        },
+        "unchanged6": {
+          "file": "src/cf/Reports/F06Report/Templates/UnsafeColumnsId/Ext/Template.xml",
+          "kind": "sha256"
+        },
+        "unchanged7": {
+          "file": "src/cf/Reports/F06Report/Templates/UnsafeLanguageSettings/Ext/Template.xml",
+          "kind": "sha256"
+        },
+        "unchanged8": {
+          "file": "src/cf/Reports/F06Report/Templates/UnsafeDrawing/Ext/Template.xml",
+          "kind": "sha256"
+        },
+        "unchanged9": {
+          "file": "src/cf/Reports/F06Report/Templates/UnsafeColumnArea/Ext/Template.xml",
+          "kind": "sha256"
+        },
+        "unchanged10": {
+          "file": "src/cf/Reports/F06Report/Templates/UnsafeFormatTranslations/Ext/Template.xml",
+          "kind": "sha256"
+        },
+        "unchanged11": {
+          "file": "src/cf/Reports/F06Report/Templates/UnsafeCompressedOutsideRow/Ext/Template.xml",
+          "kind": "sha256"
+        }
+      }
     },
     {
       "tool": "unica.apply",
@@ -54,7 +100,7 @@
         {
           "kind": "sha256",
           "path": "src/cf/Reports/F06Report/Templates/UnsafeOutsideRow/Ext/Template.xml",
-          "eq": "f1ac46633f0ae18db5a505d4d455674cd996eabea6aff43650faceb720578967"
+          "eq": "$capture.unchanged1"
         }
       ]
     },
@@ -128,7 +174,7 @@
         {
           "kind": "sha256",
           "path": "src/cf/Reports/F06Report/Templates/UnsafeOverlappingAreas/Ext/Template.xml",
-          "eq": "99d9b7184dd7451a7d1b271cea063952d66ecf18a979ee84c96356bc94b4d054"
+          "eq": "$capture.unchanged2"
         }
       ]
     },
@@ -202,7 +248,7 @@
         {
           "kind": "sha256",
           "path": "src/cf/Reports/F06Report/Templates/UnsafePhysicalAreaOrder/Ext/Template.xml",
-          "eq": "4b538e3b77d208c904a393dfab1980f97b433367429123d31a53c2883e4c9e3c"
+          "eq": "$capture.unchanged3"
         }
       ]
     },
@@ -276,7 +322,7 @@
         {
           "kind": "sha256",
           "path": "src/cf/Reports/F06Report/Templates/UnsafeCellTranslations/Ext/Template.xml",
-          "eq": "8fe1d34e5159efd275a70b3b82dcc46f5ea9b69662f7170058cc99b52178036a"
+          "eq": "$capture.unchanged4"
         }
       ]
     },
@@ -350,7 +396,7 @@
         {
           "kind": "sha256",
           "path": "src/cf/Reports/F06Report/Templates/UnsafeMultipleColumnSets/Ext/Template.xml",
-          "eq": "8cd998a7d55031ba9b175f78557c1c64b4ef2722e6b7d82f18a7a77e3b62c9da"
+          "eq": "$capture.unchanged5"
         }
       ]
     },
@@ -424,7 +470,7 @@
         {
           "kind": "sha256",
           "path": "src/cf/Reports/F06Report/Templates/UnsafeColumnsId/Ext/Template.xml",
-          "eq": "909d28947be628fc756b10ebaf33c6982755bb0c42e8e7db18e132a55c34df10"
+          "eq": "$capture.unchanged6"
         }
       ]
     },
@@ -498,7 +544,7 @@
         {
           "kind": "sha256",
           "path": "src/cf/Reports/F06Report/Templates/UnsafeLanguageSettings/Ext/Template.xml",
-          "eq": "72b0945ff487f5b46c7a8088ba929e13bb508ead49a0551f7d1d15fc4bb00973"
+          "eq": "$capture.unchanged7"
         }
       ]
     },
@@ -572,7 +618,7 @@
         {
           "kind": "sha256",
           "path": "src/cf/Reports/F06Report/Templates/UnsafeDrawing/Ext/Template.xml",
-          "eq": "bd3c443c1b825d82bca13566c831f334dfe3589171f77384e03f0beca9642eba"
+          "eq": "$capture.unchanged8"
         }
       ]
     },
@@ -632,7 +678,7 @@
         {
           "kind": "sha256",
           "path": "src/cf/Reports/F06Report/Templates/UnsafeColumnArea/Ext/Template.xml",
-          "eq": "e91d7d425fc1bd31f8e9d520f14f8d217d98bfd2b5bc760afb50758f34aab4c1"
+          "eq": "$capture.unchanged9"
         }
       ]
     },
@@ -684,7 +730,7 @@
         {
           "kind": "sha256",
           "path": "src/cf/Reports/F06Report/Templates/UnsafeFormatTranslations/Ext/Template.xml",
-          "eq": "37012a5a2337626c4fa2ae462bc0d3c5bea8ba2887123387f45726c5bec6c52b"
+          "eq": "$capture.unchanged10"
         }
       ]
     },
@@ -744,7 +790,7 @@
         {
           "kind": "sha256",
           "path": "src/cf/Reports/F06Report/Templates/UnsafeCompressedOutsideRow/Ext/Template.xml",
-          "eq": "e5a25aa22346cbb898c72729cfaebca8b5baa4bd9999cb0bb439b65d90549745"
+          "eq": "$capture.unchanged11"
         }
       ]
     }

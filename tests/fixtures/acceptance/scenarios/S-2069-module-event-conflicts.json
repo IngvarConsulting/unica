@@ -1,0 +1,197 @@
+{
+  "id": "S-2069-module-event-conflicts",
+  "issue": 2069,
+  "area": "События",
+  "task": "Прочитать конфликтующие обработчики события модуля: все привязки и обратные связи видны, единственная реализация не выбирается.",
+  "workspace": "tests/fixtures/acceptance/workspace-module-event-conflicts",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Products.Module.Object.Event.BeforeWrite"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/state",
+          "eq": "invalid"
+        },
+        {
+          "pointer": "/data/props/handler",
+          "eq": null
+        },
+        {
+          "pointer": "/data/props/implementationAt",
+          "eq": null
+        },
+        {
+          "pointer": "/data/props/signature",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/props/handlers",
+          "eq": [
+            {
+              "handler": "ПередЗаписью",
+              "implementationAt": "main:Catalog.Products.Module.Object.Method.ПередЗаписью"
+            },
+            {
+              "handler": "BeforeWrite",
+              "implementationAt": "main:Catalog.Products.Module.Object.Method.BeforeWrite"
+            }
+          ]
+        }
+      ],
+      "captures": {
+        "Products": {
+          "file": "src/Catalogs/Products/Ext/ObjectModule.bsl",
+          "kind": "sha256"
+        },
+        "CaseConflicts": {
+          "file": "src/Catalogs/CaseConflicts/Ext/ObjectModule.bsl",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Products.Module.Object.Method.ПередЗаписью"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/handles",
+          "eq": [
+            {
+              "owner": "module",
+              "event": "BeforeWrite",
+              "at": "main:Catalog.Products.Module.Object.Event.BeforeWrite",
+              "binding": "platform"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Products.Module.Object.Method.BeforeWrite"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/handles",
+          "eq": [
+            {
+              "owner": "module",
+              "event": "BeforeWrite",
+              "at": "main:Catalog.Products.Module.Object.Event.BeforeWrite",
+              "binding": "platform"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.CaseConflicts.Module.Object.Event.BeforeWrite"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/state",
+          "eq": "invalid"
+        },
+        {
+          "pointer": "/data/props/handler",
+          "eq": null
+        },
+        {
+          "pointer": "/data/props/implementationAt",
+          "eq": null
+        },
+        {
+          "pointer": "/data/props/signature",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/props/handlers",
+          "eq": [
+            {
+              "handler": "ПередЗаписью"
+            },
+            {
+              "handler": "передзаписью"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.CaseConflicts.Module.Object.Method.ПередЗаписью"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/handles",
+          "eq": [
+            {
+              "owner": "module",
+              "event": "BeforeWrite",
+              "at": "main:Catalog.CaseConflicts.Module.Object.Event.BeforeWrite",
+              "binding": "platform"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.CaseConflicts.Module.Object.Method.передзаписью"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/handles",
+          "eq": [
+            {
+              "owner": "module",
+              "event": "BeforeWrite",
+              "at": "main:Catalog.CaseConflicts.Module.Object.Event.BeforeWrite",
+              "binding": "platform"
+            }
+          ]
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Products/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.Products"
+        },
+        {
+          "path": "src/Catalogs/CaseConflicts/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.CaseConflicts"
+        }
+      ]
+    }
+  ]
+}

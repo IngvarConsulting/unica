@@ -1,0 +1,1250 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:ns1="http://v8.1c.ru/8.1/data/core" xmlns:ns2="http://v8.1c.ru/8.1/data/ui" xmlns:ns3="http://v8.1c.ru/8.2/managed-application/core" xmlns:ns4="http://v8.1c.ru/8.2/managed-application/logform" xmlns:ns5="http://v8.1c.ru/8.2/data/spreadsheet" xmlns:tns="http://v8.1c.ru/8.2/managed-application/logform/layouter" xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="http://v8.1c.ru/8.2/managed-application/logform/layouter" attributeFormDefault="unqualified" elementFormDefault="qualified">
+	<xs:import namespace="http://v8.1c.ru/8.1/data/core"/>
+	<xs:import namespace="http://v8.1c.ru/8.1/data/ui"/>
+	<xs:import namespace="http://v8.1c.ru/8.2/managed-application/core"/>
+	<xs:import namespace="http://v8.1c.ru/8.2/managed-application/logform"/>
+	<xs:import namespace="http://v8.1c.ru/8.2/data/spreadsheet"/>
+	<xs:simpleType name="BWDValue">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="true"/>
+			<xs:enumeration value="false"/>
+			<xs:enumeration value="auto"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="CaptionButtonsLocation">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Left"/>
+			<xs:enumeration value="Right"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ChoiceButtonRepresentation">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="ShowInDropList"/>
+			<xs:enumeration value="ShowInDropListAndInInputField"/>
+			<xs:enumeration value="ShowInInputField"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ChoiceObjects">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Items"/>
+			<xs:enumeration value="Folders"/>
+			<xs:enumeration value="FoldersAndItems"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ColumnMode">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Text"/>
+			<xs:enumeration value="Input"/>
+			<xs:enumeration value="Check"/>
+			<xs:enumeration value="Image"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ColumnsGroup">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Horizontal"/>
+			<xs:enumeration value="Vertical"/>
+			<xs:enumeration value="InCell"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ControlCategory">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Prim"/>
+			<xs:enumeration value="Sec"/>
+			<xs:enumeration value="Ttl"/>
+			<xs:enumeration value="ExTlp"/>
+			<xs:enumeration value="GrpTtl"/>
+			<xs:enumeration value="Clp"/>
+			<xs:enumeration value="SearchStringRepresentation"/>
+			<xs:enumeration value="ViewStatusRepresentation"/>
+			<xs:enumeration value="SearchControl"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="Direction">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Hor"/>
+			<xs:enumeration value="Ver"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="DrawingSelectionShowMode">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Show"/>
+			<xs:enumeration value="DontShow"/>
+			<xs:enumeration value="Auto"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ElementShiftMode">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="None"/>
+			<xs:enumeration value="Top"/>
+			<xs:enumeration value="Bottom"/>
+			<xs:enumeration value="Left"/>
+			<xs:enumeration value="SmallRight"/>
+			<xs:enumeration value="BigRight"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="FormDateSelectionMode">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Single"/>
+			<xs:enumeration value="Multiple"/>
+			<xs:enumeration value="Interval"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="FormElementOrientation">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Horizontal"/>
+			<xs:enumeration value="Vertical"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="FormEnterKeyBehavior">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="ControlNavigation"/>
+			<xs:enumeration value="DefaultButton"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="FormPanelTabsRepresentation">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="None"/>
+			<xs:enumeration value="Top"/>
+			<xs:enumeration value="Bottom"/>
+			<xs:enumeration value="LeftHorizontal"/>
+			<xs:enumeration value="RightHorizontal"/>
+			<xs:enumeration value="Swipe"/>
+			<xs:enumeration value="Auto"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="FormProgressBarRepresentation">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Smooth"/>
+			<xs:enumeration value="Broken"/>
+			<xs:enumeration value="BrokenTilt"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="FormTrackBarMarking">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="DontShow"/>
+			<xs:enumeration value="TopLeft"/>
+			<xs:enumeration value="BottomRight"/>
+			<xs:enumeration value="BothSides"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="IncompleteItemChoiceMode">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="OnEnterPressed"/>
+			<xs:enumeration value="OnActivate"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ItemHorizontalAlignment">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Left"/>
+			<xs:enumeration value="Center"/>
+			<xs:enumeration value="Right"/>
+			<xs:enumeration value="Auto"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ItemVerticalAlignment">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Top"/>
+			<xs:enumeration value="Bottom"/>
+			<xs:enumeration value="Center"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="MenuElementRepresentation">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Text"/>
+			<xs:enumeration value="Picture"/>
+			<xs:enumeration value="TextPicture"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="PictureSize">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="RealSize"/>
+			<xs:enumeration value="Stretch"/>
+			<xs:enumeration value="Proportionally"/>
+			<xs:enumeration value="Tile"/>
+			<xs:enumeration value="AutoSize"/>
+			<xs:enumeration value="RealSizeIgnoreScale"/>
+			<xs:enumeration value="AutoSizeIgnoreScale"/>
+			<xs:enumeration value="ByFontSize"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="SearchOnInputForbiddenMode">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Allow"/>
+			<xs:enumeration value="Forbidden"/>
+			<xs:enumeration value="Check"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="SelectionShowMode">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="WhenActive"/>
+			<xs:enumeration value="Always"/>
+			<xs:enumeration value="DontShow"/>
+			<xs:enumeration value="WhenMultipleCellsSelected"/>
+			<xs:enumeration value="WhenMultipleCellsSelectedWhenActive"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="SpreadSheetDocumentScrollBarUse">
+		<xs:union memberTypes="ns4:TableScrollBarUse xs:boolean"/>
+	</xs:simpleType>
+	<xs:simpleType name="StretchableMode">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="No"/>
+			<xs:enumeration value="Hor"/>
+			<xs:enumeration value="Ver"/>
+			<xs:enumeration value="Any"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="TableFieldEditMode">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Directly"/>
+			<xs:enumeration value="Enter"/>
+			<xs:enumeration value="EnterOnInput"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="TableInitialListView">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Beginning"/>
+			<xs:enumeration value="End"/>
+			<xs:enumeration value="Auto"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="TableInitialTreeView">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="NoExpand"/>
+			<xs:enumeration value="ExpandTopLevel"/>
+			<xs:enumeration value="ExpandAllLevels"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="TableRowInputMode">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="EndOfList"/>
+			<xs:enumeration value="EndOfWindow"/>
+			<xs:enumeration value="AfterCurrentRow"/>
+			<xs:enumeration value="BeforeCurrentRow"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="TableRowSelectionMode">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Cell"/>
+			<xs:enumeration value="Row"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="TableScrollBarUse">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="DontUse"/>
+			<xs:enumeration value="UseAlways"/>
+			<xs:enumeration value="AutoUse"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="TableSelectionMode">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="SingleRow"/>
+			<xs:enumeration value="MultiRow"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ViewScalingMode">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="Normal"/>
+			<xs:enumeration value="Large"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="WarningBeforeEditRepresentation">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Show"/>
+			<xs:enumeration value="DontShow"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:complexType name="BackObject">
+		<xs:complexContent>
+			<xs:extension base="tns:Item">
+				<xs:sequence>
+					<xs:element name="bkClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="io" type="xs:string" minOccurs="0" maxOccurs="unbounded"/>
+				</xs:sequence>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="Button">
+		<xs:complexContent>
+			<xs:extension base="tns:Item">
+				<xs:choice>
+					<xs:element name="tooltip" type="xs:string" minOccurs="0"/>
+					<xs:element name="shortCut" type="ns2:ShortCutType" minOccurs="0"/>
+					<xs:element name="pic" type="ns2:Picture" minOccurs="0"/>
+					<xs:element name="txtClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="bkClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="brdClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="fnt" type="ns2:Font" minOccurs="0"/>
+					<xs:element name="cmd" type="tns:Command" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="menu" type="tns:Submenu" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="msep" type="tns:MenuSeparator" minOccurs="0" maxOccurs="unbounded"/>
+				</xs:choice>
+				<xs:attribute name="defBtn" type="xs:boolean"/>
+				<xs:attribute name="depBtn" type="xs:boolean"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="Calendar">
+		<xs:complexContent>
+			<xs:extension base="tns:Item">
+				<xs:sequence>
+					<xs:element name="tooltip" type="xs:string" minOccurs="0"/>
+					<xs:element name="fnt" type="ns2:Font" minOccurs="0"/>
+					<xs:element name="stcut" type="ns2:ShortCutType" minOccurs="0"/>
+					<xs:element name="cntm" type="tns:ContextMenu" minOccurs="0"/>
+					<xs:element name="brdClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="brd" type="ns2:Border" minOccurs="0"/>
+				</xs:sequence>
+				<xs:attribute name="dateSel" type="tns:FormDateSelectionMode"/>
+				<xs:attribute name="showCurDate" type="xs:boolean"/>
+				<xs:attribute name="navigation" type="xs:boolean"/>
+				<xs:attribute name="begPeriod" type="xs:dateTime"/>
+				<xs:attribute name="endPeriod" type="xs:dateTime"/>
+				<xs:attribute name="startDrag" type="xs:boolean"/>
+				<xs:attribute name="drag" type="xs:boolean"/>
+				<xs:attribute name="monthPanelVisible" type="xs:boolean"/>
+				<xs:attribute name="widthInMonths" type="xs:decimal"/>
+				<xs:attribute name="heightInMonths" type="xs:decimal"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="CaptionButtons">
+		<xs:complexContent>
+			<xs:extension base="tns:Item">
+				<xs:choice>
+					<xs:element name="loc" type="tns:CaptionButtonsLocation" minOccurs="0"/>
+					<xs:element name="btn" type="tns:Button" minOccurs="0" maxOccurs="unbounded"/>
+				</xs:choice>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="Chart">
+		<xs:complexContent>
+			<xs:extension base="tns:Item">
+				<xs:sequence>
+					<xs:element name="tooltip" type="xs:string" minOccurs="0"/>
+					<xs:element name="stcut" type="ns2:ShortCutType" minOccurs="0"/>
+					<xs:element name="cntm" type="tns:ContextMenu" minOccurs="0"/>
+				</xs:sequence>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="CheckBox">
+		<xs:complexContent>
+			<xs:extension base="tns:Item">
+				<xs:sequence>
+					<xs:element name="tooltip" type="xs:string" minOccurs="0"/>
+					<xs:element name="brdClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="stcut" type="ns2:ShortCutType" minOccurs="0"/>
+					<xs:element name="cntm" type="tns:ContextMenu" minOccurs="0"/>
+				</xs:sequence>
+				<xs:attribute name="threeState" type="xs:boolean"/>
+				<xs:attribute name="vAlign" type="tns:ItemVerticalAlignment"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="Command">
+		<xs:complexContent>
+			<xs:extension base="tns:Item">
+				<xs:sequence>
+					<xs:element name="tooltip" type="xs:string" minOccurs="0"/>
+					<xs:element name="shortCut" type="ns2:ShortCutType" minOccurs="0"/>
+					<xs:element name="pic" type="ns2:Picture" minOccurs="0"/>
+				</xs:sequence>
+				<xs:attribute name="repres" type="tns:MenuElementRepresentation"/>
+				<xs:attribute name="defBtn" type="xs:boolean"/>
+				<xs:attribute name="locationincommandbar" type="ns4:ButtonLocationInCommandBar"/>
+				<xs:attribute name="important" type="xs:boolean"/>
+				<xs:attribute name="right" type="xs:boolean"/>
+				<xs:attribute name="subMenu" type="xs:boolean"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="CommandBar">
+		<xs:complexContent>
+			<xs:extension base="tns:Item">
+				<xs:choice>
+					<xs:element name="cmd" type="tns:Command" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="menu" type="tns:Submenu" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="msep" type="tns:MenuSeparator" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="txt" type="tns:TextBox" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="btn" type="tns:Button" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="stcut" type="ns2:ShortCutType" minOccurs="0"/>
+					<xs:element name="fnt" type="ns2:Font" minOccurs="0"/>
+				</xs:choice>
+				<xs:attribute name="source" type="xs:string"/>
+				<xs:attribute name="hAlign" type="tns:ItemHorizontalAlignment"/>
+				<xs:attribute name="secCB" type="xs:boolean"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="ContextMenu">
+		<xs:complexContent>
+			<xs:extension base="tns:Item">
+				<xs:choice>
+					<xs:element name="cmd" type="tns:Command" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="menu" type="tns:Submenu" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="msep" type="tns:MenuSeparator" minOccurs="0" maxOccurs="unbounded"/>
+				</xs:choice>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="Dendrogram">
+		<xs:complexContent>
+			<xs:extension base="tns:Item">
+				<xs:sequence>
+					<xs:element name="tooltip" type="xs:string" minOccurs="0"/>
+					<xs:element name="stcut" type="ns2:ShortCutType" minOccurs="0"/>
+					<xs:element name="cntm" type="tns:ContextMenu" minOccurs="0"/>
+				</xs:sequence>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="EmptyElement">
+		<xs:complexContent>
+			<xs:extension base="tns:Item"/>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="Flowchart">
+		<xs:complexContent>
+			<xs:extension base="tns:Item">
+				<xs:sequence>
+					<xs:element name="tooltip" type="xs:string" minOccurs="0"/>
+					<xs:element name="brdClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="stcut" type="ns2:ShortCutType" minOccurs="0"/>
+					<xs:element name="cntm" type="tns:ContextMenu" minOccurs="0"/>
+				</xs:sequence>
+				<xs:attribute name="output" type="xs:boolean"/>
+				<xs:attribute name="edit" type="xs:boolean"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="Form">
+		<xs:complexContent>
+			<xs:extension base="tns:Item">
+				<xs:choice>
+					<xs:element name="lbl" type="tns:Label" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="txt" type="tns:TextBox" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="chk" type="tns:CheckBox" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="tmb" type="tns:Tumbler" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="vs" type="tns:ViewStatus" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="btn" type="tns:Button" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="rbtn" type="tns:RadioButton" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="cmdb" type="tns:CommandBar" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="tbl" type="tns:TableBox" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="grpb" type="tns:GroupBox" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="spnl" type="tns:SeparatePanel" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="pnl" type="tns:Panel" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="img" type="tns:Image" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="sep" type="tns:Separator" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="bo" type="tns:BackObject" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="vl" type="tns:VerticalLine" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="sprdsht" type="tns:Spreadsheet" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="txtd" type="tns:TextDocument" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="fmtd" type="tns:FormattedDocument" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="plnnr" type="tns:Planner" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="clndr" type="tns:Calendar" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="prd" type="tns:Period" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="prgb" type="tns:ProgressBar" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="trckb" type="tns:TrackBar" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="chrt" type="tns:Chart" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="gchrt" type="tns:GanttChart" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="dndrgm" type="tns:Dendrogram" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="flwchrt" type="tns:Flowchart" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="html" type="tns:HTML" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="gm" type="tns:GeographicalMap" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="empt" type="tns:EmptyElement" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="nvg" type="tns:Navigator" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="cpb" type="tns:CaptionButtons" minOccurs="0" maxOccurs="unbounded"/>
+				</xs:choice>
+				<xs:attribute name="realHeight" type="xs:decimal"/>
+				<xs:attribute name="enter" type="tns:FormEnterKeyBehavior"/>
+				<xs:attribute name="verScroll" type="xs:boolean"/>
+				<xs:attribute name="convRepr" type="ns4:LogFormShowConversations"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="FormChanges">
+		<xs:sequence>
+			<xs:element name="removed" type="tns:FormChangesRemoved" minOccurs="0"/>
+			<xs:element name="added" type="tns:FormChangesAdded" minOccurs="0"/>
+			<xs:element name="changed" type="tns:FormChangesChanged" minOccurs="0"/>
+			<xs:element name="moved" type="tns:FormChangesMoved" minOccurs="0"/>
+			<xs:element name="shifted" type="tns:FormChangesShifted" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="FormChangesAdded">
+		<xs:sequence>
+			<xs:element name="item" type="tns:FormChangesAddedItem" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="FormChangesAddedItem">
+		<xs:sequence>
+			<xs:element name="type" type="ns1:UUID"/>
+		</xs:sequence>
+		<xs:attribute name="name" type="xs:string"/>
+		<xs:attribute name="pname" type="xs:string"/>
+		<xs:attribute name="aname" type="xs:string"/>
+	</xs:complexType>
+	<xs:complexType name="FormChangesChanged">
+		<xs:sequence>
+			<xs:element name="item" type="tns:FormChangesChangedItem" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="FormChangesChangedItem">
+		<xs:choice>
+			<xs:element name="frm" type="tns:Form" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="lbl" type="tns:Label" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="txt" type="tns:TextBox" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="chk" type="tns:CheckBox" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="tmb" type="tns:Tumbler" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="vs" type="tns:ViewStatus" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="btn" type="tns:Button" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="rbtn" type="tns:RadioButton" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="cmdb" type="tns:CommandBar" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="cmd" type="tns:Command" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="menu" type="tns:Submenu" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="msep" type="tns:MenuSeparator" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="cntm" type="tns:ContextMenu" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="tbl" type="tns:TableBox" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="column" type="tns:TableColumn" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="group" type="tns:TableColumnsGroup" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="grpb" type="tns:GroupBox" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="spnl" type="tns:SeparatePanel" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="pnl" type="tns:Panel" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="page" type="tns:Page" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="img" type="tns:Image" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="sep" type="tns:Separator" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="bo" type="tns:BackObject" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="vl" type="tns:VerticalLine" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="sprdsht" type="tns:Spreadsheet" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="txtd" type="tns:TextDocument" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="fmtd" type="tns:FormattedDocument" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="plnnr" type="tns:Planner" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="clndr" type="tns:Calendar" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="prd" type="tns:Period" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="prgb" type="tns:ProgressBar" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="trckb" type="tns:TrackBar" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="chrt" type="tns:Chart" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="gchrt" type="tns:GanttChart" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="dndrgm" type="tns:Dendrogram" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="flwchrt" type="tns:Flowchart" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="html" type="tns:HTML" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="gm" type="tns:GeographicalMap" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="empt" type="tns:EmptyElement" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="nvg" type="tns:Navigator" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="cpb" type="tns:CaptionButtons" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:choice>
+		<xs:attribute name="name" type="xs:string"/>
+		<xs:attribute name="chtype" type="ns1:UUID"/>
+	</xs:complexType>
+	<xs:complexType name="FormChangesMoved">
+		<xs:sequence>
+			<xs:element name="item" type="tns:FormChangesMovedItem" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="FormChangesMovedItem">
+		<xs:attribute name="name" type="xs:string"/>
+		<xs:attribute name="pname" type="xs:string"/>
+		<xs:attribute name="aname" type="xs:string"/>
+	</xs:complexType>
+	<xs:complexType name="FormChangesRemoved">
+		<xs:sequence>
+			<xs:element name="item" type="tns:FormChangesRemovedItem" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="FormChangesRemovedItem">
+		<xs:attribute name="name" type="xs:string"/>
+	</xs:complexType>
+	<xs:complexType name="FormChangesShifted">
+		<xs:sequence>
+			<xs:element name="item" type="tns:FormChangesShiftedItem" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="FormChangesShiftedItem">
+		<xs:attribute name="name" type="xs:string"/>
+		<xs:attribute name="pname" type="xs:string"/>
+		<xs:attribute name="index" type="xs:decimal"/>
+	</xs:complexType>
+	<xs:complexType name="FormattedDocument">
+		<xs:complexContent>
+			<xs:extension base="tns:Item">
+				<xs:sequence>
+					<xs:element name="tooltip" type="xs:string" minOccurs="0"/>
+					<xs:element name="stcut" type="ns2:ShortCutType" minOccurs="0"/>
+					<xs:element name="txtClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="bkClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="brdClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="fnt" type="ns2:Font" minOccurs="0"/>
+					<xs:element name="cntm" type="tns:ContextMenu" minOccurs="0"/>
+				</xs:sequence>
+				<xs:attribute name="output" type="xs:boolean"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="GanttChart">
+		<xs:complexContent>
+			<xs:extension base="tns:Item">
+				<xs:sequence>
+					<xs:element name="tooltip" type="xs:string" minOccurs="0"/>
+					<xs:element name="stcut" type="ns2:ShortCutType" minOccurs="0"/>
+					<xs:element name="cntm" type="tns:ContextMenu" minOccurs="0"/>
+				</xs:sequence>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="GeographicalMap">
+		<xs:complexContent>
+			<xs:extension base="tns:Item">
+				<xs:sequence>
+					<xs:element name="tooltip" type="xs:string" minOccurs="0"/>
+					<xs:element name="brdClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="stcut" type="ns2:ShortCutType" minOccurs="0"/>
+					<xs:element name="cntm" type="tns:ContextMenu" minOccurs="0"/>
+				</xs:sequence>
+				<xs:attribute name="output" type="xs:boolean"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="GroupBox">
+		<xs:complexContent>
+			<xs:extension base="tns:Item">
+				<xs:choice>
+					<xs:element name="tooltip" type="xs:string" minOccurs="0"/>
+					<xs:element name="txtClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="fnt" type="ns2:Font" minOccurs="0"/>
+					<xs:element name="bkClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="lbl" type="tns:Label" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="txt" type="tns:TextBox" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="chk" type="tns:CheckBox" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="tmb" type="tns:Tumbler" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="vs" type="tns:ViewStatus" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="btn" type="tns:Button" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="rbtn" type="tns:RadioButton" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="cmdb" type="tns:CommandBar" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="tbl" type="tns:TableBox" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="grpb" type="tns:GroupBox" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="spnl" type="tns:SeparatePanel" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="pnl" type="tns:Panel" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="img" type="tns:Image" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="sep" type="tns:Separator" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="bo" type="tns:BackObject" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="vl" type="tns:VerticalLine" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="sprdsht" type="tns:Spreadsheet" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="txtd" type="tns:TextDocument" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="fmtd" type="tns:FormattedDocument" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="plnnr" type="tns:Planner" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="clndr" type="tns:Calendar" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="prd" type="tns:Period" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="prgb" type="tns:ProgressBar" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="trckb" type="tns:TrackBar" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="chrt" type="tns:Chart" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="gchrt" type="tns:GanttChart" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="dndrgm" type="tns:Dendrogram" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="flwchrt" type="tns:Flowchart" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="html" type="tns:HTML" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="gm" type="tns:GeographicalMap" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="empt" type="tns:EmptyElement" minOccurs="0" maxOccurs="unbounded"/>
+				</xs:choice>
+				<xs:attribute name="format" type="xs:string"/>
+				<xs:attribute name="dataLink" type="xs:boolean"/>
+				<xs:attribute name="hyper" type="xs:boolean"/>
+				<xs:attribute name="shiftMode" type="tns:ElementShiftMode"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="HTML">
+		<xs:complexContent>
+			<xs:extension base="tns:Item">
+				<xs:sequence>
+					<xs:element name="tooltip" type="xs:string" minOccurs="0"/>
+					<xs:element name="brdClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="stcut" type="ns2:ShortCutType" minOccurs="0"/>
+					<xs:element name="cntm" type="tns:ContextMenu" minOccurs="0"/>
+				</xs:sequence>
+				<xs:attribute name="output" type="xs:boolean"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="HTMLChanges">
+		<xs:sequence>
+			<xs:element name="item" type="tns:HTMLChangesItem" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="schs" type="xs:string" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="HTMLChangesItem">
+		<xs:attribute name="state" type="xs:decimal"/>
+		<xs:attribute name="id" type="xs:string"/>
+		<xs:attribute name="pid" type="xs:string"/>
+		<xs:attribute name="html" type="xs:string"/>
+		<xs:attribute name="multi" type="xs:boolean"/>
+		<xs:attribute name="index" type="xs:decimal"/>
+	</xs:complexType>
+	<xs:complexType name="Image">
+		<xs:complexContent>
+			<xs:extension base="tns:Item">
+				<xs:sequence>
+					<xs:element name="tooltip" type="xs:string" minOccurs="0"/>
+					<xs:element name="shortCut" type="ns2:ShortCutType" minOccurs="0"/>
+					<xs:element name="pic" type="ns2:Picture" minOccurs="0"/>
+					<xs:element name="picVal" type="ns2:Picture" minOccurs="0"/>
+					<xs:element name="txtClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="brdClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="fnt" type="ns2:Font" minOccurs="0"/>
+					<xs:element name="brd" type="ns2:Border" minOccurs="0"/>
+					<xs:element name="extTooltip" type="xs:string" minOccurs="0"/>
+					<xs:element name="cntm" type="tns:ContextMenu" minOccurs="0"/>
+				</xs:sequence>
+				<xs:attribute name="hyper" type="xs:boolean"/>
+				<xs:attribute name="pictureSize" type="tns:PictureSize"/>
+				<xs:attribute name="zoom" type="xs:boolean"/>
+				<xs:attribute name="startDrag" type="xs:boolean"/>
+				<xs:attribute name="drag" type="xs:boolean"/>
+				<xs:attribute name="fExtTooltip" type="xs:boolean"/>
+				<xs:attribute name="picTxt" type="xs:string"/>
+				<xs:attribute name="fileDragMode" type="ns4:FileDragMode"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="Item" abstract="true">
+		<xs:sequence>
+			<xs:element name="title" type="xs:string" minOccurs="0"/>
+		</xs:sequence>
+		<xs:attribute name="name" type="xs:string"/>
+		<xs:attribute name="formItem" type="xs:string"/>
+		<xs:attribute name="cat" type="tns:ControlCategory"/>
+		<xs:attribute name="top" type="xs:decimal"/>
+		<xs:attribute name="left" type="xs:decimal"/>
+		<xs:attribute name="width" type="xs:decimal"/>
+		<xs:attribute name="height" type="xs:decimal"/>
+		<xs:attribute name="stretch" type="tns:StretchableMode"/>
+		<xs:attribute name="enabled" type="xs:boolean"/>
+		<xs:attribute name="readOnly" type="xs:boolean"/>
+		<xs:attribute name="col" type="xs:decimal"/>
+		<xs:attribute name="skip" type="xs:boolean"/>
+		<xs:attribute name="def" type="xs:boolean"/>
+	</xs:complexType>
+	<xs:complexType name="Label">
+		<xs:complexContent>
+			<xs:extension base="tns:Item">
+				<xs:sequence>
+					<xs:element name="tooltip" type="xs:string" minOccurs="0"/>
+					<xs:element name="shortCut" type="ns2:ShortCutType" minOccurs="0"/>
+					<xs:element name="pic" type="ns2:Picture" minOccurs="0"/>
+					<xs:element name="txtClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="bkClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="brdClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="brd" type="ns2:Border" minOccurs="0"/>
+					<xs:element name="fnt" type="ns2:Font" minOccurs="0"/>
+					<xs:element name="cntm" type="tns:ContextMenu" minOccurs="0"/>
+				</xs:sequence>
+				<xs:attribute name="hAlign" type="tns:ItemHorizontalAlignment"/>
+				<xs:attribute name="vAlign" type="tns:ItemVerticalAlignment"/>
+				<xs:attribute name="hyper" type="xs:boolean"/>
+				<xs:attribute name="format" type="xs:string"/>
+				<xs:attribute name="markNegatives" type="xs:boolean"/>
+				<xs:attribute name="pwd" type="xs:boolean"/>
+				<xs:attribute name="formatted" type="xs:boolean"/>
+				<xs:attribute name="shiftMode" type="tns:ElementShiftMode"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="MenuSeparator">
+		<xs:complexContent>
+			<xs:extension base="tns:Item">
+				<xs:attribute name="auto" type="xs:boolean"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="Navigator">
+		<xs:complexContent>
+			<xs:extension base="tns:Item">
+				<xs:choice>
+					<xs:element name="cmd" type="tns:Command" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="menu" type="tns:Submenu" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="msep" type="tns:MenuSeparator" minOccurs="0" maxOccurs="unbounded"/>
+				</xs:choice>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="Page">
+		<xs:complexContent>
+			<xs:extension base="tns:Item">
+				<xs:choice>
+					<xs:element name="pic" type="ns2:Picture" minOccurs="0"/>
+					<xs:element name="stcut" type="ns2:ShortCutType" minOccurs="0"/>
+					<xs:element name="bkClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="lbl" type="tns:Label" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="txt" type="tns:TextBox" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="chk" type="tns:CheckBox" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="tmb" type="tns:Tumbler" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="vs" type="tns:ViewStatus" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="btn" type="tns:Button" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="rbtn" type="tns:RadioButton" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="cmdb" type="tns:CommandBar" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="tbl" type="tns:TableBox" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="grpb" type="tns:GroupBox" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="spnl" type="tns:SeparatePanel" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="pnl" type="tns:Panel" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="img" type="tns:Image" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="sep" type="tns:Separator" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="bo" type="tns:BackObject" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="vl" type="tns:VerticalLine" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="sprdsht" type="tns:Spreadsheet" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="txtd" type="tns:TextDocument" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="fmtd" type="tns:FormattedDocument" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="plnnr" type="tns:Planner" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="clndr" type="tns:Calendar" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="prd" type="tns:Period" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="prgb" type="tns:ProgressBar" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="trckb" type="tns:TrackBar" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="chrt" type="tns:Chart" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="gchrt" type="tns:GanttChart" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="dndrgm" type="tns:Dendrogram" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="flwchrt" type="tns:Flowchart" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="html" type="tns:HTML" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="gm" type="tns:GeographicalMap" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="empt" type="tns:EmptyElement" minOccurs="0" maxOccurs="unbounded"/>
+				</xs:choice>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="Panel">
+		<xs:complexContent>
+			<xs:extension base="tns:Item">
+				<xs:sequence>
+					<xs:element name="page" type="tns:Page" maxOccurs="unbounded"/>
+					<xs:element name="stcut" type="ns2:ShortCutType" minOccurs="0"/>
+					<xs:element name="fnt" type="ns2:Font" minOccurs="0"/>
+				</xs:sequence>
+				<xs:attribute name="tabs" type="tns:FormPanelTabsRepresentation"/>
+				<xs:attribute name="tabWidth" type="xs:decimal"/>
+				<xs:attribute name="mainLayouter" type="xs:boolean"/>
+				<xs:attribute name="realHeight" type="xs:decimal"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="Period">
+		<xs:complexContent>
+			<xs:extension base="tns:Item">
+				<xs:sequence>
+					<xs:element name="tooltip" type="xs:string" minOccurs="0"/>
+					<xs:element name="fnt" type="ns2:Font" minOccurs="0"/>
+					<xs:element name="stcut" type="ns2:ShortCutType" minOccurs="0"/>
+					<xs:element name="cntm" type="tns:ContextMenu" minOccurs="0"/>
+					<xs:element name="brdClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="brd" type="ns2:Border" minOccurs="0"/>
+				</xs:sequence>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="Planner">
+		<xs:complexContent>
+			<xs:extension base="tns:Item">
+				<xs:sequence>
+					<xs:element name="tooltip" type="xs:string" minOccurs="0"/>
+					<xs:element name="stcut" type="ns2:ShortCutType" minOccurs="0"/>
+					<xs:element name="cntm" type="tns:ContextMenu" minOccurs="0"/>
+				</xs:sequence>
+				<xs:attribute name="startDrag" type="xs:boolean"/>
+				<xs:attribute name="drag" type="xs:boolean"/>
+				<xs:attribute name="timeScaleItemHyperlink" type="xs:boolean"/>
+				<xs:attribute name="dimensionItemHyperlink" type="xs:boolean"/>
+				<xs:attribute name="wrappedTimeScaleHeaderHyperlink" type="xs:boolean"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="ProgressBar">
+		<xs:complexContent>
+			<xs:extension base="tns:Item">
+				<xs:sequence>
+					<xs:element name="tooltip" type="xs:string" minOccurs="0"/>
+					<xs:element name="brdClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="cntm" type="tns:ContextMenu" minOccurs="0"/>
+				</xs:sequence>
+				<xs:attribute name="minValue" type="xs:decimal"/>
+				<xs:attribute name="maxValue" type="xs:decimal"/>
+				<xs:attribute name="orientation" type="tns:FormElementOrientation"/>
+				<xs:attribute name="represent" type="tns:FormProgressBarRepresentation"/>
+				<xs:attribute name="showPercent" type="xs:boolean"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="RadioButton">
+		<xs:complexContent>
+			<xs:extension base="tns:Item">
+				<xs:sequence>
+					<xs:element name="tooltip" type="xs:string" minOccurs="0"/>
+					<xs:element name="txtClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="fnt" type="ns2:Font" minOccurs="0"/>
+					<xs:element name="brdClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="stcut" type="ns2:ShortCutType" minOccurs="0"/>
+					<xs:element name="cntm" type="tns:ContextMenu" minOccurs="0"/>
+				</xs:sequence>
+				<xs:attribute name="vAlign" type="tns:ItemVerticalAlignment"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="SeparatePanel">
+		<xs:complexContent>
+			<xs:extension base="tns:Item">
+				<xs:choice>
+					<xs:element name="bkClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="lbl" type="tns:Label" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="txt" type="tns:TextBox" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="chk" type="tns:CheckBox" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="tmb" type="tns:Tumbler" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="vs" type="tns:ViewStatus" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="btn" type="tns:Button" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="rbtn" type="tns:RadioButton" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="cmdb" type="tns:CommandBar" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="tbl" type="tns:TableBox" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="grpb" type="tns:GroupBox" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="spnl" type="tns:SeparatePanel" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="pnl" type="tns:Panel" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="img" type="tns:Image" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="sep" type="tns:Separator" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="bo" type="tns:BackObject" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="sprdsht" type="tns:Spreadsheet" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="txtd" type="tns:TextDocument" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="fmtd" type="tns:FormattedDocument" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="plnnr" type="tns:Planner" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="clndr" type="tns:Calendar" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="prd" type="tns:Period" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="prgb" type="tns:ProgressBar" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="trckb" type="tns:TrackBar" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="chrt" type="tns:Chart" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="gchrt" type="tns:GanttChart" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="dndrgm" type="tns:Dendrogram" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="flwchrt" type="tns:Flowchart" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="html" type="tns:HTML" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="gm" type="tns:GeographicalMap" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="empt" type="tns:EmptyElement" minOccurs="0" maxOccurs="unbounded"/>
+				</xs:choice>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="Separator">
+		<xs:complexContent>
+			<xs:extension base="tns:Item">
+				<xs:attribute name="dir" type="tns:Direction"/>
+				<xs:attribute name="fre" type="xs:string"/>
+				<xs:attribute name="sre" type="xs:string"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="Spreadsheet">
+		<xs:complexContent>
+			<xs:extension base="tns:Item">
+				<xs:sequence>
+					<xs:element name="tooltip" type="xs:string" minOccurs="0"/>
+					<xs:element name="brdClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="stcut" type="ns2:ShortCutType" minOccurs="0"/>
+					<xs:element name="cntm" type="tns:ContextMenu" minOccurs="0"/>
+				</xs:sequence>
+				<xs:attribute name="grid" type="xs:boolean"/>
+				<xs:attribute name="headers" type="xs:boolean"/>
+				<xs:attribute name="horScroll" type="tns:SpreadSheetDocumentScrollBarUse"/>
+				<xs:attribute name="verScroll" type="tns:SpreadSheetDocumentScrollBarUse"/>
+				<xs:attribute name="blackAndWhite" type="xs:boolean"/>
+				<xs:attribute name="protect" type="xs:boolean"/>
+				<xs:attribute name="selShow" type="tns:SelectionShowMode"/>
+				<xs:attribute name="output" type="xs:boolean"/>
+				<xs:attribute name="edit" type="xs:boolean"/>
+				<xs:attribute name="showGroups" type="xs:boolean"/>
+				<xs:attribute name="startDrag" type="xs:boolean"/>
+				<xs:attribute name="drag" type="xs:boolean"/>
+				<xs:attribute name="viewScalingMode" type="tns:ViewScalingMode"/>
+				<xs:attribute name="showCellNames" type="xs:boolean"/>
+				<xs:attribute name="showRowAndColumnNames" type="xs:boolean"/>
+				<xs:attribute name="pointerType" type="ns5:SpreadsheetDocumentPointerType"/>
+				<xs:attribute name="drawingSelectionMode" type="tns:DrawingSelectionShowMode"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="Submenu">
+		<xs:complexContent>
+			<xs:extension base="tns:Item">
+				<xs:choice>
+					<xs:element name="tooltip" type="xs:string" minOccurs="0"/>
+					<xs:element name="pic" type="ns2:Picture" minOccurs="0"/>
+					<xs:element name="stcut" type="ns2:ShortCutType" minOccurs="0"/>
+					<xs:element name="groupId" type="ns1:CompositeID"/>
+					<xs:element name="cmd" type="tns:Command" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="menu" type="tns:Submenu" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="msep" type="tns:MenuSeparator" minOccurs="0" maxOccurs="unbounded"/>
+				</xs:choice>
+				<xs:attribute name="repres" type="tns:MenuElementRepresentation"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="TableBox">
+		<xs:complexContent>
+			<xs:extension base="tns:Item">
+				<xs:choice>
+					<xs:element name="tooltip" type="xs:string" minOccurs="0"/>
+					<xs:element name="rowsPic" type="ns2:Picture" minOccurs="0"/>
+					<xs:element name="txtClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="bkClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="brdClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="fnt" type="ns2:Font" minOccurs="0"/>
+					<xs:element name="stcut" type="ns2:ShortCutType" minOccurs="0"/>
+					<xs:element name="cntm" type="tns:ContextMenu" minOccurs="0"/>
+					<xs:element name="column" type="tns:TableColumn" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="group" type="tns:TableColumnsGroup" minOccurs="0" maxOccurs="unbounded"/>
+				</xs:choice>
+				<xs:attribute name="inplEdit" type="xs:boolean"/>
+				<xs:attribute name="changeRowSet" type="xs:boolean"/>
+				<xs:attribute name="changeRowOrder" type="xs:boolean"/>
+				<xs:attribute name="rowInput" type="tns:TableRowInputMode"/>
+				<xs:attribute name="rowSel" type="tns:TableRowSelectionMode"/>
+				<xs:attribute name="sel" type="tns:TableSelectionMode"/>
+				<xs:attribute name="showHeader" type="xs:boolean"/>
+				<xs:attribute name="headerHeight" type="xs:decimal"/>
+				<xs:attribute name="showFooter" type="xs:boolean"/>
+				<xs:attribute name="footerHeight" type="xs:decimal"/>
+				<xs:attribute name="logicRowHeight" type="xs:decimal"/>
+				<xs:attribute name="realRowHeight" type="xs:decimal"/>
+				<xs:attribute name="horScroll" type="tns:TableScrollBarUse"/>
+				<xs:attribute name="verScroll" type="tns:TableScrollBarUse"/>
+				<xs:attribute name="horLines" type="xs:boolean"/>
+				<xs:attribute name="verLines" type="xs:boolean"/>
+				<xs:attribute name="fixedLeft" type="xs:decimal"/>
+				<xs:attribute name="fixedRight" type="xs:decimal"/>
+				<xs:attribute name="altRowColor" type="xs:boolean"/>
+				<xs:attribute name="autoInsert" type="xs:boolean"/>
+				<xs:attribute name="autoInsertNotcompleted" type="xs:boolean"/>
+				<xs:attribute name="autoMarkNotcompleted" type="xs:boolean"/>
+				<xs:attribute name="initListView" type="tns:TableInitialListView"/>
+				<xs:attribute name="initTreeView" type="tns:TableInitialTreeView"/>
+				<xs:attribute name="output" type="xs:boolean"/>
+				<xs:attribute name="startDrag" type="xs:boolean"/>
+				<xs:attribute name="drag" type="xs:boolean"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="TableColumn">
+		<xs:complexContent>
+			<xs:extension base="tns:Item">
+				<xs:sequence>
+					<xs:element name="tooltip" type="xs:string" minOccurs="0"/>
+					<xs:element name="footerText" type="xs:string" minOccurs="0"/>
+					<xs:element name="invTitle" type="xs:string" minOccurs="0"/>
+					<xs:element name="headerPic" type="ns2:Picture" minOccurs="0"/>
+					<xs:element name="footerPic" type="ns2:Picture" minOccurs="0"/>
+					<xs:element name="txtClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="bkClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="fnt" type="ns2:Font" minOccurs="0"/>
+					<xs:element name="hdrTxtClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="hdrBkClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="hdrFnt" type="ns2:Font" minOccurs="0"/>
+					<xs:element name="ftrTxtClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="ftrBkClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="ftrFnt" type="ns2:Font" minOccurs="0"/>
+					<xs:element name="stcut" type="ns2:ShortCutType" minOccurs="0"/>
+					<xs:element name="minValue" minOccurs="0"/>
+					<xs:element name="maxValue" minOccurs="0"/>
+					<xs:element name="choiceBtnPic" type="ns2:Picture" minOccurs="0"/>
+					<xs:element name="choiceForm" type="ns1:UUID" minOccurs="0"/>
+					<xs:element name="cntm" type="tns:ContextMenu" minOccurs="0"/>
+				</xs:sequence>
+				<xs:attribute name="mode" type="tns:ColumnMode"/>
+				<xs:attribute name="showInHeader" type="xs:boolean"/>
+				<xs:attribute name="showInFooter" type="xs:boolean"/>
+				<xs:attribute name="columnHAlign" type="tns:ItemHorizontalAlignment"/>
+				<xs:attribute name="headerHAlign" type="tns:ItemHorizontalAlignment"/>
+				<xs:attribute name="footerHAlign" type="tns:ItemHorizontalAlignment"/>
+				<xs:attribute name="editMode" type="tns:TableFieldEditMode"/>
+				<xs:attribute name="autoCellHeight" type="xs:boolean"/>
+				<xs:attribute name="wrap" type="xs:boolean"/>
+				<xs:attribute name="pwd" type="xs:boolean"/>
+				<xs:attribute name="extended" type="xs:boolean"/>
+				<xs:attribute name="textEdit" type="xs:boolean"/>
+				<xs:attribute name="multiLine" type="xs:boolean"/>
+				<xs:attribute name="format" type="xs:string"/>
+				<xs:attribute name="inputFormat" type="xs:string"/>
+				<xs:attribute name="markNegatives" type="xs:boolean"/>
+				<xs:attribute name="choiceListBtn" type="xs:boolean"/>
+				<xs:attribute name="dropListBtn" type="xs:boolean"/>
+				<xs:attribute name="choiceBtn" type="xs:boolean"/>
+				<xs:attribute name="choiceBtnRepresentation" type="tns:ChoiceButtonRepresentation"/>
+				<xs:attribute name="clearBtn" type="xs:boolean"/>
+				<xs:attribute name="spinBtn" type="xs:boolean"/>
+				<xs:attribute name="openBtn" type="xs:boolean"/>
+				<xs:attribute name="enableCreateButton" type="tns:BWDValue"/>
+				<xs:attribute name="mask" type="xs:string"/>
+				<xs:attribute name="listChoiceMode" type="xs:boolean"/>
+				<xs:attribute name="choiceListHeight" type="xs:decimal"/>
+				<xs:attribute name="choiceListMinWidth" type="xs:decimal"/>
+				<xs:attribute name="autoChoice" type="xs:boolean"/>
+				<xs:attribute name="autoChoiceMode" type="tns:IncompleteItemChoiceMode"/>
+				<xs:attribute name="autoMark" type="xs:boolean"/>
+				<xs:attribute name="quickChoice" type="tns:BWDValue"/>
+				<xs:attribute name="finalQuickChoice" type="xs:boolean"/>
+				<xs:attribute name="choice" type="tns:ChoiceObjects"/>
+				<xs:attribute name="threeState" type="xs:boolean"/>
+				<xs:attribute name="hyper" type="xs:boolean"/>
+				<xs:attribute name="searchOnInput" type="tns:SearchOnInputForbiddenMode"/>
+				<xs:attribute name="inputHint" type="xs:string"/>
+				<xs:attribute name="inputByStringChoiceDataGetMode" type="ns4:ChoiceDataGetModeOnInputByString"/>
+				<xs:attribute name="finalInputByStringChoiceDataGetMode" type="xs:boolean"/>
+				<xs:attribute name="choiceHistory" type="tns:BWDValue"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="TableColumnsGroup">
+		<xs:complexContent>
+			<xs:extension base="tns:Item">
+				<xs:choice>
+					<xs:element name="tooltip" type="xs:string" minOccurs="0"/>
+					<xs:element name="headerPic" type="ns2:Picture" minOccurs="0"/>
+					<xs:element name="hdrTxtClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="hdrBkClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="hdrFnt" type="ns2:Font" minOccurs="0"/>
+					<xs:element name="column" type="tns:TableColumn" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="group" type="tns:TableColumnsGroup" minOccurs="0" maxOccurs="unbounded"/>
+				</xs:choice>
+				<xs:attribute name="grouping" type="tns:ColumnsGroup"/>
+				<xs:attribute name="showInHeader" type="xs:boolean"/>
+				<xs:attribute name="headerHAlign" type="tns:ItemHorizontalAlignment"/>
+				<xs:attribute name="headerFormat" type="xs:string"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="TextBox">
+		<xs:complexContent>
+			<xs:extension base="tns:Item">
+				<xs:sequence>
+					<xs:element name="tooltip" type="xs:string" minOccurs="0"/>
+					<xs:element name="minValue" minOccurs="0"/>
+					<xs:element name="maxValue" minOccurs="0"/>
+					<xs:element name="choiceBtnPic" type="ns2:Picture" minOccurs="0"/>
+					<xs:element name="choiceForm" type="ns1:UUID" minOccurs="0"/>
+					<xs:element name="txtClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="bkClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="brdClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="fnt" type="ns2:Font" minOccurs="0"/>
+					<xs:element name="stcut" type="ns2:ShortCutType" minOccurs="0"/>
+					<xs:element name="cntm" type="tns:ContextMenu" minOccurs="0"/>
+				</xs:sequence>
+				<xs:attribute name="hAlign" type="tns:ItemHorizontalAlignment"/>
+				<xs:attribute name="wrap" type="xs:boolean"/>
+				<xs:attribute name="pwd" type="xs:boolean"/>
+				<xs:attribute name="extended" type="xs:boolean"/>
+				<xs:attribute name="format" type="xs:string"/>
+				<xs:attribute name="markNegatives" type="xs:boolean"/>
+				<xs:attribute name="choiceListBtn" type="xs:boolean"/>
+				<xs:attribute name="dropListBtn" type="xs:boolean"/>
+				<xs:attribute name="choiceBtn" type="xs:boolean"/>
+				<xs:attribute name="choiceBtnRepresentation" type="tns:ChoiceButtonRepresentation"/>
+				<xs:attribute name="clearBtn" type="xs:boolean"/>
+				<xs:attribute name="spinBtn" type="xs:boolean"/>
+				<xs:attribute name="openBtn" type="xs:boolean"/>
+				<xs:attribute name="createBtn" type="tns:BWDValue"/>
+				<xs:attribute name="mask" type="xs:string"/>
+				<xs:attribute name="listChoiceMode" type="xs:boolean"/>
+				<xs:attribute name="choiceListHeight" type="xs:decimal"/>
+				<xs:attribute name="choiceListMinWidth" type="xs:decimal"/>
+				<xs:attribute name="autoChoice" type="xs:boolean"/>
+				<xs:attribute name="choiceMode" type="tns:IncompleteItemChoiceMode"/>
+				<xs:attribute name="autoMark" type="xs:boolean"/>
+				<xs:attribute name="quickChoice" type="tns:BWDValue"/>
+				<xs:attribute name="finalQuickChoice" type="xs:boolean"/>
+				<xs:attribute name="choice" type="tns:ChoiceObjects"/>
+				<xs:attribute name="textEdit" type="xs:boolean"/>
+				<xs:attribute name="multiLine" type="xs:boolean"/>
+				<xs:attribute name="warningOnEditMode" type="xs:boolean"/>
+				<xs:attribute name="searchOnInput" type="tns:SearchOnInputForbiddenMode"/>
+				<xs:attribute name="inputHint" type="xs:string"/>
+				<xs:attribute name="enableCreateButton" type="tns:BWDValue"/>
+				<xs:attribute name="inputByStringChoiceDataGetMode" type="ns4:ChoiceDataGetModeOnInputByString"/>
+				<xs:attribute name="finalInputByStringChoiceDataGetMode" type="xs:boolean"/>
+				<xs:attribute name="choiceHistory" type="tns:BWDValue"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="TextDocument">
+		<xs:complexContent>
+			<xs:extension base="tns:Item">
+				<xs:sequence>
+					<xs:element name="stcut" type="ns2:ShortCutType" minOccurs="0"/>
+					<xs:element name="txtClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="bkClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="brdClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="fnt" type="ns2:Font" minOccurs="0"/>
+					<xs:element name="cntm" type="tns:ContextMenu" minOccurs="0"/>
+				</xs:sequence>
+				<xs:attribute name="output" type="xs:boolean"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="TrackBar">
+		<xs:complexContent>
+			<xs:extension base="tns:Item">
+				<xs:sequence>
+					<xs:element name="tooltip" type="xs:string" minOccurs="0"/>
+					<xs:element name="brdClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="stcut" type="ns2:ShortCutType" minOccurs="0"/>
+					<xs:element name="cntm" type="tns:ContextMenu" minOccurs="0"/>
+				</xs:sequence>
+				<xs:attribute name="minValue" type="xs:decimal"/>
+				<xs:attribute name="maxValue" type="xs:decimal"/>
+				<xs:attribute name="step" type="xs:decimal"/>
+				<xs:attribute name="page" type="xs:decimal"/>
+				<xs:attribute name="markingStep" type="xs:decimal"/>
+				<xs:attribute name="orientation" type="tns:FormElementOrientation"/>
+				<xs:attribute name="marking" type="tns:FormTrackBarMarking"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="Tumbler">
+		<xs:complexContent>
+			<xs:extension base="tns:Item">
+				<xs:sequence>
+					<xs:element name="tooltip" type="xs:string" minOccurs="0"/>
+					<xs:element name="stcut" type="ns2:ShortCutType" minOccurs="0"/>
+					<xs:element name="txtClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="bkClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="brdClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="fnt" type="ns2:Font" minOccurs="0"/>
+					<xs:element name="titles" type="xs:string" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="rwoc" type="xs:double" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="cntm" type="tns:ContextMenu" minOccurs="0"/>
+				</xs:sequence>
+				<xs:attribute name="clmnsCnt" type="xs:decimal"/>
+				<xs:attribute name="cbMode" type="xs:boolean"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="VerticalLine">
+		<xs:complexContent>
+			<xs:extension base="tns:Item">
+				<xs:sequence>
+					<xs:element name="bkClr" type="ns2:Color" minOccurs="0"/>
+				</xs:sequence>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="ViewStatus">
+		<xs:complexContent>
+			<xs:extension base="tns:Item">
+				<xs:sequence>
+					<xs:element name="tooltip" type="xs:string" minOccurs="0"/>
+					<xs:element name="txtClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="titleTxtClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="bkClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="btnBkClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="brdClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="fnt" type="ns2:Font" minOccurs="0"/>
+					<xs:element name="titleFnt" type="ns2:Font" minOccurs="0"/>
+					<xs:element name="brd" type="ns2:Border" minOccurs="0"/>
+					<xs:element name="cntm" type="tns:ContextMenu" minOccurs="0"/>
+				</xs:sequence>
+				<xs:attribute name="hAlign" type="tns:ItemHorizontalAlignment"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+</xs:schema>

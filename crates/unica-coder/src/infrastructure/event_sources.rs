@@ -35,6 +35,9 @@ pub(crate) struct PropertyEventSource {
     pub(crate) owner_chain: Vec<PropertyEventOwner>,
     pub(crate) descriptor_requirements: Vec<PathBuf>,
     pub(crate) owner_evidence: EventOwnerEvidencePlan,
+    /// Профиль линии набора, в котором найден источник события: по нему
+    /// выбирается каталог возможных событий.
+    pub(crate) platform: unica_bsl::profile::PlatformProfile,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -136,7 +139,7 @@ pub(crate) fn resolve_event_source(
         }));
     }
 
-    let source = resolve_property_event_source(source_set_kind, event_at)?;
+    let source = resolve_property_event_source(source_set_kind, profile, event_at)?;
     if source
         .owner_chain
         .iter()
@@ -165,11 +168,12 @@ pub(in crate::infrastructure) fn resolve_event_source_for_form_evidence(
             "property evidence resolver does not accept Platform events",
         ));
     }
-    resolve_property_event_source(source_set_kind, event_at)
+    resolve_property_event_source(source_set_kind, profile, event_at)
 }
 
 fn resolve_property_event_source(
     source_set_kind: SourceSetKind,
+    profile: unica_bsl::profile::PlatformProfile,
     event_at: &QualifiedAddress,
 ) -> Result<PropertyEventSource, EventSourceError> {
     let segments = event_at.segments();
@@ -240,6 +244,7 @@ fn resolve_property_event_source(
         owner_chain,
         descriptor_requirements,
         owner_evidence,
+        platform: profile,
     })
 }
 

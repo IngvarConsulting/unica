@@ -32,7 +32,25 @@
             "op": "relation.replace"
           }
         }
-      ]
+      ],
+      "captures": {
+        "initial0": {
+          "file": "src/Configuration.xml",
+          "kind": "sha256"
+        },
+        "initial1": {
+          "file": "src/CommonModules/GoogleПереводчик.xml",
+          "kind": "sha256"
+        },
+        "initial2": {
+          "file": "src/Catalogs/Валюты.xml",
+          "kind": "sha256"
+        },
+        "initial3": {
+          "file": "src/Reports/АнализВерсийОбъектов.xml",
+          "kind": "sha256"
+        }
+      }
     },
     {
       "tool": "unica.view",
@@ -60,22 +78,22 @@
         {
           "path": "src/Configuration.xml",
           "kind": "sha256",
-          "eq": "41c7a0b8161a1e7661471f225cc24faf46d85761df32ff022b171b525b063989"
+          "eq": "$capture.initial0"
         },
         {
           "path": "src/CommonModules/GoogleПереводчик.xml",
           "kind": "sha256",
-          "eq": "e1a2225d4378f6b1468b35164555a128e923536deca404c9370db239b2a890dc"
+          "eq": "$capture.initial1"
         },
         {
           "path": "src/Catalogs/Валюты.xml",
           "kind": "sha256",
-          "eq": "9161bb171692857d30f3f58203e262a4adbe74f3a24020ec5e3c6bab44e931bd"
+          "eq": "$capture.initial2"
         },
         {
           "path": "src/Reports/АнализВерсийОбъектов.xml",
           "kind": "sha256",
-          "eq": "4a5d35f1061d329b0003a90ffe4b3a2ecd37de256a442694061bfc3f19124230"
+          "eq": "$capture.initial3"
         }
       ],
       "refusal": "bad_value: operation `relation.add` does not apply to CommonModule"
@@ -121,22 +139,22 @@
         {
           "path": "src/Configuration.xml",
           "kind": "sha256",
-          "eq": "41c7a0b8161a1e7661471f225cc24faf46d85761df32ff022b171b525b063989"
+          "eq": "$capture.initial0"
         },
         {
           "path": "src/CommonModules/GoogleПереводчик.xml",
           "kind": "sha256",
-          "eq": "e1a2225d4378f6b1468b35164555a128e923536deca404c9370db239b2a890dc"
+          "eq": "$capture.initial1"
         },
         {
           "path": "src/Catalogs/Валюты.xml",
           "kind": "sha256",
-          "eq": "9161bb171692857d30f3f58203e262a4adbe74f3a24020ec5e3c6bab44e931bd"
+          "eq": "$capture.initial2"
         },
         {
           "path": "src/Reports/АнализВерсийОбъектов.xml",
           "kind": "sha256",
-          "eq": "4a5d35f1061d329b0003a90ffe4b3a2ecd37de256a442694061bfc3f19124230"
+          "eq": "$capture.initial3"
         }
       ],
       "refusal": "bad_value: apply operation `relation.add` does not apply to CommonModule `main:CommonModule.GoogleПереводчик`; it addresses `Kind.Name` of a kind with supported relations"
@@ -167,22 +185,22 @@
         {
           "path": "src/Configuration.xml",
           "kind": "sha256",
-          "eq": "41c7a0b8161a1e7661471f225cc24faf46d85761df32ff022b171b525b063989"
+          "eq": "$capture.initial0"
         },
         {
           "path": "src/CommonModules/GoogleПереводчик.xml",
           "kind": "sha256",
-          "eq": "e1a2225d4378f6b1468b35164555a128e923536deca404c9370db239b2a890dc"
+          "eq": "$capture.initial1"
         },
         {
           "path": "src/Catalogs/Валюты.xml",
           "kind": "sha256",
-          "eq": "9161bb171692857d30f3f58203e262a4adbe74f3a24020ec5e3c6bab44e931bd"
+          "eq": "$capture.initial2"
         },
         {
           "path": "src/Reports/АнализВерсийОбъектов.xml",
           "kind": "sha256",
-          "eq": "4a5d35f1061d329b0003a90ffe4b3a2ecd37de256a442694061bfc3f19124230"
+          "eq": "$capture.initial3"
         }
       ],
       "refusal": "bad_value: operation `relation.remove` does not apply to CommonModule"
@@ -228,22 +246,22 @@
         {
           "path": "src/Configuration.xml",
           "kind": "sha256",
-          "eq": "41c7a0b8161a1e7661471f225cc24faf46d85761df32ff022b171b525b063989"
+          "eq": "$capture.initial0"
         },
         {
           "path": "src/CommonModules/GoogleПереводчик.xml",
           "kind": "sha256",
-          "eq": "e1a2225d4378f6b1468b35164555a128e923536deca404c9370db239b2a890dc"
+          "eq": "$capture.initial1"
         },
         {
           "path": "src/Catalogs/Валюты.xml",
           "kind": "sha256",
-          "eq": "9161bb171692857d30f3f58203e262a4adbe74f3a24020ec5e3c6bab44e931bd"
+          "eq": "$capture.initial2"
         },
         {
           "path": "src/Reports/АнализВерсийОбъектов.xml",
           "kind": "sha256",
-          "eq": "4a5d35f1061d329b0003a90ffe4b3a2ecd37de256a442694061bfc3f19124230"
+          "eq": "$capture.initial3"
         }
       ],
       "refusal": "bad_value: apply operation `relation.remove` does not apply to CommonModule `main:CommonModule.GoogleПереводчик`; it addresses `Kind.Name` of a kind with supported relatio"
@@ -274,22 +292,22 @@
         {
           "path": "src/Configuration.xml",
           "kind": "sha256",
-          "eq": "41c7a0b8161a1e7661471f225cc24faf46d85761df32ff022b171b525b063989"
+          "eq": "$capture.initial0"
         },
         {
           "path": "src/CommonModules/GoogleПереводчик.xml",
           "kind": "sha256",
-          "eq": "e1a2225d4378f6b1468b35164555a128e923536deca404c9370db239b2a890dc"
+          "eq": "$capture.initial1"
         },
         {
           "path": "src/Catalogs/Валюты.xml",
           "kind": "sha256",
-          "eq": "9161bb171692857d30f3f58203e262a4adbe74f3a24020ec5e3c6bab44e931bd"
+          "eq": "$capture.initial2"
         },
         {
           "path": "src/Reports/АнализВерсийОбъектов.xml",
           "kind": "sha256",
-          "eq": "4a5d35f1061d329b0003a90ffe4b3a2ecd37de256a442694061bfc3f19124230"
+          "eq": "$capture.initial3"
         }
       ],
       "refusal": "bad_value: operation `relation.replace` does not apply to CommonModule"
@@ -335,22 +353,22 @@
         {
           "path": "src/Configuration.xml",
           "kind": "sha256",
-          "eq": "41c7a0b8161a1e7661471f225cc24faf46d85761df32ff022b171b525b063989"
+          "eq": "$capture.initial0"
         },
         {
           "path": "src/CommonModules/GoogleПереводчик.xml",
           "kind": "sha256",
-          "eq": "e1a2225d4378f6b1468b35164555a128e923536deca404c9370db239b2a890dc"
+          "eq": "$capture.initial1"
         },
         {
           "path": "src/Catalogs/Валюты.xml",
           "kind": "sha256",
-          "eq": "9161bb171692857d30f3f58203e262a4adbe74f3a24020ec5e3c6bab44e931bd"
+          "eq": "$capture.initial2"
         },
         {
           "path": "src/Reports/АнализВерсийОбъектов.xml",
           "kind": "sha256",
-          "eq": "4a5d35f1061d329b0003a90ffe4b3a2ecd37de256a442694061bfc3f19124230"
+          "eq": "$capture.initial3"
         }
       ],
       "refusal": "bad_value: apply operation `relation.replace` does not apply to CommonModule `main:CommonModule.GoogleПереводчик`; it addresses `Kind.Name` of a kind with supported relati"
@@ -410,22 +428,22 @@
         {
           "path": "src/Configuration.xml",
           "kind": "sha256",
-          "eq": "41c7a0b8161a1e7661471f225cc24faf46d85761df32ff022b171b525b063989"
+          "eq": "$capture.initial0"
         },
         {
           "path": "src/CommonModules/GoogleПереводчик.xml",
           "kind": "sha256",
-          "eq": "e1a2225d4378f6b1468b35164555a128e923536deca404c9370db239b2a890dc"
+          "eq": "$capture.initial1"
         },
         {
           "path": "src/Catalogs/Валюты.xml",
           "kind": "sha256",
-          "eq": "9161bb171692857d30f3f58203e262a4adbe74f3a24020ec5e3c6bab44e931bd"
+          "eq": "$capture.initial2"
         },
         {
           "path": "src/Reports/АнализВерсийОбъектов.xml",
           "kind": "sha256",
-          "eq": "4a5d35f1061d329b0003a90ffe4b3a2ecd37de256a442694061bfc3f19124230"
+          "eq": "$capture.initial3"
         }
       ],
       "refusal": "bad_value: operation `relation.add` does not apply to Report"
@@ -471,22 +489,22 @@
         {
           "path": "src/Configuration.xml",
           "kind": "sha256",
-          "eq": "41c7a0b8161a1e7661471f225cc24faf46d85761df32ff022b171b525b063989"
+          "eq": "$capture.initial0"
         },
         {
           "path": "src/CommonModules/GoogleПереводчик.xml",
           "kind": "sha256",
-          "eq": "e1a2225d4378f6b1468b35164555a128e923536deca404c9370db239b2a890dc"
+          "eq": "$capture.initial1"
         },
         {
           "path": "src/Catalogs/Валюты.xml",
           "kind": "sha256",
-          "eq": "9161bb171692857d30f3f58203e262a4adbe74f3a24020ec5e3c6bab44e931bd"
+          "eq": "$capture.initial2"
         },
         {
           "path": "src/Reports/АнализВерсийОбъектов.xml",
           "kind": "sha256",
-          "eq": "4a5d35f1061d329b0003a90ffe4b3a2ecd37de256a442694061bfc3f19124230"
+          "eq": "$capture.initial3"
         }
       ],
       "refusal": "bad_value: apply operation `relation.add` does not apply to Report `main:Report.АнализВерсийОбъектов`; it addresses `Kind.Name` of a kind with supported relations"
@@ -517,22 +535,22 @@
         {
           "path": "src/Configuration.xml",
           "kind": "sha256",
-          "eq": "41c7a0b8161a1e7661471f225cc24faf46d85761df32ff022b171b525b063989"
+          "eq": "$capture.initial0"
         },
         {
           "path": "src/CommonModules/GoogleПереводчик.xml",
           "kind": "sha256",
-          "eq": "e1a2225d4378f6b1468b35164555a128e923536deca404c9370db239b2a890dc"
+          "eq": "$capture.initial1"
         },
         {
           "path": "src/Catalogs/Валюты.xml",
           "kind": "sha256",
-          "eq": "9161bb171692857d30f3f58203e262a4adbe74f3a24020ec5e3c6bab44e931bd"
+          "eq": "$capture.initial2"
         },
         {
           "path": "src/Reports/АнализВерсийОбъектов.xml",
           "kind": "sha256",
-          "eq": "4a5d35f1061d329b0003a90ffe4b3a2ecd37de256a442694061bfc3f19124230"
+          "eq": "$capture.initial3"
         }
       ],
       "refusal": "bad_value: operation `relation.remove` does not apply to Report"
@@ -578,22 +596,22 @@
         {
           "path": "src/Configuration.xml",
           "kind": "sha256",
-          "eq": "41c7a0b8161a1e7661471f225cc24faf46d85761df32ff022b171b525b063989"
+          "eq": "$capture.initial0"
         },
         {
           "path": "src/CommonModules/GoogleПереводчик.xml",
           "kind": "sha256",
-          "eq": "e1a2225d4378f6b1468b35164555a128e923536deca404c9370db239b2a890dc"
+          "eq": "$capture.initial1"
         },
         {
           "path": "src/Catalogs/Валюты.xml",
           "kind": "sha256",
-          "eq": "9161bb171692857d30f3f58203e262a4adbe74f3a24020ec5e3c6bab44e931bd"
+          "eq": "$capture.initial2"
         },
         {
           "path": "src/Reports/АнализВерсийОбъектов.xml",
           "kind": "sha256",
-          "eq": "4a5d35f1061d329b0003a90ffe4b3a2ecd37de256a442694061bfc3f19124230"
+          "eq": "$capture.initial3"
         }
       ],
       "refusal": "bad_value: apply operation `relation.remove` does not apply to Report `main:Report.АнализВерсийОбъектов`; it addresses `Kind.Name` of a kind with supported relations"
@@ -624,22 +642,22 @@
         {
           "path": "src/Configuration.xml",
           "kind": "sha256",
-          "eq": "41c7a0b8161a1e7661471f225cc24faf46d85761df32ff022b171b525b063989"
+          "eq": "$capture.initial0"
         },
         {
           "path": "src/CommonModules/GoogleПереводчик.xml",
           "kind": "sha256",
-          "eq": "e1a2225d4378f6b1468b35164555a128e923536deca404c9370db239b2a890dc"
+          "eq": "$capture.initial1"
         },
         {
           "path": "src/Catalogs/Валюты.xml",
           "kind": "sha256",
-          "eq": "9161bb171692857d30f3f58203e262a4adbe74f3a24020ec5e3c6bab44e931bd"
+          "eq": "$capture.initial2"
         },
         {
           "path": "src/Reports/АнализВерсийОбъектов.xml",
           "kind": "sha256",
-          "eq": "4a5d35f1061d329b0003a90ffe4b3a2ecd37de256a442694061bfc3f19124230"
+          "eq": "$capture.initial3"
         }
       ],
       "refusal": "bad_value: operation `relation.replace` does not apply to Report"
@@ -685,22 +703,22 @@
         {
           "path": "src/Configuration.xml",
           "kind": "sha256",
-          "eq": "41c7a0b8161a1e7661471f225cc24faf46d85761df32ff022b171b525b063989"
+          "eq": "$capture.initial0"
         },
         {
           "path": "src/CommonModules/GoogleПереводчик.xml",
           "kind": "sha256",
-          "eq": "e1a2225d4378f6b1468b35164555a128e923536deca404c9370db239b2a890dc"
+          "eq": "$capture.initial1"
         },
         {
           "path": "src/Catalogs/Валюты.xml",
           "kind": "sha256",
-          "eq": "9161bb171692857d30f3f58203e262a4adbe74f3a24020ec5e3c6bab44e931bd"
+          "eq": "$capture.initial2"
         },
         {
           "path": "src/Reports/АнализВерсийОбъектов.xml",
           "kind": "sha256",
-          "eq": "4a5d35f1061d329b0003a90ffe4b3a2ecd37de256a442694061bfc3f19124230"
+          "eq": "$capture.initial3"
         }
       ],
       "refusal": "bad_value: apply operation `relation.replace` does not apply to Report `main:Report.АнализВерсийОбъектов`; it addresses `Kind.Name` of a kind with supported relations"
@@ -753,22 +771,22 @@
         {
           "path": "src/Configuration.xml",
           "kind": "sha256",
-          "eq": "41c7a0b8161a1e7661471f225cc24faf46d85761df32ff022b171b525b063989"
+          "eq": "$capture.initial0"
         },
         {
           "path": "src/CommonModules/GoogleПереводчик.xml",
           "kind": "sha256",
-          "eq": "e1a2225d4378f6b1468b35164555a128e923536deca404c9370db239b2a890dc"
+          "eq": "$capture.initial1"
         },
         {
           "path": "src/Catalogs/Валюты.xml",
           "kind": "sha256",
-          "eq": "9161bb171692857d30f3f58203e262a4adbe74f3a24020ec5e3c6bab44e931bd"
+          "eq": "$capture.initial2"
         },
         {
           "path": "src/Reports/АнализВерсийОбъектов.xml",
           "kind": "sha256",
-          "eq": "4a5d35f1061d329b0003a90ffe4b3a2ecd37de256a442694061bfc3f19124230"
+          "eq": "$capture.initial3"
         }
       ]
     }

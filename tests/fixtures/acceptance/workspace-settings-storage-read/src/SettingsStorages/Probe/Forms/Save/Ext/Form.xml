@@ -1,0 +1,1 @@
+<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20"><ChildItems><InputField name="Value" id="1"/><UsualGroup name="Group" id="2"><ChildItems><InputField name="Inside" id="3"/></ChildItems></UsualGroup></ChildItems><Attributes><Attribute name="FormValue" id="1"/></Attributes></Form>

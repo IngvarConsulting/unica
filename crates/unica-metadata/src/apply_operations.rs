@@ -231,11 +231,44 @@ impl unica_operations::FamilyOperation for MetadataOperation {
             .segments()
             .iter()
             .any(|segment| segment.kind() == unica_address::address::NodeKind::TabularSection);
-        Some(
-            self.contract_at(
-                owner.map(|owner| crate::contracts::MetadataSite { owner, in_section }),
-            ),
-        )
+        let mut contract = self
+            .contract_at(owner.map(|owner| crate::contracts::MetadataSite { owner, in_section }));
+        if self == Self::AttributeSet
+            && !OperationApplicability::CatalogTabularAttribute.matches(site)
+        {
+            contract.schema["properties"]["values"]["properties"]
+                .as_object_mut()
+                .expect("attribute.set values schema")
+                .remove("toolTip");
+        }
+        if self == Self::EnumValueSet {
+            let line = site.source().classification_profile().semantic_line();
+            offer_enum_value_color(&mut contract.schema["properties"]["values"], line);
+        }
+        Some(contract)
+    }
+}
+
+/// `color` of an enumeration value exists from the line that adds it: `can`
+/// offers it in a set of that line or later and otherwise names the line it
+/// exists from (INV.SOURCE.PROFILE-CAPABILITIES).
+fn offer_enum_value_color(
+    values: &mut serde_json::Value,
+    line: Option<unica_source_contract::format_identity::PlatformLine>,
+) {
+    use unica_source_contract::format_identity::{member_property_exists, member_property_since};
+    if member_property_exists(line, "EnumValue", "Color") {
+        values["properties"]["color"] = crate::contracts::enum_value_color_schema();
+    } else if let Some(since) = member_property_since("EnumValue", "Color") {
+        values["x-unica-later-lines"] = serde_json::json!({
+            "line": line.map(|line| line.to_string()),
+            "format": line.map(crate::descriptor_operations::line_format),
+            "items": [{
+                "property": "Color",
+                "since": since.to_string(),
+                "format": crate::descriptor_operations::line_format(since),
+            }],
+        });
     }
 }
 
@@ -286,6 +319,58 @@ mod tests {
                         contract.example_args
                     );
                 }
+            }
+        }
+    }
+
+    /// rule: INV.SOURCE.PROFILE-CAPABILITIES
+    #[test]
+    fn can_offers_the_color_of_an_enumeration_value_in_the_lines_that_have_it() {
+        use unica_operations::FamilyOperation;
+        use unica_source_contract::context::{OperationSite, SourceSetTraits};
+        use unica_source_contract::format_identity::PlatformLine;
+        use unica_source_contract::route::RouteClass;
+        use unica_source_contract::{SourceProfile, SourceSetKind};
+        let at = unica_address::address::QualifiedAddress::parse("main:Enum.Kinds.EnumValue.First")
+            .unwrap();
+        let values = |line: PlatformLine| {
+            let profile = SourceProfile::platform_xml_of_line(line).unwrap();
+            let source = SourceSetTraits::from_profiles(
+                SourceSetKind::Configuration,
+                Some(profile),
+                profile,
+            );
+            let site = OperationSite::from_route(&at, source, RouteClass::Metadata);
+            FamilyOperation::contract_at(MetadataOperation::EnumValueSet, &site)
+                .unwrap()
+                .schema["properties"]["values"]
+                .clone()
+        };
+        let old = values(PlatformLine::new(8, 3, 27));
+        assert!(old["properties"].get("color").is_none());
+        assert_eq!(
+            old["x-unica-later-lines"],
+            json!({"line":"8.3.27","format":"2.20",
+                "items":[{"property":"Color","since":"8.5.1","format":"2.21"}]})
+        );
+        for line in [PlatformLine::new(8, 5, 1), PlatformLine::new(8, 5, 4)] {
+            let new = values(line);
+            assert!(new.get("x-unica-later-lines").is_none());
+            let schema = json!({"type":"object","properties":{"color":new["properties"]["color"]}});
+            let oracle = jsonschema::validator_for(&schema).unwrap();
+            for color in ["auto", "#FF00aa", "web:Red", "style:ButtonBackColor"] {
+                assert!(oracle.is_valid(&json!({"color":color})), "{color}");
+            }
+            for color in [
+                "",
+                "Red",
+                "#FF00",
+                "web:",
+                "web:Unknown",
+                "win:WindowColor",
+                "AUTO",
+            ] {
+                assert!(!oracle.is_valid(&json!({"color":color})), "{color}");
             }
         }
     }
@@ -491,7 +576,7 @@ mod tests {
         assert!(contract.normalize(&contract.example_args, "args").is_ok());
         for values in [
             json!({"newName":"PrintCopy"}),
-            json!({"synonym":"Print","comment":"kept"}),
+            json!({"synonym":"ru = 'Print'","comment":"kept"}),
             json!({"position":{"before":"Other"}}),
         ] {
             assert!(
@@ -591,6 +676,26 @@ mod tests {
             ] {
                 assert!(contract.normalize(&args, "args").is_err(), "{args}");
             }
+        }
+    }
+
+    #[test]
+    fn tool_tip_has_an_nstr_setter_only_on_catalog_tabular_attributes() {
+        for (owner, in_section, allowed) in [
+            (MetadataKind::Catalog, true, true),
+            (MetadataKind::Catalog, false, false),
+            (MetadataKind::Document, true, false),
+        ] {
+            let contract = MetadataOperation::AttributeSet
+                .contract_at(Some(MetadataSite { owner, in_section }));
+            let args = json!({"values":{"toolTip":"ru = 'Подсказка'; en = 'Tip'"}});
+            assert_eq!(contract.normalize(&args, "args").is_ok(), allowed);
+            assert!(contract
+                .normalize(
+                    &json!({"values":{"toolTip":[{"language":"ru","content":"Подсказка"}]}}),
+                    "args"
+                )
+                .is_err());
         }
     }
 
@@ -757,6 +862,7 @@ mod tests {
                     collection: crate::MetaCollection::Dimensions,
                     scope: None,
                     elements: vec![crate::MetaElementUpdate {
+                        tool_tip: None,
                         name: "Item".into(),
                         new_name: None,
                         synonym: None,
@@ -770,6 +876,7 @@ mod tests {
                         master: None,
                         main_filter: None,
                         type_reduction_mode: None,
+                        color: None,
                     }],
                 },
             )

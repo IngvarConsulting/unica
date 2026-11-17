@@ -15,9 +15,6 @@ use unica_address::source_target::MetadataAddress;
 use unica_code_intelligence::completion::{
     CompletionSources, ModuleOwner, ObjectMembers, PlatformMember,
 };
-use unica_documentation_sources::platform_help::provider::{
-    global_context_members, GlobalContextMemberKind,
-};
 use unica_execution_contract::view_error::ViewError;
 use unica_work_control::cancellation::CancellationToken;
 
@@ -76,17 +73,10 @@ impl PlatformContexts {
             .spawn(move || {
                 // A panic in the help index must not leave the root loading
                 // for the life of the daemon.
-                let context = match std::panic::catch_unwind(|| global_context_members(&owned)) {
-                    Ok(Ok(members)) => PlatformContext::Ready(
-                        members
-                            .into_iter()
-                            .map(|member| PlatformMember {
-                                method: member.kind == GlobalContextMemberKind::Method,
-                                name: member.name_ru,
-                                parameters: member.parameters,
-                            })
-                            .collect(),
-                    ),
+                let context = match std::panic::catch_unwind(|| {
+                    crate::infrastructure::analysis_composition::platform_members(&owned)
+                }) {
+                    Ok(Ok(members)) => PlatformContext::Ready(Arc::from(members)),
                     Ok(Err(_)) | Err(_) => PlatformContext::Unavailable(Instant::now()),
                 };
                 lock(&contexts.loaded).insert(owned, context);

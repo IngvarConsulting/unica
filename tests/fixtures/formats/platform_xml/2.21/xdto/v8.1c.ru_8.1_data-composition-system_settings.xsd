@@ -1,0 +1,727 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:ns1="http://v8.1c.ru/8.1/data/core" xmlns:ns2="http://v8.1c.ru/8.1/data-composition-system/core" xmlns:tns="http://v8.1c.ru/8.1/data-composition-system/settings" xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="http://v8.1c.ru/8.1/data-composition-system/settings" attributeFormDefault="unqualified" elementFormDefault="qualified">
+	<xs:import namespace="http://v8.1c.ru/8.1/data/core"/>
+	<xs:import namespace="http://v8.1c.ru/8.1/data-composition-system/core"/>
+	<xs:element name="settings" type="tns:Settings"/>
+	<xs:simpleType name="DataCompositionAttributesPlacement">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="WithOwnerField"/>
+			<xs:enumeration value="Separately"/>
+			<xs:enumeration value="Together"/>
+			<xs:enumeration value="SpecialPosition"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="DataCompositionChartLegendPlacement">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="None"/>
+			<xs:enumeration value="Left"/>
+			<xs:enumeration value="Right"/>
+			<xs:enumeration value="Top"/>
+			<xs:enumeration value="Bottom"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="DataCompositionComparisonType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Equal"/>
+			<xs:enumeration value="NotEqual"/>
+			<xs:enumeration value="Less"/>
+			<xs:enumeration value="LessOrEqual"/>
+			<xs:enumeration value="Greater"/>
+			<xs:enumeration value="GreaterOrEqual"/>
+			<xs:enumeration value="Contains"/>
+			<xs:enumeration value="InList"/>
+			<xs:enumeration value="InListByHierarchy"/>
+			<xs:enumeration value="InHierarchy"/>
+			<xs:enumeration value="NotContains"/>
+			<xs:enumeration value="NotInList"/>
+			<xs:enumeration value="NotInListByHierarchy"/>
+			<xs:enumeration value="NotInHierarchy"/>
+			<xs:enumeration value="Filled"/>
+			<xs:enumeration value="NotFilled"/>
+			<xs:enumeration value="BeginsWith"/>
+			<xs:enumeration value="NotBeginsWith"/>
+			<xs:enumeration value="Like"/>
+			<xs:enumeration value="NotLike"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="DataCompositionComplexSettingsViewMode">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Show"/>
+			<xs:enumeration value="DontShow"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="DataCompositionConditionalAppearanceUse">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Use"/>
+			<xs:enumeration value="DontUse"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="DataCompositionDataRelevanceOutputType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="DontOutput"/>
+			<xs:enumeration value="Output"/>
+			<xs:enumeration value="Auto"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="DataCompositionDatabaseCopyOutputType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="DontOutput"/>
+			<xs:enumeration value="Output"/>
+			<xs:enumeration value="Auto"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="DataCompositionFieldPlacement">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="Horizontally"/>
+			<xs:enumeration value="Vertically"/>
+			<xs:enumeration value="SpecialColumn"/>
+			<xs:enumeration value="Together"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="DataCompositionFilterApplicationType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Items"/>
+			<xs:enumeration value="Hierarchy"/>
+			<xs:enumeration value="HierarchyOnly"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="DataCompositionFilterItemsGroupType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="AndGroup"/>
+			<xs:enumeration value="OrGroup"/>
+			<xs:enumeration value="NotGroup"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="DataCompositionFixation">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="DontUse"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="DataCompositionGroupFieldsPlacement">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Together"/>
+			<xs:enumeration value="Separately"/>
+			<xs:enumeration value="SeparatelyAndInTotalsOnly"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="DataCompositionGroupPlacement">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Begin"/>
+			<xs:enumeration value="End"/>
+			<xs:enumeration value="BeginAndEnd"/>
+			<xs:enumeration value="None"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="DataCompositionGroupTemplateType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Vertical"/>
+			<xs:enumeration value="Horizontal"/>
+			<xs:enumeration value="Auto"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="DataCompositionGroupUseVariant">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="AdditionalInformation"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="DataCompositionPictureOutputType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="DontOutput"/>
+			<xs:enumeration value="OutputByRef"/>
+			<xs:enumeration value="OutputByValue"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="DataCompositionResourcesAutoPosition">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="DontUse"/>
+			<xs:enumeration value="AfterAllFields"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="DataCompositionResourcesPlacement">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Vertically"/>
+			<xs:enumeration value="Horizontally"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="DataCompositionResourcesPlacementInChart">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="Series"/>
+			<xs:enumeration value="Points"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="DataCompositionSettingsItemState">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Enabled"/>
+			<xs:enumeration value="Disabled"/>
+			<xs:enumeration value="DeletedByUser"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="DataCompositionSettingsItemViewMode">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Normal"/>
+			<xs:enumeration value="QuickAccess"/>
+			<xs:enumeration value="Inaccessible"/>
+			<xs:enumeration value="Auto"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="DataCompositionSettingsViewMode">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="All"/>
+			<xs:enumeration value="QuickAccess"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="DataCompositionSortOutputType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="OutputPicture"/>
+			<xs:enumeration value="DontOutput"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="DataCompositionTextOutputType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="DontOutput"/>
+			<xs:enumeration value="Output"/>
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="OutputFilled"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ResultAutoCompositionOnOpenMode">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="Background"/>
+			<xs:enumeration value="DontCompose"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ResultAutoCompositionOnSettingsChangeMode">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="Background"/>
+			<xs:enumeration value="DontCompose"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="SaveDataCompositionAppearance">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="ForUser"/>
+			<xs:enumeration value="ForCurrentResult"/>
+			<xs:enumeration value="ByKeyForUser"/>
+			<xs:enumeration value="DontUse"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:complexType name="AppearanceField">
+		<xs:sequence>
+			<xs:element name="use" type="xs:boolean" minOccurs="0"/>
+			<xs:element name="field" type="ns2:Field"/>
+		</xs:sequence>
+		<xs:attribute name="iID" type="xs:decimal" default="0"/>
+	</xs:complexType>
+	<xs:complexType name="AppearanceFields">
+		<xs:sequence>
+			<xs:element name="item" type="tns:AppearanceField" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="AvailableFieldUseRestriction">
+		<xs:sequence>
+			<xs:element name="field" type="ns2:Field"/>
+			<xs:element name="enabled" type="xs:boolean" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="AvailableFieldUseRestrictions">
+		<xs:sequence>
+			<xs:element name="item" type="tns:AvailableFieldUseRestriction" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="AvailableFields"/>
+	<xs:complexType name="AvailableParameterUseRestriction">
+		<xs:sequence>
+			<xs:element name="parameter" type="ns2:Parameter"/>
+			<xs:element name="enabled" type="xs:boolean" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="AvailableParameterUseRestrictions">
+		<xs:sequence>
+			<xs:element name="item" type="tns:AvailableParameterUseRestriction" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="AvailableSettingsSource">
+		<xs:sequence>
+			<xs:element name="sourceID" minOccurs="0"/>
+		</xs:sequence>
+		<xs:attribute name="behaviour" type="xs:decimal"/>
+	</xs:complexType>
+	<xs:complexType name="Case">
+		<xs:sequence>
+			<xs:element name="item" type="tns:CaseItem" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="CaseItem">
+		<xs:sequence>
+			<xs:element name="use" type="xs:boolean" minOccurs="0"/>
+			<xs:element name="filter" type="tns:Filter" minOccurs="0"/>
+			<xs:element name="value" nillable="true" minOccurs="0"/>
+			<xs:element name="presentationValue" type="xs:string" minOccurs="0"/>
+			<xs:element name="lwsPresentationValue" type="ns1:LocalStringType" minOccurs="0"/>
+		</xs:sequence>
+		<xs:attribute name="iID" type="xs:decimal" default="0"/>
+	</xs:complexType>
+	<xs:complexType name="ChartGroup">
+		<xs:sequence>
+			<xs:element name="use" type="xs:boolean" minOccurs="0"/>
+			<xs:element name="name" type="xs:string" minOccurs="0"/>
+			<xs:element name="groupItems" type="tns:GroupItems" minOccurs="0"/>
+			<xs:element name="filter" type="tns:Filter" minOccurs="0"/>
+			<xs:element name="order" type="tns:Order" minOccurs="0"/>
+			<xs:element name="selection" type="tns:Selection" minOccurs="0"/>
+			<xs:element name="conditionalAppearance" type="tns:ConditionalAppearance" minOccurs="0"/>
+			<xs:element name="outputParameters" type="tns:ChartGroupOutputParameterValues" minOccurs="0"/>
+			<xs:element name="item" type="tns:ChartGroup" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="id" type="xs:string" minOccurs="0"/>
+			<xs:element name="viewMode" type="tns:DataCompositionSettingsItemViewMode" minOccurs="0"/>
+			<xs:element name="userSettingID" type="xs:string" minOccurs="0"/>
+			<xs:element name="userSettingPresentation" minOccurs="0"/>
+			<xs:element name="itemsViewMode" type="tns:DataCompositionSettingsItemViewMode" minOccurs="0"/>
+			<xs:element name="itemsUserSettingID" type="xs:string" minOccurs="0"/>
+			<xs:element name="itemsUserSettingPresentation" minOccurs="0"/>
+			<xs:element name="groupState" type="tns:DataCompositionSettingsItemState" minOccurs="0"/>
+		</xs:sequence>
+		<xs:attribute name="iID" type="xs:decimal" default="0"/>
+	</xs:complexType>
+	<xs:complexType name="ChartGroupOutputParameterValues">
+		<xs:complexContent>
+			<xs:extension base="ns2:ParameterValues"/>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="ChartOutputParameterValues">
+		<xs:complexContent>
+			<xs:extension base="ns2:ParameterValues"/>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="CompositionOutputParameterValues">
+		<xs:complexContent>
+			<xs:extension base="ns2:ParameterValues"/>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="ConditionalAppearance">
+		<xs:sequence>
+			<xs:element name="item" type="tns:ConditionalAppearanceItem" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="viewMode" type="tns:DataCompositionSettingsItemViewMode" minOccurs="0"/>
+			<xs:element name="userSettingID" type="xs:string" minOccurs="0"/>
+			<xs:element name="userSettingPresentation" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="ConditionalAppearanceItem">
+		<xs:sequence>
+			<xs:element name="use" type="xs:boolean" minOccurs="0"/>
+			<xs:element name="selection" type="tns:AppearanceFields" minOccurs="0"/>
+			<xs:element name="filter" type="tns:Filter" minOccurs="0"/>
+			<xs:element name="appearance" type="ns2:Appearance" minOccurs="0"/>
+			<xs:element name="presentation" minOccurs="0"/>
+			<xs:element name="viewMode" type="tns:DataCompositionSettingsItemViewMode" minOccurs="0"/>
+			<xs:element name="userSettingID" type="xs:string" minOccurs="0"/>
+			<xs:element name="userSettingPresentation" minOccurs="0"/>
+			<xs:element name="useInGroup" type="tns:DataCompositionConditionalAppearanceUse" minOccurs="0"/>
+			<xs:element name="useInHierarchicalGroup" type="tns:DataCompositionConditionalAppearanceUse" minOccurs="0"/>
+			<xs:element name="useInOverall" type="tns:DataCompositionConditionalAppearanceUse" minOccurs="0"/>
+			<xs:element name="useInFieldsHeader" type="tns:DataCompositionConditionalAppearanceUse" minOccurs="0"/>
+			<xs:element name="useInHeader" type="tns:DataCompositionConditionalAppearanceUse" minOccurs="0"/>
+			<xs:element name="useInParameters" type="tns:DataCompositionConditionalAppearanceUse" minOccurs="0"/>
+			<xs:element name="useInFilter" type="tns:DataCompositionConditionalAppearanceUse" minOccurs="0"/>
+			<xs:element name="useInResourceFieldsHeader" type="tns:DataCompositionConditionalAppearanceUse" minOccurs="0"/>
+			<xs:element name="useInOverallHeader" type="tns:DataCompositionConditionalAppearanceUse" minOccurs="0"/>
+			<xs:element name="useInOverallResourceFieldsHeader" type="tns:DataCompositionConditionalAppearanceUse" minOccurs="0"/>
+		</xs:sequence>
+		<xs:attribute name="iID" type="xs:decimal" default="0"/>
+	</xs:complexType>
+	<xs:complexType name="DataParameterValues">
+		<xs:complexContent>
+			<xs:extension base="ns2:ParameterValues"/>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="Filter">
+		<xs:sequence>
+			<xs:element name="item" type="tns:FilterItem" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="viewMode" type="tns:DataCompositionSettingsItemViewMode" minOccurs="0"/>
+			<xs:element name="userSettingID" type="xs:string" minOccurs="0"/>
+			<xs:element name="userSettingPresentation" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="FilterItem" abstract="true"/>
+	<xs:complexType name="FilterItemComparison">
+		<xs:complexContent>
+			<xs:extension base="tns:FilterItem">
+				<xs:sequence>
+					<xs:element name="use" type="xs:boolean" minOccurs="0"/>
+					<xs:element name="left" nillable="true" minOccurs="0"/>
+					<xs:element name="comparisonType" type="tns:DataCompositionComparisonType"/>
+					<xs:element name="right" nillable="true" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="presentation" minOccurs="0"/>
+					<xs:element name="application" type="tns:DataCompositionFilterApplicationType" minOccurs="0"/>
+					<xs:element name="viewMode" type="tns:DataCompositionSettingsItemViewMode" minOccurs="0"/>
+					<xs:element name="userSettingID" type="xs:string" minOccurs="0"/>
+					<xs:element name="userSettingPresentation" minOccurs="0"/>
+				</xs:sequence>
+				<xs:attribute name="iID" type="xs:decimal" default="0"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="FilterItemGroup">
+		<xs:complexContent>
+			<xs:extension base="tns:FilterItem">
+				<xs:sequence>
+					<xs:element name="use" type="xs:boolean" minOccurs="0"/>
+					<xs:element name="groupType" type="tns:DataCompositionFilterItemsGroupType"/>
+					<xs:element name="item" type="tns:FilterItem" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="presentation" minOccurs="0"/>
+					<xs:element name="application" type="tns:DataCompositionFilterApplicationType" minOccurs="0"/>
+					<xs:element name="viewMode" type="tns:DataCompositionSettingsItemViewMode" minOccurs="0"/>
+					<xs:element name="userSettingID" type="xs:string" minOccurs="0"/>
+					<xs:element name="userSettingPresentation" minOccurs="0"/>
+				</xs:sequence>
+				<xs:attribute name="iID" type="xs:decimal" default="0"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="GroupItem" abstract="true"/>
+	<xs:complexType name="GroupItemAuto">
+		<xs:complexContent>
+			<xs:extension base="tns:GroupItem">
+				<xs:sequence>
+					<xs:element name="use" type="xs:boolean" minOccurs="0"/>
+				</xs:sequence>
+				<xs:attribute name="iID" type="xs:decimal" default="0"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="GroupItemField">
+		<xs:complexContent>
+			<xs:extension base="tns:GroupItem">
+				<xs:sequence>
+					<xs:element name="use" type="xs:boolean" minOccurs="0"/>
+					<xs:element name="field" type="ns2:Field"/>
+					<xs:element name="groupType" type="ns2:DataCompositionGroupType" minOccurs="0"/>
+					<xs:element name="periodAdditionType" type="ns2:DataCompositionPeriodAdditionType" minOccurs="0"/>
+					<xs:element name="periodAdditionBegin" nillable="true" minOccurs="0"/>
+					<xs:element name="periodAdditionEnd" nillable="true" minOccurs="0"/>
+				</xs:sequence>
+				<xs:attribute name="iID" type="xs:decimal" default="0"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="GroupItems">
+		<xs:sequence>
+			<xs:element name="item" type="tns:GroupItem" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="GroupOutputParameterValues">
+		<xs:complexContent>
+			<xs:extension base="ns2:ParameterValues"/>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="Order">
+		<xs:sequence>
+			<xs:element name="item" type="tns:OrderItem" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="viewMode" type="tns:DataCompositionSettingsItemViewMode" minOccurs="0"/>
+			<xs:element name="userSettingID" type="xs:string" minOccurs="0"/>
+			<xs:element name="userSettingPresentation" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="OrderItem" abstract="true"/>
+	<xs:complexType name="OrderItemAuto">
+		<xs:complexContent>
+			<xs:extension base="tns:OrderItem">
+				<xs:sequence>
+					<xs:element name="use" type="xs:boolean" minOccurs="0"/>
+				</xs:sequence>
+				<xs:attribute name="iID" type="xs:decimal" default="0"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="OrderItemField">
+		<xs:complexContent>
+			<xs:extension base="tns:OrderItem">
+				<xs:sequence>
+					<xs:element name="use" type="xs:boolean" minOccurs="0"/>
+					<xs:element name="field" type="ns2:Field"/>
+					<xs:element name="orderType" type="ns2:DataCompositionSortDirection" minOccurs="0"/>
+					<xs:element name="autoOrder" type="xs:boolean" minOccurs="0"/>
+					<xs:element name="distinctNullValues" type="xs:boolean" minOccurs="0"/>
+					<xs:element name="viewMode" type="tns:DataCompositionSettingsItemViewMode" minOccurs="0"/>
+				</xs:sequence>
+				<xs:attribute name="iID" type="xs:decimal" default="0"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="SelectedItem" abstract="true"/>
+	<xs:complexType name="SelectedItemAuto">
+		<xs:complexContent>
+			<xs:extension base="tns:SelectedItem">
+				<xs:sequence>
+					<xs:element name="use" type="xs:boolean" minOccurs="0"/>
+				</xs:sequence>
+				<xs:attribute name="iID" type="xs:decimal" default="0"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="SelectedItemField">
+		<xs:complexContent>
+			<xs:extension base="tns:SelectedItem">
+				<xs:sequence>
+					<xs:element name="use" type="xs:boolean" minOccurs="0"/>
+					<xs:element name="field" type="ns2:Field"/>
+					<xs:element name="title" type="xs:string" minOccurs="0"/>
+					<xs:element name="lwsTitle" type="ns1:LocalStringType" minOccurs="0"/>
+					<xs:element name="viewMode" type="tns:DataCompositionSettingsItemViewMode" minOccurs="0"/>
+				</xs:sequence>
+				<xs:attribute name="iID" type="xs:decimal" default="0"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="SelectedItemFolder">
+		<xs:complexContent>
+			<xs:extension base="tns:SelectedItem">
+				<xs:sequence>
+					<xs:element name="use" type="xs:boolean" minOccurs="0"/>
+					<xs:element name="field" type="ns2:Field" minOccurs="0"/>
+					<xs:element name="title" type="xs:string" minOccurs="0"/>
+					<xs:element name="lwsTitle" type="ns1:LocalStringType" minOccurs="0"/>
+					<xs:element name="item" type="tns:SelectedItem" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="placement" type="tns:DataCompositionFieldPlacement" minOccurs="0"/>
+					<xs:element name="viewMode" type="tns:DataCompositionSettingsItemViewMode" minOccurs="0"/>
+				</xs:sequence>
+				<xs:attribute name="iID" type="xs:decimal" default="0"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="Selection">
+		<xs:sequence>
+			<xs:element name="item" type="tns:SelectedItem" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="viewMode" type="tns:DataCompositionSettingsItemViewMode" minOccurs="0"/>
+			<xs:element name="userSettingID" type="xs:string" minOccurs="0"/>
+			<xs:element name="userSettingPresentation" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="SettingStructure">
+		<xs:sequence>
+			<xs:element name="item" type="tns:StructureItem" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="viewMode" type="tns:DataCompositionSettingsItemViewMode" minOccurs="0"/>
+			<xs:element name="userSettingID" type="xs:string" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="Settings">
+		<xs:sequence>
+			<xs:element name="userFields" type="tns:UserFields" minOccurs="0"/>
+			<xs:element name="selection" type="tns:Selection" minOccurs="0"/>
+			<xs:element name="filter" type="tns:Filter" minOccurs="0"/>
+			<xs:element name="dataParameters" type="tns:DataParameterValues" minOccurs="0"/>
+			<xs:element name="order" type="tns:Order" minOccurs="0"/>
+			<xs:element name="conditionalAppearance" type="tns:ConditionalAppearance" minOccurs="0"/>
+			<xs:element name="outputParameters" type="tns:CompositionOutputParameterValues" minOccurs="0"/>
+			<xs:element name="item" type="tns:StructureItem" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="additionalProperties" type="ns1:Structure" minOccurs="0"/>
+			<xs:element name="itemsViewMode" type="tns:DataCompositionSettingsItemViewMode" minOccurs="0"/>
+			<xs:element name="itemsUserSettingID" type="xs:string" minOccurs="0"/>
+			<xs:element name="itemsUserSettingPresentation" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="SettingsComposer">
+		<xs:sequence>
+			<xs:element ref="tns:settings" minOccurs="0"/>
+			<xs:element name="source" type="tns:AvailableSettingsSource" minOccurs="0"/>
+			<xs:element name="userSettings" type="tns:UserSettings" minOccurs="0"/>
+			<xs:element name="fixedSettings" type="tns:Settings" minOccurs="0"/>
+			<xs:element name="emptyUserSettings" type="xs:boolean" minOccurs="0"/>
+			<xs:element name="emptyFixedSettings" type="xs:boolean" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="SettingsParameterValue">
+		<xs:complexContent>
+			<xs:extension base="ns2:ParameterValue">
+				<xs:sequence>
+					<xs:element name="viewMode" type="tns:DataCompositionSettingsItemViewMode" minOccurs="0"/>
+					<xs:element name="userSettingID" type="xs:string" minOccurs="0"/>
+					<xs:element name="userSettingPresentation" minOccurs="0"/>
+				</xs:sequence>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="SettingsVariant">
+		<xs:sequence>
+			<xs:element name="name" type="xs:string"/>
+			<xs:element name="presentation" minOccurs="0"/>
+			<xs:element ref="tns:settings"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="StructureItem" abstract="true"/>
+	<xs:complexType name="StructureItemChart">
+		<xs:complexContent>
+			<xs:extension base="tns:StructureItem">
+				<xs:sequence>
+					<xs:element name="use" type="xs:boolean" minOccurs="0"/>
+					<xs:element name="name" type="xs:string" minOccurs="0"/>
+					<xs:element name="point" type="tns:ChartGroup" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="series" type="tns:ChartGroup" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="selection" type="tns:Selection" minOccurs="0"/>
+					<xs:element name="conditionalAppearance" type="tns:ConditionalAppearance" minOccurs="0"/>
+					<xs:element name="outputParameters" type="tns:ChartOutputParameterValues" minOccurs="0"/>
+					<xs:element name="id" type="xs:string" minOccurs="0"/>
+					<xs:element name="viewMode" type="tns:DataCompositionSettingsItemViewMode" minOccurs="0"/>
+					<xs:element name="userSettingID" type="xs:string" minOccurs="0"/>
+					<xs:element name="userSettingPresentation" minOccurs="0"/>
+					<xs:element name="pointsViewMode" type="tns:DataCompositionSettingsItemViewMode" minOccurs="0"/>
+					<xs:element name="pointsUserSettingID" type="xs:string" minOccurs="0"/>
+					<xs:element name="pointsUserSettingPresentation" minOccurs="0"/>
+					<xs:element name="seriesViewMode" type="tns:DataCompositionSettingsItemViewMode" minOccurs="0"/>
+					<xs:element name="seriesUserSettingID" type="xs:string" minOccurs="0"/>
+					<xs:element name="seriesUserSettingPresentation" minOccurs="0"/>
+				</xs:sequence>
+				<xs:attribute name="iID" type="xs:decimal" default="0"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="StructureItemGroup">
+		<xs:complexContent>
+			<xs:extension base="tns:StructureItem">
+				<xs:sequence>
+					<xs:element name="use" type="xs:boolean" minOccurs="0"/>
+					<xs:element name="name" type="xs:string" minOccurs="0"/>
+					<xs:element name="groupItems" type="tns:GroupItems" minOccurs="0"/>
+					<xs:element name="filter" type="tns:Filter" minOccurs="0"/>
+					<xs:element name="order" type="tns:Order" minOccurs="0"/>
+					<xs:element name="selection" type="tns:Selection" minOccurs="0"/>
+					<xs:element name="conditionalAppearance" type="tns:ConditionalAppearance" minOccurs="0"/>
+					<xs:element name="outputParameters" type="tns:GroupOutputParameterValues" minOccurs="0"/>
+					<xs:element name="item" type="tns:StructureItem" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="id" type="xs:string" minOccurs="0"/>
+					<xs:element name="viewMode" type="tns:DataCompositionSettingsItemViewMode" minOccurs="0"/>
+					<xs:element name="userSettingID" type="xs:string" minOccurs="0"/>
+					<xs:element name="userSettingPresentation" minOccurs="0"/>
+					<xs:element name="itemsViewMode" type="tns:DataCompositionSettingsItemViewMode" minOccurs="0"/>
+					<xs:element name="itemsUserSettingID" type="xs:string" minOccurs="0"/>
+					<xs:element name="itemsUserSettingPresentation" minOccurs="0"/>
+					<xs:element name="groupState" type="tns:DataCompositionSettingsItemState" minOccurs="0"/>
+				</xs:sequence>
+				<xs:attribute name="iID" type="xs:decimal" default="0"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="StructureItemNestedObject">
+		<xs:complexContent>
+			<xs:extension base="tns:StructureItem">
+				<xs:sequence>
+					<xs:element name="use" type="xs:boolean" minOccurs="0"/>
+					<xs:element name="name" type="xs:string" minOccurs="0"/>
+					<xs:element name="objectID" type="xs:string"/>
+					<xs:element ref="tns:settings"/>
+					<xs:element name="id" type="xs:string" minOccurs="0"/>
+					<xs:element name="viewMode" type="tns:DataCompositionSettingsItemViewMode" minOccurs="0"/>
+					<xs:element name="userSettingID" type="xs:string" minOccurs="0"/>
+					<xs:element name="userSettingPresentation" minOccurs="0"/>
+				</xs:sequence>
+				<xs:attribute name="iID" type="xs:decimal" default="0"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="StructureItemTable">
+		<xs:complexContent>
+			<xs:extension base="tns:StructureItem">
+				<xs:sequence>
+					<xs:element name="use" type="xs:boolean" minOccurs="0"/>
+					<xs:element name="name" type="xs:string" minOccurs="0"/>
+					<xs:element name="column" type="tns:TableGroup" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="row" type="tns:TableGroup" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="selection" type="tns:Selection" minOccurs="0"/>
+					<xs:element name="conditionalAppearance" type="tns:ConditionalAppearance" minOccurs="0"/>
+					<xs:element name="outputParameters" type="tns:TableOutputParameterValues" minOccurs="0"/>
+					<xs:element name="id" type="xs:string" minOccurs="0"/>
+					<xs:element name="viewMode" type="tns:DataCompositionSettingsItemViewMode" minOccurs="0"/>
+					<xs:element name="userSettingID" type="xs:string" minOccurs="0"/>
+					<xs:element name="userSettingPresentation" minOccurs="0"/>
+					<xs:element name="columnsViewMode" type="tns:DataCompositionSettingsItemViewMode" minOccurs="0"/>
+					<xs:element name="columnsUserSettingID" type="xs:string" minOccurs="0"/>
+					<xs:element name="columnsUserSettingPresentation" minOccurs="0"/>
+					<xs:element name="rowsViewMode" type="tns:DataCompositionSettingsItemViewMode" minOccurs="0"/>
+					<xs:element name="rowsUserSettingID" type="xs:string" minOccurs="0"/>
+					<xs:element name="rowsUserSettingPresentation" minOccurs="0"/>
+				</xs:sequence>
+				<xs:attribute name="iID" type="xs:decimal" default="0"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="TableGroup">
+		<xs:sequence>
+			<xs:element name="use" type="xs:boolean" minOccurs="0"/>
+			<xs:element name="name" type="xs:string" minOccurs="0"/>
+			<xs:element name="groupItems" type="tns:GroupItems" minOccurs="0"/>
+			<xs:element name="filter" type="tns:Filter" minOccurs="0"/>
+			<xs:element name="order" type="tns:Order" minOccurs="0"/>
+			<xs:element name="selection" type="tns:Selection" minOccurs="0"/>
+			<xs:element name="conditionalAppearance" type="tns:ConditionalAppearance" minOccurs="0"/>
+			<xs:element name="outputParameters" type="tns:TableGroupOutputParameterValues" minOccurs="0"/>
+			<xs:element name="item" type="tns:TableGroup" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="id" type="xs:string" minOccurs="0"/>
+			<xs:element name="viewMode" type="tns:DataCompositionSettingsItemViewMode" minOccurs="0"/>
+			<xs:element name="userSettingID" type="xs:string" minOccurs="0"/>
+			<xs:element name="userSettingPresentation" minOccurs="0"/>
+			<xs:element name="itemsViewMode" type="tns:DataCompositionSettingsItemViewMode" minOccurs="0"/>
+			<xs:element name="itemsUserSettingID" type="xs:string" minOccurs="0"/>
+			<xs:element name="itemsUserSettingPresentation" minOccurs="0"/>
+			<xs:element name="groupState" type="tns:DataCompositionSettingsItemState" minOccurs="0"/>
+		</xs:sequence>
+		<xs:attribute name="iID" type="xs:decimal" default="0"/>
+	</xs:complexType>
+	<xs:complexType name="TableGroupOutputParameterValues">
+		<xs:complexContent>
+			<xs:extension base="ns2:ParameterValues"/>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="TableOutputParameterValues">
+		<xs:complexContent>
+			<xs:extension base="ns2:ParameterValues"/>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="UserField" abstract="true">
+		<xs:sequence>
+			<xs:element name="use" type="xs:boolean" minOccurs="0"/>
+			<xs:element name="dataPath" type="xs:string"/>
+			<xs:element name="title" type="xs:string" minOccurs="0"/>
+			<xs:element name="lwsTitle" type="ns1:LocalStringType" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="UserFieldCase">
+		<xs:complexContent>
+			<xs:extension base="tns:UserField">
+				<xs:sequence>
+					<xs:element name="cases" type="tns:Case"/>
+				</xs:sequence>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="UserFieldExpression">
+		<xs:complexContent>
+			<xs:extension base="tns:UserField">
+				<xs:sequence>
+					<xs:element name="detailExpression" type="xs:string"/>
+					<xs:element name="detailExpressionPresentation" type="xs:string" minOccurs="0"/>
+					<xs:element name="totalExpression" type="xs:string"/>
+					<xs:element name="totalExpressionPresentation" type="xs:string" minOccurs="0"/>
+				</xs:sequence>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="UserFields">
+		<xs:sequence>
+			<xs:element name="item" type="tns:UserField" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="UserSettings">
+		<xs:sequence>
+			<xs:element name="item" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="additionalProperties" type="ns1:Structure" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+</xs:schema>

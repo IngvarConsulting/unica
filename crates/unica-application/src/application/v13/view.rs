@@ -51,7 +51,6 @@ const MAX_LIMIT: usize = 50;
 // problem: неизвестно
 // on-reach: страница останавливается по объёму (stoppedBy bytes) с курсором; неделимый элемент отдаётся целиком
 // decision: закреплено правилом INV.WIRE.READ-PAGE-BUDGET
-// decision-date: 2026-09-23
 // decision-source: arch/rules/mcp/read-page-budget.md
 pub const PREFERRED_PAGE_BYTES: usize = 64 * 1024;
 type ViewProjector<'a> = dyn Fn(&Value) -> Result<Value, ViewError> + 'a;
@@ -362,7 +361,7 @@ impl<A: ViewReadAuthority> ViewService<A> {
                 "typed node projection is not an object",
             )
         })?;
-        if let Some(text) = text {
+        if let Some((text, revision)) = text {
             // Проекция может ответить на другой вопрос о том же узле
             // (контракт операции `.Can.<op>`): текст несёт только сам `Body`.
             if object.get("kind").and_then(Value::as_str) == Some("Body") {
@@ -388,7 +387,7 @@ impl<A: ViewReadAuthority> ViewService<A> {
                         json!({"lines": {"state": "range", "from": from, "to": to}}),
                     );
                 }
-                let mut result = body_text_result(&canonical_at, object, Some(snapshot.revision));
+                let mut result = body_text_result(&canonical_at, object, revision);
                 match text {
                     SourceText::Whole(text) => {
                         result.source_text = Some(text);
@@ -400,14 +399,12 @@ impl<A: ViewReadAuthority> ViewService<A> {
                             unica_bootstrap::MAX_RESPONSE_BUDGET,
                         );
                         let data = result.data.take();
-                        let rev = result.rev.take();
                         result = DomainResult::canonical_rejection(
                             Some(canonical_at.to_string()),
                             RefusalCode::ResultTooLarge,
                             error.to_string(),
                         );
                         result.data = data;
-                        result.rev = rev;
                         result.next.extend(error.next().iter().cloned());
                         result.source_text_read_hint = Some(Box::new(
                             unica_execution_contract::invocation::SourceTextReadHint {
@@ -485,15 +482,15 @@ fn module_body_view(
     body_at: &QualifiedAddress,
     text: ModuleText,
 ) -> Result<NodeViewData, ViewError> {
-    let (text, count) = match text {
+    let (text, count, revision) = match text {
         ModuleText::TooLarge {
             bytes,
             prefix,
             lines,
-        } => (SourceText::Oversized { bytes, prefix }, lines),
-        ModuleText::Text(text) => {
+        } => (SourceText::Oversized { bytes, prefix }, lines, None),
+        ModuleText::Text { text, revision } => {
             let lines = text.lines().count();
-            (SourceText::Whole(text), lines)
+            (SourceText::Whole(text), lines, Some(revision))
         }
     };
     let (from, to) = body_at
@@ -504,10 +501,13 @@ fn module_body_view(
         from,
         to,
     };
-    Ok(NodeViewData::Text(TextView::new(
-        NodeView::new(body_at.to_string(), "Body", "Body", Map::new()),
-        text,
-    )))
+    Ok(NodeViewData::Text(
+        TextView::new(
+            NodeView::new(body_at.to_string(), "Body", "Body", Map::new()),
+            text,
+        )
+        .with_revision(revision),
+    ))
 }
 
 fn collection_result(
@@ -1176,7 +1176,7 @@ mod tests {
         let at = "main:Document.Заказ.Module.Object.Body";
         let text = "// Комментарий\r\nProcedure A()\n\tReturn;\nEndProcedure\n";
         let mut authority = FixtureAuthority::new();
-        authority.module_text = Some(ModuleText::Text(text.into()));
+        authority.module_text = Some(ModuleText::whole(text.into()));
         let service = ViewService::new(authority, ViewCursorStore::default());
         let request = ViewRequest::new(at).unwrap().with_limit(1).unwrap();
         let result = service.view_projected(request, &|data| {
@@ -1221,7 +1221,7 @@ mod tests {
     fn module_text_rechecks_revision_after_the_read() {
         let at = "main:Document.Заказ.Module.Object.Body";
         let mut authority = FixtureAuthority::new();
-        authority.module_text = Some(ModuleText::Text("Procedure A()\n".into()));
+        authority.module_text = Some(ModuleText::whole("Procedure A()\n".into()));
         authority.revision_change_on_snapshot = Some(2);
         let result = ViewService::new(authority, ViewCursorStore::default())
             .view(ViewRequest::new(at).unwrap());

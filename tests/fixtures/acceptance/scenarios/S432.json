@@ -67,8 +67,8 @@
               "items": [
                 {
                   "name": "ОбновитьКурсы",
-                  "title": "Обновить курсы",
-                  "tooltip": "Загрузить курсы валют",
+                  "title": "ru = 'Обновить курсы'",
+                  "tooltip": "ru = 'Загрузить курсы валют'",
                   "shortcut": "F5",
                   "representation": "TextPicture"
                 }
@@ -140,11 +140,11 @@
       "assertions": [
         {
           "pointer": "/data/props/title",
-          "eq": "Обновить курсы"
+          "eq": "ru = 'Обновить курсы'"
         },
         {
           "pointer": "/data/props/tooltip",
-          "eq": "Загрузить курсы валют"
+          "eq": "ru = 'Загрузить курсы валют'"
         },
         {
           "pointer": "/data/props/shortcut",

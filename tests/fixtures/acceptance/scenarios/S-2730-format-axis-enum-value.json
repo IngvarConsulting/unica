@@ -1,0 +1,52 @@
+{
+  "id": "S-2730-format-axis-enum-value",
+  "issue": 2730,
+  "area": "Форматы выгрузки",
+  "task": "Добавить значение перечисления в наборе каждого формата выгрузки: свойства значения те же, что пишет платформа этого формата.",
+  "workspace": "tests/fixtures/acceptance/workspace-all-kinds",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Enum.СпособыУстановкиКурсаВалюты",
+        "ops": [
+          {
+            "op": "enumValue.add",
+            "args": {
+              "items": [
+                {
+                  "name": "ОсьФормата"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Enums/СпособыУстановкиКурсаВалюты.xml",
+          "kind": "xmlTags",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Enum/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}EnumValue[last()]/{http://v8.1c.ru/8.3/MDClasses}Properties/*",
+          "eq": {
+            "$reference": {
+              "path": "src/Enums/СпособыУстановкиКурсаВалюты.xml",
+              "select": "./{http://v8.1c.ru/8.3/MDClasses}Enum/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}EnumValue[1]/{http://v8.1c.ru/8.3/MDClasses}Properties/*"
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

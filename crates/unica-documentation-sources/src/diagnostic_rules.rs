@@ -113,6 +113,9 @@ impl DocumentationProvider for DiagnosticRulesProvider {
                 signature: Some(document.code.clone()),
                 snippet: document.text.chars().take(400).collect(),
                 applicable_version: SNAPSHOT.version.clone(),
+                // Описание правила диагностики вида статьи не имеет.
+                kind: None,
+                owner: None,
             });
         } else {
             section.warnings.push(format!("The bundled bsl-analyzer {} documentation snapshot contains no description for `{code}`. This does not establish that the diagnostic rule or its basis is absent.", SNAPSHOT.version));
@@ -141,6 +144,8 @@ impl DocumentationProvider for DiagnosticRulesProvider {
             signature: Some(document.code.clone()),
             applicable_version: SNAPSHOT.version.clone(),
             text: document.text.clone(),
+            // Поставщик статью полями не разбирает.
+            article: None,
         }))
     }
 }

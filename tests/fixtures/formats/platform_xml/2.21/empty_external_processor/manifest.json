@@ -1,0 +1,30 @@
+{
+  "format": "2.21",
+  "build": "8.5.1.1529",
+  "designerBinarySha256": "636ab6f2379b197bc85ce3f7c46de35438778a78fefb37522b939f6974f551c5",
+  "seed": "2.20/external_artifacts/epf: root, InternalInfo and empty Properties of the synthetic object, renamed EmptyProcessor, without child objects",
+  "steps": [
+    {
+      "step": "create",
+      "tool": "1cv8 CREATEINFOBASE",
+      "build": "8.5.1.1529"
+    },
+    {
+      "step": "load",
+      "tool": "designer /LoadExternalDataProcessorOrReportFromFiles",
+      "build": "8.5.1.1529"
+    },
+    {
+      "step": "export",
+      "tool": "designer /DumpExternalDataProcessorOrReportToFiles -Format Hierarchical",
+      "build": "8.5.1.1529"
+    }
+  ],
+  "rounds": "Round 2 loads the round-1 export into a second new file infobase and exports it again; the files are byte-identical.",
+  "files": {
+    "epf/EmptyProcessor.xml": {
+      "sha256": "28943ec9d2644f385d93e46a03df10617ce2038e01cef960bc53c57e72e17a22",
+      "size": 1707
+    }
+  }
+}

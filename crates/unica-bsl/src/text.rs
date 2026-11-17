@@ -2275,6 +2275,7 @@ mod tests {
             "Procedure Base()\n    Value = 1;\n    Value = 3; EndProcedure\n",
         ] {
             let operation = CodePlanOperation::Replace(CodeReplaceArgs {
+                if_rev: None,
                 at: unica_address::address::QualifiedAddress::parse(
                     "main:CommonModule.Sample.Method.Base.Body",
                 )

@@ -1,8 +1,7 @@
+use crate::deadlines::{CodeDiagnosticsDeadlines, CodeIntelligenceDeadlines};
 use serde::Serialize;
 use std::fmt;
 use std::time::Duration;
-use unica_code_intelligence::deadlines::CodeIntelligenceDeadlines;
-use unica_diagnostics::deadlines::CodeDiagnosticsDeadlines;
 
 // resource-limit: config.diagnostics-analyze-timeout-min
 // class: deadline
@@ -15,7 +14,6 @@ use unica_diagnostics::deadlines::CodeDiagnosticsDeadlines;
 // problem: неизвестно
 // on-reach: настройка отвергается диагностикой OutOfRange
 // decision: закреплено правилом INV.APP.CONFIG-SNAPSHOT
-// decision-date: 2026-09-22
 // decision-source: arch/rules/analysis/diagnostics-timeout-overlay.md
 const EXPLICIT_DIAGNOSTICS_ANALYZE_MIN_SECONDS: u64 = 30;
 // resource-limit: check.diagnostics-analyze-timeout-max

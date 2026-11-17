@@ -338,6 +338,7 @@ pub fn typed_element(
             deny_incomplete_values: None,
             fill_value: None,
             addressing_dimension: None,
+            color: None,
             properties: properties_readback,
             standard_attributes: None,
             property_limits: Vec::new(),
@@ -352,9 +353,21 @@ pub fn typed_element(
         crate::info_projection::direct_md_child_text(properties, "Name").unwrap_or_default();
     let mut incomplete = raw_name.trim().is_empty();
     let name = if incomplete { String::new() } else { raw_name };
-    let synonym = crate::info_projection::direct_md_child(properties, "Synonym")
-        .map(crate::xml_model::meta_info_ml_text)
-        .filter(|value| !value.is_empty());
+    let synonym = match crate::info_projection::localized_property_as_nstr(
+        properties,
+        "metadata collection item",
+        "Synonym",
+    ) {
+        Ok(value) => value,
+        Err(error) => {
+            diagnostics.push(
+                MetaDiagnostic::error(MetaDiagnosticCode::ProviderUnavailable, error)
+                    .with_metadata_path(target.clone())
+                    .with_field(format!("{field}.synonym")),
+            );
+            None
+        }
+    };
     let comment = match crate::info_projection::observe_collection_item_comment(properties) {
         Ok(comment) => comment,
         Err(error) => {
@@ -556,6 +569,9 @@ pub fn typed_element(
         .into_iter()
         .chain(profile_properties)
         .collect();
+    let color = (node.tag_name().name() == "EnumValue")
+        .then(|| crate::info_projection::direct_md_child_text(properties, "Color"))
+        .flatten();
     Some(MetaElementData {
         name,
         incomplete,
@@ -568,6 +584,7 @@ pub fn typed_element(
         deny_incomplete_values,
         fill_value,
         addressing_dimension,
+        color,
         properties: properties_readback,
         standard_attributes,
         property_limits,
@@ -727,24 +744,25 @@ pub fn parse_typed_meta_local_info_inner(
         .with_metadata_path(target.clone())
         .into());
     }
-    let synonym = properties.and_then(|properties| {
-        let nodes = crate::info_projection::direct_children_with_namespace(
-            properties,
-            super::info_projection::MD_CLASSES_NAMESPACE,
-            "Synonym",
-        );
-        let [node] = nodes.as_slice() else {
-            return None;
-        };
-        crate::info_projection::meta_info_property_value_is_valid(
-            *node,
-            MetaInfoPropertyValueKind::LegacyLocalizedString,
-        )
-        .then(|| crate::xml_model::meta_info_ml_text(*node))
-        .filter(|value| !value.is_empty())
-    });
-
     let mut diagnostics = Vec::new();
+    let synonym =
+        properties.and_then(
+            |properties| match crate::info_projection::localized_property_as_nstr(
+                properties,
+                kind.as_str(),
+                "Synonym",
+            ) {
+                Ok(value) => value,
+                Err(error) => {
+                    diagnostics.push(
+                        MetaDiagnostic::error(MetaDiagnosticCode::ProviderUnavailable, error)
+                            .with_metadata_path(target.clone())
+                            .with_field("properties.Synonym"),
+                    );
+                    None
+                }
+            },
+        );
     for error in crate::info_projection::meta_info_profile_errors(kind, properties, child_objects) {
         diagnostics.push(
             MetaDiagnostic::error(error.code, error.message)
@@ -767,7 +785,11 @@ pub fn parse_typed_meta_local_info_inner(
     );
     let format = unica_source_designer::roots::root_version_literal(xml, doc.root_element());
     let member_read_profile = source_kind.and_then(|source| {
-        unica_metadata::MetaMemberReadProfile::for_source(source, kind, format.as_deref())
+        unica_metadata::MetaMemberReadProfile::for_source(
+            source,
+            kind,
+            crate::dialect::root_version::is_writable(format.as_deref()),
+        )
     });
     let collection_route = |tag, nested_attributes, field| {
         TypedRootCollectionRoute::new(kind, tag, nested_attributes, field)
@@ -1140,6 +1162,47 @@ mod predefined_code_type_tests {
         )
         .iter()
         .any(|error| error.field == "properties.CodeType"));
+    }
+}
+
+#[cfg(test)]
+mod borrowed_2_22_tests {
+    use super::*;
+
+    /// A borrowed object of 8.5.4 names a closed action on a missing
+    /// configuration object; another value is malformed, not dropped.
+    /// rule: INV.SOURCE.INCOMPLETE-METADATA-READ
+    #[test]
+    fn a_borrowed_object_of_format_2_22_refuses_an_unknown_action() {
+        let text = include_str!(
+            "../../../tests/fixtures/formats/platform_xml/2.22/cfe_borrow/extension-document.xml"
+        )
+        .trim_start_matches('\u{feff}');
+        let errors = |text: &str| {
+            let document = roxmltree::Document::parse(text).unwrap();
+            let properties = document
+                .descendants()
+                .find(|node| node.has_tag_name("Properties"))
+                .unwrap();
+            crate::info_projection::meta_info_profile_errors(
+                MetadataKind::Document,
+                Some(properties),
+                None,
+            )
+            .into_iter()
+            .map(|error| error.field)
+            .collect::<Vec<_>>()
+        };
+        assert!(errors(text).is_empty());
+        let damaged = text.replacen(
+            "<ActionOnConfigurationObjectMissing>Auto<",
+            "<ActionOnConfigurationObjectMissing>Sometimes<",
+            1,
+        );
+        assert_eq!(
+            errors(&damaged),
+            vec!["properties.ActionOnConfigurationObjectMissing".to_string()]
+        );
     }
 }
 

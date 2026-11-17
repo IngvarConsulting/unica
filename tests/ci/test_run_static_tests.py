@@ -99,12 +99,24 @@ class PullRequestLevelTests(unittest.TestCase):
         self.assertEqual(removed["run"], "python scripts/ci/background_step.py wait removed-tests --timeout 600")
         started = self.step("Удалённые тесты (запуск)")
         self.assertEqual(started["run"], 'python scripts/ci/background_step.py start removed-tests -- '
-                                         'python scripts/ci/removed_tests.py --base "$BASE_SHA" --nightly-profile large')
-        self.assertEqual(started["env"]["BASE_SHA"], "${{ github.event.pull_request.base.sha }}")
+                                         'python scripts/ci/removed_tests.py --base "origin/$BASE_REF" --nightly-profile large')
+        # Not the event's base.sha: it is frozen at PR creation, while the
+        # checkout is the merge ref with the current base branch.
+        self.assertEqual(started["env"]["BASE_REF"], "${{ github.base_ref }}")
+        self.assertNotIn("BASE_SHA", started["env"])
         # The description is read fresh through the API: the job may read pull requests.
         # Reading actions is for the queue's nightly path, which finds the last night's inventory.
+        # Reading issues is for open marks: each names an open task.
         job = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"))["jobs"]["unica-ci"]
-        self.assertEqual(job["permissions"], {"contents": "read", "pull-requests": "read", "actions": "read"})
+        self.assertEqual(job["permissions"], {"contents": "read", "pull-requests": "read", "issues": "read",
+                                              "actions": "read"})
+
+    def test_the_pull_request_checks_open_marks_against_open_issues(self) -> None:
+        # Issues are read to tell an open task from a closed one or a pull request.
+        marks = self.step("Пометки незакрытого")
+        self.assertEqual(marks["if"], "${{ github.event_name == 'pull_request' && env.KEPT != 'true' }}")
+        self.assertEqual(marks["run"], "python scripts/ci/open_marks.py pr")
+        self.assertEqual(marks["env"]["GH_TOKEN"], "${{ github.token }}")
 
 
 if __name__ == "__main__":
