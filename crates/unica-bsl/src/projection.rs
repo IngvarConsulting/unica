@@ -13,15 +13,17 @@ pub enum BranchKind {
     Interface,
     Event,
     Body,
+    Variable,
 }
 
 impl BranchKind {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Method,
         Self::Region,
         Self::Interface,
         Self::Event,
         Self::Body,
+        Self::Variable,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -31,6 +33,7 @@ impl BranchKind {
             Self::Interface => "Interface",
             Self::Event => "Event",
             Self::Body => "Body",
+            Self::Variable => "Variable",
         }
     }
 }
@@ -447,6 +450,19 @@ impl fmt::Display for ProjectionError {
 impl std::error::Error for ProjectionError {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VariableProjection {
+    pub at: Option<String>,
+    pub name: String,
+    pub export: bool,
+    pub directive: Option<String>,
+    pub line: usize,
+    pub from_line: usize,
+    pub to_line: usize,
+    pub region: Option<String>,
+    pub limits: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModuleProjectionSet {
     summary: ModuleSummary,
     methods: Vec<MethodProjection>,
@@ -456,6 +472,7 @@ pub struct ModuleProjectionSet {
     compilation: Vec<CompilationProjection>,
     body: Vec<BodyLine>,
     source: String,
+    variables: Vec<VariableProjection>,
 }
 
 impl ModuleProjectionSet {
@@ -475,6 +492,7 @@ impl ModuleProjectionSet {
             interfaces.len(),
             events.len(),
             body.len(),
+            0,
         ];
         let base = identity.at.to_string();
         let branches = BranchKind::ALL
@@ -503,6 +521,7 @@ impl ModuleProjectionSet {
             compilation,
             body,
             source: String::new(),
+            variables: Vec::new(),
         }
     }
 
@@ -524,6 +543,23 @@ impl ModuleProjectionSet {
     /// как в файле.
     pub fn source_text(&self) -> &str {
         &self.source
+    }
+
+    pub fn with_variables(mut self, variables: Vec<VariableProjection>) -> Self {
+        if let Some(branch) = self
+            .summary
+            .branches
+            .iter_mut()
+            .find(|branch| branch.kind == BranchKind::Variable)
+        {
+            branch.count = variables.len();
+        }
+        self.variables = variables;
+        self
+    }
+
+    pub fn variables(&self) -> &[VariableProjection] {
+        &self.variables
     }
 
     /// Текст `Method.<имя>.Body`: строки от документирующего комментария до
@@ -706,7 +742,8 @@ mod tests {
                     {"at": "main:Document.Пустой.Module.Object.Region", "count": 0},
                     {"at": "main:Document.Пустой.Module.Object.Interface", "count": 0},
                     {"at": "main:Document.Пустой.Module.Object.Event", "count": 1},
-                    {"at": "main:Document.Пустой.Module.Object.Body", "count": 0}
+                    {"at": "main:Document.Пустой.Module.Object.Body", "count": 0},
+                    {"at": "main:Document.Пустой.Module.Object.Variable", "count": 0}
                 ],
                 "rev": "rev-1"
             })
@@ -754,6 +791,7 @@ mod tests {
                 (BranchKind::Interface, 0),
                 (BranchKind::Event, 1),
                 (BranchKind::Body, 0),
+                (BranchKind::Variable, 0),
             ]
         );
         assert_eq!(projection.events().len(), 1);
@@ -892,7 +930,8 @@ mod tests {
                     {"at": format!("{base}.Region"), "count": 1},
                     {"at": format!("{base}.Interface"), "count": 1},
                     {"at": format!("{base}.Event"), "count": 1},
-                    {"at": format!("{base}.Body"), "count": 2}
+                    {"at": format!("{base}.Body"), "count": 2},
+                    {"at": format!("{base}.Variable"), "count": 0}
                 ],
                 "rev": "rev-1"
             })

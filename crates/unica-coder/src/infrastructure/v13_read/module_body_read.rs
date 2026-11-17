@@ -30,6 +30,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
             |segment: &AddressSegment, kind| segment.kind() == kind && segment.name().is_none();
         let module_body = matches!(suffix, [body] if is_branch(body, NodeKind::Body));
         let method = matches!(suffix, [method] if is_named(method, NodeKind::Method));
+        let variable = matches!(suffix, [variable] if is_named(variable, NodeKind::Variable));
         let method_body = matches!(
             suffix,
             [method, body] if is_named(method, NodeKind::Method) && is_branch(body, NodeKind::Body)
@@ -38,7 +39,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
             && suffix
                 .iter()
                 .all(|segment| is_named(segment, NodeKind::Region));
-        if !(module_body || method || method_body || region) {
+        if !(module_body || method || method_body || region || variable) {
             let projected = self.read_exact(at, admitted)?;
             return Ok((projected.kind().to_string(), ResolvedLines::NotLineBased));
         }
@@ -75,7 +76,13 @@ impl<'a> LogicalViewReadAuthority<'a> {
             ));
         }
         let projections = self.module_projection(&module_at, capability, admitted)?;
-        let (kind, lines) = if region {
+        let (kind, lines) = if variable {
+            let variable = find_variable(&projections, suffix[0].name().unwrap_or_default())?;
+            (
+                NodeKind::Variable,
+                line_range(variable.from_line, variable.to_line),
+            )
+        } else if region {
             let region = projections
                 .region(&at.to_string())
                 .map_err(|error| ViewError::new(RefusalCode::NotFound, error.to_string()))?;

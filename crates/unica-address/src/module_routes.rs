@@ -230,7 +230,7 @@ fn module_projection_suffix_is_valid(suffix: &[AddressSegment], role: ModuleRole
         [branch]
             if matches!(
                 branch.kind(),
-                NodeKind::Method | NodeKind::Interface | NodeKind::Event
+                NodeKind::Method | NodeKind::Interface | NodeKind::Event | NodeKind::Variable
             ) =>
         {
             true
