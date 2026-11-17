@@ -468,7 +468,7 @@ class CollectResultsTests(unittest.TestCase):
         lanes = load("ci_rust_lanes")
         self.assertEqual(lanes.GATE_JOB, self.collect.GATE_JOB)
         self.assertEqual(lanes.os_job("windows-latest"), self.collect.runner_job("windows-latest"))
-        self.assertEqual(set(self.collect.RUST_LANES), set(lanes.LANES))
+        self.assertEqual(set(self.collect.RUST_LANES), set(lanes.LANES) | {"vendor"})
         prefixes = (self.collect.RESULTS_PREFIX, self.collect.PLAN_PREFIX)
 
         def uploads(job: str) -> list[dict]:
