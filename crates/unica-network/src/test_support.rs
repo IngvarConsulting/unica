@@ -206,6 +206,7 @@ fn read_head(reader: &mut impl BufRead) -> std::io::Result<String> {
 pub struct HttpStand {
     port: u16,
     heads: Arc<Mutex<Vec<Head>>>,
+    requests: Arc<Mutex<Vec<String>>>,
 }
 
 /// Заголовки одного запроса: имя и значение в порядке прихода.
@@ -213,24 +214,56 @@ type Head = Vec<(String, String)>;
 
 impl HttpStand {
     pub fn start(body: impl Into<Vec<u8>>, content_type: &str) -> Self {
+        Self::respond(200, &[], body, content_type)
+    }
+    /// A controlled response without changing the client's trust or route.
+    pub fn respond(
+        status: u16,
+        headers: &[(&str, &str)],
+        body: impl Into<Vec<u8>>,
+        content_type: &str,
+    ) -> Self {
+        let extra_headers = headers
+            .iter()
+            .map(|(name, value)| format!("{name}: {value}\r\n"))
+            .collect::<String>();
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind HTTP stand");
         let port = listener.local_addr().expect("stand address").port();
         let heads = Arc::new(Mutex::new(Vec::new()));
         let shared = Arc::clone(&heads);
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let seen_requests = Arc::clone(&requests);
         let body: Arc<Vec<u8>> = Arc::new(body.into());
         let content_type = content_type.to_owned();
         thread::spawn(move || {
             for stream in listener.incoming() {
                 let Ok(stream) = stream else { break };
                 let heads = Arc::clone(&shared);
+                let requests = Arc::clone(&seen_requests);
+                let extra_headers = extra_headers.clone();
                 let body = Arc::clone(&body);
                 let content_type = content_type.clone();
                 thread::spawn(move || {
-                    let _ = serve_plain(stream, &heads, &body, &content_type);
+                    let _ = serve_plain(
+                        stream,
+                        &heads,
+                        &requests,
+                        status,
+                        &extra_headers,
+                        &body,
+                        &content_type,
+                    );
                 });
             }
         });
-        Self { port, heads }
+        Self {
+            port,
+            heads,
+            requests,
+        }
+    }
+    pub fn requests(&self) -> Vec<String> {
+        self.requests.lock().expect("stand requests").clone()
     }
 
     pub fn url(&self, path: &str) -> String {
@@ -261,6 +294,9 @@ impl HttpStand {
 fn serve_plain(
     stream: TcpStream,
     heads: &Mutex<Vec<Head>>,
+    requests: &Mutex<Vec<String>>,
+    status: u16,
+    extra_headers: &str,
     body: &[u8],
     content_type: &str,
 ) -> std::io::Result<()> {
@@ -285,9 +321,14 @@ fn serve_plain(
     let mut request_body = vec![0_u8; content_length];
     std::io::Read::read_exact(&mut reader, &mut request_body)?;
     heads.lock().expect("stand log").push(head);
+    requests
+        .lock()
+        .expect("stand requests")
+        .push(request_line.trim_end().to_owned());
     let mut stream = stream;
     let answer = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 {status} {}\r\n{extra_headers}Content-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        if status == 200 { "OK" } else { "Synthetic" },
         body.len()
     );
     stream.write_all(answer.as_bytes())?;

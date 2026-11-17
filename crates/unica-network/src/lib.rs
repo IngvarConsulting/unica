@@ -21,7 +21,10 @@
 //! держит пул соединений. Неудачная сборка не запоминается: исправленную
 //! настройку подхватит следующий запрос того же процесса.
 
+mod diagnostics;
 mod failure;
+#[cfg(test)]
+mod medium_error_redaction_tests;
 mod proxy;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
@@ -221,7 +224,10 @@ impl NetworkClient {
         }
         Err(NetworkError::new(
             NetworkFailure::Transport,
-            format!("{url}: more than {MAX_REDIRECTS} redirects"),
+            format!(
+                "{}: more than {MAX_REDIRECTS} redirects",
+                diagnostics::url(url)
+            ),
         ))
     }
 
@@ -268,13 +274,21 @@ fn next_hop(current: &url::Url, location: &str) -> Result<url::Url, NetworkError
     let next = current.join(location).map_err(|error| {
         NetworkError::new(
             NetworkFailure::Transport,
-            format!("{current} redirected to an invalid location {location}: {error}"),
+            format!(
+                "{} redirected to an invalid location {}: {error}",
+                diagnostics::url(current.as_str()),
+                diagnostics::url(location)
+            ),
         )
     })?;
     if current.scheme() == "https" && next.scheme() != "https" {
         return Err(NetworkError::new(
             NetworkFailure::InsecureRedirect,
-            format!("{current} redirected to a non-HTTPS URL: {next}"),
+            format!(
+                "{} redirected to a non-HTTPS URL: {}",
+                diagnostics::url(current.as_str()),
+                diagnostics::url(next.as_str())
+            ),
         ));
     }
     Ok(next)
@@ -284,7 +298,7 @@ fn parse(url: &str) -> Result<url::Url, NetworkError> {
     url::Url::parse(url).map_err(|error| {
         NetworkError::new(
             NetworkFailure::Configuration,
-            format!("invalid URL {url}: {error}"),
+            format!("invalid URL {}: {error}", diagnostics::url(url)),
         )
     })
 }
