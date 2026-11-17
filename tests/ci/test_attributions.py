@@ -147,10 +147,13 @@ class AttributionTests(unittest.TestCase):
         names.update("plugins/unica/third-party/licenses/ureq/" + name for name in (
             "LICENSE-MIT", "LICENSE-APACHE", "src/chunked/LICENSE-MIT", "src/chunked/LICENSE-APACHE",
         ))
+        names.update("plugins/unica/third-party/licenses/bsl-analyzer/" + name for name in (
+            "LICENSE-APACHE", "LICENSE-GPL", "LICENSE-LGPL", "LICENSE-MIT",
+        ))
         original = {name: (root / name).read_bytes() for name in names}
         with tempfile.TemporaryDirectory(prefix="vendor-checkout-") as temporary:
             base = Path(temporary)
-            repo, checkout = base / "source", base / "checkout"
+            repo = base / "source"
             repo.mkdir()
             empty_attributes = base / "empty-attributes"
             empty_attributes.write_bytes(b"")
@@ -168,11 +171,13 @@ class AttributionTests(unittest.TestCase):
                 target.write_bytes(data)
             (repo / "conversion-control.txt").write_bytes(b"first\nsecond\n")
             git("add", "--all")
-            git("checkout-index", "--all", "--force", "--prefix=" + checkout.as_posix() + "/", autocrlf="true")
-            self.assertEqual((checkout / "conversion-control.txt").read_bytes(), b"first\r\nsecond\r\n")
-            for name, data in original.items():
-                with self.subTest(path=name):
-                    self.assertEqual((checkout / name).read_bytes(), data)
+            for autocrlf, expected_control in (("true", b"first\r\nsecond\r\n"), ("false", b"first\nsecond\n")):
+                checkout = base / ("checkout-" + autocrlf)
+                git("checkout-index", "--all", "--force", "--prefix=" + checkout.as_posix() + "/", autocrlf=autocrlf)
+                self.assertEqual((checkout / "conversion-control.txt").read_bytes(), expected_control)
+                for name, data in original.items():
+                    with self.subTest(autocrlf=autocrlf, path=name):
+                        self.assertEqual((checkout / name).read_bytes(), data)
 
     def test_patched_library_requires_a_packaged_license(self) -> None:
         root = self.repo_root()
