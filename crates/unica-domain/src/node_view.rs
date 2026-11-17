@@ -112,7 +112,8 @@ impl NodeView {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct BranchRef {
     at: String,
-    count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    count: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     bytes: Option<u64>,
 }
@@ -121,7 +122,15 @@ impl BranchRef {
     pub fn new(at: impl Into<String>, count: usize) -> Self {
         Self {
             at: at.into(),
-            count,
+            count: Some(count),
+            bytes: None,
+        }
+    }
+
+    pub fn uncounted(at: impl Into<String>) -> Self {
+        Self {
+            at: at.into(),
+            count: None,
             bytes: None,
         }
     }

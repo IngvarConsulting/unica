@@ -162,6 +162,7 @@ mod editability_view;
 mod form_payload;
 mod method_doc;
 mod module_body_read;
+mod notification_bindings;
 mod typed_payload_read;
 mod validation_input;
 
@@ -1483,7 +1484,7 @@ fn module_projection_view_data(
     requested: &QualifiedAddress,
     prefix_len: usize,
     projections: &ModuleProjectionSet,
-    mut bindings: BTreeMap<String, Vec<Value>>,
+    bindings: BTreeMap<String, Vec<Value>>,
 ) -> Result<NodeViewData, ViewError> {
     let suffix = &requested.segments()[prefix_len..];
     if suffix.is_empty() {
@@ -1524,7 +1525,11 @@ fn module_projection_view_data(
                 .methods()
                 .iter()
                 .map(|method| {
-                    method_node_value(method, bindings.get(&method.at).map_or(0, Vec::len))
+                    method_node_value(
+                        method,
+                        bindings.get(&method.at).map_or(0, Vec::len),
+                        notification_bindings::can_receive(projections, method),
+                    )
                 })
                 .collect(),
         ),
@@ -1532,7 +1537,13 @@ fn module_projection_view_data(
             .methods()
             .iter()
             .find(|method| method.name == name)
-            .map(|method| method_node(method, bindings.get(&method.at).map_or(0, Vec::len)))
+            .map(|method| {
+                method_node(
+                    method,
+                    bindings.get(&method.at).map_or(0, Vec::len),
+                    notification_bindings::can_receive(projections, method),
+                )
+            })
             .map(NodeViewData::Node)
             .ok_or_else(|| {
                 ViewError::new(
@@ -1549,16 +1560,6 @@ fn module_projection_view_data(
                 projections.method_text(method),
                 method.text_from_line,
                 projections.source_text(),
-            )
-        }
-        (NodeKind::Method, Some(name), Some(detail))
-            if detail.name().is_none() && detail.kind() == NodeKind::Binding =>
-        {
-            let method = find_method(projections, name)?;
-            module_collection(
-                requested,
-                NodeKind::Binding,
-                bindings.remove(&method.at).unwrap_or_default(),
             )
         }
         (NodeKind::Region, None, None) => module_collection(
@@ -1785,7 +1786,7 @@ fn find_method<'a>(
         })
 }
 
-fn method_node(method: &MethodProjection, binding_count: usize) -> NodeView {
+fn method_node(method: &MethodProjection, binding_count: usize, notify: bool) -> NodeView {
     let mut props = Map::from_iter([
         ("signature".to_string(), json!(method.signature)),
         ("methodKind".to_string(), json!(method.method_kind)),
@@ -1823,7 +1824,9 @@ fn method_node(method: &MethodProjection, binding_count: usize) -> NodeView {
         format!("{}.Body", method.at),
         method.text_line_count(),
     )];
-    if binding_count > 0 {
+    if notify {
+        branches.push(BranchRef::uncounted(format!("{}.Binding", method.at)));
+    } else if binding_count > 0 {
         branches.push(BranchRef::new(
             format!("{}.Binding", method.at),
             binding_count,
@@ -1833,8 +1836,8 @@ fn method_node(method: &MethodProjection, binding_count: usize) -> NodeView {
         .with_branches(branches)
 }
 
-fn method_node_value(method: &MethodProjection, binding_count: usize) -> Value {
-    serde_json::to_value(method_node(method, binding_count)).unwrap_or(Value::Null)
+fn method_node_value(method: &MethodProjection, binding_count: usize, notify: bool) -> Value {
+    serde_json::to_value(method_node(method, binding_count, notify)).unwrap_or(Value::Null)
 }
 
 fn region_node(requested: &QualifiedAddress, region: &RegionProjection) -> NodeView {
