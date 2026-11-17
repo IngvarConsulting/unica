@@ -52,6 +52,13 @@ impl HeaderLine {
             index += 1;
         }
 
+        if index == 0 || index == self.as_bytes().len() {
+            return Err(Error::new(
+                ErrorKind::BadHeader,
+                Some("Header requires a nonempty name followed by ':'".to_owned()),
+            ));
+        }
+
         Ok(Header { line: self, index })
     }
 }
@@ -70,8 +77,8 @@ pub(crate) struct Header {
     // It does not contain the final CRLF.
     line: HeaderLine,
     // Index is the position of the colon within the header field.
-    // Invariant: index > 0
-    // Invariant: index + 1 < line.len()
+    // Invariant: index < line.len() (an empty value is allowed).
+    // Parsed names are nonempty; Header::new is validated separately.
     index: usize,
 }
 
@@ -280,7 +287,20 @@ mod tests {
 
     #[test]
     fn test_parse_invalid_name() {
+        for line in ["", "Location", "X-Colonless", ": value"] {
+            let result = HeaderLine::from(line.to_owned()).into_header();
+            assert!(
+                matches!(result, Err(ref e) if e.kind() == ErrorKind::BadHeader),
+                "{:?}: expected BadHeader, got {:?}",
+                line,
+                result
+            );
+        }
         let cases = vec![
+            "",
+            "Location",
+            "X-Colonless",
+            ": value",
             "Content-Type  :",
             " Content-Type: foo",
             "Content-Type foo",
