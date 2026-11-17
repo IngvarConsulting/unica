@@ -163,6 +163,7 @@ struct OwnerEdgeCacheKey {
 mod diagnostic_scope;
 mod editability_view;
 mod form_payload;
+mod http_service_handler;
 mod method_doc;
 mod module_body_read;
 mod module_variables;
@@ -728,7 +729,15 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
         } else {
             let payload = self.typed_payload_for(&route, admitted)?;
             let handler = payload.pointer("/details/details/method").cloned();
-            let projected = self.web_service_view(&route, payload, admitted)?;
+            let projected = if at
+                .segments()
+                .first()
+                .is_some_and(|owner| owner.kind() == NodeKind::HttpService)
+            {
+                self.http_service_view(&route, payload, admitted)?
+            } else {
+                self.web_service_view(&route, payload, admitted)?
+            };
             let projected =
                 self.with_scheduled_job_handler(projected, at, handler.as_ref(), admitted)?;
             self.with_template_body_branches(projected, &route)?
