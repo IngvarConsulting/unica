@@ -23,7 +23,7 @@ use crate::model::*;
 
 /// Версия схемы статьи. Поднимается, когда меняется набор полей или смысл
 /// существующего поля; добавление поля к виду статьи — тоже смена набора.
-pub const ARTICLE_SCHEMA_VERSION: u32 = 1;
+pub const ARTICLE_SCHEMA_VERSION: u32 = 2;
 
 /// Поле статьи, которое вид статьи может иметь.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -300,6 +300,23 @@ pub fn article(value: &HelpArticle) -> Value {
         out.insert(present.as_str().to_string(), rendered);
     }
     out.insert("links".to_string(), links(&value.links));
+    out.insert(
+        "seeAlso".to_string(),
+        Value::Array(
+            value.see_also.iter().map(|entry| match entry {
+                SeeAlsoEntry::Document(link) => {
+                    json!({ "kind": "document", "name": link.label, "documentId": link.document_id })
+                }
+                SeeAlsoEntry::Member { owner, kind, link } => json!({
+                    "kind": kind.as_str(), "owner": owner, "name": link.label,
+                    "documentId": link.document_id,
+                }),
+                SeeAlsoEntry::Unparsed { text, links: row_links } => {
+                    json!({ "kind": "unparsed", "text": text, "links": links(row_links) })
+                }
+            }).collect(),
+        ),
+    );
     out.insert(
         "otherSections".to_string(),
         Value::Array(

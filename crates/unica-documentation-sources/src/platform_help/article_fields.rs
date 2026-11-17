@@ -10,9 +10,10 @@ use std::collections::BTreeMap;
 use unica_bsl_types::article as source;
 use unica_documentation::model as public;
 
-/// Локатор документа по пути страницы в этом корпусе.
-fn document_id(corpus: &str, path: &str) -> String {
-    format!("platform-syntax-help:{corpus}:{path}.html")
+use super::locator::LocatorScope;
+
+fn document_id(scope: LocatorScope<'_>, path: &str) -> String {
+    scope.document_id(&format!("{path}.html"))
 }
 
 /// Место исполнения устойчивым значением. Место, которого справка ещё не
@@ -45,7 +46,7 @@ fn context(value: &unica_bsl_types::Context) -> String {
 /// («Массив»), а не из последнего отрезка пути («Array»): путь у статьи
 /// один на обе локали, а потребитель показывает имя человеку.
 fn type_mention(
-    corpus: &str,
+    scope: LocatorScope<'_>,
     labels: &BTreeMap<&str, &str>,
     reference: &unica_bsl_types::TypeRef,
 ) -> public::TypeMention {
@@ -55,7 +56,7 @@ fn type_mention(
                 .get(path.as_str())
                 .map(|label| (*label).to_string())
                 .unwrap_or_else(|| path.rsplit('/').next().unwrap_or(path).to_string()),
-            document_id: Some(document_id(corpus, path)),
+            document_id: Some(document_id(scope, path)),
         },
         unica_bsl_types::TypeName::Primitive(name) => public::TypeMention {
             text: name.clone(),
@@ -92,10 +93,10 @@ fn name(value: &source::ArticleName) -> public::LocalizedName {
     }
 }
 
-fn link(corpus: &str, value: &source::ArticleLink) -> public::ArticleLink {
+fn link(scope: LocatorScope<'_>, value: &source::ArticleLink) -> public::ArticleLink {
     public::ArticleLink {
         label: value.label.clone(),
-        document_id: document_id(corpus, &value.path),
+        document_id: document_id(scope, &value.path),
     }
 }
 
@@ -113,17 +114,17 @@ fn field<T, U>(value: &source::Field<T>, convert: impl FnOnce(&T) -> U) -> publi
 }
 
 fn types(
-    corpus: &str,
+    scope: LocatorScope<'_>,
     labels: &BTreeMap<&str, &str>,
     list: &[unica_bsl_types::TypeRef],
 ) -> Vec<public::TypeMention> {
     list.iter()
-        .map(|reference| type_mention(corpus, labels, reference))
+        .map(|reference| type_mention(scope, labels, reference))
         .collect()
 }
 
 fn variant(
-    corpus: &str,
+    scope: LocatorScope<'_>,
     labels: &BTreeMap<&str, &str>,
     value: &source::SyntaxVariant,
 ) -> public::ArticleVariant {
@@ -136,7 +137,7 @@ fn variant(
                 .map(|parameter| public::ArticleParameter {
                     name: parameter.name.clone(),
                     optional: parameter.optional,
-                    types: types(corpus, labels, &parameter.types),
+                    types: types(scope, labels, &parameter.types),
                     type_text: parameter.type_text.clone(),
                     default: parameter.default.clone(),
                     description: parameter.description.clone(),
@@ -145,16 +146,18 @@ fn variant(
         }),
         description: field(&value.description, Clone::clone),
         returns: field(&value.returns, |returns| public::ArticleReturn {
-            types: types(corpus, labels, &returns.types),
+            types: types(scope, labels, &returns.types),
             type_text: returns.type_text.clone(),
             description: returns.description.clone(),
         }),
     }
 }
 
-/// Разобранная статья в публичном виде. `corpus` — корпус локатора,
-/// которым открыта сама статья: её ссылки ведут в тот же корпус.
-pub fn public_article(corpus: &str, value: &source::Article) -> public::HelpArticle {
+/// Ссылки статьи ведут в тот же корпус и сборку.
+pub(super) fn public_article(
+    scope: LocatorScope<'_>,
+    value: &source::Article,
+) -> public::HelpArticle {
     // Подписи ссылок статьи: по ним тип получает имя на языке статьи.
     let labels: BTreeMap<&str, &str> = value
         .links
@@ -165,10 +168,7 @@ pub fn public_article(corpus: &str, value: &source::Article) -> public::HelpArti
         kind: kind(value.kind),
         name: name(&value.name),
         owner: value.owner.as_ref().map(name),
-        owner_document_id: value
-            .owner_id
-            .as_ref()
-            .map(|path| document_id(corpus, path)),
+        owner_document_id: value.owner_id.as_ref().map(|path| document_id(scope, path)),
         // Вариантов нет — у статьи нет раздела синтаксиса; это пусто,
         // а не «не разобрано».
         variants: if value.variants.is_empty() {
@@ -178,11 +178,11 @@ pub fn public_article(corpus: &str, value: &source::Article) -> public::HelpArti
                 value
                     .variants
                     .iter()
-                    .map(|item| variant(corpus, &labels, item))
+                    .map(|item| variant(scope, &labels, item))
                     .collect(),
             )
         },
-        value_types: field(&value.value_types, |list| types(corpus, &labels, list)),
+        value_types: field(&value.value_types, |list| types(scope, &labels, list)),
         value_type_text: value.value_type_text.clone(),
         read_only: field(&value.read_only, |flag| *flag),
         availability: field(&value.availability, |places| {
@@ -194,17 +194,39 @@ pub fn public_article(corpus: &str, value: &source::Article) -> public::HelpArti
         note: field(&value.note, Clone::clone),
         example: field(&value.example, Clone::clone),
         collection_element: field(&value.collection_element, |list| {
-            types(corpus, &labels, list)
+            types(scope, &labels, list)
         }),
         member_lists: value
             .member_lists
             .iter()
             .map(|list| public::ArticleMemberList {
                 title: list.title.clone(),
-                members: list.members.iter().map(|item| link(corpus, item)).collect(),
+                members: list.members.iter().map(|item| link(scope, item)).collect(),
             })
             .collect(),
-        links: value.links.iter().map(|item| link(corpus, item)).collect(),
+        links: value.links.iter().map(|item| link(scope, item)).collect(),
+        see_also: value
+            .see_also
+            .iter()
+            .map(|entry| match entry {
+                source::SeeAlsoEntry::Document(item) => {
+                    public::SeeAlsoEntry::Document(link(scope, item))
+                }
+                source::SeeAlsoEntry::Member {
+                    owner,
+                    kind: member_kind,
+                    link: item,
+                } => public::SeeAlsoEntry::Member {
+                    owner: owner.clone(),
+                    kind: kind(*member_kind),
+                    link: link(scope, item),
+                },
+                source::SeeAlsoEntry::Unparsed { text, links } => public::SeeAlsoEntry::Unparsed {
+                    text: text.clone(),
+                    links: links.iter().map(|item| link(scope, item)).collect(),
+                },
+            })
+            .collect(),
         other_sections: value.other_sections.clone(),
     }
 }

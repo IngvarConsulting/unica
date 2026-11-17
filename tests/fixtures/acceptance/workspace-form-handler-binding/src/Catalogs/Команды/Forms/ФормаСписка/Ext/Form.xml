@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20">
+    <ChildItems>
+        <Table name="Goods" id="1">
+            <ChildItems>
+                <InputField name="Quantity" id="2">
+                    <Events><Event name="OnChange">SharedHandler</Event></Events>
+                </InputField>
+            </ChildItems>
+        </Table>
+        <InputField name="WrongContext" id="3">
+            <Events><Event name="OnChange">InvalidHandler</Event></Events>
+        </InputField>
+    </ChildItems>
+    <Commands>
+        <Command name="Refresh" id="1"><Action>RunCommand</Action></Command>
+    </Commands>
+    <Events>
+        <Event name="OnOpen">SharedHandler</Event>
+        <Event name="OnClose">AbsentHandler</Event>
+    </Events>
+</Form>

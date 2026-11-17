@@ -509,6 +509,21 @@ pub struct ArticleLink {
     pub document_id: String,
 }
 
+/// One source row of the See also section.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SeeAlsoEntry {
+    Document(ArticleLink),
+    Member {
+        owner: String,
+        kind: ArticleKind,
+        link: ArticleLink,
+    },
+    Unparsed {
+        text: String,
+        links: Vec<ArticleLink>,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ArticleParameter {
     pub name: String,
@@ -569,6 +584,7 @@ pub struct HelpArticle {
     pub member_lists: Vec<ArticleMemberList>,
     /// Ссылки статьи на другие статьи в порядке появления.
     pub links: Vec<ArticleLink>,
+    pub see_also: Vec<SeeAlsoEntry>,
     /// Разделы, которым разбор не знает места: заголовок и текст.
     pub other_sections: Vec<(String, String)>,
 }

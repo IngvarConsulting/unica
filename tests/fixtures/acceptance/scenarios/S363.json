@@ -94,10 +94,7 @@
               "items": [
                 {
                   "name": "Work",
-                  "title": {
-                    "ru": "Рабочий",
-                    "en": "Work"
-                  }
+                  "title": "ru = 'Рабочий'; en = 'Work'"
                 }
               ]
             }
@@ -239,7 +236,7 @@
                     "Amount"
                   ],
                   "appearance": {
-                    "Format": "ЧДЦ=2"
+                    "Format": "ru = 'ЧДЦ=2'"
                   }
                 }
               ]
@@ -367,10 +364,7 @@
             "args": {
               "at": "cf:Report.F05Report.Template.PrimitiveSettings.Setting.Work",
               "values": {
-                "presentation": {
-                  "ru": "Новый",
-                  "en": "New"
-                }
+                "presentation": "ru = 'Новый'; en = 'New'"
               }
             }
           },

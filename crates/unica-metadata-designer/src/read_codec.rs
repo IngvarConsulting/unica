@@ -39,6 +39,18 @@ impl MetadataReadCodec for DesignerMetadataReadCodec {
         crate::descriptor_comment::read_comment(descriptor, kind)
     }
 
+    fn descriptor_localized_property(
+        &self,
+        descriptor: &str,
+        kind: &str,
+        name: &str,
+    ) -> Result<Option<String>, String> {
+        let document = roxmltree::Document::parse(descriptor.trim_start_matches('\u{feff}'))
+            .map_err(|error| error.to_string())?;
+        let properties = crate::descriptor_comment::descriptor_properties(&document, kind)?;
+        crate::info_projection::localized_property_as_nstr(properties, kind, name)
+    }
+
     fn language_code(&self, descriptor: &[u8]) -> Result<String, String> {
         crate::language_code::read_code(descriptor)
     }
@@ -207,6 +219,10 @@ impl MetadataReadCodec for DesignerMetadataReadCodec {
 
     fn support_root_uuid(&self, descriptor: &[u8]) -> Option<String> {
         crate::support::support_root_uuid_from_bytes(descriptor)
+    }
+
+    fn configuration_support_uuid(&self, descriptor: &[u8]) -> Option<String> {
+        crate::support::configuration_support_uuid(descriptor)
     }
 
     fn support_stream(&self) -> Box<dyn SupportStateStream> {

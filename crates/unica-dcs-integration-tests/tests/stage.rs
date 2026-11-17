@@ -29,7 +29,7 @@ fn dcs_operations_transform_the_staged_schema_and_keep_its_byte_order_mark() {
         "field.add",
         &json!({
             "at": "main:Report.Versions.Template.Schema.DataSet.НаборДанных1",
-            "items": [{"dataPath": "Автор", "title": "Автор версии"}]
+            "items": [{"dataPath": "Автор", "title": "ru = 'Автор версии'"}]
         }),
         0,
     )
@@ -150,10 +150,10 @@ fn translations(xml: &str, tag: &str, key: &str, name: &str, text: &str) -> Vec<
         })
         .collect()
 }
-/// A plain-string title is written in the default language of the
-/// source set; a set keeps the translations of the other languages.
+/// NStr titles set the complete list of translations in the given order.
+/// Only a generated variant presentation uses the source default language.
 #[test]
-fn dcs_titles_write_the_configuration_default_language() {
+fn dcs_nstr_titles_replace_translations_and_default_variant_uses_source_language() {
     let fixture = Stand::new();
     fixture.use_english_only_language();
     let schema = "main:Report.Versions.Template.Schema";
@@ -163,27 +163,27 @@ fn dcs_titles_write_the_configuration_default_language() {
         &[
             (
                 "field.add",
-                json!({"at": data_set, "items": [{"dataPath": "Автор", "title": "Version author"}]}),
+                json!({"at": data_set, "items": [{"dataPath": "Автор", "title": "en = 'Version author'; ru = 'Автор версии'"}]}),
             ),
             (
                 "field.set",
-                json!({"at": format!("{data_set}.Field.Количество"), "values": {"title": "Count"}}),
+                json!({"at": format!("{data_set}.Field.Количество"), "values": {"title": "en = 'Count'"}}),
             ),
             (
                 "parameter.add",
-                json!({"at": schema, "items": [{"name": "Period", "title": "Period"}]}),
+                json!({"at": schema, "items": [{"name": "Period", "title": "en = 'Period'"}]}),
             ),
             (
                 "calculatedField.add",
-                json!({"at": schema, "items": [{"name": "Share", "expression": "1", "title": "Share"}]}),
+                json!({"at": schema, "items": [{"name": "Share", "expression": "1", "title": "en = 'Share'"}]}),
             ),
             (
                 "variant.add",
-                json!({"at": schema, "items": [{"name": "Brief", "title": "Brief"}]}),
+                json!({"at": schema, "items": [{"name": "Brief"}, {"name": "Explicit", "title": "ru = 'Точный'"}]}),
             ),
             (
                 "variant.set",
-                json!({"at": format!("{schema}.Setting.Основной"), "values": {"title": "Stored versions"}}),
+                json!({"at": format!("{schema}.Setting.Основной"), "values": {"title": "ru = 'Количество и объем хранимых версий объектов'; en = 'Stored versions'"}}),
             ),
         ],
     )
@@ -192,12 +192,12 @@ fn dcs_titles_write_the_configuration_default_language() {
     let ru = |text: &str| ("ru".to_string(), text.to_string());
     assert_eq!(
         translations(&xml, "field", "dataPath", "Автор", "title"),
-        [en("Version author")]
+        [en("Version author"), ru("Автор версии")]
     );
     assert_eq!(
         translations(&xml, "field", "dataPath", "Количество", "title"),
-        [ru("Количество"), en("Count")],
-        "the Russian translation is kept"
+        [en("Count")],
+        "the unlisted Russian translation is removed"
     );
     assert_eq!(
         translations(&xml, "parameter", "name", "Period", "title"),
@@ -212,6 +212,10 @@ fn dcs_titles_write_the_configuration_default_language() {
         [en("Brief")]
     );
     assert_eq!(
+        translations(&xml, "settingsVariant", "name", "Explicit", "presentation"),
+        [ru("Точный")]
+    );
+    assert_eq!(
         translations(&xml, "settingsVariant", "name", "Основной", "presentation"),
         [
             ru("Количество и объем хранимых версий объектов"),
@@ -223,23 +227,25 @@ fn dcs_titles_write_the_configuration_default_language() {
         .rfind("<v8:item>")
         .unwrap();
     let end = SCHEMA[start..].find("</v8:item>").unwrap() + start + "</v8:item>".len();
+    let original_variant = xml.split_once("</dcsset:presentation>").unwrap().0;
     assert!(
-        xml.contains(&SCHEMA[start..end]),
+        original_variant.contains(&SCHEMA[start..end]),
         "the kept translation keeps its bytes\n{xml}"
     );
 }
-/// The default language is read only for a plain-string text: other DCS
-/// edits do not depend on it, a title does and is refused without it.
+/// Explicit NStr needs no default language. A generated presentation
+/// still needs the source language.
 #[test]
-fn dcs_edits_without_text_do_not_read_the_default_language() {
+fn dcs_explicit_nstr_needs_no_default_language() {
     let fixture = Stand::new();
     std::fs::remove_file(fixture.source_dir().join("Languages/Русский.xml")).unwrap();
-    let data_set = "main:Report.Versions.Template.Schema.DataSet.НаборДанных1";
+    let schema = "main:Report.Versions.Template.Schema";
+    let data_set = format!("{schema}.DataSet.НаборДанных1");
     let xml = plan_on_versions_schema(
         &fixture,
         &[(
             "field.add",
-            json!({"at": data_set, "items": [{"dataPath": "Автор", "title": {"en": "Author"}}]}),
+            json!({"at": data_set, "items": [{"dataPath": "Автор", "title": "en = 'Author'"}]}),
         )],
     )
     .unwrap_or_else(|error| panic!("{error:?} at {:?}", error.path()));
@@ -251,11 +257,11 @@ fn dcs_edits_without_text_do_not_read_the_default_language() {
     let error = plan_on_versions_schema(
         &fixture,
         &[(
-            "field.set",
-            json!({"at": format!("{data_set}.Field.Количество"), "values": {"title": "Count"}}),
+            "variant.add",
+            json!({"at": schema, "items": [{"name": "Brief"}]}),
         )],
     )
-    .expect_err("a plain-string title needs the default language");
+    .expect_err("a generated variant presentation needs the default language");
     assert_eq!(error.kind(), ApplyPlanErrorKind::InvalidSource, "{error:?}");
     assert_eq!(error.path(), Some("ops[0].args.at"));
 }
@@ -345,7 +351,7 @@ fn typed_dcs_field_set_changes_the_composite_field_by_its_escaped_address() {
             0,
             plan(
                 "field.set",
-                &json!({"at": at, "values": {"title": "Тип (представление)"}}),
+                &json!({"at": at, "values": {"title": "ru = 'Тип (представление)'"}}),
                 0,
             )
             .unwrap(),

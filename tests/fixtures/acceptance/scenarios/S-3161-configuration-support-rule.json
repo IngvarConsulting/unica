@@ -1,0 +1,390 @@
+{
+  "id": "S-3161-configuration-support-rule",
+  "name": "unlock-configuration-root-without-changing-vendor-support",
+  "issue": 3161,
+  "area": "Поддержка поставщика",
+  "task": "Изменить собственное правило корня конфигурации и затем отдельно записать свойство, сохранив остальную поддержку.",
+  "workspace": "tests/fixtures/acceptance/workspace-configuration-support",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Configuration.Can.supportRule.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/op",
+          "eq": "supportRule.set"
+        }
+      ],
+      "captures": {
+        "marker": {
+          "file": "src/Ext/ParentConfigurations.bin",
+          "kind": "sha256"
+        },
+        "config": {
+          "file": "src/Configuration.xml",
+          "kind": "sha256"
+        },
+        "vendor": {
+          "file": "src/Ext/ParentConfigurations/РеактивныйHTML.cf",
+          "kind": "sha256"
+        },
+        "child": {
+          "file": "src/DataProcessors/ТестHTML.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "supportRule.set",
+            "args": {
+              "values": {
+                "rule": "locked"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "lock": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/Ext/ParentConfigurations.bin",
+          "kind": "sha256",
+          "eq": "$capture.marker"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.config"
+        },
+        {
+          "path": "src/Ext/ParentConfigurations/РеактивныйHTML.cf",
+          "kind": "sha256",
+          "eq": "$capture.vendor"
+        },
+        {
+          "path": "src/DataProcessors/ТестHTML.xml",
+          "kind": "sha256",
+          "eq": "$capture.child"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.lock"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Ext/ParentConfigurations.bin",
+          "kind": "sha256",
+          "eq": "7725d9181056e31a46488b3ce84b51d355547ec80a682afc087f89af96339426"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.config"
+        },
+        {
+          "path": "src/Ext/ParentConfigurations/РеактивныйHTML.cf",
+          "kind": "sha256",
+          "eq": "$capture.vendor"
+        },
+        {
+          "path": "src/DataProcessors/ТестHTML.xml",
+          "kind": "sha256",
+          "eq": "$capture.child"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Configuration"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/support/rule",
+          "eq": "locked"
+        },
+        {
+          "pointer": "/data/props/support/editable",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "Edited with vendor support"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "assertions": [
+        {
+          "pointer": "/next/0/tool",
+          "eq": "unica.apply"
+        },
+        {
+          "pointer": "/next/0/args",
+          "eq": {
+            "at": "main:Configuration",
+            "ops": [
+              {
+                "op": "supportRule.set",
+                "args": {
+                  "values": {
+                    "rule": "editable"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      ],
+      "captures": {
+        "unlockAt": {
+          "pointer": "/next/0/args/at"
+        },
+        "unlockOperationArgs": {
+          "pointer": "/next/0/args/ops/0/args"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/Ext/ParentConfigurations.bin",
+          "kind": "sha256",
+          "eq": "7725d9181056e31a46488b3ce84b51d355547ec80a682afc087f89af96339426"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.config"
+        },
+        {
+          "path": "src/Ext/ParentConfigurations/РеактивныйHTML.cf",
+          "kind": "sha256",
+          "eq": "$capture.vendor"
+        },
+        {
+          "path": "src/DataProcessors/ТестHTML.xml",
+          "kind": "sha256",
+          "eq": "$capture.child"
+        }
+      ],
+      "refusal": "invalid_state: `main:Configuration` has its own vendor support rule `locked`; set `supportRule.set` with rule `editable` on `main:Configuration` in a separate apply before ord"
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.unlockAt",
+        "ops": [
+          {
+            "op": "supportRule.set",
+            "args": "$capture.unlockOperationArgs"
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "unlock": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/Ext/ParentConfigurations.bin",
+          "kind": "sha256",
+          "eq": "7725d9181056e31a46488b3ce84b51d355547ec80a682afc087f89af96339426"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.config"
+        },
+        {
+          "path": "src/Ext/ParentConfigurations/РеактивныйHTML.cf",
+          "kind": "sha256",
+          "eq": "$capture.vendor"
+        },
+        {
+          "path": "src/DataProcessors/ТестHTML.xml",
+          "kind": "sha256",
+          "eq": "$capture.child"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.unlock"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Ext/ParentConfigurations.bin",
+          "kind": "sha256",
+          "eq": "30c444ca0e2ba8a419ee7b0d92fab61dcb02bd61d551a6018b2474a63dc24843"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.config"
+        },
+        {
+          "path": "src/Ext/ParentConfigurations/РеактивныйHTML.cf",
+          "kind": "sha256",
+          "eq": "$capture.vendor"
+        },
+        {
+          "path": "src/DataProcessors/ТестHTML.xml",
+          "kind": "sha256",
+          "eq": "$capture.child"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Configuration"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/support/rule",
+          "eq": "editableWithSupport"
+        },
+        {
+          "pointer": "/data/props/support/editable",
+          "eq": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "Edited with vendor support"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "edit": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/Ext/ParentConfigurations.bin",
+          "kind": "sha256",
+          "eq": "30c444ca0e2ba8a419ee7b0d92fab61dcb02bd61d551a6018b2474a63dc24843"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.config"
+        },
+        {
+          "path": "src/Ext/ParentConfigurations/РеактивныйHTML.cf",
+          "kind": "sha256",
+          "eq": "$capture.vendor"
+        },
+        {
+          "path": "src/DataProcessors/ТестHTML.xml",
+          "kind": "sha256",
+          "eq": "$capture.child"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.edit"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Ext/ParentConfigurations.bin",
+          "kind": "sha256",
+          "eq": "30c444ca0e2ba8a419ee7b0d92fab61dcb02bd61d551a6018b2474a63dc24843"
+        },
+        {
+          "path": "src/Ext/ParentConfigurations/РеактивныйHTML.cf",
+          "kind": "sha256",
+          "eq": "$capture.vendor"
+        },
+        {
+          "path": "src/DataProcessors/ТестHTML.xml",
+          "kind": "sha256",
+          "eq": "$capture.child"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Configuration"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/properties/comment",
+          "eq": "Edited with vendor support"
+        }
+      ]
+    }
+  ]
+}

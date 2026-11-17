@@ -85,10 +85,10 @@ fn subsystem_fixture_xml(name: &str) -> String {
 #[test]
 fn subsystem_native_text_observations_keep_empty_absent_and_invalid_distinct() {
     for (comment_xml, explanation_xml, comment, explanation, errors) in [
-        ("<Comment/>", "<Explanation/>", Some(""), Some(""), 0),
+        ("<Comment/>", "<Explanation/>", Some(""), None, 0),
         ("", "", None, None, 0),
-        ("<Comment>точный текст</Comment>", "<Explanation><v8:item><v8:lang>en</v8:lang><v8:content>fallback</v8:content></v8:item></Explanation>", Some("точный текст"), Some("fallback"), 0),
-        ("<Comment>а<![CDATA[б]]>в</Comment>", "<Explanation><v8:item><v8:lang>ru</v8:lang><v8:content>а<![CDATA[б]]>в</v8:content></v8:item></Explanation>", Some("абв"), Some("абв"), 0),
+        ("<Comment>точный текст</Comment>", "<Explanation><v8:item><v8:lang>en</v8:lang><v8:content>fallback</v8:content></v8:item></Explanation>", Some("точный текст"), Some("en = 'fallback'"), 0),
+        ("<Comment>а<![CDATA[б]]>в</Comment>", "<Explanation><v8:item><v8:lang>ru</v8:lang><v8:content>а<![CDATA[б]]>в</v8:content></v8:item></Explanation>", Some("абв"), Some("ru = 'абв'"), 0),
         ("<Comment><Bad/></Comment>", "<Explanation>text</Explanation>", None, None, 2),
         ("<Comment/><Comment/>", "<Explanation/><Explanation/>", None, None, 2),
     ] {

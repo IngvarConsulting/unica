@@ -233,6 +233,14 @@ impl unica_operations::FamilyOperation for MetadataOperation {
             .any(|segment| segment.kind() == unica_address::address::NodeKind::TabularSection);
         let mut contract = self
             .contract_at(owner.map(|owner| crate::contracts::MetadataSite { owner, in_section }));
+        if self == Self::AttributeSet
+            && !OperationApplicability::CatalogTabularAttribute.matches(site)
+        {
+            contract.schema["properties"]["values"]["properties"]
+                .as_object_mut()
+                .expect("attribute.set values schema")
+                .remove("toolTip");
+        }
         if self == Self::EnumValueSet {
             let line = site.source().classification_profile().semantic_line();
             offer_enum_value_color(&mut contract.schema["properties"]["values"], line);
@@ -523,7 +531,7 @@ mod tests {
         assert!(contract.normalize(&contract.example_args, "args").is_ok());
         for values in [
             json!({"newName":"PrintCopy"}),
-            json!({"synonym":"Print","comment":"kept"}),
+            json!({"synonym":"ru = 'Print'","comment":"kept"}),
             json!({"position":{"before":"Other"}}),
         ] {
             assert!(
@@ -623,6 +631,26 @@ mod tests {
             ] {
                 assert!(contract.normalize(&args, "args").is_err(), "{args}");
             }
+        }
+    }
+
+    #[test]
+    fn tool_tip_has_an_nstr_setter_only_on_catalog_tabular_attributes() {
+        for (owner, in_section, allowed) in [
+            (MetadataKind::Catalog, true, true),
+            (MetadataKind::Catalog, false, false),
+            (MetadataKind::Document, true, false),
+        ] {
+            let contract = MetadataOperation::AttributeSet
+                .contract_at(Some(MetadataSite { owner, in_section }));
+            let args = json!({"values":{"toolTip":"ru = 'Подсказка'; en = 'Tip'"}});
+            assert_eq!(contract.normalize(&args, "args").is_ok(), allowed);
+            assert!(contract
+                .normalize(
+                    &json!({"values":{"toolTip":[{"language":"ru","content":"Подсказка"}]}}),
+                    "args"
+                )
+                .is_err());
         }
     }
 
@@ -789,6 +817,7 @@ mod tests {
                     collection: crate::MetaCollection::Dimensions,
                     scope: None,
                     elements: vec![crate::MetaElementUpdate {
+                        tool_tip: None,
                         name: "Item".into(),
                         new_name: None,
                         synonym: None,

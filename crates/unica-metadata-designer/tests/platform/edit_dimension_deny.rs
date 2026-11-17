@@ -15,6 +15,7 @@ fn deny(name: &str, value: bool) -> MetaEditOperation {
         collection: MetaCollection::Dimensions,
         scope: None,
         elements: vec![MetaElementUpdate {
+            tool_tip: None,
             name: name.to_string(),
             new_name: None,
             synonym: None,

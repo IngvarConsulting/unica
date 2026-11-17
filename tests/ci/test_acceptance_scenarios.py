@@ -972,6 +972,28 @@ def packed_json_strings(value, path=""):
     return []
 
 
+def legacy_localized_values(value, path="/data"):
+    """Recognize old translation structures in the public view payload."""
+    if isinstance(value, dict):
+        if value.get("kind") == "localizedString":
+            yield f"{path}: localizedString must be a string in NStr form"
+            return
+        for key, item in value.items():
+            yield from legacy_localized_values(item, f"{path}/{key}")
+    elif isinstance(value, list):
+        if value and all(
+            isinstance(item, dict)
+            and set(item) == {"language", "content"}
+            and isinstance(item["language"], str)
+            and isinstance(item["content"], str)
+            for item in value
+        ):
+            yield f"{path}: a translation array must be a string in NStr form"
+            return
+        for index, item in enumerate(value):
+            yield from legacy_localized_values(item, f"{path}/{index}")
+
+
 def call_step(server, step, arguments, label, *, delivery=False):
     if step.get("awaitTask"):
         return completed_delivery_call(server, step["tool"], arguments, label, retry_pending_index=False)
@@ -1094,6 +1116,7 @@ def run_corpus(test_case, corpus, plugin=None, scenario_driver=None, fixture_cle
                     failures = content_mismatches(step, structured, actual, note, server.workspace, context)
                     if step["tool"] == "unica.view":
                         failures.extend(packed_json_strings(structured))
+                        failures.extend(legacy_localized_values(structured.get("data")))
                     if not failures:
                         try:
                             candidate["captures"] = capture_values(step, structured, server.workspace, context)

@@ -309,7 +309,7 @@ fn canonical_dcs_late_planning_failure_discards_prior_successful_operations() {
     let batch = preview_request(
         TEMPLATE,
         json!([
-            {"op":"field.add","args":{"at":DATASET,"items":[{"dataPath":"Added","title":"Added"}]}},
+            {"op":"field.add","args":{"at":DATASET,"items":[{"dataPath":"Added","title":"ru = 'Added'"}]}},
             {"op":"query.patch","args":{"at":QUERY,"values":{"find":"Missing query text","replace":"cannot publish","once":true}}}
         ]),
     );

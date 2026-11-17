@@ -108,7 +108,7 @@ async function check(at, kind, expected, message) {
 const assert = require("node:assert/strict");
 const vm = require("node:vm");
 const page = require("node:fs").readFileSync(0, "utf8");
-const source = page.slice(page.indexOf("async function fill("), page.indexOf("function highlightTreeRow"));
+const source = page.slice(page.indexOf("function handlerTarget("), page.indexOf("function highlightTreeRow"));
 let data;
 const context = vm.createContext({
   document: {createElement: () => ({remove() {}})},
@@ -116,14 +116,26 @@ const context = vm.createContext({
   view: async () => ({result: {ok: true, data}}),
   makeRow: (label, at) => ({label, at}),
   markLeaf: () => {}, shortLabel: () => "", isGraph: () => false,
+  esc: value => value,
 });
 vm.runInContext(source, context);
 (async () => {
-  for (const target of ["main:CommonModule.MonthClose.Method.RunScheduled", undefined]) {
-    data = {kind: "Method", at: "main:HTTPService.ExternalAPI.URLTemplate.Metrics.Method.Get", props: {implementationAt: target}};
+  const http = "main:HTTPService.ExternalAPI.Module.HTTPService.Method.MetricsGet";
+  const form = "main:CommonForm.Editor.Module.Form.Method.OnOpen";
+  const cases = [
+    [{kind: "Method", at: "main:HTTPService.ExternalAPI.URLTemplate.Metrics.Method.Get", props: {implementationAt: http}}, http],
+    [{kind: "Method", at: "main:HTTPService.ExternalAPI.URLTemplate.Metrics.Method.Get", props: {}}, undefined],
+    [{kind: "Method", at: "main:HTTPService.ExternalAPI.URLTemplate.Metrics.Method.Get", props: {implementationAt: 7}}, undefined],
+    [{kind: "Method", at: "main:CommonModule.Other.Method.Get", props: {implementationAt: http}}, undefined],
+    [{kind: "Event", at: "main:CommonForm.Editor.Event.OnOpen", props: {binding: "property", state: "implemented", implementationAt: form}}, form],
+    [{kind: "Event", props: {binding: "property", state: "available", implementationAt: form}}, undefined],
+    [{kind: "Operation", props: {implementationAt: http}}, undefined],
+  ];
+  for (const [value, target] of cases) {
+    data = value;
     const rows = [];
     const container = {appendChild: row => rows.push(row), childElementCount: 1};
-    await context.fill(container, "main:ScheduledJob.MonthClose");
+    await context.fill(container, data.at);
     const handlers = rows.filter(row => row.label === "Handler");
     assert.equal(handlers.length, target ? 1 : 0);
     if (target) assert.equal(handlers[0].at, target);

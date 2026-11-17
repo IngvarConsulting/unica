@@ -17,7 +17,7 @@
       "assertions": [
         {
           "pointer": "/data/document/schemaVersion",
-          "eq": 1
+          "eq": 2
         },
         {
           "pointer": "/data/document/article/kind",
@@ -37,7 +37,7 @@
         },
         {
           "pointer": "/data/document/article/ownerDocumentId",
-          "eq": "platform-syntax-help:syntax-context:objects/SampleTable.html"
+          "eq": "platform-syntax-help:8.3.27.2074:syntax-context:objects/SampleTable.html"
         },
         {
           "pointer": "/data/document/article/variants/0/call",
@@ -57,7 +57,7 @@
         },
         {
           "pointer": "/data/document/article/variants/0/parameters/0/types/0/documentId",
-          "eq": "platform-syntax-help:syntax-context:objects/SampleArray.html"
+          "eq": "platform-syntax-help:8.3.27.2074:syntax-context:objects/SampleArray.html"
         },
         {
           "pointer": "/data/document/article/variants/0/returns/typeText",

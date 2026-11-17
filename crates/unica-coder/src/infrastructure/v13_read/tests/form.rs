@@ -882,6 +882,7 @@ fn form_projection_uses_a_positive_nested_scalar_allowlist() {
 }
 
 /// rule: CTR.SOURCE.QUALIFIED-LOGICAL-ADDRESS
+/// rule: INV.SOURCE.LOCALIZED-STRING-NSTR
 #[test]
 fn form_metadata_has_its_own_descriptor_properties_and_resource_identity() {
     let fixture = RealReaderFixture::new();
@@ -927,7 +928,7 @@ fn form_metadata_has_its_own_descriptor_properties_and_resource_identity() {
         );
         assert_eq!(
             data["props"]["Synonym"],
-            json!({"kind":"localizedString","values":[{"language":"ru","content":"Описание формы"},{"language":"en","content":"Form declaration"}]})
+            "ru = 'Описание формы'; en = 'Form declaration'"
         );
         for (key, ru, en) in [
             (
@@ -937,10 +938,7 @@ fn form_metadata_has_its_own_descriptor_properties_and_resource_identity() {
             ),
             ("Explanation", "Пояснение", "Explanation"),
         ] {
-            assert_eq!(
-                data["props"][key],
-                json!({"kind":"localizedString","values":[{"language":"ru","content":ru},{"language":"en","content":en}]})
-            );
+            assert_eq!(data["props"][key], format!("ru = '{ru}'; en = '{en}'"));
         }
         assert!(data["limits"].as_array().unwrap().iter().any(|limit| limit
             .as_str()
@@ -964,14 +962,14 @@ fn form_metadata_has_its_own_descriptor_properties_and_resource_identity() {
             declaration["UsePurposes"],
             json!(["PlatformApplication", "MobilePlatformApplication"])
         );
-        // Localized text loses its observation wrapper, as node props do.
+        // Localized text is one NStr string, as node props are.
         assert_eq!(
             declaration["Synonym"],
-            json!([{"language":"ru","content":"Описание формы"},{"language":"en","content":"Form declaration"}])
+            "ru = 'Описание формы'; en = 'Form declaration'"
         );
         assert_eq!(
             declaration["Explanation"],
-            json!([{"language":"ru","content":"Пояснение"},{"language":"en","content":"Explanation"}])
+            "ru = 'Пояснение'; en = 'Explanation'"
         );
         assert!(declaration.get("uuid").is_none() && declaration.get("Name").is_none());
         assert!(root_data["limits"]

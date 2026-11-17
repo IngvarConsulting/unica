@@ -1696,6 +1696,10 @@ mod tests {
             "КонецПроцедуры",
         );
         let projection = project("main:CommonModule.ЗаказыСервер", Some(source));
+        let documented = &projection.methods()[0];
+        assert_eq!(documented.text_from_line, 3);
+        assert_eq!(documented.declaration_line, 6);
+        assert_eq!(documented.name_column, Some(11));
         let text = |name: &str| {
             let method = projection
                 .methods()
