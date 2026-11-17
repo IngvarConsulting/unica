@@ -119,3 +119,50 @@ fn document_sequence_filling_preserves_posting_movements_forms_and_modules() {
         before
     );
 }
+
+/// rule: INV.SOURCE.WRITABLE-PROFILE
+/// rule: INV.SOURCE.EXACT-VERSION
+#[test]
+fn medium_document_sequence_filling_refuses_noncanonical_owner_versions_without_writes() {
+    for version in ["2.20.0", "02.20", "2.020", "2.&#50;0"] {
+        let fixture = Fixture::new("workspace-register-dimensions");
+        let runtime = runtime();
+        let path = fixture.source.join("Documents/Приход.xml");
+        let original = std::fs::read_to_string(&path).unwrap();
+        let format = fixture
+            .binding(false)
+            .source_profile()
+            .serialization_format()
+            .unwrap();
+        let version_attribute = format!("version=\"{format}\"");
+        assert!(original.contains(&version_attribute));
+        std::fs::write(
+            &path,
+            original.replace(&version_attribute, &format!("version=\"{version}\"")),
+        )
+        .unwrap();
+        let before = unica_workspace::test_support::tree_snapshot(&fixture.source);
+        let result = call(
+            &runtime,
+            &fixture,
+            ToolIdentity::Apply,
+            json!({"at":"main:Document.Приход","ops":[
+                {"op":"props.set","args":{"values":{"SequenceFilling":"AutoFillOff"}}}
+            ]}),
+        );
+        assert!(!result.ok, "version={version}: {result:?}");
+        assert_eq!(
+            result.diagnostics[0]["code"], "invalid_source",
+            "version={version}: {result:?}"
+        );
+        assert!(result
+            .data
+            .as_ref()
+            .and_then(|data| data.get("executionToken"))
+            .is_none());
+        assert_eq!(
+            unica_workspace::test_support::tree_snapshot(&fixture.source),
+            before
+        );
+    }
+}

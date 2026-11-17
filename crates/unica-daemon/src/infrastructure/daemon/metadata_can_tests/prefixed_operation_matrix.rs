@@ -297,6 +297,12 @@ fn medium_every_metadata_write_keeps_the_owner_prefix() {
             "form.add",
             json!({"at":"main:Catalog.B","ops":[{"op":"form.add","args":{"items":[{"name":"Choose","type":"ChoiceForm"}]}}]}),
         ),
+        (
+            "props.set",
+            json!({"at":"main:Document.D","ops":[
+                {"op":"props.set","args":{"values":{"SequenceFilling":"AutoFillOff"}}}
+            ]}),
+        ),
     ];
 
     let sampled = steps
