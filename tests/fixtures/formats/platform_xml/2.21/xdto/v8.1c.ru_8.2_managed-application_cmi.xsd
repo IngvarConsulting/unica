@@ -1,0 +1,278 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:ns1="http://v8.1c.ru/8.1/data/core" xmlns:ns2="http://v8.1c.ru/8.1/data/ui" xmlns:ns3="http://v8.1c.ru/8.2/uobjects" xmlns:ns4="http://v8.1c.ru/8.2/managed-application/logform" xmlns:ns5="http://v8.1c.ru/8.2/managed-application/modules" xmlns:ns6="http://v8.1c.ru/8.2/managed-application/core" xmlns:ns7="http://v8.1c.ru/8.2/data/bsl" xmlns:tns="http://v8.1c.ru/8.2/managed-application/cmi" xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="http://v8.1c.ru/8.2/managed-application/cmi" attributeFormDefault="unqualified" elementFormDefault="qualified">
+	<xs:import namespace="http://v8.1c.ru/8.1/data/core"/>
+	<xs:import namespace="http://v8.1c.ru/8.1/data/ui"/>
+	<xs:import namespace="http://v8.1c.ru/8.2/uobjects"/>
+	<xs:import namespace="http://v8.1c.ru/8.2/managed-application/logform"/>
+	<xs:import namespace="http://v8.1c.ru/8.2/managed-application/modules"/>
+	<xs:import namespace="http://v8.1c.ru/8.2/managed-application/core"/>
+	<xs:import namespace="http://v8.1c.ru/8.2/data/bsl"/>
+	<xs:element name="command" type="tns:Command"/>
+	<xs:element name="group" type="tns:Group"/>
+	<xs:element name="section" type="tns:Section"/>
+	<xs:simpleType name="CommandParameterUseMode">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Single"/>
+			<xs:enumeration value="Multiple"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="FuncMenuGroupType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Simple"/>
+			<xs:enumeration value="SubSystem"/>
+			<xs:enumeration value="Section"/>
+			<xs:enumeration value="Group"/>
+			<xs:enumeration value="Actions"/>
+			<xs:enumeration value="SeeAlso"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="GroupCategories">
+		<xs:list itemType="tns:GroupCategory"/>
+	</xs:simpleType>
+	<xs:simpleType name="GroupCategory">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="undefined"/>
+			<xs:enumeration value="navigator"/>
+			<xs:enumeration value="form"/>
+			<xs:enumeration value="panel"/>
+			<xs:enumeration value="toolbar"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:complexType name="ClientCMIStartUpDataType">
+		<xs:sequence>
+			<xs:element name="defaultNPHandleInfo" type="tns:HandlerInfo" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="toplevelSubsystems" type="tns:Fragment" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="urls" type="tns:URLsByNavigationPoints" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="panels" type="tns:Fragment" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="commandsWithShortCuts" type="tns:CommansShortCutInfoVector" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="ClientCMIUpdateInterfaceDataType">
+		<xs:sequence>
+			<xs:element name="foVer" type="xs:string" minOccurs="0"/>
+			<xs:element name="defaultNP" type="ns6:NavigationPoint" minOccurs="0"/>
+			<xs:element name="currentNPUrl" type="xs:string" minOccurs="0"/>
+			<xs:element name="startUpData" type="tns:ClientCMIStartUpDataType" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="Command">
+		<xs:complexContent>
+			<xs:extension base="tns:CommandInfo">
+				<xs:attribute name="include" type="xs:boolean" default="true"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="CommandIDs">
+		<xs:sequence>
+			<xs:element name="id" type="ns1:CompositeID" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="CommandInfo">
+		<xs:choice>
+			<xs:element name="text" type="xs:string" minOccurs="0"/>
+			<xs:element name="tooltip" type="xs:string" minOccurs="0"/>
+			<xs:element name="pic" type="ns2:Picture" minOccurs="0"/>
+			<xs:element name="picSizeCX" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="picSizeCY" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="picMask" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="shortcut" type="ns2:ShortCutType" minOccurs="0"/>
+			<xs:element name="param" type="ns1:TypeDescription" minOccurs="0"/>
+		</xs:choice>
+		<xs:attribute name="id" type="ns1:CompositeID" use="required"/>
+		<xs:attribute name="nameInt" type="xs:string" use="required"/>
+		<xs:attribute name="nameRus" type="xs:string" use="required"/>
+		<xs:attribute name="md" type="xs:string" use="required"/>
+		<xs:attribute name="kind" type="ns4:ButtonRepresentation"/>
+		<xs:attribute name="helpTopic" type="xs:string" use="required"/>
+		<xs:attribute name="url" type="xs:string" use="required"/>
+	</xs:complexType>
+	<xs:complexType name="CommandInterfaceItems">
+		<xs:sequence>
+			<xs:element name="uitems" type="ns3:FormDataTree" minOccurs="0"/>
+			<xs:element name="present" type="ns6:SectionPanelRepresentation" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="CommandPath">
+		<xs:sequence>
+			<xs:element name="cmd" type="tns:CommandInfo" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="CommandsInfo">
+		<xs:sequence>
+			<xs:element name="info" type="tns:CommandInfo" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="CommansShortCutInfo">
+		<xs:sequence>
+			<xs:element name="shortCut" type="ns2:ShortCutType"/>
+			<xs:element name="fragments" type="tns:SubsystemAndPanel" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="commandId" type="ns1:CompositeID"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="CommansShortCutInfoVector">
+		<xs:sequence>
+			<xs:element name="info" type="tns:CommansShortCutInfo" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="Fragment">
+		<xs:choice>
+			<xs:element ref="tns:command" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element ref="tns:group" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element ref="tns:section" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:choice>
+		<xs:attribute name="kind" type="ns6:SectionPanelRepresentation"/>
+	</xs:complexType>
+	<xs:complexType name="FuncMenuCommand">
+		<xs:sequence>
+			<xs:element name="id" type="ns1:CompositeID" minOccurs="0"/>
+			<xs:element name="url" type="xs:string" minOccurs="0"/>
+			<xs:element name="text" type="xs:string" minOccurs="0"/>
+			<xs:element name="tooltip" type="xs:string" minOccurs="0"/>
+			<xs:element name="picture" type="ns2:Picture" minOccurs="0"/>
+			<xs:element name="shortCut" type="ns2:ShortCutType" minOccurs="0"/>
+			<xs:element name="important" type="xs:boolean" minOccurs="0"/>
+			<xs:element name="highlight" type="tns:FuncMenuHighlight"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="FuncMenuGroup">
+		<xs:sequence>
+			<xs:element name="type" type="tns:FuncMenuGroupType" minOccurs="0"/>
+			<xs:element name="id" type="ns1:CompositeID" minOccurs="0"/>
+			<xs:element name="text" type="xs:string" minOccurs="0"/>
+			<xs:element name="picture" type="ns2:Picture" minOccurs="0"/>
+			<xs:element name="newColumn" type="xs:boolean" minOccurs="0"/>
+			<xs:element name="command" type="tns:FuncMenuCommand" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="group" type="tns:FuncMenuGroup" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="highlight" type="tns:FuncMenuHighlight"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="FuncMenuHighlight">
+		<xs:attribute name="position" type="xs:decimal"/>
+		<xs:attribute name="length" type="xs:decimal"/>
+	</xs:complexType>
+	<xs:complexType name="Group">
+		<xs:complexContent>
+			<xs:extension base="tns:GroupInfo">
+				<xs:choice>
+					<xs:element ref="tns:command" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element ref="tns:group" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element ref="tns:section" minOccurs="0" maxOccurs="unbounded"/>
+				</xs:choice>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="GroupInfo">
+		<xs:choice>
+			<xs:element name="text" type="xs:string" minOccurs="0"/>
+			<xs:element name="tooltip" type="xs:string" minOccurs="0"/>
+			<xs:element name="pic" type="ns2:Picture" minOccurs="0"/>
+			<xs:element name="picSizeCX" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="picSizeCY" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="picMask" type="xs:decimal" minOccurs="0"/>
+		</xs:choice>
+		<xs:attribute name="id" type="ns1:UUID" use="required"/>
+		<xs:attribute name="cat" type="tns:GroupCategory"/>
+		<xs:attribute name="order" type="xs:decimal"/>
+		<xs:attribute name="kind" type="ns4:ButtonRepresentation"/>
+	</xs:complexType>
+	<xs:complexType name="HandlerInfo">
+		<xs:sequence>
+			<xs:element name="formId" type="ns1:CompositeID"/>
+			<xs:element name="formName" type="xs:string" minOccurs="0"/>
+			<xs:element name="moduleInfo" type="tns:ModuleInfo" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="name" type="xs:string" minOccurs="0"/>
+			<xs:element name="nameRu" type="xs:string" minOccurs="0"/>
+			<xs:element name="listFilter" type="xs:boolean"/>
+			<xs:element name="param" type="xs:string" minOccurs="0"/>
+			<xs:element name="usageMode" type="tns:CommandParameterUseMode"/>
+			<xs:element name="modifiesData" type="xs:boolean"/>
+			<xs:element name="createGroupCommand" type="xs:boolean"/>
+		</xs:sequence>
+		<xs:attribute name="theme" type="xs:boolean"/>
+		<xs:attribute name="subTheme" type="xs:boolean"/>
+		<xs:attribute name="standard" type="xs:boolean"/>
+		<xs:attribute name="defGroupCat" type="tns:GroupCategory"/>
+	</xs:complexType>
+	<xs:complexType name="HandlerInfoByID">
+		<xs:sequence>
+			<xs:element name="id" type="ns1:CompositeID"/>
+			<xs:element name="handleInfo" type="tns:HandlerInfo" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="HandlerInfoEx">
+		<xs:complexContent>
+			<xs:extension base="tns:HandlerInfo">
+				<xs:sequence>
+					<xs:element name="moduleInfoEx" type="tns:ModuleInfoEx" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="url" type="xs:string" minOccurs="0"/>
+					<xs:element name="presentation" type="xs:string" minOccurs="0"/>
+					<xs:element name="shortPresentation" type="xs:string" minOccurs="0"/>
+				</xs:sequence>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="HandlersInfosVector">
+		<xs:sequence>
+			<xs:element name="item" type="tns:HandlerInfoByID" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="ModuleInfo">
+		<xs:sequence>
+			<xs:element name="securityInfo" type="xs:string" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+		<xs:attribute name="moduleId" type="xs:string"/>
+		<xs:attribute name="moduleName" type="xs:string"/>
+	</xs:complexType>
+	<xs:complexType name="ModuleInfoEx">
+		<xs:sequence>
+			<xs:element name="clnModule" type="xs:string" minOccurs="0"/>
+			<xs:element name="mtd" type="ns5:MethodDefs" minOccurs="0"/>
+			<xs:element name="moduleImage" type="ns7:BSLModuleImage" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="Section">
+		<xs:complexContent>
+			<xs:extension base="tns:SectionInfo">
+				<xs:choice>
+					<xs:element ref="tns:command" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element ref="tns:group" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element ref="tns:section" minOccurs="0" maxOccurs="unbounded"/>
+				</xs:choice>
+				<xs:attribute name="include" type="xs:boolean" default="true"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="SectionInfo">
+		<xs:choice>
+			<xs:element name="text" type="xs:string" minOccurs="0"/>
+			<xs:element name="tooltip" type="xs:string" minOccurs="0"/>
+			<xs:element name="pic" type="ns2:Picture" minOccurs="0"/>
+			<xs:element name="picSizeCX" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="picSizeCY" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="picMask" type="xs:decimal" minOccurs="0"/>
+		</xs:choice>
+		<xs:attribute name="id" type="ns1:UUID" use="required"/>
+		<xs:attribute name="name" type="xs:string" use="required"/>
+		<xs:attribute name="helpTopic" type="xs:string" use="required"/>
+		<xs:attribute name="oneCommandSubsystem" type="xs:boolean" default="false"/>
+	</xs:complexType>
+	<xs:complexType name="SubsystemAndPanel">
+		<xs:sequence>
+			<xs:element name="subsystem" type="ns1:UUID"/>
+			<xs:element name="panel" type="xs:decimal"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="URLByNavigationPoint">
+		<xs:sequence>
+			<xs:element name="np" type="ns6:NavigationPoint"/>
+			<xs:element name="url" type="xs:string"/>
+			<xs:element name="presentation" type="xs:string"/>
+			<xs:element name="shortPresentation" type="xs:string"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="URLsByNavigationPoints">
+		<xs:sequence>
+			<xs:element name="data" type="tns:URLByNavigationPoint" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+</xs:schema>

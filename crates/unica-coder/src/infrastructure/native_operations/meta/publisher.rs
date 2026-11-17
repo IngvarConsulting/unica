@@ -1145,7 +1145,7 @@ pub(crate) mod medium_typed_add_publication_tests {
     use super::*;
 
     use std::collections::BTreeMap;
-    use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+    use unica_address::source_target::MetadataAddress;
     use unica_metadata::{
         EventSourceClass, MetaCollection, MetaEditOperation, MetaElementInput, MetaEventSource,
         MetaPredefinedFields, MetaPredefinedItemAdd, MetaPropertyChanges, MetaPropertyInput,
@@ -1156,8 +1156,7 @@ pub(crate) mod medium_typed_add_publication_tests {
 
     #[test]
     fn publication_failure_code_is_selected_by_typed_commit_kind() {
-        let target =
-            MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Catalog.Items").unwrap();
+        let target = MetadataAddress::parse_logical("Catalog.Items").unwrap();
         for (kind, expected) in [
             (
                 CommitFailureKind::ConcurrentModification,
@@ -1506,8 +1505,7 @@ pub(crate) mod medium_typed_add_publication_tests {
             .unwrap()
             .publish(&cancellation)
             .unwrap();
-        let parent_address =
-            MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Catalog.Parent").unwrap();
+        let parent_address = MetadataAddress::parse_logical("Catalog.Parent").unwrap();
         let request = unica_metadata::request::MetaAddRequest {
             operations: vec![MetaEditOperation::edit_relations(
                 MetaRelation::Owners,
@@ -1635,6 +1633,14 @@ pub(crate) mod medium_typed_add_publication_tests {
         let owner_before = fs::read(&owner).unwrap();
         let module_directory = fixture.root.join("src/CommonModules/Proof");
         let outside_directory = fixture.root.join("outside-handler");
+        // The link is made inside the hook, where a skip cannot return from
+        // the test: probe the privilege first.
+        let probe = fixture.root.join("link-probe");
+        if !crate::infrastructure::test_fixtures::dir_link_or_skip(fixture.root.join("src"), &probe)
+        {
+            return;
+        }
+        unica_workspace::test_support::remove_dir_symlink_for_test(&probe).unwrap();
         let module_directory_for_hook = module_directory.clone();
         let outside_directory_for_hook = outside_directory.clone();
         let request = unica_metadata::request::MetaAddRequest {
@@ -1714,12 +1720,12 @@ pub(crate) mod medium_typed_add_publication_tests {
         let module_directory = fixture.root.join("src/CommonModules/Proof");
         let outside_directory = fixture.root.join("outside-handler");
         fs::rename(&module_directory, &outside_directory).unwrap();
-        unica_workspace::test_support::create_dir_symlink_for_test(
+        if !crate::infrastructure::test_fixtures::dir_link_or_skip(
             &outside_directory,
             &module_directory,
-        )
-        .expect("directory symlinks are supported by the test platform")
-        .unwrap();
+        ) {
+            return;
+        }
 
         let failure = match prepared.publish(&cancellation) {
             Ok(_) => panic!("post-prepare handler symlink unexpectedly published metadata"),
@@ -1960,11 +1966,7 @@ mod host_path_tests {
         let extended = extended_length_spelling_for_test(&plain);
         std::fs::create_dir_all(plain.join("src/Catalogs")).unwrap();
         let relative = Path::new("src/Catalogs/Absent.xml");
-        let target = MetadataAddress::parse(
-            unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
-            "Catalog.Absent",
-        )
-        .unwrap();
+        let target = MetadataAddress::parse_logical("Catalog.Absent").unwrap();
 
         let mut transaction = CompileTransaction::new();
         bind_prerequisite_ancestor_topology(

@@ -33,11 +33,11 @@ fn common_module_synonym_reaches_collection_and_detail_without_changing_source()
         .as_array()
         .unwrap();
     let row = rows.iter().find(|row| row["at"] == MODULE).unwrap();
-    assert_eq!(row["props"]["synonym"], expected);
+    assert_eq!(row["props"]["synonym"], format!("ru = '{expected}'"));
     let detail = service.view(ViewRequest::new(MODULE).unwrap());
     assert!(detail.ok, "the module must be readable");
     let data = detail.data.as_ref().unwrap();
-    assert_eq!(data["props"]["synonym"], expected);
+    assert_eq!(data["props"]["synonym"], format!("ru = '{expected}'"));
     assert_eq!(data["at"], MODULE);
     assert_eq!(row["title"], "РеактивныйСервер");
     assert_eq!(data["title"], "Common module РеактивныйСервер");
@@ -55,8 +55,8 @@ fn common_module_synonym_preserves_localization_absence_and_local_damage() {
     for (raw, expected, damaged) in [
         ("", None, false),
         ("<Synonym/>", None, false),
-        ("<Synonym><v8:item><v8:lang>en</v8:lang><v8:content>Server</v8:content></v8:item><v8:item><v8:lang>ru</v8:lang><v8:content>Сервер</v8:content></v8:item></Synonym>", Some("Сервер"), false),
-        ("<Synonym><v8:item><v8:lang>en</v8:lang><v8:content>Server</v8:content></v8:item></Synonym>", Some("Server"), false),
+        ("<Synonym><v8:item><v8:lang>en</v8:lang><v8:content>Server</v8:content></v8:item><v8:item><v8:lang>ru</v8:lang><v8:content>Сервер</v8:content></v8:item></Synonym>", Some("en = 'Server'; ru = 'Сервер'"), false),
+        ("<Synonym><v8:item><v8:lang>en</v8:lang><v8:content>Server</v8:content></v8:item></Synonym>", Some("en = 'Server'"), false),
         ("<Synonym><broken/></Synonym>", None, true),
         ("<Synonym/><Synonym/>", None, true),
     ] {
@@ -99,7 +99,10 @@ fn common_module_synonym_obeys_compact_limit_and_is_readable_whole() {
         service.view(ViewRequest::new(MODULE).unwrap())
     });
     assert!(whole.ok, "the whole-property projection must work");
-    assert_eq!(whole.data.as_ref().unwrap()["props"]["synonym"], text);
+    assert_eq!(
+        whole.data.as_ref().unwrap()["props"]["synonym"],
+        format!("ru = '{text}'")
+    );
 }
 
 #[test]
@@ -114,7 +117,8 @@ fn common_module_synonym_of_a_borrowed_module_is_local_and_keeps_unknown_flags()
                 "<CommonModule>CorpusModule</CommonModule></ChildObjects>",
             ),
         );
-        let mut descriptor = fixture_text("platform_8_3_27/cfe_borrow/extension-common-module.xml");
+        let mut descriptor =
+            fixture_text("formats/platform_xml/2.20/cfe_borrow/extension-common-module.xml");
         let start = descriptor.find("<Synonym>").unwrap();
         let end = descriptor.find("</Synonym>").unwrap() + "</Synonym>".len();
         let replacement = if local {
@@ -144,7 +148,7 @@ fn common_module_synonym_of_a_borrowed_module_is_local_and_keeps_unknown_flags()
             data["props"]
                 .get("synonym")
                 .and_then(serde_json::Value::as_str),
-            local.then_some("Локальный")
+            local.then_some("ru = 'Локальный'")
         );
         assert!(data["props"]["commonModule"]["privileged"].is_null());
         assert!(data["props"]["commonModule"]["server"].is_null());
@@ -206,7 +210,7 @@ fn common_module_collection_keeps_identity_when_the_added_synonym_read_fails() {
         .iter()
         .find(|row| row["at"] == "main:CommonModule.Healthy")
         .unwrap();
-    assert_eq!(healthy["props"]["synonym"], "Реактивный сервер");
+    assert_eq!(healthy["props"]["synonym"], "ru = 'Реактивный сервер'");
     let detail = service.view(ViewRequest::new(MODULE).unwrap());
     assert!(
         !detail.ok,

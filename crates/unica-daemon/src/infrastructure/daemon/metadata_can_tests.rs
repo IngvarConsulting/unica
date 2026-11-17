@@ -62,7 +62,7 @@ fn props_set_common_module_can_is_contextual_and_previews_without_writes() {
 fn props_set_role_can_is_contextual_and_previews_without_writes() {
     assert_props_can_and_preview(
         "main:Role.SalesReader",
-        json!({"values":{"synonym":"Properties role preview","Comment":"Independent alias groups"}}),
+        json!({"values":{"synonym":"ru = 'Properties role preview'","Comment":"Independent alias groups"}}),
         &[
             (json!({"values":{"Synonym":"","comment":""}}), true),
             (json!({"values":{"synonym":"","Comment":""}}), true),
@@ -724,7 +724,7 @@ fn canonical_foreign_form_file_keeps_catalog_structure_and_reports_provider_unav
     assert!(viewed.ok, "{viewed:?}");
     let data = viewed.data.as_ref().unwrap();
     assert_eq!(data["title"], "Products");
-    assert_eq!(data["props"]["Synonym"], "Products");
+    assert_eq!(data["props"]["Synonym"], "ru = 'Products'");
     assert!(
         data["branches"]
             .as_array()
@@ -991,11 +991,17 @@ fn canonical_event_source_family_and_constant_manager_choice_round_trip() {
         assert!(view.ok, "{view:?}");
         view.data.unwrap()["items"].clone()
     };
+    let handler = json!({
+        "relation": "handler",
+        "title": "Handler",
+        "at": "main:CommonModule.EventHandlers.Method.OnBeforeWrite",
+        "kind": "Method",
+    });
     let family = json!({"kind":"family","sourceClass":"catalogObject"});
     publish(&runtime, &fixture, replace(family.clone()));
     assert_eq!(
         relation(&fixture),
-        json!([{"relation":"source","kind":"family","target":family}])
+        json!([{"relation":"source","kind":"family","target":family}, handler])
     );
     assert_eq!(
         subscription_source(&fixture),
@@ -1040,7 +1046,7 @@ fn canonical_event_source_family_and_constant_manager_choice_round_trip() {
         );
         assert_eq!(
             relation(&fixture),
-            json!([{"relation":"source","at":"main:Constant.Sample","kind":"Constant","target":target}]),
+            json!([{"relation":"source","at":"main:Constant.Sample","kind":"Constant","target":target}, handler]),
             "{class}"
         );
         assert_noop(target);
@@ -1098,6 +1104,66 @@ fn canonical_apply_refuses_inexact_export_format_and_offers_platform_reexport() 
             ] {
                 assert!(message.contains(expected), "{raw}: {message}");
             }
+            // The person may re-export the set and make the edit again, with
+            // the agreed words (INV.SOURCE.WRITABLE-PROFILE).
+            let choice = refused.human_choice.as_deref().expect("a question");
+            assert_eq!(choice.code, "source.format_old");
+            assert_eq!(
+                choice.question,
+                "Набор «main» выгружен в формате 2.19. Правки доступны с формата 2.20 (платформа 8.3.27)."
+            );
+            assert_eq!(choice.options.len(), 1);
+            let option = &choice.options[0];
+            assert_eq!(option.title, "Перевыгрузить набор в формате 2.20");
+            assert_eq!(
+                option.description,
+                "файлы набора перезапишутся, несохранённые правки в них пропадут"
+            );
+            // One call re-exports the set and makes the same edit: a long
+            // re-export continues as one Task together with the edit.
+            assert_eq!(option.tool, "unica.apply");
+            assert!(option.then.is_empty());
+            let mut edit = option.arguments.clone();
+            assert_eq!(
+                edit.remove(unica_execution_contract::invocation::HUMAN_REEXPORT_KEY),
+                Some(json!({"sourceSet": "main", "format": "2.20"}))
+            );
+            assert_eq!(Value::Object(edit), args);
+            // The answer is known long, so it is a Task. A re-export the
+            // runner refuses is its result: the edit does not run and the
+            // sources stay as they are.
+            let request = InvocationRequest::new(
+                ToolIdentity::Apply,
+                Value::Object(option.arguments.clone()),
+                fixture.workspace.to_string_lossy(),
+                7_000,
+            )
+            .unwrap();
+            let Ok(bound) = runtime.bind(request) else {
+                panic!("the answer is admitted");
+            };
+            let prepared = bound.prepare().expect("the answer is prepared");
+            assert!(matches!(
+                prepared.execution_class(),
+                ExecutionClass::KnownLong(_)
+            ));
+            let answered = prepared
+                .execute(CancellationToken::new())
+                .expect("the Task ends with a result");
+            assert!(!answered.ok, "{answered:?}");
+            assert_eq!(
+                answered.at.as_deref(),
+                Some("source.reexport"),
+                "{answered:?}"
+            );
+            assert!(answered.changed.is_empty(), "{answered:?}");
+            assert_eq!(
+                unica_workspace::test_support::tree_snapshot(&fixture.workspace),
+                before,
+                "{raw}"
+            );
+        } else {
+            assert!(refused.human_choice.is_none(), "{raw}: {refused:?}");
         }
         assert!(
             refused
@@ -1114,6 +1180,140 @@ fn canonical_apply_refuses_inexact_export_format_and_offers_platform_reexport() 
             "{raw}"
         );
     }
+}
+
+/// The answer to the format question is one call that re-exports the set and
+/// makes the same edit: the re-export runs, through the runner, before the
+/// edit is admitted, the edit plans on the files the re-export wrote, and the
+/// answer names both. The temporary directory of the re-export goes away.
+/// rule: INV.SOURCE.WRITABLE-PROFILE
+/// rule: INV.MCP.HUMAN-CHOICE
+#[test]
+fn a_format_answer_reexports_the_set_and_makes_the_same_edit_in_one_task() {
+    use unica_process::runner::{ProcessCommand, ProcessOutput, ProcessRunner};
+
+    /// The runner of a re-export: `pull` writes the set in the writable
+    /// format, as the platform of that line does.
+    struct ReexportingRunner {
+        descriptor: PathBuf,
+        commands: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl ProcessRunner for ReexportingRunner {
+        fn run(&self, command: &ProcessCommand) -> Result<ProcessOutput, String> {
+            let args = command.args.join(" ");
+            self.commands.lock().unwrap().push(args.clone());
+            let name = if args.ends_with("infobase create") {
+                "infobase create"
+            } else if args.contains(" pull main --force") {
+                rewrite(&self.descriptor, r#"version="2.19""#, r#"version="2.20""#);
+                "pull"
+            } else {
+                return Err(format!("unexpected runner call: {args}"));
+            };
+            Ok(ProcessOutput {
+                status_success: true,
+                status: "exit status: 0".to_string(),
+                stdout: json!({"command": name, "ok": true, "data": {}}).to_string(),
+                stderr: String::new(),
+                timed_out: false,
+                cancelled: false,
+                stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
+            })
+        }
+    }
+
+    let args = json!({"at":"main:Catalog.Products","ops":[{"op":"attribute.add","args":{"items":[{"name":"Extra"}]}}]});
+    let runtime = runtime();
+    let fixture = Fixture::blank();
+    publish(
+        &runtime,
+        &fixture,
+        json!({"at":"main:Configuration","ops":[{"op":"object.create","args":{"values":{"kind":"Catalog","name":"Products"}}}]}),
+    );
+    let descriptor = fixture.source.join("Catalogs/Products.xml");
+    rewrite(&descriptor, r#"version="2.20""#, r#"version="2.19""#);
+
+    let refused = call(&runtime, &fixture, ToolIdentity::Apply, args.clone());
+    let choice = refused.human_choice.as_deref().expect("a question");
+    assert_eq!(choice.code, "source.format_old");
+    let answer = Value::Object(choice.options[0].arguments.clone());
+
+    let runner = Arc::new(ReexportingRunner {
+        descriptor: descriptor.clone(),
+        commands: std::sync::Mutex::new(Vec::new()),
+    });
+    let tool = unica_artifact_delivery::engine::BundledTool {
+        program: fixture.workspace.join("v8-runner"),
+        warnings: Vec::new(),
+        missing: None,
+    };
+    let answered = super::super::v13_source_export::with_reexport_test_runner(
+        Arc::clone(&runner) as Arc<dyn ProcessRunner + Send + Sync>,
+        tool,
+        || {
+            let request = InvocationRequest::new(
+                ToolIdentity::Apply,
+                answer,
+                fixture.workspace.to_string_lossy(),
+                7_000,
+            )
+            .unwrap();
+            let Ok(bound) = runtime.bind(request) else {
+                panic!("the answer is admitted");
+            };
+            let prepared = bound.prepare().expect("the answer is prepared");
+            assert!(matches!(
+                prepared.execution_class(),
+                ExecutionClass::KnownLong(_)
+            ));
+            prepared
+                .execute(CancellationToken::new())
+                .expect("the Task ends with a result")
+        },
+    );
+
+    assert!(answered.ok, "{answered:?}");
+    let commands = runner.commands.lock().unwrap().clone();
+    assert_eq!(commands.len(), 2, "{commands:?}");
+    assert!(commands[0].ends_with("infobase create"), "{commands:?}");
+    assert!(commands[1].ends_with("pull main --force"), "{commands:?}");
+    assert!(
+        std::fs::read_to_string(&descriptor)
+            .unwrap()
+            .contains(r#"version="2.20""#),
+        "the set is re-exported in the writable format"
+    );
+    assert!(
+        answered
+            .data
+            .as_ref()
+            .is_some_and(|data| data.get("executionToken").is_some()),
+        "the same edit is planned on the re-exported set: {answered:?}"
+    );
+    assert!(
+        answered
+            .summary
+            .starts_with("source.reexport replaced the source set `main`"),
+        "{}",
+        answered.summary
+    );
+    assert!(
+        answered
+            .changed
+            .iter()
+            .any(|change| change["kind"] == "replaced"),
+        "{answered:?}"
+    );
+    assert!(
+        std::fs::read_dir(fixture.workspace.join(".build/unica/reexport"))
+            .map(|entries| entries.count() == 0)
+            .unwrap_or(true),
+        "nothing of the re-export stays"
+    );
 }
 
 // --- Канонические `check` и `view` сообщают диагностики читателя
@@ -1159,7 +1359,7 @@ fn canonical_unmodelled_type_is_a_localized_warning_in_check_and_view() {
         &fixture,
         "main:Catalog.Products.Attribute.Article",
     );
-    assert_eq!(attribute["props"]["synonym"], "Article");
+    assert_eq!(attribute["props"]["synonym"], "ru = 'Article'");
     assert_eq!(attribute["props"]["incomplete"], true);
     assert!(attribute["props"].get("type").is_none(), "{attribute}");
     assert!(
@@ -1169,7 +1369,7 @@ fn canonical_unmodelled_type_is_a_localized_warning_in_check_and_view() {
         "{attribute}"
     );
     let constant = view(&runtime, &fixture, "main:Constant.Rate");
-    assert_eq!(constant["props"]["Synonym"], "Rate");
+    assert_eq!(constant["props"]["Synonym"], "ru = 'Rate'");
     // Тип не прочитан: значения нет, причина — в пределах узла.
     assert!(constant["props"]["Type"].is_null(), "{constant}");
     assert!(
@@ -1178,6 +1378,49 @@ fn canonical_unmodelled_type_is_a_localized_warning_in_check_and_view() {
         ),
         "{constant}"
     );
+}
+
+/// `check` сообщает значение, которое режим совместимости набора запрещает:
+/// строка фиксированной длины больше 100 символов вне режима 8.1 — ошибка у
+/// типа. Набор в режиме 8.1 только для чтения, но проверяется.
+/// rule: INV.SOURCE.PROFILE-CAPABILITIES
+/// rule: INV.SOURCE.WRITABLE-PROFILE
+#[test]
+fn canonical_check_reports_a_value_the_mode_of_the_set_forbids() {
+    let runtime = runtime();
+    let fixture = catalog_and_constant(&runtime);
+    let configuration = fixture.source.join("Configuration.xml");
+    rewrite(
+        &configuration,
+        "<Name>Store</Name>",
+        "<Name>Store</Name><CompatibilityMode>Version8_3_24</CompatibilityMode>",
+    );
+    let catalog = fixture.source.join("Catalogs/Products.xml");
+    rewrite(
+        &catalog,
+        "<v8:Length>10</v8:Length>",
+        "<v8:Length>150</v8:Length>",
+    );
+    rewrite(
+        &catalog,
+        "<v8:AllowedLength>Variable</v8:AllowedLength>",
+        "<v8:AllowedLength>Fixed</v8:AllowedLength>",
+    );
+
+    let (status, diagnostics) = check(&runtime, &fixture, "main:Catalog.Products");
+    assert_eq!(status, "failed", "{diagnostics:?}");
+    let error = finding(&diagnostics, "validation_failed", "type");
+    assert_eq!(error["severity"], "error");
+    let message = error["message"].as_str().unwrap();
+    assert!(
+        message.contains("150") && message.contains("Version8_3_24"),
+        "{message}"
+    );
+
+    // Mode 8.1 allows it; the set is read-only there, and check still runs.
+    rewrite(&configuration, "Version8_3_24", "Version8_1");
+    let (status, diagnostics) = check(&runtime, &fixture, "main:Catalog.Products");
+    assert_eq!(status, "passed", "{diagnostics:?}");
 }
 
 /// INV.SOURCE.OBSERVED-TYPE-CAPABILITY: повреждённый квалификатор остаётся
@@ -1798,7 +2041,7 @@ fn canonical_check_accepts_a_binary_template_without_data() {
     // Двоичный макет планировщик не создаёт: описание — из выгрузки платформы.
     let templates = fixture.source.join("Catalogs/Products/Templates");
     let descriptor = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(
-        "../../tests/fixtures/platform_8_3_27/template-new-xml/native-binary-descriptor.xml",
+        "../../tests/fixtures/formats/platform_xml/2.20/template-new-xml/native-binary-descriptor.xml",
     ))
     .unwrap()
     .replace("CorpusTemplate", "Empty")
@@ -1883,7 +2126,7 @@ fn canonical_check_accepts_a_common_binary_template_without_data() {
     let runtime = runtime();
     let fixture = catalog_and_constant(&runtime);
     let descriptor = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(
-        "../../tests/fixtures/platform_8_3_27/template-new-xml/native-binary-descriptor.xml",
+        "../../tests/fixtures/formats/platform_xml/2.20/template-new-xml/native-binary-descriptor.xml",
     ))
     .unwrap()
     .replace("CorpusTemplate", "Empty")
@@ -1906,6 +2149,64 @@ fn canonical_check_accepts_a_common_binary_template_without_data() {
     );
     let viewed = view(&runtime, &fixture, "main:CommonTemplate.Empty");
     assert_eq!(viewed["kind"], "CommonTemplate", "{viewed}");
+}
+
+/// #2015: a short enum can be corrected immediately; a long enum has a
+/// bounded preview and an actual readable continuation to the complete set.
+#[test]
+fn property_enum_refusals_show_bounded_domains_and_open_their_contract() {
+    let fixture = Fixture::new("workspace");
+    let runtime = runtime();
+    let before = unica_workspace::test_support::tree_snapshot(&fixture.workspace);
+    for property in ["DefaultRunMode", "CompatibilityMode"] {
+        let refused = call(
+            &runtime,
+            &fixture,
+            ToolIdentity::Apply,
+            json!({"at":"main:Configuration","ops":[{"op":"props.set","args":{"values":{property:"wrong"}}}]}),
+        );
+        assert!(!refused.ok, "{refused:?}");
+        assert_eq!(refused.diagnostics[0]["code"], "bad_value");
+        assert_eq!(
+            refused.at.as_deref(),
+            Some(format!("ops[0].args.values.{property}").as_str())
+        );
+        let message = refused.diagnostics[0]["message"].as_str().unwrap();
+        if property == "DefaultRunMode" {
+            for value in ["ManagedApplication", "OrdinaryApplication", "Auto"] {
+                assert!(message.contains(&format!("\"{value}\"")), "{message}");
+            }
+            assert!(!message.contains("list shortened"));
+        } else {
+            assert!(message.contains("list shortened"), "{message}");
+            assert!(message.len() < 400, "{message}");
+            assert!(!message.contains("Version8_3_27"), "{message}");
+        }
+        assert_eq!(refused.next[0]["tool"], "unica.view");
+        assert_eq!(
+            refused.next[0]["args"]["at"],
+            "main:Configuration.Can.props.set"
+        );
+        let opened = call(
+            &runtime,
+            &fixture,
+            ToolIdentity::View,
+            refused.next[0]["args"].clone(),
+        );
+        assert!(opened.ok, "{opened:?}");
+        let values = &opened.data.unwrap()["props"]["contract"]["argsSchema"]["properties"]
+            ["values"]["properties"][property]["enum"];
+        assert!(values.as_array().unwrap().iter().any(|v| v
+            == if property == "DefaultRunMode" {
+                "ManagedApplication"
+            } else {
+                "Version8_3_27"
+            }));
+    }
+    assert_eq!(
+        unica_workspace::test_support::tree_snapshot(&fixture.workspace),
+        before
+    );
 }
 
 /// Собственные факты Unica в `props` корня и плоские поля составных
@@ -2188,7 +2489,7 @@ fn oversized_role_synonym_is_named_by_its_platform_name() {
     );
     let whole = view(&runtime, &fixture, &format!("{at}.Props.Synonym"));
     assert!(
-        whole["props"]["Synonym"] == synonym,
+        whole["props"]["Synonym"] == format!("ru = '{synonym}'"),
         "the synonym reads whole at its address"
     );
     let plain = view(&runtime, &Fixture::new("workspace"), at);
@@ -2251,7 +2552,7 @@ fn an_oversized_synonym_leaves_a_bounded_marked_title() {
         );
         let whole = view(&runtime, &fixture, &format!("{at}.Props.Synonym"));
         assert!(
-            whole["props"]["Synonym"] == synonym,
+            whole["props"]["Synonym"] == format!("ru = '{synonym}'"),
             "{at}: the synonym reads whole at its address"
         );
         let rows = view(&runtime, &fixture, collection);
@@ -2272,6 +2573,7 @@ fn an_oversized_synonym_leaves_a_bounded_marked_title() {
 
 /// A form item title longer than the property limit leaves a bounded
 /// marked title and a limit naming the address it reads whole at.
+/// rule: INV.SOURCE.LOCALIZED-STRING-NSTR
 #[test]
 fn an_oversized_form_item_title_is_named_by_a_limit() {
     let fixture = Fixture::new("workspace");
@@ -2308,8 +2610,9 @@ fn an_oversized_form_item_title_is_named_by_a_limit() {
         "a limit names the title address"
     );
     let whole = view(&runtime, &fixture, &format!("{at}.Props.title"));
-    assert!(
-        whole["props"]["title"] == title,
-        "the title reads whole at its address"
+    assert_eq!(
+        whole["props"]["title"],
+        format!("ru = '{title}'"),
+        "the full title retains its NStr form at the property address"
     );
 }

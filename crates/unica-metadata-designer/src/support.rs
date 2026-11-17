@@ -290,6 +290,11 @@ pub fn parse_support_state_compat_bytes(data: Option<&[u8]>) -> Option<SupportSt
 
 /// Parses already-admitted support-state bytes with the same semantics as the
 /// path wrapper. The caller owns file identity/no-follow checks.
+/// The marker the platform writes for a configuration taken off vendor support
+/// entirely (8.3.27 and 8.5.1 write the same bytes; fixture
+/// `support-markers/removed.bin`).
+pub const REMOVED_SUPPORT_MARKER: &[u8] = b"\xef\xbb\xbf{6,0,0,0,1,0}";
+
 pub fn parse_support_state_strict_bytes(
     data: Option<&[u8]>,
 ) -> Result<Option<SupportState>, SupportReadError> {
@@ -429,6 +434,20 @@ pub fn is_uuid_text(value: &str) -> bool {
         })
 }
 
+/// The UUID of the Configuration element, never the wrapper or a nested object.
+pub fn configuration_support_uuid(raw: &[u8]) -> Option<String> {
+    let owner = unica_source_designer::owner::prove_already_read_source_set_owner(
+        std::path::Path::new("Configuration.xml"),
+        raw,
+        unica_source_contract::SourceSetKind::Configuration,
+    )
+    .ok()?;
+    owner
+        .artifact_uuid()
+        .filter(|uuid| is_uuid_text(uuid))
+        .map(str::to_owned)
+}
+
 pub fn support_root_uuid_from_bytes(raw: &[u8]) -> Option<String> {
     let text = std::str::from_utf8(raw).ok()?;
     let doc = Document::parse(text.trim_start_matches('\u{feff}')).ok()?;
@@ -454,9 +473,26 @@ mod support_stream_tests {
                 include_bytes!("../tests/fixtures/support-markers/editable.bin").as_slice()
             }
             "locked" => include_bytes!("../tests/fixtures/support-markers/locked.bin").as_slice(),
+            "removed" => include_bytes!("../tests/fixtures/support-markers/removed.bin").as_slice(),
             other => panic!("no support marker fixture `{other}`"),
         }
         .to_vec()
+    }
+
+    /// The marker of a configuration taken off vendor support entirely, as
+    /// the platform writes it (8.3.27 and 8.5.1): both readers take it for
+    /// removed support, with editing enabled and no object rules.
+    /// rule: INV.APP.SUPPORT-STATE
+    #[test]
+    fn the_platform_marker_of_removed_support_reads_as_removed() {
+        let bytes = marker("removed");
+        assert_eq!(bytes, "\u{feff}{6,0,0,0,1,0}".as_bytes());
+        assert_eq!(bytes, REMOVED_SUPPORT_MARKER);
+        for state in both(&bytes) {
+            assert!(state.removed());
+            assert!(state.global_editing_enabled());
+            assert_eq!(state.counts(), [0, 0, 0]);
+        }
     }
 
     fn both(bytes: &[u8]) -> [SupportState; 2] {

@@ -306,15 +306,16 @@ fn unknown_facts_of_borrowed_objects_are_named_as_node_limits() {
             "<InformationRegister>CorpusRegister</InformationRegister><CommonModule>CorpusModule</CommonModule></ChildObjects>",
         ),
     );
-    let register =
-        fixture_text("platform_8_3_27/incomplete_borrowed/extension-information-register.xml");
+    let register = fixture_text(
+        "formats/platform_xml/2.20/incomplete_borrowed/extension-information-register.xml",
+    );
     let register_path = fixture
         .source
         .join("InformationRegisters/CorpusRegister.xml");
     write(&register_path, &register);
     write(
         &fixture.source.join("CommonModules/CorpusModule.xml"),
-        &fixture_text("platform_8_3_27/incomplete_borrowed/extension-common-module.xml"),
+        &fixture_text("formats/platform_xml/2.20/incomplete_borrowed/extension-common-module.xml"),
     );
     write(
         &fixture
@@ -368,8 +369,10 @@ fn unknown_facts_of_borrowed_objects_are_named_as_node_limits() {
     assert!(contexts(&limits("main:CommonModule.CorpusModule.Method")));
     write(
         &fixture.source.join("CommonModules/CorpusModule.xml"),
-        &fixture_text("platform_8_3_27/cfe_borrow/extension-common-module-environment-only.xml")
-            .replace("СерверныеФункции", "CorpusModule"),
+        &fixture_text(
+            "formats/platform_xml/2.20/cfe_borrow/extension-common-module-environment-only.xml",
+        )
+        .replace("СерверныеФункции", "CorpusModule"),
     );
     assert!(!contexts(&limits("main:CommonModule.CorpusModule")));
 

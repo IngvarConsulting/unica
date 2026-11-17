@@ -30,28 +30,12 @@
           "absent": true
         }
       ],
-      "fileAssertions": [
-        {
-          "kind": "sha256",
-          "path": "src/Catalogs/ПримерА.xml",
-          "eq": "f26e51844876d2c3de70bd83d5acc6569137f55247a6abc3d83647592e4f6a16"
-        },
-        {
-          "kind": "sha256",
-          "path": "src/Configuration.xml",
-          "eq": "536e44b361658b812021ada45a7a8ff9756e7e869f0c43c1eac6a5c2b41bfab0"
-        },
-        {
-          "kind": "sha256",
-          "path": "src/EventSubscriptions/CorpusEventSubscription.xml",
-          "eq": "b59e1fb71734340a2896c5001ecd3a2e3780abf0f6e5c2f46c5fc893814f1182"
-        },
-        {
-          "kind": "sha256",
-          "path": "src/CommonModules/EventHandlers/Ext/Module.bsl",
-          "eq": "bbb99d8473d791b06f943687d6231011b55b8d1834c7296a3c4e5ce7bcced3e6"
+      "captures": {
+        "unchanged1": {
+          "file": "src/CommonModules/EventHandlers/Ext/Module.bsl",
+          "kind": "sha256"
         }
-      ]
+      }
     },
     {
       "tool": "unica.apply",
@@ -133,7 +117,7 @@
         {
           "kind": "sha256",
           "path": "src/CommonModules/EventHandlers/Ext/Module.bsl",
-          "eq": "bbb99d8473d791b06f943687d6231011b55b8d1834c7296a3c4e5ce7bcced3e6"
+          "eq": "$capture.unchanged1"
         }
       ]
     },
@@ -176,7 +160,7 @@
         {
           "kind": "sha256",
           "path": "src/CommonModules/EventHandlers/Ext/Module.bsl",
-          "eq": "bbb99d8473d791b06f943687d6231011b55b8d1834c7296a3c4e5ce7bcced3e6"
+          "eq": "$capture.unchanged1"
         },
         {
           "kind": "xml",

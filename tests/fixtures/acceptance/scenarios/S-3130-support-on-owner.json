@@ -1,0 +1,49 @@
+{
+  "id": "S-3130-support-on-owner",
+  "issue": 3130,
+  "area": "Поддержка поставщика",
+  "task": "Сохранить поддержку у её владельцев и показать действующую блокировку на узле, где редактирование запрещено.",
+  "workspace": "tests/fixtures/acceptance/workspace-support-form",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {"at": "main:Catalog.Items"},
+      "expect": ["ok"],
+      "assertions": [
+        {"pointer": "/data/props/support/editable", "eq": true},
+        {"pointer": "/data/props/support/rule", "eq": "editableWithSupport"}
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {"at": "main:Catalog.Items.Module.Object.Event.BeforeWrite"},
+      "expect": ["ok"],
+      "assertions": [
+        {"pointer": "/data/props/support", "absent": true},
+        {"pointer": "/data/props/state", "eq": "available"},
+        {"pointer": "/data/can/0/op", "eq": "event.implement"},
+        {"pointer": "/data/can/0/blocked", "absent": true}
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {"at": "main:Catalog.Items.Form.Main"},
+      "expect": ["ok"],
+      "assertions": [
+        {"pointer": "/data/props/support/editable", "eq": false},
+        {"pointer": "/data/props/support/rule", "eq": "locked"}
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {"at": "main:Catalog.Items.Form.Main.Module.Form"},
+      "expect": ["ok"],
+      "assertions": [
+        {"pointer": "/data/props/support", "absent": true},
+        {"pointer": "/data/limits", "contains": "Editing blocked by vendor support: `main:Catalog.Items.Form.Main` is a vendor object with the support rule `locked`"},
+        {"pointer": "/data/can/0/op", "eq": "code.insert"},
+        {"pointer": "/data/can/0/blocked/reason", "eq": "locked"}
+      ]
+    }
+  ]
+}

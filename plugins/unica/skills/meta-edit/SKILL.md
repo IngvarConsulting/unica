@@ -50,6 +50,15 @@ allowed-tools:
 | Встроенная справка | `help.create` |
 | Объект целиком | `object.remove` |
 
+Синоним объекта и членов (`Synonym` в `props.set`, `synonym` в `*.add` и
+`*.set`) передаётся одной строкой в форме НСтр: `ru = 'Товары'; en = 'Goods'`,
+кавычка внутри текста удваивается. Это полное значение: языков, которых в
+строке нет, после записи нет, пустая строка очищает синоним. Текст без кода
+языка отклоняется `bad_value`. Многоязычные свойства в `props` узла
+(`ToolTip`, синонимы стандартных реквизитов) `view` отдаёт в той же форме.
+Короткий ключ `synonym` узла пока показывает один язык; чтобы записать синоним,
+соберите строку НСтр со всеми нужными языками.
+
 Допустимые свойства, коллекции, виды типов и связей берутся из контракта
 операции (`argsSchema` подробного `can`). Общие прикладные правила — в
 [соглашениях по метаданным](../../references/platform/metadata-conventions.md).
@@ -57,14 +66,25 @@ allowed-tools:
 `props.set` изменяет только строковый `Comment` у существующих
 `CommonAttribute`, `FunctionalOptionsParameter`,
 `SessionParameter`, `FilterCriterion`, `SettingsStorage`, `CommonCommand`,
-`CommandGroup`, `CommonForm`, `CommonTemplate`, `CommonPicture`,
+`CommandGroup`, `CommonTemplate`, `CommonPicture`,
 `IntegrationService`, `XDTOPackage`,
-`Sequence` и `Style`. Для общей формы адресуй дескриптор
-`main:CommonForm.<Имя>.Metadata`; остальные владельцы адресуются как
+`Sequence` и `Style`. Эти владельцы адресуются как
 `main:<Вид>.<Имя>`. Например, `{"values":{"Comment":"Назначение параметра"}}`;
 пустая строка очищает комментарий. Имя `comment` — допустимый псевдоним,
 одновременно оба написания не передаются. Отсутствующий, неоднозначный
 или составной `Comment` требует исправления исходного дескриптора.
+
+Дескриптор формы адресуется как `main:CommonForm.<Имя>.Metadata` или
+`main:<Вид>.<Имя>.Form.<Форма>.Metadata`, в том числе у формы внешней
+обработки или отчёта. `props.set` меняет у него `Comment`, булев
+`IncludeHelpInContents`, `UsePurposes` — весь набор различных назначений
+(`PlatformApplication`, `MobilePlatformApplication`; пустой массив очищает) —
+и с платформы 8.5.1 `UseInInterfaceCompatibilityMode` (`Any`, `Taxi`,
+`Version85`). В наборе 8.3.27 режима совместимости нет: `can` называет его
+в `x-unica-later-lines`, а запись отвергается. `FormType` только читается:
+тип формы меняется вместе с её содержимым. У формы расширения меняется только
+`Comment`. Отсутствующее свойство пишется на то место, где его пишет
+платформа; то же значение не меняет ни байта.
 
 У `FunctionalOption` тот же `props.set` поддерживает строковый `Comment`,
 строковый `Location` и булев `PrivilegedGetMode`, в том числе в одном `values`.

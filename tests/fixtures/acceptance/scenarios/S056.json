@@ -11,7 +11,7 @@
             "op": "tabularSection.set",
             "args": {
               "values": {
-                "synonym": "Мультиязычные представления"
+                "synonym": "ru = 'Мультиязычные представления'"
               }
             }
           }

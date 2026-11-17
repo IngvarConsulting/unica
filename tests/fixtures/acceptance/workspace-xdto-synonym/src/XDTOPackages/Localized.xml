@@ -1,0 +1,2 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" version="2.20"><XDTOPackage uuid="30980000-0000-4000-8000-000000000001"><Properties><Name>Localized</Name><Synonym><v8:item><v8:lang>en</v8:lang><v8:content>Contracts</v8:content></v8:item><v8:item><v8:lang>ru</v8:lang><v8:content>Договоры &amp; акты</v8:content></v8:item></Synonym><Comment>Package comment</Comment><Namespace>urn:unica:anonymous</Namespace></Properties></XDTOPackage></MetaDataObject>

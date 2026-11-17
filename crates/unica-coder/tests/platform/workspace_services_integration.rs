@@ -359,6 +359,8 @@ mod medium_tests {
                 expected_cache.into_os_string(),
                 "--mode".into(),
                 "stdio".into(),
+                "--enable-tool".into(),
+                "references".into(),
             ]
         );
         assert_eq!(
@@ -2975,7 +2977,9 @@ fn main() {
         fn drop(&mut self) {
             for gate in &self.gates {
                 let (released, changed) = &**gate;
-                *released.lock().unwrap() = true;
+                *released
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = true;
                 changed.notify_all();
             }
             for stream in &self.streams {
@@ -3251,7 +3255,12 @@ fn main() {
 
         impl Drop for BlockingRetiredSession {
             fn drop(&mut self) {
-                self.drop_started.send(()).unwrap();
+                let started = self.drop_started.send(());
+                // A failing test has stopped listening: nothing waits to release this drop.
+                if std::thread::panicking() {
+                    return;
+                }
+                started.unwrap();
                 self.drop_release.lock().unwrap().recv().unwrap();
             }
         }
@@ -3729,7 +3738,12 @@ fn main() {
         struct DropSignal(Option<mpsc::Sender<()>>);
         impl Drop for DropSignal {
             fn drop(&mut self) {
-                self.0.take().unwrap().send(()).unwrap();
+                if let Some(signal) = self.0.take() {
+                    let sent = signal.send(());
+                    if !std::thread::panicking() {
+                        sent.unwrap();
+                    }
+                }
             }
         }
 

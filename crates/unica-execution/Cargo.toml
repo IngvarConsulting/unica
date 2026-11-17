@@ -11,7 +11,6 @@ test-support = ["unica-workspace/test-support", "unica-process/test-support"]
 receipt-ledger-test-support = ["unica-execution-contract/receipt-ledger-test-support"]
 
 [dependencies]
-unica-runner = { path = "../unica-runner" }
 unica-process = { path = "../unica-process" }
 unica-redaction = { path = "../unica-redaction" }
 unica-source-contract = { path = "../unica-source-contract" }

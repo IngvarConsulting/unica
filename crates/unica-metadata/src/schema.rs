@@ -31,6 +31,9 @@ pub fn metadata_property_schemas(kind: Option<MetadataKind>) -> Map<String, Valu
             })
             .as_object_mut()
             .expect("root property schema is always an object");
+        if let Some(max_length) = spec.string_max_length {
+            entry.insert("maxLength".into(), json!(max_length));
+        }
         if let Some(pattern) = spec.string_pattern {
             entry.insert("pattern".into(), Value::String(pattern.to_string()));
         }
@@ -64,6 +67,14 @@ pub fn metadata_property_schemas(kind: Option<MetadataKind>) -> Map<String, Valu
             .as_object_mut()
             .expect("root property schema is always an object")
             .remove("unconstrained");
+    }
+    for spec in METADATA_PROPERTY_SPECS
+        .iter()
+        .filter(|spec| spec.key == crate::MetaPropertyKey::Synonym)
+    {
+        if let Some(entry) = root_properties.get_mut(spec.public_name) {
+            *entry = crate::properties::localized_value_schema();
+        }
     }
     root_properties
 }

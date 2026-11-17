@@ -132,11 +132,8 @@ pub(crate) fn accepts_logical_metadata_address(
     if owner.name().is_some() {
         return logical_metadata_reader_target(address).is_some();
     }
-    unica_address::source_target::MetadataAddressPrefix::parse(
-        unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
-        owner.kind().as_str(),
-    )
-    .is_ok()
+    unica_address::source_target::MetadataAddressPrefix::parse_logical(owner.kind().as_str())
+        .is_ok()
 }
 
 #[cfg(test)]

@@ -356,7 +356,22 @@ impl<'a> LogicalViewReadAuthority<'a> {
             return Ok(NodeViewData::Node(event_node(&event)));
         }
         let projections = self.module_projection(&module_at, capability, admitted)?;
-        let mut view = module_projection_view(route.at(), prefix_len, projections.as_ref())?;
+        let binding_items = match &route.at().segments()[prefix_len..] {
+            [method, rest @ ..]
+                if capability.role() == ModuleRole::Form
+                    && method.kind() == NodeKind::Method
+                    && (rest.is_empty()
+                        || matches!(rest, [binding] if binding.kind() == NodeKind::Binding))
+                    && projections.methods().iter().any(|projection| {
+                        method.name().is_none_or(|name| projection.name == name)
+                            && !projection.handles.is_empty()
+                    }) =>
+            {
+                self.form_method_bindings(&module_at, &projections, admitted)?
+            }
+            _ => BTreeMap::new(),
+        };
+        let mut view = module_projection_view(route.at(), prefix_len, &projections, binding_items)?;
         if capability.role() == ModuleRole::Common && route.at() == &module_at {
             let (synonym, limits) = self.common_module_synonym(&module_at)?;
             if let Some(synonym) = synonym {
@@ -369,10 +384,10 @@ impl<'a> LogicalViewReadAuthority<'a> {
         // называет; непрочитанный состав подсистем узел называет пределом.
         if capability.role() == ModuleRole::Common && route.at().segments().len() == 1 {
             let target = route.at().segments()[0].name().and_then(|name| {
-                MetadataAddress::parse(
-                    PLATFORM_XML_8_3_27_FORMAT_2_20,
-                    &format!("{}.{name}", NodeKind::CommonModule.as_str()),
-                )
+                MetadataAddress::parse_logical(&format!(
+                    "{}.{name}",
+                    NodeKind::CommonModule.as_str()
+                ))
                 .ok()
             });
             if let (NodeViewData::Node(node), Some(target)) = (&view, target.as_ref()) {
@@ -415,40 +430,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
         at: &QualifiedAddress,
     ) -> Result<(Option<Value>, Vec<String>), ViewError> {
         self.read_checkpoint()?;
-        let owner = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &at.logical_path())
-            .map_err(|error| {
-                ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
-            })?;
-        let descriptor = self.read.metadata_descriptor(&owner)?;
-        let text = std::str::from_utf8(&descriptor).map_err(|error| {
-            ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
-        })?;
-        let properties = crate::infrastructure::family_codecs::metadata_read_codec()
-            .common_module_properties(text)
-            .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?;
-        let observation = properties.info("Synonym");
-        let mut props = Map::new();
-        let mut limits = Vec::new();
-        match observation {
-            Ok(Some(unica_metadata::MetaInfoPropertyValue::String(text))) if !text.is_empty() => {
-                crate::infrastructure::v13_read_projection::place_prop(
-                    &mut props,
-                    &mut limits,
-                    at,
-                    "synonym",
-                    &json!(text),
-                    false,
-                    "common module Synonym",
-                );
-            }
-            Ok(None | Some(unica_metadata::MetaInfoPropertyValue::String(_))) => {}
-            Ok(Some(_)) => unreachable!("the closed Synonym profile yields a string"),
-            Err(error) => limits.push(format!(
-                "properties.Synonym is unreadable: {}",
-                error.message
-            )),
-        }
-        Ok((props.remove("synonym"), limits))
+        self.read.common_module_synonym(at)
     }
 
     pub(super) fn module_projection(
@@ -481,9 +463,9 @@ impl<'a> LogicalViewReadAuthority<'a> {
                         "common module owner is invalid",
                     )
                 })?;
-            let owner = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, owner).map_err(
-                |error| ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string()),
-            )?;
+            let owner = MetadataAddress::parse_logical(owner).map_err(|error| {
+                ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+            })?;
             let descriptor = self.read.metadata_descriptor(&owner)?;
             Some(common_module_properties(
                 &descriptor,
@@ -500,6 +482,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
         let projection = Arc::new(
             project_module(ModuleProjectionRequest {
                 at: module_at,
+                platform: self.platform_profile(),
                 capability,
                 title: module_title(module_at, capability),
                 rev: &admitted.revision,

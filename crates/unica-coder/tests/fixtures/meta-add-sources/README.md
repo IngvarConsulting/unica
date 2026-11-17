@@ -1,6 +1,6 @@
 # meta-add-sources
 
-Пустая конфигурация 8.3.27 (`tests/fixtures/platform_8_3_27/empty_configuration`)
+Пустая конфигурация 8.3.27 (`tests/fixtures/formats/platform_xml/2.20/empty_configuration`)
 с шестью объектами, записанными `unica.meta.add`: `Catalog.MetaAddSource`,
 `Document.MetaAddRegistrar`, `ChartOfAccounts.MetaAddAccounts`,
 `ChartOfCalculationTypes.MetaAddCalculationTypes`, `Task.MetaAddTask` и

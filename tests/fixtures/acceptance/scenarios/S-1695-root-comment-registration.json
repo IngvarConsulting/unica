@@ -31,26 +31,25 @@
       ],
       "fileAssertions": [
         {
-          "kind": "sha256",
-          "path": "v8project.yaml",
-          "eq": "6fa50678d415c16f6fc4127bd3e86d1e262428d161c7bc00e3e808f5b69fbe41"
-        },
-        {
-          "kind": "sha256",
-          "path": "src/Configuration.xml",
-          "eq": "5081cfe341032873dbec96c70135faff38cf1d183a920e5fe274d2cd50262362"
-        },
-        {
-          "kind": "sha256",
-          "path": "src/CommonAttributes/Probe.xml",
-          "eq": "5de4ef9c1d8e97ba65703fac1f0f0bc4f3d30abea1185771243b5e00910a40de"
-        },
-        {
           "kind": "exists",
           "path": "src/ConfigDumpInfo.xml",
           "eq": false
         }
-      ]
+      ],
+      "captures": {
+        "unchanged1": {
+          "file": "v8project.yaml",
+          "kind": "sha256"
+        },
+        "unchanged2": {
+          "file": "src/Configuration.xml",
+          "kind": "sha256"
+        },
+        "unchanged3": {
+          "file": "src/CommonAttributes/Probe.xml",
+          "kind": "sha256"
+        }
+      }
     },
     {
       "tool": "unica.view",
@@ -79,17 +78,17 @@
         {
           "kind": "sha256",
           "path": "v8project.yaml",
-          "eq": "6fa50678d415c16f6fc4127bd3e86d1e262428d161c7bc00e3e808f5b69fbe41"
+          "eq": "$capture.unchanged1"
         },
         {
           "kind": "sha256",
           "path": "src/Configuration.xml",
-          "eq": "5081cfe341032873dbec96c70135faff38cf1d183a920e5fe274d2cd50262362"
+          "eq": "$capture.unchanged2"
         },
         {
           "kind": "sha256",
           "path": "src/CommonAttributes/Probe.xml",
-          "eq": "5de4ef9c1d8e97ba65703fac1f0f0bc4f3d30abea1185771243b5e00910a40de"
+          "eq": "$capture.unchanged3"
         },
         {
           "kind": "exists",
@@ -135,17 +134,17 @@
         {
           "kind": "sha256",
           "path": "v8project.yaml",
-          "eq": "6fa50678d415c16f6fc4127bd3e86d1e262428d161c7bc00e3e808f5b69fbe41"
+          "eq": "$capture.unchanged1"
         },
         {
           "kind": "sha256",
           "path": "src/Configuration.xml",
-          "eq": "5081cfe341032873dbec96c70135faff38cf1d183a920e5fe274d2cd50262362"
+          "eq": "$capture.unchanged2"
         },
         {
           "kind": "sha256",
           "path": "src/CommonAttributes/Probe.xml",
-          "eq": "5de4ef9c1d8e97ba65703fac1f0f0bc4f3d30abea1185771243b5e00910a40de"
+          "eq": "$capture.unchanged3"
         },
         {
           "kind": "exists",
@@ -191,17 +190,17 @@
         {
           "kind": "sha256",
           "path": "v8project.yaml",
-          "eq": "6fa50678d415c16f6fc4127bd3e86d1e262428d161c7bc00e3e808f5b69fbe41"
+          "eq": "$capture.unchanged1"
         },
         {
           "kind": "sha256",
           "path": "src/Configuration.xml",
-          "eq": "5081cfe341032873dbec96c70135faff38cf1d183a920e5fe274d2cd50262362"
+          "eq": "$capture.unchanged2"
         },
         {
           "kind": "sha256",
           "path": "src/CommonAttributes/Probe.xml",
-          "eq": "5de4ef9c1d8e97ba65703fac1f0f0bc4f3d30abea1185771243b5e00910a40de"
+          "eq": "$capture.unchanged3"
         },
         {
           "kind": "exists",

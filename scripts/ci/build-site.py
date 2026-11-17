@@ -80,7 +80,7 @@ def carry_history(results: Path, site: str | None, line: str) -> int:
     target = results / "history"
     carried = 0
     for name in HISTORY_FILES:
-        if fetch(f"{site}/allure/{line}/history/{name}", target / name):
+        if fetch(site, f"allure/{line}/history/{name}", target / name):
             carried += 1
     return carried
 
@@ -155,11 +155,11 @@ def stored_results(site: str | None, line: str, work: Path) -> dict[str, tuple[P
     found: dict[str, tuple[Path, Path]] = {}
     for profile in SITE_PROFILES:
         archive = work / f"{line}-{profile}.tar.gz"
-        if fetch(f"{site}/data/{line}/results/{profile}.tar.gz", archive):
+        if fetch(site, f"data/{line}/results/{profile}.tar.gz", archive):
             found[profile] = (archive, unpack(archive, work / line / profile))
     if not found:
         archive = work / f"{line}-main.tar.gz"
-        if fetch(f"{site}/data/{line}/results.tar.gz", archive):
+        if fetch(site, f"data/{line}/results.tar.gz", archive):
             found["main"] = (archive, unpack(archive, work / line / "main"))
     return found
 
@@ -217,7 +217,7 @@ def record_large_memory(data: Path, line: str, results: Path, fresh: bool, site:
             memory = {key: run.get(key, "") for key in ("sha", "at", "run_url", "run_id", "profile")}
             target.write_text(json.dumps(memory, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
             return f"память large записана: {run.get('sha', '')[:7]}"
-    if site and fetch(f"{site}/data/{line}/profiles/large.json", target):
+    if site and fetch(site, f"data/{line}/profiles/large.json", target):
         return "память large перенесена с сайта"
     return "памяти large нет"
 
@@ -232,7 +232,7 @@ def record_run(data: Path, line: str, fresh: bool, args: argparse.Namespace) -> 
     """
     if not fresh:
         if args.site:
-            fetch(f"{args.site}/data/{line}/run.json", data / "run.json")
+            fetch(args.site, f"data/{line}/run.json", data / "run.json")
         return
     record = {"sha": args.run_sha, "url": args.run_url, "at": args.run_at}
     (data / "run.json").write_text(
@@ -412,12 +412,12 @@ def publish_version(out: Path, tag: str, fresh: Path | None, args: argparse.Name
         record = {"tag": tag, "sha": args.run_sha, "url": args.run_url, "at": args.run_at,
                   "profile": signature_of(fresh).get("profile", "")}
         (data / "run.json").write_text(json.dumps(record, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    elif args.site and fetch(f"{args.site}/data/versions/{tag}/results.tar.gz", data / "results.tar.gz"):
+    elif args.site and fetch(args.site, f"data/versions/{tag}/results.tar.gz", data / "results.tar.gz"):
         results = unpack(data / "results.tar.gz", work / "versions" / tag)
-        fetch(f"{args.site}/data/versions/{tag}/run.json", data / "run.json")
+        fetch(args.site, f"data/versions/{tag}/run.json", data / "run.json")
     if results is None:
         legacy = data / "legacy.json"
-        if args.site and fetch(f"{args.site}/data/versions/{tag}/legacy.json", legacy):
+        if args.site and fetch(args.site, f"data/versions/{tag}/legacy.json", legacy):
             return f"{tag}: отчёта нет, счётчики журнала перенесены с сайта"
         record = legacy_record(args.repo, tag) if args.repo else None
         if record is None:

@@ -3,35 +3,31 @@
 //! силами `v8-runner pull` (A-6 зонтика #871). Пара к `push`: тот
 //! вносит исходники в базу, этот выносит базу в исходники.
 //!
-//! Аргументы закрыты: `force:true` обязателен, выгрузка всегда полная; `sourceSet` — имя
-//! объявленного набора, без него раннер берёт набор конфигурации;
-//! `extension` — имя расширения, которое раннер требует для набора расширения
-//! и сверяет с ним. Частичная выгрузка по объектам за словарём: у неё свой
-//! словарь селекторов, и он не описан.
+//! Аргументы закрыты: `force`, `sourceSet` и `extension`. Без `force` режим
+//! выбирает раннер по своей памяти о прошлом обмене, `force:true` требует
+//! полной выгрузки. `sourceSet` — имя объявленного набора, без него раннер
+//! берёт набор конфигурации; набор расширения требует явного `extension`.
 //!
-//! Превью зовёт `pull --force --dry-run`: раннер называет набор, режим и целевой
-//! каталог, ничего не записывая. Цель обязана лежать внутри рабочего
-//! пространства и наружу уходит относительным путём. Применение повторяет
-//! превью, сверяет забор ревизии, выгружает и пересчитывает файлы в цели
-//! сама — квитанция не со слов провайдера. Путь к платформе и командная
-//! строка наружу не идут.
-
-mod publication_protocol;
+//! Превью зовёт `pull --dry-run`: раннер называет набор, режим и целевой
+//! каталог, ничего не записывая. Исполнение вызывает раннер один раз, цель
+//! пишет он сам; Unica сверяет ответ с вызовом и не хранит копию прежних
+//! исходников. Цель обязана лежать внутри рабочего пространства и наружу
+//! уходит относительным путём. Путь к платформе и командная строка наружу
+//! не идут.
 
 use super::protocol::InvocationRequest;
-use super::runner_015::{lock_project, normalize_full_export_config, project_full_export_config};
 use super::v13_infobase_exports::{
     digest_optional_workspace_file, digest_required_workspace_file, missing_runner_rejection,
-    note_another_copy, resolve_bundled_runner, runner_rejection, runner_start_rejection,
-    valid_1c_identifier, RunnerAbsence, CONFIG_NAME, LOCAL_CONFIG_NAME, RUNNER_OUTPUT_LIMIT,
+    note_runner_warnings, resolve_bundled_runner, runner_envelope_refusal, runner_rejection,
+    runner_start_rejection, valid_1c_identifier, CONFIG_NAME, LOCAL_CONFIG_NAME,
+    RUNNER_OUTPUT_LIMIT,
 };
 use super::v13_source_set_name::{source_set_name_guidance, valid_source_set_name};
-use unica_adapter_v8_runner::full_dump::FullDumpSelection;
 use unica_artifact_delivery::engine::BundledTool;
 use unica_execution::invocation_store::ToolIdentity;
-#[cfg(test)]
-use unica_process::runner::ProcessOutput;
-use unica_process::runner::{ProcessCommand, ProcessRunner, SystemProcessRunner};
+use unica_process::runner::{
+    ProcessCommand, ProcessOutput, ProcessRunner, ProcessStreamFailure, SystemProcessRunner,
+};
 use unica_source_contract::workspace::WorkspaceContext;
 
 use crate::infrastructure::workspace::discover_workspace;
@@ -39,13 +35,18 @@ use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use unica_execution_contract::invocation::{DomainResult, SafeIdentityHash};
+use unica_execution_contract::invocation::{
+    DomainResult, HumanChoice, SafeIdentityHash, HUMAN_REEXPORT_KEY,
+};
 use unica_redaction::redactor;
 use unica_refusal::RefusalCode;
 use unica_work_control::cancellation::CancellationToken;
 use unica_workspace::paths::normalize_path_identity;
 
 pub(super) const OPERATION: &str = "pull";
+/// Перевыгрузка набора в записываемом формате через временную файловую базу
+/// (INV.SOURCE.WRITABLE-PROFILE).
+pub(super) const REEXPORT: &str = "source.reexport";
 /// Имя команды раннера и в командной строке, и в конверте: с 0.12 раннер
 /// называет её словом словаря.
 const RUNNER_COMMAND: &str = "pull";
@@ -66,6 +67,13 @@ impl ExportMode {
     }
 
     /// Как раннер пишет режим в конверте.
+    const fn public_name(self) -> &'static str {
+        match self {
+            Self::Full => "full",
+            Self::Incremental => "incremental",
+        }
+    }
+
     const fn runner_mode(self) -> &'static str {
         match self {
             Self::Full => "FULL",
@@ -86,6 +94,11 @@ pub(super) struct PreparedSourceExport {
     arguments: ExportArguments,
     dry_run: bool,
     context: WorkspaceContext,
+    /// The writable export format of a re-export; `None` for `pull`.
+    reexport: Option<&'static str>,
+    /// The call as made: the question about the infobase of another copy
+    /// repeats it.
+    call: Map<String, Value>,
 }
 
 pub(super) enum Preparation {
@@ -95,15 +108,111 @@ pub(super) enum Preparation {
 }
 
 pub(super) fn prepare(request: &InvocationRequest) -> Preparation {
-    if request.tool() != ToolIdentity::Run
-        || request.arguments().get("op").and_then(Value::as_str) != Some(OPERATION)
-    {
+    if request.tool() != ToolIdentity::Run {
         return Preparation::NotApplicable;
     }
-    match PreparedSourceExport::parse(request) {
+    let parsed = match request.arguments().get("op").and_then(Value::as_str) {
+        Some(OPERATION) => PreparedSourceExport::parse(request),
+        Some(REEXPORT) => PreparedSourceExport::parse_reexport(request),
+        _ => return Preparation::NotApplicable,
+    };
+    match parsed {
         Ok(prepared) => Preparation::Ready(Arc::new(prepared)),
         Err(result) => Preparation::Rejected(Box::new(result)),
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The runner a re-export of this thread runs on, for tests of the calls
+    /// that contain one: no bundled runner is resolved.
+    static REEXPORT_TEST_RUNNER: std::cell::RefCell<
+        Option<(Arc<dyn ProcessRunner + Send + Sync>, BundledTool)>,
+    > = const { std::cell::RefCell::new(None) };
+}
+
+/// Runs `run` with re-exports of this thread on `runner` started as `tool`.
+#[cfg(test)]
+pub(super) fn with_reexport_test_runner<T>(
+    runner: Arc<dyn ProcessRunner + Send + Sync>,
+    tool: BundledTool,
+    run: impl FnOnce() -> T,
+) -> T {
+    REEXPORT_TEST_RUNNER.with(|slot| *slot.borrow_mut() = Some((runner, tool)));
+    let result = run();
+    REEXPORT_TEST_RUNNER.with(|slot| *slot.borrow_mut() = None);
+    result
+}
+
+pub(super) enum ReexportBeforeApply {
+    NotApplicable,
+    Rejected(Box<DomainResult>),
+    /// The re-export and the same `unica.apply` without the mark.
+    Ready(Arc<PreparedSourceExport>, InvocationRequest),
+}
+
+/// `unica.apply` that carries a person's choice to re-export a set before the
+/// edit ([`HUMAN_REEXPORT_KEY`]): the set is re-exported first, and then the
+/// same edit runs, both in this one call (INV.SOURCE.WRITABLE-PROFILE). Only
+/// the door sets the mark, from the answer to the question about the set's
+/// format; that answer is the person's consent to replace the files of the
+/// set, so the re-export asks nothing more.
+pub(super) fn prepare_reexport_before_apply(request: &InvocationRequest) -> ReexportBeforeApply {
+    if request.tool() != ToolIdentity::Apply {
+        return ReexportBeforeApply::NotApplicable;
+    }
+    let Some(mark) = request.arguments().get(HUMAN_REEXPORT_KEY) else {
+        return ReexportBeforeApply::NotApplicable;
+    };
+    let reexport = match mark.as_object() {
+        Some(mark)
+            if mark.len() == 2
+                && mark.get("sourceSet").is_some_and(Value::is_string)
+                && mark.get("format").is_some_and(Value::is_string) =>
+        {
+            mark.clone()
+        }
+        _ => {
+            return ReexportBeforeApply::Rejected(Box::new(DomainResult::canonical_rejection(
+                None,
+                RefusalCode::BadValue,
+                format!("{HUMAN_REEXPORT_KEY} names the source set and the format of a re-export"),
+            )))
+        }
+    };
+    let run = request.with_call(
+        ToolIdentity::Run,
+        json!({"op": REEXPORT, "args": reexport, "dryRun": false})
+            .as_object()
+            .cloned()
+            .expect("an object"),
+    );
+    match PreparedSourceExport::parse_reexport_with(&run, false) {
+        Ok(prepared) => {
+            let mut apply = request.arguments().clone();
+            apply.remove(HUMAN_REEXPORT_KEY);
+            ReexportBeforeApply::Ready(
+                Arc::new(prepared),
+                request.with_call(ToolIdentity::Apply, apply),
+            )
+        }
+        Err(result) => ReexportBeforeApply::Rejected(Box::new(result)),
+    }
+}
+
+/// The `unica.apply` call a format question offers: the same edit with the
+/// person's choice to re-export `source_set` in `format` first.
+pub(super) fn reexport_before_apply_call(
+    call: &Map<String, Value>,
+    source_set: &str,
+    format: &str,
+) -> Map<String, Value> {
+    let mut call = unica_execution_contract::invocation::without_confirmation(call);
+    call.insert(
+        HUMAN_REEXPORT_KEY.into(),
+        json!({"sourceSet": source_set, "format": format}),
+    );
+    call
 }
 
 impl PreparedSourceExport {
@@ -122,13 +231,7 @@ impl PreparedSourceExport {
                     "pull requires dryRun: true to preview or dryRun: false to execute",
                 )
             })?;
-        let context =
-            discover_workspace(Some(PathBuf::from(request.workspace_hint()))).map_err(|error| {
-                reject(
-                    RefusalCode::ProviderUnavailable,
-                    format!("workspace discovery failed: {error}"),
-                )
-            })?;
+        let context = discover_context(request)?;
         if let Some(unknown) = args
             .keys()
             .find(|k| !["sourceSet", "extension", "force"].contains(&k.as_str()))
@@ -138,20 +241,136 @@ impl PreparedSourceExport {
                 format!("pull does not accept `{unknown}`; use its published argsSchema"),
             ));
         }
-        if args.get("force") != Some(&Value::Bool(true)) {
-            return Err(reject(RefusalCode::UnsupportedOperation, "pull requires force:true on the compatibility adapter; synchronization protection is unavailable"));
-        }
+        // Без `force` режим выбирает раннер по своей памяти о прошлом обмене;
+        // `force:true` требует полной выгрузки.
+        let force = match args.get("force") {
+            None | Some(Value::Bool(false)) => false,
+            Some(Value::Bool(true)) => true,
+            Some(_) => return Err(reject(RefusalCode::BadValue, "pull force must be boolean")),
+        };
         let mut public = args.clone();
         public.remove("force");
-        public.insert("mode".into(), json!("full"));
+        public.insert(
+            "mode".into(),
+            json!(if force { "full" } else { "incremental" }),
+        );
         let arguments = parse_export_arguments(&public)?;
+        // Полная выгрузка заменяет весь набор: с несохранёнными правками или
+        // без git она исполняется только с согласия человека. Вопрос
+        // задаётся до допуска: вызов, ушедший в фоновую задачу, спросить уже
+        // не может. Превью и чистый набор не спрашивают. Набор, который по
+        // проекту не определить, разбирает исполнение своим отказом.
+        if force && !dry_run {
+            require_replacement_consent(&context.workspace_root, &arguments, request)?;
+        }
         Ok(Self {
             arguments,
             dry_run,
             context,
+            reexport: None,
+            call: request.arguments().clone(),
         })
     }
 
+    /// `source.reexport {sourceSet, format}`: the declared set and one of the
+    /// writable export formats. The set is replaced in full, so an execution
+    /// asks the person like a full `pull` does.
+    fn parse_reexport(request: &InvocationRequest) -> Result<Self, DomainResult> {
+        Self::parse_reexport_with(request, true)
+    }
+
+    /// As [`Self::parse_reexport`]; `ask` is false when the person already
+    /// chose to replace the set, in the answer about its format.
+    fn parse_reexport_with(request: &InvocationRequest, ask: bool) -> Result<Self, DomainResult> {
+        let reject = |code, message: String| reject_reexport(code, message);
+        let arguments = request.arguments();
+        let args = arguments
+            .get("args")
+            .and_then(Value::as_object)
+            .ok_or_else(|| reject(RefusalCode::BadValue, "run args must be an object".into()))?;
+        let dry_run = arguments
+            .get("dryRun")
+            .and_then(Value::as_bool)
+            .ok_or_else(|| {
+                reject(
+                    RefusalCode::BadValue,
+                    format!(
+                        "{REEXPORT} requires dryRun: true to preview or dryRun: false to execute"
+                    ),
+                )
+            })?;
+        if let Some(unknown) = args
+            .keys()
+            .find(|key| !["sourceSet", "format"].contains(&key.as_str()))
+        {
+            return Err(reject(
+                RefusalCode::BadValue,
+                format!("{REEXPORT} does not accept `{unknown}`; the closed args are sourceSet and format"),
+            ));
+        }
+        let source_set = match args.get("sourceSet") {
+            Some(Value::String(value)) if valid_source_set_name(value) => value.clone(),
+            _ => {
+                return Err(reject(
+                    RefusalCode::BadValue,
+                    source_set_name_guidance(REEXPORT),
+                ))
+            }
+        };
+        let format = args
+            .get("format")
+            .and_then(Value::as_str)
+            .and_then(|format| {
+                unica_source_designer::format_profile::WRITABLE_EXPORT_FORMATS
+                    .into_iter()
+                    .find(|writable| *writable == format)
+            })
+            .ok_or_else(|| {
+                reject(
+                    RefusalCode::BadValue,
+                    format!(
+                        "{REEXPORT} format must be one of the writable export formats: {}",
+                        unica_source_designer::format_profile::writable_export_formats_text()
+                    ),
+                )
+            })?;
+        let context = discover_context(request).map_err(|mut refusal| {
+            refusal.at = Some(REEXPORT.to_string());
+            refusal
+        })?;
+        // The runner exports an extension only by its name, which is its set's.
+        let extension = is_extension_set(&context.workspace_root.join(CONFIG_NAME), &source_set)
+            .map_err(|mut refusal| {
+                refusal.at = Some(REEXPORT.to_string());
+                refusal
+            })?
+            .then(|| source_set.clone());
+        let arguments = ExportArguments {
+            mode: ExportMode::Full,
+            source_set: Some(source_set),
+            extension,
+        };
+        if !dry_run && ask {
+            require_replacement_consent(&context.workspace_root, &arguments, request)?;
+        }
+        Ok(Self {
+            arguments,
+            dry_run,
+            context,
+            reexport: Some(format),
+            call: request.arguments().clone(),
+        })
+    }
+
+    /// The workspace root whose lane of source writes the execution holds.
+    pub(super) fn workspace_root(&self) -> &std::path::Path {
+        &self.context.workspace_root
+    }
+
+    /// A preview neither writes nor loads sources, so it takes no lane.
+    pub(super) fn is_preview(&self) -> bool {
+        self.dry_run
+    }
     pub(super) fn workspace_identity_hash(&self) -> SafeIdentityHash {
         let mut hasher = Sha256::new();
         hasher.update(b"unica-v13-source-export-workspace-v1\0");
@@ -160,8 +379,43 @@ impl PreparedSourceExport {
     }
 
     pub(super) fn execute(&self, cancellation: CancellationToken) -> DomainResult {
-        execute_with_runner(self, &SystemProcessRunner, cancellation)
+        // A re-export runs on a config of its own: the working copy is not
+        // prepared, its files stay as they are.
+        if self.reexport.is_some() {
+            #[cfg(test)]
+            if let Some((runner, tool)) = REEXPORT_TEST_RUNNER.with(|slot| slot.borrow().clone()) {
+                return execute_with_resolved_runner(
+                    self,
+                    runner.as_ref(),
+                    cancellation,
+                    &tool,
+                    "test",
+                );
+            }
+            return execute_with_runner(
+                self,
+                &super::runner::PinnedRunner::default(),
+                cancellation,
+            );
+        }
+        super::runner::with_bundled_runner(
+            &self.context.workspace_root,
+            &self.context.cwd,
+            OPERATION,
+            cancellation,
+            |runner, cancellation| execute_with_runner(self, runner, cancellation),
+        )
     }
+}
+
+/// The workspace of a `pull` or a re-export, as the call names it.
+fn discover_context(request: &InvocationRequest) -> Result<WorkspaceContext, DomainResult> {
+    discover_workspace(Some(PathBuf::from(request.workspace_hint()))).map_err(|error| {
+        reject(
+            RefusalCode::ProviderUnavailable,
+            format!("workspace discovery failed: {error}"),
+        )
+    })
 }
 
 fn parse_export_arguments(args: &Map<String, Value>) -> Result<ExportArguments, DomainResult> {
@@ -246,11 +500,50 @@ fn capture_inputs(prepared: &PreparedSourceExport) -> Result<StableInputs, Domai
             ));
         }
     }
+    // Набор расширения выгружается только с явным именем расширения, набор
+    // конфигурации — без него; отказ приходит до запуска раннера.
+    let extension_set = match &prepared.arguments.source_set {
+        Some(source_set) => is_extension_set(&root.join(CONFIG_NAME), source_set)?,
+        None => false,
+    };
+    if extension_set != prepared.arguments.extension.is_some() {
+        return Err(reject(
+            RefusalCode::BadValue,
+            "pull requires one Configuration source set or an Extension source set with an explicit extension argument",
+        ));
+    }
     Ok(StableInputs {
         config_sha256,
         local_config_sha256,
         declared,
     })
+}
+
+/// Объявлен ли набор `name` как набор расширения (`type: EXTENSION`).
+fn is_extension_set(config: &Path, name: &str) -> Result<bool, DomainResult> {
+    let text = std::fs::read_to_string(config)
+        .map_err(|error| reject(RefusalCode::InvalidState, format!("{CONFIG_NAME}: {error}")))?;
+    let document: serde_yaml::Value = serde_yaml::from_str(&text).map_err(|error| {
+        reject(
+            RefusalCode::InvalidState,
+            format!(
+                "{CONFIG_NAME} is not valid YAML: {}",
+                redactor(&error.to_string())
+            ),
+        )
+    })?;
+    Ok(document
+        .get("source-set")
+        .and_then(serde_yaml::Value::as_sequence)
+        .into_iter()
+        .flatten()
+        .filter(|entry| entry.get("name").and_then(serde_yaml::Value::as_str) == Some(name))
+        .any(|entry| {
+            entry
+                .get("type")
+                .and_then(serde_yaml::Value::as_str)
+                .is_some_and(|kind| kind.eq_ignore_ascii_case("EXTENSION"))
+        }))
 }
 
 fn declared_source_sets(config: &Path) -> Result<Vec<String>, DomainResult> {
@@ -296,7 +589,14 @@ fn execute_with_runner(
 ) -> DomainResult {
     let runner_tool = match resolve_bundled_runner(&prepared.context.cwd) {
         Ok(resolved) => resolved,
-        Err(message) => return reject_absent_runner(message),
+        Err(absence) => {
+            let at = if prepared.reexport.is_some() {
+                REEXPORT
+            } else {
+                OPERATION
+            };
+            return missing_runner_rejection(Some(at.to_string()), absence);
+        }
     };
     let tool = runner_tool.tool;
     let runner_version = runner_tool.version;
@@ -308,7 +608,7 @@ struct ExportPlan {
     source_set: String,
     target: PathBuf,
     target_absolute: PathBuf,
-    /// Цель уже была на месте при превью: применение назовёт её заменённой.
+    /// Цель была на месте до запуска раннера: исполнение назовёт её обновлённой.
     existed: bool,
     /// Режим, который случился (у превью — режим плана), строчными буквами:
     /// `full`, `incremental`, `partial` или `unknown`.
@@ -328,8 +628,9 @@ fn performed_mode(value: &Value) -> Option<&'static str> {
     }
 }
 
-/// Причина расхождения режимов: закрытый словарь раннера 0.15; поле
-/// необязательно.
+/// Причина расхождения режимов: закрытый словарь раннера; поле необязательно.
+/// С 0.17 выгрузка Конфигуратора или агента с обновлением, переписавшая каждый
+/// файл набора, называется `platform_rewrote_all`.
 fn mode_reason(value: &Value) -> Result<Option<&'static str>, ()> {
     match value {
         Value::Null => Ok(None),
@@ -337,6 +638,7 @@ fn mode_reason(value: &Value) -> Result<Option<&'static str>, ()> {
             "version_file" => Ok(Some("version_file")),
             "foreign_format" => Ok(Some("foreign_format")),
             "platform_forecast" => Ok(Some("platform_forecast")),
+            "platform_rewrote_all" => Ok(Some("platform_rewrote_all")),
             "unknown" => Ok(Some("unknown")),
             _ => Err(()),
         },
@@ -351,7 +653,857 @@ fn execute_with_resolved_runner(
     tool: &BundledTool,
     _runner_version: &str,
 ) -> DomainResult {
-    publication_protocol::execute(prepared, runner, cancellation, tool)
+    if cancellation.is_cancelled() {
+        return reject(RefusalCode::Cancelled, "pull cancelled before preparation");
+    }
+    if let Some(format) = prepared.reexport {
+        return execute_reexport(prepared, format, runner, &cancellation, tool);
+    }
+    let inputs = match capture_inputs(prepared) {
+        Ok(value) => value,
+        Err(result) => return result,
+    };
+    let root = match normalize_path_identity(&prepared.context.workspace_root) {
+        Ok(value) => value,
+        Err(_) => {
+            return reject(
+                RefusalCode::InvalidState,
+                "pull could not resolve the workspace root",
+            )
+        }
+    };
+    // Существование цели снимается до запуска: после записи раннером оно
+    // уже не говорит, создана цель или обновлена.
+    let existed_before = selected_target_exists(prepared, &root);
+    // Запись в базу другой копии — по согласию человека: исполнение над
+    // файловой базой сначала сверяется с превью раннера.
+    if !prepared.dry_run
+        && super::v13_infobase_another_copy::needs_preview(
+            &prepared.context.workspace_root,
+            &prepared.call,
+        )
+    {
+        if let Ok(preview) = invoke_runner(prepared, tool, runner, &cancellation, true) {
+            if let Some(refusal) =
+                super::v13_infobase_another_copy::refusal_for(OPERATION, &preview, &prepared.call)
+            {
+                return refusal;
+            }
+        }
+    }
+    // Исполнение вызывает раннер один раз; цель пишет сам раннер, а правки
+    // набора через Unica на это время исключены блокировкой рабочей области.
+    let envelope = match invoke_runner(prepared, tool, runner, &cancellation, prepared.dry_run) {
+        Ok(envelope) => envelope,
+        Err(result) => return result,
+    };
+    let mut plan = match validate_envelope(prepared, &inputs, &root, &envelope, !prepared.dry_run) {
+        Ok(plan) => plan,
+        Err(mut result) => {
+            // Раннер завершился, но его ответ не принят: он мог уже писать.
+            if envelope["data"]["provider_dispatched"] == true {
+                note_partial_export(prepared, &mut result);
+            }
+            return result;
+        }
+    };
+    if let Some(existed) = existed_before {
+        plan.existed = existed;
+    }
+    if prepared.dry_run {
+        // Полная выгрузка заменяет весь набор: превью называет, сколько
+        // несохранённых в git правок она сотрёт, или что набор не под git.
+        let local = if prepared.arguments.mode == ExportMode::Full {
+            // git — не раннер: его зовёт обычный процесс, без обёртки v8-runner.
+            match local_changes(&SystemProcessRunner, &plan.target_absolute, &cancellation) {
+                Ok(local) => Some(local),
+                Err((code, error)) => return reject(code, error),
+            }
+        } else {
+            None
+        };
+        preview_result(prepared, plan, &envelope, local)
+    } else {
+        applied_result(prepared, plan, &envelope)
+    }
+}
+
+fn invoke_runner(
+    prepared: &PreparedSourceExport,
+    tool: &BundledTool,
+    runner: &dyn ProcessRunner,
+    cancellation: &CancellationToken,
+    dry_run: bool,
+) -> Result<Value, DomainResult> {
+    if cancellation.is_cancelled() {
+        return Err(reject(
+            RefusalCode::Cancelled,
+            "pull cancelled before provider launch",
+        ));
+    }
+    let mut args = vec![
+        "--config".to_string(),
+        prepared
+            .context
+            .workspace_root
+            .join(CONFIG_NAME)
+            .display()
+            .to_string(),
+        "--json-message".to_string(),
+        RUNNER_COMMAND.to_string(),
+    ];
+    if let Some(source_set) = &prepared.arguments.source_set {
+        args.push(source_set.clone());
+    }
+    if prepared.arguments.mode == ExportMode::Full {
+        args.push("--force".to_string());
+    }
+    if let Some(extension) = &prepared.arguments.extension {
+        args.push("--extension".to_string());
+        args.push(extension.clone());
+    }
+    if dry_run {
+        args.push("--dry-run".to_string());
+    }
+    let output = runner
+        .run_staged(&ProcessCommand {
+            program: tool.program.clone(),
+            args,
+            cwd: prepared.context.workspace_root.clone(),
+            env: Vec::new(),
+            env_remove: Vec::new(),
+            capture_limits: Some((RUNNER_OUTPUT_LIMIT, RUNNER_OUTPUT_LIMIT)),
+            timeout: None,
+            cancellation: cancellation.clone(),
+        })
+        .map_err(|error| {
+            runner_start_rejection(Some(OPERATION.to_string()), &error, &tool.program)
+        })?;
+    parse_runner_output(output).map_err(|(mut result, envelope)| {
+        // Отказ раннера до платформы ничего не писал; иначе цель могла
+        // остаться частичной.
+        if envelope["data"]["provider_dispatched"] != false {
+            note_partial_export(prepared, &mut result);
+        }
+        note_runner_warnings(&mut result, &envelope);
+        result
+    })
+}
+
+fn parse_runner_output(output: ProcessOutput) -> Result<Value, (DomainResult, Value)> {
+    if output.cancelled {
+        return Err((
+            reject(RefusalCode::Cancelled, "v8-runner was cancelled"),
+            Value::Null,
+        ));
+    }
+    if output.timed_out {
+        return Err((
+            reject(
+                RefusalCode::DeadlineExceeded,
+                "v8-runner exceeded its execution deadline",
+            ),
+            Value::Null,
+        ));
+    }
+    if output.stdout_truncated || output.stdout_had_invalid_utf8 {
+        return Err((
+            reject(
+                RefusalCode::InvalidResult,
+                "v8-runner returned an unreadable or oversized JSON result",
+            ),
+            Value::Null,
+        ));
+    }
+    let envelope: Value = serde_json::from_str(&output.stdout).map_err(|_| {
+        (
+            reject(
+                RefusalCode::InvalidResult,
+                "v8-runner returned an invalid JSON result",
+            ),
+            Value::Null,
+        )
+    })?;
+    validate_runner_result(envelope.clone(), output.status_success)
+        .map_err(|result| (result, envelope))
+}
+
+/// Цель выбранного набора по `v8project.yaml` до запуска раннера: `None`, если
+/// набор не определить (тогда решает ответ раннера).
+fn selected_target_exists(prepared: &PreparedSourceExport, root: &Path) -> Option<bool> {
+    let (_, directory) = selected_source_set(root, &prepared.arguments)?;
+    Some(directory.is_dir())
+}
+
+/// Выбранный набор по `v8project.yaml`: его имя и каталог. Без `sourceSet` —
+/// набор конфигурации. `None`, если набор не определить.
+fn selected_source_set(root: &Path, arguments: &ExportArguments) -> Option<(String, PathBuf)> {
+    let text = std::fs::read_to_string(root.join(CONFIG_NAME)).ok()?;
+    let document: serde_yaml::Value = serde_yaml::from_str(&text).ok()?;
+    let entry = document
+        .get("source-set")?
+        .as_sequence()?
+        .iter()
+        .find(|entry| match &arguments.source_set {
+            Some(name) => entry.get("name").and_then(serde_yaml::Value::as_str) == Some(name),
+            None => entry
+                .get("type")
+                .and_then(serde_yaml::Value::as_str)
+                .is_some_and(|kind| kind.eq_ignore_ascii_case("CONFIGURATION")),
+        })?;
+    let name = entry.get("name").and_then(serde_yaml::Value::as_str)?;
+    let path = entry.get("path").and_then(serde_yaml::Value::as_str)?;
+    Some((name.to_string(), root.join(path)))
+}
+
+/// Согласие человека на замену набора целиком — полным `pull` или
+/// перевыгрузкой: с несохранёнными правками или без git вызов идёт только с
+/// ним (INV.RUNTIME.DESTRUCTIVE-CONFIRMATION).
+fn require_replacement_consent(
+    root: &Path,
+    arguments: &ExportArguments,
+    request: &InvocationRequest,
+) -> Result<(), DomainResult> {
+    let Some((source_set, directory)) = selected_source_set(root, arguments) else {
+        return Ok(());
+    };
+    let local = local_changes(&SystemProcessRunner, &directory, &CancellationToken::new())
+        .map_err(|(code, error)| reject(code, error))?;
+    match pull_unsaved_question(&source_set, local) {
+        Some(question)
+            if !HumanChoice::is_confirmed(&question, "unica.run", request.arguments()) =>
+        {
+            Err(pull_unsaved_unconfirmed(
+                &source_set,
+                local,
+                request.arguments(),
+            ))
+        }
+        _ => Ok(()),
+    }
+}
+
+/// Перевыгрузка набора: приватная конфигурация раннера с временной файловой
+/// базой и линией платформы целевого формата, затем `infobase create`, для
+/// расширения — его загрузка, и полная выгрузка в каталог набора. Временный
+/// каталог удаляется и при успехе, и при отказе; база и файлы проекта не
+/// меняются.
+fn execute_reexport(
+    prepared: &PreparedSourceExport,
+    format: &'static str,
+    runner: &dyn ProcessRunner,
+    cancellation: &CancellationToken,
+    tool: &BundledTool,
+) -> DomainResult {
+    if let Err(mut refusal) = capture_inputs(prepared) {
+        refusal.at = Some(REEXPORT.to_string());
+        return refusal;
+    }
+    let Ok(root) = normalize_path_identity(&prepared.context.workspace_root) else {
+        return reject_reexport(
+            RefusalCode::InvalidState,
+            format!("{REEXPORT} could not resolve the workspace root"),
+        );
+    };
+    let source_set = prepared
+        .arguments
+        .source_set
+        .clone()
+        .expect("a re-export names its set");
+    let Some((_, directory)) = selected_source_set(&root, &prepared.arguments) else {
+        return reject_reexport(
+            RefusalCode::InvalidState,
+            format!("{CONFIG_NAME} declares no directory of the source set `{source_set}`"),
+        );
+    };
+    let platform_line =
+        unica_source_designer::format_profile::platform_line_for_export_format(format)
+            .expect("a writable export format has a platform line");
+    let target = path_text(
+        unica_workspace::paths::host_path_relative_to(&directory, &root)
+            .as_deref()
+            .unwrap_or(&directory),
+    );
+    if prepared.dry_run {
+        let local = match local_changes(&SystemProcessRunner, &directory, cancellation) {
+            Ok(local) => local,
+            Err((code, error)) => return reject_reexport(code, error),
+        };
+        let mut result = DomainResult::success(format!(
+            "{REEXPORT} plans to replace the source set `{source_set}` with its export in format {format} through a temporary file infobase"
+        ));
+        result.data = Some(json!({
+            "op": REEXPORT,
+            "dryRun": true,
+            "plan": {
+                "sourceSet": source_set,
+                "format": format,
+                "platformLine": platform_line,
+                "target": target,
+                "replacesLocalSources": true,
+                "localChanges": local.public(),
+                "temporaryInfobase": true,
+                "requiresPlatform": true,
+            },
+        }));
+        result.next.push(json!({
+            "tool": "unica.run",
+            "args": {"op": REEXPORT, "args": {"sourceSet": source_set, "format": format}, "dryRun": false},
+            "reason": "execute the re-export with the current arguments",
+        }));
+        return result;
+    }
+    let work = root
+        .join(".build")
+        .join("unica")
+        .join("reexport")
+        .join(uuid::Uuid::new_v4().simple().to_string());
+    // The runner holds its own lock on the private config; the set itself
+    // belongs to the working copy, so its runner lock is held throughout.
+    let _lock = match super::runner::lock_working_copy(&root, cancellation) {
+        Ok(lock) => lock,
+        Err(unica_workspace::runner_lock::RunnerLockFailure::Cancelled) => {
+            return reject_reexport(
+                RefusalCode::Cancelled,
+                format!("{REEXPORT} cancelled while waiting for the working copy runner lock"),
+            )
+        }
+        Err(unica_workspace::runner_lock::RunnerLockFailure::InvalidState(message)) => {
+            return reject_reexport(RefusalCode::InvalidState, message)
+        }
+    };
+    let outcome = run_reexport(
+        prepared,
+        &root,
+        &work,
+        platform_line,
+        runner,
+        cancellation,
+        tool,
+    );
+    // The temporary infobase and config are the re-export's own: nothing of
+    // them stays. A platform process may still hold its files for a moment
+    // after the runner answered, so the removal is repeated before it gives up.
+    let kept = remove_reexport_directory(&work).err();
+    let mut result = match outcome {
+        Ok(()) => {
+            let mut result = DomainResult::success(format!(
+                "{REEXPORT} replaced the source set `{source_set}` with its export in format {format}; the project infobase and files are unchanged"
+            ));
+            result.data = Some(json!({
+                "op": REEXPORT,
+                "dryRun": false,
+                "sourceSet": source_set,
+                "format": format,
+                "platformLine": platform_line,
+                "target": target,
+                "performedMode": ExportMode::Full.public_name(),
+            }));
+            result
+                .changed
+                .push(json!({"path": target, "kind": "replaced"}));
+            result
+        }
+        Err(refusal) => refusal,
+    };
+    if let Some(error) = kept {
+        let location = path_text(
+            unica_workspace::paths::host_path_relative_to(&work, &root)
+                .as_deref()
+                .unwrap_or(&work),
+        );
+        result.warnings.push(json!({
+            "code": REEXPORT_TEMPORARY_KEPT,
+            "message": format!(
+                "{REEXPORT} could not remove its temporary infobase {location} ({error}); the project infobase and files are unchanged; delete the directory when no 1C process holds it"
+            ),
+            "path": location,
+        }));
+    }
+    result
+}
+
+/// Code of the warning that the temporary directory of a re-export stays.
+const REEXPORT_TEMPORARY_KEPT: &str = "reexport_temporary_kept";
+
+/// Removes the re-export's own directory. A platform process may hold its
+/// files for a moment after the runner answered, so the removal is repeated
+/// for a few seconds; an absent directory is already removed.
+fn remove_reexport_directory(work: &Path) -> std::io::Result<()> {
+    let mut attempt = 0;
+    loop {
+        match std::fs::remove_dir_all(work) {
+            Ok(()) => return Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) if attempt >= 9 => return Err(error),
+            Err(_) => {
+                attempt += 1;
+                std::thread::sleep(std::time::Duration::from_millis(500));
+            }
+        }
+    }
+}
+
+fn run_reexport(
+    prepared: &PreparedSourceExport,
+    root: &Path,
+    work: &Path,
+    platform_line: &str,
+    runner: &dyn ProcessRunner,
+    cancellation: &CancellationToken,
+    tool: &BundledTool,
+) -> Result<(), DomainResult> {
+    let source_set = prepared
+        .arguments
+        .source_set
+        .clone()
+        .expect("a re-export names its set");
+    let config = super::runner::write_reexport_config(root, work, platform_line)
+        .map_err(|error| reject_reexport(RefusalCode::InvalidState, redactor(&error)))?;
+    let step = |command: &str, arguments: Vec<String>| -> Result<Value, DomainResult> {
+        if cancellation.is_cancelled() {
+            return Err(reject_reexport(
+                RefusalCode::Cancelled,
+                format!("{REEXPORT} cancelled before `{command}`"),
+            ));
+        }
+        let mut args = vec![
+            "--config".to_string(),
+            config.display().to_string(),
+            "--json-message".to_string(),
+        ];
+        args.extend(arguments);
+        let output = runner
+            .run_staged(&ProcessCommand {
+                program: tool.program.clone(),
+                args,
+                cwd: root.to_path_buf(),
+                env: Vec::new(),
+                env_remove: Vec::new(),
+                capture_limits: Some((RUNNER_OUTPUT_LIMIT, RUNNER_OUTPUT_LIMIT)),
+                timeout: None,
+                cancellation: cancellation.clone(),
+            })
+            .map_err(|error| {
+                runner_start_rejection(Some(REEXPORT.to_string()), &error, &tool.program)
+            })?;
+        reexport_step_result(command, output)
+    };
+    step("infobase create", vec!["infobase".into(), "create".into()])?;
+    if let Some(extension) = &prepared.arguments.extension {
+        step(
+            "push",
+            vec!["push".into(), extension.clone(), "--force".into()],
+        )?;
+    }
+    let mut pull = vec![
+        "pull".to_string(),
+        source_set.clone(),
+        "--force".to_string(),
+    ];
+    if let Some(extension) = &prepared.arguments.extension {
+        pull.extend(["--extension".to_string(), extension.clone()]);
+    }
+    step("pull", pull).map_err(|mut refusal| {
+        // The export may have started writing the set before it failed.
+        refusal.next.push(json!({
+            "tool": "unica.run",
+            "args": {"op": REEXPORT, "args": {"sourceSet": source_set, "format": prepared.reexport}, "dryRun": false},
+            "reason": "the source set may hold a partial export: repeat the re-export",
+        }));
+        refusal
+    })?;
+    Ok(())
+}
+
+/// One runner step of a re-export: its own command, an `ok` answer.
+fn reexport_step_result(command: &str, output: ProcessOutput) -> Result<Value, DomainResult> {
+    if output.cancelled {
+        return Err(reject_reexport(
+            RefusalCode::Cancelled,
+            "v8-runner was cancelled".into(),
+        ));
+    }
+    if output.stdout_truncated || output.stdout_had_invalid_utf8 {
+        return Err(reject_reexport(
+            RefusalCode::InvalidResult,
+            "v8-runner returned an unreadable or oversized JSON result".into(),
+        ));
+    }
+    let envelope: Value = serde_json::from_str(&output.stdout).map_err(|_| {
+        reject_reexport(
+            RefusalCode::InvalidResult,
+            "v8-runner returned an invalid JSON result".into(),
+        )
+    })?;
+    if envelope["command"] != command {
+        return Err(reject_reexport(
+            RefusalCode::InvalidResult,
+            format!("v8-runner returned a result for another command than `{command}`"),
+        ));
+    }
+    if !output.status_success || envelope["ok"] != true {
+        let code = envelope["error"]["code"]
+            .as_str()
+            .unwrap_or("provider_failed");
+        let message = envelope["error"]["message"]
+            .as_str()
+            .map(redactor)
+            .unwrap_or_else(|| "v8-runner failed without a typed message".to_string());
+        return Err(runner_rejection(
+            Some(REEXPORT.to_string()),
+            code,
+            envelope["error"]["layer"].as_str(),
+            message,
+        ));
+    }
+    Ok(envelope)
+}
+
+fn reject_reexport(code: RefusalCode, message: String) -> DomainResult {
+    DomainResult::canonical_rejection(Some(REEXPORT.to_string()), code, message)
+}
+
+/// Код вопроса о полной выгрузке поверх несохранённых правок.
+const PULL_UNSAVED_CODE: &str = "source.pull_unsaved";
+
+/// Согласованный текст вопроса о полной выгрузке; `None` — чистый набор, о
+/// нём не спрашивают. Число правок входит в текст: согласие на другое число
+/// не годится.
+fn pull_unsaved_question(source_set: &str, local: LocalChanges) -> Option<String> {
+    match local {
+        LocalChanges::Files(0) => None,
+        LocalChanges::Files(files) => Some(format!(
+            "В исходниках набора «{source_set}» есть несохранённые правки, файлов: {files}."
+        )),
+        LocalChanges::NotUnderGit => Some(format!(
+            "Исходники набора «{source_set}» не под git: несохранённые правки проверить нельзя."
+        )),
+    }
+}
+
+/// Подтверждение полной выгрузки этим же вызовом: надписи согласованы и
+/// закреплены тестом.
+fn pull_unsaved_confirmation(
+    source_set: &str,
+    local: LocalChanges,
+    call: &Map<String, Value>,
+) -> Option<HumanChoice> {
+    let question = pull_unsaved_question(source_set, local)?;
+    let (description, cancel, facts) = match local {
+        LocalChanges::Files(files) => (
+            format!("правки пропадут, файлов: {files}"),
+            Some("сохраните правки в git и повторите".to_string()),
+            json!({"sourceSet": source_set, "underGit": true, "files": files}),
+        ),
+        LocalChanges::NotUnderGit => (
+            "правки в файлах набора пропадут".to_string(),
+            None,
+            json!({"sourceSet": source_set, "underGit": false}),
+        ),
+    };
+    let mut choice = HumanChoice::confirmation(
+        PULL_UNSAVED_CODE,
+        question,
+        "Перезаписать исходники",
+        description,
+        "unica.run",
+        call,
+    )
+    .with_data(facts);
+    choice.cancel_description = cancel;
+    Some(choice)
+}
+
+/// Отказ `cancelled` без согласия человека: исходники не тронуты. Клиенту,
+/// который умеет спрашивать, дверь задаёт вопрос; остальным исполняет вызов
+/// как прежде.
+fn pull_unsaved_unconfirmed(
+    source_set: &str,
+    local: LocalChanges,
+    call: &Map<String, Value>,
+) -> DomainResult {
+    let mut rejection = reject(
+        RefusalCode::Cancelled,
+        "pull with force:true replaces the whole source set, which has unsaved changes or is not under git; it runs only with the person's confirmation, it was not given, and the sources are unchanged",
+    );
+    rejection.human_choice = pull_unsaved_confirmation(source_set, local, call).map(Box::new);
+    rejection
+}
+
+/// Несохранённые правки каталога набора перед полной выгрузкой: она
+/// заменяет весь набор, и правки, не сохранённые в git, пропадут.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum LocalChanges {
+    /// Изменённые, удалённые и неотслеживаемые файлы, не исключённые
+    /// `.gitignore`; ноль — правок нет.
+    Files(usize),
+    /// Каталог набора не под git: правки проверить нельзя.
+    NotUnderGit,
+}
+
+impl LocalChanges {
+    fn public(self) -> Value {
+        match self {
+            Self::Files(files) => json!({"underGit": true, "files": files}),
+            Self::NotUnderGit => json!({"underGit": false}),
+        }
+    }
+}
+
+/// Считает по git несохранённые правки в `target`. Отсутствующий каталог —
+/// правок нет. Каталог вне рабочего дерева git или без git на машине —
+/// `NotUnderGit`; ответ git, который не прочитать, — отказ, а не ноль.
+// resource-limit: pull.git-status-output-bytes
+// class: retention
+// unit: bytes
+// scope: process
+// value: 134217728
+// resource: Захват stdout `git status` каталога набора в превью полной выгрузки pull.
+// status: unproven
+// origin: #2843 (PR5): одна запись на файл, в неотслеживаемом наборе — десятки тысяч файлов с длинными путями
+// problem: предел вывода раннера (1 МиБ) отказывал превью первого pull большого набора
+// on-reach: вывод сверх предела — отказ invalid_state «git status did not report the changes of the source set»; правки не выдаются за отсутствующие.
+const GIT_STATUS_OUTPUT_LIMIT: usize = 128 * 1024 * 1024;
+// resource-limit: pull.git-timeout
+// class: deadline
+// unit: ms
+// scope: process
+// value: 120000
+// resource: Каждый вызов git (rev-parse, check-ignore, status) при подсчёте правок набора в превью полной выгрузки pull.
+// status: unproven
+// origin: #2843 (PR5)
+// problem: git, который не отвечает (fsmonitor, сетевой диск), держал бы превью без конца
+// on-reach: отказ deadline_exceeded «git <команда> did not answer in time»; превью не выдаёт правки за отсутствующие.
+const GIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
+pub(super) fn local_changes(
+    runner: &dyn ProcessRunner,
+    target: &Path,
+    cancellation: &CancellationToken,
+) -> Result<LocalChanges, (RefusalCode, String)> {
+    if !target.is_dir() {
+        return Ok(LocalChanges::Files(0));
+    }
+    let git = |args: &[&str]| {
+        runner.run_staged(&ProcessCommand {
+            program: PathBuf::from("git"),
+            args: args.iter().map(|arg| (*arg).to_string()).collect(),
+            cwd: target.to_path_buf(),
+            // Messages stay in English: "not a git repository" is read below.
+            env: vec![
+                ("GIT_OPTIONAL_LOCKS".into(), "0".into()),
+                ("LC_ALL".into(), "C".into()),
+                ("LANGUAGE".into(), "C".into()),
+            ],
+            env_remove: [
+                "GIT_DIR",
+                "GIT_WORK_TREE",
+                "GIT_INDEX_FILE",
+                "GIT_COMMON_DIR",
+            ]
+            .into_iter()
+            .map(Into::into)
+            .collect(),
+            capture_limits: Some((GIT_STATUS_OUTPUT_LIMIT, RUNNER_OUTPUT_LIMIT)),
+            timeout: Some(GIT_TIMEOUT),
+            cancellation: cancellation.clone(),
+        })
+    };
+    let failed = |what: &str, output: &ProcessOutput| -> Option<(RefusalCode, String)> {
+        if output.cancelled {
+            Some((
+                RefusalCode::Cancelled,
+                format!("pull cancelled during git {what}"),
+            ))
+        } else if output.timed_out {
+            Some((
+                RefusalCode::DeadlineExceeded,
+                format!("git {what} did not answer in time"),
+            ))
+        } else {
+            None
+        }
+    };
+    let inside = match git(&["rev-parse", "--is-inside-work-tree"]) {
+        Ok(output) => output,
+        // Нет git на машине: правки проверить нельзя, как и вне репозитория.
+        Err(ProcessStreamFailure::Spawn(_)) => return Ok(LocalChanges::NotUnderGit),
+        Err(error) => {
+            return Err((
+                RefusalCode::InvalidState,
+                format!("git rev-parse failed: {}", redactor(error.message())),
+            ))
+        }
+    };
+    if let Some(refusal) = failed("rev-parse", &inside) {
+        return Err(refusal);
+    }
+    if !inside.status_success {
+        // Вне репозитория правок не проверить; любой другой отказ git
+        // (например, чужой владелец репозитория) — не «не под git».
+        if inside.stderr.contains("not a git repository") {
+            return Ok(LocalChanges::NotUnderGit);
+        }
+        return Err((
+            RefusalCode::InvalidState,
+            format!(
+                "git could not tell whether the source set is under git: {}",
+                redactor(inside.stderr.trim())
+            ),
+        ));
+    }
+    if inside.stdout.trim() != "true" {
+        return Ok(LocalChanges::NotUnderGit);
+    }
+    // Каталог набора целиком исключён `.gitignore`: git его не хранит, и
+    // «правок нет» соврало бы — набор пропадёт весь.
+    let ignored = git(&["check-ignore", "-q", "."]).map_err(|error| {
+        (
+            RefusalCode::InvalidState,
+            format!("git check-ignore failed: {}", redactor(error.message())),
+        )
+    })?;
+    if let Some(refusal) = failed("check-ignore", &ignored) {
+        return Err(refusal);
+    }
+    if ignored.status_success {
+        return Ok(LocalChanges::NotUnderGit);
+    }
+    let status = git(&[
+        "status",
+        "--porcelain=v1",
+        "-z",
+        "--untracked-files=all",
+        "--no-renames",
+        "--",
+        ".",
+    ])
+    .map_err(|error| {
+        (
+            RefusalCode::InvalidState,
+            format!("git status failed: {}", redactor(error.message())),
+        )
+    })?;
+    if let Some(refusal) = failed("status", &status) {
+        return Err(refusal);
+    }
+    if !status.status_success || status.stdout_truncated || status.stdout_had_invalid_utf8 {
+        return Err((
+            RefusalCode::InvalidState,
+            "git status did not report the changes of the source set".to_string(),
+        ));
+    }
+    Ok(LocalChanges::Files(
+        status
+            .stdout
+            .split('\0')
+            .filter(|entry| !entry.is_empty())
+            .count(),
+    ))
+}
+
+/// Unica не сохраняет прежние исходники и не откатывает выгрузку: отказ
+/// исполнения после запуска раннера говорит, что цель может содержать
+/// частичную выгрузку, и предлагает повторить её полностью.
+fn note_partial_export(prepared: &PreparedSourceExport, result: &mut DomainResult) {
+    if prepared.dry_run {
+        return;
+    }
+    result.warnings.push(json!({
+        "code": "partial_export_possible",
+        "message": "v8-runner may have written part of the export: the target can hold a partial export; Unica keeps no copy of the previous sources",
+    }));
+    let mut args = public_arguments(prepared);
+    args["force"] = Value::Bool(true);
+    result.next.push(json!({
+        "tool": "unica.run",
+        "args": {"op": OPERATION, "args": args, "dryRun": false},
+        "reason": "repeat the export in full to replace a possibly partial target",
+    }));
+}
+
+fn applied_result(
+    prepared: &PreparedSourceExport,
+    plan: ExportPlan,
+    envelope: &Value,
+) -> DomainResult {
+    let target = path_text(&plan.target);
+    let up_to_date = envelope["data"]["up_to_date"] == true;
+    let state = if up_to_date {
+        "unchanged"
+    } else if plan.existed {
+        "updated"
+    } else {
+        "created"
+    };
+    let summary = if up_to_date {
+        format!(
+            "pull found source set `{}` up to date; nothing was exported",
+            plan.source_set
+        )
+    } else {
+        format!(
+            "pull exported source set `{}` into `{target}` in {} mode",
+            plan.source_set, plan.performed_mode
+        )
+    };
+    let mut result = DomainResult::success(summary);
+    result.data = Some(json!({
+        "op": OPERATION,
+        "dryRun": false,
+        "sourceSet": plan.source_set,
+        "extension": prepared.arguments.extension,
+        "mode": prepared.arguments.mode.public_name(),
+        "performedMode": plan.performed_mode,
+        "modeReason": plan.mode_reason,
+        "target": target,
+        "state": state,
+        "providerDispatched": true,
+    }));
+    if !up_to_date {
+        result.changed.push(json!({"path": target, "kind": state}));
+    }
+    note_runner_warnings(&mut result, envelope);
+    result
+}
+
+fn preview_result(
+    prepared: &PreparedSourceExport,
+    plan: ExportPlan,
+    envelope: &Value,
+    local: Option<LocalChanges>,
+) -> DomainResult {
+    let force = prepared.arguments.mode == ExportMode::Full;
+    let mut result = DomainResult::success(format!(
+        "pull planned a {} export of source set `{}`",
+        plan.performed_mode, plan.source_set
+    ));
+    result.data = Some(json!({
+        "op": OPERATION,
+        "dryRun": true,
+        "plan": {
+            "sourceSet": plan.source_set,
+            "extension": prepared.arguments.extension,
+            "mode": prepared.arguments.mode.public_name(),
+            "plannedMode": plan.performed_mode,
+            "modeReason": plan.mode_reason,
+            "target": path_text(&plan.target),
+            "targetExists": plan.existed,
+            "force": force,
+            "replacesLocalSources": force,
+            "localChanges": local.map(LocalChanges::public),
+        },
+        "providerDispatched": false,
+        "requiresPlatform": true,
+    }));
+    result.next.push(json!({
+        "tool": "unica.run",
+        "args": {"op": OPERATION, "args": public_arguments(prepared), "dryRun": false},
+        "reason": "execute with the current arguments",
+    }));
+    note_runner_warnings(&mut result, envelope);
+    result
 }
 
 fn validate_envelope(
@@ -471,14 +1623,24 @@ fn validate_runner_result(envelope: Value, status_success: bool) -> Result<Value
             .as_str()
             .map(redactor)
             .unwrap_or_else(|| "v8-runner failed without a typed message".to_string());
-        return Err(runner_rejection(Some(OPERATION.to_string()), code, message));
+        return Err(runner_envelope_refusal(
+            runner_rejection(
+                Some(OPERATION.to_string()),
+                code,
+                envelope["error"]["layer"].as_str(),
+                message,
+            ),
+            &envelope,
+        ));
     }
     Ok(envelope)
 }
 
 fn public_arguments(prepared: &PreparedSourceExport) -> Value {
     let mut args = Map::new();
-    args.insert("force".to_string(), Value::Bool(true));
+    if prepared.arguments.mode == ExportMode::Full {
+        args.insert("force".to_string(), Value::Bool(true));
+    }
     if let Some(source_set) = &prepared.arguments.source_set {
         args.insert("sourceSet".to_string(), Value::String(source_set.clone()));
     }
@@ -498,53 +1660,21 @@ fn reject(code: RefusalCode, message: impl Into<String>) -> DomainResult {
 
 /// Поставляемого раннера нет: маршрут один на все операции `run`, уточнение
 /// `provider_absent` назначает общий помощник.
-fn reject_absent_runner(absence: RunnerAbsence) -> DomainResult {
-    missing_runner_rejection(Some(OPERATION.to_string()), absence)
-}
-
 #[cfg(test)]
 mod medium_tests {
     use super::super::v13_infobase_exports::map_runner_code;
     use super::*;
     use std::fs;
     use std::sync::Mutex;
-    use unica_adapter_v8_runner::full_dump::with_test_platform;
-    use unica_process::runner::{ProcessStreamFailure, ProcessStreamOutput};
-    use unica_process::ProcessLineReply;
     use unica_refusal::Outcome;
 
-    type ApplyEffect = Box<dyn Fn(&ProcessCommand, &Path)>;
-
+    /// Раннер с заготовленными ответами: `pull` вызывает его один раз,
+    /// без протокола публикации.
     struct SequenceRunner {
         outputs: Mutex<Vec<ProcessOutput>>,
         calls: Mutex<Vec<ProcessCommand>>,
-        /// Ожидаемая логическая цель. Фикстура пишет только в приватный stage
-        /// из команды, даже если кадр намеренно сообщает чужую цель.
-        materialize_on_apply: Option<PathBuf>,
-        after_apply: Option<ApplyEffect>,
-        after_publication: Option<ApplyEffect>,
-        after_preview: Option<Box<dyn Fn()>>,
-        fault: Option<PublicationFault>,
-        replies: Mutex<Vec<Value>>,
-        stage_writes: Mutex<Vec<PathBuf>>,
-        terminals: Mutex<Vec<Value>>,
-    }
-
-    enum PublicationFault {
-        ReadyField(&'static str, Value),
-        SelectedExecutor(Value),
-        TerminalField(&'static str, Value),
-        MissingTerminal,
-        MalformedTerminal,
-        /// The terminal frame of a preview (`false`) or of a published apply
-        /// (`true`) exceeds the stream line limit, as the managed child reports it.
-        OversizedTerminal {
-            published: bool,
-        },
-        AckWriteFailure,
-        CancelAfterPublication,
-        UnconfirmedRunBeforeReady,
-        UnwindBeforeReady,
+        /// Каталог, который раннер создаёт во время вызова, как настоящая выгрузка.
+        writes: Option<PathBuf>,
     }
 
     impl SequenceRunner {
@@ -552,21 +1682,8 @@ mod medium_tests {
             Self {
                 outputs: Mutex::new(outputs.into_iter().rev().collect()),
                 calls: Mutex::new(Vec::new()),
-                materialize_on_apply: None,
-                after_apply: None,
-                after_publication: None,
-                after_preview: None,
-                fault: None,
-                replies: Mutex::new(Vec::new()),
-                stage_writes: Mutex::new(Vec::new()),
-                terminals: Mutex::new(Vec::new()),
+                writes: None,
             }
-        }
-
-        fn exporting(outputs: Vec<ProcessOutput>, target: PathBuf) -> Self {
-            let mut runner = Self::new(outputs);
-            runner.materialize_on_apply = Some(target);
-            runner
         }
 
         fn call_count(&self) -> usize {
@@ -576,203 +1693,72 @@ mod medium_tests {
         fn joined_args(&self, index: usize) -> String {
             self.calls.lock().unwrap()[index].args.join(" ")
         }
-
-        fn decision(
-            &self,
-            response: &ProcessLineReply,
-            nonce: &str,
-            phase: &str,
-        ) -> Option<String> {
-            let bytes = match response {
-                ProcessLineReply::Reply(bytes)
-                | ProcessLineReply::ReplyAndProtect { reply: bytes, .. } => bytes,
-                ProcessLineReply::Continue | ProcessLineReply::Stop => return None,
-            };
-            assert!(bytes.len() <= 4096 && bytes.last() == Some(&b'\n'));
-            let reply: Value = serde_json::from_slice(bytes).unwrap();
-            assert_eq!(reply["version"], 1);
-            assert_eq!(reply["nonce"], nonce);
-            assert_eq!(reply["phase"], phase);
-            let decision = reply["decision"].as_str().unwrap().to_owned();
-            self.replies.lock().unwrap().push(reply);
-            Some(decision)
-        }
     }
 
     impl ProcessRunner for SequenceRunner {
-        fn run(&self, _: &ProcessCommand) -> Result<ProcessOutput, String> {
-            panic!("source export must exchange live publication frames")
-        }
-
-        /// Drive the fixture publication protocol with configured faults and stop replies.
-        fn run_controlled_streaming_staged(
-            &self,
-            command: &ProcessCommand,
-            _: usize,
-            on_line: &mut dyn FnMut(usize, &[u8]) -> ProcessLineReply,
-        ) -> Result<ProcessStreamOutput, ProcessStreamFailure> {
+        fn run(&self, command: &ProcessCommand) -> Result<ProcessOutput, String> {
             self.calls.lock().unwrap().push(command.clone());
-            let output = self.outputs.lock().unwrap().pop().expect("runner output");
-            let mut envelope: Value = serde_json::from_str(&output.stdout).unwrap();
-            let config = Path::new(&command.args[1]);
-            let yaml: serde_yaml::Value =
-                serde_yaml::from_slice(&fs::read(config).unwrap()).unwrap();
-            let local: serde_yaml::Value =
-                fs::read(config.parent().unwrap().join(LOCAL_CONFIG_NAME))
-                    .ok()
-                    .map(|bytes| serde_yaml::from_slice(&bytes).unwrap())
-                    .unwrap_or(serde_yaml::Value::Null);
-            let pull = command.args.iter().position(|arg| arg == "pull").unwrap();
-            let set = command
-                .args
-                .get(pull + 1)
-                .filter(|arg| !arg.starts_with("--"))
-                .map(String::as_str)
-                .unwrap_or("main");
-            let declared = yaml["source-set"]
-                .as_sequence()
+            if let Some(target) = &self.writes {
+                fs::create_dir_all(target).unwrap();
+            }
+            self.outputs
+                .lock()
                 .unwrap()
-                .iter()
-                .find(|entry| entry["name"].as_str() == Some(set));
-            let declared = declared.expect("guard selects a declared source set");
-            let target = Path::new(declared["path"].as_str().unwrap());
-            let original = normalize_path_identity(&command.cwd).unwrap().join(set);
-            if envelope["data"]["source_set"].as_str() == Some(set)
-                && envelope["data"]["target_path"].as_str().map(Path::new) == Some(&original)
-            {
-                envelope["data"]["target_path"] = json!(target);
-            }
-            let stage_index = command
-                .args
-                .iter()
-                .position(|arg| arg == "--publication-stdio")
-                .expect("canonical export requests the publication protocol");
-            let stage = Path::new(&command.args[stage_index + 1]);
-            assert!(stage.is_absolute() && target.is_absolute());
-            assert_ne!(stage, target);
-            assert!(stage.starts_with(&command.cwd));
-            assert!(stage.parent().unwrap().is_dir());
-            assert!(stage.ancestors().any(|path| path
-                .file_name()
-                .is_some_and(|name| { name.to_string_lossy().starts_with(".unica-dump-guard-") })));
-            let preview = command.args.iter().any(|argument| argument == "--dry-run");
-            let nonce = uuid::Uuid::new_v4().to_string();
-            let executable = local["tools"]["platform"]["path"]
-                .as_str()
-                .or_else(|| yaml["tools"]["platform"]["path"].as_str())
-                .map(PathBuf::from)
-                .unwrap_or_else(|| command.cwd.join("platform/8.3.27.2074/1cv8"));
-            let mut executor = json!({"kind":"local","executable":executable,"endpoint":null});
-            if let Some(PublicationFault::SelectedExecutor(value)) = &self.fault {
-                executor = value.clone();
-            }
-            let selected = json!({"version":1,"nonce":nonce,"phase":"selected",
-                "provider":{"selected":"designer"},"executor":executor});
-            let response = on_line(1, &serde_json::to_vec(&selected).unwrap());
-            let authorized =
-                self.decision(&response, &nonce, "selected").as_deref() == Some("continue");
-            let mut stopped = response == ProcessLineReply::Stop;
-            let mut published = false;
-            let mut line_error = None;
-            if authorized && !preview {
-                if let Some(expected_target) = &self.materialize_on_apply {
-                    assert_eq!(normalize_path_identity(expected_target).unwrap(), target);
-                    write_valid_dump(stage, declared["type"].as_str() == Some("EXTENSION"));
-                    self.stage_writes.lock().unwrap().push(stage.to_path_buf());
-                }
-                if let Some(effect) = &self.after_apply {
-                    effect(command, stage);
-                }
-                if matches!(&self.fault, Some(PublicationFault::UnwindBeforeReady)) {
-                    panic!("injected controlled runner unwind before Ready");
-                }
-                if matches!(
-                    &self.fault,
-                    Some(PublicationFault::UnconfirmedRunBeforeReady)
-                ) {
-                    return Err(ProcessStreamFailure::Run(
-                        "process_failed: termination was not confirmed".into(),
-                    ));
-                }
-                let mut ready = json!({"version":1,"nonce":nonce,"phase":"ready",
-                    "command":envelope["command"],
-                    "requested_mode":envelope["data"]["requested_mode"],
-                    "mode":envelope["data"]["mode"],
-                    "mode_reason":envelope["data"]["mode_reason"],
-                    "extension":envelope["data"]["extension"],
-                    "provider_dispatched":envelope["data"]["provider_dispatched"],
-                    "source_set":envelope["data"]["source_set"],
-                    "target_path":envelope["data"]["target_path"],
-                    "stage_path":stage,"snapshot":"prepared","snapshot_warning":null});
-                if let Some(PublicationFault::ReadyField(field, value)) = &self.fault {
-                    ready[*field] = value.clone();
-                }
-                let response = on_line(2, &serde_json::to_vec(&ready).unwrap());
-                let decision = self.decision(&response, &nonce, "ready");
-                published = matches!(response, ProcessLineReply::ReplyAndProtect { .. });
-                assert_eq!(published, decision.as_deref() == Some("published"));
-                stopped |= response == ProcessLineReply::Stop;
-                if published {
-                    assert!(
-                        !stage.exists(),
-                        "publication must consume its private stage"
-                    );
-                    assert!(target.join("Configuration.xml").is_file());
-                    if let Some(effect) = &self.after_publication {
-                        effect(command, stage);
-                    }
-                    match &self.fault {
-                        Some(PublicationFault::AckWriteFailure) => {
-                            return Err(ProcessStreamFailure::Run(
-                                "process_failed: injected commit ACK write failure".into(),
-                            ))
-                        }
-                        Some(PublicationFault::CancelAfterPublication) => {
-                            command.cancellation.cancel()
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            if !(stopped
-                || (published && matches!(&self.fault, Some(PublicationFault::MissingTerminal))))
-            {
-                if published && matches!(&self.fault, Some(PublicationFault::MalformedTerminal)) {
-                    stopped = on_line(3, b"not a JSON frame") == ProcessLineReply::Stop;
-                } else if matches!(&self.fault,
-                    Some(PublicationFault::OversizedTerminal { published: faulted }) if *faulted == published)
-                {
-                    // The managed child withholds the oversized line and stops the runner.
-                    line_error = Some((3, unica_process::STREAM_LINE_TOO_LONG_ERROR.to_string()));
-                    stopped = true;
-                } else {
-                    let mut terminal = json!({"version":1,"nonce":nonce,"phase":"terminal",
-                        "publication":if published {"published"} else {"not_published"},
-                        "memory":if published {"saved"} else {"unchanged"},"result":envelope});
-                    if published {
-                        if let Some(PublicationFault::TerminalField(field, value)) = &self.fault {
-                            terminal[*field] = value.clone();
-                        }
-                    }
-                    self.terminals.lock().unwrap().push(terminal.clone());
-                    stopped = on_line(3, &serde_json::to_vec(&terminal).unwrap())
-                        == ProcessLineReply::Stop;
-                }
-            }
-            if preview {
-                if let Some(effect) = &self.after_preview {
-                    effect();
-                }
-            }
-            Ok(ProcessStreamOutput {
-                status_success: output.status_success && !stopped,
-                status: output.status,
-                stderr: output.stderr,
-                timed_out: output.timed_out,
-                cancelled: output.cancelled,
-                stopped_by_consumer: stopped,
-                line_error,
-            })
+                .pop()
+                .ok_or_else(|| "unexpected v8-runner call".to_string())
+        }
+    }
+
+    fn run(root: &Path, prepared: &PreparedSourceExport, runner: &SequenceRunner) -> DomainResult {
+        execute_with_resolved_runner(
+            prepared,
+            runner,
+            CancellationToken::new(),
+            &tool(root),
+            "0.17.0-test-fixture",
+        )
+    }
+
+    fn workspace() -> tempfile::TempDir {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(
+            root.path().join(CONFIG_NAME),
+            "format: DESIGNER\ninfobase:\n  connection: 'File=build/ib'\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: main\n  - name: Sales\n    type: EXTENSION\n    path: Sales\n",
+        )
+        .unwrap();
+        root
+    }
+
+    fn prepared(
+        root: &Path,
+        mode: ExportMode,
+        source_set: Option<&str>,
+        extension: Option<&str>,
+        dry_run: bool,
+    ) -> PreparedSourceExport {
+        PreparedSourceExport {
+            arguments: ExportArguments {
+                mode,
+                source_set: source_set.map(str::to_string),
+                extension: extension.map(str::to_string),
+            },
+            dry_run,
+            context: WorkspaceContext {
+                cwd: root.to_path_buf(),
+                workspace_root: root.to_path_buf(),
+                cache_root: root.join(".build/unica"),
+                workspace_epoch: 1,
+            },
+            reexport: None,
+            call: super::super::v13_infobase_another_copy::with_consent(&Map::new()),
+        }
+    }
+
+    fn tool(root: &Path) -> BundledTool {
+        BundledTool {
+            program: root.join("v8-runner"),
+            warnings: Vec::new(),
+            missing: None,
         }
     }
 
@@ -796,78 +1782,13 @@ mod medium_tests {
         }
     }
 
-    fn workspace() -> tempfile::TempDir {
-        let root = tempfile::tempdir().unwrap();
-        fs::write(
-            root.path().join(CONFIG_NAME),
-            "format: DESIGNER\ninfobase:\n  connection: 'File=build/ib'\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: main\n  - name: Sales\n    type: EXTENSION\n    path: Sales\n",
-        )
-        .unwrap();
-        root
+    fn captured_014(name: &str) -> Value {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/v8_runner_014")
+            .join(name);
+        serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
     }
 
-    fn write_valid_dump(target: &Path, extension: bool) {
-        fs::create_dir_all(target.join("Catalogs")).unwrap();
-        let properties = if extension {
-            "<Properties><ConfigurationExtensionPurpose>Customization</ConfigurationExtensionPurpose></Properties>"
-        } else {
-            "<Properties/>"
-        };
-        fs::write(target.join("Configuration.xml"), format!(
-            "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.20\"><Configuration>{properties}</Configuration></MetaDataObject>"
-        )).unwrap();
-        fs::write(target.join("Catalogs/Items.xml"),
-            "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.20\"><Catalog><Properties/></Catalog></MetaDataObject>"
-        ).unwrap();
-    }
-
-    fn trusted_platform(root: &Path) -> PathBuf {
-        let path = root.join("platform/8.3.27.2074/1cv8");
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(&path, b"controlled platform identity").unwrap();
-        for name in ["ibcmd", "ibcmd.exe"] {
-            fs::write(
-                path.parent().unwrap().join(name),
-                b"controlled probe identity",
-            )
-            .unwrap();
-        }
-        path
-    }
-
-    fn prepared(
-        root: &Path,
-        mode: ExportMode,
-        source_set: Option<&str>,
-        extension: Option<&str>,
-        dry_run: bool,
-    ) -> PreparedSourceExport {
-        PreparedSourceExport {
-            arguments: ExportArguments {
-                mode,
-                source_set: source_set.map(str::to_string),
-                extension: extension.map(str::to_string),
-            },
-            dry_run,
-            context: WorkspaceContext {
-                cwd: root.to_path_buf(),
-                workspace_root: root.to_path_buf(),
-                cache_root: root.join(".build/unica"),
-                workspace_epoch: 1,
-            },
-        }
-    }
-
-    fn tool(root: &Path) -> BundledTool {
-        BundledTool {
-            program: root.join("v8-runner"),
-            warnings: Vec::new(),
-            missing: None,
-        }
-    }
-
-    /// Конверт `pull` раннера 0.12.0 (форма та же, что у `dump` 0.9.0 с живой пробы):
-    /// набор, режим прописными и абсолютный целевой каталог.
     fn envelope(
         root: &Path,
         set: &str,
@@ -884,10 +1805,7 @@ mod medium_tests {
             "mode": mode,
             "target_path": root.join(set),
             "duration_ms": 2,
-            "message": format!(
-                "would dump {mode} into '{}' via /opt/1cv8/8.3.27.2074/1cv8; nothing written",
-                root.join(set).display()
-            ),
+            "message": "fixture",
         });
         if let Some(extension) = extension {
             data["extension"] = json!(extension);
@@ -902,23 +1820,281 @@ mod medium_tests {
         })
     }
 
-    fn run(root: &Path, prepared: &PreparedSourceExport, runner: &SequenceRunner) -> DomainResult {
-        with_test_platform(&trusted_platform(root), "8.3.27.2074", || {
-            execute_with_resolved_runner(
-                prepared,
-                runner,
-                CancellationToken::new(),
-                &tool(root),
-                "0.9.0",
-            )
+    fn failure(code: &str, message: &str) -> Value {
+        json!({
+            "ok": false,
+            "command": "pull",
+            "duration_ms": 0,
+            "data": {"ok": false, "provider_dispatched": true, "source_set": "main", "mode": "FULL", "target_path": "", "message": message},
+            "warnings": [],
+            "steps": [],
+            "error": {"code": code, "kind": "validation", "message": message}
         })
     }
 
-    fn captured_014(name: &str) -> Value {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures/v8_runner_014")
-            .join(name);
-        serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
+    /// Без `force` режим выбирает раннер; `force:true` требует полной
+    /// выгрузки, а не логическое значение — неверный вызов.
+    /// rule: INV.WIRE.SOURCE-EXPORT-TARGET-STAYS-INSIDE-THE-WORKSPACE
+    #[test]
+    fn force_is_optional_and_only_force_requests_a_full_export() {
+        let root = workspace();
+        let request = |args| {
+            InvocationRequest::new(
+                ToolIdentity::Run,
+                json!({"op":"pull","args":args,"dryRun":true}),
+                root.path().display().to_string(),
+                7000,
+            )
+            .unwrap()
+        };
+        let full = PreparedSourceExport::parse(&request(json!({"force":true}))).unwrap();
+        assert_eq!(full.arguments.mode, ExportMode::Full);
+        for args in [json!({}), json!({"force": false})] {
+            let incremental = PreparedSourceExport::parse(&request(args.clone()))
+                .unwrap_or_else(|_| panic!("{args} must be accepted"));
+            assert_eq!(
+                incremental.arguments.mode,
+                ExportMode::Incremental,
+                "{args}"
+            );
+        }
+        let refused = PreparedSourceExport::parse(&request(json!({"force":"yes"})))
+            .expect_err("non-boolean force is refused");
+        assert_eq!(refused.diagnostics[0]["code"], "bad_value");
+    }
+
+    /// Превью без `force` не заказывает полную выгрузку и предлагает
+    /// исполнить те же аргументы.
+    /// rule: INV.WIRE.SOURCE-EXPORT-TARGET-STAYS-INSIDE-THE-WORKSPACE
+    #[test]
+    fn preview_without_force_leaves_the_mode_to_the_runner() {
+        let root = workspace();
+        let runner = SequenceRunner::new(vec![process(
+            envelope(root.path(), "main", "INCREMENTAL", None, false),
+            true,
+        )]);
+        let result = run(
+            root.path(),
+            &prepared(
+                root.path(),
+                ExportMode::Incremental,
+                Some("main"),
+                None,
+                true,
+            ),
+            &runner,
+        );
+        assert!(result.ok, "{result:?}");
+        let plan = &result.data.as_ref().unwrap()["plan"];
+        assert_eq!(plan["mode"], "incremental");
+        assert_eq!(plan["plannedMode"], "incremental");
+        assert_eq!(plan["force"], false);
+        assert_eq!(plan["replacesLocalSources"], false);
+        assert_eq!(result.next[0]["args"]["args"], json!({"sourceSet": "main"}));
+        assert_eq!(
+            runner.joined_args(0),
+            format!(
+                "--config {} --json-message pull main --dry-run",
+                root.path().join(CONFIG_NAME).display()
+            )
+        );
+    }
+
+    /// Исполнение вызывает раннер один раз, без стадии и публикации; квитанция
+    /// называет цель и фактический режим.
+    /// rule: INV.WIRE.SOURCE-EXPORT-TARGET-STAYS-INSIDE-THE-WORKSPACE
+    #[test]
+    fn apply_runs_the_runner_once_and_names_the_target_and_the_mode() {
+        let root = workspace();
+        fs::create_dir(root.path().join("main")).unwrap();
+        let runner = SequenceRunner::new(vec![process(
+            envelope(root.path(), "main", "FULL", None, true),
+            true,
+        )]);
+        let result = run(
+            root.path(),
+            &prepared(root.path(), ExportMode::Full, Some("main"), None, false),
+            &runner,
+        );
+        assert!(result.ok, "{result:?}");
+        assert_eq!(runner.call_count(), 1);
+        let args = runner.joined_args(0);
+        assert!(args.ends_with("--json-message pull main --force"), "{args}");
+        assert!(!args.contains("--publication-stdio"), "{args}");
+        let data = result.data.as_ref().unwrap();
+        assert_eq!(data["target"], "main");
+        assert_eq!(data["performedMode"], "full");
+        assert_eq!(data["state"], "updated");
+        assert!(data.get("files").is_none(), "{data}");
+        assert_eq!(
+            result.changed,
+            vec![json!({"path":"main","kind":"updated"})]
+        );
+        assert!(result.warnings.is_empty(), "{result:?}");
+        assert!(fs::read_dir(root.path()).unwrap().all(|entry| !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".unica-dump-guard-")));
+        let encoded = serde_json::to_string(&result).unwrap();
+        let root_text = normalize_path_identity(root.path())
+            .unwrap()
+            .display()
+            .to_string();
+        assert!(
+            !encoded.contains(&root_text),
+            "absolute path leaked: {encoded}"
+        );
+    }
+
+    /// Раннер не нашёл изменений: исполнение ничего не выгрузило и цель не
+    /// названа изменённой.
+    /// rule: INV.WIRE.SOURCE-EXPORT-TARGET-STAYS-INSIDE-THE-WORKSPACE
+    #[test]
+    fn an_up_to_date_set_is_answered_without_a_change() {
+        let root = workspace();
+        fs::create_dir(root.path().join("main")).unwrap();
+        let mut unchanged = envelope(root.path(), "main", "INCREMENTAL", None, true);
+        unchanged["data"]["up_to_date"] = json!(true);
+        let runner = SequenceRunner::new(vec![process(unchanged, true)]);
+        let result = run(
+            root.path(),
+            &prepared(
+                root.path(),
+                ExportMode::Incremental,
+                Some("main"),
+                None,
+                false,
+            ),
+            &runner,
+        );
+        assert!(result.ok, "{result:?}");
+        assert_eq!(result.data.as_ref().unwrap()["state"], "unchanged");
+        assert!(result.changed.is_empty(), "{result:?}");
+        assert!(result.summary.contains("up to date"), "{}", result.summary);
+    }
+
+    /// Unica не хранит прежние исходники: отказ раннера при исполнении
+    /// предупреждает о возможной частичной выгрузке и предлагает повторить её
+    /// полностью; превью этого не говорит.
+    /// rule: INV.WIRE.SOURCE-EXPORT-TARGET-STAYS-INSIDE-THE-WORKSPACE
+    #[test]
+    fn a_failed_apply_warns_about_a_partial_export_and_offers_a_full_one() {
+        let root = workspace();
+        let runner = SequenceRunner::new(vec![process(
+            failure("platform_failure", "designer exited with code 1"),
+            false,
+        )]);
+        let result = run(
+            root.path(),
+            &prepared(
+                root.path(),
+                ExportMode::Incremental,
+                Some("main"),
+                None,
+                false,
+            ),
+            &runner,
+        );
+        assert!(!result.ok);
+        assert_eq!(
+            result.warnings[0]["code"], "partial_export_possible",
+            "{result:?}"
+        );
+        assert_eq!(
+            result.next[0]["args"],
+            json!({"op":"pull","args":{"sourceSet":"main","force":true},"dryRun":false})
+        );
+
+        let runner = SequenceRunner::new(vec![process(
+            failure("platform_failure", "designer exited with code 1"),
+            false,
+        )]);
+        let preview = run(
+            root.path(),
+            &prepared(
+                root.path(),
+                ExportMode::Incremental,
+                Some("main"),
+                None,
+                true,
+            ),
+            &runner,
+        );
+        assert!(!preview.ok);
+        assert!(preview.warnings.is_empty(), "{preview:?}");
+    }
+
+    /// Цель, которой до запуска не было, названа созданной, хотя раннер её
+    /// уже записал.
+    /// rule: INV.WIRE.SOURCE-EXPORT-TARGET-STAYS-INSIDE-THE-WORKSPACE
+    #[test]
+    fn a_target_absent_before_the_runner_is_named_created() {
+        let root = workspace();
+        let target = root.path().join("main");
+        let mut runner = SequenceRunner::new(vec![process(
+            envelope(root.path(), "main", "FULL", None, true),
+            true,
+        )]);
+        runner.writes = Some(target.clone());
+        let result = run(
+            root.path(),
+            &prepared(root.path(), ExportMode::Full, Some("main"), None, false),
+            &runner,
+        );
+        assert!(target.is_dir());
+        assert!(result.ok, "{result:?}");
+        assert_eq!(result.data.as_ref().unwrap()["state"], "created");
+        assert_eq!(
+            result.changed,
+            vec![json!({"path":"main","kind":"created"})]
+        );
+    }
+
+    /// Отказ раннера до платформы ничего не писал: предупреждения о частичной
+    /// выгрузке нет.
+    /// rule: INV.WIRE.SOURCE-EXPORT-TARGET-STAYS-INSIDE-THE-WORKSPACE
+    #[test]
+    fn a_refusal_before_dispatch_does_not_warn_about_a_partial_export() {
+        let root = workspace();
+        let mut refused = failure("invalid_argument", "source set is not declared");
+        refused["data"]["provider_dispatched"] = json!(false);
+        let runner = SequenceRunner::new(vec![process(refused, false)]);
+        let result = run(
+            root.path(),
+            &prepared(
+                root.path(),
+                ExportMode::Incremental,
+                Some("main"),
+                None,
+                false,
+            ),
+            &runner,
+        );
+        assert!(!result.ok);
+        assert!(result.warnings.is_empty(), "{result:?}");
+        assert!(result.next.is_empty(), "{result:?}");
+    }
+
+    /// Ответ раннера о другом наборе не признаётся успехом.
+    /// rule: INV.WIRE.SOURCE-EXPORT-TARGET-STAYS-INSIDE-THE-WORKSPACE
+    #[test]
+    fn apply_refuses_a_result_for_another_source_set() {
+        let root = workspace();
+        let runner = SequenceRunner::new(vec![process(
+            envelope(root.path(), "Sales", "FULL", None, true),
+            true,
+        )]);
+        let result = run(
+            root.path(),
+            &prepared(root.path(), ExportMode::Full, Some("main"), None, false),
+            &runner,
+        );
+        assert_eq!(
+            result.diagnostics[0]["code"], "invalid_result",
+            "{result:?}"
+        );
+        assert!(result.changed.is_empty());
     }
 
     /// Живые конверты раннера 0.14.0: `pull` копии в базу другой рабочей копии
@@ -932,7 +2108,6 @@ mod medium_tests {
     fn captured_pull_into_the_infobase_of_another_copy_names_it() {
         let root = workspace();
         fs::create_dir_all(root.path().join("main")).unwrap();
-        write_valid_dump(&root.path().join("main"), false);
         let target = normalize_path_identity(root.path()).unwrap().join("main");
         let legacy = captured_014("other-copy-pull-preview.json");
         let runner = SequenceRunner::new(vec![process(legacy, true)]);
@@ -961,10 +2136,7 @@ mod medium_tests {
         assert!(result.ok, "{result:?}");
         super::super::v13_source_import::tests::assert_another_copy_is_named(&result);
 
-        let runner = SequenceRunner::exporting(
-            vec![process(preview, true), process(applied, true)],
-            root.path().join("main"),
-        );
+        let runner = SequenceRunner::new(vec![process(applied, true)]);
         let result = run(
             root.path(),
             &prepared(root.path(), ExportMode::Full, Some("main"), None, false),
@@ -972,26 +2144,18 @@ mod medium_tests {
         );
         assert!(result.ok, "{result:?}");
         super::super::v13_source_import::tests::assert_another_copy_is_named(&result);
-    }
 
-    /// rule: INV.RUNTIME.COMPATIBLE-DEVELOPMENT-CYCLE
-    #[test]
-    fn compatibility_cycle_accepts_explicit_force_and_rejects_silent_overwrite() {
-        let root = workspace();
-        let request = |args| {
-            InvocationRequest::new(
-                ToolIdentity::Run,
-                json!({"op":"pull","args":args,"dryRun":true}),
-                root.path().display().to_string(),
-                7000,
-            )
-            .unwrap()
-        };
-        assert!(PreparedSourceExport::parse(&request(json!({"force":true}))).is_ok());
-        assert!(PreparedSourceExport::parse(&request(json!({}))).is_err());
-        assert!(PreparedSourceExport::parse(&request(json!({"force":false}))).is_err());
+        // Без согласия человека исполнение после превью отменяется с вопросом.
+        let mut unasked = prepared(root.path(), ExportMode::Full, Some("main"), None, false);
+        unasked.call = Map::new();
+        let runner = SequenceRunner::new(vec![process(preview, true)]);
+        let refused = run(root.path(), &unasked, &runner);
+        assert_eq!(refused.diagnostics[0]["code"], "cancelled", "{refused:?}");
+        assert_eq!(
+            refused.human_choice.as_deref().expect("a question").code,
+            "infobase.another_copy"
+        );
     }
-
     /// rule: INV.WIRE.SOURCE-EXPORT-TARGET-STAYS-INSIDE-THE-WORKSPACE
     #[test]
     fn arguments_are_closed_and_each_refusal_names_the_fix() {
@@ -1057,7 +2221,6 @@ mod medium_tests {
             .contains("declared source sets: main, Sales"));
         assert_eq!(runner.call_count(), 0);
     }
-
     /// rule: INV.WIRE.SOURCE-EXPORT-TARGET-STAYS-INSIDE-THE-WORKSPACE
     #[test]
     fn preview_names_the_target_inside_the_workspace_without_writing() {
@@ -1096,10 +2259,9 @@ mod medium_tests {
         assert!(!encoded.contains("1cv8"), "platform path leaked: {encoded}");
         assert!(runner
             .joined_args(0)
-            .contains("pull main --force --publication-stdio "));
+            .contains("--json-message pull --force"));
         assert!(runner.joined_args(0).ends_with("--dry-run"));
     }
-
     /// rule: INV.WIRE.SOURCE-EXPORT-TARGET-STAYS-INSIDE-THE-WORKSPACE
     #[test]
     fn preview_of_an_extension_set_passes_the_extension_and_the_set() {
@@ -1121,14 +2283,11 @@ mod medium_tests {
         );
         assert!(result.ok, "{result:?}");
         assert_eq!(result.data.as_ref().unwrap()["plan"]["extension"], "Sales");
-        assert!(runner
-            .joined_args(0)
-            .contains("pull Sales --force --publication-stdio "));
+        assert!(runner.joined_args(0).contains("pull Sales --force"));
         assert!(runner
             .joined_args(0)
             .ends_with("--extension Sales --dry-run"));
     }
-
     #[test]
     fn preview_accepts_cyrillic_extension_source_set_from_public_run_request() {
         let root = workspace();
@@ -1160,16 +2319,13 @@ mod medium_tests {
             "Доработки"
         );
         assert_eq!(result.data.as_ref().unwrap()["plan"]["target"], "Доработки");
-        assert!(runner
-            .joined_args(0)
-            .contains("pull Доработки --force --publication-stdio "));
+        assert!(runner.joined_args(0).contains("pull Доработки --force"));
         assert!(runner
             .joined_args(0)
             .ends_with("--extension Доработки --dry-run"));
         assert!(result.changed.is_empty());
         assert!(!root.path().join("Доработки").exists());
     }
-
     #[test]
     fn an_extension_set_requires_its_explicit_extension_before_runner_start() {
         let root = workspace();
@@ -1189,35 +2345,6 @@ mod medium_tests {
         assert_eq!(runner.call_count(), 0);
         assert!(!root.path().join("Sales").exists());
     }
-
-    #[test]
-    fn cancellation_while_waiting_for_project_ownership_is_typed_before_runner_start() {
-        let root = workspace();
-        let owner = lock_project(root.path(), &CancellationToken::new()).unwrap();
-        let cancellation = CancellationToken::new();
-        let cancel_waiter = cancellation.clone();
-        let runner = SequenceRunner::new(Vec::new());
-        let result = unica_workspace::full_dump::test_support::with_test_project_lock_contention(
-            move || cancel_waiter.cancel(),
-            || {
-                execute_with_resolved_runner(
-                    &prepared(root.path(), ExportMode::Full, None, None, true),
-                    &runner,
-                    cancellation,
-                    &tool(root.path()),
-                    "0.15.3",
-                )
-            },
-        );
-        assert!(!result.ok);
-        assert_eq!(result.diagnostics[0]["code"], "cancelled");
-        assert!(result.changed.is_empty());
-        assert_eq!(runner.call_count(), 0);
-        assert!(!root.path().join("main").exists());
-        drop(owner);
-        lock_project(root.path(), &CancellationToken::new()).unwrap();
-    }
-
     /// rule: INV.WIRE.SOURCE-EXPORT-TARGET-STAYS-INSIDE-THE-WORKSPACE
     #[test]
     fn preview_refuses_a_target_outside_the_workspace_an_undeclared_set_or_a_write() {
@@ -1269,1572 +2396,6 @@ mod medium_tests {
             .unwrap()
             .contains("nothing was written"));
     }
-
-    #[test]
-    fn full_export_refuses_an_untrusted_platform_before_writing_sources() {
-        let root = workspace();
-        let config = root.path().join(CONFIG_NAME);
-        let yaml = fs::read_to_string(&config).unwrap();
-        fs::write(
-            &config,
-            format!("{yaml}tools:\n  platform:\n    path: missing-platform/1cv8\n"),
-        )
-        .unwrap();
-        let runner = SequenceRunner::exporting(
-            vec![
-                process(envelope(root.path(), "main", "FULL", None, false), true),
-                process(envelope(root.path(), "main", "FULL", None, true), true),
-            ],
-            root.path().join("main"),
-        );
-        let result = execute_with_resolved_runner(
-            &prepared(root.path(), ExportMode::Full, None, None, false),
-            &runner,
-            CancellationToken::new(),
-            &tool(root.path()),
-            "0.15.3",
-        );
-        assert!(!result.ok, "untrusted platform was dispatched: {result:?}");
-        assert_eq!(
-            runner.call_count(),
-            1,
-            "selection needs one runner handshake"
-        );
-        assert!(!runner
-            .replies
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|reply| reply["decision"] == "continue"));
-        assert!(runner.stage_writes.lock().unwrap().is_empty());
-        assert!(!root.path().join("main").exists());
-    }
-
-    /// rule: INV.WIRE.SOURCE-EXPORT-TARGET-STAYS-INSIDE-THE-WORKSPACE
-    #[test]
-    fn apply_without_prior_preview_counts_the_exported_files_itself() {
-        let root = workspace();
-        let runner = SequenceRunner::exporting(
-            vec![
-                process(envelope(root.path(), "main", "FULL", None, false), true),
-                process(envelope(root.path(), "main", "FULL", None, true), true),
-            ],
-            root.path().join("main"),
-        );
-
-        let result = run(
-            root.path(),
-            &prepared(root.path(), ExportMode::Full, None, None, false),
-            &runner,
-        );
-
-        assert!(result.ok, "{result:?}");
-        assert_eq!(runner.call_count(), 2);
-        assert!(runner.joined_args(0).ends_with("--dry-run"));
-        assert!(!runner.joined_args(1).contains("--dry-run"));
-        let data = result.data.as_ref().unwrap();
-        assert_eq!(data["target"], "main");
-        assert_eq!(data["files"], 2);
-        assert_eq!(data["state"], "created");
-        assert_eq!(result.changed[0]["path"], "main");
-        assert_eq!(result.changed[0]["kind"], "created");
-        assert!(result.rev.is_none());
-        assert!(result.artifacts.is_empty());
-        let encoded = serde_json::to_string(&result).unwrap();
-        assert!(!encoded.contains("1cv8"), "platform path leaked: {encoded}");
-        assert!(!encoded.contains("--config"));
-    }
-
-    /// rule: INV.RUNTIME.FULL-EXPORT-PRIVATE-STAGING
-    /// rule: INV.RUNTIME.FULL-EXPORT-PUBLICATION
-    #[test]
-    fn full_export_publishes_configuration_and_extension_from_a_private_stage() {
-        for (set, extension) in [("main", None), ("Sales", Some("Sales"))] {
-            let validations_before =
-                unica_workspace::full_dump::test_support::semantic_validations_on_this_thread();
-            let root = workspace();
-            let target = root.path().join(set);
-            write_valid_dump(&target, extension.is_some());
-            fs::write(target.join("local-change.bsl"), "old local source").unwrap();
-            fs::write(
-                root.path().join(LOCAL_CONFIG_NAME),
-                "infobase:\n  password: local-export-secret\n",
-            )
-            .unwrap();
-            let original = fs::read(root.path().join(CONFIG_NAME)).unwrap();
-            let original_local = fs::read(root.path().join(LOCAL_CONFIG_NAME)).unwrap();
-            let expected_target = target.clone();
-            let mut runner = SequenceRunner::exporting(
-                vec![
-                    process(envelope(root.path(), set, "FULL", extension, false), true),
-                    process(envelope(root.path(), set, "FULL", extension, true), true),
-                ],
-                target.clone(),
-            );
-            runner.after_apply = Some(Box::new(move |command, staged| {
-                assert_ne!(staged, expected_target);
-                fs::rename(
-                    staged.join("Catalogs/Items.xml"),
-                    staged.join("Catalogs/CorpusCatalog.xml"),
-                )
-                .unwrap();
-                let indexes = staged.join("Catalogs/CorpusCatalog/Ext/AdditionalIndexes.xml");
-                fs::create_dir_all(indexes.parent().unwrap()).unwrap();
-                fs::write(
-                    &indexes,
-                    include_bytes!(
-                        "../../../../unica-coder/tests/fixtures/additional_indexes/AdditionalIndexes.xml"
-                    ),
-                )
-                .unwrap();
-                assert_eq!(
-                    fs::read(expected_target.join("local-change.bsl")).unwrap(),
-                    b"old local source"
-                );
-                let config = Path::new(&command.args[1]);
-                assert!(!fs::read_to_string(config)
-                    .unwrap()
-                    .contains("local-export-secret"));
-                assert!(
-                    fs::read_to_string(config.parent().unwrap().join(LOCAL_CONFIG_NAME))
-                        .unwrap()
-                        .contains("local-export-secret")
-                );
-            }));
-            let result = run(
-                root.path(),
-                &prepared(root.path(), ExportMode::Full, Some(set), extension, false),
-                &runner,
-            );
-            assert!(result.ok, "{set}: {result:?}");
-            // Содержимое разбирается один раз: дальше достаточно сверки байт со снимком.
-            assert_eq!(
-                unica_workspace::full_dump::test_support::semantic_validations_on_this_thread()
-                    - validations_before,
-                1,
-                "{set}"
-            );
-            assert_eq!(result.data.as_ref().unwrap()["files"], 3);
-            assert_eq!(result.data.as_ref().unwrap()["state"], "replaced");
-            assert_eq!(result.data.as_ref().unwrap()["extension"], json!(extension));
-            assert!(!target.join("local-change.bsl").exists());
-            assert!(target.join("Catalogs/CorpusCatalog.xml").is_file());
-            assert_eq!(
-                fs::read(target.join("Catalogs/CorpusCatalog/Ext/AdditionalIndexes.xml")).unwrap(),
-                include_bytes!("../../../../unica-coder/tests/fixtures/additional_indexes/AdditionalIndexes.xml")
-            );
-            assert_eq!(fs::read(root.path().join(CONFIG_NAME)).unwrap(), original);
-            assert_eq!(
-                fs::read(root.path().join(LOCAL_CONFIG_NAME)).unwrap(),
-                original_local
-            );
-            assert!(!serde_json::to_string(&result)
-                .unwrap()
-                .contains("local-export-secret"));
-            let calls = runner.calls.lock().unwrap();
-            assert_eq!(calls[0].args[1], calls[1].args[1]);
-            assert!(
-                Path::new(&calls[1].args[1]).is_file(),
-                "the stable working-copy owner remains available after finish"
-            );
-            assert!(calls
-                .iter()
-                .all(|call| call.args.iter().any(|arg| arg == "--publication-stdio")));
-            assert!(fs::read_dir(root.path()).unwrap().all(|entry| !entry
-                .unwrap()
-                .file_name()
-                .to_string_lossy()
-                .starts_with(".unica-dump-guard-")));
-        }
-    }
-
-    /// rule: CTR.RUNTIME.FULL-EXPORT-DIAGNOSTICS
-    /// rule: INV.RUNTIME.FULL-EXPORT-PLATFORM-TRUST
-    /// rule: INV.RUNTIME.FULL-EXPORT-PUBLICATION
-    #[test]
-    fn full_export_rejects_invalid_results_before_replacing_sources() {
-        for defect in [
-            "command",
-            "requested_mode",
-            "mode",
-            "mode_reason",
-            "extension",
-            "source_set",
-            "target_path",
-            "provider_dispatched",
-            "xml",
-            "unknown_root",
-            "wrong_version",
-            "versionless_with_version",
-            "malformed_xml",
-            "missing_owner",
-            "empty_dump",
-            "cancel",
-            "platform",
-            "config",
-        ] {
-            let root = workspace();
-            let target = root.path().join("main");
-            write_valid_dump(&target, false);
-            fs::write(target.join("keep.bsl"), "unchanged").unwrap();
-            let original = unica_workspace::test_support::tree_snapshot(&target);
-            let mut applied = envelope(root.path(), "main", "FULL", None, true);
-            match defect {
-                "command" => applied["command"] = json!("push"),
-                "requested_mode" => applied["data"]["requested_mode"] = json!("INCREMENTAL"),
-                "mode" => applied["data"]["mode"] = json!("UNVERIFIED"),
-                "mode_reason" => applied["data"]["mode_reason"] = json!("weather"),
-                "extension" => applied["data"]["extension"] = json!("Other"),
-                "source_set" => applied["data"]["source_set"] = json!("ext-sales"),
-                "target_path" => {
-                    applied["data"]["target_path"] = json!(root.path().join("unexpected"))
-                }
-                "provider_dispatched" => applied["data"]["provider_dispatched"] = json!(false),
-                _ => {}
-            }
-            let mut runner = SequenceRunner::exporting(
-                vec![
-                    process(envelope(root.path(), "main", "FULL", None, false), true),
-                    process(applied, true),
-                ],
-                target.clone(),
-            );
-            let workspace_root = root.path().to_path_buf();
-            let retained_stage = Arc::new(Mutex::new(None));
-            let observed_stage = Arc::clone(&retained_stage);
-            runner.after_apply = Some(Box::new(move |command, staged| {
-                *observed_stage.lock().unwrap() =
-                    Some(staged.parent().unwrap().parent().unwrap().to_path_buf());
-                match defect {
-                    "xml" => fs::write(staged.join("Configuration.xml"), "<invalid/>").unwrap(),
-                    "unknown_root" => fs::write(staged.join("Unknown.xml"), r#"<UnregisteredDumpRoot xmlns="http://v8.1c.ru/8.3/xcf/extrnprops" version="2.20"/>"#).unwrap(),
-                    "wrong_version" => {
-                        let owner = staged.join("Configuration.xml");
-                        let text = fs::read_to_string(&owner).unwrap().replace("2.20", "2.19");
-                        fs::write(owner, text).unwrap();
-                    },
-                    "versionless_with_version" => fs::write(staged.join("Unknown.xml"), r#"<DataCompositionSchema xmlns="http://v8.1c.ru/8.1/data-composition-system/schema" version="2.20"/>"#).unwrap(),
-                    "malformed_xml" => fs::write(staged.join("Unknown.xml"), "<broken password=provider-secret stdout-marker /private/private-marker>").unwrap(),
-                    "missing_owner" => fs::remove_file(staged.join("Configuration.xml")).unwrap(),
-                    "empty_dump" => {
-                        for entry in fs::read_dir(staged).unwrap() {
-                            let path = entry.unwrap().path();
-                            if path.is_dir() { fs::remove_dir_all(path).unwrap(); } else { fs::remove_file(path).unwrap(); }
-                        }
-                    },
-                    "cancel" => command.cancellation.cancel(),
-                    "platform" => {
-                        fs::write(
-                            workspace_root.join("platform/8.3.27.2074/1cv8"),
-                            "replaced platform",
-                        )
-                        .unwrap();
-                    }
-                    "config" => {
-                        fs::write(workspace_root.join(CONFIG_NAME), "replaced config").unwrap();
-                    }
-                    _ => {}
-                }
-            }));
-            let result = run(
-                root.path(),
-                &prepared(root.path(), ExportMode::Full, None, None, false),
-                &runner,
-            );
-            assert!(!result.ok, "{defect}");
-            let expected = match defect {
-                "xml" => Some(("invalidOwner", Some("Configuration.xml"))),
-                "unknown_root" => Some(("unsupportedRoot", Some("Unknown.xml"))),
-                "wrong_version" => Some(("wrongVersion", Some("Configuration.xml"))),
-                "versionless_with_version" => Some(("wrongVersion", Some("Unknown.xml"))),
-                "malformed_xml" => Some(("invalidXml", Some("Unknown.xml"))),
-                "missing_owner" => Some(("missingOwner", Some("Configuration.xml"))),
-                "empty_dump" => Some(("emptyDump", None)),
-                _ => None,
-            };
-            if let Some((reason, path)) = expected {
-                let data = result
-                    .data
-                    .as_ref()
-                    .unwrap_or_else(|| panic!("{defect}: {result:?}"));
-                assert_eq!(data["state"], "notPublished", "{defect}");
-                assert_eq!(data["validation"]["reason"], reason, "{defect}");
-                assert_eq!(data["validation"]["path"], json!(path), "{defect}");
-                let (version, qname) = match defect {
-                    "wrong_version" => (json!({"kind":"exact","literal":"2.20"}), Value::Null),
-                    "versionless_with_version" => (
-                        json!({"kind":"absent"}),
-                        json!("{http://v8.1c.ru/8.1/data-composition-system/schema}DataCompositionSchema"),
-                    ),
-                    "unknown_root" => (
-                        Value::Null,
-                        json!("{http://v8.1c.ru/8.3/xcf/extrnprops}UnregisteredDumpRoot"),
-                    ),
-                    _ => (Value::Null, Value::Null),
-                };
-                assert_eq!(
-                    data["validation"]["versionRequirement"], version,
-                    "{defect}"
-                );
-                if !qname.is_null() {
-                    assert_eq!(data["validation"]["qname"], qname, "{defect}");
-                }
-                assert!(
-                    result.summary.contains(reason),
-                    "text-only client needs the reason"
-                );
-                assert_eq!(result.diagnostics[0]["code"], "invalid_result");
-                assert!(
-                    result
-                        .warnings
-                        .iter()
-                        .any(|warning| warning["reason"] == "writerCompletionUnconfirmed"),
-                    "{defect}: separate cleanup reason survives validation failure"
-                );
-            }
-            let private_root = retained_stage.lock().unwrap().take().unwrap();
-            assert_eq!(result.artifacts.len(), 1, "{defect}");
-            assert_eq!(result.artifacts[0]["kind"], "recovery", "{defect}");
-            assert_eq!(
-                result.artifacts[0].as_object().unwrap().len(),
-                2,
-                "{defect}"
-            );
-            assert_retained_artifact_names_directory(&result, root.path(), &private_root);
-            let encoded = serde_json::to_string(&result).unwrap();
-            assert!(!encoded.contains("1cv8"), "{defect}");
-            assert!(!encoded.contains("--config"), "{defect}");
-            for private in [
-                "provider-secret",
-                "stdout-marker",
-                "private-marker",
-                root.path().to_str().unwrap(),
-            ] {
-                assert!(!encoded.contains(private), "{defect}: leaked {private}");
-            }
-            // Only the checked recovery artifact may name private staging.
-            let mut without_recovery = serde_json::to_value(&result).unwrap();
-            without_recovery
-                .as_object_mut()
-                .unwrap()
-                .remove("artifacts");
-            assert!(
-                !serde_json::to_string(&without_recovery)
-                    .unwrap()
-                    .contains(".unica-dump-guard-"),
-                "{defect}"
-            );
-            assert_eq!(
-                unica_workspace::test_support::tree_snapshot(&target),
-                original,
-                "{defect}"
-            );
-            assert!(result.changed.is_empty(), "{defect}");
-        }
-    }
-
-    /// rule: INV.RUNTIME.FULL-EXPORT-PLATFORM-TRUST
-    #[test]
-    fn selected_executor_must_be_attested_locally_before_continue_or_stage_writes() {
-        for executor in [
-            json!({"kind":"remote","endpoint":"https://example.invalid","executable":null}),
-            json!({"kind":"attached","endpoint":null,"executable":null}),
-            json!({"kind":"local","endpoint":null,"executable":null}),
-        ] {
-            let root = workspace();
-            let target = root.path().join("main");
-            write_valid_dump(&target, false);
-            let original = unica_workspace::test_support::tree_snapshot(&target);
-            let mut runner = SequenceRunner::exporting(
-                vec![process(
-                    envelope(root.path(), "main", "FULL", None, false),
-                    true,
-                )],
-                target.clone(),
-            );
-            runner.fault = Some(PublicationFault::SelectedExecutor(executor));
-            let result = run(
-                root.path(),
-                &prepared(root.path(), ExportMode::Full, None, None, false),
-                &runner,
-            );
-            assert!(!result.ok, "{result:?}");
-            assert_eq!(runner.call_count(), 1);
-            assert!(runner.stage_writes.lock().unwrap().is_empty());
-            assert!(!runner
-                .replies
-                .lock()
-                .unwrap()
-                .iter()
-                .any(|reply| reply["decision"] == "continue"));
-            assert_eq!(
-                unica_workspace::test_support::tree_snapshot(&target),
-                original
-            );
-            assert!(result.changed.is_empty());
-        }
-    }
-
-    #[test]
-    fn ready_frame_cannot_publish_another_target_stage_or_unprepared_snapshot() {
-        for field in [
-            "source_set",
-            "target_path",
-            "stage_path",
-            "snapshot",
-            "snapshot_warning",
-            "nonce",
-            "version",
-        ] {
-            let root = workspace();
-            let outside = tempfile::tempdir().unwrap();
-            fs::write(
-                outside.path().join("foreign.bsl"),
-                "preserve foreign target",
-            )
-            .unwrap();
-            let foreign = unica_workspace::test_support::tree_snapshot(outside.path());
-            let target = root.path().join("main");
-            write_valid_dump(&target, false);
-            fs::write(target.join("keep.bsl"), "preserve original sources").unwrap();
-            let original = unica_workspace::test_support::tree_snapshot(&target);
-            let mut runner = SequenceRunner::exporting(
-                vec![
-                    process(envelope(root.path(), "main", "FULL", None, false), true),
-                    process(envelope(root.path(), "main", "FULL", None, true), true),
-                ],
-                target.clone(),
-            );
-            let value = match field {
-                "source_set" => json!("Sales"),
-                "target_path" | "stage_path" => json!(outside.path()),
-                "snapshot" => json!("unavailable"),
-                "snapshot_warning" => json!("memory snapshot failed"),
-                "nonce" => json!(uuid::Uuid::new_v4().to_string()),
-                "version" => json!(2),
-                _ => unreachable!(),
-            };
-            runner.fault = Some(PublicationFault::ReadyField(field, value));
-            let result = run(
-                root.path(),
-                &prepared(root.path(), ExportMode::Full, None, None, false),
-                &runner,
-            );
-            assert!(!result.ok, "{field}: {result:?}");
-            assert!(result.changed.is_empty(), "{field}: {result:?}");
-            assert_eq!(
-                unica_workspace::test_support::tree_snapshot(&target),
-                original,
-                "{field}"
-            );
-            assert_eq!(
-                unica_workspace::test_support::tree_snapshot(outside.path()),
-                foreign,
-                "{field}"
-            );
-            assert_eq!(runner.stage_writes.lock().unwrap().len(), 1);
-            assert!(!runner
-                .replies
-                .lock()
-                .unwrap()
-                .iter()
-                .any(|reply| reply["decision"] == "published"));
-        }
-    }
-
-    #[test]
-    fn internal_preview_rechecks_both_original_config_layers_before_apply() {
-        for local in [false, true] {
-            let root = workspace();
-            let target = root.path().join("main");
-            write_valid_dump(&target, false);
-            let original = unica_workspace::test_support::tree_snapshot(&target);
-            let mut runner = SequenceRunner::exporting(
-                vec![process(
-                    envelope(root.path(), "main", "FULL", None, false),
-                    true,
-                )],
-                target.clone(),
-            );
-            let config = root.path().join(if local {
-                LOCAL_CONFIG_NAME
-            } else {
-                CONFIG_NAME
-            });
-            runner.after_preview = Some(Box::new(move || {
-                if local {
-                    fs::write(&config, "infobase:\n  password: changed-after-preview\n").unwrap();
-                } else {
-                    let mut source = fs::read_to_string(&config).unwrap();
-                    source.push_str("\n# changed after the internal preview\n");
-                    fs::write(&config, source).unwrap();
-                }
-            }));
-            let result = run(
-                root.path(),
-                &prepared(root.path(), ExportMode::Full, None, None, false),
-                &runner,
-            );
-            assert!(!result.ok, "local={local}: {result:?}");
-            assert_eq!(result.diagnostics[0]["code"], "concurrent_change");
-            assert_eq!(
-                runner.call_count(),
-                1,
-                "apply must not start after changed inputs"
-            );
-            assert!(runner.stage_writes.lock().unwrap().is_empty());
-            assert_eq!(
-                unica_workspace::test_support::tree_snapshot(&target),
-                original
-            );
-            assert!(result.changed.is_empty());
-        }
-    }
-
-    /// rule: INV.RUNTIME.FULL-EXPORT-RETAINED-IDENTITY
-    #[test]
-    fn an_unconfirmed_run_retains_the_named_stage_of_a_live_writer() {
-        assert_unconfirmed_finish_retains_live_writer(false);
-    }
-
-    /// rule: INV.RUNTIME.FULL-EXPORT-RETAINED-IDENTITY
-    #[test]
-    fn an_unwind_retains_the_named_stage_of_a_live_writer() {
-        assert_unconfirmed_finish_retains_live_writer(true);
-    }
-
-    fn assert_unconfirmed_finish_retains_live_writer(unwind: bool) {
-        use std::io::Write;
-        use std::sync::{mpsc, Arc};
-        use std::time::Duration;
-
-        struct HeldWriter {
-            path: PathBuf,
-            release: Option<mpsc::Sender<()>>,
-            finished: mpsc::Receiver<Result<(), String>>,
-            worker: Option<std::thread::JoinHandle<()>>,
-        }
-
-        impl Drop for HeldWriter {
-            fn drop(&mut self) {
-                if let Some(release) = self.release.take() {
-                    let _ = release.send(());
-                }
-                if let Some(worker) = self.worker.take() {
-                    let _ = worker.join();
-                }
-            }
-        }
-
-        let root = workspace();
-        let target = root.path().join("main");
-        write_valid_dump(&target, false);
-        fs::write(target.join("local.bsl"), b"original public source").unwrap();
-        let before = unica_workspace::test_support::tree_snapshot(&target);
-        let writer = Arc::new(Mutex::new(None));
-        let writer_for_runner = writer.clone();
-        let mut runner = SequenceRunner::exporting(
-            vec![
-                process(envelope(root.path(), "main", "FULL", None, false), true),
-                process(envelope(root.path(), "main", "FULL", None, true), true),
-            ],
-            target.clone(),
-        );
-        runner.fault = Some(if unwind {
-            PublicationFault::UnwindBeforeReady
-        } else {
-            PublicationFault::UnconfirmedRunBeforeReady
-        });
-        runner.after_apply = Some(Box::new(move |_, stage| {
-            let path = stage.join("active-writer.bsl");
-            let mut file = fs::OpenOptions::new()
-                .create_new(true)
-                .append(true)
-                .open(&path)
-                .unwrap();
-            file.write_all(b"before\n").unwrap();
-            file.sync_all().unwrap();
-            let (release, wait) = mpsc::channel();
-            let (finished, completion) = mpsc::channel();
-            let worker = std::thread::spawn(move || {
-                if wait.recv().is_ok() {
-                    let result = file
-                        .write_all(b"after\n")
-                        .and_then(|()| file.sync_all())
-                        .map_err(|error| error.to_string());
-                    let _ = finished.send(result);
-                }
-            });
-            *writer_for_runner.lock().unwrap() = Some(HeldWriter {
-                path,
-                release: Some(release),
-                finished: completion,
-                worker: Some(worker),
-            });
-        }));
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            run(
-                root.path(),
-                &prepared(root.path(), ExportMode::Full, None, None, false),
-                &runner,
-            )
-        }));
-        let result = if unwind {
-            assert!(
-                result.is_err(),
-                "the fixture must exercise guard Drop through unwind"
-            );
-            None
-        } else {
-            let result = result.expect("the error-result fixture must not unwind");
-            assert!(!result.ok);
-            assert!(result.changed.is_empty());
-            Some(result)
-        };
-        let mut writer = writer.lock().unwrap().take().unwrap();
-        assert_eq!(
-            unica_workspace::test_support::tree_snapshot(&target),
-            before
-        );
-        assert!(
-            !writer.worker.as_ref().unwrap().is_finished(),
-            "the fixture must still own a live stage writer"
-        );
-        assert_eq!(
-            fs::read(&writer.path).unwrap_or_else(|error| {
-                panic!("cleanup removed the live writer's named data: {error}")
-            }),
-            b"before\n"
-        );
-        writer.release.take().unwrap().send(()).unwrap();
-        writer
-            .finished
-            .recv_timeout(Duration::from_secs(2))
-            .unwrap()
-            .unwrap();
-        assert_eq!(fs::read(&writer.path).unwrap(), b"before\nafter\n");
-        assert_eq!(
-            unica_workspace::test_support::tree_snapshot(&target),
-            before
-        );
-        if let Some(result) = result {
-            assert_ne!(
-                result.data.as_ref().and_then(|data| data["state"].as_str()),
-                Some("unknown"),
-                "private retention before Ready does not make the unchanged public target unknown"
-            );
-            let private_root = writer.path.ancestors().nth(3).unwrap();
-            assert_retained_artifact_names_directory(&result, root.path(), private_root);
-        }
-    }
-
-    fn assert_retained_artifact_names_directory(
-        result: &DomainResult,
-        workspace: &Path,
-        expected: &Path,
-    ) {
-        let expected = fs::canonicalize(expected).unwrap();
-        assert!(
-            result.artifacts.iter().any(|artifact| {
-                artifact["path"].as_str().is_some_and(|path| {
-                    fs::canonicalize(workspace.join(path)).is_ok_and(|path| path == expected)
-                })
-            }),
-            "the result must name its retained recovery directory"
-        );
-    }
-
-    /// rule: CTR.RUNTIME.FULL-EXPORT-DIAGNOSTICS
-    #[test]
-    fn full_export_reports_unconfirmed_private_location_without_changing_publication_facts() {
-        use unica_workspace::paths::is_file_sharing_violation;
-        use unica_workspace::read::{
-            open_read_directory_nofollow as open_directory_nofollow, FileIdentity, ReadFile,
-        };
-        fn file_identity(handle: &ReadFile) -> std::io::Result<FileIdentity> {
-            handle.identity()
-        }
-        use std::collections::BTreeMap;
-
-        type CapturedTree = (BTreeMap<PathBuf, Vec<u8>>, BTreeMap<PathBuf, FileIdentity>);
-
-        fn capture(root: &Path) -> CapturedTree {
-            fn visit(
-                root: &Path,
-                current: &Path,
-                identities: &mut BTreeMap<PathBuf, FileIdentity>,
-            ) {
-                let handle = if current.is_dir() {
-                    open_directory_nofollow(current).unwrap()
-                } else {
-                    unica_workspace::test_support::read_file_from_fixture_file(
-                        fs::File::open(current).unwrap(),
-                    )
-                };
-                identities.insert(
-                    current.strip_prefix(root).unwrap().to_path_buf(),
-                    file_identity(&handle).unwrap(),
-                );
-                if current.is_dir() {
-                    for entry in fs::read_dir(current).unwrap() {
-                        visit(root, &entry.unwrap().path(), identities);
-                    }
-                }
-            }
-            let mut identities = BTreeMap::new();
-            visit(root, root, &mut identities);
-            (
-                unica_workspace::test_support::tree_snapshot(root),
-                identities,
-            )
-        }
-
-        enum Relocation {
-            Relocated {
-                private: PathBuf,
-                displaced: PathBuf,
-                owned_before: CapturedTree,
-                foreign_before: CapturedTree,
-                public_at_effect: CapturedTree,
-            },
-            Denied {
-                private: PathBuf,
-                displaced: PathBuf,
-                owned_before: CapturedTree,
-                public_at_effect: CapturedTree,
-            },
-        }
-
-        let mut invalid_reports = Vec::new();
-        for after_publication in [false, true] {
-            let phase = if after_publication {
-                "after verified publication"
-            } else {
-                "before Ready"
-            };
-            let root = workspace();
-            let target = root.path().join("main");
-            write_valid_dump(&target, false);
-            fs::write(target.join("replaced.bsl"), b"old source").unwrap();
-            fs::write(
-                root.path().join(LOCAL_CONFIG_NAME),
-                "infobase:\n  password: private-location-secret\n",
-            )
-            .unwrap();
-            let public_before = capture(&target);
-            let config_before = fs::read(root.path().join(CONFIG_NAME)).unwrap();
-            let local_before = fs::read(root.path().join(LOCAL_CONFIG_NAME)).unwrap();
-            let observed = std::sync::Arc::new(Mutex::new(None));
-            let effect_observed = std::sync::Arc::clone(&observed);
-            let effect_target = target.clone();
-            let effect: ApplyEffect = Box::new(move |_, stage| {
-                let private = stage.parent().unwrap().parent().unwrap().to_path_buf();
-                let displaced = private.with_file_name("displaced-owned-private");
-                let owned_before = capture(&private);
-                let public_at_effect = capture(&effect_target);
-                let absent = fs::symlink_metadata(&displaced).unwrap_err();
-                assert_eq!(
-                    absent.kind(),
-                    std::io::ErrorKind::NotFound,
-                    "{phase}: {absent}"
-                );
-                let outcome = match fs::rename(&private, &displaced) {
-                    Ok(()) => {
-                        fs::create_dir(&private).unwrap();
-                        fs::create_dir(private.join("foreign")).unwrap();
-                        fs::write(
-                            private.join("foreign/sentinel.txt"),
-                            b"foreign private replacement sentinel",
-                        )
-                        .unwrap();
-                        let foreign_before = capture(&private);
-                        Relocation::Relocated {
-                            private,
-                            displaced,
-                            owned_before,
-                            foreign_before,
-                            public_at_effect,
-                        }
-                    }
-                    Err(error)
-                        if error.kind() == std::io::ErrorKind::PermissionDenied
-                            || is_file_sharing_violation(&error) =>
-                    {
-                        assert_eq!(
-                            capture(&private), owned_before,
-                            "{phase}: denied relocation must preserve all private bytes and identities"
-                        );
-                        assert_eq!(
-                            capture(&effect_target), public_at_effect,
-                            "{phase}: denied relocation must preserve all public bytes and identities"
-                        );
-                        let absent = fs::symlink_metadata(&displaced).unwrap_err();
-                        assert_eq!(
-                            absent.kind(),
-                            std::io::ErrorKind::NotFound,
-                            "{phase}: {absent}"
-                        );
-                        Relocation::Denied {
-                            private,
-                            displaced,
-                            owned_before,
-                            public_at_effect,
-                        }
-                    }
-                    Err(error) => panic!(
-                        "{phase}: expected actual relocation or access/share denial: {error}"
-                    ),
-                };
-                *effect_observed.lock().unwrap() = Some(outcome);
-            });
-            let mut runner = SequenceRunner::exporting(
-                vec![
-                    process(envelope(root.path(), "main", "FULL", None, false), true),
-                    process(envelope(root.path(), "main", "FULL", None, true), true),
-                ],
-                target.clone(),
-            );
-            if after_publication {
-                runner.after_publication = Some(effect);
-            } else {
-                runner.after_apply = Some(effect);
-            }
-            let result = run(
-                root.path(),
-                &prepared(root.path(), ExportMode::Full, None, None, false),
-                &runner,
-            );
-            let outcome = observed
-                .lock()
-                .unwrap()
-                .take()
-                .expect("the real private-directory rename attempt must execute");
-            assert_eq!(
-                fs::read(root.path().join(CONFIG_NAME)).unwrap(),
-                config_before
-            );
-            assert_eq!(
-                fs::read(root.path().join(LOCAL_CONFIG_NAME)).unwrap(),
-                local_before
-            );
-            let encoded = serde_json::to_string(&result).unwrap();
-            assert!(!encoded.contains("private-location-secret"), "{phase}");
-            assert!(!encoded.contains("1cv8"), "{phase}");
-            assert!(!encoded.contains("--config"), "{phase}");
-            assert!(!encoded.contains(CONFIG_NAME), "{phase}");
-            match outcome {
-                Relocation::Relocated {
-                    private,
-                    displaced,
-                    owned_before,
-                    foreign_before,
-                    public_at_effect,
-                } => {
-                    assert_eq!(
-                        capture(&displaced),
-                        owned_before,
-                        "{phase}: finalization must preserve all owned private identities and bytes"
-                    );
-                    assert_eq!(
-                        capture(&private),
-                        foreign_before,
-                        "{phase}: finalization must preserve all foreign identities and bytes"
-                    );
-                    assert_ne!(
-                        owned_before.1[Path::new("")],
-                        foreign_before.1[Path::new("")]
-                    );
-                    assert_eq!(
-                        fs::read(private.join("foreign/sentinel.txt")).unwrap(),
-                        b"foreign private replacement sentinel"
-                    );
-                    assert_eq!(capture(&target), public_at_effect, "{phase}");
-                    if after_publication {
-                        assert!(result.ok, "{phase}");
-                        assert_eq!(
-                            result.changed,
-                            vec![json!({"path":"main","kind":"replaced"})],
-                            "{phase}"
-                        );
-                        assert_eq!(result.data.as_ref().unwrap()["state"], "replaced");
-                        assert!(!target.join("replaced.bsl").exists());
-                        assert!(target.join("Catalogs/Items.xml").is_file());
-                        assert!(owned_before.0.values().any(|bytes| bytes == b"old source"));
-                    } else {
-                        assert!(!result.ok, "{phase}");
-                        assert_eq!(
-                            result.diagnostics[0]["code"], "concurrent_change",
-                            "{phase}"
-                        );
-                        assert!(result.changed.is_empty(), "{phase}");
-                        assert_eq!(capture(&target), public_before, "{phase}");
-                        assert_eq!(
-                            fs::read(target.join("replaced.bsl")).unwrap(),
-                            b"old source"
-                        );
-                        assert_ne!(
-                            result.data.as_ref().and_then(|data| data["state"].as_str()),
-                            Some("unknown"),
-                            "private location uncertainty must not change public publication facts"
-                        );
-                    }
-                    let annotation = format!(
-                        "original name: {}",
-                        private
-                            .strip_prefix(normalize_path_identity(root.path()).unwrap())
-                            .unwrap()
-                            .display()
-                    );
-                    let mut without_location_note = serde_json::to_value(&result).unwrap();
-                    let warnings = without_location_note["warnings"].as_array_mut().unwrap();
-                    let before_count = warnings.len();
-                    warnings.retain(|warning| {
-                        !(warning["code"] == "export_cleanup"
-                            && warning["message"].as_str().is_some_and(|message| {
-                                message.contains("current location is unconfirmed")
-                                    && message.contains(&annotation)
-                            }))
-                    });
-                    let exact_location_note = warnings.len() < before_count;
-                    let no_other_private_path = !serde_json::to_string(&without_location_note)
-                        .unwrap()
-                        .contains(".unica-dump-guard-");
-                    if !result.artifacts.is_empty()
-                        || !exact_location_note
-                        || !no_other_private_path
-                    {
-                        invalid_reports.push(phase);
-                    }
-                    eprintln!("private_relocation_observed phase={phase} outcome=relocated");
-                }
-                Relocation::Denied {
-                    private,
-                    displaced,
-                    owned_before,
-                    public_at_effect,
-                } => {
-                    assert!(result.ok, "{phase}: {result:?}");
-                    assert_eq!(
-                        runner.call_count(),
-                        2,
-                        "{phase}: preview and apply must both run"
-                    );
-                    assert_eq!(
-                        result.changed,
-                        vec![json!({"path":"main","kind":"replaced"})]
-                    );
-                    assert_eq!(result.data.as_ref().unwrap()["state"], "replaced");
-                    assert_eq!(result.data.as_ref().unwrap()["files"], 2);
-                    assert!(!target.join("replaced.bsl").exists(), "{phase}");
-                    assert!(target.join("Catalogs/Items.xml").is_file(), "{phase}");
-                    if after_publication {
-                        assert_eq!(capture(&target), public_at_effect, "{phase}");
-                        assert!(owned_before.0.values().any(|bytes| bytes == b"old source"));
-                    } else {
-                        assert_eq!(public_at_effect, public_before, "{phase}");
-                        assert!(public_at_effect
-                            .0
-                            .values()
-                            .any(|bytes| bytes == b"old source"));
-                    }
-                    let replies = runner.replies.lock().unwrap();
-                    assert_eq!(
-                        replies
-                            .iter()
-                            .filter(|reply| {
-                                reply["phase"] == "ready" && reply["decision"] == "published"
-                            })
-                            .count(),
-                        1,
-                        "{phase}: publication must be acknowledged normally"
-                    );
-                    assert!(result.artifacts.is_empty(), "{phase}: {result:?}");
-                    assert!(
-                        !result.warnings.iter().any(|warning| {
-                            matches!(
-                                warning["code"].as_str(),
-                                Some("sync_memory_unconfirmed" | "export_cleanup")
-                            )
-                        }),
-                        "{phase}: {result:?}"
-                    );
-                    assert!(
-                        !encoded.contains(".unica-dump-guard-"),
-                        "{phase}: {result:?}"
-                    );
-                    for path in [&private, &displaced] {
-                        let absent = fs::symlink_metadata(path)
-                            .expect_err("confirmed finish removes private names");
-                        assert_eq!(
-                            absent.kind(),
-                            std::io::ErrorKind::NotFound,
-                            "{phase}: {absent}"
-                        );
-                    }
-                    eprintln!("private_relocation_observed phase={phase} outcome=denied");
-                }
-            }
-        }
-        assert!(
-            invalid_reports.is_empty(),
-            "false or missing private-location reports: {invalid_reports:?}"
-        );
-    }
-
-    /// rule: INV.RUNTIME.FULL-EXPORT-PUBLICATION
-    /// rule: INV.RUNTIME.FULL-EXPORT-RETAINED-IDENTITY
-    #[test]
-    fn a_verified_publication_with_no_terminal_retains_its_recovery() {
-        use std::time::Duration;
-
-        struct ObservedSystemRunner {
-            fixture_cutoff: Option<Duration>,
-            outputs: Mutex<Vec<Result<ProcessStreamOutput, ProcessStreamFailure>>>,
-            delivered_frames: Mutex<Vec<Vec<Vec<u8>>>>,
-        }
-
-        impl ProcessRunner for ObservedSystemRunner {
-            fn run(&self, command: &ProcessCommand) -> Result<ProcessOutput, String> {
-                SystemProcessRunner.run(command)
-            }
-
-            fn run_controlled_streaming_staged(
-                &self,
-                command: &ProcessCommand,
-                max_line_bytes: usize,
-                on_line: &mut dyn FnMut(usize, &[u8]) -> ProcessLineReply,
-            ) -> Result<ProcessStreamOutput, ProcessStreamFailure> {
-                let mut bounded = command.clone();
-                if let Some(cutoff) = self.fixture_cutoff {
-                    bounded.timeout = Some(
-                        bounded
-                            .timeout
-                            .map_or(cutoff, |existing| existing.min(cutoff)),
-                    );
-                }
-                let mut delivered = Vec::new();
-                let output = SystemProcessRunner.run_controlled_streaming_staged(
-                    &bounded,
-                    max_line_bytes,
-                    &mut |number, bytes| {
-                        let reply = on_line(number, bytes);
-                        delivered.push(bytes.to_vec());
-                        reply
-                    },
-                );
-                self.delivered_frames.lock().unwrap().push(delivered);
-                self.outputs.lock().unwrap().push(output.clone());
-                output
-            }
-        }
-
-        let build = tempfile::tempdir().unwrap();
-        let compiled = build.path().join(format!(
-            "publication-producer{}",
-            std::env::consts::EXE_SUFFIX
-        ));
-        let compilation =
-            std::process::Command::new(std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into()))
-                .arg("--edition=2021")
-                .arg(
-                    Path::new(env!("CARGO_MANIFEST_DIR"))
-                        .join("tests/support/real_publication_producer.rs"),
-                )
-                .arg("-o")
-                .arg(&compiled)
-                .output()
-                .expect("compile controlled publication producer");
-        assert!(
-            compilation.status.success(),
-            "producer compilation failed: {}",
-            String::from_utf8_lossy(&compilation.stderr)
-        );
-
-        for mode in ["complete", "missing-terminal", "withheld-eof"] {
-            let root = workspace();
-            let canonical_root = normalize_path_identity(root.path()).unwrap();
-            let target = canonical_root.join("main");
-            write_valid_dump(&target, false);
-            fs::write(target.join("replaced.bsl"), b"old source").unwrap();
-            let platform = trusted_platform(&canonical_root);
-            let producer = canonical_root.join(format!(
-                "publication-producer{}",
-                std::env::consts::EXE_SUFFIX
-            ));
-            fs::copy(&compiled, &producer).unwrap();
-            fs::write(
-                producer.with_extension("fixture"),
-                format!(
-                    "{mode}\n{}\n{}\n{}\n{}\n",
-                    serde_json::to_string(&platform).unwrap(),
-                    serde_json::to_string(&target).unwrap(),
-                    envelope(&canonical_root, "main", "FULL", None, false),
-                    envelope(&canonical_root, "main", "FULL", None, true),
-                ),
-            )
-            .unwrap();
-            let runner = ObservedSystemRunner {
-                // The fixture deliberately never closes its output pipes in this case.
-                // Production FINISH_TIMEOUT and all callback replies stay unchanged.
-                fixture_cutoff: (mode == "withheld-eof").then_some(Duration::from_secs(5)),
-                outputs: Mutex::new(Vec::new()),
-                delivered_frames: Mutex::new(Vec::new()),
-            };
-            // Only installation attestation is a fixture. Process ownership, both
-            // pipes, reply writes, publication and guard cleanup execute normally.
-            let result = with_test_platform(&platform, "8.3.27.2074", || {
-                execute_with_resolved_runner(
-                    &prepared(&canonical_root, ExportMode::Full, None, None, false),
-                    &runner,
-                    CancellationToken::new(),
-                    &BundledTool {
-                        program: producer.clone(),
-                        warnings: Vec::new(),
-                        missing: None,
-                    },
-                    "0.15.2-test-fixture",
-                )
-            });
-            let outputs = runner.outputs.lock().unwrap();
-            assert_eq!(outputs.len(), 2, "{mode}: preview and apply must both run");
-            let preview = outputs[0].as_ref().expect("real preview process output");
-            assert!(
-                preview.status_success && !preview.timed_out,
-                "{mode}: {preview:?}"
-            );
-            assert!(!preview.cancelled && !preview.stopped_by_consumer);
-            assert!(preview.line_error.is_none(), "{mode}: {preview:?}");
-            let apply = outputs[1].as_ref().expect("real apply process output");
-            assert_eq!(apply.timed_out, mode == "withheld-eof", "{mode}: {apply:?}");
-            assert_eq!(
-                apply.status_success,
-                mode != "withheld-eof",
-                "{mode}: {apply:?}"
-            );
-            assert!(
-                !apply.cancelled && !apply.stopped_by_consumer,
-                "{mode}: {apply:?}"
-            );
-            assert!(apply.line_error.is_none(), "{mode}: {apply:?}");
-            assert!(
-                apply.stderr.contains("publication producer stderr"),
-                "{mode}: {apply:?}"
-            );
-
-            assert!(result.ok, "{mode}: {result:?}");
-            assert_eq!(
-                result.changed,
-                vec![json!({"path":"main","kind":"replaced"})]
-            );
-            let data = result.data.as_ref().unwrap();
-            assert_eq!(data["state"], "replaced", "{mode}: {result:?}");
-            assert_eq!(data["files"], 2, "{mode}: {result:?}");
-            assert!(!target.join("replaced.bsl").exists(), "{mode}");
-            assert!(target.join("Catalogs/Items.xml").is_file(), "{mode}");
-            let records: Vec<Value> = fs::read_to_string(producer.with_extension("events.jsonl"))
-                .unwrap()
-                .lines()
-                .map(|line| serde_json::from_str(line).unwrap())
-                .collect();
-            let ready: Vec<_> = records
-                .iter()
-                .filter(|record| record["event"] == "ready")
-                .collect();
-            assert_eq!(ready.len(), 1, "{mode}: {records:?}");
-            let ready = ready[0];
-            assert!(ready["pid"].as_u64().is_some_and(|pid| pid != 0), "{mode}");
-            let stage = PathBuf::from(ready["stage"].as_str().unwrap());
-            let private_root = stage.parent().unwrap().parent().unwrap();
-            let published_ack: Vec<_> = records
-                .iter()
-                .filter(|record| record["event"] == "published_ack")
-                .collect();
-            assert_eq!(published_ack.len(), 1, "{mode}: {records:?}");
-            assert_eq!(
-                published_ack[0]["reply"],
-                json!({
-                    "version":1,"nonce":ready["nonce"],"phase":"ready","decision":"published"
-                }),
-                "{mode}: {records:?}"
-            );
-            // Observe delivery after the production callback, not only the
-            // producer's flush: the deadline can expire with a frame still queued.
-            let delivered = runner.delivered_frames.lock().unwrap();
-            assert_eq!(
-                delivered.len(),
-                2,
-                "{mode}: preview and apply callback deliveries"
-            );
-            let apply_frames: Vec<Value> = delivered[1]
-                .iter()
-                .map(|bytes| serde_json::from_slice(bytes).unwrap())
-                .collect();
-            let terminals: Vec<_> = apply_frames
-                .iter()
-                .filter(|frame| frame["phase"] == "terminal")
-                .collect();
-            if mode == "missing-terminal" {
-                assert!(terminals.is_empty(), "{mode}: {apply_frames:?}");
-            } else {
-                assert_eq!(terminals.len(), 1, "{mode}: {apply_frames:?}");
-                assert_eq!(
-                    terminals[0],
-                    &json!({
-                        "version":1,
-                        "nonce":ready["nonce"],
-                        "phase":"terminal",
-                        "publication":"published",
-                        "memory":"saved",
-                        "result":envelope(&canonical_root, "main", "FULL", None, true),
-                    }),
-                    "{mode}: callback did not receive the valid terminal outcome"
-                );
-            }
-            let has_event = |name: &str| records.iter().any(|record| record["event"] == name);
-            assert_eq!(
-                has_event("terminal_sent"),
-                mode != "missing-terminal",
-                "{mode}: {records:?}"
-            );
-            assert_eq!(
-                has_event("exit_without_terminal"),
-                mode == "missing-terminal",
-                "{mode}: {records:?}"
-            );
-            assert_eq!(
-                has_event("eof_withheld"),
-                mode == "withheld-eof",
-                "{mode}: {records:?}"
-            );
-            assert_eq!(
-                result
-                    .warnings
-                    .iter()
-                    .any(|warning| warning["code"] == "sync_memory_unconfirmed"),
-                mode != "complete",
-                "{mode}: {result:?}"
-            );
-            if mode == "complete" {
-                let absence = fs::symlink_metadata(private_root)
-                    .expect_err("confirmed finite producer must release its recovery directory");
-                assert_eq!(absence.kind(), std::io::ErrorKind::NotFound, "{absence}");
-            } else {
-                assert!(
-                    private_root.is_dir(),
-                    "{mode}: unconfirmed finish removed recovery"
-                );
-                assert!(
-                    unica_workspace::test_support::tree_snapshot(private_root)
-                        .values()
-                        .any(|bytes| bytes == b"old source"),
-                    "{mode}: original source bytes must remain available for recovery"
-                );
-                assert_retained_artifact_names_directory(&result, &canonical_root, private_root);
-            }
-        }
-    }
-
-    /// rule: INV.RUNTIME.FULL-EXPORT-PUBLICATION
-    /// rule: INV.WIRE.SOURCE-EXPORT-TARGET-STAYS-INSIDE-THE-WORKSPACE
-    #[test]
-    fn published_sources_survive_missing_terminal_ack_failure_and_late_cancel() {
-        for (name, fault, unconfirmed) in [
-            ("missing terminal", PublicationFault::MissingTerminal, true),
-            ("ACK write failed", PublicationFault::AckWriteFailure, true),
-            (
-                "late cancellation",
-                PublicationFault::CancelAfterPublication,
-                false,
-            ),
-            (
-                "memory not saved",
-                PublicationFault::TerminalField("memory", json!("not_saved")),
-                true,
-            ),
-        ] {
-            let root = workspace();
-            let target = root.path().join("main");
-            write_valid_dump(&target, false);
-            fs::write(target.join("replaced.bsl"), "old source").unwrap();
-            let mut runner = SequenceRunner::exporting(
-                vec![
-                    process(envelope(root.path(), "main", "FULL", None, false), true),
-                    process(envelope(root.path(), "main", "FULL", None, true), true),
-                ],
-                target.clone(),
-            );
-            runner.fault = Some(fault);
-            let result = run(
-                root.path(),
-                &prepared(root.path(), ExportMode::Full, None, None, false),
-                &runner,
-            );
-            assert!(result.ok, "{name}: {result:?}");
-            assert_eq!(
-                result.changed,
-                vec![json!({"path":"main","kind":"replaced"})],
-                "{name}"
-            );
-            assert_eq!(result.data.as_ref().unwrap()["files"], 2, "{name}");
-            assert!(!target.join("replaced.bsl").exists(), "{name}");
-            assert!(target.join("Catalogs/Items.xml").is_file(), "{name}");
-            assert_eq!(
-                result
-                    .warnings
-                    .iter()
-                    .any(|warning| warning["code"] == "sync_memory_unconfirmed"),
-                unconfirmed,
-                "{name}: {result:?}"
-            );
-        }
-    }
-
-    fn assert_recovery_artifact(result: &DomainResult, workspace: &Path) -> PathBuf {
-        let path = result
-            .artifacts
-            .iter()
-            .find(|artifact| artifact["kind"] == "recovery")
-            .and_then(|artifact| artifact["path"].as_str())
-            .unwrap_or_else(|| panic!("the result must name its recovery directory: {result:?}"));
-        let recovery = workspace.join(path);
-        assert!(recovery.is_dir(), "{}", recovery.display());
-        recovery
-    }
-
-    fn dump_guards(root: &Path) -> Vec<String> {
-        fs::read_dir(root)
-            .unwrap()
-            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
-            .filter(|name| name.starts_with(".unica-dump-guard-"))
-            .collect()
-    }
-
-    #[test]
-    fn oversized_preview_frame_is_a_named_refusal_that_leaves_no_guard() {
-        let root = workspace();
-        let target = root.path().join("main");
-        write_valid_dump(&target, false);
-        fs::write(target.join("untracked.bsl"), "local work").unwrap();
-        let mut runner = SequenceRunner::new(vec![process(
-            envelope(root.path(), "main", "FULL", None, false),
-            true,
-        )]);
-        runner.fault = Some(PublicationFault::OversizedTerminal { published: false });
-        let result = run(
-            root.path(),
-            &prepared(root.path(), ExportMode::Full, None, None, true),
-            &runner,
-        );
-
-        assert!(!result.ok, "{result:?}");
-        assert_eq!(
-            result.diagnostics[0]["code"], "invalid_result",
-            "{result:?}"
-        );
-        let message = result.diagnostics[0]["message"].as_str().unwrap();
-        assert!(
-            message.contains(&format!("{RUNNER_OUTPUT_LIMIT}-byte line limit"))
-                && message.contains("nothing was published")
-                && message.contains("exist nowhere else"),
-            "{message}"
-        );
-        assert!(result.changed.is_empty());
-        assert!(result.artifacts.is_empty(), "{result:?}");
-        assert!(
-            dump_guards(root.path()).is_empty(),
-            "{:?}",
-            dump_guards(root.path())
-        );
-        assert_eq!(
-            fs::read(target.join("untracked.bsl")).unwrap(),
-            b"local work"
-        );
-    }
-
-    #[test]
-    fn oversized_final_frame_after_publication_keeps_replaced_sources_recoverable() {
-        let root = workspace();
-        let target = root.path().join("main");
-        write_valid_dump(&target, false);
-        fs::write(target.join("replaced.bsl"), "old source").unwrap();
-        let mut runner = SequenceRunner::exporting(
-            vec![
-                process(envelope(root.path(), "main", "FULL", None, false), true),
-                process(envelope(root.path(), "main", "FULL", None, true), true),
-            ],
-            target.clone(),
-        );
-        runner.fault = Some(PublicationFault::OversizedTerminal { published: true });
-        let result = run(
-            root.path(),
-            &prepared(root.path(), ExportMode::Full, None, None, false),
-            &runner,
-        );
-
-        assert!(!result.ok, "{result:?}");
-        assert_eq!(
-            result.diagnostics[0]["code"], "invalid_result",
-            "{result:?}"
-        );
-        let message = result.diagnostics[0]["message"].as_str().unwrap();
-        assert!(
-            message.contains(&format!("{RUNNER_OUTPUT_LIMIT}-byte line limit"))
-                && message.contains("sources were published")
-                && message.contains("recovery"),
-            "{message}"
-        );
-        assert_eq!(
-            result.changed,
-            vec![json!({"path":"main","kind":"replaced"})]
-        );
-        assert!(target.join("Catalogs/Items.xml").is_file());
-        assert!(!target.join("replaced.bsl").exists());
-        assert!(result
-            .warnings
-            .iter()
-            .any(|warning| warning["code"] == "sync_memory_unconfirmed"));
-        let private_root = assert_recovery_artifact(&result, root.path());
-        assert!(
-            unica_workspace::test_support::tree_snapshot(&private_root)
-                .values()
-                .any(|bytes| bytes == b"old source"),
-            "replaced sources must stay recoverable while the final frame is unread"
-        );
-    }
-
-    /// rule: INV.WIRE.SOURCE-EXPORT-TARGET-STAYS-INSIDE-THE-WORKSPACE
-    #[test]
-    fn invalid_terminal_after_publication_keeps_changed_and_reports_invalid_result() {
-        for defect in [
-            "malformed",
-            "nonce",
-            "publication",
-            "command",
-            "requested_mode",
-            "mode",
-            "mode_reason",
-            "extension",
-            "provider_dispatched",
-        ] {
-            let root = workspace();
-            let target = root.path().join("main");
-            write_valid_dump(&target, false);
-            fs::write(target.join("replaced.bsl"), "old source").unwrap();
-            let mut runner = SequenceRunner::exporting(
-                vec![
-                    process(envelope(root.path(), "main", "FULL", None, false), true),
-                    process(envelope(root.path(), "main", "FULL", None, true), true),
-                ],
-                target.clone(),
-            );
-            let mut forged = envelope(root.path(), "main", "FULL", None, true);
-            runner.fault = Some(match defect {
-                "malformed" => PublicationFault::MalformedTerminal,
-                "nonce" => PublicationFault::TerminalField(
-                    "nonce",
-                    json!(uuid::Uuid::new_v4().to_string()),
-                ),
-                "publication" => {
-                    PublicationFault::TerminalField("publication", json!("not_published"))
-                }
-                field => {
-                    match field {
-                        "command" => forged["command"] = json!("push"),
-                        "requested_mode" => forged["data"]["requested_mode"] = json!("INCREMENTAL"),
-                        "mode" => forged["data"]["mode"] = json!("UNVERIFIED"),
-                        "mode_reason" => forged["data"]["mode_reason"] = json!("weather"),
-                        "extension" => forged["data"]["extension"] = json!("Other"),
-                        "provider_dispatched" => {
-                            forged["data"]["provider_dispatched"] = json!(false)
-                        }
-                        _ => unreachable!(),
-                    }
-                    PublicationFault::TerminalField("result", forged)
-                }
-            });
-            let result = run(
-                root.path(),
-                &prepared(root.path(), ExportMode::Full, None, None, false),
-                &runner,
-            );
-            assert!(!result.ok, "{defect}: {result:?}");
-            assert_eq!(
-                result.diagnostics[0]["code"], "invalid_result",
-                "{defect}: {result:?}"
-            );
-            assert_eq!(
-                result.changed,
-                vec![json!({"path":"main","kind":"replaced"})],
-                "{defect}"
-            );
-            assert_eq!(result.data.as_ref().unwrap()["files"], 2);
-            assert!(result
-                .warnings
-                .iter()
-                .any(|warning| warning["code"] == "sync_memory_unconfirmed"));
-            assert!(!target.join("replaced.bsl").exists());
-            assert!(target.join("Catalogs/Items.xml").is_file());
-        }
-    }
-
-    #[test]
-    fn full_export_preserves_concurrent_occupant_and_retains_rollback_recovery() {
-        use unica_workspace::full_dump::test_support::{
-            with_publication_hook, PublicationCheckpoint,
-        };
-        let root = workspace();
-        let target = root.path().join("main");
-        write_valid_dump(&target, false);
-        fs::write(target.join("original.bsl"), "recover me").unwrap();
-        let runner = SequenceRunner::exporting(
-            vec![
-                process(envelope(root.path(), "main", "FULL", None, false), true),
-                process(envelope(root.path(), "main", "FULL", None, true), true),
-            ],
-            target.clone(),
-        );
-        let occupant = target.clone();
-        let result = with_publication_hook(
-            PublicationCheckpoint::AfterBackup,
-            move || {
-                fs::create_dir(&occupant).unwrap();
-                fs::write(occupant.join("foreign.bsl"), "keep the concurrent owner").unwrap();
-            },
-            || {
-                run(
-                    root.path(),
-                    &prepared(root.path(), ExportMode::Full, None, None, false),
-                    &runner,
-                )
-            },
-        );
-        assert!(!result.ok, "{result:?}");
-        assert_eq!(
-            fs::read(target.join("foreign.bsl")).unwrap(),
-            b"keep the concurrent owner"
-        );
-        assert!(!target.join("Catalogs/Items.xml").exists());
-        let recovery_root = fs::read_dir(root.path())
-            .unwrap()
-            .filter_map(Result::ok)
-            .map(|entry| entry.path())
-            .find(|path| {
-                path.file_name()
-                    .unwrap()
-                    .to_string_lossy()
-                    .starts_with(".unica-dump-guard-")
-            })
-            .expect("original tree retained for recovery");
-        let original = fs::read_dir(recovery_root.join("recovery"))
-            .unwrap()
-            .filter_map(Result::ok)
-            .map(|entry| entry.path().join("original.bsl"))
-            .find(|path| path.is_file())
-            .expect("original source in quarantine");
-        assert_eq!(fs::read(original).unwrap(), b"recover me");
-        assert!(result.changed.is_empty());
-    }
-
     /// Общий декодер различает запрошенный и случившийся режимы. Публичный
     /// guarded pull принимает только force/full; историческая incremental
     /// ветка проверяется здесь на своей границе декодирования конверта.
@@ -2852,6 +2413,18 @@ mod medium_tests {
         assert_eq!(request.arguments.mode, ExportMode::Incremental);
         assert_eq!(plan.performed_mode, "full");
         assert_eq!(plan.mode_reason, Some("version_file"));
+        // Каждая причина раннера 0.17 принимается и называется как есть.
+        for reason in [
+            "version_file",
+            "foreign_format",
+            "platform_forecast",
+            "platform_rewrote_all",
+            "unknown",
+        ] {
+            performed["data"]["mode_reason"] = json!(reason);
+            let plan = validate_envelope(&request, &inputs, &identity, &performed, true).unwrap();
+            assert_eq!(plan.mode_reason, Some(reason));
+        }
 
         // Ответ на другой запрошенный режим и неизвестный режим не принимаются.
         for (field, value) in [
@@ -2869,7 +2442,6 @@ mod medium_tests {
             );
         }
     }
-
     #[test]
     fn an_export_target_inside_the_workspace_is_recognised_in_any_host_spelling() {
         let root = workspace();
@@ -2887,69 +2459,6 @@ mod medium_tests {
                 .unwrap_or_else(|result| panic!("{target:?} under {identity:?}: {result:?}"));
         }
     }
-
-    /// rule: INV.WIRE.SOURCE-EXPORT-TARGET-STAYS-INSIDE-THE-WORKSPACE
-    #[test]
-    fn apply_refuses_another_target_and_an_empty_target() {
-        let root = workspace();
-        let runner = SequenceRunner::exporting(
-            vec![
-                process(envelope(root.path(), "main", "FULL", None, false), true),
-                process(envelope(root.path(), "ext-sales", "FULL", None, true), true),
-            ],
-            root.path().join("main"),
-        );
-        let result = run(
-            root.path(),
-            &prepared(root.path(), ExportMode::Full, None, None, false),
-            &runner,
-        );
-        assert_eq!(
-            result.diagnostics[0]["code"], "invalid_result",
-            "{result:?}"
-        );
-        assert!(result.changed.is_empty());
-        assert!(!root.path().join("main").exists());
-        assert!(!root.path().join("ext-sales").exists());
-
-        let root = workspace();
-        let runner = SequenceRunner::new(vec![
-            process(envelope(root.path(), "main", "FULL", None, false), true),
-            process(envelope(root.path(), "main", "FULL", None, true), true),
-        ]);
-        let result = run(
-            root.path(),
-            &prepared(root.path(), ExportMode::Full, None, None, false),
-            &runner,
-        );
-        assert_eq!(
-            result.diagnostics[0]["code"], "invalid_result",
-            "{result:?}"
-        );
-        assert!(result.changed.is_empty());
-        assert!(!root.path().join("main").exists());
-
-        // Цель есть, но раннер в неё ничего не положил: квитанция пустая.
-        let root = workspace();
-        std::fs::create_dir(root.path().join("main")).unwrap();
-        let runner = SequenceRunner::new(vec![
-            process(envelope(root.path(), "main", "FULL", None, false), true),
-            process(envelope(root.path(), "main", "FULL", None, true), true),
-        ]);
-        let result = run(
-            root.path(),
-            &prepared(root.path(), ExportMode::Full, None, None, false),
-            &runner,
-        );
-        assert_eq!(
-            result.diagnostics[0]["code"], "invalid_result",
-            "{result:?}"
-        );
-        assert!(result.changed.is_empty());
-        assert!(root.path().join("main").is_dir());
-        assert_eq!(fs::read_dir(root.path().join("main")).unwrap().count(), 0);
-    }
-
     #[test]
     fn runner_refusals_keep_their_outcome() {
         // Снимок отказа `dump` у раннера 0.9.0 писал `provider_dispatched: true`
@@ -2990,203 +2499,576 @@ mod medium_tests {
             assert_eq!(result.diagnostics[0]["code"], expected, "{code}");
             assert_eq!(map_runner_code(code).outcome(), outcome, "{code}");
         }
-    }
 
-    fn verify_rejected_ready_retains_the_stage_without_a_process_tree_witness(invalid_xml: bool) {
-        use unica_workspace::read::{
-            open_read_directory_nofollow as open_directory_nofollow,
-            open_read_regular_child_nofollow as open_regular_child_nofollow, FileIdentity,
-            ReadFile,
-        };
-        fn file_identity(handle: &ReadFile) -> std::io::Result<FileIdentity> {
-            handle.identity()
-        }
-        fn verify_owner_only_acl(handle: &ReadFile) -> std::io::Result<()> {
-            handle.verify_owner_only()
-        }
-        use std::ffi::OsStr;
-        use std::io::Read;
-        use unica_workspace::full_dump::test_support::{
-            with_publication_hook, PublicationCheckpoint,
-        };
-
-        let root = workspace();
-        let target = root.path().join("main");
-        write_valid_dump(&target, false);
-        fs::write(target.join("local.bsl"), b"original public source").unwrap();
-        fs::write(
-            root.path().join(LOCAL_CONFIG_NAME),
-            "infobase:\n  password: ready-retention-secret\n",
-        )
-        .unwrap();
-        let original_primary = fs::read(root.path().join(CONFIG_NAME)).unwrap();
-        let original_local = fs::read(root.path().join(LOCAL_CONFIG_NAME)).unwrap();
-        let target_before = unica_workspace::test_support::tree_snapshot(&target);
-        let target_identity = file_identity(&open_directory_nofollow(&target).unwrap()).unwrap();
-        let mut runner = SequenceRunner::exporting(
-            vec![
-                process(envelope(root.path(), "main", "FULL", None, false), true),
-                process(envelope(root.path(), "main", "FULL", None, true), true),
-            ],
-            target.clone(),
-        );
-        if invalid_xml {
-            // Actual fake provider write, without touching the cleanup ledger.
-            runner.after_apply = Some(Box::new(move |_, stage| {
-                fs::write(stage.join("Configuration.xml"), b"<invalid-owned-xml>").unwrap();
-            }));
-        }
-        let config = root.path().join(CONFIG_NAME);
-        let mut concurrent_input = fs::read(&config).unwrap();
-        concurrent_input.extend_from_slice(b"\n# concurrent input after authenticated Ready\n");
-        let hook_input = concurrent_input.clone();
-        let invoke = || {
-            run(
+        // Отказы раннера 0.17 о рабочем пространстве и занятости доходят
+        // с его текстом: своего перевода у Unica нет.
+        for (code, expected, message) in [
+            (
+                "work_path_on_another_volume",
+                "invalid_state",
+                "source-set 'main' at 'D:/src' and workPath 'C:/work/.build/v8-runner' are on different volumes: the dump stage lies in workPath and is published by a rename; move the source set or workPath onto one volume",
+            ),
+            (
+                "workspace_busy",
+                "concurrent_change",
+                "workspace 'C:/work' is busy: another command holds it",
+            ),
+        ] {
+            let runner = SequenceRunner::new(vec![process(failure(code, message), false)]);
+            let result = run(
                 root.path(),
-                &prepared(root.path(), ExportMode::Full, None, None, false),
+                &prepared(root.path(), ExportMode::Full, Some("main"), None, true),
                 &runner,
-            )
-        };
-        let result = if invalid_xml {
-            invoke()
-        } else {
-            with_publication_hook(
-                PublicationCheckpoint::AfterStagedCapture,
-                move || fs::write(&config, &hook_input).unwrap(),
-                invoke,
-            )
-        };
-        assert!(!result.ok);
-        assert!(result.changed.is_empty());
-        assert_eq!(
-            result.diagnostics[0]["code"],
-            if invalid_xml {
-                "invalid_result"
-            } else {
-                "concurrent_change"
-            }
-        );
-        if invalid_xml {
-            assert_eq!(result.diagnostics[0]["outcome"], "deadEnd");
-            assert_eq!(
-                fs::read(root.path().join(CONFIG_NAME)).unwrap(),
-                original_primary
             );
-        } else {
-            assert_eq!(
-                fs::read(root.path().join(CONFIG_NAME)).unwrap(),
-                concurrent_input
-            );
+            assert_eq!(result.diagnostics[0]["code"], expected, "{code}");
+            assert_eq!(result.summary, message, "{code}");
         }
-        assert_eq!(
-            unica_workspace::test_support::tree_snapshot(&target),
-            target_before
-        );
-        assert_eq!(
-            file_identity(&open_directory_nofollow(&target).unwrap()).unwrap(),
-            target_identity
-        );
-        let replies = runner.replies.lock().unwrap();
-        assert_eq!(
-            replies
-                .iter()
-                .filter(|reply| reply["phase"] == "ready")
-                .count(),
-            1
-        );
-        assert!(replies
-            .iter()
-            .any(|reply| { reply["phase"] == "ready" && reply["decision"] == "rejected" }));
-        assert!(!replies.iter().any(|reply| reply["decision"] == "published"));
-        drop(replies);
-        let terminals = runner.terminals.lock().unwrap();
-        let terminal = terminals.last().unwrap();
-        assert_eq!(terminal["publication"], "not_published");
-        assert_eq!(terminal["memory"], "unchanged");
-        drop(terminals);
-        let stages = runner.stage_writes.lock().unwrap();
-        assert_eq!(stages.len(), 1);
-        let stage = &stages[0];
-        let private_root = stage.parent().unwrap().parent().unwrap();
-        // Generic ProcessStreamOutput has no ALL-processes/both-EOF proof.
-        // The stream control retains this named tree even though the fake
-        // writer returned synchronously. Its stable runner projection remains
-        // private; it has a separate lifetime from this execution stage.
-        assert!(stage.is_dir());
-        assert!(stage.join("Catalogs/Items.xml").is_file());
-        if invalid_xml {
-            assert_eq!(
-                fs::read(stage.join("Configuration.xml")).unwrap(),
-                b"<invalid-owned-xml>"
-            );
-        }
-        assert_retained_artifact_names_directory(&result, root.path(), private_root);
-        let calls = runner.calls.lock().unwrap();
-        let command = calls.last().unwrap();
-        let config_position = command
-            .args
-            .iter()
-            .position(|argument| argument == "--config")
-            .expect("the canonical runner receives an explicit config")
-            + 1;
-        let projected_config = Path::new(&command.args[config_position]);
-        let canonical_root = super::normalize_path_identity(root.path()).unwrap();
-        let projection_root = super::super::runner_015::projection_directory(&canonical_root);
-        assert_eq!(projected_config, projection_root.join(CONFIG_NAME));
-        assert!(
-            !projection_root.starts_with(private_root),
-            "the stable runner projection is separate from retained execution data"
-        );
-        let projection_directory = open_directory_nofollow(&projection_root).unwrap();
-        verify_owner_only_acl(&projection_directory).unwrap();
-        let mut projected_primary =
-            open_regular_child_nofollow(&projection_directory, OsStr::new(CONFIG_NAME)).unwrap();
-        let mut projected_local =
-            open_regular_child_nofollow(&projection_directory, OsStr::new(LOCAL_CONFIG_NAME))
-                .unwrap();
-        verify_owner_only_acl(&projected_primary).unwrap();
-        verify_owner_only_acl(&projected_local).unwrap();
-        let mut primary_bytes = Vec::new();
-        projected_primary.read_to_end(&mut primary_bytes).unwrap();
-        let mut local_bytes = Vec::new();
-        projected_local.read_to_end(&mut local_bytes).unwrap();
-        let local: serde_yaml::Value = serde_yaml::from_slice(&local_bytes).unwrap();
-        let origin = &local["infobases"]["origin"];
-        assert_eq!(
-            origin["password"].as_str(),
-            Some("ready-retention-secret"),
-            "the stable owner-only local layer preserves the merged origin"
-        );
-        let connection = origin["connection"].as_str().unwrap();
-        let projected_infobase = connection
-            .strip_prefix("File=\"")
-            .and_then(|path| path.strip_suffix('"'))
-            .expect("the fixture keeps its file-infobase connection in the local origin");
-        assert_eq!(
-            super::normalize_path_identity(Path::new(projected_infobase)).unwrap(),
-            super::normalize_path_identity(&root.path().join("build/ib")).unwrap()
-        );
-        assert!(!String::from_utf8(primary_bytes)
-            .unwrap()
-            .contains("ready-retention-secret"));
-        assert_eq!(
-            fs::read(root.path().join(LOCAL_CONFIG_NAME)).unwrap(),
-            original_local
-        );
-        assert!(!serde_json::to_string(&result)
-            .unwrap()
-            .contains("ready-retention-secret"));
     }
 
-    /// rule: INV.RUNTIME.FULL-EXPORT-RETAINED-IDENTITY
-    #[test]
-    fn invalid_owned_xml_ready_rejects_and_retains_the_unknown_writer_stage() {
-        verify_rejected_ready_retains_the_stage_without_a_process_tree_witness(true);
+    fn git(dir: &Path, args: &[&str]) {
+        let status = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
+            .env_remove("GIT_COMMON_DIR")
+            .status()
+            .unwrap();
+        assert!(status.success(), "git {args:?}");
     }
 
+    /// Полная выгрузка заменяет набор: подсчёт видит изменённые, удалённые
+    /// и неотслеживаемые файлы, но не исключённые `.gitignore`.
     /// rule: INV.WIRE.SOURCE-EXPORT-TARGET-STAYS-INSIDE-THE-WORKSPACE
     #[test]
-    fn authenticated_ready_capture_precedes_concurrent_input_refusal() {
-        verify_rejected_ready_retains_the_stage_without_a_process_tree_witness(false);
+    fn local_changes_count_changed_deleted_and_untracked_files_under_git() {
+        let root = tempfile::tempdir().unwrap();
+        git(root.path(), &["init", "-q"]);
+        git(root.path(), &["config", "user.email", "t@example.com"]);
+        git(root.path(), &["config", "user.name", "test"]);
+        let set = root.path().join("main");
+        fs::create_dir_all(set.join("CommonModules")).unwrap();
+        fs::write(set.join("Configuration.xml"), "configuration").unwrap();
+        fs::write(set.join("CommonModules/A.bsl"), "a").unwrap();
+        fs::write(set.join("CommonModules/B.bsl"), "b").unwrap();
+        fs::write(
+            root.path().join(".gitignore"),
+            "main/*.log
+",
+        )
+        .unwrap();
+        git(root.path(), &["add", "-A"]);
+        git(
+            root.path(),
+            &[
+                "-c",
+                "commit.gpgsign=false",
+                "-c",
+                "core.hooksPath=",
+                "commit",
+                "-qm",
+                "init",
+            ],
+        );
+        let cancellation = CancellationToken::new();
+
+        assert_eq!(
+            local_changes(&SystemProcessRunner, &set, &cancellation).unwrap(),
+            LocalChanges::Files(0)
+        );
+        fs::write(set.join("CommonModules/A.bsl"), "edited").unwrap();
+        fs::remove_file(set.join("CommonModules/B.bsl")).unwrap();
+        fs::write(set.join("CommonModules/New.bsl"), "new").unwrap();
+        fs::write(set.join("ignored.log"), "ignored").unwrap();
+        fs::write(root.path().join("outside.txt"), "outside the set").unwrap();
+        assert_eq!(
+            local_changes(&SystemProcessRunner, &set, &cancellation).unwrap(),
+            LocalChanges::Files(3)
+        );
+    }
+
+    /// Каталог вне git — правки проверить нельзя; отсутствующий каталог —
+    /// правок нет.
+    /// rule: INV.WIRE.SOURCE-EXPORT-TARGET-STAYS-INSIDE-THE-WORKSPACE
+    #[test]
+    fn local_changes_name_a_set_outside_git_and_an_absent_one() {
+        let root = tempfile::tempdir().unwrap();
+        let set = root.path().join("main");
+        let cancellation = CancellationToken::new();
+        assert_eq!(
+            local_changes(&SystemProcessRunner, &set, &cancellation).unwrap(),
+            LocalChanges::Files(0)
+        );
+        fs::create_dir_all(&set).unwrap();
+        fs::write(set.join("Configuration.xml"), "configuration").unwrap();
+        // Каталог временный, но может лежать внутри чужого репозитория:
+        // ответ тогда — число, а не «не под git»; проверяется только вне git.
+        let outside = std::process::Command::new("git")
+            .args(["rev-parse", "--is-inside-work-tree"])
+            .current_dir(&set)
+            .output()
+            .map(|output| !output.status.success())
+            .unwrap_or(true);
+        if outside {
+            assert_eq!(
+                local_changes(&SystemProcessRunner, &set, &cancellation).unwrap(),
+                LocalChanges::NotUnderGit
+            );
+        }
+    }
+
+    /// Каталог набора, целиком исключённый `.gitignore`, git не хранит: это
+    /// «не под git», а не «правок нет».
+    /// rule: INV.WIRE.SOURCE-EXPORT-TARGET-STAYS-INSIDE-THE-WORKSPACE
+    #[test]
+    fn a_set_ignored_by_git_is_not_under_git() {
+        let root = tempfile::tempdir().unwrap();
+        git(root.path(), &["init", "-q"]);
+        fs::write(
+            root.path().join(".gitignore"),
+            "main/
+",
+        )
+        .unwrap();
+        let set = root.path().join("main");
+        fs::create_dir_all(&set).unwrap();
+        fs::write(set.join("Configuration.xml"), "configuration").unwrap();
+        assert_eq!(
+            local_changes(&SystemProcessRunner, &set, &CancellationToken::new()).unwrap(),
+            LocalChanges::NotUnderGit
+        );
+    }
+
+    /// Отмена — `cancelled`; отказ git по иной причине, чем «не репозиторий»,
+    /// не выдаётся за «не под git».
+    /// rule: INV.WIRE.SOURCE-EXPORT-TARGET-STAYS-INSIDE-THE-WORKSPACE
+    #[test]
+    fn a_cancelled_or_refusing_git_is_not_taken_for_a_set_outside_git() {
+        let root = tempfile::tempdir().unwrap();
+        let mut cancelled = process(json!(null), false);
+        cancelled.cancelled = true;
+        let runner = SequenceRunner::new(vec![cancelled]);
+        let (code, _) = local_changes(&runner, root.path(), &CancellationToken::new()).unwrap_err();
+        assert_eq!(code, RefusalCode::Cancelled);
+
+        let mut dubious = process(json!(null), false);
+        dubious.stdout = String::new();
+        dubious.stderr = "fatal: detected dubious ownership in repository".to_string();
+        let runner = SequenceRunner::new(vec![dubious]);
+        let (code, error) =
+            local_changes(&runner, root.path(), &CancellationToken::new()).unwrap_err();
+        assert_eq!(code, RefusalCode::InvalidState);
+        assert!(error.contains("dubious ownership"), "{error}");
+
+        let mut outside = process(json!(null), false);
+        outside.stdout = String::new();
+        outside.stderr =
+            "fatal: not a git repository (or any of the parent directories): .git".to_string();
+        let runner = SequenceRunner::new(vec![outside]);
+        assert_eq!(
+            local_changes(&runner, root.path(), &CancellationToken::new()).unwrap(),
+            LocalChanges::NotUnderGit
+        );
+    }
+
+    /// Ответ git, который не прочитать, — отказ, а не «правок нет».
+    /// rule: INV.WIRE.SOURCE-EXPORT-TARGET-STAYS-INSIDE-THE-WORKSPACE
+    #[test]
+    fn an_unreadable_git_answer_is_refused_rather_than_counted_as_clean() {
+        let root = tempfile::tempdir().unwrap();
+        let mut inside = process(json!(null), true);
+        inside.stdout = "true
+"
+        .to_string();
+        let mut failed = process(json!(null), false);
+        failed.stdout = String::new();
+        let mut not_ignored = process(json!(null), false);
+        not_ignored.stdout = String::new();
+        let runner = SequenceRunner::new(vec![inside, not_ignored, failed]);
+        let (code, error) =
+            local_changes(&runner, root.path(), &CancellationToken::new()).unwrap_err();
+        assert_eq!(code, RefusalCode::InvalidState);
+        assert!(error.contains("git status"), "{error}");
+        let args: Vec<String> = runner.calls.lock().unwrap()[2].args.clone();
+        assert!(
+            args.contains(&"--untracked-files=all".to_string()),
+            "{args:?}"
+        );
+    }
+
+    /// Превью полной выгрузки называет несохранённые правки; частичная
+    /// выгрузка набор не заменяет и их не считает.
+    /// rule: INV.WIRE.SOURCE-EXPORT-TARGET-STAYS-INSIDE-THE-WORKSPACE
+    #[test]
+    fn a_full_pull_preview_names_local_changes_and_a_partial_one_does_not() {
+        let root = workspace();
+        for (mode, runner_mode, expected) in [
+            (ExportMode::Full, "FULL", true),
+            (ExportMode::Incremental, "INCREMENTAL", false),
+        ] {
+            let runner = SequenceRunner::new(vec![process(
+                envelope(root.path(), "main", runner_mode, None, false),
+                true,
+            )]);
+            let result = run(
+                root.path(),
+                &prepared(root.path(), mode, Some("main"), None, true),
+                &runner,
+            );
+            assert!(result.ok, "{result:?}");
+            let local = &result.data.as_ref().unwrap()["plan"]["localChanges"];
+            assert_eq!(!local.is_null(), expected, "{mode:?}: {local}");
+        }
+    }
+
+    fn pull_request(root: &Path, arguments: Value) -> InvocationRequest {
+        InvocationRequest::new(
+            ToolIdentity::Run,
+            arguments,
+            root.display().to_string(),
+            7000,
+        )
+        .unwrap()
+    }
+
+    /// Проект под git с набором `main`, сохранённым в коммите.
+    fn committed_workspace() -> tempfile::TempDir {
+        let root = workspace();
+        let set = root.path().join("main");
+        fs::create_dir_all(set.join("CommonModules")).unwrap();
+        fs::write(set.join("Configuration.xml"), "configuration").unwrap();
+        fs::write(set.join("CommonModules/A.bsl"), "a").unwrap();
+        fs::write(set.join("CommonModules/B.bsl"), "b").unwrap();
+        git(root.path(), &["init", "-q"]);
+        git(root.path(), &["config", "user.email", "t@example.com"]);
+        git(root.path(), &["config", "user.name", "test"]);
+        git(root.path(), &["add", "-A"]);
+        git(
+            root.path(),
+            &[
+                "-c",
+                "commit.gpgsign=false",
+                "-c",
+                "core.hooksPath=",
+                "commit",
+                "-qm",
+                "init",
+            ],
+        );
+        root
+    }
+
+    /// Исполняемый полный `pull` поверх несохранённых правок идёт только с
+    /// согласия человека. Вопрос называет число правок по согласованному
+    /// тексту, при отмене советует сохранить их в git. Согласие годится только
+    /// для того же числа правок. Чистый набор и превью не спрашивают.
+    /// rule: INV.RUNTIME.DESTRUCTIVE-CONFIRMATION
+    /// rule: INV.WIRE.SOURCE-EXPORT-TARGET-STAYS-INSIDE-THE-WORKSPACE
+    /// rule: INV.MCP.HUMAN-CHOICE
+    #[test]
+    fn a_full_pull_over_unsaved_changes_runs_only_with_the_persons_confirmation() {
+        let root = committed_workspace();
+        let call =
+            json!({"op": "pull", "args": {"force": true, "sourceSet": "main"}, "dryRun": false});
+
+        // Чистый набор: вопроса нет.
+        PreparedSourceExport::parse(&pull_request(root.path(), call.clone()))
+            .expect("a clean source set is not asked");
+
+        fs::write(root.path().join("main/CommonModules/A.bsl"), "edited").unwrap();
+        let refused = PreparedSourceExport::parse(&pull_request(root.path(), call.clone()))
+            .expect_err("unsaved changes need a confirmation");
+        assert_eq!(refused.diagnostics[0]["code"], "cancelled");
+        let choice = refused.human_choice.as_deref().expect("a confirmation");
+        // Надписи согласованы: менять их — только вместе с этим тестом.
+        assert_eq!(choice.code, "source.pull_unsaved");
+        assert_eq!(
+            choice.question,
+            "В исходниках набора «main» есть несохранённые правки, файлов: 1."
+        );
+        assert!(choice.proceeds_unasked);
+        assert_eq!(choice.options.len(), 1);
+        assert_eq!(choice.options[0].title, "Перезаписать исходники");
+        assert_eq!(choice.options[0].description, "правки пропадут, файлов: 1");
+        assert_eq!(
+            choice.cancel_description.as_deref(),
+            Some("сохраните правки в git и повторите")
+        );
+        assert_eq!(
+            choice.data,
+            Some(json!({"sourceSet": "main", "underGit": true, "files": 1}))
+        );
+        assert_eq!(
+            Value::Object(unica_execution_contract::invocation::without_confirmation(
+                &choice.options[0].arguments
+            )),
+            call
+        );
+
+        let confirmed = choice.options[0].arguments.clone();
+        let executed = PreparedSourceExport::parse(&pull_request(
+            root.path(),
+            Value::Object(confirmed.clone()),
+        ))
+        .expect("a confirmed full pull is executed");
+        assert_eq!(executed.arguments.mode, ExportMode::Full);
+
+        // Правок стало больше: прежнее согласие не годится.
+        fs::write(root.path().join("main/CommonModules/New.bsl"), "new").unwrap();
+        let again =
+            PreparedSourceExport::parse(&pull_request(root.path(), Value::Object(confirmed)))
+                .expect_err("another count needs a new confirmation");
+        assert_eq!(
+            again.human_choice.as_deref().unwrap().question,
+            "В исходниках набора «main» есть несохранённые правки, файлов: 2."
+        );
+
+        // Без `sourceSet` считается набор конфигурации.
+        let unnamed = PreparedSourceExport::parse(&pull_request(
+            root.path(),
+            json!({"op": "pull", "args": {"force": true}, "dryRun": false}),
+        ))
+        .expect_err("the configuration set is counted too");
+        assert!(unnamed.human_choice.is_some());
+
+        for unasked in [
+            json!({"op": "pull", "args": {"force": true, "sourceSet": "main"}, "dryRun": true}),
+            json!({"op": "pull", "args": {"sourceSet": "main"}, "dryRun": false}),
+        ] {
+            PreparedSourceExport::parse(&pull_request(root.path(), unasked.clone()))
+                .unwrap_or_else(|refused| panic!("{unasked} is not asked: {refused:?}"));
+        }
+    }
+
+    /// Набор не под git: правки проверить нельзя, и полный `pull` спрашивает
+    /// по согласованному тексту.
+    /// rule: INV.RUNTIME.DESTRUCTIVE-CONFIRMATION
+    #[test]
+    fn a_full_pull_of_a_set_outside_git_asks_the_person() {
+        let root = workspace();
+        let set = root.path().join("main");
+        fs::create_dir_all(&set).unwrap();
+        fs::write(set.join("Configuration.xml"), "configuration").unwrap();
+        // Каталог временный, но может лежать внутри чужого репозитория.
+        let outside = std::process::Command::new("git")
+            .args(["rev-parse", "--is-inside-work-tree"])
+            .current_dir(&set)
+            .output()
+            .map(|output| !output.status.success())
+            .unwrap_or(true);
+        if !outside {
+            return;
+        }
+        let refused = PreparedSourceExport::parse(&pull_request(
+            root.path(),
+            json!({"op": "pull", "args": {"force": true, "sourceSet": "main"}, "dryRun": false}),
+        ))
+        .expect_err("a set outside git needs a confirmation");
+        let choice = refused.human_choice.as_deref().expect("a confirmation");
+        assert_eq!(choice.code, "source.pull_unsaved");
+        assert_eq!(
+            choice.question,
+            "Исходники набора «main» не под git: несохранённые правки проверить нельзя."
+        );
+        assert_eq!(choice.options[0].title, "Перезаписать исходники");
+        assert_eq!(
+            choice.options[0].description,
+            "правки в файлах набора пропадут"
+        );
+        assert_eq!(choice.cancel_description, None);
+        assert_eq!(
+            choice.data,
+            Some(json!({"sourceSet": "main", "underGit": false}))
+        );
+    }
+
+    fn reexport_request(root: &Path, args: Value, dry_run: bool) -> InvocationRequest {
+        pull_request(
+            root,
+            json!({"op": REEXPORT, "args": args, "dryRun": dry_run}),
+        )
+    }
+
+    fn ok(command: &str) -> ProcessOutput {
+        process(json!({"command": command, "ok": true, "data": {}}), true)
+    }
+
+    fn reexport_work_dirs(root: &Path) -> usize {
+        fs::read_dir(root.join(".build/unica/reexport"))
+            .map(|entries| entries.count())
+            .unwrap_or(0)
+    }
+
+    /// `source.reexport` takes a declared set and one of the writable export
+    /// formats; an extension set is exported by its own name.
+    /// rule: INV.SOURCE.WRITABLE-PROFILE
+    #[test]
+    fn a_reexport_takes_a_set_and_a_writable_format() {
+        let root = workspace();
+        for (args, refused) in [
+            (
+                json!({"sourceSet": "main", "format": "2.19"}),
+                "writable export formats",
+            ),
+            (
+                json!({"sourceSet": "main", "format": "2.20", "force": true}),
+                "does not accept `force`",
+            ),
+            (json!({"format": "2.20"}), "sourceSet"),
+        ] {
+            let refusal =
+                PreparedSourceExport::parse_reexport(&reexport_request(root.path(), args, true))
+                    .expect_err("refused");
+            assert_eq!(refusal.diagnostics[0]["code"], "bad_value", "{refusal:?}");
+            assert!(
+                refusal.summary.contains(refused)
+                    || serde_json::to_string(&refusal).unwrap().contains(refused),
+                "{refusal:?}"
+            );
+        }
+        let extension = PreparedSourceExport::parse_reexport(&reexport_request(
+            root.path(),
+            json!({"sourceSet": "Sales", "format": "2.21"}),
+            true,
+        ))
+        .unwrap();
+        assert_eq!(extension.reexport, Some("2.21"));
+        assert_eq!(extension.arguments.extension.as_deref(), Some("Sales"));
+        assert_eq!(extension.arguments.mode, ExportMode::Full);
+    }
+
+    /// The preview names the set, the format, its platform line and that the
+    /// files of the set are replaced; it starts no runner.
+    /// rule: INV.SOURCE.WRITABLE-PROFILE
+    #[test]
+    fn a_reexport_preview_plans_without_the_runner() {
+        let root = workspace();
+        let prepared = PreparedSourceExport::parse_reexport(&reexport_request(
+            root.path(),
+            json!({"sourceSet": "main", "format": "2.22"}),
+            true,
+        ))
+        .unwrap();
+        let runner = SequenceRunner::new(Vec::new());
+        let result = run(root.path(), &prepared, &runner);
+        assert!(result.ok, "{result:?}");
+        assert_eq!(runner.call_count(), 0);
+        let plan = &result.data.as_ref().unwrap()["plan"];
+        assert_eq!(plan["sourceSet"], "main");
+        assert_eq!(plan["format"], "2.22");
+        assert_eq!(plan["platformLine"], "8.5.4");
+        assert_eq!(plan["target"], "main");
+        assert_eq!(plan["replacesLocalSources"], true);
+        assert_eq!(result.next[0]["args"]["dryRun"], false);
+    }
+
+    /// The execution loads the set into a temporary file infobase of its own
+    /// config and exports it back in full; an extension is loaded into it
+    /// first. The temporary directory goes away, and the project files the
+    /// runner was given are the private ones.
+    /// rule: INV.SOURCE.WRITABLE-PROFILE
+    #[test]
+    fn a_reexport_runs_through_a_temporary_infobase_and_leaves_nothing_behind() {
+        let root = committed_workspace();
+        let configuration = PreparedSourceExport::parse_reexport(&reexport_request(
+            root.path(),
+            json!({"sourceSet": "main", "format": "2.20"}),
+            false,
+        ))
+        .expect("a clean set is not asked");
+        let runner = SequenceRunner::new(vec![ok("infobase create"), ok("pull")]);
+        let result = run(root.path(), &configuration, &runner);
+        assert!(result.ok, "{result:?}");
+        assert_eq!(runner.call_count(), 2);
+        let create = runner.joined_args(0);
+        assert!(
+            create.contains("reexport") && create.ends_with("infobase create"),
+            "{create}"
+        );
+        assert!(
+            !create.contains(&format!(
+                "{}{}",
+                root.path().display(),
+                std::path::MAIN_SEPARATOR_STR.to_string() + "v8project.yaml"
+            )),
+            "{create}"
+        );
+        assert!(
+            runner.joined_args(1).ends_with("pull main --force"),
+            "{}",
+            runner.joined_args(1)
+        );
+        assert_eq!(reexport_work_dirs(root.path()), 0);
+        assert_eq!(result.data.as_ref().unwrap()["format"], "2.20");
+
+        let extension = PreparedSourceExport::parse_reexport(&reexport_request(
+            root.path(),
+            json!({"sourceSet": "Sales", "format": "2.20"}),
+            false,
+        ))
+        .unwrap();
+        let runner = SequenceRunner::new(vec![ok("infobase create"), ok("push"), ok("pull")]);
+        assert!(run(root.path(), &extension, &runner).ok);
+        assert!(runner.joined_args(1).ends_with("push Sales --force"));
+        assert!(runner
+            .joined_args(2)
+            .ends_with("pull Sales --force --extension Sales"));
+
+        // A failed export may have written part of the set: the refusal offers
+        // the re-export again, and the temporary directory still goes away.
+        let runner = SequenceRunner::new(vec![
+            ok("infobase create"),
+            process(
+                json!({"command": "pull", "ok": false, "error": {"code": "platform_failure", "message": "dump failed"}}),
+                false,
+            ),
+        ]);
+        let refused = run(root.path(), &configuration, &runner);
+        assert!(!refused.ok);
+        assert_eq!(refused.next[0]["args"]["op"], REEXPORT);
+        assert_eq!(reexport_work_dirs(root.path()), 0);
+    }
+
+    /// Like a full `pull`, an executing re-export over unsaved changes asks the
+    /// person first.
+    /// rule: INV.RUNTIME.DESTRUCTIVE-CONFIRMATION
+    #[test]
+    fn a_reexport_over_unsaved_changes_asks_the_person() {
+        let root = committed_workspace();
+        fs::write(root.path().join("main/CommonModules/A.bsl"), "edited").unwrap();
+        let refused = PreparedSourceExport::parse_reexport(&reexport_request(
+            root.path(),
+            json!({"sourceSet": "main", "format": "2.20"}),
+            false,
+        ))
+        .expect_err("unsaved changes need a confirmation");
+        let choice = refused.human_choice.as_deref().expect("a confirmation");
+        assert_eq!(choice.code, "source.pull_unsaved");
+        let confirmed = choice.options[0].arguments.clone();
+        PreparedSourceExport::parse_reexport(&pull_request(root.path(), Value::Object(confirmed)))
+            .expect("the confirmed re-export is executed");
+
+        // The re-export a format question offers before the edit carries
+        // that consent already.
+        let apply = InvocationRequest::new(
+            ToolIdentity::Apply,
+            json!({
+                "at": "main:Catalog.Products",
+                "ops": [],
+                HUMAN_REEXPORT_KEY: {"sourceSet": "main", "format": "2.20"},
+            }),
+            root.path().display().to_string(),
+            7_000,
+        )
+        .unwrap();
+        let ReexportBeforeApply::Ready(reexport, edit) = prepare_reexport_before_apply(&apply)
+        else {
+            panic!("the offered re-export asks nothing more");
+        };
+        assert!(!reexport.is_preview());
+        assert_eq!(edit.tool(), ToolIdentity::Apply);
+        assert!(!edit.arguments().contains_key(HUMAN_REEXPORT_KEY));
+        assert_eq!(edit.arguments()["at"], "main:Catalog.Products");
     }
 }

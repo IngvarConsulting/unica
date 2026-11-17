@@ -1,0 +1,1177 @@
+{
+  "id": "S-1667-scheduled-job-key",
+  "issue": 1667,
+  "area": "Свойства метаданных",
+  "task": "Задать, заменить и очистить Key существующего ScheduledJob через сохранённый preview; прочитать результат, сохранить обработчик/расписание/модули, проверить no-op, неверные значения и конфликт входов без частичной записи",
+  "workspace": "tests/fixtures/acceptance/workspace-scheduled-job-key",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ScheduledJob.KeyProbe.Can.props.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "f0": {
+          "file": "src/CommonModules/EventHandlers/Ext/Module.bsl",
+          "kind": "sha256"
+        },
+        "f1": {
+          "file": "src/CommonModules/EventHandlers.xml",
+          "kind": "sha256"
+        },
+        "f2": {
+          "file": "src/ConfigDumpInfo.xml",
+          "kind": "sha256"
+        },
+        "f3": {
+          "file": "src/Configuration.xml",
+          "kind": "sha256"
+        },
+        "f4": {
+          "file": "src/Languages/Русский.xml",
+          "kind": "sha256"
+        },
+        "f5": {
+          "file": "src/ScheduledJobs/KeyProbe/Ext/Schedule.xml",
+          "kind": "sha256"
+        },
+        "f6": {
+          "file": "src/ScheduledJobs/KeyProbe.xml",
+          "kind": "sha256"
+        },
+        "f7": {
+          "file": "v8project.yaml",
+          "kind": "sha256"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/Key/type",
+          "eq": "string"
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/Key/maxLength",
+          "eq": 128
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule.EventHandlers.Can.props.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/Key",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:ScheduledJob.KeyProbe",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Key": "Обмен & очередь"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/EventHandlers/Ext/Module.bsl",
+          "eq": "$capture.f0"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/EventHandlers.xml",
+          "eq": "$capture.f1"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ConfigDumpInfo.xml",
+          "eq": "$capture.f2"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "$capture.f3"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/Русский.xml",
+          "eq": "$capture.f4"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ScheduledJobs/KeyProbe/Ext/Schedule.xml",
+          "eq": "$capture.f5"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ScheduledJobs/KeyProbe.xml",
+          "eq": "$capture.f6"
+        },
+        {
+          "kind": "sha256",
+          "path": "v8project.yaml",
+          "eq": "$capture.f7"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "kind": "xml",
+          "path": "src/ScheduledJobs/KeyProbe.xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Key",
+          "eq": [
+            "Обмен & очередь"
+          ]
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/EventHandlers/Ext/Module.bsl",
+          "eq": "$capture.f0"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/EventHandlers.xml",
+          "eq": "$capture.f1"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ConfigDumpInfo.xml",
+          "eq": "$capture.f2"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "$capture.f3"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/Русский.xml",
+          "eq": "$capture.f4"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ScheduledJobs/KeyProbe/Ext/Schedule.xml",
+          "eq": "$capture.f5"
+        },
+        {
+          "kind": "sha256",
+          "path": "v8project.yaml",
+          "eq": "$capture.f7"
+        },
+        {
+          "kind": "xml",
+          "path": "src/ScheduledJobs/KeyProbe.xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}ScheduledJob[@uuid='c4572221-0058-4b29-8ac7-98ca02e6a165']/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "eq": [
+            "KeyProbe"
+          ]
+        },
+        {
+          "kind": "xml",
+          "path": "src/ScheduledJobs/KeyProbe.xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}ScheduledJob[@uuid='c4572221-0058-4b29-8ac7-98ca02e6a165']/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}MethodName",
+          "eq": [
+            "CommonModule.EventHandlers.Run"
+          ]
+        },
+        {
+          "kind": "xml",
+          "path": "src/ScheduledJobs/KeyProbe.xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}ScheduledJob[@uuid='c4572221-0058-4b29-8ac7-98ca02e6a165']/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Use",
+          "eq": [
+            "false"
+          ]
+        },
+        {
+          "kind": "xml",
+          "path": "src/ScheduledJobs/KeyProbe.xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}ScheduledJob[@uuid='c4572221-0058-4b29-8ac7-98ca02e6a165']/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Predefined",
+          "eq": [
+            "false"
+          ]
+        },
+        {
+          "kind": "xml",
+          "path": "src/ScheduledJobs/KeyProbe.xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}ScheduledJob[@uuid='c4572221-0058-4b29-8ac7-98ca02e6a165']/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}RestartCountOnFailure",
+          "eq": [
+            "3"
+          ]
+        },
+        {
+          "kind": "xml",
+          "path": "src/ScheduledJobs/KeyProbe.xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}ScheduledJob[@uuid='c4572221-0058-4b29-8ac7-98ca02e6a165']/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}RestartIntervalOnFailure",
+          "eq": [
+            "10"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ScheduledJob.KeyProbe"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Key",
+          "eq": "Обмен & очередь"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:ScheduledJob.KeyProbe",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Key": "Второй ключ 😀"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/EventHandlers/Ext/Module.bsl",
+          "eq": "$capture.f0"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/EventHandlers.xml",
+          "eq": "$capture.f1"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ConfigDumpInfo.xml",
+          "eq": "$capture.f2"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "$capture.f3"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/Русский.xml",
+          "eq": "$capture.f4"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ScheduledJobs/KeyProbe/Ext/Schedule.xml",
+          "eq": "$capture.f5"
+        },
+        {
+          "kind": "sha256",
+          "path": "v8project.yaml",
+          "eq": "$capture.f7"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "kind": "xml",
+          "path": "src/ScheduledJobs/KeyProbe.xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Key",
+          "eq": [
+            "Второй ключ 😀"
+          ]
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/EventHandlers/Ext/Module.bsl",
+          "eq": "$capture.f0"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/EventHandlers.xml",
+          "eq": "$capture.f1"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ConfigDumpInfo.xml",
+          "eq": "$capture.f2"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "$capture.f3"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/Русский.xml",
+          "eq": "$capture.f4"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ScheduledJobs/KeyProbe/Ext/Schedule.xml",
+          "eq": "$capture.f5"
+        },
+        {
+          "kind": "sha256",
+          "path": "v8project.yaml",
+          "eq": "$capture.f7"
+        },
+        {
+          "kind": "xml",
+          "path": "src/ScheduledJobs/KeyProbe.xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}ScheduledJob[@uuid='c4572221-0058-4b29-8ac7-98ca02e6a165']/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "eq": [
+            "KeyProbe"
+          ]
+        },
+        {
+          "kind": "xml",
+          "path": "src/ScheduledJobs/KeyProbe.xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}ScheduledJob[@uuid='c4572221-0058-4b29-8ac7-98ca02e6a165']/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}MethodName",
+          "eq": [
+            "CommonModule.EventHandlers.Run"
+          ]
+        },
+        {
+          "kind": "xml",
+          "path": "src/ScheduledJobs/KeyProbe.xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}ScheduledJob[@uuid='c4572221-0058-4b29-8ac7-98ca02e6a165']/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Use",
+          "eq": [
+            "false"
+          ]
+        },
+        {
+          "kind": "xml",
+          "path": "src/ScheduledJobs/KeyProbe.xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}ScheduledJob[@uuid='c4572221-0058-4b29-8ac7-98ca02e6a165']/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Predefined",
+          "eq": [
+            "false"
+          ]
+        },
+        {
+          "kind": "xml",
+          "path": "src/ScheduledJobs/KeyProbe.xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}ScheduledJob[@uuid='c4572221-0058-4b29-8ac7-98ca02e6a165']/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}RestartCountOnFailure",
+          "eq": [
+            "3"
+          ]
+        },
+        {
+          "kind": "xml",
+          "path": "src/ScheduledJobs/KeyProbe.xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}ScheduledJob[@uuid='c4572221-0058-4b29-8ac7-98ca02e6a165']/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}RestartIntervalOnFailure",
+          "eq": [
+            "10"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ScheduledJob.KeyProbe"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Key",
+          "eq": "Второй ключ 😀"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:ScheduledJob.KeyProbe",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Key": ""
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/EventHandlers/Ext/Module.bsl",
+          "eq": "$capture.f0"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/EventHandlers.xml",
+          "eq": "$capture.f1"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ConfigDumpInfo.xml",
+          "eq": "$capture.f2"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "$capture.f3"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/Русский.xml",
+          "eq": "$capture.f4"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ScheduledJobs/KeyProbe/Ext/Schedule.xml",
+          "eq": "$capture.f5"
+        },
+        {
+          "kind": "sha256",
+          "path": "v8project.yaml",
+          "eq": "$capture.f7"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "kind": "xml",
+          "path": "src/ScheduledJobs/KeyProbe.xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Key",
+          "eq": [
+            ""
+          ]
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/EventHandlers/Ext/Module.bsl",
+          "eq": "$capture.f0"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/EventHandlers.xml",
+          "eq": "$capture.f1"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ConfigDumpInfo.xml",
+          "eq": "$capture.f2"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "$capture.f3"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/Русский.xml",
+          "eq": "$capture.f4"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ScheduledJobs/KeyProbe/Ext/Schedule.xml",
+          "eq": "$capture.f5"
+        },
+        {
+          "kind": "sha256",
+          "path": "v8project.yaml",
+          "eq": "$capture.f7"
+        },
+        {
+          "kind": "xml",
+          "path": "src/ScheduledJobs/KeyProbe.xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}ScheduledJob[@uuid='c4572221-0058-4b29-8ac7-98ca02e6a165']/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "eq": [
+            "KeyProbe"
+          ]
+        },
+        {
+          "kind": "xml",
+          "path": "src/ScheduledJobs/KeyProbe.xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}ScheduledJob[@uuid='c4572221-0058-4b29-8ac7-98ca02e6a165']/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}MethodName",
+          "eq": [
+            "CommonModule.EventHandlers.Run"
+          ]
+        },
+        {
+          "kind": "xml",
+          "path": "src/ScheduledJobs/KeyProbe.xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}ScheduledJob[@uuid='c4572221-0058-4b29-8ac7-98ca02e6a165']/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Use",
+          "eq": [
+            "false"
+          ]
+        },
+        {
+          "kind": "xml",
+          "path": "src/ScheduledJobs/KeyProbe.xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}ScheduledJob[@uuid='c4572221-0058-4b29-8ac7-98ca02e6a165']/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Predefined",
+          "eq": [
+            "false"
+          ]
+        },
+        {
+          "kind": "xml",
+          "path": "src/ScheduledJobs/KeyProbe.xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}ScheduledJob[@uuid='c4572221-0058-4b29-8ac7-98ca02e6a165']/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}RestartCountOnFailure",
+          "eq": [
+            "3"
+          ]
+        },
+        {
+          "kind": "xml",
+          "path": "src/ScheduledJobs/KeyProbe.xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}ScheduledJob[@uuid='c4572221-0058-4b29-8ac7-98ca02e6a165']/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}RestartIntervalOnFailure",
+          "eq": [
+            "10"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ScheduledJob.KeyProbe"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Key",
+          "eq": ""
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:ScheduledJob.KeyProbe",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Key": "stale"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "stale": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:ScheduledJob.KeyProbe",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Key": "winner"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "kind": "xml",
+          "path": "src/ScheduledJobs/KeyProbe.xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Key",
+          "eq": [
+            "winner"
+          ]
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/EventHandlers/Ext/Module.bsl",
+          "eq": "$capture.f0"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/EventHandlers.xml",
+          "eq": "$capture.f1"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ConfigDumpInfo.xml",
+          "eq": "$capture.f2"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "$capture.f3"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/Русский.xml",
+          "eq": "$capture.f4"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ScheduledJobs/KeyProbe/Ext/Schedule.xml",
+          "eq": "$capture.f5"
+        },
+        {
+          "kind": "sha256",
+          "path": "v8project.yaml",
+          "eq": "$capture.f7"
+        },
+        {
+          "kind": "xml",
+          "path": "src/ScheduledJobs/KeyProbe.xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}ScheduledJob[@uuid='c4572221-0058-4b29-8ac7-98ca02e6a165']/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "eq": [
+            "KeyProbe"
+          ]
+        },
+        {
+          "kind": "xml",
+          "path": "src/ScheduledJobs/KeyProbe.xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}ScheduledJob[@uuid='c4572221-0058-4b29-8ac7-98ca02e6a165']/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}MethodName",
+          "eq": [
+            "CommonModule.EventHandlers.Run"
+          ]
+        },
+        {
+          "kind": "xml",
+          "path": "src/ScheduledJobs/KeyProbe.xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}ScheduledJob[@uuid='c4572221-0058-4b29-8ac7-98ca02e6a165']/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Use",
+          "eq": [
+            "false"
+          ]
+        },
+        {
+          "kind": "xml",
+          "path": "src/ScheduledJobs/KeyProbe.xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}ScheduledJob[@uuid='c4572221-0058-4b29-8ac7-98ca02e6a165']/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Predefined",
+          "eq": [
+            "false"
+          ]
+        },
+        {
+          "kind": "xml",
+          "path": "src/ScheduledJobs/KeyProbe.xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}ScheduledJob[@uuid='c4572221-0058-4b29-8ac7-98ca02e6a165']/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}RestartCountOnFailure",
+          "eq": [
+            "3"
+          ]
+        },
+        {
+          "kind": "xml",
+          "path": "src/ScheduledJobs/KeyProbe.xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}ScheduledJob[@uuid='c4572221-0058-4b29-8ac7-98ca02e6a165']/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}RestartIntervalOnFailure",
+          "eq": [
+            "10"
+          ]
+        }
+      ],
+      "captures": {
+        "winner": {
+          "kind": "sha256",
+          "file": "src/ScheduledJobs/KeyProbe.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.stale"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "stale_revision: retained apply preimage changed: ScheduledJobs/KeyProbe.xml; input `ScheduledJobs/KeyProbe.xml`: source write target; the plan retains its original state to pre",
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/ScheduledJobs/KeyProbe.xml",
+          "eq": "$capture.winner"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/EventHandlers/Ext/Module.bsl",
+          "eq": "$capture.f0"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/EventHandlers.xml",
+          "eq": "$capture.f1"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ConfigDumpInfo.xml",
+          "eq": "$capture.f2"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "$capture.f3"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/Русский.xml",
+          "eq": "$capture.f4"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ScheduledJobs/KeyProbe/Ext/Schedule.xml",
+          "eq": "$capture.f5"
+        },
+        {
+          "kind": "sha256",
+          "path": "v8project.yaml",
+          "eq": "$capture.f7"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:ScheduledJob.KeyProbe",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Key": "winner"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/ScheduledJobs/KeyProbe.xml",
+          "eq": "$capture.winner"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/ScheduledJobs/KeyProbe.xml",
+          "eq": "$capture.winner"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/EventHandlers/Ext/Module.bsl",
+          "eq": "$capture.f0"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/EventHandlers.xml",
+          "eq": "$capture.f1"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ConfigDumpInfo.xml",
+          "eq": "$capture.f2"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "$capture.f3"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/Русский.xml",
+          "eq": "$capture.f4"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ScheduledJobs/KeyProbe/Ext/Schedule.xml",
+          "eq": "$capture.f5"
+        },
+        {
+          "kind": "sha256",
+          "path": "v8project.yaml",
+          "eq": "$capture.f7"
+        },
+        {
+          "kind": "xml",
+          "path": "src/ScheduledJobs/KeyProbe.xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}ScheduledJob[@uuid='c4572221-0058-4b29-8ac7-98ca02e6a165']/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "eq": [
+            "KeyProbe"
+          ]
+        },
+        {
+          "kind": "xml",
+          "path": "src/ScheduledJobs/KeyProbe.xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}ScheduledJob[@uuid='c4572221-0058-4b29-8ac7-98ca02e6a165']/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}MethodName",
+          "eq": [
+            "CommonModule.EventHandlers.Run"
+          ]
+        },
+        {
+          "kind": "xml",
+          "path": "src/ScheduledJobs/KeyProbe.xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}ScheduledJob[@uuid='c4572221-0058-4b29-8ac7-98ca02e6a165']/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Use",
+          "eq": [
+            "false"
+          ]
+        },
+        {
+          "kind": "xml",
+          "path": "src/ScheduledJobs/KeyProbe.xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}ScheduledJob[@uuid='c4572221-0058-4b29-8ac7-98ca02e6a165']/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Predefined",
+          "eq": [
+            "false"
+          ]
+        },
+        {
+          "kind": "xml",
+          "path": "src/ScheduledJobs/KeyProbe.xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}ScheduledJob[@uuid='c4572221-0058-4b29-8ac7-98ca02e6a165']/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}RestartCountOnFailure",
+          "eq": [
+            "3"
+          ]
+        },
+        {
+          "kind": "xml",
+          "path": "src/ScheduledJobs/KeyProbe.xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}ScheduledJob[@uuid='c4572221-0058-4b29-8ac7-98ca02e6a165']/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}RestartIntervalOnFailure",
+          "eq": [
+            "10"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:ScheduledJob.KeyProbe",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Key": true
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: property value must be a string",
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/ScheduledJobs/KeyProbe.xml",
+          "eq": "$capture.winner"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/EventHandlers/Ext/Module.bsl",
+          "eq": "$capture.f0"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/EventHandlers.xml",
+          "eq": "$capture.f1"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ConfigDumpInfo.xml",
+          "eq": "$capture.f2"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "$capture.f3"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/Русский.xml",
+          "eq": "$capture.f4"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ScheduledJobs/KeyProbe/Ext/Schedule.xml",
+          "eq": "$capture.f5"
+        },
+        {
+          "kind": "sha256",
+          "path": "v8project.yaml",
+          "eq": "$capture.f7"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:ScheduledJob.KeyProbe",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Key": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: property `Key` exceeds its maximum length of 128 characters",
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/ScheduledJobs/KeyProbe.xml",
+          "eq": "$capture.winner"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/EventHandlers/Ext/Module.bsl",
+          "eq": "$capture.f0"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/EventHandlers.xml",
+          "eq": "$capture.f1"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ConfigDumpInfo.xml",
+          "eq": "$capture.f2"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "$capture.f3"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/Русский.xml",
+          "eq": "$capture.f4"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ScheduledJobs/KeyProbe/Ext/Schedule.xml",
+          "eq": "$capture.f5"
+        },
+        {
+          "kind": "sha256",
+          "path": "v8project.yaml",
+          "eq": "$capture.f7"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:ScheduledJob.KeyProbe",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Key": "bad\u0000key"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: Key must contain only XML 1.0 characters",
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/ScheduledJobs/KeyProbe.xml",
+          "eq": "$capture.winner"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/EventHandlers/Ext/Module.bsl",
+          "eq": "$capture.f0"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/EventHandlers.xml",
+          "eq": "$capture.f1"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ConfigDumpInfo.xml",
+          "eq": "$capture.f2"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "$capture.f3"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/Русский.xml",
+          "eq": "$capture.f4"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ScheduledJobs/KeyProbe/Ext/Schedule.xml",
+          "eq": "$capture.f5"
+        },
+        {
+          "kind": "sha256",
+          "path": "v8project.yaml",
+          "eq": "$capture.f7"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:CommonModule.EventHandlers",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Key": "wrong"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: property `Key` is not supported for CommonModule",
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/ScheduledJobs/KeyProbe.xml",
+          "eq": "$capture.winner"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/EventHandlers/Ext/Module.bsl",
+          "eq": "$capture.f0"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/EventHandlers.xml",
+          "eq": "$capture.f1"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ConfigDumpInfo.xml",
+          "eq": "$capture.f2"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "$capture.f3"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/Русский.xml",
+          "eq": "$capture.f4"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ScheduledJobs/KeyProbe/Ext/Schedule.xml",
+          "eq": "$capture.f5"
+        },
+        {
+          "kind": "sha256",
+          "path": "v8project.yaml",
+          "eq": "$capture.f7"
+        }
+      ]
+    }
+  ]
+}

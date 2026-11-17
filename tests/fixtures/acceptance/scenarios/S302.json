@@ -2,7 +2,7 @@
   "id": "S302",
   "area": "Формы",
   "workspace": "tests/fixtures/acceptance/workspace-format",
-  "task": "Проверить форму в старой выгрузке — тот же совет на узле формы",
+  "task": "Проверить форму в старой выгрузке — та же находка на узле формы",
   "wire": [
     {
       "tool": "unica.check",
@@ -13,7 +13,7 @@
         "ok"
       ],
       "status": "passed",
-      "diagnostic": "formatMigrationAvailable",
+      "diagnostic": "formatVersionUnverified",
       "validators": [
         "form"
       ]

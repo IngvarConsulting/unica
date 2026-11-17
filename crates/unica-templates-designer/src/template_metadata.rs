@@ -42,7 +42,7 @@ pub fn template_metadata_xml(
     let metadata_type = unica_xml_format::text::escape_xml(metadata_type);
     let format_version = unica_xml_format::text::escape_xml(format_version);
     let template_uuid = unica_xml_format::text::escape_xml(template_uuid);
-    format!(
+    let descriptor = format!(
         concat!(
             "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
             "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\"",
@@ -83,5 +83,55 @@ pub fn template_metadata_xml(
         template_name = template_name,
         synonym = synonym,
         metadata_type = metadata_type,
-    )
+    );
+    unica_source_designer::layout::declare_format_namespaces(descriptor, &format_version)
+}
+
+#[cfg(test)]
+mod format_tests {
+    /// The namespaces a root declares, as roxmltree reads them.
+    fn declarations(xml: &str) -> Vec<(Option<String>, String)> {
+        let document = roxmltree::Document::parse(xml.trim_start_matches('\u{feff}')).unwrap();
+        let mut declared: Vec<_> = document
+            .root_element()
+            .namespaces()
+            .map(|namespace| {
+                (
+                    namespace.name().map(str::to_owned),
+                    namespace.uri().to_owned(),
+                )
+            })
+            .collect();
+        declared.sort();
+        declared
+    }
+
+    /// rule: INV.SOURCE.WRITABLE-PROFILE
+    #[test]
+    fn a_new_template_descriptor_declares_the_namespaces_of_its_set_format() {
+        let template = |version| {
+            super::template_metadata_xml("Macet", "Macet", "SpreadsheetDocument", version, "uuid")
+        };
+        let root = |xml: &str| {
+            let start = xml.find("<MetaDataObject").unwrap();
+            xml[start..start + xml[start..].find('>').unwrap()].to_owned()
+        };
+        for (version, corpus) in [
+            (
+                "2.20",
+                include_str!("../../../tests/fixtures/formats/platform_xml/2.20/all_kinds/src/DataProcessors/Обработка/Templates/Макет.xml"),
+            ),
+            (
+                "2.21",
+                include_str!("../../../tests/fixtures/formats/platform_xml/2.21/all_kinds/src/DataProcessors/Обработка/Templates/Макет.xml"),
+            ),
+            (
+                "2.22",
+                include_str!("../../../tests/fixtures/formats/platform_xml/2.22/all_kinds/src/DataProcessors/Обработка/Templates/Макет.xml"),
+            ),
+        ] {
+            assert_eq!(root(&template(version)), root(corpus), "{version}");
+            assert_eq!(declarations(&template(version)), declarations(corpus), "{version}");
+        }
+    }
 }

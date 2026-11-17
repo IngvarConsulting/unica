@@ -8,11 +8,13 @@ use std::{
     path::PathBuf,
     sync::Arc,
 };
+use unica_execution::runner::{
+    attempt::RuntimeWorkspaceObservation, operation::RuntimeJobOperation,
+};
 use unica_execution::runtime_jobs::{
     cancel_queued_job, fail_queued_job, run_worker_request, RuntimeJobSnapshot,
     RuntimeLifecycleObserver, RuntimeWorkerRun,
 };
-use unica_runner::{attempt::RuntimeWorkspaceObservation, operation::RuntimeJobOperation};
 use unica_work_control::cancellation::CancellationToken;
 type JobResult<T> = Result<T, String>;
 fn redacted_error(text: &str) -> String {
@@ -159,8 +161,6 @@ mod codec {
         pub timeout_reason: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub build_preflight: Option<RuntimeBuildPreflight>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub full_rebuild_fallback_argv: Option<Vec<String>>,
     }
 
     #[derive(Debug, Serialize, Deserialize)]
@@ -188,7 +188,6 @@ mod codec {
                 artifact_path: request.artifact_path.clone(),
                 timeout_reason: request.timeout_reason.clone(),
                 build_preflight: request.build_preflight.clone(),
-                full_rebuild_fallback_argv: request.full_rebuild_fallback_argv.clone(),
             }
         }
 
@@ -202,7 +201,6 @@ mod codec {
             );
             request.timeout_reason = self.timeout_reason.clone();
             request.build_preflight = self.build_preflight.clone();
-            request.full_rebuild_fallback_argv = self.full_rebuild_fallback_argv.clone();
             request.validate_build_preflight()?;
             Ok(request)
         }

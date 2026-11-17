@@ -1,0 +1,23 @@
+{
+  "id": "S-2960-queue-manager-event-absent",
+  "issue": 2960,
+  "area": "Модули и события",
+  "task": "Спросить событие менеджера очереди в наборе формата без вида «Очередь»: отказ по незарегистрированному владельцу, а не событие чужой линии.",
+  "workspace": "tests/fixtures/acceptance/workspace-all-kinds",
+  "formats": [
+    "2.20",
+    "2.21"
+  ],
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Queue.Probe.Module.Manager.Event.MessageProcessing"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "not_found: metadata owner `Queue.Probe` is not registered"
+    }
+  ]
+}

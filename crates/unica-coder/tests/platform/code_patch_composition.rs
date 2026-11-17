@@ -743,12 +743,12 @@ fn canonical_code_insert_inside_older_source_set_is_refused_without_writes() {
                             "{case}: {error}"
                         );
                         // The refusal names the owner file, the version it
-                        // records, the writable profile and the remedy.
+                        // records, the writable formats and the remedy.
                         let message = error.to_string();
                         for part in [
                             relative,
                             version,
-                            "2.20 for 1C 8.3.27",
+                            "2.20",
                             "re-export the sources with the platform",
                         ] {
                             assert!(message.contains(part), "{case}: {part}: {message}");
@@ -790,6 +790,54 @@ fn object_and_manager_modules_report_owner_and_role() {
         assert_eq!(target.owner, "Catalog.Items");
         assert_eq!(target.module_role, role);
     }
+    fs::remove_dir_all(&context.workspace_root).unwrap();
+}
+
+/// Модуль менеджера очереди правится по общему маршруту прямых модулей,
+/// а модуля объекта у очереди нет: отсутствующий файл не считается
+/// пропущенным пустым и остаётся неадресуемым.
+/// rule: INV.SOURCE.PLATFORM-CAPABILITY-EXISTENCE
+#[test]
+fn the_queue_manager_module_is_patched_and_its_object_module_is_unaddressable() {
+    let context = temp_context("queue-module-roles");
+    let src = context.workspace_root.join("src");
+    fs::write(
+            src.join("Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.22"><Configuration/></MetaDataObject>"#,
+        )
+        .unwrap();
+    fs::create_dir_all(src.join("Queues/Probe/Ext")).unwrap();
+    fs::write(
+            src.join("Queues/Probe.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.22"><Queue><Properties><Name>Probe</Name></Properties></Queue></MetaDataObject>"#,
+        )
+        .unwrap();
+    let module = src.join("Queues/Probe/Ext/ManagerModule.bsl");
+    fs::write(&module, "Procedure Run()\nEndProcedure\n").unwrap();
+
+    let args = patch_args(
+        "main",
+        "Queue.Probe.ManagerModule",
+        "Run",
+        "Procedure Added()\nEndProcedure",
+    );
+    let preview = patch_inner(&args, &context, PatchMode::Preview);
+    assert!(preview.outcome.ok, "{:?}", preview.outcome.errors);
+    let target = preview.data.unwrap().affected_target;
+    assert_eq!(target.owner, "Queue.Probe");
+    assert_eq!(target.module_role, "ManagerModule");
+
+    let refused = patch_inner(
+        &tail_args(
+            "main",
+            "Queue.Probe.ObjectModule",
+            "Procedure Run()\nEndProcedure",
+        ),
+        &context,
+        PatchMode::Apply,
+    );
+    assert!(!refused.outcome.ok);
+    assert!(!src.join("Queues/Probe/Ext/ObjectModule.bsl").exists());
     fs::remove_dir_all(&context.workspace_root).unwrap();
 }
 
@@ -1399,7 +1447,7 @@ fn code_patch_rolls_back_if_v8project_changes_the_owner_source_set_before_commit
     fs::write(&module, before).unwrap();
     fs::write(
             context.workspace_root.join("src/CommonModules.xml"),
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.21"><ExternalDataProcessor/></MetaDataObject>"#,
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.23"><ExternalDataProcessor/></MetaDataObject>"#,
         )
         .unwrap();
     let args = patch_args(
@@ -1990,6 +2038,7 @@ fn method_replacement_owns_supplied_documentation_and_repeats_without_duplicates
                 );
                 let expected = format!("{prefix}{expected_doc}&AtServer\nProcedure Base()\n    Value = 2;\nEndProcedure\n{suffix}").replace('\n', eol);
                 let operation = CodePlanOperation::Replace(CodeReplaceArgs {
+                    if_rev: None,
                     at: unica_address::address::QualifiedAddress::parse(
                         "main:CommonModule.Sample.Method.Base",
                     )
@@ -2074,6 +2123,7 @@ fn framed_method_body_text_replaces_its_closing_comment_and_repeats_as_noop() {
                 let before = format!("{read}{neighbor}");
                 let edited = read.replace("1;", "2;");
                 let operation = CodePlanOperation::Replace(CodeReplaceArgs {
+                    if_rev: None,
                     at: unica_address::address::QualifiedAddress::parse(
                         "main:CommonModule.Sample.Method.Base.Body",
                     )
@@ -2098,6 +2148,7 @@ fn method_body_replacement_keeps_executable_tail_on_its_closing_line() {
         let before =
             format!("Procedure Base() EndProcedure Procedure Neighbor() EndProcedure{eol}");
         let operation = CodePlanOperation::Replace(CodeReplaceArgs {
+            if_rev: None,
             at: unica_address::address::QualifiedAddress::parse(
                 "main:CommonModule.Sample.Method.Base.Body",
             )
@@ -3890,7 +3941,7 @@ fn staged_code_v12_parity_rejects_malformed_postimage_and_owner_evidence() {
                 "malformed" => fs::write(descriptor, b"<not-xml").unwrap(),
                 "wrong-format" => {
                     let before = fs::read_to_string(&descriptor).unwrap();
-                    fs::write(descriptor, before.replace("2.20", "2.21")).unwrap();
+                    fs::write(descriptor, before.replace("2.20", "2.23")).unwrap();
                 }
                 _ => unreachable!(),
             }
@@ -4017,6 +4068,30 @@ fn staged_code_effects_omit_a_module_restored_to_its_original_preimage() {
 
     assert!(state.planned_changes().is_empty());
     assert!(effects.events().is_empty());
+    fixture.cleanup();
+}
+
+/// rule: INV.SOURCE.CODE-REPLACE-TEXT-REVISION
+#[test]
+fn a_replacement_with_an_old_text_revision_preserves_an_external_edit() {
+    let original = b"Procedure Base()\nEndProcedure\n";
+    let fixture = staged_code_fixture("stale-text-revision", original);
+    let module = fixture.source.join("CommonModules/Sample/Ext/Module.bsl");
+    let old_revision = unica_source_contract::read::module_text_revision(original);
+    let external = b"Procedure Base()\r\nEndProcedure\r\n";
+    fs::write(&module, external).unwrap();
+    let args = json!({
+        "at": "main:CommonModule.Sample.Body",
+        "text": "Procedure Edited()\nEndProcedure\n",
+        "ifRev": old_revision,
+    });
+    let guarded = parse_code_plan_operation("code.replace", &args, 0, "main").unwrap();
+    let admission = staged_code_admission(&fixture, true);
+    let error = plan_admitted_code(&admission, &fixture.binding, &[guarded]).unwrap_err();
+    assert_eq!(error.kind(), ApplyPlanErrorKind::Conflict);
+    assert_eq!(error.path(), Some("ops[0].args.ifRev"));
+    assert_eq!(fs::read(&module).unwrap(), external);
+    drop(admission);
     fixture.cleanup();
 }
 
@@ -4499,6 +4574,7 @@ fn staged_insert(
 
 fn staged_replace(at: &str, text: &str, anchor: Option<&str>) -> CodePlanOperation {
     CodePlanOperation::Replace(CodeReplaceArgs {
+        if_rev: None,
         at: unica_address::address::QualifiedAddress::parse(at).unwrap(),
         text: text.to_string(),
         anchor: anchor.map(str::to_string),

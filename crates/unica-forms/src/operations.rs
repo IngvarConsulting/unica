@@ -49,12 +49,13 @@ macro_rules! form_operations {
 
 form_operations!(
     Add => ("form.add", MetadataForms, Items),
-    Set => ("form.set", MetadataForms, Values),
+    Set => ("form.set", FormSlots, Values),
     Remove => ("form.remove", Form, Target),
     ItemAdd => ("item.add", FormItemContainer, Items),
     ItemRemove => ("item.remove", FormItem, Target),
     ItemMove => ("item.move", FormItem, Values),
     AttributeAdd => ("attribute.add", Form, Items),
+    AttributeRemove => ("attribute.remove", FormAttribute, Target),
     ColumnAdd => ("column.add", FormAttribute, Items),
     CommandAdd => ("command.add", Form, Items),
     EventBind => ("event.bind", FormEvent, Values),
@@ -84,6 +85,7 @@ impl FormOperation {
             | Self::ItemRemove
             | Self::ItemMove
             | Self::AttributeAdd
+            | Self::AttributeRemove
             | Self::ColumnAdd
             | Self::CommandAdd
             | Self::EventBind
@@ -99,6 +101,7 @@ impl FormOperation {
             | Self::Set
             | Self::Remove
             | Self::AttributeAdd
+            | Self::AttributeRemove
             | Self::ColumnAdd
             | Self::CommandAdd
             | Self::EventBind
@@ -153,10 +156,11 @@ impl unica_operations::FamilyOperation for FormOperation {
         site: &unica_source_contract::context::OperationSite<'_>,
     ) -> Option<unica_operation_contract::OperationContract> {
         Some(match self {
-            Self::Set => crate::contracts::form_set(
+            Self::Set => crate::contracts::form_set_in(
                 site.segments()
                     .first()
                     .map(|segment| segment.kind().as_str()),
+                site.source().classification_profile().semantic_line(),
             ),
             _ => self.contract_for_address(site.at()),
         })
@@ -215,7 +219,7 @@ mod tests {
             (
                 FormOperation::Set,
                 "form.set",
-                OperationApplicability::MetadataForms,
+                OperationApplicability::FormSlots,
                 OperationSkeleton::Values,
             ),
             (
@@ -247,6 +251,12 @@ mod tests {
                 "attribute.add",
                 OperationApplicability::Form,
                 OperationSkeleton::Items,
+            ),
+            (
+                FormOperation::AttributeRemove,
+                "attribute.remove",
+                OperationApplicability::FormAttribute,
+                OperationSkeleton::Target,
             ),
             (
                 FormOperation::ColumnAdd,
@@ -330,7 +340,7 @@ mod tests {
         );
         for input in [
             json!({"items":[{"name":"Value","type":"CatalogRef.Items"}]}),
-            json!({"items":[{"name":"Value","type":"string(40)","title":"Value"}]}),
+            json!({"items":[{"name":"Value","type":"string(40)","title":"en = 'Value'"}]}),
         ] {
             assert!(contract.normalize(&input, "args").is_ok());
         }
