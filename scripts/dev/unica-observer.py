@@ -1636,8 +1636,9 @@ function handlerTarget(data) {
       typeof entry?.implementationAt === "string") {
     return entry.implementationAt;
   }
-  if (data.kind === "Event" && entry?.binding === "property" &&
-      entry.state === "implemented" && typeof entry.implementationAt === "string") {
+  if ((data.kind === "ScheduledJob" ||
+       (data.kind === "Event" && entry?.binding === "property" && entry.state === "implemented")) &&
+      typeof entry?.implementationAt === "string") {
     return entry.implementationAt;
   }
 }
