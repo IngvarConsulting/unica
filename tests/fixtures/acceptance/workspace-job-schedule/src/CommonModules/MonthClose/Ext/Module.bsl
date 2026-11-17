@@ -1,0 +1,2 @@
+Procedure RunScheduled() Export
+EndProcedure
