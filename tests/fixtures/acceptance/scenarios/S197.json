@@ -11,7 +11,7 @@
             "op": "template.set",
             "args": {
               "values": {
-                "synonym": "Основная схема"
+                "synonym": "ru = 'Основная схема'"
               }
             }
           }

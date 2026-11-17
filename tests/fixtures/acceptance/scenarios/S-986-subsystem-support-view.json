@@ -20,16 +20,28 @@
           "eq": "main:Catalog.Items"
         },
         {
-          "pointer": "/data/props/support",
-          "eq": "locked"
-        },
-        {
           "pointer": "/data/props/location",
           "absent": true
         },
         {
           "pointer": "/data/props/provider",
           "absent": true
+        },
+        {
+          "pointer": "/data/props/support/reason",
+          "eq": "locked"
+        },
+        {
+          "pointer": "/data/props/support/editable",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/support/policy",
+          "eq": "deny"
+        },
+        {
+          "pointer": "/data/props/support/rule",
+          "eq": "locked"
         }
       ]
     },
@@ -47,20 +59,28 @@
           "eq": "main:Subsystem.Parent"
         },
         {
-          "pointer": "/data/props/support",
-          "eq": "locked"
-        },
-        {
-          "pointer": "/data/props/directEditSafe",
-          "eq": false
-        },
-        {
           "pointer": "/data/props/location",
           "absent": true
         },
         {
           "pointer": "/data/props/provider",
           "absent": true
+        },
+        {
+          "pointer": "/data/props/support/reason",
+          "eq": "locked"
+        },
+        {
+          "pointer": "/data/props/support/editable",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/support/policy",
+          "eq": "deny"
+        },
+        {
+          "pointer": "/data/props/support/rule",
+          "eq": "locked"
         }
       ]
     },
@@ -78,20 +98,28 @@
           "eq": "main:Subsystem.Parent.Subsystem.Child"
         },
         {
-          "pointer": "/data/props/support",
-          "eq": "editableWithSupport"
-        },
-        {
-          "pointer": "/data/props/directEditSafe",
-          "eq": true
-        },
-        {
           "pointer": "/data/props/location",
           "absent": true
         },
         {
           "pointer": "/data/props/provider",
           "absent": true
+        },
+        {
+          "pointer": "/data/props/support/reason",
+          "eq": "locked"
+        },
+        {
+          "pointer": "/data/props/support/editable",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/support/policy",
+          "eq": "deny"
+        },
+        {
+          "pointer": "/data/props/support/rule",
+          "eq": "editableWithSupport"
         }
       ]
     },
@@ -109,20 +137,28 @@
           "eq": "main:Subsystem.Parent"
         },
         {
-          "pointer": "/data/props/support",
-          "eq": "locked"
-        },
-        {
-          "pointer": "/data/props/directEditSafe",
-          "eq": false
-        },
-        {
           "pointer": "/data/props/location",
           "absent": true
         },
         {
           "pointer": "/data/props/provider",
           "absent": true
+        },
+        {
+          "pointer": "/data/props/support/reason",
+          "eq": "locked"
+        },
+        {
+          "pointer": "/data/props/support/editable",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/support/policy",
+          "eq": "deny"
+        },
+        {
+          "pointer": "/data/props/support/rule",
+          "eq": "locked"
         }
       ]
     },
@@ -140,19 +176,27 @@
           "eq": "absent:Subsystem.Parent"
         },
         {
-          "pointer": "/data/props/support",
-          "eq": "notSupported"
-        },
-        {
-          "pointer": "/data/props/directEditSafe",
-          "eq": null
-        },
-        {
           "pointer": "/data/props/location",
           "absent": true
         },
         {
           "pointer": "/data/props/provider",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/support/reason",
+          "eq": "notSupported"
+        },
+        {
+          "pointer": "/data/props/support/editable",
+          "eq": true
+        },
+        {
+          "pointer": "/data/props/support/policy",
+          "eq": "deny"
+        },
+        {
+          "pointer": "/data/props/support/rule",
           "absent": true
         }
       ]
@@ -171,15 +215,27 @@
           "eq": "absent:Catalog.Items"
         },
         {
-          "pointer": "/data/props/support",
-          "eq": "notSupported"
-        },
-        {
           "pointer": "/data/props/location",
           "absent": true
         },
         {
           "pointer": "/data/props/provider",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/support/reason",
+          "eq": "notSupported"
+        },
+        {
+          "pointer": "/data/props/support/editable",
+          "eq": true
+        },
+        {
+          "pointer": "/data/props/support/policy",
+          "eq": "deny"
+        },
+        {
+          "pointer": "/data/props/support/rule",
           "absent": true
         }
       ]

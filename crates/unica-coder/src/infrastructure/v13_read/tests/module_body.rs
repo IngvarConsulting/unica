@@ -1,5 +1,61 @@
 use super::*;
 
+/// rule: INV.SOURCE.MODULE-REGION-INTERFACE
+#[test]
+fn region_links_only_to_direct_children_and_unambiguous_methods() {
+    let fixture = RealReaderFixture::new();
+    let module = fixture
+        .source
+        .join("CommonModules/РеактивныйСервер/Ext/Module.bsl");
+    fs::write(
+        module,
+        r"#Область Outer
+Процедура Direct()
+КонецПроцедуры
+#Область Inner
+Процедура Nested()
+КонецПроцедуры
+#Если Сервер Тогда
+Процедура Duplicate()
+КонецПроцедуры
+#КонецЕсли
+#КонецОбласти
+#КонецОбласти
+#Если Клиент Тогда
+Процедура Duplicate()
+КонецПроцедуры
+#КонецЕсли
+",
+    )
+    .unwrap();
+    let service = fixture.view_service();
+    let base = "main:CommonModule.РеактивныйСервер";
+    let read = |suffix: &str| {
+        let result = service.view(ViewRequest::new(&format!("{base}.{suffix}")).unwrap());
+        assert!(result.ok, "{:?}", refusal_codes(&result));
+        result.data.unwrap()
+    };
+    let outer = read("Region.Outer");
+    assert_eq!(
+        outer["items"],
+        json!([
+            {"at": format!("{base}.Region.Outer.Region.Inner"), "kind": "Region"},
+            {"at": format!("{base}.Method.Direct"), "kind": "Method"}
+        ])
+    );
+    let inner = read("Region.Outer.Region.Inner");
+    assert_eq!(
+        inner["items"],
+        json!([{"at": format!("{base}.Method.Nested"), "kind": "Method"}])
+    );
+    assert_eq!(
+        inner["limits"],
+        json!([format!(
+            "method address `{base}.Method.Duplicate` is ambiguous"
+        )])
+    );
+}
+
 /// `Body` отдаёт исходные строки с их номерами: среза по контексту у `view`
 /// нет, и клиентский код формы остаётся в ответе.
 /// rule: INV.SOURCE.MODULE-COMPILATION-AND-BODY
@@ -30,6 +86,40 @@ fn module_body_returns_the_source_text_byte_for_byte() {
     }
 }
 
+/// rule: INV.SOURCE.CODE-REPLACE-TEXT-REVISION
+#[test]
+fn module_revision_follows_the_whole_text_of_a_body_or_range() {
+    let fixture = RealReaderFixture::new();
+    let module = fixture
+        .source
+        .join("Reports/ParityReport/Forms/MainForm/Ext/Form/Module.bsl");
+    let owner = "main:Report.ParityReport.Form.MainForm.Module.Form";
+    let text = concat!(
+        "// Before\r\nПроцедура А()\r\n\tВозврат;\r\nКонецПроцедуры\r\n",
+        "\r\nПроцедура Б()\r\nКонецПроцедуры\r\n",
+    );
+    fs::write(&module, format!("\u{feff}{text}")).unwrap();
+    let service = fixture.view_service();
+    let whole = service.view(ViewRequest::new(&format!("{owner}.Body")).unwrap());
+    assert!(whole.ok, "{:?}", refusal_codes(&whole));
+    assert_eq!(
+        whole.rev.as_deref(),
+        Some(unica_source_contract::read::module_text_revision(text.as_bytes()).as_str()),
+    );
+    for suffix in ["Body#L1-L1", "Method.А.Body"] {
+        let body = service.view(ViewRequest::new(&format!("{owner}.{suffix}")).unwrap());
+        assert!(body.ok, "{:?}", refusal_codes(&body));
+        assert_ne!(body.source_text, whole.source_text);
+        assert_eq!(body.rev, whole.rev);
+    }
+    fs::write(&module, text.replace("\r\n", "\n")).unwrap();
+    let lf = fixture
+        .view_service()
+        .view(ViewRequest::new(&format!("{owner}.Body")).unwrap());
+    assert!(lf.ok, "{:?}", refusal_codes(&lf));
+    assert_ne!(lf.rev, whole.rev);
+}
+
 /// rule: INV.WIRE.SOURCE-TEXT-RESPONSE-BUDGET
 #[test]
 fn view_never_returns_module_text_above_the_largest_host_budget() {
@@ -49,6 +139,7 @@ fn view_never_returns_module_text_above_the_largest_host_budget() {
     let refused = fixture.view_service().view(ViewRequest::new(at).unwrap());
     assert_eq!(refused.diagnostics[0]["code"], "result_too_large");
     assert!(refused.source_text.is_none());
+    assert!(refused.rev.is_none());
 }
 
 /// rule: INV.SOURCE.MODULE-COMPILATION-AND-BODY
@@ -259,4 +350,58 @@ fn an_open_buffer_is_read_in_place_of_its_module_file_and_the_file_is_untouched(
         .join("CommonModules/Новый")
         .join("Ext/Module.bsl")
         .exists());
+}
+
+#[test]
+fn method_view_reports_declaration_and_name_without_changing_body_start() {
+    for newline in ["\n", "\r\n"] {
+        for (declaration, closing, name, column) in [
+            (
+                "\tПроцедура Проверка() Экспорт",
+                "КонецПроцедуры",
+                "Проверка",
+                12,
+            ),
+            ("  Function Check() Export", "EndFunction", "Check", 12),
+            (
+                "\tАсинх Процедура Проверка()",
+                "КонецПроцедуры",
+                "Проверка",
+                18,
+            ),
+            ("  Async Function Check()", "EndFunction", "Check", 18),
+        ] {
+            for (prefix, line, declaration_line) in [
+                ("// Описание 😀\n\n&НаСервере\n", 3, 4),
+                ("// Описание 😀\n&НаСервере\n", 1, 3),
+                ("// Описание 😀\n\n&НаСервере\n&Перед(\"Original\")\n", 3, 5),
+                ("", 1, 1),
+            ] {
+                let fixture = RealReaderFixture::new();
+                let module = fixture
+                    .source
+                    .join("CommonModules/РеактивныйСервер/Ext/Module.bsl");
+                let source = format!("{prefix}{declaration}\n{closing}\n").replace('\n', newline);
+                fs::write(module, &source).unwrap();
+                let at = format!("main:CommonModule.РеактивныйСервер.Method.{name}");
+                let result = fixture.view_service().view(ViewRequest::new(&at).unwrap());
+                assert!(result.ok, "{source:?}: {:?}", refusal_codes(&result));
+                let data = result.data.unwrap();
+                assert_eq!(data["props"]["line"], line, "{source:?}");
+                assert_eq!(
+                    data["props"]["declarationLine"], declaration_line,
+                    "{source:?}"
+                );
+                assert_eq!(data["props"]["nameColumn"], column, "{source:?}");
+                let body = fixture
+                    .view_service()
+                    .view(ViewRequest::new(&format!("{at}.Body")).unwrap());
+                let expected = source
+                    .split_inclusive(newline)
+                    .skip(line - 1)
+                    .collect::<String>();
+                assert_eq!(body.source_text.as_deref(), Some(expected.as_str()));
+            }
+        }
+    }
 }

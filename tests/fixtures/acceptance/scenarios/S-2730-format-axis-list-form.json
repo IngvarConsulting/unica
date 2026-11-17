@@ -1,0 +1,53 @@
+{
+  "id": "S-2730-format-axis-list-form",
+  "issue": 2730,
+  "area": "Форматы выгрузки",
+  "task": "Добавить форму списка справочнику в наборе каждого формата выгрузки: свойства формы и её таблицы те же, что пишет платформа этого формата.",
+  "workspace": "tests/fixtures/acceptance/workspace-all-kinds",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты",
+        "ops": [
+          {
+            "op": "form.add",
+            "args": {
+              "items": [
+                {
+                  "name": "ФормаОсиФормата",
+                  "type": "ListForm"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Валюты/Forms/ФормаОсиФормата.xml",
+          "kind": "xmlTags",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Form/{http://v8.1c.ru/8.3/MDClasses}Properties/*",
+          "eq": {
+            "$reference": {
+              "path": "src/Catalogs/Валюты/Forms/ФормаСписка.xml",
+              "select": "./{http://v8.1c.ru/8.3/MDClasses}Form/{http://v8.1c.ru/8.3/MDClasses}Properties/*"
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

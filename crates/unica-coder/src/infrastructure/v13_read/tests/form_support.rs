@@ -256,6 +256,7 @@ fn canonical_form_support_details_do_not_change_legacy_payload() {
             state: ObjectSupportState::Locked,
             direct_edit_safe: Some(false),
         },
+        None,
     )
     .unwrap();
     let payload = serde_json::to_value(data).unwrap();

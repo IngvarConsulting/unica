@@ -117,7 +117,12 @@ pub(crate) fn properties(reader: LogicalReader, kind: NodeKind) -> &'static [Pro
             const {
                 &[
                     write("type", "parameter.set"),
+                    write("title", "parameter.set"),
                     write("value", "parameter.set"),
+                    observed(
+                        "valueType",
+                        "Platform type of the default value; pass it with value in parameter.set",
+                    ),
                     write("expression", "parameter.set"),
                     write("availableAsField", "parameter.set"),
                     input(write("useRestriction", "parameter.set"), "restricted"),
@@ -182,6 +187,10 @@ pub(crate) fn properties(reader: LogicalReader, kind: NodeKind) -> &'static [Pro
         (LogicalReader::Xdto, NodeKind::XdtoPackage) => {
             const {
                 &[
+                    special(observed(
+                        "Synonym",
+                        "Preferred-language text from the package metadata descriptor; no synonym writer",
+                    )),
                     special(write("Comment", "props.set")),
                     observed(
                         "targetNamespace",
@@ -287,11 +296,14 @@ pub(super) fn direct_props(
         .filter_map(|spec| {
             value
                 .get(spec.input?)
-                .and_then(|value| {
-                    if reader == LogicalReader::Xdto && kind == NodeKind::Property {
-                        bounded_prop(spec.name, value)
+                .and_then(|property| {
+                    if reader == LogicalReader::Xdto && kind == NodeKind::Property
+                        || reader == LogicalReader::Dcs
+                            && matches!(spec.name, "title" | "presentation")
+                    {
+                        bounded_prop(spec.name, property)
                     } else {
-                        safe_prop(spec.name, value).then(|| value.clone())
+                        safe_prop(spec.name, property).then(|| property.clone())
                     }
                 })
                 .map(|value| (spec.name.to_string(), value))
@@ -312,6 +324,14 @@ pub fn property(
     props: &Value,
     name: &str,
 ) -> Option<PropertySpec> {
+    // Every node of an object names its editability under vendor support
+    // (INV.APP.SUPPORT-STATE); `supportRule.set` changes the rule, not this.
+    if name == "support" {
+        return Some(derived(
+            "support",
+            "Editability of the node under vendor support and the project policy",
+        ));
+    }
     if matches!(reader, LogicalReader::Dcs | LogicalReader::Xdto)
         && matches!(kind, NodeKind::Template | NodeKind::XdtoPackage)
     {

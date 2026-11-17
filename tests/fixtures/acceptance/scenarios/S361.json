@@ -303,7 +303,7 @@
               "items": [
                 {
                   "dataPath": "Amount",
-                  "title": "Итого [шт]"
+                  "title": "ru = 'Итого [шт]'"
                 }
               ]
             }
@@ -449,10 +449,7 @@
             "args": {
               "at": "cf:Report.F05Report.Template.PrimitiveData.DataSet.ObjectData.Field.Amount",
               "values": {
-                "title": {
-                  "ru": "Сумма [шт]",
-                  "en": "Amount @work"
-                },
+                "title": "ru = 'Сумма [шт]'; en = 'Amount @work'",
                 "type": "decimal(12,3)"
               }
             }

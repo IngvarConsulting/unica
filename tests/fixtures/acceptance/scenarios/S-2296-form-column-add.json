@@ -143,7 +143,7 @@
                 {
                   "name": "Enabled",
                   "type": "Boolean",
-                  "title": "Активно"
+                  "title": "ru = 'Активно'"
                 }
               ]
             }
@@ -251,6 +251,10 @@
         {
           "pointer": "/data/props/type",
           "eq": "boolean"
+        },
+        {
+          "pointer": "/data/props/title",
+          "eq": "ru = 'Активно'"
         }
       ]
     },

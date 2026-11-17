@@ -40,7 +40,7 @@
             "op": "props.set",
             "args": {
               "values": {
-                "Synonym": "Новый"
+                "Synonym": "ru = 'Новый'; en = 'Keep & preserve'"
               }
             }
           }
@@ -119,7 +119,7 @@
             "op": "props.set",
             "args": {
               "values": {
-                "Synonym": "Новый"
+                "Synonym": "en = 'Keep'; ru = 'Новый'"
               }
             }
           }
@@ -198,7 +198,7 @@
             "op": "props.set",
             "args": {
               "values": {
-                "Synonym": "Новый"
+                "Synonym": "ru = 'Новый'"
               }
             }
           }
@@ -269,7 +269,12 @@
       "expect": [
         "ok"
       ],
-      "assertions": [],
+      "assertions": [
+        {
+          "pointer": "/data/props/title",
+          "eq": "ru = 'Старый'"
+        }
+      ],
       "captures": {
         "before3": {
           "kind": "sha256",
@@ -286,7 +291,7 @@
             "op": "field.set",
             "args": {
               "values": {
-                "title": "Новый"
+                "title": "en = 'New'; ru = 'Новый'"
               }
             }
           }
@@ -324,6 +329,7 @@
           "kind": "xml",
           "select": ".//{http://v8.1c.ru/8.1/data-composition-system/schema}title/{http://v8.1c.ru/8.1/data/core}item/{http://v8.1c.ru/8.1/data/core}content",
           "eq": [
+            "New",
             "Новый"
           ]
         }
@@ -337,7 +343,12 @@
       "expect": [
         "ok"
       ],
-      "assertions": []
+      "assertions": [
+        {
+          "pointer": "/data/props/title",
+          "eq": "en = 'New'; ru = 'Новый'"
+        }
+      ]
     },
     {
       "tool": "unica.view",
@@ -364,7 +375,7 @@
             "op": "field.set",
             "args": {
               "values": {
-                "title": "Новый"
+                "title": "en = 'New'; ru = 'Новый'"
               }
             }
           }
@@ -407,7 +418,7 @@
             "op": "field.set",
             "args": {
               "values": {
-                "title": ""
+                "title": "ru = ''"
               }
             }
           }
@@ -466,7 +477,12 @@
       "expect": [
         "ok"
       ],
-      "assertions": []
+      "assertions": [
+        {
+          "pointer": "/data/props/title",
+          "eq": "ru = ''"
+        }
+      ]
     }
   ]
 }

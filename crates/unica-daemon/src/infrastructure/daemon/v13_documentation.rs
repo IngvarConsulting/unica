@@ -365,7 +365,6 @@ fn docs_page_result(
 // problem: неизвестно
 // on-reach: строка делится на фрагменты по курсору без потери байтов
 // decision: закреплено правилом INV.APP.DOCUMENTATION-TEXT-PAGES
-// decision-date: 2026-09-24
 // decision-source: arch/rules/analysis/documentation/document-text-pages.md
 const DOCUMENT_TEXT_FRAGMENT_BYTES: usize = 16 * 1024;
 
@@ -1017,6 +1016,9 @@ mod tests {
                                 "found".into()
                             },
                             applicable_version: "8.3".into(),
+                            // Стенд вида статьи и владельца не различает.
+                            kind: None,
+                            owner: None,
                         })
                         .collect(),
                 })
@@ -1177,6 +1179,9 @@ mod tests {
                         signature: None,
                         applicable_version: "8.3.27".into(),
                         text: self.text.lock().unwrap().clone(),
+                        // Стенд отдаёт только текст: разобранной статьи
+                        // у него нет.
+                        article: None,
                     })
                 })
             }

@@ -34,7 +34,7 @@ mod tests {
 
         assert_eq!(plan.args.get("fullRebuild"), None);
         assert!(plan.build_preflight.is_some());
-        assert!(plan.warnings[0].contains("retry once"));
+        assert!(plan.warnings[0].contains("streams no progress"));
     }
 
     #[test]

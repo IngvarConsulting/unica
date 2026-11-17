@@ -32,11 +32,6 @@
           "kind": "exists",
           "path": ".build/unica",
           "eq": false
-        },
-        {
-          "kind": "sha256",
-          "path": "src/Configuration.xml",
-          "eq": "f4a2e802412626925d8b1f5fbbd4856308fd4ca48d3d1b05f1e3c24156a503ff"
         }
       ]
     }

@@ -62,12 +62,26 @@ impl MetadataFixture {
     }
 
     fn with_kind_and_files(kind: SourceSetKind, files: &[(&str, &str)]) -> Self {
+        Self::with_profile_and_files(
+            kind,
+            SourceProfile::platform_xml_8_3_27_format_2_20(),
+            files,
+        )
+    }
+
+    /// A `main` set of `kind` whose format is that of `profile`.
+    fn with_profile_and_files(
+        kind: SourceSetKind,
+        profile: SourceProfile,
+        files: &[(&str, &str)],
+    ) -> Self {
         let root = tempfile::tempdir().unwrap();
         let source = root.path().join("src");
         std::fs::create_dir_all(&source).unwrap();
         let project_kind = match kind {
             SourceSetKind::Configuration => "CONFIGURATION",
             SourceSetKind::Extension => "EXTENSION",
+            SourceSetKind::ExternalProcessor => "EXTERNAL_DATA_PROCESSORS",
             other => panic!("unsupported fixture kind {other:?}"),
         };
         std::fs::write(
@@ -96,7 +110,7 @@ impl MetadataFixture {
                 &source,
                 kind,
                 SourceFormat::PlatformXml,
-                SourceProfile::platform_xml_8_3_27_format_2_20(),
+                profile,
             )],
             "metadata-family-planner-test",
         )
@@ -248,6 +262,46 @@ fn metadata_parser_rejects_unknown_and_misplaced_fields_at_the_exact_operation_p
     .unwrap_err();
     assert_eq!(misplaced.kind(), ApplyPlanErrorKind::BadValue);
     assert_eq!(misplaced.path(), Some("ops[4].args.items"));
+}
+
+#[test]
+fn props_set_translates_canonical_subscription_handler_in_its_own_source_set() {
+    let fixture = MetadataFixture::new();
+    let plan = parse_metadata_plan_operation(
+        "props.set",
+        &json!({
+            "at": "main:EventSubscription.BeforeWrite",
+            "values": {"Handler": "main:CommonModule.Обработчики.Method.Записать"}
+        }),
+        3,
+        &fixture.binding,
+    )
+    .unwrap();
+    let unica_metadata_designer::decode::MetadataPlanKind::Edit {
+        operation: unica_metadata::MetaEditOperation::SetProperties { values },
+        ..
+    } = plan.kind
+    else {
+        panic!("expected properties operation");
+    };
+    assert_eq!(
+        values.entries(),
+        &[(
+            unica_metadata::MetaPropertyKey::Handler,
+            unica_metadata::MetaPropertyValue::String("CommonModule.Обработчики.Записать".into())
+        )]
+    );
+    let error = parse_metadata_plan_operation(
+        "props.set",
+        &json!({
+            "at": "main:EventSubscription.BeforeWrite",
+            "values": {"Handler": "ext:CommonModule.Обработчики.Method.Записать"}
+        }),
+        4,
+        &fixture.binding,
+    )
+    .unwrap_err();
+    assert_eq!(error.path(), Some("ops[4].args.values.Handler"));
 }
 
 #[test]
@@ -699,7 +753,7 @@ fn typed_command_changes_keep_the_addressed_collection_action_and_fields() {
         let parsed = parse_metadata_plan_operation(
             "command.set",
             &json!({"at":at,"values":{
-                "newName":"PrintCopy","synonym":"Print copy","comment":"kept",
+                "newName":"PrintCopy","synonym":"ru = 'Print copy'","comment":"kept",
                 "position":{"before":"Other"}
             }}),
             3,
@@ -725,7 +779,10 @@ fn typed_command_changes_keep_the_addressed_collection_action_and_fields() {
         assert_eq!(elements.len(), 1);
         assert_eq!(elements[0].name, "Print");
         assert_eq!(elements[0].new_name.as_deref(), Some("PrintCopy"));
-        assert_eq!(elements[0].synonym.as_deref(), Some("Print copy"));
+        assert_eq!(
+            elements[0].synonym.as_deref(),
+            Some(&[unica_metadata::LocalizedItem::new("ru", "Print copy")][..])
+        );
         assert_eq!(elements[0].comment.as_deref(), Some("kept"));
         assert_eq!(
             elements[0].position.as_ref().unwrap().before.as_deref(),
@@ -1720,7 +1777,7 @@ fn a_tabular_section_takes_attributes_at_its_own_address_in_one_batch() {
                 ),
                 (
                     "tabularSection.set",
-                    json!({"at": "main:Document.Order.TabularSection.Lines", "values": {"synonym": "Строки"}}),
+                    json!({"at": "main:Document.Order.TabularSection.Lines", "values": {"synonym": "ru = 'Строки'"}}),
                 ),
             ],
         )
@@ -1770,12 +1827,12 @@ fn addressed_member_operations_refuse_a_name_argument_and_the_owner_address() {
     for (operation, args, path) in [
         (
             "tabularSection.set",
-            json!({"at": "main:Document.Order.TabularSection.Lines", "values": {"name": "Lines", "synonym": "x"}}),
+            json!({"at": "main:Document.Order.TabularSection.Lines", "values": {"name": "Lines", "synonym": "ru = 'x'"}}),
             "ops[0].args.values.name",
         ),
         (
             "tabularSection.set",
-            json!({"at": "main:Document.Order", "values": {"synonym": "x"}}),
+            json!({"at": "main:Document.Order", "values": {"synonym": "ru = 'x'"}}),
             "ops[0].args.at",
         ),
         (
@@ -1790,7 +1847,7 @@ fn addressed_member_operations_refuse_a_name_argument_and_the_owner_address() {
         ),
         (
             "dimension.set",
-            json!({"at": "main:Document.Order.TabularSection.Lines", "values": {"synonym": "x"}}),
+            json!({"at": "main:Document.Order.TabularSection.Lines", "values": {"synonym": "ru = 'x'"}}),
             "ops[0].args.at",
         ),
         (
@@ -1800,7 +1857,7 @@ fn addressed_member_operations_refuse_a_name_argument_and_the_owner_address() {
         ),
         (
             "template.set",
-            json!({"at": "main:Document.Order", "values": {"name": "Print", "synonym": "x"}}),
+            json!({"at": "main:Document.Order", "values": {"name": "Print", "synonym": "ru = 'x'"}}),
             "ops[0].args.at",
         ),
         (
@@ -1858,7 +1915,7 @@ fn a_missing_addressed_member_is_not_found_at_the_operation_address() {
     for (operation, args) in [
         (
             "tabularSection.set",
-            json!({"at": "main:Document.Order.TabularSection.Absent", "values": {"synonym": "x"}}),
+            json!({"at": "main:Document.Order.TabularSection.Absent", "values": {"synonym": "ru = 'x'"}}),
         ),
         (
             "tabularSection.remove",
@@ -1866,7 +1923,7 @@ fn a_missing_addressed_member_is_not_found_at_the_operation_address() {
         ),
         (
             "attribute.set",
-            json!({"at": "main:Document.Order.Attribute.Absent", "values": {"synonym": "x"}}),
+            json!({"at": "main:Document.Order.Attribute.Absent", "values": {"synonym": "ru = 'x'"}}),
         ),
         (
             "attribute.add",
@@ -2045,7 +2102,7 @@ fn medium_member_operation_contracts_and_the_planner_agree_on_structure() {
                 ]),
                 (_, "set") => samples.extend([
                     (json!({"values": {"newName": "Other"}}), Some(true)),
-                    (json!({"values": {"comment": "x", "synonym": "y"}}), Some(true)),
+                    (json!({"values": {"comment": "x", "synonym": "ru = 'y'"}}), Some(true)),
                     (json!({"values": {"type": string_type}}), Some(typed)),
                     (
                         json!({"values": {"required": true}}),
@@ -3750,10 +3807,10 @@ fn properties_typed_patches_compose_and_preserve_descriptor_companions() {
             ("props.set", json!({"at":"main:Document.Order","values":{"Comment":"first"}})),
             ("attribute.add", json!({"at":"main:Document.Order","items":[{"name":"Total"}]})),
             ("props.set", json!({"at":"main:Document.Order","values":{"Comment":"final"}})),
-            ("props.set", json!({"at":"main:Role.Reader","values":{"synonym":"Reader edited","Comment":"clear later"}})),
+            ("props.set", json!({"at":"main:Role.Reader","values":{"synonym":"en = 'Retained translation'; ru = 'Reader edited'","Comment":"clear later"}})),
             ("props.set", json!({"at":"main:Role.Reader","values":{"comment":""}})),
             ("props.set", json!({"at":"main:Subsystem.Sales","values":{
-                "synonym":"Sales edited","comment":"first","Explanation":"About sales",
+                "synonym":"en = 'Retained translation'; ru = 'Sales edited'","comment":"first","Explanation":"ru = 'About sales'",
                 "IncludeHelpInContents":false,"includeInCommandInterface":false,"useOneCommand":true
             }})),
             ("props.set", json!({"at":"main:Subsystem.Sales","values":{"Comment":"last"}})),
@@ -3798,7 +3855,7 @@ fn properties_typed_patches_compose_and_preserve_descriptor_companions() {
 fn configuration_root_fixture(relative: &str) -> String {
     std::fs::read_to_string(
         Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../tests/fixtures/platform_8_3_27")
+            .join("../../tests/fixtures/formats/platform_xml/2.20")
             .join(relative),
     )
     .unwrap()
@@ -3828,14 +3885,14 @@ fn configuration_root_properties_match_the_platform_reexport() {
     let before = unica_workspace::test_support::tree_snapshot(fixture.binding.source_root());
     let (staged, effects) = plan_all_with_effects(&fixture, &[
             ("props.set", json!({"at":"main:Configuration","values":{
-                "Synonym":"Учёт & <склад>","comment":"Корень","Vendor":"ООО Пример",
+                "Synonym":"ru = 'Учёт & <склад>'","comment":"Корень","Vendor":"ООО Пример",
                 "Version":"1.0.0.2","UpdateCatalogAddress":"https://example.invalid/upd",
                 "IncludeHelpInContents":true,"UseManagedFormInOrdinaryApplication":true,
-                "BriefInformation":"Кратко","Copyright":"© Пример",
+                "BriefInformation":"ru = 'Кратко'","Copyright":"ru = '© Пример'",
                 "CompatibilityMode":"Version8_3_24","InterfaceCompatibilityMode":"Taxi",
                 "ModalityUseMode":"UseWithWarnings","MainClientApplicationWindowMode":"FullscreenWorkplace",
-                "DetailedInformation":"Подробно","VendorInformationAddress":"https://example.invalid/vendor",
-                "ConfigurationInformationAddress":"https://example.invalid/about",
+                "DetailedInformation":"ru = 'Подробно'","VendorInformationAddress":"ru = 'https://example.invalid/vendor'",
+                "ConfigurationInformationAddress":"ru = 'https://example.invalid/about'",
                 "UseOrdinaryFormInManagedApplication":true,"DefaultRunMode":"Auto",
                 "DataLockControlMode":"AutomaticAndManaged","ObjectAutonumerationMode":"AutoFree",
                 "SynchronousPlatformExtensionAndAddInCallUseMode":"Use"
@@ -3893,17 +3950,22 @@ fn extension_root_properties_match_the_platform_reexport() {
         effects.events()[0].kind,
         unica_source_contract::events::DomainEventKind::CfeChanged
     );
-    // The extension root has no own text language here, so a localized
-    // property is a typed refusal rather than a guessed `<v8:lang>`.
-    let error = plan_all(
+    let staged = plan_all(
         &fixture,
         &[(
             "props.set",
-            json!({"at":"main:Configuration","values":{"Synonym":"Исправления"}}),
+            json!({"at":"main:Configuration","values":{"Synonym":"ru = 'Исправления'"}}),
         )],
     )
-    .unwrap_err();
-    assert_eq!(error.kind(), ApplyPlanErrorKind::InvalidSource);
+    .unwrap();
+    assert_eq!(
+        ml_values(
+            &staged_texts(&staged)[Path::new("Configuration.xml")],
+            "Корректировки",
+            "Synonym"
+        ),
+        vec![("ru".to_string(), "Исправления".to_string())]
+    );
     // Identity of the adopted configuration stays the platform's own.
     for field in [
         "DefaultRunMode",
@@ -3985,11 +4047,8 @@ fn properties_argument_errors_precede_missing_or_damaged_descriptor_state() {
 
 #[test]
 fn properties_late_failure_and_stale_inputs_publish_no_partial_patch() {
-    for relative in [
-        "Configuration.xml",
-        "Languages/Русский.xml",
-        "Roles/Reader.xml",
-    ] {
+    {
+        let relative = "Roles/Reader.xml";
         let fixture = MetadataFixture::with_files(&[
             ("Configuration.xml", RU_CONFIGURATION_XML),
             ("Languages/Русский.xml", &language_xml("Русский", "ru")),
@@ -4006,7 +4065,7 @@ fn properties_late_failure_and_stale_inputs_publish_no_partial_patch() {
             &[
                 fixture.parse(
                     "props.set",
-                    json!({"at":"main:Role.Reader","values":{"synonym":"not published"}}),
+                    json!({"at":"main:Role.Reader","values":{"synonym":"ru = 'not published'"}}),
                     0,
                 ),
                 fixture.parse(
@@ -4027,7 +4086,7 @@ fn properties_late_failure_and_stale_inputs_publish_no_partial_patch() {
             &fixture,
             &[(
                 "props.set",
-                json!({"at":"main:Role.Reader","values":{"synonym":"not published"}}),
+                json!({"at":"main:Role.Reader","values":{"synonym":"ru = 'not published'"}}),
             )],
         )
         .unwrap();
@@ -4068,7 +4127,7 @@ fn new_multilingual_values_take_the_configuration_default_language() {
             &[
                 (
                     "props.set",
-                    json!({"at": "main:Document.Order", "values": {"Synonym": "Sales order"}}),
+                    json!({"at": "main:Document.Order", "values": {"Synonym": "en = 'Sales order'"}}),
                 ),
                 (
                     "attribute.add",
@@ -4076,7 +4135,7 @@ fn new_multilingual_values_take_the_configuration_default_language() {
                 ),
                 (
                     "attribute.set",
-                    json!({"at": "main:Document.Order.Attribute.Total", "values": {"synonym": "Grand total"}}),
+                    json!({"at": "main:Document.Order.Attribute.Total", "values": {"synonym": "en = 'Grand total'"}}),
                 ),
                 (
                     "tabularSection.add",
@@ -4100,11 +4159,11 @@ fn new_multilingual_values_take_the_configuration_default_language() {
                 ),
                 (
                     "props.set",
-                    json!({"at": "main:Role.Reader", "values": {"synonym": "Reader"}}),
+                    json!({"at": "main:Role.Reader", "values": {"synonym": "en = 'Reader'"}}),
                 ),
                 (
                     "props.set",
-                    json!({"at": "main:Subsystem.Sales", "values": {"synonym": "Sales", "explanation": "Sales area"}}),
+                    json!({"at": "main:Subsystem.Sales", "values": {"synonym": "en = 'Sales'", "explanation": "en = 'Sales area'"}}),
                 ),
             ],
         )
@@ -4223,6 +4282,61 @@ fn object_create_writes_the_configuration_default_language() {
     assert_eq!(error.path(), Some("ops[0].args.at"));
 }
 
+/// rule: INV.SOURCE.PROFILE-CAPABILITIES
+#[test]
+fn the_mode_of_the_extension_itself_admits_its_operations() {
+    // The extension's own ConfigurationExtensionCompatibilityMode decides; the
+    // CompatibilityMode next to it, which the loading platform keeps at its
+    // line, does not.
+    let extension = |mode: &str| {
+        let configuration = format!(
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration uuid="99999999-9999-4999-8999-999999999999"><Properties><ObjectBelonging>Adopted</ObjectBelonging><Name>Ext</Name><ConfigurationExtensionPurpose>Customization</ConfigurationExtensionPurpose><NamePrefix>Ext_</NamePrefix><CompatibilityMode>Version8_3_27</CompatibilityMode><ConfigurationExtensionCompatibilityMode>{mode}</ConfigurationExtensionCompatibilityMode><DefaultLanguage>Language.English</DefaultLanguage></Properties><ChildObjects><Language>English</Language><Document>Order</Document></ChildObjects></Configuration></MetaDataObject>"#
+        );
+        let language = r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Language uuid="33333333-3333-4333-8333-333333333333"><InternalInfo/><Properties><ObjectBelonging>Adopted</ObjectBelonging><Name>English</Name><Comment/><ExtendedConfigurationObject>44444444-4444-4444-8444-444444444444</ExtendedConfigurationObject><LanguageCode>en</LanguageCode></Properties></Language></MetaDataObject>"#;
+        // A borrowed Order: its properties name the object it extends.
+        let order = ORDER_XML.replace(
+            "<BasedOn/></Properties>",
+            "<BasedOn/><ObjectBelonging>Adopted</ObjectBelonging><ExtendedConfigurationObject>55555555-5555-4555-8555-555555555555</ExtendedConfigurationObject></Properties>",
+        );
+        MetadataFixture::with_kind_and_files(
+            SourceSetKind::Extension,
+            &[
+                ("Configuration.xml", configuration.as_str()),
+                ("Languages/English.xml", language),
+                ("Documents/Order.xml", order.as_str()),
+            ],
+        )
+    };
+    let catalog = (
+        "object.create",
+        json!({"at": "main:Configuration", "values": {"kind": "Catalog", "name": "Ext_Products"}}),
+    );
+    let attribute = (
+        "attribute.add",
+        json!({"at": "main:Document.Order", "items": [{"name": "Total"}]}),
+    );
+
+    for (operation, refused_in, since, admitted_in) in [
+        (&catalog, "Version8_3_10", "Version8_3_11", "Version8_3_11"),
+        (&attribute, "Version8_3_8", "Version8_3_9", "Version8_3_9"),
+    ] {
+        let error = plan_all(&extension(refused_in), std::slice::from_ref(operation))
+            .expect_err("the mode of the extension refuses the operation");
+        assert_eq!(error.kind(), ApplyPlanErrorKind::InvalidState, "{error:?}");
+        assert_eq!(error.path(), Some("ops[0]"), "{error:?}");
+        let message = error.to_string();
+        assert!(
+            message.contains(refused_in) && message.contains(since),
+            "{message}"
+        );
+        plan_all(&extension(admitted_in), std::slice::from_ref(operation))
+            .unwrap_or_else(|error| panic!("{admitted_in}: {error:?} at {:?}", error.path()));
+    }
+    // No compatibility admits both.
+    plan_all(&extension("DontUse"), &[catalog, attribute])
+        .unwrap_or_else(|error| panic!("{error:?} at {:?}", error.path()));
+}
+
 #[test]
 fn an_extension_writes_new_values_in_its_own_default_language() {
     // The extension's own Configuration.xml and adopted language decide;
@@ -4267,7 +4381,7 @@ fn an_extension_writes_new_values_in_its_own_default_language() {
 }
 
 #[test]
-fn editing_a_multilingual_value_changes_only_the_default_language_item() {
+fn editing_a_multilingual_value_changes_only_the_requested_translation() {
     const WORKSPACE: &str = concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../../tests/fixtures/acceptance/workspace/src"
@@ -4338,25 +4452,25 @@ fn editing_a_multilingual_value_changes_only_the_default_language_item() {
             &[
                 (
                     "props.set",
-                    json!({"at": "main:Enum.LanguageAware", "values": {"Synonym": "Короткое & новое"}}),
+                    json!({"at": "main:Enum.LanguageAware", "values": {"Synonym": "ru = 'Короткое & новое'; en = 'A very long enum title intended for the command interface'"}}),
                 ),
                 (
                     "attribute.set",
-                    json!({"at": "main:Document.Order.Attribute.Total", "values": {"synonym": "Всего"}}),
+                    json!({"at": "main:Document.Order.Attribute.Total", "values": {"synonym": "ru = 'Всего'; en = 'Total'"}}),
                 ),
                 (
                     "attribute.set",
-                    json!({"at": "main:Document.Order.TabularSection.Lines.Attribute.Qty", "values": {"synonym": "Кол-во"}}),
+                    json!({"at": "main:Document.Order.TabularSection.Lines.Attribute.Qty", "values": {"synonym": "ru = 'Кол-во'; en = 'Quantity'"}}),
                 ),
                 (
                     "enumValue.set",
-                    json!({"at": "main:Enum.Kinds.EnumValue.Retail", "values": {"synonym": "Розничная"}}),
+                    json!({"at": "main:Enum.Kinds.EnumValue.Retail", "values": {"synonym": "ru = 'Розничная'; en = 'Retail'"}}),
                 ),
                 (
                     "props.set",
                     json!({"at": "main:Subsystem.Sales", "values": {
-                        "synonym": "Продажи и маркетинг",
-                        "explanation": "Новый раздел",
+                        "synonym": "ru = 'Продажи и маркетинг'; en = 'Sales'",
+                        "explanation": "ru = 'Новый раздел'; en = 'Sales area'",
                         "comment": "Отдел"
                     }}),
                 ),

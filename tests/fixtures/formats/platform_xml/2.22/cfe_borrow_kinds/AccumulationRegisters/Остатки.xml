@@ -1,0 +1,39 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:app="http://v8.1c.ru/8.2/managed-application/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:cmi="http://v8.1c.ru/8.2/managed-application/cmi" xmlns:ent="http://v8.1c.ru/8.1/data/enterprise" xmlns:lf="http://v8.1c.ru/8.2/managed-application/logform" xmlns:pal="http://v8.1c.ru/8.1/data/ui/colors/palette" xmlns:style="http://v8.1c.ru/8.1/data/ui/style" xmlns:sys="http://v8.1c.ru/8.1/data/ui/fonts/system" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:v8ui="http://v8.1c.ru/8.1/data/ui" xmlns:web="http://v8.1c.ru/8.1/data/ui/colors/web" xmlns:win="http://v8.1c.ru/8.1/data/ui/colors/windows" xmlns:xen="http://v8.1c.ru/8.3/xcf/enums" xmlns:xpr="http://v8.1c.ru/8.3/xcf/predef" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.22">
+	<AccumulationRegister uuid="0a4e5356-0f58-889b-883d-0bd01c111c60">
+		<InternalInfo>
+			<xr:GeneratedType name="AccumulationRegisterRecord.Остатки" category="Record">
+				<xr:TypeId>988582d7-bd4e-83b9-8ee9-7440e0c2347c</xr:TypeId>
+				<xr:ValueId>c49e0ba7-892c-85ec-8f09-6f6dfae2fc97</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="AccumulationRegisterManager.Остатки" category="Manager">
+				<xr:TypeId>a140c812-bd36-86f6-9b09-9169027d87c3</xr:TypeId>
+				<xr:ValueId>e22e2ea8-b5fa-86e9-8980-659baf512258</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="AccumulationRegisterSelection.Остатки" category="Selection">
+				<xr:TypeId>6fad04e2-44f1-8257-a9b5-90fb2e5f0959</xr:TypeId>
+				<xr:ValueId>bc4f733f-bebd-80b0-9f25-fbc2c92c0d0c</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="AccumulationRegisterList.Остатки" category="List">
+				<xr:TypeId>305e8f34-6196-88ec-91eb-d4b037ad1af0</xr:TypeId>
+				<xr:ValueId>f43f7f19-38f1-8200-959a-e6566212c8ef</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="AccumulationRegisterRecordSet.Остатки" category="RecordSet">
+				<xr:TypeId>a5d92e97-d968-8fa8-abb0-82966618bc7b</xr:TypeId>
+				<xr:ValueId>79ea2ec3-9d17-8b57-8a7f-fab493613c54</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="AccumulationRegisterRecordKey.Остатки" category="RecordKey">
+				<xr:TypeId>696dcd91-dd9c-8c08-a3b8-61452e62b652</xr:TypeId>
+				<xr:ValueId>3ba52b6b-5c43-8aec-b713-443f0fa12679</xr:ValueId>
+			</xr:GeneratedType>
+		</InternalInfo>
+		<Properties>
+			<ObjectBelonging>Adopted</ObjectBelonging>
+			<Name>Остатки</Name>
+			<Comment/>
+			<ExtendedConfigurationObject>6d168f0f-5f4b-548b-ac10-a639df7dfaa7</ExtendedConfigurationObject>
+			<ActionOnConfigurationObjectMissing>Auto</ActionOnConfigurationObjectMissing>
+		</Properties>
+		<ChildObjects/>
+	</AccumulationRegister>
+</MetaDataObject>

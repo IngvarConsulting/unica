@@ -50,7 +50,7 @@ struct InfobaseTarget {
     configured: bool,
     source: Option<&'static str>,
     /// The layers that name the infobase by a top-level `connection`: the
-    /// former runner format, which v8-runner 0.15 refuses with the whole
+    /// former runner format, which the pinned v8-runner refuses with the whole
     /// configuration (#2155).
     legacy_connection: Vec<&'static str>,
 }
@@ -807,8 +807,14 @@ fn inspect_infobase_target(
         legacy_connection.push("v8project.local.yaml");
     }
     // The runner refuses the whole configuration, so no infobase is usable
-    // even when `infobases.origin` is declared beside the former key.
-    let configured = configured && legacy_connection.is_empty();
+    // even when `infobases.origin` is declared beside the former key. It also
+    // refuses an `infobases` map in the project file: the map belongs to
+    // v8project.local.yaml (the former `infobase:` key is still accepted there
+    // for one release cycle).
+    let project_map = base
+        .as_mapping()
+        .is_some_and(|mapping| mapping.contains_key(serde_yaml::Value::from("infobases")));
+    let configured = configured && legacy_connection.is_empty() && !project_map;
     Ok(InfobaseTarget {
         configured,
         source: configured.then_some(source.expect("configured connection has a source")),
@@ -817,7 +823,7 @@ fn inspect_infobase_target(
 }
 
 /// The finding about a top-level `connection`: the key, the layers that hold
-/// it and where v8-runner 0.15 reads the infobase address instead.
+/// it and where the pinned v8-runner reads the infobase address instead.
 fn legacy_connection_finding(files: &[&str]) -> Value {
     let named = files.join(" and ");
     object([
@@ -843,7 +849,7 @@ fn legacy_connection_finding(files: &[&str]) -> Value {
         (
             "message",
             Value::String(format!(
-                "{named} names the infobase by a top-level `connection`, the former v8-runner format; v8-runner 0.15 refuses the configuration and the infobase is not configured. Move the value to `infobases.origin.connection` in v8project.local.yaml"
+                "{named} names the infobase by a top-level `connection`, the former v8-runner format; the pinned v8-runner refuses the configuration and the infobase is not configured. Move the value to `infobases.origin.connection` in v8project.local.yaml"
             )),
         ),
         ("evidence", Value::Array(Vec::new())),
@@ -1637,6 +1643,33 @@ mod medium_tests {
             serde_yaml::from_str(&project_config_recipe(&source_map).unwrap()).unwrap();
 
         assert_eq!(parsed["format"], "EDT");
+    }
+
+    /// Раннер 0.17 отклоняет карту `infobases` в проектном файле: база там
+    /// не настроена, где бы ни лежала другая её часть.
+    #[test]
+    fn an_infobases_map_in_the_project_file_is_not_a_usable_target() {
+        let workspace = tempfile::tempdir().unwrap();
+        std::fs::write(
+            workspace.path().join("v8project.yaml"),
+            "format: DESIGNER\ninfobases:\n  origin:\n    connection: 'File=build/ib'\n",
+        )
+        .unwrap();
+        assert!(
+            !inspect_infobase_target(workspace.path(), true)
+                .unwrap()
+                .configured
+        );
+        std::fs::write(
+            workspace.path().join("v8project.yaml"),
+            "format: DESIGNER\ninfobase:\n  connection: 'File=build/ib'\n",
+        )
+        .unwrap();
+        assert!(
+            inspect_infobase_target(workspace.path(), true)
+                .unwrap()
+                .configured
+        );
     }
 
     #[test]

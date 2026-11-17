@@ -137,8 +137,7 @@ fn nested_profiles_are_closed_by_source_owner_version_and_exact_member_context()
         ),
     ] {
         let profile =
-            MetaMemberReadProfile::for_source(SourceSetKind::Configuration, owner, Some("2.20"))
-                .unwrap();
+            MetaMemberReadProfile::for_source(SourceSetKind::Configuration, owner, true).unwrap();
         assert_eq!(profile.owner_kind(), owner);
         assert_eq!(profile.properties(context).count(), count);
         for source in [
@@ -146,16 +145,13 @@ fn nested_profiles_are_closed_by_source_owner_version_and_exact_member_context()
             SourceSetKind::ExternalProcessor,
             SourceSetKind::ExternalReport,
         ] {
-            assert!(MetaMemberReadProfile::for_source(source, owner, Some("2.20")).is_none());
+            assert!(MetaMemberReadProfile::for_source(source, owner, true).is_none());
         }
-        for version in [None, Some("2.19"), Some("2.21"), Some("02.20")] {
-            assert!(MetaMemberReadProfile::for_source(
-                SourceSetKind::Configuration,
-                owner,
-                version
-            )
-            .is_none());
-        }
+        // A descriptor outside the writable format (the codec's dialect
+        // decides; see its root_version tests) has no member profile.
+        assert!(
+            MetaMemberReadProfile::for_source(SourceSetKind::Configuration, owner, false).is_none()
+        );
         let at = QualifiedAddress::parse(&format!(
             "main:{}.Owner.{}.Member",
             owner.as_str(),
@@ -263,10 +259,14 @@ fn reduction_profile_requires_exact_source_owner_format_and_dimension_context() 
         SourceSetKind::ExternalReport,
         SourceSetKind::ExternalProcessor,
     ] {
-        for format in [Some("2.20"), Some("2.19"), None] {
+        for writable_format in [true, false] {
             assert_eq!(
-                MetaMemberReadProfile::for_source(kind, MetadataKind::InformationRegister, format),
-                (kind == SourceSetKind::Configuration && format == Some("2.20")).then_some(profile)
+                MetaMemberReadProfile::for_source(
+                    kind,
+                    MetadataKind::InformationRegister,
+                    writable_format
+                ),
+                (kind == SourceSetKind::Configuration && writable_format).then_some(profile)
             );
         }
     }

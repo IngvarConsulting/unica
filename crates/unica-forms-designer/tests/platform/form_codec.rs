@@ -9,6 +9,7 @@ fn form_item_binding_facts_preserve_both_targets_and_legacy_normalization() {
 <Button name="Both" id="1"><DataPath> Объект.<!-- split -->Ref </DataPath><CommandName> Form.Command.Заполнить </CommandName></Button>
 <Button name="Command" id="2"><CommandName><![CDATA[ Form.StandardCommand.Close ]]></CommandName></Button>
 </ChildItems></Form>"#,
+        None,
     ).unwrap();
     let both = &data.elements[0];
     assert_eq!(both.data_path.as_deref(), Some(" Объект.Ref "));
@@ -46,7 +47,9 @@ fn form_item_binding_facts_keep_damage_local_to_each_property() {
             };
             let data = parse_form_event_evidence_xml(&format!(
                 "<Form xmlns=\"http://v8.1c.ru/8.3/xcf/logform\" version=\"2.20\"><ChildItems><Button name=\"Probe\" id=\"1\">{raw}{other}</Button></ChildItems></Form>"
-            )).unwrap();
+            ),
+                None,
+).unwrap();
             let element = &data.elements[0];
             assert_eq!(element.binding_limits.len(), 1);
             assert!(element.binding_limits[0].contains(property));
@@ -67,7 +70,7 @@ fn form_command_string_values_preserve_space_and_resolve_expanded_type_names() {
         r#"<lf:AssociatedTableElementId xmlns:lf="http://v8.1c.ru/8.3/xcf/logform" xmlns="http://www.w3.org/2001/XMLSchema" xsi:type="string"> Товары </lf:AssociatedTableElementId>"#,
         "<AssociatedTableElementId> Товары </AssociatedTableElementId>",
     ] {
-        let data = parse_form_event_evidence_xml(&format!(r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xs="http://www.w3.org/2001/XMLSchema" version="2.20"><Commands><Command name="Fill" id="1">{property}<Action>Keep</Action></Command></Commands></Form>"#)).unwrap();
+        let data = parse_form_event_evidence_xml(&format!(r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xs="http://www.w3.org/2001/XMLSchema" version="2.20"><Commands><Command name="Fill" id="1">{property}<Action>Keep</Action></Command></Commands></Form>"#), None).unwrap();
         let command = &data.commands[0];
         assert_eq!(
             command.associated_table_element_id.as_deref(),
@@ -93,7 +96,7 @@ fn form_command_string_type_rejects_unresolved_or_wrong_qnames() {
         r#"<AssociatedTableElementId xsi:type="&#160;xs:string&#160;">Товары</AssociatedTableElementId>"#,
         r#"<lf:AssociatedTableElementId xmlns:lf="http://v8.1c.ru/8.3/xcf/logform" xmlns="urn:foreign" xsi:type="string">Товары</lf:AssociatedTableElementId>"#,
     ] {
-        let data = parse_form_event_evidence_xml(&format!(r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xs="http://www.w3.org/2001/XMLSchema" version="2.20"><Commands><Command name="Fill" id="1">{property}<Action>Keep</Action></Command></Commands></Form>"#)).unwrap();
+        let data = parse_form_event_evidence_xml(&format!(r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xs="http://www.w3.org/2001/XMLSchema" version="2.20"><Commands><Command name="Fill" id="1">{property}<Action>Keep</Action></Command></Commands></Form>"#), None).unwrap();
         let command = &data.commands[0];
         assert!(command.associated_table_element_id.is_none(), "{property}");
         assert_eq!(
@@ -106,7 +109,7 @@ fn form_command_string_type_rejects_unresolved_or_wrong_qnames() {
 
 #[test]
 fn form_command_option_reference_does_not_trim_non_xml_whitespace() {
-    let data = parse_form_event_evidence_xml(r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20"><Commands><Command name="Fill" id="1"><FunctionalOptions><Item>&#160;FunctionalOption.Bad&#160;</Item><Item>FunctionalOption.Keep</Item></FunctionalOptions><Action>Keep</Action></Command></Commands></Form>"#).unwrap();
+    let data = parse_form_event_evidence_xml(r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20"><Commands><Command name="Fill" id="1"><FunctionalOptions><Item>&#160;FunctionalOption.Bad&#160;</Item><Item>FunctionalOption.Keep</Item></FunctionalOptions><Action>Keep</Action></Command></Commands></Form>"#, None).unwrap();
     let command = &data.commands[0];
     assert_eq!(
         command.functional_options,
@@ -127,7 +130,7 @@ fn form_command_non_xml_whitespace_is_damage_in_boolean_and_enum_values() {
         ("<Picture><xr:Ref>CommonPicture.Fill</xr:Ref><xr:LoadTransparent>&#160;false&#160;</xr:LoadTransparent></Picture>", "LoadTransparent"),
         ("<FunctionalOptions>&#160;</FunctionalOptions>", "FunctionalOptions"),
     ] {
-        let data = parse_form_event_evidence_xml(&format!(r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" version="2.20"><Commands><Command name="Fill" id="1">{property}<Action>Keep</Action></Command></Commands></Form>"#)).unwrap();
+        let data = parse_form_event_evidence_xml(&format!(r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" version="2.20"><Commands><Command name="Fill" id="1">{property}<Action>Keep</Action></Command></Commands></Form>"#), None).unwrap();
         let command = &data.commands[0];
         assert!(command.modifies_saved_data.is_none());
         assert!(command.current_row_use.is_none());
@@ -145,7 +148,7 @@ fn form_command_context_and_picture_transparency_survive_typed_reading() {
         let text = format!(
             r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xs="http://www.w3.org/2001/XMLSchema" version="2.20"><Commands><Command name="Fill" id="1"><CurrentRowUse>DontUse</CurrentRowUse><ModifiesSavedData>true</ModifiesSavedData><AssociatedTableElementId xsi:type="xs:string">Товары</AssociatedTableElementId><FunctionalOptions><Item>FunctionalOption.Prices</Item><Item>FunctionalOption.Taxes</Item></FunctionalOptions><Picture><xr:Ref>CommonPicture.Fill</xr:Ref><xr:LoadTransparent>{transparent}</xr:LoadTransparent></Picture><Action callType="After">FillAfter</Action></Command></Commands></Form>"#
         );
-        let data = parse_form_event_evidence_xml(&text).unwrap();
+        let data = parse_form_event_evidence_xml(&text, None).unwrap();
         let command = serde_json::to_value(&data.commands[0]).unwrap();
         assert_eq!(command["currentRowUse"], "DontUse");
         assert_eq!(command["modifiesSavedData"], true);
@@ -167,7 +170,7 @@ fn form_command_properties_distinguish_absence_empty_and_local_damage() {
         let xml = format!(
             r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" version="2.20"><Commands><Command name="Fill" id="1"><Action>Keep</Action>{body}</Command></Commands></Form>"#
         );
-        parse_form_event_evidence_xml(&xml)
+        parse_form_event_evidence_xml(&xml, None)
             .unwrap()
             .commands
             .remove(0)
@@ -251,6 +254,7 @@ fn form_info_projects_direct_command_action_as_execute_binding() {
             state: unica_metadata::support_state::ObjectSupportState::NotSupported,
             direct_edit_safe: Some(true),
         },
+        None,
     )
     .unwrap();
 
@@ -605,28 +609,30 @@ fn form_edit_namespace_repair_is_noop_without_emitted_prefixes() {
 }
 
 #[test]
-fn form_element_dispatcher_ignores_nested_table_and_page_properties() {
+fn form_element_dispatcher_keeps_the_primary_kind_over_nested_properties() {
     let definition = json!({
-        "elements": [
-            {
-                "table": "Rows",
-                "commandBar": {"autofill": false},
-                "columns": []
-            },
-            {
-                "pages": "Tabs",
-                "children": [
-                    {"page": "Main", "group": "horizontal"}
-                ]
-            }
-        ]
+        "elements": [{
+            "pages": "Tabs",
+            "children": [
+                {"page": "Main", "group": "horizontal"}
+            ]
+        }]
     });
 
     let (xml, _) = form_compile_xml(&definition, "2.20").unwrap();
 
-    assert!(xml.contains("<Table name=\"Rows\""), "{xml}");
     assert!(xml.contains("<Page name=\"Main\""), "{xml}");
     assert!(xml.contains("<Group>Horizontal</Group>"), "{xml}");
+
+    let error = form_compile_xml(
+        &json!({ "elements": [{ "table": "Rows", "commandBar": {"autofill": false}, "columns": [] }] }),
+        "2.20",
+    )
+    .unwrap_err();
+    assert_eq!(
+        error,
+        "key `commandBar` is not written for form element kind `table` (element `Rows`)"
+    );
 }
 
 #[test]
@@ -786,11 +792,32 @@ fn form_command_keys_are_written_like_the_platform_dump() {
             name,
             id,
             "\t\t",
-            Some("ru"),
+            FormTextMode::Legacy(Some("ru")),
         )
         .unwrap();
         assert_eq!(lines.join("\n"), expected, "{name}");
     }
+}
+
+#[test]
+fn legacy_form_compiler_preserves_nstr_looking_caption_as_literal_text() {
+    let definition = json!({"title": "en = 'Help'"});
+    let mut lines = Vec::new();
+    emit_form_command(
+        &mut lines,
+        definition.as_object().unwrap(),
+        "Help",
+        1,
+        "",
+        FormTextMode::Legacy(Some("ru")),
+    )
+    .unwrap();
+    let xml = lines.join("\n");
+    assert!(xml.contains("<v8:lang>ru</v8:lang>"), "{xml}");
+    assert!(
+        xml.contains("<v8:content>en = 'Help'</v8:content>"),
+        "{xml}"
+    );
 }
 
 /// The form compiler and `command.add` share one command writer:
@@ -811,7 +838,14 @@ fn form_compile_writes_the_same_command_block_as_form_command_add() {
         ..Default::default()
     };
     let mut lines = Vec::new();
-    emit_form_commands(&mut lines, Some(&commands), "\t", &mut ids, Some("ru")).unwrap();
+    emit_form_commands(
+        &mut lines,
+        Some(&commands),
+        "\t",
+        &mut ids,
+        FormTextMode::Legacy(Some("ru")),
+    )
+    .unwrap();
     assert_eq!(
         lines.join("\n"),
         format!("\t<Commands>\n{DUMP_SHAPED_REFRESH_COMMAND}\n\t</Commands>")
@@ -839,6 +873,80 @@ fn form_compile_refuses_button_representation_on_command() {
             "{invalid}: {error}"
         );
     }
+}
+
+/// A kind the compiler does not emit is refused by name, at the top level and
+/// inside a group, instead of being written as an input field.
+#[test]
+fn form_compile_refuses_an_element_kind_it_does_not_emit() {
+    for kind in [
+        "radio",
+        "picture",
+        "picField",
+        "calendar",
+        "columnGroup",
+        "spreadsheet",
+        "formattedDoc",
+        "progressBar",
+        "trackBar",
+        "chart",
+        "ganttChart",
+        "graphicalSchema",
+        "planner",
+        "periodField",
+        "dendrogram",
+        "popup",
+        "buttonGroup",
+    ] {
+        let element = json!({ kind: "Поле", "name": "Поле", "path": "Объект" });
+        for definition in [
+            json!({ "elements": [element.clone()] }),
+            json!({ "elements": [{ "group": "vertical", "name": "Группа", "children": [element] }] }),
+        ] {
+            let error = form_compile_xml(&definition, "2.20").unwrap_err();
+            assert_eq!(
+                error,
+                format!("form element kind `{kind}` is not supported by the form compiler")
+            );
+        }
+    }
+}
+
+/// A top-level key the compiler skips is refused: elements under another
+/// name would otherwise leave an empty form behind a successful call.
+#[test]
+fn form_compile_refuses_a_top_level_key_it_does_not_write() {
+    let error = form_compile_xml(
+        &json!({ "children": [{ "input": "Поле", "path": "Объект" }] }),
+        "2.20",
+    )
+    .unwrap_err();
+    assert_eq!(
+        error,
+        "unknown form description key `children`; expected one of: title, properties, events, elements, attributes, parameters, commands"
+    );
+    for key in [
+        "excludedCommands",
+        "mobileCommandBarContent",
+        "commandInterface",
+        "conditionalAppearance",
+    ] {
+        let error = form_compile_xml(&json!({ key: [] }), "2.20").unwrap_err();
+        assert_eq!(
+            error,
+            format!("form description key `{key}` is not supported by the form compiler")
+        );
+    }
+    let (xml, _) = form_compile_xml(
+        &json!({
+            "title": "Форма",
+            "attributes": [{ "name": "Объект", "type": "string" }],
+            "elements": [{ "input": "Поле", "path": "Объект" }]
+        }),
+        "2.20",
+    )
+    .unwrap();
+    assert!(xml.contains("<InputField name=\"Поле\""), "{xml}");
 }
 
 #[test]
@@ -2156,7 +2264,7 @@ fn form_element_emitters_escape_enum_text_when_preflight_is_bypassed() {
         "Check",
         "\t",
         &mut ids,
-        Some("ru"),
+        FormTextMode::Legacy(Some("ru")),
     )
     .unwrap();
     let input = json!({"titleLocation": "</TitleLocation><Injected/>"});
@@ -2166,7 +2274,7 @@ fn form_element_emitters_escape_enum_text_when_preflight_is_bypassed() {
         "Input",
         "\t",
         &mut ids,
-        Some("ru"),
+        FormTextMode::Legacy(Some("ru")),
     )
     .unwrap();
     lines.push("</Form>".to_string());
@@ -2942,7 +3050,7 @@ fn html_document_field_matches_platform_fixture_and_preserves_requested_properti
         .find(|n| n.has_tag_name("HTMLDocumentField"))
         .unwrap();
     let fixture = include_str!(concat!(env!("CARGO_MANIFEST_DIR"),
-            "/../../tests/fixtures/platform_8_3_27/support-edit-bin-only/src/DataProcessors/ТестHTML/Forms/Форма/Ext/Form.xml"));
+            "/../../tests/fixtures/formats/platform_xml/2.20/support-edit-bin-only/src/DataProcessors/ТестHTML/Forms/Форма/Ext/Form.xml"));
     let oracle = Document::parse(fixture.trim_start_matches('\u{feff}')).unwrap();
     let oracle_field = oracle
         .descendants()
@@ -3254,7 +3362,7 @@ fn form_edit_inserts_lines_with_the_form_line_ending() {
     let path = std::path::Path::new("Catalogs/X/Forms/F/Ext/Form.xml");
     let edit = |mut text: String| {
         let start = text.find("<Form").unwrap();
-        form_edit_apply_definition(&mut text, &defn, path, start, Some("ru")).unwrap();
+        form_edit_apply_definition(&mut text, &defn, path, start, Some("ru"), None).unwrap();
         text
     };
 
@@ -3300,6 +3408,7 @@ fn column_group_add_rejects_nonfields_for_direct_and_sibling_placement() {
                 std::path::Path::new("Main/Form.xml"),
                 0,
                 Some("ru"),
+                None,
             );
             let error = match result {
                 Err(error) => error,
@@ -3332,6 +3441,7 @@ fn column_group_add_accepts_supported_fields_and_preserves_their_container() {
             std::path::Path::new("Main/Form.xml"),
             0,
             Some("ru"),
+            None,
         )
         .unwrap();
         let doc = Document::parse(&xml).unwrap();
@@ -3401,8 +3511,9 @@ fn english_companions_preserve_existing_names_and_repeat_without_changes() {
         &definition,
         Path::new("Form.xml"),
         root_start,
-        None,
+        FormTextMode::Legacy(None),
         ScriptVariant::English,
+        None,
     )
     .unwrap();
     let doc = roxmltree::Document::parse(&xml).unwrap();
@@ -3432,8 +3543,9 @@ fn english_companions_preserve_existing_names_and_repeat_without_changes() {
         &definition,
         Path::new("Form.xml"),
         root_start,
-        None,
+        FormTextMode::Legacy(None),
         ScriptVariant::English,
+        None,
     )
     .unwrap();
     assert_eq!(xml, first);
@@ -3441,7 +3553,7 @@ fn english_companions_preserve_existing_names_and_repeat_without_changes() {
 
 #[test]
 fn english_table_companions_match_the_platform_dump_in_both_command_bar_modes() {
-    // Names are independently present in platform_8_3_27/external_artifacts/
+    // Names are independently present in formats/platform_xml/2.20/external_artifacts/
     // epf/SyntheticProcessor/Forms/Main/Ext/Form.xml (LinesSearchString etc.).
     for autofill in [None, Some(true), Some(false)] {
         let mut table = json!({"table": "Lines", "path": "Object.Lines"});
@@ -3450,7 +3562,14 @@ fn english_table_companions_match_the_platform_dump_in_both_command_bar_modes() 
         }
         let mut lines = Vec::new();
         let mut context = FormEmissionContext::with_script_variant(ScriptVariant::English);
-        emit_form_element(&mut lines, &table, "", &mut context, None).unwrap();
+        emit_form_element(
+            &mut lines,
+            &table,
+            "",
+            &mut context,
+            FormTextMode::Legacy(None),
+        )
+        .unwrap();
         let fragment = format!("<Form {FORM_ROOT_NAMESPACES}>{}</Form>", lines.join("\n"));
         let doc = roxmltree::Document::parse(&fragment).unwrap();
         let names = doc
@@ -3472,4 +3591,44 @@ fn english_table_companions_match_the_platform_dump_in_both_command_bar_modes() 
             );
         }
     }
+}
+
+/// A new list or choice form carries the dynamic list settings the Designer
+/// writes for its own new list form: `ManualQuery`, `DynamicDataRead`,
+/// `MainTable` and the `ListSettings` skeleton, in the platform's order.
+#[test]
+fn a_new_list_form_carries_the_designer_dynamic_list_settings() {
+    fn settings_block(xml: &str) -> String {
+        let xml = xml.replace("\r\n", "\n");
+        let start = xml.find("<Settings xsi:type=\"DynamicList\">").unwrap();
+        let end = xml[start..].find("</Settings>").unwrap() + start + "</Settings>".len();
+        xml[start..end].to_string()
+    }
+    let designer = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/fixtures/formats/platform_xml/2.20/all_kinds/src/Catalogs/Валюты/Forms/ФормаСписка/Ext/Form.xml"
+    ));
+    for purpose in ["List", "Choice"] {
+        let xml = form_add_content_xml("Catalog", "Валюты", purpose, "2.20").unwrap();
+        assert_eq!(settings_block(&xml), settings_block(designer), "{purpose}");
+    }
+}
+
+/// A compiled dynamic list without `dynamicDataRead` reads its data
+/// dynamically, as a new list form of the Designer does.
+#[test]
+fn a_compiled_dynamic_list_reads_dynamically_unless_told_otherwise() {
+    let definition = json!({
+        "attributes": [{
+            "name": "Список",
+            "type": "DynamicList",
+            "main": true,
+            "settings": { "mainTable": "Catalog.Валюты" }
+        }]
+    });
+    let (xml, _) = form_compile_xml(&definition, "2.20").unwrap();
+    assert!(
+        xml.contains("<DynamicDataRead>true</DynamicDataRead>"),
+        "{xml}"
+    );
 }

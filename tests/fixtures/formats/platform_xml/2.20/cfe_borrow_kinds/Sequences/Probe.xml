@@ -1,0 +1,26 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:app="http://v8.1c.ru/8.2/managed-application/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:cmi="http://v8.1c.ru/8.2/managed-application/cmi" xmlns:ent="http://v8.1c.ru/8.1/data/enterprise" xmlns:lf="http://v8.1c.ru/8.2/managed-application/logform" xmlns:style="http://v8.1c.ru/8.1/data/ui/style" xmlns:sys="http://v8.1c.ru/8.1/data/ui/fonts/system" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:v8ui="http://v8.1c.ru/8.1/data/ui" xmlns:web="http://v8.1c.ru/8.1/data/ui/colors/web" xmlns:win="http://v8.1c.ru/8.1/data/ui/colors/windows" xmlns:xen="http://v8.1c.ru/8.3/xcf/enums" xmlns:xpr="http://v8.1c.ru/8.3/xcf/predef" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.20">
+	<Sequence uuid="43eca8e2-4d1a-8c96-b367-92270e7610fe">
+		<InternalInfo>
+			<xr:GeneratedType name="SequenceRecord.Probe" category="Record">
+				<xr:TypeId>07c1c49f-6896-8b65-999a-7b7f588ed24b</xr:TypeId>
+				<xr:ValueId>c6b615b0-feb8-83f8-a8ae-db0a365a6138</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="SequenceManager.Probe" category="Manager">
+				<xr:TypeId>0af26ecc-4621-8dcb-b014-ef309ba20413</xr:TypeId>
+				<xr:ValueId>47aa4225-0203-8385-8ff8-827f8ac3d33b</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="SequenceRecordSet.Probe" category="RecordSet">
+				<xr:TypeId>d33692a4-db28-89b7-a9e1-265bc459f246</xr:TypeId>
+				<xr:ValueId>71f2eeb6-53a8-8378-9c73-37038ded0a2c</xr:ValueId>
+			</xr:GeneratedType>
+		</InternalInfo>
+		<Properties>
+			<ObjectBelonging>Adopted</ObjectBelonging>
+			<Name>Probe</Name>
+			<Comment/>
+			<ExtendedConfigurationObject>5b8540f4-5d1c-50de-a24a-b4f78aea3cb6</ExtendedConfigurationObject>
+		</Properties>
+		<ChildObjects/>
+	</Sequence>
+</MetaDataObject>
