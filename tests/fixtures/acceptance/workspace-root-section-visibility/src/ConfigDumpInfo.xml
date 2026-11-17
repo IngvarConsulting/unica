@@ -1,0 +1,16 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<ConfigDumpInfo xmlns="http://v8.1c.ru/8.3/xcf/dumpinfo" xmlns:xen="http://v8.1c.ru/8.3/xcf/enums" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" format="Hierarchical" version="2.20">
+	<ConfigVersions>
+		<Metadata name="Configuration.UnicaRootVisibilityProbe" id="829019ad-9973-4df8-bd04-63ec82ad0830" configVersion="ec8690dd4d02374581eabe611d67907f00000000"/>
+		<Metadata name="Configuration.UnicaRootVisibilityProbe.ClientApplicationInterface" id="00000000-0000-0000-0000-000000000002.b" configVersion="8f2b8ec8ba42e644987258d5ea9685b700000000"/>
+		<Metadata name="Configuration.UnicaRootVisibilityProbe.CommandInterface" id="00000000-0000-0000-0000-000000000002.a" configVersion="309fe0a71052554f9fe9166b377d484700000000"/>
+		<Metadata name="Language.Русский" id="00000000-0000-0000-0000-000000000001" configVersion="9ddf4e3f15bb1b4182bb02ae423d282400000000"/>
+		<Metadata name="Role.HiddenRole" id="ee99702c-6fd5-4f13-bdd0-144823951fe3" configVersion="4cc2c4e721401c4abc80ef288f3b16e900000000"/>
+		<Metadata name="Role.HiddenRole.Rights" id="ee99702c-6fd5-4f13-bdd0-144823951fe3.0" configVersion="cbc0958b8d28b74899af8d2ade01095800000000"/>
+		<Metadata name="Role.VisibleRole" id="e3b967f4-28af-46e0-9b5b-facdee4b6a6c" configVersion="237fb07aba2c3440b3dde2354780801900000000"/>
+		<Metadata name="Role.VisibleRole.Rights" id="e3b967f4-28af-46e0-9b5b-facdee4b6a6c.0" configVersion="ea829fb240dd3e42babfc1eac8dd9dee00000000"/>
+		<Metadata name="Subsystem.Administration" id="00000000-0000-4000-8000-000000001834" configVersion="bbba6db7f17b2d4391a1694c25e9b35d00000000"/>
+		<Metadata name="Subsystem.Sales" id="00000000-0000-4000-8000-000000001832" configVersion="4f3bef87452cca4096e01aa7bb3199a100000000"/>
+		<Metadata name="Subsystem.Warehouse" id="00000000-0000-4000-8000-000000001833" configVersion="19660698a1a43048b8f266d5dff7fa9200000000"/>
+	</ConfigVersions>
+</ConfigDumpInfo>

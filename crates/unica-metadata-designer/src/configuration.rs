@@ -101,9 +101,8 @@ pub fn cf_home_page_item_data(items: &[CfHomePageItem]) -> Vec<CfHomePageItemDat
 
 /// Разбирает корневой `Ext/CommandInterface.xml`.
 ///
-/// Документ несёт единственную секцию — `SubsystemsOrder`, список ссылок вида
-/// `Subsystem.Планирование` в порядке, заданном разработчиком. Порядок —
-/// содержательный факт: он задаёт, как разделы встают в интерфейсе.
+/// Порядок сохраняет последовательность платформы. Видимость включает
+/// настройки, явно присутствующие в документе.
 pub fn parse_cf_command_interface_xml(text: &str) -> Result<CfInterfaceData, String> {
     const CI_NS: &str = "http://v8.1c.ru/8.3/xcf/extrnprops";
 
@@ -127,14 +126,23 @@ pub fn parse_cf_command_interface_xml(text: &str) -> Result<CfInterfaceData, Str
         .map(|text| text.trim().to_string())
         .filter(|reference| !reference.is_empty())
         .collect();
-    Ok(CfInterfaceData { subsystem_order })
+    let (subsystems_visibility, subsystems_visibility_error) =
+        match crate::configuration_section_visibility::read(root) {
+            Ok(rows) => (Some(rows), None),
+            Err(error) => (None, Some(error)),
+        };
+    Ok(CfInterfaceData {
+        subsystem_order,
+        subsystems_visibility,
+        subsystems_visibility_error,
+    })
 }
 
 pub fn parse_cf_info_xml(
     text: &str,
     support: ConfigurationSupportData,
     home_page: Option<CfHomePageData>,
-    interface: Option<CfInterfaceData>,
+    mut interface: Option<CfInterfaceData>,
     panels: Option<serde_json::Value>,
 ) -> Result<ParsedCfInfo, String> {
     const MD_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
@@ -163,7 +171,7 @@ pub fn parse_cf_info_xml(
     let extension_purpose = optional(cf_prop_text(props, "ConfigurationExtensionPurpose"));
     let counts = cf_child_object_counts(cfg);
     let total_objects = counts.iter().map(|(_, count)| *count).sum::<usize>();
-    let registered_objects = cfg
+    let registered_objects: Vec<CfRegisteredObject> = cfg
         .children()
         .find(|node| unica_xml_format::names::element_has_name(*node, "ChildObjects", Some(MD_NS)))
         .into_iter()
@@ -179,7 +187,45 @@ pub fn parse_cf_info_xml(
                 })
         })
         .collect();
-    let mut property_limits = Vec::new();
+    if let Some(interface) = &mut interface {
+        if let Some(rows) = interface
+            .subsystems_visibility
+            .as_ref()
+            .filter(|rows| !rows.is_empty())
+        {
+            let registered = cfg
+                .children()
+                .filter(|node| node.has_tag_name((MD_NS, "ChildObjects")))
+                .flat_map(|node| node.children())
+                .filter(|node| {
+                    node.has_tag_name((MD_NS, "Role")) || node.has_tag_name((MD_NS, "Subsystem"))
+                })
+                .filter_map(|node| {
+                    let kind = node.tag_name().name();
+                    let name = unica_source_designer::owner::registered_child_name(node)?;
+                    Some(format!("{kind}.{name}"))
+                })
+                .collect::<std::collections::HashSet<_>>();
+            if let Some(reference) = rows
+                .iter()
+                .flat_map(|entry| {
+                    std::iter::once(entry.subsystem.as_str())
+                        .chain(entry.roles.iter().map(|role| role.role.as_str()))
+                })
+                .find(|reference| !registered.contains(*reference))
+            {
+                interface.subsystems_visibility_error =
+                    Some(format!("unregistered reference {reference}"));
+                interface.subsystems_visibility = None;
+            }
+        }
+    }
+    let mut property_limits = interface
+        .as_ref()
+        .and_then(|interface| interface.subsystems_visibility_error.as_ref())
+        .map(|error| format!("source_unreadable: SubsystemsVisibility: {error}"))
+        .into_iter()
+        .collect::<Vec<_>>();
     let mut localized = |name| match crate::info_projection::localized_property_as_nstr(
         props,
         "Configuration",

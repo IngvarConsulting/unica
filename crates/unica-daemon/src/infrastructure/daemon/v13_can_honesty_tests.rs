@@ -566,6 +566,9 @@ fn build_sample_args(descriptor: OperationDescriptor) -> Value {
         }}),
         "groupOrder.set" => json!({"values": {"groups": ["NavigationPanelImportant"]}}),
         "subsystemOrder.set" => json!({"values": {"subsystems": ["Subsystem.Sample"]}}),
+        "subsystemVisibility.set" => {
+            json!({"items": [{"subsystem":"main:Subsystem.Sample","common":false}]})
+        }
         "valueType.add" => json!({"values": {"name": "Sample", "base": "xs:string"}}),
         "objectType.add" => json!({"values": {"name": "Sample"}}),
         "property.add" => json!({"values": {"property": {"name": "Sample", "type": "xs:string"}}}),
@@ -2282,6 +2285,11 @@ fn subsystem_interface_contracts_preview_all_operations_without_source_writes() 
             "main:Configuration".to_string(),
             "subsystemOrder.set",
             json!({"values":{"subsystems":["Subsystem.Администрирование"]}}),
+        ),
+        (
+            "main:Configuration".to_string(),
+            "subsystemVisibility.set",
+            json!({"items":[{"subsystem":subsystem,"common":false}]}),
         ),
     ] {
         let detailed = invoke(

@@ -32,6 +32,12 @@
       "skeleton": "Values"
     },
     {
+      "variant": "SubsystemVisibilitySet",
+      "operation": "subsystemVisibility.set",
+      "applicability": "ConfigurationRoot",
+      "skeleton": "Items"
+    },
+    {
       "variant": "PanelsSet",
       "operation": "panels.set",
       "applicability": "ConfigurationRoot",
