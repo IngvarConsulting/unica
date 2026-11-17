@@ -2869,12 +2869,22 @@ pub fn apply_selection_presence_markers_bind_identity_but_not_unread_bytes(
     policies: crate::policies::WorkspacePolicies,
 ) {
     use std::io::Write;
+    struct CleanupFixture(Option<ActorFixture>);
+    impl Drop for CleanupFixture {
+        fn drop(&mut self) {
+            if let Some(ActorFixture { root, actor, .. }) = self.0.take() {
+                drop(actor);
+                let _ = std::fs::remove_dir_all(root);
+            }
+        }
+    }
     let _policy_scope = policies_scope(policies);
     for mutation in ["bytes", "replacement", "absent", "directory", "exact-yaml"] {
-        let fixture = actor_fixture(
+        let owned = CleanupFixture(Some(actor_fixture(
             &format!("selection-presence-{mutation}"),
             &["main", "other"],
-        );
+        )));
+        let fixture = owned.0.as_ref().unwrap();
         let marker = fixture.roots[1].join("Configuration.xml");
         std::fs::write(&marker, b"<MetaDataObject/>").unwrap();
         let yaml = fixture.root.join("v8project.yaml");
@@ -2986,7 +2996,6 @@ pub fn apply_selection_presence_markers_bind_identity_but_not_unread_bytes(
             other_before,
             "the external marker change must not be rewritten"
         );
-        fixture.cleanup();
     }
 }
 
