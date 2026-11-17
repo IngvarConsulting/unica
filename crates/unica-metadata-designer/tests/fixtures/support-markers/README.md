@@ -12,6 +12,9 @@
   -ChangesAllowedRule ObjectIsEditableSupportEnabled -ChangesNotRecommendedRule
   ObjectIsEditableSupportEnabled -NoBind` на временном хранилище.
 - `locked.bin` — то же с правилами `ObjectNotEditable`.
+- `removed.bin` — конфигурация, полностью снятая с поддержки в Конфигураторе:
+  16 байт `﻿{6,0,0,0,1,0}`. Одинаковые байты дали выгрузки 8.3.27 и 8.5.1
+  раннера (`v8-runner`, стенды `bench/p-new` и `ssl/project`).
 
 Второе поле заголовка `{6,<поле>,…}` — `1`, пока изменения выключены, и `0`
 после их включения. Запись объекта — `<правило>,<отметка>,<uuid>,<uuid>`:

@@ -121,10 +121,10 @@ fn enum_value_borrow_preserves_siblings_namespaces_and_noop_bytes() {
 #[test]
 fn emitted_enum_value_matches_platform_8_3_27_export_byte_for_byte() {
     let expected = include_bytes!(
-        "../../../../tests/fixtures/platform_8_3_27/cfe_borrow/extension-enum-value.xml"
+        "../../../../tests/fixtures/formats/platform_xml/2.20/cfe_borrow/extension-enum-value.xml"
     );
     let manifest: serde_json::Value = serde_json::from_str(include_str!(
-        "../../../../tests/fixtures/platform_8_3_27/cfe_borrow/manifest.json"
+        "../../../../tests/fixtures/formats/platform_xml/2.20/cfe_borrow/manifest.json"
     ))
     .unwrap();
     let digest = Sha256::digest(expected)

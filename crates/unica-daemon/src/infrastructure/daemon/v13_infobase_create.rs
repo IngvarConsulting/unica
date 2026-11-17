@@ -8,7 +8,9 @@
 //! раннера по их статусам: базу можно создать только если шаг `infobase`
 //! запланирован. Существующую файловую базу раннер 0.15 отвергает отказом
 //! проверки с проваленным шагом `infobase` ещё в превью; это отказ до применения,
-//! а не тихий пропуск. Шаг EDT-пространства обязан быть пропущен: Unica работает
+//! а не тихий пропуск. При исполнении этот отказ спрашивает человека
+//! (`infobase.exists`), и по его выбору тот же вызов пересоздаёт базу ключом
+//! раннера `--recreate`. Шаг EDT-пространства обязан быть пропущен: Unica работает
 //! с выгрузкой Designer и проект другого формата не заводит.
 //!
 //! Квитанцию после создания даёт сам раннер: повторное превью обязано
@@ -25,20 +27,22 @@
 //! Записи поколения после создания нет: первый `push` поколение не сверяет.
 
 use super::protocol::InvocationRequest;
-use super::runner_015::{origin_kind, OriginKind, Runner015ProcessRunner};
+use super::runner::{origin_kind, OriginKind};
 use super::v13_infobase_exports::{
     configuration_source_set, digest_optional_workspace_file, digest_required_workspace_file,
-    missing_runner_rejection, resolve_bundled_runner, runner_rejection, runner_start_rejection,
-    RunnerAbsence, CONFIG_NAME, LOCAL_CONFIG_NAME, RUNNER_OUTPUT_LIMIT,
+    missing_runner_rejection, note_config_warnings, resolve_bundled_runner,
+    runner_envelope_refusal, runner_rejection, runner_start_rejection, RunnerAbsence, CONFIG_NAME,
+    LOCAL_CONFIG_NAME, RUNNER_OUTPUT_LIMIT,
 };
+use super::v13_source_import::INFOBASE_NAME;
 use crate::infrastructure::workspace::discover_workspace;
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use unica_artifact_delivery::engine::BundledTool;
 use unica_execution::invocation_store::ToolIdentity;
-use unica_execution_contract::invocation::{DomainResult, SafeIdentityHash};
+use unica_execution_contract::invocation::{DomainResult, HumanChoice, SafeIdentityHash};
 use unica_process::runner::{ProcessCommand, ProcessOutput, ProcessRunner};
 use unica_redaction::redactor;
 use unica_refusal::RefusalCode;
@@ -57,6 +61,8 @@ const EDT_STEP: &str = "edt_workspace";
 pub(super) struct PreparedInfobaseCreate {
     dry_run: bool,
     context: WorkspaceContext,
+    /// The call as made: a question about the busy infobase repeats it.
+    call: Map<String, Value>,
 }
 
 pub(super) enum Preparation {
@@ -108,7 +114,11 @@ impl PreparedInfobaseCreate {
                     format!("workspace discovery failed: {error}"),
                 )
             })?;
-        Ok(Self { dry_run, context })
+        Ok(Self {
+            dry_run,
+            context,
+            call: request.arguments().clone(),
+        })
     }
 
     pub(super) fn workspace_identity_hash(&self) -> SafeIdentityHash {
@@ -119,7 +129,14 @@ impl PreparedInfobaseCreate {
     }
 
     pub(super) fn execute(&self, cancellation: CancellationToken) -> DomainResult {
-        execute_with_runner(self, &Runner015ProcessRunner, cancellation)
+        let result = super::runner::with_bundled_runner(
+            &self.context.workspace_root,
+            &self.context.cwd,
+            OPERATION,
+            cancellation,
+            |runner, cancellation| execute_with_runner(self, runner, cancellation),
+        );
+        super::v13_infobase_sessions::bind_to_call(result, &self.call)
     }
 }
 
@@ -225,6 +242,160 @@ fn execute_with_resolved_runner(
             "infobase.create cancelled before preflight",
         );
     }
+    // «Создать свою базу» (вопрос `infobase.another_copy`): сначала раннер
+    // объявляет этой копии свою базу в местном слое, затем она создаётся как
+    // обычно — уже по новому соединению.
+    let own_base =
+        !prepared.dry_run && super::v13_infobase_another_copy::declares_own_base(&prepared.call);
+    if own_base {
+        if let Err(result) = declare_own_base(prepared, tool, runner, &cancellation) {
+            return result;
+        }
+    }
+    let result = create_with_resolved_runner(prepared, runner, cancellation, tool);
+    if own_base {
+        return own_base_result(result);
+    }
+    result
+}
+
+/// Ответ «Создать свою базу»: создана — согласованный текст; не создана —
+/// отказ создания с предупреждением, что база уже объявлена.
+fn own_base_result(mut result: DomainResult) -> DomainResult {
+    if result.ok {
+        result.summary = "infobase.create declared an infobase of this working copy in v8project.local.yaml and created it; the infobase of the other working copy is kept as infobases.upstream and is not changed; repeat the original call on the new infobase".to_string();
+        if let Some(Value::Object(data)) = result.data.as_mut() {
+            data.insert("ownInfobaseDeclared".to_string(), Value::Bool(true));
+        }
+    } else {
+        result.warnings.push(json!({
+            "code": OWN_INFOBASE_DECLARED_CODE,
+            "message": "the infobase of this working copy is declared in v8project.local.yaml, but it was not created; the infobase of the other working copy is kept as infobases.upstream; create the new one with infobase.create",
+        }));
+    }
+    result
+}
+
+/// Предупреждение: своя база объявлена, но не создана.
+const OWN_INFOBASE_DECLARED_CODE: &str = "own_infobase_declared";
+
+/// Объявляет этой копии свою файловую базу раннером:
+/// `init --infobase "File=<localPath>/db"`. Прежняя секция `origin` уходит в
+/// `upstream`; занятое имя `upstream` — отказ до записи.
+fn declare_own_base(
+    prepared: &PreparedInfobaseCreate,
+    tool: &BundledTool,
+    runner: &dyn ProcessRunner,
+    cancellation: &CancellationToken,
+) -> Result<(), DomainResult> {
+    let root = &prepared.context.workspace_root;
+    match std::fs::symlink_metadata(root.join(LOCAL_CONFIG_NAME)) {
+        Ok(metadata) if !metadata.file_type().is_file() => {
+            return Err(local_layer_unwritable("it is a link"))
+        }
+        Ok(metadata) if metadata.permissions().readonly() => {
+            return Err(local_layer_unwritable("the file is read-only"))
+        }
+        _ => {}
+    }
+    let layer = |name: &str| {
+        super::v13_workspace_bootstrap::read_yaml_config(root, name)
+            .map_err(|error| reject(RefusalCode::InvalidState, redactor(&error)))
+    };
+    let base = layer(CONFIG_NAME)?;
+    let local = layer(LOCAL_CONFIG_NAME)?;
+    if local
+        .as_ref()
+        .and_then(|local| local.get("infobases"))
+        .and_then(|infobases| infobases.get("upstream"))
+        .is_some()
+    {
+        return Err(upstream_taken());
+    }
+    // Каталог своей базы — `localPath` раннера (местный слой важнее
+    // проектного), по умолчанию `.local`; путь считается от каталога
+    // `v8project.yaml`.
+    let local_path = [local.as_ref(), base.as_ref()]
+        .into_iter()
+        .flatten()
+        .find_map(|layer| layer.get("localPath").and_then(serde_yaml::Value::as_str))
+        .unwrap_or(".local")
+        .trim_end_matches(['/', '\\'])
+        .to_string();
+    if cancellation.is_cancelled() {
+        return Err(reject(
+            RefusalCode::Cancelled,
+            "infobase.create cancelled before declaring the infobase of this working copy",
+        ));
+    }
+    let output = runner
+        .run_staged(&ProcessCommand {
+            program: tool.program.clone(),
+            args: vec![
+                "--json-message".to_string(),
+                "init".to_string(),
+                // The global `--config` is refused by `init`: the project file
+                // it writes beside is named by `--output`.
+                "--output".to_string(),
+                root.join(CONFIG_NAME).display().to_string(),
+                "--infobase".to_string(),
+                format!("File={local_path}/db"),
+            ],
+            // Only from the project root: started elsewhere, a refusal of the
+            // runner leaves a partial write (v8-runner-rust#718).
+            cwd: root.clone(),
+            env: Vec::new(),
+            env_remove: Vec::new(),
+            capture_limits: Some((RUNNER_OUTPUT_LIMIT, RUNNER_OUTPUT_LIMIT)),
+            timeout: None,
+            cancellation: cancellation.protect_process_on_spawn(),
+        })
+        .map_err(|error| {
+            runner_start_rejection(Some(OPERATION.to_string()), &error, &tool.program)
+        })?;
+    let envelope: Value = serde_json::from_str(&output.stdout).unwrap_or(Value::Null);
+    if output.status_success && envelope["ok"] == true {
+        return Ok(());
+    }
+    let code = envelope["error"]["code"]
+        .as_str()
+        .unwrap_or("provider_failed");
+    let message = envelope["error"]["message"].as_str().unwrap_or_default();
+    if code == "invalid_argument" && message.contains("upstream") {
+        return Err(upstream_taken());
+    }
+    Err(runner_rejection(
+        Some(OPERATION.to_string()),
+        code,
+        envelope["error"]["layer"].as_str(),
+        if message.is_empty() {
+            "v8-runner could not declare the infobase of this working copy".to_string()
+        } else {
+            redactor(message)
+        },
+    ))
+}
+
+fn upstream_taken() -> DomainResult {
+    reject(
+        RefusalCode::InvalidState,
+        "this working copy already keeps another infobase as infobases.upstream in v8project.local.yaml; remove or rename that section, then answer again",
+    )
+}
+
+fn local_layer_unwritable(reason: &str) -> DomainResult {
+    reject(
+        RefusalCode::InvalidState,
+        format!("v8project.local.yaml cannot be written: {reason}; declare infobases.origin with this working copy's own connection there, then create it with infobase.create"),
+    )
+}
+
+fn create_with_resolved_runner(
+    prepared: &PreparedInfobaseCreate,
+    runner: &dyn ProcessRunner,
+    cancellation: CancellationToken,
+    tool: &BundledTool,
+) -> DomainResult {
     let before = match capture_inputs(prepared) {
         Ok(inputs) => inputs,
         Err(result) => return result,
@@ -233,11 +404,23 @@ fn execute_with_resolved_runner(
         Ok(contents) => contents,
         Err(result) => return result,
     };
-    let preview = match invoke_runner(prepared, &contents, tool, runner, &cancellation, true) {
+    // Пересоздание — только по выбору человека и только при исполнении.
+    let recreate = !prepared.dry_run && recreates(&prepared.call);
+    let preview = match invoke_runner(
+        prepared,
+        &contents,
+        tool,
+        runner,
+        &cancellation,
+        Pass::Preview { recreate },
+    ) {
         Ok(envelope) => envelope,
         Err(result) => return result,
     };
-    if let Err(result) = validate_preview(&preview) {
+    if let Err(mut result) = validate_preview(&preview) {
+        if !prepared.dry_run && refuses_an_existing_file_infobase(&preview, &contents) {
+            result.human_choice = Some(Box::new(recreate_choice(&prepared.call)));
+        }
         return result;
     }
     let after = match capture_inputs(prepared) {
@@ -287,6 +470,7 @@ fn execute_with_resolved_runner(
             },
             "reason": "create using the current workspace inputs"
         }));
+        note_config_warnings(&mut result, &preview);
         return result;
     }
     if cancellation.is_cancelled() {
@@ -295,7 +479,14 @@ fn execute_with_resolved_runner(
             "infobase.create cancelled before provider launch",
         );
     }
-    let applied = match invoke_runner(prepared, &contents, tool, runner, &cancellation, false) {
+    let applied = match invoke_runner(
+        prepared,
+        &contents,
+        tool,
+        runner,
+        &cancellation,
+        Pass::Apply { recreate },
+    ) {
         Ok(envelope) => envelope,
         Err(result) => return result,
     };
@@ -348,6 +539,7 @@ fn execute_with_resolved_runner(
             "receipt": "provider step only; a cluster infobase is not observable by a repeated preview",
         }));
         result.warnings.push(cluster_database_warning(false));
+        note_config_warnings(&mut result, &applied);
         result
             .changed
             .push(json!({"infobase": true, "kind": "created"}));
@@ -364,7 +556,7 @@ fn execute_with_resolved_runner(
         tool,
         runner,
         &CancellationToken::new(),
-        true,
+        Pass::Preview { recreate: false },
     ) {
         Ok(envelope) => envelope,
         Err(result) => return result,
@@ -389,15 +581,20 @@ fn execute_with_resolved_runner(
     // **Улику о состоянии базы Unica не подделывает.** Файлы базы за
     // соединением Unica не читает; создание засвидетельствовано провайдером
     // и его же повторным превью, и источник признания назван прямо.
+    let (verb, kind) = if recreate {
+        ("recreated", "recreated")
+    } else {
+        ("created", "created")
+    };
     let mut result = DomainResult::success(match contents.loaded_source_set() {
-        Some(set) => format!("infobase.create created the infobase with the main configuration of source set `{set}`; the first push loads that set only if it changed since, and the other sets in full; the state is attested by the provider and confirmed by a repeated preview"),
-        None => "infobase.create created an empty infobase; the first push loads every source set in full; the state is attested by the provider and confirmed by a repeated preview".to_string(),
+        Some(set) => format!("infobase.create {verb} the infobase with the main configuration of source set `{set}`; the first push loads that set only if it changed since, and the other sets in full; the state is attested by the provider and confirmed by a repeated preview"),
+        None => format!("infobase.create {verb} an empty infobase; the first push loads every source set in full; the state is attested by the provider and confirmed by a repeated preview"),
     });
     result.data = Some(json!({
         "op": OPERATION,
         "dryRun": false,
         "target": "infobase",
-        "state": "created",
+        "state": kind,
         "initializesSources": contents.initializes_sources(),
         "sourceSet": contents.loaded_source_set(),
         "connectionFrom": CONFIG_NAME,
@@ -407,10 +604,48 @@ fn execute_with_resolved_runner(
     // Изменилась база, а не файл рабочего пространства: путь сюда не кладётся.
     result.changed.push(json!({
         "infobase": true,
-        "kind": "created",
+        "kind": kind,
     }));
+    note_config_warnings(&mut result, &applied);
 
     result
+}
+
+/// Код вопроса о существующей базе.
+const EXISTS_CODE: &str = "infobase.exists";
+const RUN_TOOL: &str = "unica.run";
+
+/// Вопрос о существующей файловой базе: «Пересоздать базу» — тот же вызов с
+/// отметкой согласия. Клиент без вопросов получает прежний отказ.
+fn recreate_choice(call: &Map<String, Value>) -> HumanChoice {
+    let mut choice = HumanChoice::confirmation(
+        EXISTS_CODE,
+        recreate_question(),
+        "Пересоздать базу",
+        "данные и конфигурация базы пропадут",
+        RUN_TOOL,
+        call,
+    )
+    .with_data(json!({"infobase": INFOBASE_NAME}));
+    choice.options[0].id = "recreate".to_string();
+    choice.proceeds_unasked = false;
+    choice
+}
+
+fn recreate_question() -> String {
+    format!("База «{INFOBASE_NAME}» уже существует.")
+}
+
+/// Вызов несёт согласие человека пересоздать базу.
+fn recreates(call: &Map<String, Value>) -> bool {
+    HumanChoice::is_confirmed(&recreate_question(), RUN_TOOL, call)
+}
+
+/// Проход раннера: превью или применение, с пересозданием или без.
+#[derive(Debug, Clone, Copy)]
+enum Pass {
+    Preview { recreate: bool },
+    Apply { recreate: bool },
 }
 
 fn validate_preview(envelope: &Value) -> Result<(), DomainResult> {
@@ -453,7 +688,7 @@ fn validate_preview(envelope: &Value) -> Result<(), DomainResult> {
 fn existing_infobase_rejection() -> DomainResult {
     reject(
         RefusalCode::InvalidState,
-        "the infobase at the configured connection already exists; infobase.create only creates an absent one, use infobase.restore with mode replace to overwrite its data",
+        "the infobase at the configured connection already exists; infobase.create recreates it only by the person's choice, use infobase.restore with mode replace to overwrite its data",
     )
 }
 
@@ -510,6 +745,7 @@ fn creation_contents(prepared: &PreparedInfobaseCreate) -> Result<CreationConten
 /// запуска платформы с проваленным шагом `infobase`. Других отказов проверки
 /// у этого шага файловой цели нет; у кластера тот же род значит нехватку
 /// реквизитов СУБД, поэтому признак читается только у файловой цели.
+/// Отказ шага пересоздания (`action: recreate`) — не о существующей базе.
 fn refuses_an_existing_file_infobase(envelope: &Value, contents: &CreationContents) -> bool {
     contents.kind == OriginKind::File
         && envelope["ok"] == false
@@ -518,7 +754,7 @@ fn refuses_an_existing_file_infobase(envelope: &Value, contents: &CreationConten
         && envelope["data"]["steps"]
             .as_array()
             .and_then(|steps| steps.iter().find(|step| step["target"] == INFOBASE_STEP))
-            .is_some_and(|step| step["status"] == "failed")
+            .is_some_and(|step| step["status"] == "failed" && step["action"] != "recreate")
 }
 
 fn invoke_runner(
@@ -527,8 +763,12 @@ fn invoke_runner(
     tool: &BundledTool,
     runner: &dyn ProcessRunner,
     cancellation: &CancellationToken,
-    dry_run: bool,
+    pass: Pass,
 ) -> Result<Value, DomainResult> {
+    let (dry_run, recreate) = match pass {
+        Pass::Preview { recreate } => (true, recreate),
+        Pass::Apply { recreate } => (false, recreate),
+    };
     if cancellation.is_cancelled() {
         return Err(reject(
             RefusalCode::Cancelled,
@@ -546,6 +786,9 @@ fn invoke_runner(
         "--json-message".to_string(),
     ];
     args.extend(RUNNER_ARGV.map(str::to_string));
+    if recreate {
+        args.push("--recreate".to_string());
+    }
     if dry_run {
         args.push("--dry-run".to_string());
     }
@@ -614,7 +857,15 @@ fn parse_runner_output(
             .as_str()
             .map(redactor)
             .unwrap_or_else(|| "v8-runner failed without a typed message".to_string());
-        return Err(runner_rejection(Some(OPERATION.to_string()), code, message));
+        return Err(runner_envelope_refusal(
+            runner_rejection(
+                Some(OPERATION.to_string()),
+                code,
+                envelope["error"]["layer"].as_str(),
+                message,
+            ),
+            &envelope,
+        ));
     }
     Ok(envelope)
 }
@@ -698,6 +949,7 @@ mod tests {
 
     fn prepared(root: &Path, dry_run: bool) -> PreparedInfobaseCreate {
         PreparedInfobaseCreate {
+            call: Map::new(),
             dry_run,
             context: WorkspaceContext {
                 cwd: root.to_path_buf(),
@@ -776,7 +1028,7 @@ mod tests {
         assert_eq!(runner.call_count(), 0);
     }
 
-    /// rule: INV.WIRE.INFOBASE-CREATE-ONLY-CREATES-AN-ABSENT-ONE
+    /// rule: INV.WIRE.INFOBASE-CREATE-RECREATES-BY-CHOICE
     #[test]
     fn preview_plans_the_infobase_without_creating_anything_or_naming_its_path() {
         let root = workspace();
@@ -810,7 +1062,7 @@ mod tests {
             .ends_with("--json-message infobase create --dry-run"));
     }
 
-    /// rule: INV.WIRE.INFOBASE-CREATE-ONLY-CREATES-AN-ABSENT-ONE
+    /// rule: INV.WIRE.INFOBASE-CREATE-RECREATES-BY-CHOICE
     #[test]
     fn an_existing_infobase_is_refused_at_preview_and_points_to_import() {
         let root = workspace();
@@ -828,7 +1080,7 @@ mod tests {
         assert!(result.rev.is_none());
     }
 
-    /// rule: INV.WIRE.INFOBASE-CREATE-ONLY-CREATES-AN-ABSENT-ONE
+    /// rule: INV.WIRE.INFOBASE-CREATE-RECREATES-BY-CHOICE
     #[test]
     fn a_project_that_needs_an_edt_workspace_is_refused() {
         let root = workspace();
@@ -845,7 +1097,7 @@ mod tests {
             .contains("Designer projects only"));
     }
 
-    /// rule: INV.WIRE.INFOBASE-CREATE-ONLY-CREATES-AN-ABSENT-ONE
+    /// rule: INV.WIRE.INFOBASE-CREATE-RECREATES-BY-CHOICE
     #[test]
     fn apply_without_prior_preview_creates_and_confirms_the_provider_receipt() {
         let root = workspace();
@@ -923,7 +1175,7 @@ mod tests {
         assert!(!calls[2].cancellation.is_cancelled());
     }
 
-    /// rule: INV.WIRE.INFOBASE-CREATE-ONLY-CREATES-AN-ABSENT-ONE
+    /// rule: INV.WIRE.INFOBASE-CREATE-RECREATES-BY-CHOICE
     #[test]
     fn apply_refuses_an_infobase_created_elsewhere() {
         let root = workspace();
@@ -942,7 +1194,7 @@ mod tests {
             .contains("not created by this call"));
     }
 
-    /// rule: INV.WIRE.INFOBASE-CREATE-ONLY-CREATES-AN-ABSENT-ONE
+    /// rule: INV.WIRE.INFOBASE-CREATE-RECREATES-BY-CHOICE
     #[test]
     fn apply_refuses_a_receipt_that_still_plans_to_create() {
         let root = workspace();
@@ -990,7 +1242,7 @@ mod tests {
     /// повторное превью отказывает на существующей базе — это и есть квитанция.
     /// Ответ называет загруженный набор, не называет путь базы и платформы и
     /// не обещает защиту поколения: она — свойство `push`, а не создания.
-    /// rule: INV.WIRE.INFOBASE-CREATE-ONLY-CREATES-AN-ABSENT-ONE
+    /// rule: INV.WIRE.INFOBASE-CREATE-RECREATES-BY-CHOICE
     #[test]
     fn captured_runner_015_create_is_confirmed_by_its_repeated_preview() {
         let root = workspace_with_main("File=build/ib");
@@ -1034,7 +1286,7 @@ mod tests {
     /// в превью. Для `infobase.create` это не правка вызова (аргументов нет), а
     /// состояние: превью отказывает `invalid_state`, применение, на котором база
     /// появилась после превью, — `concurrent_change`.
-    /// rule: INV.WIRE.INFOBASE-CREATE-ONLY-CREATES-AN-ABSENT-ONE
+    /// rule: INV.WIRE.INFOBASE-CREATE-RECREATES-BY-CHOICE
     #[test]
     fn captured_existing_infobase_refusal_is_a_state_not_a_call_error() {
         let root = workspace_with_main("File=build/ib");
@@ -1073,8 +1325,233 @@ mod tests {
         assert_eq!(result.diagnostics[0]["code"], "bad_value", "{result:?}");
     }
 
+    /// Конверт `infobase create --recreate`: шаг пересоздания идёт первым.
+    fn recreating(root: &Path, status: &str, dispatched: bool) -> Value {
+        let mut envelope = envelope(root, status, "skipped", dispatched);
+        envelope["data"]["steps"].as_array_mut().unwrap().insert(
+            0,
+            json!({"target": "infobase", "action": "recreate", "status": status,
+                       "message": "the base is this working copy's own", "duration_ms": 0}),
+        );
+        envelope["data"]["removed"] =
+            json!([{"kind": "file", "name": "1Cv8.1CD", "state": status}]);
+        envelope
+    }
+
+    fn call(dry_run: bool) -> Map<String, Value> {
+        json!({"op": OPERATION, "args": {}, "dryRun": dry_run})
+            .as_object()
+            .unwrap()
+            .clone()
+    }
+
+    /// Существующая файловая база при исполнении получает вопрос человеку;
+    /// «Пересоздать базу» — тот же вызов с отметкой согласия, и раннер
+    /// пересоздаёт базу ключом `--recreate`. Превью не спрашивает.
+    /// rule: INV.WIRE.INFOBASE-CREATE-RECREATES-BY-CHOICE
+    /// rule: INV.MCP.HUMAN-CHOICE
+    #[test]
+    fn an_existing_file_infobase_is_recreated_by_the_persons_choice() {
+        let root = workspace_with_main("File=build/ib");
+        let existing = || process(captured("infobase-create-receipt-preview.json"), false);
+
+        let runner = SequenceRunner::new(vec![existing()]);
+        let mut preview = prepared(root.path(), true);
+        preview.call = call(true);
+        let result = run(root.path(), &preview, &runner);
+        assert_eq!(result.diagnostics[0]["code"], "invalid_state", "{result:?}");
+        assert!(result.human_choice.is_none(), "{result:?}");
+
+        let runner = SequenceRunner::new(vec![existing()]);
+        let mut executed = prepared(root.path(), false);
+        executed.call = call(false);
+        let refused = run(root.path(), &executed, &runner);
+        assert_eq!(
+            refused.diagnostics[0]["message"],
+            "the infobase at the configured connection already exists; infobase.create recreates it only by the person's choice, use infobase.restore with mode replace to overwrite its data"
+        );
+        let choice = refused.human_choice.as_deref().expect("a question");
+        assert_eq!(choice.code, "infobase.exists");
+        assert_eq!(choice.question, "База «origin» уже существует.");
+        assert!(!choice.proceeds_unasked);
+        assert_eq!(choice.options.len(), 1);
+        assert_eq!(choice.options[0].id, "recreate");
+        assert_eq!(choice.options[0].title, "Пересоздать базу");
+        assert_eq!(
+            choice.options[0].description,
+            "данные и конфигурация базы пропадут"
+        );
+        assert!(!recreates(&executed.call));
+
+        let mut answered = prepared(root.path(), false);
+        answered.call = choice.options[0].arguments.clone();
+        assert!(recreates(&answered.call));
+        let runner = SequenceRunner::new(vec![
+            process(recreating(root.path(), "planned", false), true),
+            process(recreating(root.path(), "ok", true), true),
+            existing(),
+        ]);
+        let result = run(root.path(), &answered, &runner);
+        assert!(result.ok, "{result:?}");
+        assert!(runner
+            .joined_args(0)
+            .ends_with("infobase create --recreate --dry-run"));
+        assert!(runner
+            .joined_args(1)
+            .ends_with("infobase create --recreate"));
+        assert!(runner.joined_args(2).ends_with("infobase create --dry-run"));
+        assert_eq!(result.data.as_ref().unwrap()["state"], "recreated");
+        assert_eq!(result.changed[0]["kind"], "recreated");
+        assert!(result.summary.contains("recreated"), "{result:?}");
+    }
+
+    /// The call of «Создать свою базу» as the question about the infobase of
+    /// another copy offers it.
+    fn own_base_call() -> Map<String, Value> {
+        let warned = json!({"ok": true, "warnings": [
+            "push writes the infobase '/x/ib' of another working copy: it is held by /y (pid 1)"
+        ]});
+        let push = json!({"op": "push", "args": {}, "dryRun": false});
+        let refused = super::super::v13_infobase_another_copy::refusal_for(
+            "push",
+            &warned,
+            push.as_object().unwrap(),
+        )
+        .unwrap();
+        refused.human_choice.unwrap().options[1].arguments.clone()
+    }
+
+    /// «Создать свою базу»: раннер объявляет этой копии свою базу
+    /// `File=.local/db` в местном слое, затем она создаётся, и ответ говорит,
+    /// что база другой копии осталась секцией `upstream`.
+    /// rule: INV.RUNTIME.RUNNER-BASE-REFUSALS
+    #[test]
+    fn the_own_infobase_is_declared_by_the_runner_and_created() {
+        let root = workspace_with_main("File=../other/ib");
+        let mut answered = prepared(root.path(), false);
+        answered.call = own_base_call();
+        let declared = json!({"ok": true, "command": "init", "data": {"kind": "local",
+            "origin": {"change": "redirected", "connection": "File=.local/db"}}});
+        let runner = SequenceRunner::new(vec![
+            process(declared, true),
+            process(captured("infobase-create-preview.json"), true),
+            process(captured("infobase-create-apply.json"), true),
+            process(captured("infobase-create-receipt-preview.json"), false),
+        ]);
+        let result = run(root.path(), &answered, &runner);
+        assert!(result.ok, "{result:?}");
+        assert!(runner
+            .joined_args(0)
+            .ends_with("v8project.yaml --infobase File=.local/db"));
+        assert!(!runner.joined_args(0).contains("--config"));
+        assert!(runner.joined_args(0).contains("init --output "));
+        // `init` runs from the project root: started elsewhere, a refusal of the
+        // runner leaves a partial write (v8-runner-rust#718).
+        assert_eq!(runner.calls.lock().unwrap()[0].cwd, root.path());
+        assert!(runner.joined_args(1).ends_with("infobase create --dry-run"));
+        assert_eq!(
+            result.summary,
+            "infobase.create declared an infobase of this working copy in v8project.local.yaml and created it; the infobase of the other working copy is kept as infobases.upstream and is not changed; repeat the original call on the new infobase"
+        );
+        assert_eq!(result.data.as_ref().unwrap()["ownInfobaseDeclared"], true);
+
+        // A localPath of the project names the directory of the own infobase.
+        let root = workspace_with_main("File=../other/ib");
+        fs::write(
+            root.path().join(CONFIG_NAME),
+            format!(
+                "localPath: state/
+{}",
+                fs::read_to_string(root.path().join(CONFIG_NAME)).unwrap()
+            ),
+        )
+        .unwrap();
+        let runner = SequenceRunner::new(vec![process(
+            json!({"ok": false, "command": "init", "error": {"code": "invalid_argument",
+                "message": "infobases.upstream already exists"}}),
+            false,
+        )]);
+        let refused = run(root.path(), &answered_in(root.path()), &runner);
+        assert!(runner
+            .joined_args(0)
+            .ends_with("v8project.yaml --infobase File=state/db"));
+        assert_eq!(
+            refused.diagnostics[0]["message"],
+            "this working copy already keeps another infobase as infobases.upstream in v8project.local.yaml; remove or rename that section, then answer again"
+        );
+    }
+
+    fn answered_in(root: &Path) -> PreparedInfobaseCreate {
+        let mut answered = prepared(root, false);
+        answered.call = own_base_call();
+        answered
+    }
+
+    /// An `upstream` already declared, or a local layer that cannot be
+    /// written, refuses before the runner is called; nothing changes.
+    /// rule: INV.RUNTIME.RUNNER-BASE-REFUSALS
+    #[test]
+    fn the_own_infobase_is_not_declared_over_an_upstream_or_an_unwritable_layer() {
+        let root = workspace_with_main("File=../other/ib");
+        let local = root.path().join(LOCAL_CONFIG_NAME);
+        let text = format!(
+            "{}  upstream:
+    connection: 'File=../old/ib'
+",
+            fs::read_to_string(&local).unwrap()
+        );
+        fs::write(&local, &text).unwrap();
+        let runner = SequenceRunner::new(Vec::new());
+        let refused = run(root.path(), &answered_in(root.path()), &runner);
+        assert_eq!(
+            refused.diagnostics[0]["code"], "invalid_state",
+            "{refused:?}"
+        );
+        assert!(refused.diagnostics[0]["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("this working copy already keeps another infobase as infobases.upstream"));
+        assert_eq!(runner.call_count(), 0);
+
+        let root = workspace_with_main("File=../other/ib");
+        let local = root.path().join(LOCAL_CONFIG_NAME);
+        let mut permissions = fs::metadata(&local).unwrap().permissions();
+        permissions.set_readonly(true);
+        fs::set_permissions(&local, permissions.clone()).unwrap();
+        let refused = run(root.path(), &answered_in(root.path()), &runner);
+        assert_eq!(
+            refused.diagnostics[0]["message"],
+            "v8project.local.yaml cannot be written: the file is read-only; declare infobases.origin with this working copy's own connection there, then create it with infobase.create"
+        );
+        assert_eq!(runner.call_count(), 0);
+        #[allow(clippy::permissions_set_readonly_false)]
+        permissions.set_readonly(false);
+        fs::set_permissions(&local, permissions).unwrap();
+    }
+
+    /// Отказ самого шага пересоздания — не «база есть»: вопрос не повторяется.
+    /// rule: INV.WIRE.INFOBASE-CREATE-RECREATES-BY-CHOICE
+    #[test]
+    fn a_refused_recreation_is_not_read_as_an_existing_infobase() {
+        let root = workspace_with_main("File=build/ib");
+        let mut refused = recreating(root.path(), "failed", false);
+        refused["ok"] = json!(false);
+        refused["error"] = json!({"code": "invalid_state", "kind": "validation",
+                                  "message": "a leftover of an interrupted recreation"});
+        let runner = SequenceRunner::new(vec![process(refused, false)]);
+        let mut answered = prepared(root.path(), false);
+        answered.call = recreate_choice(&call(false)).options[0].arguments.clone();
+        let result = run(root.path(), &answered, &runner);
+        assert!(!result.ok);
+        assert!(result.human_choice.is_none(), "{result:?}");
+        assert!(result.diagnostics[0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("leftover"));
+    }
+
     /// База в кластере создаётся пустой: ответ не обещает загрузку исходников.
-    /// rule: INV.WIRE.INFOBASE-CREATE-ONLY-CREATES-AN-ABSENT-ONE
+    /// rule: INV.WIRE.INFOBASE-CREATE-RECREATES-BY-CHOICE
     #[test]
     fn a_cluster_infobase_is_created_without_sources() {
         let root = workspace_with_main("Srvr=srv;Ref=demo");

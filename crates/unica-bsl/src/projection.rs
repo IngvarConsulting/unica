@@ -12,17 +12,15 @@ pub enum BranchKind {
     Region,
     Interface,
     Event,
-    Compilation,
     Body,
 }
 
 impl BranchKind {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 5] = [
         Self::Method,
         Self::Region,
         Self::Interface,
         Self::Event,
-        Self::Compilation,
         Self::Body,
     ];
 
@@ -32,7 +30,6 @@ impl BranchKind {
             Self::Region => "Region",
             Self::Interface => "Interface",
             Self::Event => "Event",
-            Self::Compilation => "Compilation",
             Self::Body => "Body",
         }
     }
@@ -213,6 +210,10 @@ pub struct MethodProjection {
     /// Первая строка текста `Method.<имя>.Body`: начало документирующего
     /// комментария непосредственно над методом, иначе `from_line`.
     pub text_from_line: usize,
+    /// One-based physical line of the procedure/function keyword.
+    pub declaration_line: usize,
+    /// One-based UTF-16 column of the AST name token, when recovered.
+    pub name_column: Option<usize>,
     pub body_from_line: usize,
     pub body_to_line: usize,
     /// Ближайшая нормативная область, охватывающая метод
@@ -269,7 +270,6 @@ impl Serialize for MethodProjection {
             doc: &'a Option<String>,
             method_kind: MethodKind,
             export: bool,
-            compile: &'a CompilationFacts,
             #[serde(skip_serializing_if = "Vec::is_empty")]
             handles: &'a Vec<HandleProjection>,
             #[serde(skip_serializing_if = "Option::is_none")]
@@ -288,7 +288,6 @@ impl Serialize for MethodProjection {
                 doc: &self.doc,
                 method_kind: self.method_kind,
                 export: self.export,
-                compile: &self.compile,
                 handles: &self.handles,
                 extension: &self.extension,
                 area: self.area,
@@ -296,20 +295,12 @@ impl Serialize for MethodProjection {
         )?;
         state.serialize_field(
             "branches",
-            &[
-                BranchSummary {
-                    kind: BranchKind::Compilation,
-                    at: format!("{}.Compilation", self.at),
-                    count: self.compilation_count,
-                    bytes: None,
-                },
-                BranchSummary {
-                    kind: BranchKind::Body,
-                    at: format!("{}.Body", self.at),
-                    count: self.text_line_count(),
-                    bytes: None,
-                },
-            ],
+            &[BranchSummary {
+                kind: BranchKind::Body,
+                at: format!("{}.Body", self.at),
+                count: self.text_line_count(),
+                bytes: None,
+            }],
         )?;
         state.end()
     }
@@ -349,10 +340,8 @@ impl InterfaceKind {
     }
 }
 
-/// Срез методов модуля по нормативным областям. У среза нет адреса:
-/// у `Interface` не бывает имени, и `…Interface.Public` грамматика адреса
-/// отвергает (CTR.SOURCE.QUALIFIED-LOGICAL-ADDRESS). Срез — элемент ветви
-/// `…Interface`, а его методы адресуются своими `…Method.<имя>` (#1467).
+/// Срез методов модуля по нормативным областям. Чтение публикует срез под
+/// `…Interface.<имя>` со ссылками на исходные `…Method.<имя>`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct InterfaceProjection {
     pub kind: &'static str,
@@ -489,7 +478,6 @@ impl ModuleProjectionSet {
             regions.len(),
             interfaces.len(),
             events.len(),
-            compilation.len(),
             body.len(),
         ];
         let base = identity.at.to_string();
@@ -693,6 +681,7 @@ mod tests {
     }
 
     /// rule: INV.SOURCE.MODULE-SUMMARY
+    /// rule: INV.SOURCE.MODULE-COMPILATION
     #[test]
     fn serialized_module_projection_shape_is_stable() {
         let projection = ModuleProjectionSet::new(
@@ -721,7 +710,6 @@ mod tests {
                     {"at": "main:Document.Пустой.Module.Object.Region", "count": 0},
                     {"at": "main:Document.Пустой.Module.Object.Interface", "count": 0},
                     {"at": "main:Document.Пустой.Module.Object.Event", "count": 1},
-                    {"at": "main:Document.Пустой.Module.Object.Compilation", "count": 0},
                     {"at": "main:Document.Пустой.Module.Object.Body", "count": 0}
                 ],
                 "rev": "rev-1"
@@ -769,7 +757,6 @@ mod tests {
                 (BranchKind::Region, 0),
                 (BranchKind::Interface, 0),
                 (BranchKind::Event, 1),
-                (BranchKind::Compilation, 0),
                 (BranchKind::Body, 0),
             ]
         );
@@ -831,6 +818,8 @@ mod tests {
             from_line: 5,
             to_line: 9,
             text_from_line: 4,
+            declaration_line: 6,
+            name_column: Some(11),
             body_from_line: 7,
             body_to_line: 8,
             area: None,
@@ -909,7 +898,6 @@ mod tests {
                     {"at": format!("{base}.Region"), "count": 1},
                     {"at": format!("{base}.Interface"), "count": 1},
                     {"at": format!("{base}.Event"), "count": 1},
-                    {"at": format!("{base}.Compilation"), "count": 1},
                     {"at": format!("{base}.Body"), "count": 2}
                 ],
                 "rev": "rev-1"
@@ -925,12 +913,6 @@ mod tests {
                     "doc": "Проверяет заказ.",
                     "methodKind": "procedure",
                     "export": true,
-                    "compile": {
-                        "directive": "&НаСервере",
-                        "guard": "Server",
-                        "contexts": ["server"],
-                        "conditionalBody": true
-                    },
                     "handles": [{
                         "owner": "platform",
                         "event": "BeforeWrite",
@@ -944,7 +926,6 @@ mod tests {
                     }
                 },
                 "branches": [
-                    {"at": format!("{base}.Method.Проверить.Compilation"), "count": 1},
                     {"at": format!("{base}.Method.Проверить.Body"), "count": 6}
                 ]
             })
@@ -1097,6 +1078,8 @@ mod tests {
             from_line: 1,
             to_line: 1,
             text_from_line: 1,
+            declaration_line: 1,
+            name_column: Some(11),
             body_from_line: 1,
             body_to_line: 0,
             area: None,
@@ -1104,7 +1087,7 @@ mod tests {
         let value = serde_json::to_value(method).unwrap();
         // Текст `Body` метода включает объявление и строку окончания, поэтому
         // у метода без тела ветвь не пуста.
-        assert_eq!(value["branches"][1]["count"], 1);
+        assert_eq!(value["branches"][0]["count"], 1);
         assert!(value.get("body").is_none());
         assert!(value.get("source").is_none());
     }

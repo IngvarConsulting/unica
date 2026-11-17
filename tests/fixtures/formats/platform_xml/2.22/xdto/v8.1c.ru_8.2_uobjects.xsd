@@ -1,0 +1,379 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:ns1="http://v8.1c.ru/8.1/data/core" xmlns:tns="http://v8.1c.ru/8.2/uobjects" xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="http://v8.1c.ru/8.2/uobjects" attributeFormDefault="unqualified" elementFormDefault="qualified">
+	<xs:import namespace="http://v8.1c.ru/8.1/data/core"/>
+	<xs:simpleType name="AccessMode">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="rw"/>
+			<xs:enumeration value="r"/>
+			<xs:enumeration value="none"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="CollectionIds">
+		<xs:list itemType="xs:long"/>
+	</xs:simpleType>
+	<xs:simpleType name="RemoteKey">
+		<xs:restriction base="xs:string"/>
+	</xs:simpleType>
+	<xs:simpleType name="StructureFields">
+		<xs:list itemType="xs:unsignedInt"/>
+	</xs:simpleType>
+	<xs:simpleType name="TypeList">
+		<xs:list itemType="ns1:UUID"/>
+	</xs:simpleType>
+	<xs:complexType name="BaseDescription"/>
+	<xs:complexType name="BaseStructure">
+		<xs:sequence>
+			<xs:element name="v" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+		<xs:attribute name="fields" type="tns:StructureFields"/>
+		<xs:attribute name="fixedFields" type="tns:StructureFields"/>
+	</xs:complexType>
+	<xs:complexType name="Changes">
+		<xs:choice>
+			<xs:element name="structure" type="tns:StructureChanges" minOccurs="0"/>
+			<xs:element name="collection" type="tns:CollectionChanges" minOccurs="0"/>
+			<xs:element name="structureAndCollection" type="tns:StructureAndCollectionChanges" minOccurs="0"/>
+			<xs:element name="tree" type="tns:TreeChanges" minOccurs="0"/>
+		</xs:choice>
+		<xs:attribute name="sinDesc" type="xs:unsignedInt"/>
+		<xs:attribute name="sin" type="xs:unsignedInt"/>
+		<xs:attribute name="seq" type="xs:unsignedInt"/>
+	</xs:complexType>
+	<xs:complexType name="Collection">
+		<xs:sequence>
+			<xs:element name="column" type="tns:CollectionColumn" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="item" type="tns:CollectionItem" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+		<xs:attribute name="count" type="xs:unsignedInt" use="required"/>
+		<xs:attribute name="lastId" type="xs:long" use="required"/>
+		<xs:attribute name="ids" type="tns:CollectionIds"/>
+		<xs:attribute name="fullChanged" type="xs:boolean"/>
+		<xs:attribute name="firstAddedLine" type="xs:integer"/>
+	</xs:complexType>
+	<xs:complexType name="CollectionChanges">
+		<xs:sequence>
+			<xs:element name="operations" type="tns:CollectionOperations" minOccurs="0"/>
+			<xs:element name="items" type="tns:CollectionItemChangesList" minOccurs="0"/>
+			<xs:element name="column" type="tns:CollectionColumn" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+		<xs:attribute name="count" type="xs:unsignedInt" use="required"/>
+		<xs:attribute name="lastId" type="xs:long" use="required"/>
+		<xs:attribute name="fullChanged" type="xs:boolean"/>
+		<xs:attribute name="firstAddedLine" type="xs:integer"/>
+		<xs:attribute name="dropOld" type="xs:boolean" default="false"/>
+	</xs:complexType>
+	<xs:complexType name="CollectionColumn">
+		<xs:attribute name="id" type="ns1:CompositeID" use="required"/>
+		<xs:attribute name="total" type="xs:decimal" use="required"/>
+	</xs:complexType>
+	<xs:complexType name="CollectionFragment">
+		<xs:choice>
+			<xs:element name="item" type="tns:CollectionFragmentItem" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:choice>
+	</xs:complexType>
+	<xs:complexType name="CollectionFragmentItem">
+		<xs:complexContent>
+			<xs:extension base="tns:BaseStructure">
+				<xs:attribute name="id" type="xs:long" use="required"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="CollectionItem">
+		<xs:complexContent>
+			<xs:extension base="tns:BaseStructure">
+				<xs:attribute name="index" type="xs:unsignedInt" use="required"/>
+				<xs:attribute name="id" type="xs:long" use="required"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="CollectionItemChanges">
+		<xs:sequence>
+			<xs:element name="structure" type="tns:StructureChanges" minOccurs="0"/>
+		</xs:sequence>
+		<xs:attribute name="index" type="xs:unsignedInt" use="required"/>
+		<xs:attribute name="id" type="xs:long" use="required"/>
+	</xs:complexType>
+	<xs:complexType name="CollectionItemChangesList">
+		<xs:choice>
+			<xs:element name="item" type="tns:CollectionItemChanges" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:choice>
+	</xs:complexType>
+	<xs:complexType name="CollectionOperationAdd">
+		<xs:attribute name="index" type="xs:unsignedInt" use="required"/>
+		<xs:attribute name="id" type="xs:long" use="required"/>
+	</xs:complexType>
+	<xs:complexType name="CollectionOperationAddRange">
+		<xs:attribute name="index1" type="xs:unsignedInt" use="required"/>
+		<xs:attribute name="index2" type="xs:unsignedInt" use="required"/>
+		<xs:attribute name="startId" type="xs:long" use="required"/>
+	</xs:complexType>
+	<xs:complexType name="CollectionOperationClear"/>
+	<xs:complexType name="CollectionOperationMove">
+		<xs:attribute name="index" type="xs:unsignedInt" use="required"/>
+		<xs:attribute name="delta" type="xs:integer" use="required"/>
+	</xs:complexType>
+	<xs:complexType name="CollectionOperationRemove">
+		<xs:attribute name="index" type="xs:unsignedInt" use="required"/>
+	</xs:complexType>
+	<xs:complexType name="CollectionOperationRemoveRange">
+		<xs:attribute name="index1" type="xs:unsignedInt" use="required"/>
+		<xs:attribute name="index2" type="xs:unsignedInt" use="required"/>
+	</xs:complexType>
+	<xs:complexType name="CollectionOperationSwap">
+		<xs:attribute name="index1" type="xs:unsignedInt" use="required"/>
+		<xs:attribute name="index2" type="xs:unsignedInt" use="required"/>
+	</xs:complexType>
+	<xs:complexType name="CollectionOperations">
+		<xs:choice>
+			<xs:element name="add" type="tns:CollectionOperationAdd" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="addRange" type="tns:CollectionOperationAddRange" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="remove" type="tns:CollectionOperationRemove" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="removeRange" type="tns:CollectionOperationRemoveRange" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="swap" type="tns:CollectionOperationSwap" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="move" type="tns:CollectionOperationMove" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="clear" type="tns:CollectionOperationClear" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:choice>
+	</xs:complexType>
+	<xs:complexType name="FormDataCollection">
+		<xs:sequence>
+			<xs:element name="descriptions" type="tns:FormDataDescriptions"/>
+			<xs:element name="type" type="xs:string"/>
+			<xs:element name="data" type="tns:Collection"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="FormDataCollectionDescription">
+		<xs:complexContent>
+			<xs:extension base="tns:BaseDescription">
+				<xs:attribute name="name" type="xs:string" use="required"/>
+				<xs:attribute name="maxCount" type="xs:decimal" default="0"/>
+				<xs:attribute name="fixed" type="xs:boolean" default="false"/>
+				<xs:attribute name="itemType" type="xs:string" use="required"/>
+				<xs:attribute name="lineNoFieldId" type="ns1:CompositeID"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="FormDataDescriptionChanges">
+		<xs:choice>
+			<xs:element name="added" type="tns:FormDataDescriptions" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="removed" type="xs:string" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="changed" type="tns:FormDataStructureChanges" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:choice>
+		<xs:attribute name="sin" type="xs:decimal" use="required"/>
+		<xs:attribute name="seq" type="xs:decimal" use="required"/>
+		<xs:attribute name="sinUo" type="xs:decimal" use="required"/>
+		<xs:attribute name="seqUo" type="xs:decimal" use="required"/>
+	</xs:complexType>
+	<xs:complexType name="FormDataDescriptions">
+		<xs:choice>
+			<xs:element name="structure" type="tns:FormDataStructureDescription" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="collection" type="tns:FormDataCollectionDescription" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="structureAndCollection" type="tns:FormDataStructureAndCollectionDescription" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="tree" type="tns:FormDataTreeDescription" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:choice>
+		<xs:attribute name="remoteKey" type="tns:RemoteKey" use="required"/>
+		<xs:attribute name="trackChanges" type="xs:boolean" use="required"/>
+		<xs:attribute name="sinDe" type="xs:unsignedInt" use="required"/>
+		<xs:attribute name="seqDe" type="xs:unsignedInt" use="required"/>
+		<xs:attribute name="sinUo" type="xs:unsignedInt" use="required"/>
+		<xs:attribute name="seqUo" type="xs:unsignedInt" use="required"/>
+	</xs:complexType>
+	<xs:complexType name="FormDataFieldDescription">
+		<xs:sequence>
+			<xs:element name="type" type="tns:FormDataTypeDescription"/>
+		</xs:sequence>
+		<xs:attribute name="id" type="ns1:CompositeID" use="required"/>
+		<xs:attribute name="name" type="xs:string" use="required"/>
+		<xs:attribute name="nameRu" type="xs:string" default=""/>
+		<xs:attribute name="mode" type="tns:AccessMode" default="rw"/>
+		<xs:attribute name="imode" type="tns:AccessMode" default="rw"/>
+		<xs:attribute name="fromCntx" type="xs:boolean" default="false"/>
+	</xs:complexType>
+	<xs:complexType name="FormDataStructure">
+		<xs:sequence>
+			<xs:element name="descriptions" type="tns:FormDataDescriptions"/>
+			<xs:element name="type" type="xs:string"/>
+			<xs:element name="data" type="tns:Structure"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="FormDataStructureAndCollection">
+		<xs:sequence>
+			<xs:element name="descriptions" type="tns:FormDataDescriptions"/>
+			<xs:element name="type" type="xs:string"/>
+			<xs:element name="data" type="tns:StructureAndCollection"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="FormDataStructureAndCollectionDescription">
+		<xs:complexContent>
+			<xs:extension base="tns:BaseDescription">
+				<xs:sequence>
+					<xs:element name="structure" type="tns:FormDataStructureDescription"/>
+					<xs:element name="collection" type="tns:FormDataCollectionDescription"/>
+				</xs:sequence>
+				<xs:attribute name="name" type="xs:string" use="required"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="FormDataStructureChanges">
+		<xs:choice>
+			<xs:element name="added" type="tns:FormDataFieldDescription" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="removed" type="ns1:CompositeID" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="changed" type="tns:FormDataFieldDescription" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:choice>
+		<xs:attribute name="name" type="xs:string" use="required"/>
+	</xs:complexType>
+	<xs:complexType name="FormDataStructureDescription">
+		<xs:complexContent>
+			<xs:extension base="tns:BaseDescription">
+				<xs:sequence>
+					<xs:element name="field" type="tns:FormDataFieldDescription" minOccurs="0" maxOccurs="unbounded"/>
+				</xs:sequence>
+				<xs:attribute name="name" type="xs:string" use="required"/>
+				<xs:attribute name="value" type="xs:boolean" default="false"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="FormDataTree">
+		<xs:sequence>
+			<xs:element name="descriptions" type="tns:FormDataDescriptions"/>
+			<xs:element name="type" type="xs:string"/>
+			<xs:element name="data" type="tns:Tree"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="FormDataTreeDescription">
+		<xs:complexContent>
+			<xs:extension base="tns:BaseDescription">
+				<xs:attribute name="name" type="xs:string" use="required"/>
+				<xs:attribute name="itemType" type="xs:string" use="required"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="FormDataTypeDescription">
+		<xs:simpleContent>
+			<xs:extension base="tns:TypeList">
+				<xs:attribute name="object" type="xs:boolean" default="false"/>
+				<xs:attribute name="digits" type="xs:decimal" default="10"/>
+				<xs:attribute name="precision" type="xs:decimal" default="0"/>
+				<xs:attribute name="unsigned" type="xs:boolean" default="false"/>
+				<xs:attribute name="length" type="xs:decimal" default="10"/>
+				<xs:attribute name="fixed" type="xs:boolean" default="false"/>
+				<xs:attribute name="dateFraction" type="ns1:DateFractions" default="DateTime"/>
+				<xs:attribute name="binaryLength" type="xs:decimal" default="0"/>
+				<xs:attribute name="binaryFixed" type="xs:boolean" default="false"/>
+				<xs:attribute name="name" type="xs:string"/>
+			</xs:extension>
+		</xs:simpleContent>
+	</xs:complexType>
+	<xs:complexType name="Fragment">
+		<xs:choice>
+			<xs:element name="collection" type="tns:CollectionFragment" minOccurs="0"/>
+		</xs:choice>
+	</xs:complexType>
+	<xs:complexType name="Structure">
+		<xs:complexContent>
+			<xs:extension base="tns:BaseStructure"/>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="StructureAndCollection">
+		<xs:sequence>
+			<xs:element name="structure" type="tns:BaseStructure"/>
+			<xs:element name="collection" type="tns:Collection"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="StructureAndCollectionChanges">
+		<xs:sequence>
+			<xs:element name="structure" type="tns:StructureChanges" minOccurs="0"/>
+			<xs:element name="collection" type="tns:CollectionChanges" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="StructureChanges">
+		<xs:choice>
+			<xs:element name="v" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:choice>
+		<xs:attribute name="fields" type="tns:StructureFields"/>
+		<xs:attribute name="fixedFields" type="tns:StructureFields"/>
+	</xs:complexType>
+	<xs:complexType name="Tree">
+		<xs:choice>
+			<xs:element name="item" type="tns:TreeItem" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:choice>
+	</xs:complexType>
+	<xs:complexType name="TreeChanges">
+		<xs:sequence>
+			<xs:element name="operations" type="tns:TreeOperations" minOccurs="0"/>
+			<xs:element name="items" type="tns:TreeItemChangesList" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="TreeItem">
+		<xs:complexContent>
+			<xs:extension base="tns:BaseStructure">
+				<xs:choice>
+					<xs:element name="item" type="tns:TreeItem" minOccurs="0" maxOccurs="unbounded"/>
+				</xs:choice>
+				<xs:attribute name="id" type="xs:long" use="required"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="TreeItemChanges">
+		<xs:sequence>
+			<xs:element name="structure" type="tns:StructureChanges" minOccurs="0"/>
+		</xs:sequence>
+		<xs:attribute name="id" type="xs:long" use="required"/>
+	</xs:complexType>
+	<xs:complexType name="TreeItemChangesList">
+		<xs:choice>
+			<xs:element name="item" type="tns:TreeItemChanges" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:choice>
+	</xs:complexType>
+	<xs:complexType name="TreeOperationAdd">
+		<xs:attribute name="parentId" type="xs:long"/>
+		<xs:attribute name="index" type="xs:unsignedInt" use="required"/>
+		<xs:attribute name="id" type="xs:long" use="required"/>
+	</xs:complexType>
+	<xs:complexType name="TreeOperationAddRange">
+		<xs:attribute name="parentId" type="xs:long"/>
+		<xs:attribute name="index1" type="xs:unsignedInt" use="required"/>
+		<xs:attribute name="index2" type="xs:unsignedInt" use="required"/>
+		<xs:attribute name="startId" type="xs:long" use="required"/>
+	</xs:complexType>
+	<xs:complexType name="TreeOperationClear">
+		<xs:attribute name="parentId" type="xs:long"/>
+	</xs:complexType>
+	<xs:complexType name="TreeOperationMove">
+		<xs:attribute name="parentId" type="xs:long"/>
+		<xs:attribute name="index" type="xs:unsignedInt" use="required"/>
+		<xs:attribute name="delta" type="xs:integer" use="required"/>
+	</xs:complexType>
+	<xs:complexType name="TreeOperationRemove">
+		<xs:attribute name="parentId" type="xs:long"/>
+		<xs:attribute name="index" type="xs:unsignedInt" use="required"/>
+	</xs:complexType>
+	<xs:complexType name="TreeOperationRemoveRange">
+		<xs:attribute name="parentId" type="xs:long"/>
+		<xs:attribute name="index1" type="xs:unsignedInt" use="required"/>
+		<xs:attribute name="index2" type="xs:unsignedInt" use="required"/>
+	</xs:complexType>
+	<xs:complexType name="TreeOperationSwap">
+		<xs:attribute name="parentId" type="xs:long"/>
+		<xs:attribute name="index1" type="xs:unsignedInt" use="required"/>
+		<xs:attribute name="index2" type="xs:unsignedInt" use="required"/>
+	</xs:complexType>
+	<xs:complexType name="TreeOperations">
+		<xs:choice>
+			<xs:element name="add" type="tns:TreeOperationAdd" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="addRange" type="tns:TreeOperationAddRange" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="remove" type="tns:TreeOperationRemove" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="removeRange" type="tns:TreeOperationRemoveRange" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="swap" type="tns:TreeOperationSwap" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="move" type="tns:TreeOperationMove" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="clear" type="tns:TreeOperationClear" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:choice>
+	</xs:complexType>
+	<xs:complexType name="UObject">
+		<xs:sequence>
+			<xs:element name="descriptions" type="tns:FormDataDescriptions" minOccurs="0"/>
+			<xs:element name="name" type="xs:string" minOccurs="0"/>
+			<xs:element name="data"/>
+		</xs:sequence>
+		<xs:attribute name="mode" type="xs:string" use="required"/>
+	</xs:complexType>
+</xs:schema>

@@ -1,4 +1,5 @@
 //! Embedded-help facet images and planned reads; publication remains outside the codec.
+use crate::dialect::root_version;
 use roxmltree::Document;
 
 pub fn help_metadata_xml(lang: &str, format_version: &str) -> String {
@@ -41,11 +42,11 @@ pub fn validate_help_form_owner_8_3_27(path: &Path, text: &str) -> Result<(), St
             path.display()
         ));
     }
-    if root.attribute("version") != Some(ACTIVE_FORMAT_PROFILE.export_format) {
+    if !root_version::is_writable(root.attribute("version")) {
         return Err(format!(
             "help.add form owner {} must use export format {}",
             path.display(),
-            ACTIVE_FORMAT_PROFILE.export_format
+            root_version::writable_formats()
         ));
     }
 
@@ -107,22 +108,11 @@ pub fn validate_help_form_owner_8_3_27(path: &Path, text: &str) -> Result<(), St
     Ok(())
 }
 
+/// The form descriptor `text` with `IncludeHelpInContents` the platform
+/// writes when it is absent; `None` when it is present. `props.set` inserts
+/// it with the same writer, so both produce the same bytes.
 pub fn form_with_include_help(text: &str) -> Option<String> {
-    if text.contains("<IncludeHelpInContents>") {
-        return None;
-    }
-    let insert_at = text
-        .find("</FormType>")
-        .map(|index| index + "</FormType>".len())?;
-    let mut updated = text.to_string();
-    updated.insert_str(
-        insert_at,
-        "\n\t\t\t<IncludeHelpInContents>false</IncludeHelpInContents>",
-    );
-    if !updated.ends_with('\n') {
-        updated.push('\n');
-    }
-    Some(updated)
+    crate::form_descriptor::with_include_help(text)
 }
 
 use crate::resource_plan::{TypedChildFileMutation, TypedChildResourcePlan};
@@ -137,11 +127,10 @@ use unica_metadata::{
     MetaPublicationPlanEntry, MetaPublicationResource,
 };
 use unica_source_contract::discovery::ProjectDiscoveryRead;
-use unica_source_designer::read::{path_exists, path_is_dir, read_utf8_sig_snapshot};
+use unica_source_designer::read::{path_exists, path_is_dir, read_string, read_utf8_sig_snapshot};
 
 use std::path::Path;
 use unica_address::source_target::MetadataAddress;
-use unica_source_designer::format_profile::ACTIVE_FORMAT_PROFILE;
 
 fn failure(
     owner: &MetadataAddress,
@@ -197,7 +186,14 @@ pub fn plan_help_resource_after_descriptor_edit<G>(
             ));
         }
     }
-    let format_version = ACTIVE_FORMAT_PROFILE.export_format.to_string();
+    let owner_xml = read_string(reader, descriptor_path).map_err(|error| {
+        failure(
+            owner,
+            MetaDiagnosticCode::TargetNotFound,
+            format!("owner descriptor is unreadable: {error}"),
+        )
+    })?;
+    let format_version = root_version::of_set(&owner_xml);
     let help_xml = help_metadata_xml(lang, &format_version);
     validate_help_xml(&help_xml_path, &help_xml)
         .map_err(|message| failure(owner, MetaDiagnosticCode::ValidationFailed, message))?;

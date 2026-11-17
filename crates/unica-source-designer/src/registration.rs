@@ -1,5 +1,5 @@
 //! Exact Designer child registration and byte-preserving proposal edits.
-use crate::layout::metadata_kind_index;
+use crate::layout::{metadata_kind_index, root_child_objects_order};
 use roxmltree::Document;
 use std::path::PathBuf;
 use unica_address::source_target::MetadataAddress;
@@ -145,8 +145,9 @@ pub fn cf_edit_add_child_object_text(
     type_name: &str,
     object_name: &str,
 ) -> Result<bool, String> {
+    metadata_kind_index(type_name).ok_or_else(|| format!("Unknown type '{type_name}'"))?;
     let new_type_index =
-        metadata_kind_index(type_name).ok_or_else(|| format!("Unknown type '{type_name}'"))?;
+        root_child_objects_order(type_name).ok_or_else(|| format!("Unknown type '{type_name}'"))?;
     let ((child_start, child_end, body_range), entries) = cf_edit_root_child_objects(text)?;
     let line_ending = cf_edit_line_ending(text);
     if entries
@@ -156,12 +157,14 @@ pub fn cf_edit_add_child_object_text(
         return Ok(false);
     }
 
+    // A kind without a place in the platform order does not decide where the
+    // new entry goes.
     let target = entries.iter().find(|entry| {
-        let entry_type_index =
-            cf_validate_child_object_type_index(&entry.type_name).unwrap_or(usize::MAX);
-        entry_type_index > new_type_index
-            || (entry_type_index == new_type_index
-                && cf_edit_child_name_cmp(object_name, &entry.object_name).is_lt())
+        root_child_objects_order(&entry.type_name).is_some_and(|entry_type_index| {
+            entry_type_index > new_type_index
+                || (entry_type_index == new_type_index
+                    && cf_edit_child_name_cmp(object_name, &entry.object_name).is_lt())
+        })
     });
 
     if let Some(target) = target {
@@ -364,6 +367,9 @@ pub fn platform_child_object_order(owner_kind: &str) -> Option<&'static [&'stati
             "Template",
             "Command",
         ],
+        // Очередь пишет измерения перед реквизитами: выгрузка 8.5.4
+        // собирает их в этом порядке даже из источника с обратным.
+        "Queue" => &["Dimension", "Attribute"],
         "Enum" => &["EnumValue", "Form", "Template", "Command"],
         "DocumentJournal" => &["Column", "Form", "Template", "Command"],
         _ => return None,
@@ -504,12 +510,22 @@ pub fn preserve_descriptor_image(preimage: &[u8], source: &str, updated: &str) -
 /// them. A batch that edited files first must run the removal in its own
 /// apply call; refusing here keeps a stale scan from committing dangling
 /// references or leaving staged payload behind.
+///
+/// The vendor-support marker is the one exception: it is neither payload of
+/// a metadata object nor a carrier of references, and a removal never reads
+/// or changes it. A support change a person chose before the removal stages
+/// only that marker (INV.SOURCE.SUPPORT-SEPARATE-APPLY).
 pub fn require_untouched_staged_state(
     staged: &ApplyProposal<'_>,
     operation: &str,
     at_path: &str,
 ) -> Result<(), ApplyPlanError> {
-    if staged.planned_changes().is_empty() {
+    let support_marker = std::path::Path::new("Ext/ParentConfigurations.bin");
+    if staged
+        .planned_changes()
+        .iter()
+        .all(|change| change.relative_path == support_marker)
+    {
         return Ok(());
     }
     Err(ApplyPlanError::new(

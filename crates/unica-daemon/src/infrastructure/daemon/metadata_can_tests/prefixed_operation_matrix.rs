@@ -116,7 +116,7 @@ fn medium_every_metadata_write_keeps_the_owner_prefix() {
         (
             "attribute.set",
             json!({"at":"main:Catalog.A.Attribute.Text","ops":[
-                {"op":"attribute.set","args":{"values":{"synonym":"Подпись","comment":"Note","newName":"Label"}}}
+                {"op":"attribute.set","args":{"values":{"synonym":"ru = 'Подпись'","comment":"Note","newName":"Label"}}}
             ]}),
         ),
         (
@@ -126,7 +126,7 @@ fn medium_every_metadata_write_keeps_the_owner_prefix() {
         (
             "tabularSection.set",
             json!({"at":"main:Catalog.A.TabularSection.Goods","ops":[
-                {"op":"tabularSection.set","args":{"values":{"synonym":"Товары","comment":"Rows"}}}
+                {"op":"tabularSection.set","args":{"values":{"synonym":"ru = 'Товары'","comment":"Rows"}}}
             ]}),
         ),
         (
@@ -218,7 +218,7 @@ fn medium_every_metadata_write_keeps_the_owner_prefix() {
         (
             "enumValue.add",
             json!({"at":"main:Enum.E","ops":[{"op":"enumValue.add","args":{"items":[
-                {"name":"Red","synonym":"Красный","comment":"Value"}
+                {"name":"Red","synonym":"ru = 'Красный'","comment":"Value"}
             ]}}]}),
         ),
         (

@@ -651,6 +651,15 @@ fn project_mxl(
     )))
 }
 
+pub(super) fn localized_display_text(value: &str) -> Option<String> {
+    let items = unica_metadata::parse_nstr(value).ok()?;
+    items
+        .iter()
+        .find(|item| item.language == "ru" && !item.content.is_empty())
+        .or_else(|| items.iter().find(|item| !item.content.is_empty()))
+        .map(|item| item.content.clone())
+}
+
 fn project_configuration(
     address: &QualifiedAddress,
     payload: &Value,
@@ -690,13 +699,29 @@ pub(super) fn project_configuration_with_counts(
         &[
             "format",
             "name",
-            "synonym",
             "version",
             "vendor",
             "extensionPurpose",
             "totalObjects",
         ],
     );
+    let mut limits = payload
+        .get("propertyLimits")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    for (_, key) in unica_metadata::descriptor_operations::CONFIGURATION_LOCALIZED_PROPERTIES {
+        if let Some(value) = payload
+            .get(*key)
+            .or_else(|| payload.pointer(&format!("/properties/{key}")))
+            .filter(|value| value.is_string())
+        {
+            place_prop(&mut props, &mut limits, address, key, value, false, key);
+        }
+    }
     // `interface` идёт рядом с `homePage` не по сходству имён: оба живут
     // отдельным документом рядом с `Configuration.xml` и оба описывают корень
     // целиком. Командного интерфейса как узла у конфигурации нет — внутри
@@ -722,7 +747,15 @@ pub(super) fn project_configuration_with_counts(
         match payload.get(key) {
             Some(Value::Object(object)) => {
                 // Typed, bounded structures of the root parser travel whole.
-                props.insert(key.to_string(), Value::Object(object.clone()));
+                let mut object = object.clone();
+                if key == "properties" {
+                    for (_, key) in
+                        unica_metadata::descriptor_operations::CONFIGURATION_LOCALIZED_PROPERTIES
+                    {
+                        object.remove(*key);
+                    }
+                }
+                props.insert(key.to_string(), Value::Object(object));
             }
             Some(Value::Null) => {
                 props.insert(key.to_string(), Value::Null);
@@ -730,7 +763,23 @@ pub(super) fn project_configuration_with_counts(
             _ => {}
         }
     }
-    let branches = root_branches(address, counts);
+    if let Some(roles) = props
+        .get_mut("properties")
+        .and_then(|properties| properties.get_mut("defaultRoles"))
+        .and_then(Value::as_array_mut)
+    {
+        for role in roles {
+            if let Some(reference) = role.as_str() {
+                *role = Value::String(format!("{}:{reference}", address.source_set()));
+            }
+        }
+    }
+    // Вид, которого нет в линии платформы набора, пустой ветви не получает.
+    let line = payload
+        .get("format")
+        .and_then(Value::as_str)
+        .and_then(unica_source_contract::format_identity::export_format_line);
+    let branches = root_branches(address, counts, line);
     Ok(NodeViewData::Node(
         NodeView::new(
             address.to_string(),
@@ -738,11 +787,18 @@ pub(super) fn project_configuration_with_counts(
             payload
                 .get("synonym")
                 .and_then(Value::as_str)
-                .or_else(|| payload.get("name").and_then(Value::as_str))
-                .unwrap_or("Configuration"),
+                .and_then(localized_display_text)
+                .or_else(|| {
+                    payload
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                })
+                .unwrap_or_else(|| "Configuration".to_string()),
             props,
         )
-        .with_branches(branches),
+        .with_branches(branches)
+        .with_limits(limits),
     ))
 }
 
@@ -768,6 +824,9 @@ const CONFIGURATOR_ROOT_ORDER: &[NodeKind] = &[
     NodeKind::FilterCriterion,
     NodeKind::EventSubscription,
     NodeKind::ScheduledJob,
+    // Очереди: дерево Конфигуратора 8.5.4, между регламентными
+    // заданиями и ботами.
+    NodeKind::Queue,
     NodeKind::Bot,
     NodeKind::FunctionalOption,
     NodeKind::FunctionalOptionsParameter,
@@ -784,6 +843,9 @@ const CONFIGURATOR_ROOT_ORDER: &[NodeKind] = &[
     NodeKind::WsReference,
     NodeKind::WebSocketClient,
     NodeKind::IntegrationService,
+    // Цвета палитры: дерево Конфигуратора 8.5.4, между сервисами интеграции
+    // и элементами стиля.
+    NodeKind::PaletteColor,
     NodeKind::StyleItem,
     NodeKind::Style,
     NodeKind::Language,
@@ -811,9 +873,12 @@ const CONFIGURATOR_ROOT_ORDER: &[NodeKind] = &[
 /// в корне, в порядке дерева Конфигуратора, в том числе пустой (`count: 0`),
 /// чтобы «пусто» отличалось от «вид не поддержан» (#2153). Вид вне этого
 /// порядка идёт следом; зарегистрированный вне профиля сохраняет ветвь.
+/// Вид, который добавляет более поздняя линия, чем `line` набора, пустым
+/// не выдаётся.
 fn root_branches(
     address: &QualifiedAddress,
     mut counts: std::collections::BTreeMap<String, usize>,
+    line: Option<unica_source_contract::format_identity::PlatformLine>,
 ) -> Vec<BranchRef> {
     let source_set = address.source_set();
     // Корень внешней обработки или отчёта — опись своих владельцев: видов
@@ -835,14 +900,15 @@ fn root_branches(
         let kind = kind.as_str();
         let count = counts.remove(kind).unwrap_or(0);
         let at = format!("{source_set}:{kind}");
-        let admitted = QualifiedAddress::parse(&at).is_ok_and(|branch| {
-            is_root_branch_kind(&branch)
-                && crate::infrastructure::logical_tree::route_logical_address(
-                    &branch,
-                    unica_bsl::profile::PlatformProfile::v8_3_27(),
-                )
-                .is_ok()
-        });
+        let admitted = unica_source_contract::format_identity::metadata_kind_exists(line, kind)
+            && QualifiedAddress::parse(&at).is_ok_and(|branch| {
+                is_root_branch_kind(&branch)
+                    && crate::infrastructure::logical_tree::route_logical_address(
+                        &branch,
+                        unica_bsl::profile::PlatformProfile::for_line_or_base(line),
+                    )
+                    .is_ok()
+            });
         if count > 0 || admitted {
             branches.push(BranchRef::new(at, count));
         }
@@ -909,8 +975,9 @@ pub(super) fn project_registered_metadata_branch_names(
     )
 }
 
-/// Член коллекции несёт `props.support` только в состоянии, отличном от «не на
-/// поддержке»: замок в дереве виден без чтения каждого объекта (#2158).
+/// Член коллекции несёт `support` только в состоянии, отличном от «не на
+/// поддержке»: замок в дереве виден без чтения каждого объекта (#2158, #2877).
+/// Это состояние по правилу поставщика, без учёта политики проекта.
 fn project_registered_metadata_branch_names_inner<'a>(
     address: &QualifiedAddress,
     kind: NodeKind,
@@ -919,18 +986,17 @@ fn project_registered_metadata_branch_names_inner<'a>(
 ) -> Result<NodeViewData, ViewError> {
     let items = names
         .map(|name| {
-            let props = support
-                .states
-                .remove(name)
-                .map(|state| Map::from_iter([("support".to_string(), state)]))
-                .unwrap_or_default();
-            serde_json::to_value(NodeView::new(
+            let mut item = serde_json::to_value(NodeView::new(
                 member_address(address, name),
                 kind.as_str(),
                 name,
-                props,
+                Map::new(),
             ))
-            .expect("NodeView always serializes")
+            .expect("NodeView always serializes");
+            if let Some(state) = support.states.remove(name) {
+                item["support"] = state;
+            }
+            item
         })
         .collect();
     Ok(NodeViewData::Collection(CollectionView::new(
@@ -954,9 +1020,12 @@ fn validate_reader_payload(reader: LogicalReader, payload: &Value) -> Result<(),
     })?;
     let allowed: &[&str] = match reader {
         LogicalReader::Configuration => &[
+            "propertyLimits",
             "format",
             "name",
             "synonym",
+            "caption",
+            "shortCaption",
             "version",
             "vendor",
             "extensionPurpose",
@@ -974,6 +1043,9 @@ fn validate_reader_payload(reader: LogicalReader, payload: &Value) -> Result<(),
         LogicalReader::Role => &[
             "name",
             "synonym",
+            "synonymError",
+            "comment",
+            "commentError",
             "support",
             "defaults",
             "allowed",
@@ -987,6 +1059,7 @@ fn validate_reader_payload(reader: LogicalReader, payload: &Value) -> Result<(),
             "name",
             "synonym",
             "comment",
+            "includeHelpInContents",
             "explanation",
             "picture",
             "includeInCommandInterface",
@@ -1022,6 +1095,8 @@ fn validate_reader_payload(reader: LogicalReader, payload: &Value) -> Result<(),
             "drawingCount",
         ],
         LogicalReader::Xdto => &[
+            "Synonym",
+            "synonymError",
             "Comment",
             "commentError",
             "sourceSet",
@@ -1634,6 +1709,20 @@ fn project_xdto(
             payload,
         );
         let mut limits = Vec::new();
+        if let Some(synonym) = payload.get("Synonym") {
+            place_prop(
+                &mut props,
+                &mut limits,
+                address,
+                "Synonym",
+                synonym,
+                false,
+                "metadata synonym",
+            );
+        }
+        if let Some(message) = payload.get("synonymError").and_then(Value::as_str) {
+            limits.push(format!("Synonym: {message}"));
+        }
         if let Some(comment) = payload.get("Comment") {
             place_prop(
                 &mut props,
@@ -1915,6 +2004,7 @@ fn bounded_prop(key: &str, value: &Value) -> Option<Value> {
 
 /// Наблюдённое свойство описания без обёртки `{"kind": …}` (#2031): текст,
 /// флаг и число приходят простым значением, пустое значение не публикуется.
+#[cfg(test)]
 fn bounded_observed_prop(key: &str, value: &Value) -> Option<Value> {
     bounded_prop(key, &observed_value(value)?)
 }
@@ -1931,7 +2021,13 @@ pub(super) fn place_prop(
     subject: &str,
 ) {
     let placed = if observed {
-        bounded_observed_prop(key, value)
+        let Some(value) = observed_value(value) else {
+            if !observed_absent(value) {
+                limits.push(format!("{subject} has an invalid observed value"));
+            }
+            return;
+        };
+        bounded_prop(key, &value)
     } else {
         bounded_prop(key, value)
     };
@@ -1939,10 +2035,7 @@ pub(super) fn place_prop(
         Some(value) => {
             props.insert(key.to_string(), value);
         }
-        None if !observed || observed_value(value).is_some() => {
-            limits.push(compact_limit(subject, owner, key));
-        }
-        None => {}
+        None => limits.push(compact_limit(subject, owner, key)),
     }
 }
 
@@ -2073,10 +2166,29 @@ fn prop_limit(key: &str) -> usize {
     }
 }
 
-/// Значение наблюдения без обёртки `{"kind": …}`. `None` — значения нет:
-/// `nil`, `empty` и многоязычная строка без переводов. Переводы
-/// многоязычной строки остаются массивом `{language, content}` в порядке
-/// источника; прочие составные значения не меняются.
+/// Значения нет: `nil`, `empty` и многоязычная строка без переводов.
+fn observed_absent(value: &Value) -> bool {
+    let Some(object) = value.as_object() else {
+        return false;
+    };
+    match object.get("kind").and_then(Value::as_str) {
+        Some("nil" | "empty") => object.len() == 1,
+        Some("localizedString") => {
+            object.len() == 2
+                && object
+                    .get("values")
+                    .and_then(Value::as_array)
+                    .is_some_and(Vec::is_empty)
+        }
+        _ => false,
+    }
+}
+
+/// Значение наблюдения без обёртки `{"kind": …}`. `None` — значения нет
+/// ([`observed_absent`]) или его нельзя опубликовать: многоязычная строка
+/// публикуется строкой НСтр в порядке источника, а переводы, которых НСтр
+/// не выражает, ответ называет в `limits`. Прочие составные значения не
+/// меняются.
 fn observed_value(value: &Value) -> Option<Value> {
     let Some(object) = value.as_object() else {
         return Some(value.clone());
@@ -2087,10 +2199,25 @@ fn observed_value(value: &Value) -> Option<Value> {
         Some("text" | "boolean" | "unsignedInteger") if only("value") => {
             object.get("value").cloned()
         }
-        Some("localizedString") if only("values") => object
-            .get("values")
-            .filter(|values| values.as_array().is_some_and(|values| !values.is_empty()))
-            .cloned(),
+        // A multilingual value is one NStr string with every language
+        // (INV.SOURCE.LOCALIZED-STRING-NSTR); without translations it is absent.
+        Some("localizedString") if only("values") => {
+            let items = object
+                .get("values")
+                .and_then(Value::as_array)?
+                .iter()
+                .map(|item| {
+                    Some(unica_metadata::LocalizedItem {
+                        language: item.get("language")?.as_str()?.to_string(),
+                        content: item.get("content")?.as_str()?.to_string(),
+                    })
+                })
+                .collect::<Option<Vec<_>>>()?;
+            if items.is_empty() {
+                return None;
+            }
+            unica_metadata::format_nstr(&items).map(Value::String)
+        }
         _ => Some(value.clone()),
     }
 }
@@ -2100,6 +2227,7 @@ fn observed_value(value: &Value) -> Option<Value> {
 const SUBSYSTEM_PLATFORM_PROPS: &[(&str, &str)] = &[
     ("synonym", "Synonym"),
     ("comment", "Comment"),
+    ("includeHelpInContents", "IncludeHelpInContents"),
     ("explanation", "Explanation"),
     ("picture", "Picture"),
     ("includeInCommandInterface", "IncludeInCommandInterface"),
@@ -2126,7 +2254,10 @@ fn platform_scalar_props(value: &Value, names: &[(&str, &str)]) -> Map<String, V
         .filter_map(|(source, name)| {
             value
                 .get(*source)
-                .filter(|value| safe_prop(name, value))
+                .filter(|value| {
+                    (!matches!(*name, "Synonym" | "Explanation") || value.is_string())
+                        && safe_prop(name, value)
+                })
                 .map(|value| ((*name).to_string(), value.clone()))
         })
         .collect()
@@ -2205,9 +2336,16 @@ fn node_from_value(
         .and_then(|object| {
             ["title", "synonym", "name", "dataPath", "id"]
                 .into_iter()
-                .find_map(|key| object.get(key).and_then(Value::as_str))
+                .find_map(|key| {
+                    let value = object.get(key).and_then(Value::as_str)?;
+                    if key == "synonym" && reader == LogicalReader::Subsystem {
+                        localized_display_text(value)
+                    } else {
+                        Some(value.to_string())
+                    }
+                })
         })
-        .unwrap_or_else(|| kind.as_str());
+        .unwrap_or_else(|| kind.as_str().to_string());
     let props = reader_node_props(reader, kind, value);
     let limits = dropped_by_size(value, &props, address, |probe| {
         reader_node_props(reader, kind, probe)

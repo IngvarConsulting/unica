@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import shutil
+import subprocess
 import sys
 import threading
 import unittest
@@ -37,6 +39,67 @@ def client_for(*results: dict):
 
 
 class ObserverProtocolTests(unittest.TestCase):
+    def test_reveal_pages_to_the_exact_address_and_maps_only_body_windows_to_the_parent(self):
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("Node.js is required to exercise the tree navigation")
+        script = r"""
+const assert = require("node:assert/strict");
+const vm = require("node:vm");
+const page = require("node:fs").readFileSync(0, "utf8");
+const source = page.slice(page.indexOf("function highlightTreeRow"), page.indexOf("function sourceTextHtml"));
+const open = new Set();
+const rows = new WeakMap();
+function row(at, children = [], sourceSet) {
+  const selected = new Set();
+  const wrapper = {
+    dataset: {at, sourceSet},
+    firstElementChild: {
+      classList: {add: value => selected.add(value), remove: value => selected.delete(value)},
+      scrollIntoView: () => assert(selected.has("sel")),
+    },
+    lastElementChild: {children, querySelector: () => children.find(child => child.dataset.cursor)},
+    selected,
+  };
+  rows.set(wrapper, async () => { open.add(at); });
+  return wrapper;
+}
+
+const itemParentAt = "main:Report.R.Template.S.Setting.V.Item";
+const item = row(itemParentAt + ".Body#L1");
+const children = [row(itemParentAt + ".Other")];
+const more = {dataset: {cursor: "page2"}, onclick: async () => { children.splice(1, 1, item); }};
+children.push(more);
+const body = row("main:Report.R.Module.Object.Body");
+const owner = row("main:Report.R", [row(itemParentAt, children), body]);
+const report = row("main:Report", [owner]);
+const root = row("", [row("main:Configuration", [report], "main")]);
+const context = vm.createContext({
+  $: () => ({firstElementChild: root}),
+  expandTreeRows: rows,
+  selectedRow: null,
+  selectionVersion: 0,
+});
+vm.runInContext(source, context);
+async function check(at, kind, expected, message) {
+  const button = {}, status = {};
+  await context.revealSelectedInTree(button, status, at, kind);
+  assert(expected.selected.has("sel"));
+  assert.equal(status.textContent, message);
+  assert.equal(button.disabled, false);
+}
+(async () => {
+  await check(item.dataset.at, "Item", item, "");
+  assert(open.has(itemParentAt));
+  await check(body.dataset.at + "#L1-L2", "Body", body, "В дереве: " + body.dataset.at);
+  assert(!item.selected.has("sel"));
+})().catch(error => { console.error(error); process.exitCode = 1; });
+"""
+        result = subprocess.run(
+            [node, "-e", script], input=observer.PAGE, text=True, capture_output=True, check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_source_text_preserves_the_envelope_and_exact_text(self):
         for text in ["// Текст\r\nФункция Read()\r\n\tВозврат 1;\r\nКонецФункции", "", "\n\nВозврат 1;\n", '{"ok":false}']:
             with self.subTest(text=text):

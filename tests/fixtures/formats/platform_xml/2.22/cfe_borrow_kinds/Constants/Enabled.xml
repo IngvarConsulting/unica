@@ -1,0 +1,26 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:app="http://v8.1c.ru/8.2/managed-application/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:cmi="http://v8.1c.ru/8.2/managed-application/cmi" xmlns:ent="http://v8.1c.ru/8.1/data/enterprise" xmlns:lf="http://v8.1c.ru/8.2/managed-application/logform" xmlns:pal="http://v8.1c.ru/8.1/data/ui/colors/palette" xmlns:style="http://v8.1c.ru/8.1/data/ui/style" xmlns:sys="http://v8.1c.ru/8.1/data/ui/fonts/system" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:v8ui="http://v8.1c.ru/8.1/data/ui" xmlns:web="http://v8.1c.ru/8.1/data/ui/colors/web" xmlns:win="http://v8.1c.ru/8.1/data/ui/colors/windows" xmlns:xen="http://v8.1c.ru/8.3/xcf/enums" xmlns:xpr="http://v8.1c.ru/8.3/xcf/predef" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.22">
+	<Constant uuid="7c989846-66b7-80ee-a10e-54f8f4e31d1e">
+		<InternalInfo>
+			<xr:GeneratedType name="ConstantManager.Enabled" category="Manager">
+				<xr:TypeId>b9acb1e1-0c14-8198-a39f-36b3a42c2492</xr:TypeId>
+				<xr:ValueId>ca328f9e-ee27-8050-9b87-ce80b7613013</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="ConstantValueManager.Enabled" category="ValueManager">
+				<xr:TypeId>d0b75b12-cb89-8850-8f08-6cde44e0cfab</xr:TypeId>
+				<xr:ValueId>39a84952-9113-81c5-8f31-e9114c212756</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="ConstantValueKey.Enabled" category="ValueKey">
+				<xr:TypeId>6b9e3f9f-ef35-8ba1-b696-8f4b8bae4b21</xr:TypeId>
+				<xr:ValueId>552bebdf-0100-8b0c-9bef-3afc377e3492</xr:ValueId>
+			</xr:GeneratedType>
+		</InternalInfo>
+		<Properties>
+			<ObjectBelonging>Adopted</ObjectBelonging>
+			<Name>Enabled</Name>
+			<Comment/>
+			<ExtendedConfigurationObject>bc3174aa-ee24-5708-963e-5e10783bc1bb</ExtendedConfigurationObject>
+			<ActionOnConfigurationObjectMissing>Auto</ActionOnConfigurationObjectMissing>
+		</Properties>
+	</Constant>
+</MetaDataObject>

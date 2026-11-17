@@ -641,7 +641,7 @@ pub fn minimal_auxiliary_files(
         MetadataKind::BusinessProcess => vec![(
             "Flowchart.xml",
             unica_metadata::validation_subject::MetadataAuxiliaryXmlKind::BusinessProcessFlowchart,
-            format!(
+            unica_source_designer::layout::declare_format_namespaces(format!(
                 "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n\
 <GraphicalSchema xmlns=\"http://v8.1c.ru/8.3/xcf/scheme\" xmlns:sch=\"http://v8.1c.ru/8.2/data/graphscheme\" xmlns:style=\"http://v8.1c.ru/8.1/data/ui/style\" xmlns:v8=\"http://v8.1c.ru/8.1/data/core\" xmlns:v8ui=\"http://v8.1c.ru/8.1/data/ui\" xmlns:web=\"http://v8.1c.ru/8.1/data/ui/colors/web\" xmlns:win=\"http://v8.1c.ru/8.1/data/ui/colors/windows\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" version=\"{format_version}\">\r\n\
 \t<BackColor>style:FieldBackColor</BackColor>\r\n\
@@ -659,7 +659,7 @@ pub fn minimal_auxiliary_files(
 \t</PrintParameters>\r\n\
 \t<Items/>\r\n\
 </GraphicalSchema>\r\n"
-            ),
+            ), format_version),
         )],
         _ => Vec::new(),
     }
@@ -690,7 +690,7 @@ pub fn emit_meta_catalog_xml(
     lines.push("<?xml version=\"1.0\" encoding=\"UTF-8\"?>".to_string());
     lines.push(format!(
         "<MetaDataObject {} version=\"{}\">",
-        meta_xmlns_decl(),
+        meta_xmlns_decl(format_version),
         unica_xml_format::text::escape_xml(format_version)
     ));
     lines.push(format!("\t<Catalog uuid=\"{obj_uuid}\">"));
@@ -735,7 +735,7 @@ pub fn minimal_metadata_xml<G>(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>".to_string(),
         format!(
             "<MetaDataObject {} version=\"{}\">",
-            meta_xmlns_decl(),
+            meta_xmlns_decl(format_version),
             unica_xml_format::text::escape_xml(format_version)
         ),
         format!("\t<{object_type} uuid=\"{obj_uuid}\">"),
@@ -826,12 +826,31 @@ pub fn minimal_metadata_xml<G>(
     lines.push("\t\t</Properties>".to_string());
     // Содержимое объекта задаёт вызывающий через `operations`: инструмент не
     // придумывает ресурсы, измерения и значения свойств за него.
-    if crate::format_contract::meta_8_3_27_kind_declares_child_objects(kind) {
+    if crate::format_contract::kind_declares_child_objects(kind) {
         lines.push("\t\t<ChildObjects/>".to_string());
     }
     lines.push(format!("\t</{object_type}>"));
     lines.push("</MetaDataObject>".to_string());
+    insert_format_object_properties(&mut lines, object_type, format_version);
     Ok((lines.join("\r\n"), obj_uuid))
+}
+
+/// Writes after their 2.20 neighbours the properties the export format of
+/// a new object adds (INV.SOURCE.WRITABLE-PROFILE).
+fn insert_format_object_properties(lines: &mut Vec<String>, kind: &str, format_version: &str) {
+    let dialect = crate::dialect::for_version(Some(format_version));
+    for (after, property) in (dialect.added_object_properties)(kind) {
+        let open = format!("<{after}>");
+        let empty = format!("<{after}/>");
+        let Some(at) = lines.iter().position(|line| {
+            let line = line.trim_start();
+            line.starts_with(&open) || line == empty
+        }) else {
+            continue;
+        };
+        let indent = lines[at][..lines[at].len() - lines[at].trim_start().len()].to_owned();
+        lines.insert(at + 1, format!("{indent}{property}"));
+    }
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -842,7 +861,7 @@ pub fn minimal_metadata_xml_for_tests(
     minimal_metadata_xml(
         kind,
         name,
-        "2.20",
+        crate::dialect::root_version::writable(),
         &MinimalTemplateContext::<()> {
             chart_of_accounts: None,
             chart_of_calculation_types: None,
@@ -858,8 +877,9 @@ pub fn minimal_metadata_xml_for_tests(
     )
 }
 
-pub fn meta_xmlns_decl() -> &'static str {
-    "xmlns=\"http://v8.1c.ru/8.3/MDClasses\" xmlns:app=\"http://v8.1c.ru/8.2/managed-application/core\" xmlns:cfg=\"http://v8.1c.ru/8.1/data/enterprise/current-config\" xmlns:cmi=\"http://v8.1c.ru/8.2/managed-application/cmi\" xmlns:ent=\"http://v8.1c.ru/8.1/data/enterprise\" xmlns:lf=\"http://v8.1c.ru/8.2/managed-application/logform\" xmlns:style=\"http://v8.1c.ru/8.1/data/ui/style\" xmlns:sys=\"http://v8.1c.ru/8.1/data/ui/fonts/system\" xmlns:v8=\"http://v8.1c.ru/8.1/data/core\" xmlns:v8ui=\"http://v8.1c.ru/8.1/data/ui\" xmlns:web=\"http://v8.1c.ru/8.1/data/ui/colors/web\" xmlns:win=\"http://v8.1c.ru/8.1/data/ui/colors/windows\" xmlns:xen=\"http://v8.1c.ru/8.3/xcf/enums\" xmlns:xpr=\"http://v8.1c.ru/8.3/xcf/predef\" xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\""
+/// The namespace declarations of an MDClasses root in `format_version`.
+pub fn meta_xmlns_decl(format_version: &str) -> String {
+    unica_source_designer::layout::full_md_namespace_declarations(format_version)
 }
 
 pub fn metadata_generated_types_8_3_27(
@@ -999,9 +1019,25 @@ pub fn metadata_generated_types_8_3_27(
             ("FilterCriterionList", "List"),
         ]),
         "SettingsStorage" => Some(&[("SettingsStorageManager", "Manager")]),
-        "Sequence" => Some(&[("SequenceRecordSet", "RecordSet")]),
+        // The platform writes these three for a sequence in its own export
+        // (`tests/fixtures/formats/platform_xml/<format>/all_kinds/src/
+        // Sequences/Probe.xml`, 2.20 to 2.22) and refuses to load a borrowed
+        // sequence without its record and manager.
+        "Sequence" => Some(&[
+            ("SequenceRecord", "Record"),
+            ("SequenceManager", "Manager"),
+            ("SequenceRecordSet", "RecordSet"),
+        ]),
+        // The platform writes the manager of a WS reference in its own export
+        // (`tests/fixtures/formats/platform_xml/<format>/all_kinds/src/
+        // WSReferences/Probe.xml`, 2.20 to 2.22) and refuses to load a
+        // borrowed WS reference without it.
+        "WSReference" => Some(&[("WSReferenceManager", "Manager")]),
         "IntegrationService" => Some(&[("IntegrationServiceManager", "Manager")]),
         "DefinedType" => Some(&[("DefinedType", "DefinedType")]),
+        // The queue of 8.5.4: its message is a record, its manager a manager.
+        // The platform refuses to import a queue descriptor without them.
+        "Queue" => Some(&[("QueueMessage", "Record"), ("QueueManager", "Manager")]),
         "Language"
         | "Subsystem"
         | "StyleItem"
@@ -1016,11 +1052,11 @@ pub fn metadata_generated_types_8_3_27(
         | "XDTOPackage"
         | "WebService"
         | "HTTPService"
-        | "WSReference"
         | "EventSubscription"
         | "ScheduledJob"
         | "FunctionalOption"
         | "FunctionalOptionsParameter"
+        | "PaletteColor"
         | "CommonCommand"
         | "CommandGroup"
         | "CommonForm"

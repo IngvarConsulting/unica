@@ -1,0 +1,51 @@
+{
+  "id": "S-2730-format-axis-line-property",
+  "issue": 2730,
+  "area": "Форматы выгрузки",
+  "task": "Поставить тему клиентского приложения конфигурации в наборе формата линии 8.5: свойство этой линии пишется в корень.",
+  "workspace": "tests/fixtures/acceptance/workspace-all-kinds",
+  "formats": [
+    "2.21",
+    "2.22"
+  ],
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "ClientApplicationTheme": "Dark"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Configuration/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}ClientApplicationTheme",
+          "eq": [
+            "Dark"
+          ]
+        }
+      ]
+    }
+  ]
+}

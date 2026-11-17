@@ -1,0 +1,23 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:app="http://v8.1c.ru/8.2/managed-application/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:cmi="http://v8.1c.ru/8.2/managed-application/cmi" xmlns:ent="http://v8.1c.ru/8.1/data/enterprise" xmlns:lf="http://v8.1c.ru/8.2/managed-application/logform" xmlns:pal="http://v8.1c.ru/8.1/data/ui/colors/palette" xmlns:style="http://v8.1c.ru/8.1/data/ui/style" xmlns:sys="http://v8.1c.ru/8.1/data/ui/fonts/system" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:v8ui="http://v8.1c.ru/8.1/data/ui" xmlns:web="http://v8.1c.ru/8.1/data/ui/colors/web" xmlns:win="http://v8.1c.ru/8.1/data/ui/colors/windows" xmlns:xen="http://v8.1c.ru/8.3/xcf/enums" xmlns:xpr="http://v8.1c.ru/8.3/xcf/predef" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.22">
+	<Report uuid="95f585ad-e7aa-8e4f-8d2b-f10401955d62">
+		<InternalInfo>
+			<xr:GeneratedType name="ReportObject.АнализВерсийОбъектов" category="Object">
+				<xr:TypeId>61c9cf8b-2d40-8195-81a1-bc460d1365cf</xr:TypeId>
+				<xr:ValueId>cd7be796-f485-83e5-9f64-b73c9ce521c4</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="ReportManager.АнализВерсийОбъектов" category="Manager">
+				<xr:TypeId>0d11fb8a-132f-865a-8382-2f7634e1657b</xr:TypeId>
+				<xr:ValueId>13aced53-9f4e-83a9-85c6-d61a3204ccd6</xr:ValueId>
+			</xr:GeneratedType>
+		</InternalInfo>
+		<Properties>
+			<ObjectBelonging>Adopted</ObjectBelonging>
+			<Name>АнализВерсийОбъектов</Name>
+			<Comment/>
+			<ExtendedConfigurationObject>b3f7f763-bea9-4f59-9450-df95e5c3d89d</ExtendedConfigurationObject>
+			<ActionOnConfigurationObjectMissing>Auto</ActionOnConfigurationObjectMissing>
+		</Properties>
+		<ChildObjects/>
+	</Report>
+</MetaDataObject>

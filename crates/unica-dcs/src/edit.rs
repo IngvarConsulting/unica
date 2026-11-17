@@ -413,13 +413,13 @@ mod tests {
 
     #[test]
     fn typed_dcs_operands_do_not_pass_through_editor_tokens() {
-        let edit = plan("field.add",&json!({"at":"main:Report.Versions.Template.Schema.DataSet.НаборДанных1","items":[{"dataPath":"Sum","title":"Итого [шт] @user"}]})).unwrap();
+        let edit = plan("field.add",&json!({"at":"main:Report.Versions.Template.Schema.DataSet.НаборДанных1","items":[{"dataPath":"Sum","title":"ru = 'Итого [шт] @user'"}]})).unwrap();
         let DcsIntent::FieldAdd(items) = edit.intent else {
             panic!("field.add keeps its typed intent");
         };
         assert_eq!(
             items[0].title.as_ref().unwrap().value(),
-            &json!("Итого [шт] @user")
+            &json!("ru = 'Итого [шт] @user'")
         );
     }
 
