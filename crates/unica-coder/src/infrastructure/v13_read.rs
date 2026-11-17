@@ -167,6 +167,7 @@ mod notification_bindings;
 mod scheduled_job_handler;
 mod typed_payload_read;
 mod validation_input;
+mod web_service_handler;
 
 use module_variables::{find_variable, variable_node, variable_node_value};
 
@@ -723,12 +724,7 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
         } else {
             let payload = self.typed_payload_for(&route, admitted)?;
             let handler = payload.pointer("/details/details/method").cloned();
-            let projected =
-                crate::infrastructure::v13_read_projection::project_typed_payload_for_source(
-                    &route,
-                    payload,
-                    self.read.source_set_kind(),
-                )?;
+            let projected = self.web_service_view(&route, payload, admitted)?;
             let projected =
                 self.with_scheduled_job_handler(projected, at, handler.as_ref(), admitted)?;
             self.with_template_body_branches(projected, &route)?
