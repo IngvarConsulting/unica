@@ -566,9 +566,6 @@ fn build_sample_args(descriptor: OperationDescriptor) -> Value {
         }}),
         "groupOrder.set" => json!({"values": {"groups": ["NavigationPanelImportant"]}}),
         "subsystemOrder.set" => json!({"values": {"subsystems": ["Subsystem.Sample"]}}),
-        "subsystemVisibility.set" => {
-            json!({"items": [{"subsystem":"main:Subsystem.Sample","common":false}]})
-        }
         "valueType.add" => json!({"values": {"name": "Sample", "base": "xs:string"}}),
         "objectType.add" => json!({"values": {"name": "Sample"}}),
         "property.add" => json!({"values": {"property": {"name": "Sample", "type": "xs:string"}}}),
@@ -602,6 +599,10 @@ fn node_args(
                 })
                 .unwrap_or_else(|| sample_args(descriptor))
         }
+        "subsystemVisibility.set" => crate::domain::apply::operation_site(at, traits)
+            .and_then(|site| descriptor.argument_contract_at(&site))
+            .map(|contract| contract.example_args)
+            .unwrap_or_else(|| sample_args(descriptor)),
         "item.remove" => json!({"at": ""}),
         // Место вставки у метода — до или после него (#1354).
         "code.insert" if method_address => {

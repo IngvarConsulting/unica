@@ -122,7 +122,7 @@ pub(crate) fn home_page_contract() -> OperationContract {
         }
 }
 
-pub(crate) fn subsystem_visibility_contract() -> OperationContract {
+pub(crate) fn subsystem_visibility_contract(source_set: &str) -> OperationContract {
     let role = object(
         &[
             ("role", text(true)),
@@ -156,7 +156,11 @@ pub(crate) fn subsystem_visibility_contract() -> OperationContract {
         target: "The configuration root `<set>:Configuration`.",
         effect: "Update saved visibility of top-level sections in `Ext/CommandInterface.xml`.",
         notes: "subsystem and role are qualified logical addresses from this source set. common sets visibility for roles without an override and is required when creating a saved entry with a Boolean role override. roles overlays only the listed values: true or false sets an override, null removes it. Resetting an absent override has no effect. Omitted roles keep their values. Read the saved entries in props.interface.subsystemsVisibility. An absent entry has no explicit setting. The root view proves registration in Configuration.xml. An addressed view or this operation checks the referenced descriptor. This operation does not compute a user's effective visibility or change the order, membership or access rights of sections.",
-        example_args: json!({"items":[{"subsystem":"main:Subsystem.Sample","common":false,"roles":[{"role":"main:Role.Reader","visible":true}]}]}),
+        example_args: json!({"items":[{
+            "subsystem":format!("{source_set}:Subsystem.Sample"),
+            "common":false,
+            "roles":[{"role":format!("{source_set}:Role.Reader"),"visible":true}]
+        }]}),
         help: "skills/cf-edit/SKILL.md",
         format_validators: &[],
     }
@@ -165,6 +169,17 @@ pub(crate) fn subsystem_visibility_contract() -> OperationContract {
 impl unica_operations::FamilyOperation for InterfaceOperation {
     fn contract(self) -> Option<unica_operation_contract::OperationContract> {
         Some(self.contract())
+    }
+    fn contract_at(
+        self,
+        site: &unica_source_contract::context::OperationSite<'_>,
+    ) -> Option<OperationContract> {
+        match self {
+            Self::SubsystemVisibilitySet => {
+                Some(subsystem_visibility_contract(site.at().source_set()))
+            }
+            _ => Some(self.contract()),
+        }
     }
     type Observation = ();
     fn family(self) -> unica_operations::OperationFamily {
