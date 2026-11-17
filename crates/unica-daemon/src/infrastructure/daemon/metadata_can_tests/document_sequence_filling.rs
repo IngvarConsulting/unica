@@ -10,7 +10,12 @@ fn document_sequence_filling_preserves_posting_movements_forms_and_modules() {
         &fixture,
         json!({"at":at,"ops":[{"op":"form.add","args":{"items":[{"name":"Main","type":"ObjectForm"}]}}]}),
     );
+    let before_can = unica_workspace::test_support::tree_snapshot(&fixture.source);
     let can = contract(&runtime, &fixture, at, "props.set");
+    assert_eq!(
+        unica_workspace::test_support::tree_snapshot(&fixture.source),
+        before_can
+    );
     assert_eq!(
         can["argsSchema"]["properties"]["values"]["properties"]["SequenceFilling"]["type"],
         "string"
