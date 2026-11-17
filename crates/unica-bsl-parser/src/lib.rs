@@ -4,6 +4,9 @@ mod editor;
 mod notify;
 mod outline;
 pub mod symbols;
+mod variables;
+
+pub use variables::VariableSyntax;
 
 use bsl_syntax::ast::{Annotation, AstNode, FunctionDef, PreIfDir, PreRegionDir, ProcedureDef};
 use bsl_syntax::{SyntaxKind, SyntaxNode};

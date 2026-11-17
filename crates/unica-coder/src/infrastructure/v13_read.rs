@@ -2,7 +2,7 @@ use crate::application::v13::resolve::{ModuleLine, ResolvedLines};
 use crate::application::v13::source_text::{admit_text, ModuleText};
 use unica_bsl::projection::{
     CommonModuleProperties, EventProjection, MethodProjection, ModuleProjectionSet,
-    RegionProjection,
+    RegionProjection, VariableProjection,
 };
 use unica_metadata::validation_subject::{MetadataChildProfile, MetadataTemplateType};
 use unica_metadata::{MetaDiagnosticCode, MetaDiagnosticSeverity, MetadataKind};
@@ -163,9 +163,14 @@ mod form_payload;
 mod http_service_handler;
 mod method_doc;
 mod module_body_read;
+mod module_variables;
 mod notification_bindings;
+mod scheduled_job_handler;
 mod typed_payload_read;
 mod validation_input;
+mod web_service_handler;
+
+use module_variables::{find_variable, variable_node, variable_node_value};
 
 impl<'a> LogicalViewReadAuthority<'a> {
     #[cfg(any(test, feature = "test-support"))]
@@ -719,7 +724,18 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
             self.form_view(&route, admitted)?
         } else {
             let payload = self.typed_payload_for(&route, admitted)?;
-            let projected = self.http_service_view(&route, payload, admitted)?;
+            let handler = payload.pointer("/details/details/method").cloned();
+            let projected = if at
+                .segments()
+                .first()
+                .is_some_and(|owner| owner.kind() == NodeKind::HttpService)
+            {
+                self.http_service_view(&route, payload, admitted)?
+            } else {
+                self.web_service_view(&route, payload, admitted)?
+            };
+            let projected =
+                self.with_scheduled_job_handler(projected, at, handler.as_ref(), admitted)?;
             self.with_template_body_branches(projected, &route)?
         };
         let projected = match projected {
@@ -1505,7 +1521,7 @@ fn module_projection_view_data(
     if (branch == NodeKind::Method && suffix.len() > 2)
         || (matches!(
             branch,
-            NodeKind::Interface | NodeKind::Event | NodeKind::Body
+            NodeKind::Interface | NodeKind::Event | NodeKind::Body | NodeKind::Variable
         ) && suffix.len() > 1)
     {
         return Err(ViewError::new(
@@ -1514,6 +1530,19 @@ fn module_projection_view_data(
         ));
     }
     match (branch, suffix[0].name(), suffix.get(1)) {
+        (NodeKind::Variable, None, None) => module_collection(
+            requested,
+            NodeKind::Variable,
+            projections
+                .variables()
+                .iter()
+                .map(variable_node_value)
+                .collect(),
+        ),
+        (NodeKind::Variable, Some(name), None) => {
+            let variable = find_variable(projections, name)?;
+            Ok(NodeViewData::Node(variable_node(variable)))
+        }
         (NodeKind::Method, None, None) => module_collection(
             requested,
             NodeKind::Method,

@@ -38,9 +38,8 @@ ROOT = Path(__file__).resolve().parents[2]
 PROBED = re.compile(r"^(scripts/ci/|\.github/workflows/|\.config/nextest\.toml$)")
 PROFILE = "large"
 HOST = ci_rust_lanes.LINUX
-# Самая маленькая полоса ночи: одна библиотека `ureq`. Архив и `nextest list`
-# у всех полос идут одними функциями, поэтому их поломку она показывает.
-LANE = "vendor"
+# Меньшая полоса ReceiptLedger использует тот же архивный путь, что ordinary.
+LANE = "receipt"
 # Основная полоса: её учёт ломался чаще всего, а бинари очередь уже собрала.
 LISTED = "ordinary"
 

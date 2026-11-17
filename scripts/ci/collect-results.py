@@ -49,6 +49,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 MAIN_LINE = "main"
 GATE_JOB = "Unica CI"
 OS_JOB = "Rust ({runner})"
+# The report also reads retained artifacts from before the vendor lane was retired.
 RUST_LANES = ("ordinary", "receipt", "vendor")
 PYTHON_JOB = GATE_JOB
 
