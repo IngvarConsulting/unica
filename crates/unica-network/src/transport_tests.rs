@@ -349,25 +349,13 @@ fn medium_http_proxy_and_server_authorization_survive_redacted_errors() {
         )
         .unwrap_err();
     assert_eq!(error.status(), Some(401));
-    let logged = TRANSPORT_LOG.0.lock().unwrap().join("\n");
-    assert!(logged.contains("intercepts"), "{logged}");
-    let diagnostic = format!("{error} {error:?} {logged}");
-    for secret in [
-        "request-user",
-        "request-password",
-        "proxy-user",
-        "proxy-password",
-        "old-header-marker",
-        "explicit-header-marker",
-        "reply-secret-marker",
-        "query-marker",
-    ] {
-        assert!(!diagnostic.contains(secret), "{diagnostic}");
-    }
+
     server.join().unwrap();
 
     let stand = test_support::HttpStand::start("ok", "text/plain");
-    let url = stand.url("root").replacen("http://", "http://u:p@", 1);
+    let url = stand
+        .url("root")
+        .replacen("http://", "http://request-user:request-password@", 1);
     assert_eq!(
         client_with_timeout(READ_TIMEOUT)
             .get(&url, &[], None)
@@ -378,8 +366,27 @@ fn medium_http_proxy_and_server_authorization_survive_redacted_errors() {
     );
     assert_eq!(
         stand.header("authorization"),
-        vec![vec!["Basic dTpw".to_string()]]
+        vec![vec![
+            "Basic cmVxdWVzdC11c2VyOnJlcXVlc3QtcGFzc3dvcmQ=".to_string()
+        ]]
     );
+    let logged = TRANSPORT_LOG.0.lock().unwrap().join("\n");
+    assert!(logged.contains("intercepts"), "{logged}");
+    let diagnostic = format!("{error} {error:?} {logged}");
+    for secret in [
+        "request-user",
+        "cmVxdWVzdC11c2VyOnJlcXVlc3QtcGFzc3dvcmQ=",
+        "cHJveHktdXNlcjpwcm94eS1wYXNzd29yZA==",
+        "request-password",
+        "proxy-user",
+        "proxy-password",
+        "old-header-marker",
+        "explicit-header-marker",
+        "reply-secret-marker",
+        "query-marker",
+    ] {
+        assert!(!diagnostic.contains(secret), "{diagnostic}");
+    }
 }
 
 #[test]
