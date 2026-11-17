@@ -947,20 +947,23 @@ fn configuration_root_shows_the_form_slots_of_its_line() {
         let source_root = Arc::new(unica_workspace::read::open_source_directory(&source).unwrap());
         let authority = LogicalViewReadAuthority::new(
             &cancellation,
-            "main",
-            "actor-fixture-main",
+            "cf",
+            "actor-fixture-cf",
             SourceSetKind::Configuration,
             source_root,
             PlatformProfile::for_line(line).unwrap(),
         );
         let service = ViewService::new(authority, ViewCursorStore::default());
-        let root = service.view(ViewRequest::new("main:Configuration").unwrap());
+        let root = service.view(ViewRequest::new("cf:Configuration").unwrap());
         let forms = root.data.as_ref().unwrap()["props"]["properties"]["forms"]
             .as_object()
             .unwrap()
             .clone();
         assert_eq!(forms.len(), count, "{format}");
-        assert_eq!(forms["defaultSearchForm"], "CommonForm.MainA", "{format}");
+        assert_eq!(
+            forms["defaultSearchForm"], "cf:CommonForm.MainA",
+            "{format}"
+        );
         assert!(forms["defaultReportForm"].is_null(), "{format}");
         assert_eq!(forms.contains_key("auxiliaryReportForm"), count == 18);
     }
