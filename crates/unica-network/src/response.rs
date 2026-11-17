@@ -43,7 +43,16 @@ fn transport(message: &str) -> NetworkError {
     NetworkError::new(NetworkFailure::Transport, message)
 }
 
-/// Limit retained from the previous string response reader.
+// resource-limit: network.text-response-bytes
+// class: result
+// unit: bytes
+// scope: request
+// value: 10485760
+// resource: Объём HTTP-ответа при чтении целиком в строку.
+// status: unproven
+// origin: #1792
+// problem: Предел 10 МиБ сохранён из прежнего клиента для ограничения буферизации.
+// on-reach: ответ большего размера отклоняется, потоковое чтение остаётся доступным
 const MAX_TEXT_RESPONSE_BYTES: u64 = 10 * 1024 * 1024;
 
 /// HTTP headers and a body read lazily, one network chunk at a time.
