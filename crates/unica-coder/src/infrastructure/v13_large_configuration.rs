@@ -1220,9 +1220,14 @@ fn parse_configuration_owner(
     let purpose_xml = String::from_utf8(purpose_xml.into_inner())
         .map_err(|error| source_unreadable(&error.to_string()))?;
     if read_purpose {
-        state.purpose =
-            unica_metadata_designer::configuration::read_cf_purpose_properties_xml(&purpose_xml)
-                .map_err(|error| source_unreadable(&error))?;
+        state.purpose = unica_metadata_designer::configuration::read_cf_purpose_properties_xml(
+            &purpose_xml,
+            &state.version,
+            state
+                .properties
+                .contains_key("ConfigurationExtensionPurpose"),
+        )
+        .map_err(|error| source_unreadable(&error))?;
     }
     Ok(state)
 }

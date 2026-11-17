@@ -12,9 +12,17 @@
         <xr:Item xsi:type="xr:MDObjectRef">Role.Operator</xr:Item>
         <xr:Item xsi:type="xr:MDObjectRef">Role.Administrator</xr:Item>
       </DefaultRoles>
+      <RequiredMobileApplicationPermissions/>
       <UsedMobileApplicationFunctionalities>
         <app:functionality><app:functionality>Location</app:functionality><app:use>false</app:use></app:functionality>
         <app:functionality><app:functionality>Biometrics</app:functionality><app:use>true</app:use></app:functionality>
+        <app:permissionMessage>
+          <app:permission>Camera</app:permission>
+          <app:description>
+            <v8:item><v8:lang>ru</v8:lang><v8:content>Камера</v8:content></v8:item>
+            <v8:item><v8:lang>en</v8:lang><v8:content>Camera</v8:content></v8:item>
+          </app:description>
+        </app:permissionMessage>
       </UsedMobileApplicationFunctionalities>
       <IncludeHelpInContents>false</IncludeHelpInContents>
     </Properties>

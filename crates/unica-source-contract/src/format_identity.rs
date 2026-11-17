@@ -269,6 +269,13 @@ pub(crate) fn platform_xml_profile_of_line(line: PlatformLine) -> Option<crate::
 /// (`tests/fixtures/formats/platform_xml/<format>/xdto/`); a property or value
 /// absent here exists in every described line (INV.SOURCE.PROFILE-CAPABILITIES).
 const CONFIGURATION_ROOT_LINE_ADDITIONS: &[(&str, Option<&str>, PlatformLine)] = &[
+    // The flag is in the native 2.18 configuration export, but the
+    // managed-application XDTO export omits it.
+    (
+        "UsedMobileApplicationFunctionalities",
+        Some("TextToSpeech"),
+        PlatformLine::new(8, 3, 25),
+    ),
     ("Caption", None, PlatformLine::new(8, 5, 1)),
     ("ShortCaption", None, PlatformLine::new(8, 5, 1)),
     (

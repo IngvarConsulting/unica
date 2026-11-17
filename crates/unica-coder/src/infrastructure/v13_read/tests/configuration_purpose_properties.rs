@@ -49,10 +49,7 @@ fn assert_purpose_values(data: &serde_json::Value) {
     );
     assert_eq!(
         properties["usedMobileApplicationFunctionalities"],
-        json!([
-            {"functionality": "Location", "use": false},
-            {"functionality": "Biometrics", "use": true}
-        ])
+        json!(["Biometrics", "OSBackup"])
     );
     assert_eq!(properties["includeHelpInContents"], false);
 }
@@ -90,7 +87,7 @@ fn medium_large_configuration_preserves_purpose_values() {
     assert_eq!(streamed, ordinary);
 }
 
-/// Empty lists are known empty; missing properties remain explicitly unknown.
+/// Only mobile capabilities have platform defaults for absent values.
 /// rule: INV.SOURCE.METADATA-OBJECT-FACTS
 #[test]
 fn configuration_purpose_properties_distinguish_empty_and_absent_values() {
@@ -98,9 +95,9 @@ fn configuration_purpose_properties_distinguish_empty_and_absent_values() {
     for (values, expected) in [
         (
             "<UsePurposes/><DefaultRoles/><UsedMobileApplicationFunctionalities/><IncludeHelpInContents>true</IncludeHelpInContents>",
-            json!([[], [], [], true]),
+            json!([[], [], ["Biometrics", "OSBackup"], true]),
         ),
-        ("", json!([null, null, null, null])),
+        ("", json!([null, null, ["Biometrics", "OSBackup"], null])),
     ] {
         let xml = format!(
             r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration uuid="30930000-0000-4000-8000-000000000001"><Properties><Name>EmptyPurpose</Name>{values}</Properties><ChildObjects/></Configuration></MetaDataObject>"#

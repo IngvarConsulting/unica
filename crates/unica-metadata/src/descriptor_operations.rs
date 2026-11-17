@@ -278,6 +278,7 @@ descriptor_properties!(
     DefaultExtensionPropertyCheckAction => ("DefaultExtensionPropertyCheckAction", "defaultExtensionPropertyCheckAction", Enum, false, false, false, true),
     TypeReductionByConfigurationExtensionMode => ("TypeReductionByConfigurationExtensionMode", "typeReductionByConfigurationExtensionMode", Enum, false, false, false, true),
     ActionOnExtendedConfigurationObjectsMissing => ("ActionOnExtendedConfigurationObjectsMissing", "actionOnExtendedConfigurationObjectsMissing", Parts, false, false, false, true),
+    UsedMobileApplicationFunctionalities => ("UsedMobileApplicationFunctionalities", "usedMobileApplicationFunctionalities", List, false, false, true, false),
     // Form descriptor properties (`PropertiesSite::FormDescriptor`).
     UsePurposes => ("UsePurposes", "usePurposes", List, false, false, false, false),
     UseInInterfaceCompatibilityMode => ("UseInInterfaceCompatibilityMode", "useInInterfaceCompatibilityMode", Enum, false, false, false, false),
@@ -349,6 +350,9 @@ impl DescriptorProperty {
             }
             // `ApplicationUsePurpose` and `UseInInterfaceCompatibilityMode`
             // of the platform XDTO.
+            Self::UsedMobileApplicationFunctionalities => {
+                crate::configuration::MOBILE_FUNCTIONALITIES
+            }
             Self::UsePurposes => &["PlatformApplication", "MobilePlatformApplication"],
             Self::UseInInterfaceCompatibilityMode => &["Any", "Taxi", "Version85"],
             _ => crate::configuration::cf_validate_enum_allowed(self.names()[0]),
@@ -379,6 +383,9 @@ impl DescriptorProperty {
 
     /// The values of an enumerated property in a set of platform `line`.
     pub fn allowed_values_in(self, line: Option<PlatformLine>) -> Vec<&'static str> {
+        if self == Self::UsedMobileApplicationFunctionalities {
+            return crate::configuration::mobile_functionalities_in(line);
+        }
         let mut values = self.allowed_values().to_vec();
         let property = self.names()[0];
         values.extend(
@@ -658,7 +665,13 @@ impl PropertiesSite {
                         DescriptorPropertyKind::List => json!({"type":"array", "uniqueItems":true,
                             "items":{"type":"string", "enum":self.enum_values(field)}}),
                     };
-                    let schema = if field == DescriptorProperty::Location {
+                    let schema = if field
+                        == DescriptorProperty::UsedMobileApplicationFunctionalities
+                    {
+                        let mut schema = schema;
+                        schema["description"] = json!("Complete set of enabled mobile capabilities. Omitted codes are disabled. An empty array disables all capabilities. Existing permission messages are preserved.");
+                        schema
+                    } else if field == DescriptorProperty::Location {
                         let mut schema = schema;
                         schema["description"] = json!("Existing Constant.Name, Kind.Name.Attribute.Name, Kind.Name.Resource.Name or Kind.Name.TabularSection.Name.Attribute.Name in this source set, where the owner supports that collection. Empty storage is invalid.");
                         schema
@@ -783,7 +796,13 @@ impl PropertiesSite {
             let canonical = field.names()[0];
             let missing = later.iter().find(|item| {
                 item.property == canonical
-                    && item.value.is_none_or(|later| value.as_str() == Some(later))
+                    && item.value.is_none_or(|later| {
+                        value.as_str() == Some(later)
+                            || (field.kind() == DescriptorPropertyKind::List
+                                && value.as_array().is_some_and(|values| {
+                                    values.iter().any(|value| value.as_str() == Some(later))
+                                }))
+                    })
             });
             if let Some(item) = missing {
                 return Some((name.clone(), item.reason(source_set, line)));
@@ -1052,6 +1071,41 @@ mod tests {
                     Some("Version8_5_4")
                 ),
             ]
+        );
+    }
+
+    /// rule: INV.SOURCE.PROFILE-CAPABILITIES
+    #[test]
+    fn mobile_functionality_contract_and_refusal_use_the_same_line() {
+        let older = PropertiesSite::root_of(
+            SourceSetKind::Configuration,
+            Some(PlatformLine::new(8, 3, 24)),
+        )
+        .unwrap();
+        let newer = PropertiesSite::root_of(
+            SourceSetKind::Configuration,
+            Some(PlatformLine::new(8, 3, 25)),
+        )
+        .unwrap();
+        let values = json!({"UsedMobileApplicationFunctionalities":["TextToSpeech"]});
+        let args = json!({"values":values});
+        let older_contract = PropertiesOperation::Set.contract(older);
+        let newer_contract = PropertiesOperation::Set.contract(newer);
+        assert!(!jsonschema::validator_for(&older_contract.schema)
+            .unwrap()
+            .is_valid(&args));
+        assert!(jsonschema::validator_for(&newer_contract.schema)
+            .unwrap()
+            .is_valid(&args));
+        let refusal = older
+            .later_line_refusal("main", values.as_object().unwrap())
+            .unwrap();
+        assert!(refusal.1.contains("TextToSpeech"));
+        assert!(refusal.1.contains("platform 8.3.25"));
+        assert!(refusal.1.contains("platform 8.3.24"));
+        assert_eq!(
+            newer.later_line_refusal("main", values.as_object().unwrap()),
+            None
         );
     }
 

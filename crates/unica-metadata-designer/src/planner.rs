@@ -2090,6 +2090,15 @@ fn stage_descriptor_properties(
                         set_plain_property(&text, tag, &value.to_string())
                     }
                     DescriptorPropertyValue::Parts(parts) => set_property_parts(&text, tag, parts),
+                    DescriptorPropertyValue::List(items)
+                        if property == &unica_metadata::descriptor_operations::DescriptorProperty::UsedMobileApplicationFunctionalities =>
+                    {
+                        Some(crate::configuration::set_mobile_functionalities(&text, items)
+                            .map_err(|message| {
+                                ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)
+                                    .at_path(at_path.clone())
+                            })?)
+                    }
                     DescriptorPropertyValue::List(_) => return Err(missing(tag)),
                 }
                 .ok_or_else(|| missing(tag))?;

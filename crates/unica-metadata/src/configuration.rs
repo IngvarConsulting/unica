@@ -1,5 +1,6 @@
 //! Existing configuration semantic values and closed capabilities.
 use crate::support_state::ConfigurationSupportData;
+use unica_source_contract::format_identity::{configuration_root_additions_after, PlatformLine};
 
 /// Typed answer of `unica.cf.info` (ADR-0023). Every declared property is
 /// present: an absent value is `null`, never a missing key, so "not set" and
@@ -70,20 +71,76 @@ pub struct CfInfoProperties {
     pub forms: serde_json::Map<String, serde_json::Value>,
 }
 
-/// Ordered root lists preserve absence separately from an explicitly empty section.
+/// Root purposes, default roles and the enabled mobile capabilities.
 #[derive(Default, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CfPurposeProperties {
     pub use_purposes: Option<Vec<String>>,
     pub default_roles: Option<Vec<String>>,
-    pub used_mobile_application_functionalities: Option<Vec<CfMobileFunctionality>>,
+    pub used_mobile_application_functionalities: Option<Vec<String>>,
     pub include_help_in_contents: Option<bool>,
 }
 
-#[derive(serde::Serialize)]
-pub struct CfMobileFunctionality {
-    pub functionality: String,
-    pub r#use: bool,
+/// Native Designer export order. TextToSpeech first occurs in the 2.18
+/// fixtures (8.3.25). The exported managed-application XSD omits both speech
+/// capabilities even where the platform accepts and exports their flags.
+pub const MOBILE_FUNCTIONALITIES: &[&str] = &[
+    "Biometrics",
+    "Location",
+    "BackgroundLocation",
+    "BluetoothPrinters",
+    "WiFiPrinters",
+    "Contacts",
+    "Calendars",
+    "PushNotifications",
+    "LocalNotifications",
+    "InAppPurchases",
+    "PersonalComputerFileExchange",
+    "Ads",
+    "NumberDialing",
+    "CallProcessing",
+    "CallLog",
+    "AutoSendSMS",
+    "ReceiveSMS",
+    "SMSLog",
+    "Camera",
+    "Microphone",
+    "MusicLibrary",
+    "PictureAndVideoLibraries",
+    "AudioPlaybackAndVibration",
+    "BackgroundAudioPlaybackAndVibration",
+    "InstallPackages",
+    "OSBackup",
+    "ApplicationUsageStatistics",
+    "BarcodeScanning",
+    "BackgroundAudioRecording",
+    "AllFilesAccess",
+    "Videoconferences",
+    "NFC",
+    "DocumentScanning",
+    "SpeechToText",
+    "Geofences",
+    "IncomingShareRequests",
+    "AllIncomingShareRequestsTypesProcessing",
+    "TextToSpeech",
+];
+
+pub fn mobile_functionalities_in(line: Option<PlatformLine>) -> Vec<&'static str> {
+    let later = configuration_root_additions_after(line);
+    MOBILE_FUNCTIONALITIES
+        .iter()
+        .copied()
+        .filter(|name| {
+            !later.iter().any(|addition| {
+                addition.property == "UsedMobileApplicationFunctionalities"
+                    && addition.value == Some(*name)
+            })
+        })
+        .collect()
+}
+
+pub fn mobile_functionality_default(name: &str) -> bool {
+    matches!(name, "Biometrics" | "OSBackup")
 }
 
 /// The form slots of a configuration root in the order the platform writes
