@@ -1795,7 +1795,14 @@ fn method_node(method: &MethodProjection, binding_count: usize) -> NodeView {
         // Это координата внутри модуля, а не физическая раскладка.
         ("line".to_string(), json!(method.text_from_line)),
         ("endLine".to_string(), json!(method.to_line)),
+        (
+            "declarationLine".to_string(),
+            json!(method.declaration_line),
+        ),
     ]);
+    if let Some(column) = method.name_column {
+        props.insert("nameColumn".to_string(), json!(column));
+    }
     if let Some(doc) = &method.doc {
         props.insert("doc".to_string(), json!(doc));
         // Поля комментария идут рядом с его текстом, а не вместо него:
