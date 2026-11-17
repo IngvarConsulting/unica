@@ -47,9 +47,10 @@ LARGE_TARGETS = {"daemon_receipt_ledger"} | {binary for binary, _ in LARGE_LIBRA
 # Expected command is independent of the runner's production constant.
 UREQ_SELECTION = (
     "--manifest-path", "vendor/ureq/Cargo.toml", "--locked", "--lib",
+    "--test", "diagnostic_redaction",
     "--features", "json,serde_json/preserve_order,serde_json/float_roundtrip",
     "--config-file", "vendor/ureq/.config/nextest.toml", "--target-dir", "target",
-    "-E", "test(/^completed_response_recycling::/)",
+    "-E", "test(/^completed_response_recycling::/) | binary(=diagnostic_redaction)",
 )
 
 
@@ -277,7 +278,7 @@ class GateProfileCompositionTests(unittest.TestCase):
     def test_dependency_regressions_have_a_standalone_config_and_no_retry_at_admitting_gates(self) -> None:
         config = tomllib.loads((REPO_ROOT / "vendor/ureq/.config/nextest.toml").read_text(encoding="utf-8"))
         profile = config["profile"]["ureq-recycling"]
-        self.assertEqual(profile["default-filter"], "test(/^completed_response_recycling::/)")
+        self.assertEqual(profile["default-filter"], "test(/^completed_response_recycling::/) | binary(=diagnostic_redaction)")
         self.assertEqual(profile["retries"], 0)
         self.assertFalse(profile["fail-fast"])
         self.assertEqual(profile["junit"]["path"], "junit.xml")

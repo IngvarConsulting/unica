@@ -101,6 +101,10 @@ required-features = [
 name = "https-agent"
 path = "tests/https-agent.rs"
 
+[[test]]
+name = "diagnostic_redaction"
+path = "tests/diagnostic_redaction.rs"
+
 [dependencies.base64]
 version = "0.22"
 

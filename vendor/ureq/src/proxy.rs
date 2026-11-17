@@ -15,13 +15,25 @@ pub enum Proto {
 }
 
 /// Proxy server definition
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Eq, Hash, PartialEq)]
 pub struct Proxy {
     pub(crate) server: String,
     pub(crate) port: u32,
     pub(crate) user: Option<String>,
     pub(crate) password: Option<String>,
     pub(crate) proto: Proto,
+}
+
+impl std::fmt::Debug for Proxy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Proxy")
+            .field("server", &self.server)
+            .field("port", &self.port)
+            .field("user", &self.user.as_ref().map(|_| "***"))
+            .field("password", &self.password.as_ref().map(|_| "***"))
+            .field("proto", &self.proto)
+            .finish()
+    }
 }
 
 impl Proxy {

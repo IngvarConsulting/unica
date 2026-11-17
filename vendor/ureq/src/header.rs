@@ -77,11 +77,26 @@ pub(crate) struct Header {
 
 impl fmt::Debug for Header {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}", self.line)
+        let bytes = self.line.as_bytes();
+        if !valid_name(&bytes[..self.index])
+            || !bytes.get(self.index + 1..).is_some_and(valid_value)
+        {
+            f.write_str("<invalid header>")
+        } else if self.is_sensitive() {
+            write!(f, "{}: ***", self.name())
+        } else {
+            write!(f, "{}", self.line)
+        }
     }
 }
 
 impl Header {
+    pub(crate) fn is_sensitive(&self) -> bool {
+        self.is_name("Authorization")
+            || self.is_name("Proxy-Authorization")
+            || self.is_name("Cookie")
+    }
+
     pub fn new(name: &str, value: &str) -> Self {
         let line = format!("{}: {}", name, value).into();
         let index = name.len();
@@ -144,7 +159,7 @@ impl Header {
         let value_raw = &bytes[self.index + 1..];
 
         if !valid_name(name_raw) || !valid_value(value_raw) {
-            Err(ErrorKind::BadHeader.msg(format!("invalid header '{}'", self.line)))
+            Err(ErrorKind::BadHeader.msg(format!("invalid header '{:?}'", self)))
         } else {
             Ok(())
         }

@@ -39,7 +39,9 @@ impl fmt::Debug for Request {
         write!(
             f,
             "Request({} {}, {:?})",
-            self.method, self.url, self.headers
+            self.method,
+            crate::diagnostics::url(&self.url),
+            self.headers
         )
     }
 }
@@ -499,10 +501,19 @@ impl Request {
 }
 
 /// Parsed result of a request url with handy inspection methods.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct RequestUrl {
     url: Url,
     query_pairs: Vec<(String, String)>,
+}
+
+impl fmt::Debug for RequestUrl {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RequestUrl")
+            .field("url", &crate::diagnostics::url(self.url.as_str()))
+            .field("query_pairs", &self.query_pairs)
+            .finish()
+    }
 }
 
 impl RequestUrl {
