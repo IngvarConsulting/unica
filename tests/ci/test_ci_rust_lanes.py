@@ -929,7 +929,7 @@ class PreviousInventoryTests(unittest.TestCase):
         self.assertTrue(report["previousInventory"]["resetSuppressed"])
 
     def test_retired_ureq_lane_requires_its_explicit_target_removal(self):
-        previous = self.previous("large", hosts=lanes.HOSTS)
+        previous = self.previous("large", hosts=list(lanes.HOSTS))
         vendor_case = "ureq::completed_response_recycling::complete_empty_response_survives_read_reset_failure"
         for host in lanes.HOSTS:
             previous["inventory"]["configurations"].append({
@@ -937,16 +937,16 @@ class PreviousInventoryTests(unittest.TestCase):
                 "selected": {"ureq": 1}, "cases": [vendor_case],
             })
         with self.assertRaisesRegex(ValueError, "vendor: configuration and its results disappeared"):
-            self.verify(previous, "large", hosts=lanes.HOSTS)
+            self.verify(previous, "large", hosts=list(lanes.HOSTS))
 
         previous["explanations"]["removedTargets"] = ["ureq"]
-        report = self.verify(previous, "large", hosts=lanes.HOSTS)
+        report = self.verify(previous, "large", hosts=list(lanes.HOSTS))
         self.assertEqual(report["previousInventory"]["removedCases"],
                          {f"{host}/vendor": [vendor_case] for host in lanes.HOSTS})
 
         previous["inventory"]["configurations"][-1]["binaries"].append("unexpected")
         with self.assertRaisesRegex(ValueError, "vendor: configuration and its results disappeared"):
-            self.verify(previous, "large", hosts=lanes.HOSTS)
+            self.verify(previous, "large", hosts=list(lanes.HOSTS))
 
     def test_vanished_configuration_and_its_results_fail_within_one_profile(self):
         previous = self.previous()
