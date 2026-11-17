@@ -1,0 +1,27 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:app="http://v8.1c.ru/8.2/managed-application/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:cmi="http://v8.1c.ru/8.2/managed-application/cmi" xmlns:ent="http://v8.1c.ru/8.1/data/enterprise" xmlns:lf="http://v8.1c.ru/8.2/managed-application/logform" xmlns:pal="http://v8.1c.ru/8.1/data/ui/colors/palette" xmlns:style="http://v8.1c.ru/8.1/data/ui/style" xmlns:sys="http://v8.1c.ru/8.1/data/ui/fonts/system" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:v8ui="http://v8.1c.ru/8.1/data/ui" xmlns:web="http://v8.1c.ru/8.1/data/ui/colors/web" xmlns:win="http://v8.1c.ru/8.1/data/ui/colors/windows" xmlns:xen="http://v8.1c.ru/8.3/xcf/enums" xmlns:xpr="http://v8.1c.ru/8.3/xcf/predef" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.22">
+	<Sequence uuid="e8073224-48b6-835e-a38f-7d6649f5bac2">
+		<InternalInfo>
+			<xr:GeneratedType name="SequenceRecord.Probe" category="Record">
+				<xr:TypeId>5363f245-c8aa-8c34-8121-fa2e8059d11d</xr:TypeId>
+				<xr:ValueId>c6a0958f-5364-8875-a473-47180640ec72</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="SequenceManager.Probe" category="Manager">
+				<xr:TypeId>cea75794-0c1e-8011-b905-6a0098380e7b</xr:TypeId>
+				<xr:ValueId>e04b5127-3ee1-8553-84ae-94b8c8859f9e</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="SequenceRecordSet.Probe" category="RecordSet">
+				<xr:TypeId>0df96524-3202-8add-b0f7-f36582fac9b0</xr:TypeId>
+				<xr:ValueId>da4519c8-0153-8840-b1b8-1f46915b359c</xr:ValueId>
+			</xr:GeneratedType>
+		</InternalInfo>
+		<Properties>
+			<ObjectBelonging>Adopted</ObjectBelonging>
+			<Name>Probe</Name>
+			<Comment/>
+			<ExtendedConfigurationObject>5b8540f4-5d1c-50de-a24a-b4f78aea3cb6</ExtendedConfigurationObject>
+			<ActionOnConfigurationObjectMissing>Auto</ActionOnConfigurationObjectMissing>
+		</Properties>
+		<ChildObjects/>
+	</Sequence>
+</MetaDataObject>

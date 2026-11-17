@@ -49,7 +49,7 @@ IGNORE_DEBT = frozenset({
     ("crates/unica-documentation-sources/src/platform_help/retrieval_gate.rs",
      "retrieval_gate_finds_every_golden_query_within_budget"),
     ("crates/unica-documentation-sources/tests/platform/platform_help_oracle.rs",
-     "checked_platform_event_catalog_matches_complete_8_3_27_vendor_oracle"),
+     "checked_platform_event_catalog_matches_the_complete_vendor_oracle_of_its_line"),
     ("crates/unica-documentation-sources/tests/platform/platform_help_oracle.rs",
      "vendor_oracle_rejects_a_matching_hbk_from_the_wrong_installation_version"),
     ("crates/unica-documentation-sources/tests/platform/platform_help_oracle.rs",

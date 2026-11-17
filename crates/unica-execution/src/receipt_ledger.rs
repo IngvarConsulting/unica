@@ -893,7 +893,6 @@ impl ReceiptKey {
 // problem: неизвестно
 // on-reach: frontend урезает бюджет до 7000 мс; квитанция с большим бюджетом отвергается (ResponseBudgetTooLarge); недочитанный за срок кадр закрывает сессию
 // decision: закреплено правилом
-// decision-date: 2026-09-22
 // decision-source: arch/rules/runtime/daemon-protocol.md
 pub const MAX_ORIGINAL_RESPONSE_BUDGET_MS: u64 = 7_000;
 // resource-limit: receipt.result-entitlement-bytes
@@ -908,7 +907,6 @@ pub const MAX_ORIGINAL_RESPONSE_BUDGET_MS: u64 = 7_000;
 // on-reach: терминал больше резерва не переносится в задание; вызов получает result_too_large
 // issue: #1119
 // decision: закреплено правилом INV.APP.RECEIPT-RESULT-RESERVATION
-// decision-date: 2026-09-22
 // decision-source: arch/rules/runtime/receipt-result-reservation.md
 // review: #1119 PR9
 pub const MAX_RECEIPT_ENTITLEMENT_BYTES: u64 =

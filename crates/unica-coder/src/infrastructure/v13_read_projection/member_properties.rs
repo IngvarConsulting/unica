@@ -46,7 +46,7 @@ pub(super) fn project(
             Some(MetaObservedPropertyValue::LocalizedString { values }) if values.is_empty() => {
                 continue;
             }
-            // Обёртку снимает `place_prop`: публикуется массив переводов.
+            // Обёртку снимает `place_prop`: публикуется строка НСтр.
             Some(value @ MetaObservedPropertyValue::LocalizedString { .. }) => {
                 serde_json::to_value(value).ok()
             }

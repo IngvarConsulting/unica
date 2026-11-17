@@ -1,4 +1,5 @@
 //! Actual Designer subsystem parsing, read projections, validation and in-memory edit algorithms.
+use crate::dialect::root_version::{self, RootVersionReport};
 use roxmltree::Document;
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, HashSet};
@@ -8,9 +9,6 @@ use unica_metadata::subsystem::*;
 use unica_metadata::subsystem_topology::*;
 use unica_metadata::support_state::ObjectSupportData as DomainObjectSupportData;
 use unica_source_contract::discovery::{FollowMode, ProjectDiscoveryRead};
-use unica_source_designer::format_profile::{
-    classify_root_version, FormatCompatibility, ACTIVE_FORMAT_PROFILE,
-};
 use unica_source_designer::layout::full_md_namespace_declarations;
 use unica_source_designer::read::{path_exists, path_is_dir, read_bytes, read_string};
 use unica_source_designer::roots::root_version_literal;
@@ -531,12 +529,10 @@ pub fn validate_subsystem_content(
     let root = doc.root_element();
     let version_literal = root_version_literal(source, root);
     let version = version_literal.as_deref().unwrap_or("");
-    match classify_root_version(version_literal.as_deref()) {
-        Ok(FormatCompatibility::Supported { .. }) => report.ok("Export format: 2.20"),
-        Ok(compatibility) => report.warn(
-            unica_source_designer::format_profile::format_compatibility_warning(&compatibility),
-        ),
-        Err(error) => report.error(error.to_string()),
+    match root_version::report(version_literal.as_deref()) {
+        RootVersionReport::Ok(line) => report.ok(line),
+        RootVersionReport::Warn(line) => report.warn(line),
+        RootVersionReport::Error(line) => report.error(line),
     }
     let Some(sub) = root.children().find(|node| {
         unica_xml_format::names::element_has_name(
@@ -908,6 +904,7 @@ pub fn build_subsystem_info_result(
         property_limits: data.property_limits,
         synonym: subsystem_optional(data.synonym),
         comment: data.comment,
+        include_help_in_contents: data.include_help_in_contents,
         explanation: data.explanation,
         picture: subsystem_optional(data.picture),
         include_in_command_interface: subsystem_optional(data.include_ci),
@@ -1429,7 +1426,8 @@ pub fn child_subsystem_stub_xml(
     let mut lines = Vec::new();
     lines.push("<?xml version=\"1.0\" encoding=\"UTF-8\"?>".to_string());
     lines.push(format!(
-        "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" xmlns:app=\"http://v8.1c.ru/8.2/managed-application/core\" xmlns:cfg=\"http://v8.1c.ru/8.1/data/enterprise/current-config\" xmlns:cmi=\"http://v8.1c.ru/8.2/managed-application/cmi\" xmlns:ent=\"http://v8.1c.ru/8.1/data/enterprise\" xmlns:lf=\"http://v8.1c.ru/8.2/managed-application/logform\" xmlns:style=\"http://v8.1c.ru/8.1/data/ui/style\" xmlns:sys=\"http://v8.1c.ru/8.1/data/ui/fonts/system\" xmlns:v8=\"http://v8.1c.ru/8.1/data/core\" xmlns:v8ui=\"http://v8.1c.ru/8.1/data/ui\" xmlns:web=\"http://v8.1c.ru/8.1/data/ui/colors/web\" xmlns:win=\"http://v8.1c.ru/8.1/data/ui/colors/windows\" xmlns:xen=\"http://v8.1c.ru/8.3/xcf/enums\" xmlns:xpr=\"http://v8.1c.ru/8.3/xcf/predef\" xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" version=\"{format_version}\">"
+        "<MetaDataObject {} version=\"{format_version}\">",
+        full_md_namespace_declarations(format_version)
     ));
     lines.push(format!("\t<Subsystem uuid=\"{}\">", subsystem_uuid));
     lines.push("\t\t<Properties>".to_string());
@@ -1690,7 +1688,7 @@ pub fn parse_subsystem_edit_model(text: &str, label: &str) -> Result<SubsystemEd
     Ok(SubsystemEditModel {
         version: root
             .attribute("version")
-            .unwrap_or(ACTIVE_FORMAT_PROFILE.export_format)
+            .unwrap_or(root_version::writable())
             .to_string(),
         uuid: sub
             .attribute("uuid")
@@ -1982,7 +1980,7 @@ pub fn emit_subsystem_edit_model(model: &SubsystemEditModel) -> String {
     lines.push("<?xml version=\"1.0\" encoding=\"UTF-8\"?>".to_string());
     lines.push(format!(
         "<MetaDataObject {} version=\"{}\">",
-        full_md_namespace_declarations(),
+        full_md_namespace_declarations(&model.version),
         unica_xml_format::text::escape_xml(&model.version)
     ));
     lines.push(format!(
@@ -2185,19 +2183,23 @@ pub fn parse_subsystem_info_xml(
 
     let name =
         unica_xml_format::read::child_text(props, "Name", Some("http://v8.1c.ru/8.3/MDClasses"));
-    let synonym = props
-        .children()
-        .find(|node| {
-            unica_xml_format::names::element_has_name(
-                *node,
-                "Synonym",
-                Some("http://v8.1c.ru/8.3/MDClasses"),
-            )
-        })
-        .map(unica_xml_format::read::multilang_text)
-        .unwrap_or_default();
     let mut property_limits = Vec::new();
+    let synonym =
+        subsystem_text_property(props, "Synonym", true, &mut property_limits).unwrap_or_default();
     let comment = subsystem_text_property(props, "Comment", false, &mut property_limits);
+    let include_help_in_contents =
+        subsystem_text_property(props, "IncludeHelpInContents", false, &mut property_limits)
+            .and_then(|value| match value.as_str() {
+                "true" => Some(true),
+                "false" => Some(false),
+                _ => {
+                    property_limits.push(
+                        "source_unreadable: Subsystem properties.IncludeHelpInContents must contain true or false"
+                            .to_string(),
+                    );
+                    None
+                }
+            });
     let include_ci = unica_xml_format::read::child_text(
         props,
         "IncludeInCommandInterface",
@@ -2233,6 +2235,7 @@ pub fn parse_subsystem_info_xml(
             name,
             synonym,
             comment,
+            include_help_in_contents,
             include_ci,
             use_one_command,
             explanation,
@@ -2253,7 +2256,20 @@ fn subsystem_text_property(
     localized: bool,
     limits: &mut Vec<String>,
 ) -> Option<String> {
-    use crate::info_projection::{direct_text_content, localized_string_is_valid};
+    use crate::info_projection::direct_text_content;
+    if localized {
+        return match crate::info_projection::localized_property_as_nstr(
+            properties,
+            "Subsystem",
+            name,
+        ) {
+            Ok(value) => value,
+            Err(error) => {
+                limits.push(format!("source_unreadable: {error}"));
+                None
+            }
+        };
+    }
     let nodes = properties
         .children()
         .filter(|node| node.is_element() && node.tag_name().name() == name)
@@ -2265,44 +2281,13 @@ fn subsystem_text_property(
         let direct_text = direct_text_content(*node);
         let valid = node.tag_name().namespace() == Some("http://v8.1c.ru/8.3/MDClasses")
             && node.attributes().len() == 0
-            && if localized {
-                direct_text.trim().is_empty() && localized_string_is_valid(*node)
-            } else {
-                !node.children().any(|child| child.is_element())
-            };
+            && !node.children().any(|child| child.is_element());
         if valid {
-            return Some(if localized {
-                subsystem_localized_text(*node)
-            } else {
-                direct_text
-            });
+            return Some(direct_text);
         }
     }
     limits.push(format!("source_unreadable: Subsystem properties.{name} is malformed, duplicated or has a foreign namespace"));
     None
-}
-
-fn subsystem_localized_text(node: roxmltree::Node<'_, '_>) -> String {
-    use crate::info_projection::direct_text_content;
-    let values = node
-        .children()
-        .filter(roxmltree::Node::is_element)
-        .map(|item| {
-            let text = |name| {
-                item.children()
-                    .find(|child| child.is_element() && child.tag_name().name() == name)
-                    .map(direct_text_content)
-                    .unwrap_or_default()
-            };
-            (text("lang"), text("content"))
-        })
-        .collect::<Vec<_>>();
-    values
-        .iter()
-        .find(|(language, content)| language == "ru" && !content.is_empty())
-        .or_else(|| values.iter().find(|(_, content)| !content.is_empty()))
-        .map(|(_, content)| content.clone())
-        .unwrap_or_default()
 }
 
 pub fn append_subsystem_overview(lines: &mut Vec<String>, data: &SubsystemInfoData) {
@@ -2508,3 +2493,36 @@ mod subsystem_list_patch_tests;
 #[cfg(test)]
 #[path = "../tests/platform/subsystem_codec.rs"]
 mod tests;
+
+#[cfg(test)]
+mod export_format_tests {
+    fn declarations(xml: &str) -> Vec<(Option<String>, String)> {
+        let document = roxmltree::Document::parse(xml.trim_start_matches('\u{feff}')).unwrap();
+        let mut declared: Vec<_> = document
+            .root_element()
+            .namespaces()
+            .map(|namespace| {
+                (
+                    namespace.name().map(str::to_owned),
+                    namespace.uri().to_owned(),
+                )
+            })
+            .collect();
+        declared.sort();
+        declared
+    }
+
+    /// rule: INV.SOURCE.WRITABLE-PROFILE
+    #[test]
+    fn a_rewritten_subsystem_keeps_the_namespaces_of_its_format() {
+        for corpus in [
+            include_str!("../../../tests/fixtures/formats/platform_xml/2.20/all_kinds/src/Subsystems/СтандартныеПодсистемы.xml"),
+            include_str!("../../../tests/fixtures/formats/platform_xml/2.21/all_kinds/src/Subsystems/СтандартныеПодсистемы.xml"),
+            include_str!("../../../tests/fixtures/formats/platform_xml/2.22/all_kinds/src/Subsystems/СтандартныеПодсистемы.xml"),
+        ] {
+            let model = super::parse_subsystem_edit_model(corpus, "corpus").unwrap();
+            let written = super::emit_subsystem_edit_model(&model);
+            assert_eq!(declarations(&written), declarations(corpus));
+        }
+    }
+}

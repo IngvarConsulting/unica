@@ -24,12 +24,7 @@ impl RuntimeJobRunner for SystemRuntimeJobRunner {
         }
     }
     fn spawn(&self, request: &RuntimeJobRequest) -> RuntimeJobSpawnResult {
-        spawn_runtime_job(
-            &self.program,
-            &self.cwd,
-            &request.raw_argv,
-            request.full_rebuild_fallback_argv.is_some(),
-        )
+        spawn_runtime_job(&self.program, &self.cwd, &request.raw_argv, false)
     }
     fn attach(&self, _process_id: u32) -> Result<Box<dyn RuntimeJobProcess>, String> {
         Err(unica_redaction::redactor(

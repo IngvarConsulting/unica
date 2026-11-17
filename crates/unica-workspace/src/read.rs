@@ -195,6 +195,20 @@ impl SourceDirectoryReadPort for DirectoryRead {
     fn relative_file_stamp(&self, relative: &Path) -> io::Result<Option<FileStamp>> {
         self.retained.relative_file_stamp(relative)
     }
+    fn relative_directory_file_stamps(
+        &self,
+        relative: &Path,
+    ) -> io::Result<Option<Vec<(std::ffi::OsString, FileStamp)>>> {
+        self.retained.relative_directory_file_stamps(relative)
+    }
+    fn relative_directory_file_stamps_with_extension(
+        &self,
+        relative: &Path,
+        extension: &OsStr,
+    ) -> io::Result<Option<Vec<(OsString, FileStamp)>>> {
+        self.retained
+            .relative_directory_file_stamps_with_extension(relative, extension)
+    }
     fn open_relative_regular_nofollow(&self, relative: &Path) -> io::Result<ReadHandle> {
         self.retained
             .open_relative_regular_nofollow(relative)

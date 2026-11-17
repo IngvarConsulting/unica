@@ -1,0 +1,188 @@
+{
+  "platformVersion": "8.3.27.2342",
+  "platformBinarySha256": "2a9ef3653367b6de29000a3a51749a19e6450134347925713c9075674e9f0956",
+  "formatVersion": "2.20",
+  "source": "Raw XML exported by 1C 8.3.27.2342 with DESIGNER /DumpConfigToFiles -Extension from a disposable file infobase: all_kinds 2.20 loaded as the configuration, then one empty_extension 2.20 borrowing one object of every kind of all_kinds (object.borrow of Unica), loaded with /LoadConfigFromFiles -Extension and exported back. Layout of the extension: <Kind directory>/<Name>.xml.",
+  "files": {
+    "AccountingRegisters/Бухгалтерский.xml": {
+      "sha256": "1e5fd3ebee24fce8a4cda7c92d3013ab03a69f5c249f077f265b2a85d69e0a9c",
+      "size": 3138
+    },
+    "AccumulationRegisters/Остатки.xml": {
+      "sha256": "e3f073a861bdb78ac1cc7232c5c761cd088275574383f0dafc8f8db0d3e40c46",
+      "size": 2800
+    },
+    "Bots/AllKindsBot.xml": {
+      "sha256": "41ae09e76ce36a0ccb5b3d42abc85f0fc47add6ca226af59fffc20068aef00a6",
+      "size": 1234
+    },
+    "BusinessProcesses/Approval.xml": {
+      "sha256": "113a077f5c1ce1c639fb6cce0c1545033f05d6928363f33b4b0d513c663b7418",
+      "size": 2714
+    },
+    "CalculationRegisters/Начисления.xml": {
+      "sha256": "a481f9ae0175805dcaa6c6c93219c5dc0483dbb0f32c6cdb329c3df1b112221f",
+      "size": 3082
+    },
+    "Catalogs/Валюты.xml": {
+      "sha256": "eea6b87ac4d337b2537ad7f43e97419ffdd91598f595b6b383f1f230526ff9bc",
+      "size": 2503
+    },
+    "ChartsOfAccounts/Хозрасчетный.xml": {
+      "sha256": "dbb3b7ab8eaf9e18a65567d8f4848ac99238ec5c4f5eb4c6573bb1281401a9c3",
+      "size": 3113
+    },
+    "ChartsOfCalculationTypes/ВидыРасчета.xml": {
+      "sha256": "743285f68fb88120cf42e9d5147a418f59733803c74cdf0ac85843bf2aa836e6",
+      "size": 4231
+    },
+    "ChartsOfCharacteristicTypes/Codes.xml": {
+      "sha256": "c0edf6cd68ec354370c004aec2c7ec7e2ccc9135b37452b69c0ea8d06c128c37",
+      "size": 2757
+    },
+    "CommandGroups/Probe.xml": {
+      "sha256": "9a4c1690db8fe6afebd1908255d94202bd304567a15075ace098a265794442ed",
+      "size": 1246
+    },
+    "CommonAttributes/Probe.xml": {
+      "sha256": "341b946eaae2b971d424108d7c76712c320d07c078dd88ba3c86d7119cb92434",
+      "size": 1252
+    },
+    "CommonCommands/Probe.xml": {
+      "sha256": "e72f03a4efc530fc3887a0b171fbca0d8c9640e2d07a5dd0957df394511be1a2",
+      "size": 1248
+    },
+    "CommonForms/MainA.xml": {
+      "sha256": "32d525646376dcc3976e138879a1fa625e206ca4390a7d78768a4be7a7931f95",
+      "size": 1379
+    },
+    "CommonModules/EventHandlers.xml": {
+      "sha256": "d3e79a420003280853783988587e0b412aa9b203467713ee2f780f2bcace6baa",
+      "size": 1572
+    },
+    "CommonPictures/Probe.xml": {
+      "sha256": "fbcebd90e19c0d663e014d2788c08142ca325d18517396aa85d7a81f417c4da6",
+      "size": 1248
+    },
+    "CommonTemplates/Probe.xml": {
+      "sha256": "d18084a515041b1be1b2efbdbed7901ed64675f2fcb7965f66bd754d54e0098a",
+      "size": 1294
+    },
+    "Constants/Enabled.xml": {
+      "sha256": "2fcc5c2ca8aa1b9602ac1e6b4956b49de3d7f3a2a6c20edf2b1a65dcefe46c4a",
+      "size": 1957
+    },
+    "DataProcessors/Обработка.xml": {
+      "sha256": "ba7c6c25a2dabadc0959d7163a8b2f7bafd9da3e5030037042673c398af02185",
+      "size": 1786
+    },
+    "DefinedTypes/Inner.xml": {
+      "sha256": "050e129045186d96592db93c83f213b57f8c77a105bbfe1250400595f726abca",
+      "size": 1567
+    },
+    "DocumentJournals/Entries.xml": {
+      "sha256": "00ddb7cb63dfb984cf61fb8123af56c91d403e8094ed44bee75c592c5dec78d4",
+      "size": 1997
+    },
+    "DocumentNumerators/Sales.xml": {
+      "sha256": "16bfdeb8b2c2d426389b964a9cbd06720a1ce12f76bc352c34a3cf8d82118dd6",
+      "size": 1256
+    },
+    "Documents/Orders.xml": {
+      "sha256": "4e6beda0f22671e3b13a522b03fb4c26dcf6439e067c57c230f645e7ca2d29d3",
+      "size": 2427
+    },
+    "Enums/LanguageAware.xml": {
+      "sha256": "809890fa752c60b84aa682e2a322534a8d9d7bb92d62ace4656298e823d87846",
+      "size": 1954
+    },
+    "EventSubscriptions/CorpusEventSubscription.xml": {
+      "sha256": "3ce4213b935b9c92d3d6ca956a95969e591883607002136008a4796e9a885eab",
+      "size": 1274
+    },
+    "ExchangePlans/Codes.xml": {
+      "sha256": "c80ef6cd864ebce2dbae0ec5bd0d0ca803750331e8c1dac4b20f40dfc397ed6b",
+      "size": 2494
+    },
+    "FilterCriteria/Probe.xml": {
+      "sha256": "abc0e2bc97ded17d57c91cdf0644bf673a3e2388dd2e4d6f0786b303aea18fe9",
+      "size": 1751
+    },
+    "FunctionalOptions/ByConstant.xml": {
+      "sha256": "3cab5cc941895f140a00cffa97de46c77f081688f9fa1da99dcafffe3986692b",
+      "size": 1259
+    },
+    "FunctionalOptionsParameters/Probe.xml": {
+      "sha256": "3b3d98bbb2d2a8e6eb459abe307f5f4e80c67c1f4fc0c93eaaa8e0867552a60a",
+      "size": 1274
+    },
+    "HTTPServices/ПроверкаСвязи.xml": {
+      "sha256": "4c8182641e4fe410df2d8b5b0e5be7ed6e4c145055263b581e6c0b5b7c9ab9af",
+      "size": 1284
+    },
+    "InformationRegisters/АдминистративнаяИерархия.xml": {
+      "sha256": "816329918b31717f38662c107c7c9f68aca00603d240ec56903c61f95377b3d0",
+      "size": 3323
+    },
+    "IntegrationServices/Probe.xml": {
+      "sha256": "1685cee24e810e0874847dd6830b727a7183e68cf5c7075304273ddb8c542125",
+      "size": 1532
+    },
+    "Languages/English.xml": {
+      "sha256": "d450a16c78274ec9a085552ca520486d31700ac29377d5e289a83fc22cf92c17",
+      "size": 1240
+    },
+    "Reports/АнализВерсийОбъектов.xml": {
+      "sha256": "e67a828d5de735aba0415a081d8104b7e5a9ab0ff92f25311026df1227f9bbe2",
+      "size": 1824
+    },
+    "Roles/SalesReader.xml": {
+      "sha256": "5479242752ef04878be66fd0cbed0a39ff3725aded60a0ba2b20d04ef23c1835",
+      "size": 1375
+    },
+    "ScheduledJobs/KeyProbe.xml": {
+      "sha256": "31da9d0f08d32718ec319ca9ba8c3b7a517473f99ebb3d49e29c25e806ed740e",
+      "size": 1249
+    },
+    "Sequences/Probe.xml": {
+      "sha256": "3c06d306bc6279617f5dec3dac2db433b80851f3dbc226770b21393e16f20a97",
+      "size": 1958
+    },
+    "SessionParameters/SessionProbe.xml": {
+      "sha256": "15b3fe23e760184349fffb5635385476cfb2efd3985e1b8ea596f848edbeb812",
+      "size": 1261
+    },
+    "SettingsStorages/Probe.xml": {
+      "sha256": "ddcd1de2b86eefd366be7ddb1527ff26673332dac435a86e067c7fc22e6adb16",
+      "size": 1523
+    },
+    "StyleItems/Probe.xml": {
+      "sha256": "209a5132bf63e053885fe441a46c55683be380628b546a21b538462a4e5034d9",
+      "size": 1240
+    },
+    "Styles/Probe.xml": {
+      "sha256": "e42dceab90378e474e0bb5cccf327ab82106f68c003f3aa32de6e407e1d936b8",
+      "size": 1232
+    },
+    "Subsystems/СтандартныеПодсистемы.xml": {
+      "sha256": "13c57abde8807edcbbe977ab77727f748a05d299eaab97350d593365ca0b4aa1",
+      "size": 1460
+    },
+    "Tasks/Work.xml": {
+      "sha256": "d17d87b2cf240d8b40a49bedcd4f8e5f5e1a24f0f6cdf518180460a1f0b13e09",
+      "size": 2364
+    },
+    "WebServices/ОбменДанными.xml": {
+      "sha256": "1502e17cc962c2366c6844f0360ec6b9c3f8ef04dd2acedb24822e260855a1ff",
+      "size": 1280
+    },
+    "WSReferences/Probe.xml": {
+      "sha256": "48d7cde8a1da72daba990515e0f4defce84b1677a717aa6d269e11be0033a2c9",
+      "size": 1492
+    },
+    "XDTOPackages/EnterpriseData_1_17_3.xml": {
+      "sha256": "60f8c5c58348c926233c73774bbe173abfe36f2f27bbdefaac10f31c0fec6da9",
+      "size": 1260
+    }
+  }
+}

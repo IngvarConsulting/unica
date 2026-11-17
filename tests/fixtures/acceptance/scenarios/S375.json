@@ -101,10 +101,7 @@
                   "itemsViewMode": "Normal",
                   "viewMode": "Normal",
                   "userSettingID": "11111111-1111-4111-8111-111111111111",
-                  "userSettingPresentation": {
-                    "ru": "Таблица",
-                    "en": "Table"
-                  }
+                  "userSettingPresentation": "ru = 'Таблица'; en = 'Table'"
                 },
                 {
                   "name": "Chart",
@@ -324,10 +321,7 @@
               "values": {
                 "use": true,
                 "rowsViewMode": "Normal",
-                "userSettingPresentation": {
-                  "ru": "Обновлено",
-                  "en": "Updated"
-                }
+                "userSettingPresentation": "ru = 'Обновлено'; en = 'Updated'"
               }
             }
           },

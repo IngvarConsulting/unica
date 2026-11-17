@@ -1,6 +1,3 @@
-use crate::fallback::{
-    classify_partial_platform_failure, full_rebuild_argv, BuildAttempt, PARTIAL_FALLBACK_WARNING,
-};
 use crate::preflight::RuntimeBuildPreflight;
 use unica_execution::runner::{
     attempt::{CompletedAttempt, RuntimeAttempt},
@@ -29,7 +26,6 @@ pub struct RuntimeJobRequest {
     pub(crate) artifact_path: Option<String>,
     pub(crate) timeout_reason: Option<String>,
     pub(crate) build_preflight: Option<RuntimeBuildPreflight>,
-    pub(crate) full_rebuild_fallback_argv: Option<Vec<String>>,
 }
 
 impl RuntimeJobRequest {
@@ -39,9 +35,6 @@ impl RuntimeJobRequest {
         safe_target: impl Into<String>,
         artifact_path: Option<String>,
     ) -> Self {
-        let full_rebuild_fallback_argv = (operation == RuntimeJobOperation::Build)
-            .then(|| full_rebuild_argv(&raw_argv))
-            .flatten();
         Self {
             operation,
             raw_argv,
@@ -49,7 +42,6 @@ impl RuntimeJobRequest {
             artifact_path,
             timeout_reason: None,
             build_preflight: None,
-            full_rebuild_fallback_argv,
         }
     }
 
@@ -72,36 +64,7 @@ impl RuntimeJobRequest {
                  `fullRebuild: true`",
             ));
         }
-        match &self.full_rebuild_fallback_argv {
-            Some(fallback)
-                if self.operation != RuntimeJobOperation::Build
-                    || full_rebuild
-                    || !self
-                        .raw_argv
-                        .iter()
-                        .any(|argument| argument == "--json-message")
-                    || full_rebuild_argv(&self.raw_argv).as_ref() != Some(fallback) =>
-            {
-                return Err(redacted_error(
-                    "runtime job full rebuild fallback arguments are inconsistent",
-                ));
-            }
-            None if self.operation == RuntimeJobOperation::Build && !full_rebuild => {
-                return Err(redacted_error(
-                    "normal build worker request is missing its full rebuild fallback",
-                ));
-            }
-            Some(_) | None => {}
-        }
         Ok(())
-    }
-
-    pub fn take_full_rebuild_fallback(&mut self) -> Option<Self> {
-        let raw_argv = self.full_rebuild_fallback_argv.take()?;
-        let mut fallback = self.clone();
-        fallback.raw_argv = raw_argv;
-        fallback.full_rebuild_fallback_argv = None;
-        Some(fallback)
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -124,11 +87,6 @@ impl RuntimeJobRequest {
     #[cfg(any(test, feature = "test-support"))]
     pub fn build_preflight(&self) -> Option<&RuntimeBuildPreflight> {
         self.build_preflight.as_ref()
-    }
-
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn full_rebuild_fallback_argv(&self) -> Option<&[String]> {
-        self.full_rebuild_fallback_argv.as_deref()
     }
 }
 
@@ -165,25 +123,6 @@ pub fn production_runtime_connection_markers() -> &'static [&'static str] {
     RUNTIME_CONNECTION_MARKERS
 }
 
-fn combine_runtime_job_outputs(
-    initial: &RuntimeJobOutput,
-    fallback: &RuntimeJobOutput,
-) -> RuntimeJobOutput {
-    RuntimeJobOutput {
-        stdout: format!(
-            "--- initial partial attempt ---\n{}\n--- full rebuild fallback ---\n{}",
-            initial.stdout, fallback.stdout
-        ),
-        stderr: format!(
-            "--- initial partial attempt ---\n{}\n--- full rebuild fallback ---\n{}",
-            initial.stderr, fallback.stderr
-        ),
-        output_incomplete: initial.output_incomplete || fallback.output_incomplete,
-        fallback_receipt: fallback.fallback_receipt.clone(),
-        fallback_receipt_truncated: fallback.fallback_receipt_truncated,
-    }
-}
-
 impl RuntimeAttempt for RuntimeJobRequest {
     fn operation(&self) -> RuntimeJobOperation {
         self.operation
@@ -203,42 +142,26 @@ impl RuntimeAttempt for RuntimeJobRequest {
     fn validate(&self) -> JobResult<()> {
         self.validate_build_preflight()
     }
+    // A build runs once: v8-runner chooses the import mode itself, and Unica
+    // never repeats a failed build with `--full-rebuild` on its own.
     fn take_retry(&mut self) -> Option<Self> {
-        self.take_full_rebuild_fallback()
+        None
     }
-    fn classify_retry(&self, observed: CompletedAttempt<'_>) -> Result<(), Option<String>> {
-        classify_partial_platform_failure(&BuildAttempt {
-            argv: &self.raw_argv,
-            process_exit_code: observed.process_exit_code,
-            status_success: observed.status_success,
-            timed_out: observed.timed_out,
-            cancelled: observed.cancelled,
-            stdout_truncated: observed.stdout_truncated,
-            stdout_had_invalid_utf8: observed.stdout_had_invalid_utf8,
-            stdout: observed.stdout,
-        })
-        .map(|_| ())
-        .map_err(|refusal| refusal.warning())
+    fn classify_retry(&self, _observed: CompletedAttempt<'_>) -> Result<(), Option<String>> {
+        Err(None)
     }
     fn retry_start_warning(
         &self,
-        stage: unica_execution::runner::attempt::RetryStartFailure,
+        _stage: unica_execution::runner::attempt::RetryStartFailure,
         error: &str,
     ) -> String {
-        match stage {
-            unica_execution::runner::attempt::RetryStartFailure::Authorization => format!(
-                "full rebuild fallback was not started because build identity changed: {error}"
-            ),
-            unica_execution::runner::attempt::RetryStartFailure::Spawn => format!(
-                "full rebuild fallback was not started because v8-runner failed to spawn: {error}"
-            ),
-        }
+        redacted_error(error)
     }
     fn retry_warning(&self) -> &'static str {
-        PARTIAL_FALLBACK_WARNING
+        ""
     }
-    fn combine_outputs(initial: &RuntimeJobOutput, retry: &RuntimeJobOutput) -> RuntimeJobOutput {
-        combine_runtime_job_outputs(initial, retry)
+    fn combine_outputs(_initial: &RuntimeJobOutput, retry: &RuntimeJobOutput) -> RuntimeJobOutput {
+        retry.clone()
     }
 }
 
@@ -265,9 +188,5 @@ impl RuntimeJobRequest {
     #[cfg(any(test, feature = "test-support"))]
     pub fn raw_argv_mut_for_test(&mut self) -> &mut Vec<String> {
         &mut self.raw_argv
-    }
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn replace_fallback_for_test(&mut self, fallback: Option<Vec<String>>) {
-        self.full_rebuild_fallback_argv = fallback;
     }
 }

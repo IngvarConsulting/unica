@@ -3,14 +3,14 @@ use super::*;
 /// rule: INV.SOURCE.MODULE-COMMON-PROPERTIES
 #[test]
 fn borrowed_common_module_keeps_missing_privileged_unknown() {
-    let borrowed = fixture_text("platform_8_3_27/cfe_borrow/extension-common-module.xml");
+    let borrowed = fixture_text("formats/platform_xml/2.20/cfe_borrow/extension-common-module.xml");
     let props =
         super::super::common_module_properties(borrowed.as_bytes(), SourceSetKind::Extension)
             .expect("platform borrowed CommonModule omits Privileged");
     let serialized = serde_json::to_value(props).unwrap();
     assert_eq!(serialized["privileged"], serde_json::Value::Null);
 
-    let ordinary = fixture_text("platform_8_3_27/cfe_borrow/parent-common-module.xml");
+    let ordinary = fixture_text("formats/platform_xml/2.20/cfe_borrow/parent-common-module.xml");
     let missing = ordinary.replace("<Privileged>false</Privileged>", "");
     assert_eq!(
         super::super::common_module_properties(missing.as_bytes(), SourceSetKind::Configuration)
@@ -70,7 +70,7 @@ fn borrowed_common_module_view_serializes_unknown_privileged_without_losing_cont
     );
     write(
         &fixture.source.join("CommonModules/CorpusModule.xml"),
-        &fixture_text("platform_8_3_27/cfe_borrow/extension-common-module.xml"),
+        &fixture_text("formats/platform_xml/2.20/cfe_borrow/extension-common-module.xml"),
     );
     write(
         &fixture
@@ -99,7 +99,7 @@ fn borrowed_common_module_view_serializes_unknown_privileged_without_losing_cont
 #[test]
 fn borrowed_common_module_reads_platform_absent_properties_as_unknown() {
     let inherited =
-        fixture_text("platform_8_3_27/cfe_borrow/extension-common-module-inherited.xml");
+        fixture_text("formats/platform_xml/2.20/cfe_borrow/extension-common-module-inherited.xml");
     let props =
         super::super::common_module_properties(inherited.as_bytes(), SourceSetKind::Extension)
             .expect("platform borrowed CommonModule without properties");
@@ -109,8 +109,9 @@ fn borrowed_common_module_reads_platform_absent_properties_as_unknown() {
     }
     assert!(!props.execution_environment_known());
 
-    let environment =
-        fixture_text("platform_8_3_27/cfe_borrow/extension-common-module-environment-only.xml");
+    let environment = fixture_text(
+        "formats/platform_xml/2.20/cfe_borrow/extension-common-module-environment-only.xml",
+    );
     let props =
         super::super::common_module_properties(environment.as_bytes(), SourceSetKind::Extension)
             .expect("platform borrowed CommonModule without ReturnValuesReuse");
@@ -124,7 +125,8 @@ fn borrowed_common_module_reads_platform_absent_properties_as_unknown() {
     assert_eq!(props.return_values_reuse, None);
     assert!(props.execution_environment_known());
 
-    let parent = fixture_text("platform_8_3_27/cfe_borrow/parent-common-module-cache.xml");
+    let parent =
+        fixture_text("formats/platform_xml/2.20/cfe_borrow/parent-common-module-cache.xml");
     let props =
         super::super::common_module_properties(parent.as_bytes(), SourceSetKind::Configuration)
             .unwrap();
@@ -180,9 +182,8 @@ fn borrowed_common_module_reads_platform_absent_properties_as_unknown() {
 }
 
 /// Заимствованный модуль без свойств читается, его методы доступны.
-/// Контексты без флагов среды неизвестны и сериализуются `null`, фильтр по
-/// контексту отказывает типизированно; при записанных флагах контексты
-/// вычисляются как прежде, а неизвестные свойства остаются `null`.
+/// Вычисленные контексты остаются внутренними фактами при любых флагах
+/// среды, а неизвестные свойства модуля сериализуются как `null`.
 /// rule: INV.SOURCE.MODULE-COMMON-PROPERTIES
 #[test]
 fn borrowed_common_module_view_keeps_absent_properties_and_contexts_unknown() {
@@ -204,7 +205,9 @@ fn borrowed_common_module_view_keeps_absent_properties_and_contexts_unknown() {
     ] {
         write(
             &fixture.source.join(format!("CommonModules/{name}.xml")),
-            &fixture_text(&format!("platform_8_3_27/cfe_borrow/{descriptor}")),
+            &fixture_text(&format!(
+                "formats/platform_xml/2.20/cfe_borrow/{descriptor}"
+            )),
         );
         write(
             &fixture
@@ -231,20 +234,20 @@ fn borrowed_common_module_view_keeps_absent_properties_and_contexts_unknown() {
     let method = method.data.unwrap();
     assert_eq!(method["kind"], "Method");
     assert_eq!(method["props"]["export"], true);
-    assert_eq!(
-        method["props"]["compile"]["contexts"],
-        serde_json::Value::Null,
-        "contexts of a borrowed module without environment flags are unknown"
+    assert!(
+        method["props"].get("compile").is_none(),
+        "computed compilation facts stay internal"
     );
     let body = service
         .view(ViewRequest::new("main:CommonModule.КешЗначений.Method.ПР_Удвоенное.Body").unwrap());
     assert!(body.ok, "body must succeed");
     let methods = service.view(ViewRequest::new("main:CommonModule.КешЗначений.Method").unwrap());
     assert!(methods.ok, "methods of a borrowed module stay readable");
-    assert_eq!(
-        methods.data.unwrap()["items"][0]["props"]["compile"]["contexts"],
-        serde_json::Value::Null,
-        "the collection keeps the unknown contexts of its methods"
+    assert!(
+        methods.data.unwrap()["items"][0]["props"]
+            .get("compile")
+            .is_none(),
+        "computed compilation facts stay internal"
     );
 
     let view = service.view(ViewRequest::new("main:CommonModule.СерверныеФункции").unwrap());
@@ -257,25 +260,20 @@ fn borrowed_common_module_view_keeps_absent_properties_and_contexts_unknown() {
     let method = service
         .view(ViewRequest::new("main:CommonModule.СерверныеФункции.Method.ПР_Удвоенное").unwrap());
     assert!(method.ok, "method must succeed");
-    assert_eq!(
-        method.data.unwrap()["props"]["compile"]["contexts"],
-        json!([
-            "server",
-            "mobileAppServer",
-            "mobileStandaloneServer",
-            "externalConnection"
-        ])
+    assert!(
+        method.data.unwrap()["props"].get("compile").is_none(),
+        "computed compilation facts stay internal"
     );
 }
 
-/// Контексты известны только при всех четырёх флагах среды.
-/// Без любого одного из них контексты метода — `null`, а остальные
-/// записанные флаги читаются как есть.
+/// При отсутствии любого флага среды остальные записанные флаги читаются
+/// как есть, а вычисленные контексты метода остаются внутренними фактами.
 /// rule: INV.SOURCE.MODULE-COMMON-PROPERTIES
 #[test]
 fn borrowed_common_module_without_any_single_environment_flag_has_unknown_contexts() {
-    let environment =
-        fixture_text("platform_8_3_27/cfe_borrow/extension-common-module-environment-only.xml");
+    let environment = fixture_text(
+        "formats/platform_xml/2.20/cfe_borrow/extension-common-module-environment-only.xml",
+    );
     for (flag, element) in [
         (
             "clientManagedApplication",
@@ -327,10 +325,9 @@ fn borrowed_common_module_without_any_single_environment_flag_has_unknown_contex
             ViewRequest::new("main:CommonModule.СерверныеФункции.Method.ПР_Разность").unwrap(),
         );
         assert!(method.ok, "{flag}: method view must succeed");
-        assert_eq!(
-            method.data.unwrap()["props"]["compile"]["contexts"],
-            serde_json::Value::Null,
-            "{flag}"
+        assert!(
+            method.data.unwrap()["props"].get("compile").is_none(),
+            "computed compilation facts stay internal"
         );
     }
 }
@@ -348,8 +345,9 @@ fn borrowed_common_module_missing_reuse_preserves_methods_and_source() {
             "<CommonModule>CorpusModule</CommonModule></ChildObjects>",
         ),
     );
-    let descriptor = fixture_text("platform_8_3_27/cfe_borrow/extension-common-module.xml")
-        .replace("<ReturnValuesReuse>DontUse</ReturnValuesReuse>", "");
+    let descriptor =
+        fixture_text("formats/platform_xml/2.20/cfe_borrow/extension-common-module.xml")
+            .replace("<ReturnValuesReuse>DontUse</ReturnValuesReuse>", "");
     let path = fixture.source.join("CommonModules/CorpusModule.xml");
     write(&path, &descriptor);
     let module = fixture
@@ -381,7 +379,7 @@ fn borrowed_common_module_missing_reuse_preserves_methods_and_source() {
 #[test]
 fn common_module_present_damage_is_not_missing() {
     // Synthetic corruptions exercise reader boundaries, not platform validity.
-    let borrowed = fixture_text("platform_8_3_27/cfe_borrow/extension-common-module.xml");
+    let borrowed = fixture_text("formats/platform_xml/2.20/cfe_borrow/extension-common-module.xml");
     for value in [
         "<Server/>",
         "<Server>maybe</Server>",
@@ -441,7 +439,7 @@ fn platform_borrowed_common_module_preserves_unknown_contexts_and_independent_fa
         ),
     );
     let descriptor =
-        fixture_text("platform_8_3_27/incomplete_borrowed/extension-common-module.xml");
+        fixture_text("formats/platform_xml/2.20/incomplete_borrowed/extension-common-module.xml");
     let path = fixture.source.join("CommonModules/CorpusModule.xml");
     write(&path, &descriptor);
     let module = fixture
@@ -469,17 +467,12 @@ fn platform_borrowed_common_module_preserves_unknown_contexts_and_independent_fa
         .view(ViewRequest::new("main:CommonModule.CorpusModule.Method.Проверка").unwrap())
         .data
         .unwrap();
-    assert_eq!(
-        method["props"]["compile"]["contexts"],
-        serde_json::Value::Null
+    assert!(
+        method["props"].get("compile").is_none(),
+        "computed compilation facts stay internal"
     );
-    assert_eq!(method["props"]["compile"]["guard"], "Server");
     assert_eq!(method["props"]["export"], true);
-    let compilation = service
-        .view(ViewRequest::new("main:CommonModule.CorpusModule.Compilation").unwrap())
-        .data
-        .unwrap();
-    assert_eq!(compilation["items"][0]["contexts"], serde_json::Value::Null);
+    assert!(QualifiedAddress::parse("main:CommonModule.CorpusModule.Compilation").is_err());
     assert_eq!(fs::read_to_string(&path).unwrap(), descriptor);
     assert_eq!(fs::read_to_string(&module).unwrap(), source);
 
@@ -544,8 +537,10 @@ fn platform_borrowed_common_module_preserves_unknown_contexts_and_independent_fa
 /// rule: INV.SOURCE.MODULE-COMMON-PROPERTIES
 #[test]
 fn common_module_absence_policy_keeps_ordinary_properties_required() {
-    let ordinary = fixture_text("platform_8_3_27/incomplete_borrowed/parent-common-module.xml");
-    let borrowed = fixture_text("platform_8_3_27/incomplete_borrowed/extension-common-module.xml");
+    let ordinary =
+        fixture_text("formats/platform_xml/2.20/incomplete_borrowed/parent-common-module.xml");
+    let borrowed =
+        fixture_text("formats/platform_xml/2.20/incomplete_borrowed/extension-common-module.xml");
     for name in [
         "Global",
         "ClientManagedApplication",

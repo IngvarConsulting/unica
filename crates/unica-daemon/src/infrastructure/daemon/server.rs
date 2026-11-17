@@ -24,15 +24,15 @@ pub(crate) use self::invocation_service::{
 };
 use super::protocol::InvocationRequest;
 use crate::application::tool_contracts::SurfaceRelease;
+use crate::infrastructure::analysis_composition::provider_host::ProviderHostOwner;
 pub(super) use invocation_service::workspace_admission::admit_editor_folder;
-use unica_analysis_services::provider_host::ProviderHostOwner;
 use unica_execution::clock::TokioClock;
 use unica_execution::invocation::InvocationResponseDeadline;
 use unica_execution::receipt_runtime::ports::{ExecutionClass, KnownLongReason};
 use unica_work_control::clock::Clock;
 #[cfg(test)]
 type RuntimeJobService = unica_execution::runtime_jobs::RuntimeJobService<
-    unica_adapter_v8_runner::request::RuntimeJobRequest,
+    unica_coder::infrastructure::daemon_adapters::runtime::RuntimeJobRequest,
 >;
 use crate::infrastructure::source_workspace::WorkspaceActorRegistry;
 use std::sync::Arc;
@@ -40,6 +40,8 @@ use std::time::Duration;
 use unica_execution::runtime_jobs::RuntimeResourceOwner;
 use unica_execution_contract::invocation::{DomainResult, InvocationFailure};
 use unica_work_control::cancellation::CancellationToken;
+use unica_work_control::provider_deadline::ProviderDeadline;
+use unica_workspace::actor::SourceWriteLane;
 
 /// Безымянный неуспех — только для стенда.
 ///
@@ -342,11 +344,16 @@ fn validate_hidden_v13_request(request: &InvocationRequest) -> Result<(), String
         .get("properties")
         .and_then(serde_json::Value::as_object)
         .ok_or_else(|| "canonical tool schema has no properties".to_string())?;
-    if let Some(unknown) = request
-        .arguments()
-        .keys()
-        .find(|name| !properties.contains_key(*name))
-    {
+    // Отметки ответа человека — согласие и перевыгрузку перед правкой —
+    // ставит дверь при повторе выбранного варианта; модельный вызов с ними
+    // дверь отвергает, поэтому схема их не называет. Перевыгрузка бывает
+    // только перед `unica.apply`.
+    if let Some(unknown) = request.arguments().keys().find(|name| {
+        !properties.contains_key(*name)
+            && name.as_str() != unica_execution_contract::invocation::HUMAN_CONFIRMATION_KEY
+            && !(name.as_str() == unica_execution_contract::invocation::HUMAN_REEXPORT_KEY
+                && request.tool() == unica_execution::invocation_store::ToolIdentity::Apply)
+    }) {
         return Err(format!(
             "canonical invocation has unknown argument `{unknown}`"
         ));
@@ -365,7 +372,25 @@ fn validate_hidden_v13_request(request: &InvocationRequest) -> Result<(), String
         }
     }
     for (name, value) in request.arguments() {
-        validate_canonical_value(name, value, &properties[name])?;
+        let Some(schema) = properties.get(name) else {
+            // The choice to re-export names a set and a format; its fields are
+            // checked where the re-export is prepared.
+            if name == unica_execution_contract::invocation::HUMAN_REEXPORT_KEY {
+                if !value.is_object() {
+                    return Err(format!(
+                        "canonical invocation argument `{name}` must be an object"
+                    ));
+                }
+                continue;
+            }
+            if !value.is_string() {
+                return Err(format!(
+                    "canonical invocation argument `{name}` must be text"
+                ));
+            }
+            continue;
+        };
+        validate_canonical_value(name, value, schema)?;
     }
     Ok(())
 }
@@ -744,6 +769,7 @@ enum ActorBoundCanonicalInvocationState {
     /// внешнему процессу.
     SourceImport {
         import: Arc<super::v13_source_import::PreparedSourceImport>,
+        source_writes: SourceWriteLane,
         workspace_identity_hash: unica_execution_contract::invocation::SafeIdentityHash,
         delivery: RunEngineDelivery,
     },
@@ -751,6 +777,7 @@ enum ActorBoundCanonicalInvocationState {
     /// по внешнему процессу.
     SourceExport {
         export: Arc<super::v13_source_export::PreparedSourceExport>,
+        source_writes: SourceWriteLane,
         workspace_identity_hash: unica_execution_contract::invocation::SafeIdentityHash,
         delivery: RunEngineDelivery,
     },
@@ -758,6 +785,7 @@ enum ActorBoundCanonicalInvocationState {
     /// по внешнему процессу.
     ArtifactBuild {
         build: Arc<super::v13_artifact_build::PreparedArtifactBuild>,
+        source_writes: SourceWriteLane,
         workspace_identity_hash: unica_execution_contract::invocation::SafeIdentityHash,
         delivery: RunEngineDelivery,
     },
@@ -765,6 +793,16 @@ enum ActorBoundCanonicalInvocationState {
         search: Arc<super::v13_documentation::PreparedDocumentationSearch>,
         workspace_identity_hash: unica_execution_contract::invocation::SafeIdentityHash,
         response_deadline: InvocationResponseDeadline,
+    },
+    /// `unica.apply` after the person chose to re-export its set first: the
+    /// re-export, known long by its external process, then the edit, in one
+    /// call and one Task (INV.SOURCE.WRITABLE-PROFILE).
+    ReexportThenApply {
+        export: Arc<super::v13_source_export::PreparedSourceExport>,
+        source_writes: SourceWriteLane,
+        workspace_identity_hash: unica_execution_contract::invocation::SafeIdentityHash,
+        delivery: RunEngineDelivery,
+        apply: Box<DeferredWorkspaceInvocation>,
     },
 }
 
@@ -797,18 +835,27 @@ enum PreparedCanonicalInvocationState {
     },
     SourceImport {
         import: Arc<super::v13_source_import::PreparedSourceImport>,
+        source_writes: SourceWriteLane,
         delivery: RunEngineDelivery,
     },
     SourceExport {
         export: Arc<super::v13_source_export::PreparedSourceExport>,
+        source_writes: SourceWriteLane,
         delivery: RunEngineDelivery,
     },
     ArtifactBuild {
         build: Arc<super::v13_artifact_build::PreparedArtifactBuild>,
+        source_writes: SourceWriteLane,
         delivery: RunEngineDelivery,
     },
     Documentation {
         search: Arc<super::v13_documentation::PreparedDocumentationSearch>,
+    },
+    ReexportThenApply {
+        export: Arc<super::v13_source_export::PreparedSourceExport>,
+        source_writes: SourceWriteLane,
+        delivery: RunEngineDelivery,
+        apply: Box<DeferredWorkspaceInvocation>,
     },
 }
 
@@ -820,7 +867,104 @@ fn detached_check_snapshots() -> Arc<unica_navigation::result_store::ViewCursorS
     Arc::new(super::v13_service::product_view_cursors())
 }
 
+/// A workspace invocation bound only when it runs: the edit after a re-export
+/// is admitted to its workspace after the re-export released the set, and it
+/// reads the sources the re-export wrote.
+pub(super) struct DeferredWorkspaceInvocation {
+    request: InvocationRequest,
+    service: Arc<dyn CanonicalInvocationService>,
+    clock: Arc<dyn Clock>,
+    workspace_actors: Arc<WorkspaceActorRegistry>,
+    deliveries: Arc<unica_artifact_delivery::desk::DeliveryDesk>,
+    provider_hosts: Arc<ProviderHostOwner>,
+    runtime_resources: Arc<RuntimeResourceOwner>,
+    #[cfg(test)]
+    runtime_service: Option<Arc<RuntimeJobService>>,
+}
+
+impl DeferredWorkspaceInvocation {
+    /// Binds, prepares and executes the invocation in the Task it is part of.
+    /// The answer of the Task is due later, so the deadline only bounds the
+    /// admission of this one step.
+    fn execute(self, cancellation: CancellationToken) -> Result<DomainResult, InvocationFailure> {
+        #[cfg(test)]
+        let runtime_service = self.runtime_service.clone();
+        #[cfg(not(test))]
+        let runtime_service = None;
+        let invocation = match bind_workspace_invocation_cancellable(
+            &self.request,
+            &self.workspace_actors,
+            ActorInvocationResources::new(
+                self.deliveries,
+                self.provider_hosts,
+                self.runtime_resources,
+                runtime_service,
+            ),
+            InvocationResponseDeadline::capture(self.clock),
+            &cancellation,
+        ) {
+            Ok(invocation) => invocation,
+            Err(error) => {
+                return match reject_workspace_admission(&self.request, error) {
+                    V5CanonicalPrepareError::Direct(result)
+                    | V5CanonicalPrepareError::Rejected(result) => Ok(*result),
+                    V5CanonicalPrepareError::WorkspaceRegistryFailed => {
+                        Err(InvocationFailure::new(
+                            "workspace_registry_failed",
+                            "the workspace actor registry failed after the re-export",
+                        ))
+                    }
+                }
+            }
+        };
+        if let Err(result) = self.service.prepare(&invocation) {
+            return Ok(*result);
+        }
+        let execution = invocation
+            .begin_execution(&cancellation)
+            .map_err(boundary_failure)?;
+        let outcome = self.service.execute(&execution, cancellation.clone());
+        execution
+            .publish(outcome, &cancellation)
+            .map_err(boundary_failure)?
+    }
+}
+
 impl V5CanonicalInvocationRuntime {
+    fn deferred_workspace_invocation(
+        &self,
+        request: InvocationRequest,
+    ) -> DeferredWorkspaceInvocation {
+        DeferredWorkspaceInvocation {
+            request,
+            service: Arc::clone(&self.service),
+            clock: Arc::clone(&self.clock),
+            workspace_actors: Arc::clone(&self.workspace_actors),
+            deliveries: Arc::clone(&self.deliveries),
+            provider_hosts: Arc::clone(&self.provider_hosts),
+            runtime_resources: Arc::clone(&self.runtime_resources),
+            #[cfg(test)]
+            runtime_service: self.runtime_service.clone(),
+        }
+    }
+
+    /// The lane of source writes of `workspace_root`, shared with the actors
+    /// of that workspace.
+    fn source_write_lane(
+        &self,
+        workspace_root: &std::path::Path,
+    ) -> Result<SourceWriteLane, V5CanonicalPrepareError> {
+        self.workspace_actors
+            .source_write_lane(workspace_root)
+            .map_err(|error| {
+                V5CanonicalPrepareError::Rejected(Box::new(DomainResult::canonical_rejection(
+                    None,
+                    RefusalCode::InvalidState,
+                    format!("workspace source write lane is unavailable: {error}"),
+                )))
+            })
+    }
+
     #[cfg(test)]
     pub(super) fn new(service: Arc<dyn CanonicalInvocationService>, clock: Arc<dyn Clock>) -> Self {
         Self::with_workspace_actors(
@@ -1051,6 +1195,25 @@ impl V5CanonicalInvocationRuntime {
                 ));
             }
         }
+        match super::v13_source_export::prepare_reexport_before_apply(&request) {
+            super::v13_source_export::ReexportBeforeApply::NotApplicable => {}
+            super::v13_source_export::ReexportBeforeApply::Rejected(result) => {
+                return Err(V5CanonicalPrepareError::Rejected(result))
+            }
+            super::v13_source_export::ReexportBeforeApply::Ready(export, apply) => {
+                let workspace_identity_hash = export.workspace_identity_hash();
+                let source_writes = self.source_write_lane(export.workspace_root())?;
+                return Ok(V5ActorBoundCanonicalInvocation(
+                    ActorBoundCanonicalInvocationState::ReexportThenApply {
+                        export,
+                        source_writes,
+                        workspace_identity_hash,
+                        delivery: run_delivery.clone(),
+                        apply: Box::new(self.deferred_workspace_invocation(apply)),
+                    },
+                ));
+            }
+        }
         match super::v13_source_import::prepare(&request) {
             super::v13_source_import::Preparation::NotApplicable => {}
             super::v13_source_import::Preparation::Rejected(result) => {
@@ -1058,9 +1221,11 @@ impl V5CanonicalInvocationRuntime {
             }
             super::v13_source_import::Preparation::Ready(import) => {
                 let workspace_identity_hash = import.workspace_identity_hash();
+                let source_writes = self.source_write_lane(import.workspace_root())?;
                 return Ok(V5ActorBoundCanonicalInvocation(
                     ActorBoundCanonicalInvocationState::SourceImport {
                         import,
+                        source_writes,
                         workspace_identity_hash,
                         delivery: run_delivery.clone(),
                     },
@@ -1074,9 +1239,11 @@ impl V5CanonicalInvocationRuntime {
             }
             super::v13_source_export::Preparation::Ready(export) => {
                 let workspace_identity_hash = export.workspace_identity_hash();
+                let source_writes = self.source_write_lane(export.workspace_root())?;
                 return Ok(V5ActorBoundCanonicalInvocation(
                     ActorBoundCanonicalInvocationState::SourceExport {
                         export,
+                        source_writes,
                         workspace_identity_hash,
                         delivery: run_delivery.clone(),
                     },
@@ -1090,9 +1257,11 @@ impl V5CanonicalInvocationRuntime {
             }
             super::v13_artifact_build::Preparation::Ready(build) => {
                 let workspace_identity_hash = build.workspace_identity_hash();
+                let source_writes = self.source_write_lane(build.workspace_root())?;
                 return Ok(V5ActorBoundCanonicalInvocation(
                     ActorBoundCanonicalInvocationState::ArtifactBuild {
                         build,
+                        source_writes,
                         workspace_identity_hash,
                         delivery: run_delivery.clone(),
                     },
@@ -1159,7 +1328,8 @@ impl V5ActorBoundCanonicalInvocation {
             | ActorBoundCanonicalInvocationState::InfobaseCreate { .. }
             | ActorBoundCanonicalInvocationState::SourceImport { .. }
             | ActorBoundCanonicalInvocationState::SourceExport { .. }
-            | ActorBoundCanonicalInvocationState::ArtifactBuild { .. } => None,
+            | ActorBoundCanonicalInvocationState::ArtifactBuild { .. }
+            | ActorBoundCanonicalInvocationState::ReexportThenApply { .. } => None,
             // Справка не известна длинной: локальное попадание отвечает
             // сразу, сетевое доходит до седьмой секунды. Значит у неё тот же
             // cutoff, что у чтений, — захваченный при bind.
@@ -1204,6 +1374,10 @@ impl V5ActorBoundCanonicalInvocation {
                 ..
             }
             | ActorBoundCanonicalInvocationState::ArtifactBuild {
+                workspace_identity_hash,
+                ..
+            }
+            | ActorBoundCanonicalInvocationState::ReexportThenApply {
                 workspace_identity_hash,
                 ..
             }
@@ -1260,19 +1434,54 @@ impl V5ActorBoundCanonicalInvocation {
                 PreparedCanonicalInvocationState::InfobaseCreate { create, delivery },
             )),
             ActorBoundCanonicalInvocationState::SourceImport {
-                import, delivery, ..
+                import,
+                delivery,
+                source_writes,
+                ..
             } => Ok(V5PreparedCanonicalInvocation(
-                PreparedCanonicalInvocationState::SourceImport { import, delivery },
+                PreparedCanonicalInvocationState::SourceImport {
+                    import,
+                    delivery,
+                    source_writes,
+                },
             )),
             ActorBoundCanonicalInvocationState::SourceExport {
-                export, delivery, ..
+                export,
+                delivery,
+                source_writes,
+                ..
             } => Ok(V5PreparedCanonicalInvocation(
-                PreparedCanonicalInvocationState::SourceExport { export, delivery },
+                PreparedCanonicalInvocationState::SourceExport {
+                    export,
+                    delivery,
+                    source_writes,
+                },
             )),
             ActorBoundCanonicalInvocationState::ArtifactBuild {
-                build, delivery, ..
+                build,
+                delivery,
+                source_writes,
+                ..
             } => Ok(V5PreparedCanonicalInvocation(
-                PreparedCanonicalInvocationState::ArtifactBuild { build, delivery },
+                PreparedCanonicalInvocationState::ArtifactBuild {
+                    build,
+                    delivery,
+                    source_writes,
+                },
+            )),
+            ActorBoundCanonicalInvocationState::ReexportThenApply {
+                export,
+                source_writes,
+                delivery,
+                apply,
+                ..
+            } => Ok(V5PreparedCanonicalInvocation(
+                PreparedCanonicalInvocationState::ReexportThenApply {
+                    export,
+                    source_writes,
+                    delivery,
+                    apply,
+                },
             )),
             ActorBoundCanonicalInvocationState::Documentation { search, .. } => {
                 Ok(V5PreparedCanonicalInvocation(
@@ -1280,6 +1489,35 @@ impl V5ActorBoundCanonicalInvocation {
                 ))
             }
         }
+    }
+}
+
+/// `pull`, `push` and `make` run the runner over a whole source set: they hold
+/// the workspace's lane of source writes for the call, so Unica edits wait
+/// instead of interleaving with them. A preview takes no lane.
+fn exclude_source_writes(
+    lane: &SourceWriteLane,
+    operation: &'static str,
+    preview: bool,
+    cancellation: CancellationToken,
+    run: impl FnOnce(CancellationToken) -> DomainResult,
+) -> DomainResult {
+    if preview {
+        return run(cancellation);
+    }
+    let held = cancellation.clone();
+    match lane.hold(ProviderDeadline::no_deadline(), &held, || run(cancellation)) {
+        Ok(result) => result,
+        Err(error) if error.is_cancelled() => DomainResult::canonical_rejection(
+            Some(operation.to_string()),
+            RefusalCode::Cancelled,
+            format!("{operation} cancelled while waiting for source edits of the workspace"),
+        ),
+        Err(_) => DomainResult::canonical_rejection(
+            Some(operation.to_string()),
+            RefusalCode::InvalidState,
+            format!("{operation} could not exclude source edits of the workspace"),
+        ),
     }
 }
 
@@ -1311,7 +1549,8 @@ impl V5PreparedCanonicalInvocation {
             | PreparedCanonicalInvocationState::InfobaseCreate { .. }
             | PreparedCanonicalInvocationState::SourceImport { .. }
             | PreparedCanonicalInvocationState::SourceExport { .. }
-            | PreparedCanonicalInvocationState::ArtifactBuild { .. } => &INFOBASE_EXPORT_CLASS,
+            | PreparedCanonicalInvocationState::ArtifactBuild { .. }
+            | PreparedCanonicalInvocationState::ReexportThenApply { .. } => &INFOBASE_EXPORT_CLASS,
             PreparedCanonicalInvocationState::WorkspaceInspection { .. }
             | PreparedCanonicalInvocationState::Documentation { .. } => {
                 &ExecutionClass::InlineCandidate
@@ -1355,17 +1594,76 @@ impl V5PreparedCanonicalInvocation {
             PreparedCanonicalInvocationState::InfobaseCreate { create, delivery } => {
                 Ok(delivery.execute(cancellation, |cancellation| create.execute(cancellation)))
             }
-            PreparedCanonicalInvocationState::SourceImport { import, delivery } => {
-                Ok(delivery.execute(cancellation, |cancellation| import.execute(cancellation)))
-            }
-            PreparedCanonicalInvocationState::SourceExport { export, delivery } => {
-                Ok(delivery.execute(cancellation, |cancellation| export.execute(cancellation)))
-            }
-            PreparedCanonicalInvocationState::ArtifactBuild { build, delivery } => {
-                Ok(delivery.execute(cancellation, |cancellation| build.execute(cancellation)))
-            }
+            PreparedCanonicalInvocationState::SourceImport {
+                import,
+                delivery,
+                source_writes,
+            } => Ok(delivery.execute(cancellation, |cancellation| {
+                exclude_source_writes(
+                    &source_writes,
+                    "push",
+                    import.is_preview(),
+                    cancellation,
+                    |cancellation| import.execute(cancellation),
+                )
+            })),
+            PreparedCanonicalInvocationState::SourceExport {
+                export,
+                delivery,
+                source_writes,
+            } => Ok(delivery.execute(cancellation, |cancellation| {
+                exclude_source_writes(
+                    &source_writes,
+                    "pull",
+                    export.is_preview(),
+                    cancellation,
+                    |cancellation| export.execute(cancellation),
+                )
+            })),
+            PreparedCanonicalInvocationState::ArtifactBuild {
+                build,
+                delivery,
+                source_writes,
+            } => Ok(delivery.execute(cancellation, |cancellation| {
+                exclude_source_writes(
+                    &source_writes,
+                    "make",
+                    build.is_preview(),
+                    cancellation,
+                    |cancellation| build.execute(cancellation),
+                )
+            })),
             PreparedCanonicalInvocationState::Documentation { search } => {
                 Ok(search.execute(cancellation))
+            }
+            PreparedCanonicalInvocationState::ReexportThenApply {
+                export,
+                source_writes,
+                delivery,
+                apply,
+            } => {
+                let exported = delivery.execute(cancellation.clone(), |cancellation| {
+                    exclude_source_writes(
+                        &source_writes,
+                        super::v13_source_export::REEXPORT,
+                        false,
+                        cancellation,
+                        |cancellation| export.execute(cancellation),
+                    )
+                });
+                // A refused re-export is the answer: the edit does not run.
+                if !exported.ok {
+                    return Ok(exported);
+                }
+                let mut applied = apply.execute(cancellation)?;
+                applied.summary = format!("{} {}", exported.summary, applied.summary);
+                applied.changed.splice(0..0, exported.changed);
+                for warning in exported.warnings {
+                    if !applied.warnings.contains(&warning) {
+                        applied.warnings.push(warning);
+                    }
+                }
+                Ok(applied)
             }
         }
     }
@@ -1413,7 +1711,7 @@ impl DaemonServerConfig {
         let workspace_actors = Arc::new(crate::infrastructure::source_workspace::actor_registry());
         // The editor's door reaches the same actors and the same services as
         // the agent's calls.
-        let lsp_host = Arc::new(unica_lsp::UnicaLspHost::new(Arc::new(
+        let lsp_host = Arc::new(unica_editor_analysis::UnicaLspHost::new(Arc::new(
             super::lsp_workspaces::ProductLspWorkspaces::new(
                 Arc::clone(&workspace_actors),
                 read_service,
@@ -1661,6 +1959,9 @@ mod metadata_can_tests;
 #[cfg(test)]
 mod retained_directory_removal_tests;
 #[cfg(test)]
+#[path = "support_choice_tests.rs"]
+mod support_choice_tests;
+#[cfg(test)]
 #[path = "xdto_can_tests.rs"]
 mod xdto_can_tests;
 
@@ -1692,3 +1993,53 @@ mod medium_stored_secret_tests;
 pub(crate) use medium_actor_capacity_tests as actor_capacity_tests;
 #[cfg(test)]
 pub(crate) mod medium_actor_capacity_tests;
+
+#[cfg(test)]
+mod reexport_mark_tests {
+    use super::*;
+    use unica_execution::invocation_store::ToolIdentity;
+    use unica_execution_contract::invocation::HUMAN_REEXPORT_KEY;
+
+    fn request(tool: ToolIdentity, arguments: serde_json::Value) -> InvocationRequest {
+        InvocationRequest::new(tool, arguments, "/workspace", 7_000).unwrap()
+    }
+
+    /// The choice to re-export a set first comes only with an edit: another
+    /// tool that carries it is refused as an unknown argument, and a mark that
+    /// does not name a set and a format is refused before any work.
+    /// rule: INV.SOURCE.WRITABLE-PROFILE
+    #[test]
+    fn only_an_edit_carries_the_choice_to_reexport_first() {
+        let mark = serde_json::json!({"sourceSet": "main", "format": "2.20"});
+        let ops =
+            serde_json::json!([{"op": "attribute.add", "args": {"items": [{"name": "Extra"}]}}]);
+        let edit = request(
+            ToolIdentity::Apply,
+            serde_json::json!({"at": "main:Catalog.Products", "ops": ops, HUMAN_REEXPORT_KEY: mark}),
+        );
+        assert_eq!(validate_hidden_v13_request(&edit), Ok(()));
+
+        let run = request(
+            ToolIdentity::Run,
+            serde_json::json!({"op": "pull", "args": {}, "dryRun": true, HUMAN_REEXPORT_KEY: mark}),
+        );
+        let refused = validate_hidden_v13_request(&run).unwrap_err();
+        assert!(refused.contains(HUMAN_REEXPORT_KEY), "{refused}");
+
+        let malformed = request(
+            ToolIdentity::Apply,
+            serde_json::json!({"at": "main:Catalog.Products", "ops": ops, HUMAN_REEXPORT_KEY: "2.20"}),
+        );
+        assert!(validate_hidden_v13_request(&malformed).is_err());
+        let malformed = request(
+            ToolIdentity::Apply,
+            serde_json::json!({"at": "main:Catalog.Products", "ops": ops, HUMAN_REEXPORT_KEY: {"format": "2.20"}}),
+        );
+        match super::super::v13_source_export::prepare_reexport_before_apply(&malformed) {
+            super::super::v13_source_export::ReexportBeforeApply::Rejected(result) => {
+                assert_eq!(result.diagnostics[0]["code"], "bad_value", "{result:?}");
+            }
+            _ => panic!("a mark without a set and a format is refused"),
+        }
+    }
+}

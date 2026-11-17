@@ -1,0 +1,119 @@
+{
+  "id": "S-2864-method-comment",
+  "issue": 2864,
+  "area": "Код BSL",
+  "task": "Открыть метод конфигурации и получить его документирующий комментарий полями: описание, параметры с типами и ключами коллекции, возвращаемое значение и пример. Раздел параметров без записей приходит неразобранным с причиной, а комментарий не по стандарту остаётся текстом целиком.",
+  "workspace": "tests/fixtures/acceptance/workspace-method-comment",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule.Справка.Method.Скопировать"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/docFields/schemaVersion",
+          "eq": 1
+        },
+        {
+          "pointer": "/data/props/docFields/description",
+          "eq": "Создаёт копию таблицы значений."
+        },
+        {
+          "pointer": "/data/props/docFields/parameters/0/name",
+          "eq": "Строки"
+        },
+        {
+          "pointer": "/data/props/docFields/parameters/0/types/0",
+          "eq": "Массив из Строка"
+        },
+        {
+          "pointer": "/data/props/docFields/parameters/0/description",
+          "eq": "строки для копирования."
+        },
+        {
+          "pointer": "/data/props/docFields/parameters/1/keys/0/name",
+          "eq": "Период"
+        },
+        {
+          "pointer": "/data/props/docFields/parameters/1/keys/0/types/0",
+          "eq": "Дата"
+        },
+        {
+          "pointer": "/data/props/docFields/returns/types/0",
+          "eq": "ТаблицаЗначений"
+        },
+        {
+          "pointer": "/data/props/docFields/returns/description",
+          "eq": "копия таблицы."
+        },
+        {
+          "pointer": "/data/props/docFields/example",
+          "eq": "  Копия = Справка.Скопировать(Строки, Настройки);"
+        },
+        {
+          "pointer": "/data/props/docFields/unparsed",
+          "eq": {}
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule.Справка.Method.Напечатать"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/docFields/parameters",
+          "eq": null
+        },
+        {
+          "pointer": "/data/props/docFields/unparsed/parameters/reason",
+          "eq": "no-parameter-entry"
+        },
+        {
+          "pointer": "/data/props/docFields/unparsed/parameters/text",
+          "eq": "  описаны в стандарте предприятия."
+        },
+        {
+          "pointer": "/data/props/docFields/returns",
+          "eq": {
+            "types": [],
+            "typeText": "",
+            "description": "",
+            "keys": []
+          }
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule.Справка.Method.Проверить"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/doc",
+          "eq": "Проверяет заказ.\nВызывать только из обработчика."
+        },
+        {
+          "pointer": "/data/props/docFields/text",
+          "eq": "Проверяет заказ.\nВызывать только из обработчика."
+        },
+        {
+          "pointer": "/data/props/docFields/parameters",
+          "eq": []
+        }
+      ]
+    }
+  ]
+}

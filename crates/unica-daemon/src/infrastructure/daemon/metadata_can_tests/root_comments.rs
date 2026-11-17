@@ -222,6 +222,12 @@ fn medium_root_comments_preview_publish_read_and_repeat_preserve_native_companio
             } else if kind == "DocumentNumerator" {
                 // Five numerator scalars plus Comment and its alias.
                 7
+            } else if kind == "CommonForm" {
+                // The descriptor of a common form writes Comment,
+                // IncludeHelpInContents and UsePurposes, each with its alias
+                // (#2947); UseInInterfaceCompatibilityMode comes from 8.5.1,
+                // and this set is of 8.3.27.
+                6
             } else {
                 2
             },
@@ -310,7 +316,7 @@ fn medium_root_comment_refusals_and_late_batch_failure_do_not_publish_any_file()
             source.replace("<Comment/>", "<Comment><Child/></Comment>"),
             source.replace("<Comment/>", "<Comment xmlns=\"foreign\"/>"),
             source.replace("<Comment/>", "<Comment key=\"x\"/>"),
-            source.replace("version=\"2.20\"", "version=\"2.21\""),
+            source.replace("version=\"2.20\"", "version=\"2.23\""),
             source.replace(&format!("<Name>{name}</Name>"), "<Name>Other</Name>"),
         ] {
             std::fs::write(&path, damaged).unwrap();

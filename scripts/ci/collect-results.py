@@ -49,6 +49,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 MAIN_LINE = "main"
 GATE_JOB = "Unica CI"
 OS_JOB = "Rust ({runner})"
+# The report also reads retained artifacts from before the vendor lane was retired.
 RUST_LANES = ("ordinary", "receipt", "vendor")
 PYTHON_JOB = GATE_JOB
 
@@ -402,7 +403,7 @@ def fill_python_gaps(plan_dir: Path, run: dict, seen: set[str], out: Path, concl
 def stored_rust_records(site: str, line: str, profile: str, runner: str, work: Path, lane: str | None) -> tuple[list[dict], dict] | None:
     """Записи Rust этого раннера из последнего хранимого прогона профиля на сайте."""
     archive = work / f"{line}-{profile}.tar.gz"
-    if not fetch(f"{site}/data/{line}/results/{profile}.tar.gz", archive):
+    if not fetch(site, f"data/{line}/results/{profile}.tar.gz", archive):
         return None
     unpacked = work / line / profile
     with tarfile.open(archive) as bundle:

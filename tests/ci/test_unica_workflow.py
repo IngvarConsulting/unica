@@ -738,8 +738,9 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         # Джоба другой ОС линтует везде, где идёт.
         os_clippy = step_by_id(other, "clippy")
         self.assertNotIn("if", other)
-        # Матрица — один macOS; Windows только в `large`.
-        for profile, runners in (("main", ["macos-15"]), ("large", ["macos-15", "windows-latest"])):
+        # Матрица — один macOS; Windows в `large` и в выпуске по тегу (профиль пуст).
+        for profile, runners in (("main", ["macos-15"]), ("large", ["macos-15", "windows-latest"]),
+                                 ("", ["macos-15", "windows-latest"])):
             with self.subTest(profile=profile):
                 self.assertEqual(matrix_values(other, profile)["runner"], runners)
         # Ни одна ОС не рекомендательная: красная джоба красит прогон.
@@ -963,7 +964,7 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         # CI sets no `CARGO_TARGET_DIR`: the archive goes to `<root>/target`.
         with mock.patch.dict(os.environ):
             os.environ.pop("CARGO_TARGET_DIR", None)
-            for lane in ("ordinary", "receipt", "vendor"):
+            for lane in lanes.LANES:
                 archive = lanes.archive_command(lane, Path("tests.tar.zst"))
                 self.assertEqual(Path(archive[archive.index("--target-dir") + 1]), lanes.ROOT / "target")
         script_text = CLIPPY_SCRIPT.read_text(encoding="utf-8")

@@ -1,0 +1,43 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:ns1="http://v8.1c.ru/8.3/xcf/enums" xmlns:ns2="http://v8.1c.ru/8.3/xcf/readable" xmlns:tns="http://v8.1c.ru/8.2/roles" xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="http://v8.1c.ru/8.2/roles" attributeFormDefault="unqualified" elementFormDefault="qualified">
+	<xs:import namespace="http://v8.1c.ru/8.3/xcf/enums"/>
+	<xs:import namespace="http://v8.1c.ru/8.3/xcf/readable"/>
+	<xs:complexType name="ObjectType">
+		<xs:sequence>
+			<xs:element name="name" type="xs:string"/>
+			<xs:element name="right" type="tns:RightType" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="RestrictionTemplateType">
+		<xs:sequence>
+			<xs:element name="name" type="xs:string"/>
+			<xs:element name="condition" type="xs:string" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="RightType">
+		<xs:sequence>
+			<xs:element name="name" type="xs:string"/>
+			<xs:element name="value" type="xs:boolean"/>
+			<xs:element name="restrictionByCondition" type="tns:RlsType" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="Rights">
+		<xs:complexContent>
+			<xs:extension base="ns2:EntityWithVersion">
+				<xs:sequence>
+					<xs:element name="setForNewObjects" type="xs:boolean"/>
+					<xs:element name="setForAttributesByDefault" type="xs:boolean"/>
+					<xs:element name="independentRightsOfChildObjects" type="xs:boolean"/>
+					<xs:element name="object" type="tns:ObjectType" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="restrictionTemplate" type="tns:RestrictionTemplateType" minOccurs="0" maxOccurs="unbounded"/>
+				</xs:sequence>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="RlsType">
+		<xs:sequence>
+			<xs:element name="field" type="xs:string" nillable="true" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="condition" type="xs:string" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+</xs:schema>

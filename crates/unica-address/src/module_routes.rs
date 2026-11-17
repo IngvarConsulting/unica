@@ -138,7 +138,7 @@ pub fn module_prefix_route(address: &QualifiedAddress) -> Option<ModuleRoute> {
     let segments = address.segments();
     (1..=segments.len()).rev().find_map(|length| {
         let route = module_route_for_segments(&segments[..length])?;
-        module_projection_suffix_is_valid(&segments[length..]).then_some(route)
+        module_projection_suffix_is_valid(&segments[length..], route.role()).then_some(route)
     })
 }
 
@@ -180,6 +180,10 @@ pub fn has_direct_module_route(owner_kind: NodeKind, role: ModuleRole) -> bool {
                 | NodeKind::DocumentJournal
                 | NodeKind::FilterCriterion
                 | NodeKind::SettingsStorage
+                // Очередь держит только модуль менеджера: выгрузка 8.5.4
+                // кладёт его в `Queues/<Имя>/Ext/ManagerModule.bsl`,
+                // модуля объекта у неё нет — её сообщение запись, не ссылка.
+                | NodeKind::Queue
         ),
         ModuleRole::RecordSet => matches!(
             owner_kind,
@@ -219,19 +223,14 @@ pub fn has_nested_module_route(owner_kind: NodeKind) -> bool {
             | NodeKind::ExternalReport
     )
 }
-fn module_projection_suffix_is_valid(suffix: &[AddressSegment]) -> bool {
+fn module_projection_suffix_is_valid(suffix: &[AddressSegment], role: ModuleRole) -> bool {
     match suffix {
         [] => true,
-        [branch]
-            if matches!(branch.kind(), NodeKind::Compilation | NodeKind::Body)
-                && branch.name().is_none() =>
-        {
-            true
-        }
+        [branch] if matches!(branch.kind(), NodeKind::Body) && branch.name().is_none() => true,
         [branch]
             if matches!(
                 branch.kind(),
-                NodeKind::Method | NodeKind::Interface | NodeKind::Event
+                NodeKind::Method | NodeKind::Interface | NodeKind::Event | NodeKind::Variable
             ) =>
         {
             true
@@ -239,7 +238,9 @@ fn module_projection_suffix_is_valid(suffix: &[AddressSegment]) -> bool {
         [method, projection]
             if method.kind() == NodeKind::Method
                 && method.name().is_some()
-                && matches!(projection.kind(), NodeKind::Compilation | NodeKind::Body)
+                && (projection.kind() == NodeKind::Body
+                    || (projection.kind() == NodeKind::Binding
+                        && matches!(role, ModuleRole::Form | ModuleRole::Common)))
                 && projection.name().is_none() =>
         {
             true
@@ -256,7 +257,7 @@ fn module_projection_suffix_is_valid(suffix: &[AddressSegment]) -> bool {
     }
 }
 
-fn module_route_for_segments(segments: &[AddressSegment]) -> Option<ModuleRoute> {
+pub(crate) fn module_route_for_segments(segments: &[AddressSegment]) -> Option<ModuleRoute> {
     match segments {
         [owner] if owner.name().is_some() && owner.kind() == NodeKind::CommonModule => Some(route(
             NodeKind::CommonModule,
@@ -345,9 +346,70 @@ const fn route(owner_kind: NodeKind, role: ModuleRole, route_kind: ModuleRouteKi
 
 #[cfg(test)]
 mod tests {
-    use super::module_route;
+    use super::{module_prefix_route, module_route, ModuleRole};
     use crate::address::QualifiedAddress;
     use serde::Deserialize;
+
+    /// rule: CTR.SOURCE.QUALIFIED-LOGICAL-ADDRESS
+    #[test]
+    fn binding_is_an_unnamed_branch_of_a_form_method() {
+        for at in [
+            "main:CommonForm.Main.Module.Form.Method.Handler.Binding",
+            "ext:Report.Example.Form.Main.Module.Form.Method.Handler.Binding",
+        ] {
+            let address = QualifiedAddress::parse(at).unwrap();
+            assert_eq!(
+                module_prefix_route(&address).unwrap().role(),
+                ModuleRole::Form
+            );
+        }
+        for at in [
+            "main:CommonForm.Main.Module.Form.Binding",
+            "main:CommonForm.Main.Module.Form.Method.Handler.Binding.Name",
+            "main:CommonForm.Main.Module.Form.Method.Handler.Binding.Event.OnOpen",
+            "main:Catalog.Main.Module.Object.Method.Handler.Binding",
+        ] {
+            let module = QualifiedAddress::parse(at)
+                .ok()
+                .as_ref()
+                .and_then(module_prefix_route);
+            assert_eq!(module, None, "{at}");
+        }
+    }
+
+    /// rule: CTR.SOURCE.QUALIFIED-LOGICAL-ADDRESS
+    #[test]
+    fn binding_is_addressable_on_a_common_module_method() {
+        let address =
+            QualifiedAddress::parse("main:CommonModule.Main.Method.Handler.Binding").unwrap();
+        assert_eq!(
+            module_prefix_route(&address).unwrap().role(),
+            ModuleRole::Common
+        );
+    }
+
+    /// Очередь держит один прямой модуль — менеджера. Модуля объекта у неё
+    /// нет: её сообщение запись, а не ссылка, и выгрузка 8.5.4 файла объекта
+    /// не кладёт. Грамматика адреса линию не знает: существует ли сам объект,
+    /// отвечает источник.
+    /// rule: INV.SOURCE.PLATFORM-CAPABILITY-EXISTENCE
+    #[test]
+    fn the_queue_owns_a_manager_module_and_no_object_module() {
+        let manager = QualifiedAddress::parse("main:Queue.Проба.Module.Manager").unwrap();
+        let route = module_route(&manager).expect("the queue owns a manager module");
+        assert_eq!(route.role().as_str(), "Manager");
+        assert_eq!(route.owner_kind().as_str(), "Queue");
+        assert_eq!(route.kind(), super::ModuleRouteKind::Direct);
+
+        for absent in [
+            "main:Queue.Проба.Module.Object",
+            "main:Queue.Проба.Module.RecordSet",
+            "main:Queue.Проба.Module.ValueManager",
+        ] {
+            let at = QualifiedAddress::parse(absent).unwrap();
+            assert_eq!(module_route(&at), None, "{absent}");
+        }
+    }
 
     #[derive(Deserialize)]
     #[serde(rename_all = "camelCase")]

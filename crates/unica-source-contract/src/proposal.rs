@@ -51,12 +51,62 @@ impl std::error::Error for ApplyStagingError {}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApplyPlanErrorKind {
     BadValue,
+    Conflict,
     NotFound,
     ProviderUnavailable,
     InvalidState,
     InvalidSource,
     Staging(ApplyStagingErrorKind),
     Postcondition,
+}
+
+/// What a vendor-support lock forbids in a refused apply.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SupportLockKind {
+    /// The owner object carries the rule `locked`.
+    ObjectLocked,
+    /// The whole configuration is on support with changes disabled.
+    ConfigurationLocked,
+    /// The removed object, or one of its own child objects, is `locked`.
+    RemovalLocked,
+}
+
+/// The vendor-support lock that refused an apply under `deny`: the person
+/// may lift it for this owner only (INV.SAFETY.APPLY-SUPPORT-GATE).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SupportLock {
+    pub kind: SupportLockKind,
+    pub source_set: String,
+    /// The top-level object the edit belongs to, `<Kind>.<Name>`, or
+    /// `Configuration` for an edit of the configuration root.
+    pub owner: String,
+}
+
+/// A source set that is read-only by its compatibility mode: the person may
+/// raise the mode to the oldest editable one (INV.SOURCE.WRITABLE-PROFILE).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReadOnlyMode {
+    pub mode: crate::compatibility::CompatibilityMode,
+    /// `CompatibilityMode` of a configuration or
+    /// `ConfigurationExtensionCompatibilityMode` of an extension.
+    pub property: String,
+}
+
+/// A source set whose export format keeps it from an edit: the person may
+/// re-export it in a writable format (INV.SOURCE.WRITABLE-PROFILE).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FormatReexport {
+    pub source_set: String,
+    pub kind: FormatReexportKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FormatReexportKind {
+    /// The set is exported in `actual`, older than every writable format.
+    Old { actual: String },
+    /// The roots of the set record two writable formats: the set's own and
+    /// `other`.
+    Mixed { set_format: String, other: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -69,6 +119,15 @@ pub struct ApplyPlanError {
     /// The causes the refusal names after its own diagnostic, each with
     /// its code, message and place (INV.WIRE.V13-REFUSAL-CHANNEL).
     diagnostics: Vec<serde_json::Value>,
+    /// The vendor-support lock behind an `invalid_state` refusal.
+    support_lock: Option<Box<SupportLock>>,
+    /// The compatibility mode that keeps the set read-only.
+    read_only_mode: Option<Box<ReadOnlyMode>>,
+    /// The vendor-support marker cannot be read: the person may take the
+    /// configuration off support entirely.
+    support_state_unreadable: bool,
+    /// The export format that keeps the set from an edit.
+    format_reexport: Option<Box<FormatReexport>>,
 }
 
 impl ApplyPlanError {
@@ -79,7 +138,47 @@ impl ApplyPlanError {
             message: message.into(),
             next: None,
             diagnostics: Vec::new(),
+            support_lock: None,
+            read_only_mode: None,
+            support_state_unreadable: false,
+            format_reexport: None,
         }
+    }
+
+    pub fn with_support_state_unreadable(mut self) -> Self {
+        self.support_state_unreadable = true;
+        self
+    }
+
+    pub fn support_state_unreadable(&self) -> bool {
+        self.support_state_unreadable
+    }
+
+    pub fn with_format_reexport(mut self, reexport: FormatReexport) -> Self {
+        self.format_reexport = Some(Box::new(reexport));
+        self
+    }
+
+    pub fn format_reexport(&self) -> Option<&FormatReexport> {
+        self.format_reexport.as_deref()
+    }
+
+    pub fn with_read_only_mode(mut self, mode: ReadOnlyMode) -> Self {
+        self.read_only_mode = Some(Box::new(mode));
+        self
+    }
+
+    pub fn read_only_mode(&self) -> Option<&ReadOnlyMode> {
+        self.read_only_mode.as_deref()
+    }
+
+    pub fn with_support_lock(mut self, lock: SupportLock) -> Self {
+        self.support_lock = Some(Box::new(lock));
+        self
+    }
+
+    pub fn support_lock(&self) -> Option<&SupportLock> {
+        self.support_lock.as_deref()
     }
 
     pub fn with_diagnostics(mut self, diagnostics: Vec<serde_json::Value>) -> Self {

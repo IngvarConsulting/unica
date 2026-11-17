@@ -13,6 +13,12 @@
 набора не требует: сами крейты выбраны по своим файлам. Остальное исполняет ночь; правило для красной ночи и откат —
 в `.agents/skills/unica-testing/references/ci-pipeline.md`.
 
+Приёмка `source` замораживает ответы продукта. Правка крейта, из которого собирается
+`unica` (`unica-product` и всё, от чего он зависит), или самой приёмки — сценариев,
+её подготовки и драйвера — запускает её отдельным заданием очереди «Приёмка»,
+параллельно тестам Rust (выход `acceptance`). При полном наборе приёмку исполняют
+Python medium этой записи, и отдельное задание не нужно.
+
 На Linux временные каталоги тестов очередь держит в памяти (`TMPDIR` в `/dev/shm`): журнал
 квитанций и рабочие области публикуют каждую запись через `fsync`, и на диске раннера каждый
 вызов продукта ждёт его. Те же системные вызовы выполняются, ждать им нечего. Ночь и выпуск идут
@@ -45,6 +51,10 @@ DEPENDENT_FILTER = "kind(test) & not binary(daemon_receipt_ledger)"
 MENTIONED = re.compile(r"^(tests/fixtures/(?!acceptance/scenario-manifest/)|scripts/(?!ci/|research/))")
 # Rust их не читает, а наборы `site`, стражи правил и навыков идут в Python очереди всегда.
 NO_RUST = re.compile(r"^(docs/pages/|docs/visual-kit/|arch/rules/|\.agents/|scripts/research/|[^/]+\.md$)")
+# Бинарник, ответы которого заморожены в приёмке.
+PRODUCT = "unica-product"
+# Сценарии приёмки, её подготовка и драйвер.
+ACCEPTANCE = re.compile(r"^(tests/fixtures/acceptance/|tests/ci/acceptance_[^/]*\.py$|tests/ci/test_acceptance_scenarios\.py$)")
 # Крейт, который собирает путь к данным из частей, читает любой их каталог.
 ASSEMBLED_FIXTURES = '"tests/fixtures"'
 MEMORY_TEMP_ROOT = Path("/dev/shm")
@@ -100,7 +110,7 @@ def needle(path: str) -> str:
 
 
 def mentions(text: str, root: Path = ROOT) -> list[str]:
-    completed = subprocess.run(["git", "grep", "-lF", text, "--", "crates", "vendor"], cwd=root, capture_output=True, text=True, encoding="utf-8")
+    completed = subprocess.run(["git", "grep", "-lF", text, "--", "crates"], cwd=root, capture_output=True, text=True, encoding="utf-8")
     if completed.returncode not in (0, 1):
         raise OSError(completed.stderr)
     return completed.stdout.split()
@@ -118,6 +128,15 @@ def lock_keeps_external(base: str, head: str, members: set[str], root: Path = RO
     return external_packages(locks[0], members) == external_packages(locks[1], members)
 
 
+def whole_build(paths: list[str], *, lock_is_internal: bool = False) -> str | None:
+    """Путь, правка которого задевает всю сборку: внешние зависимости в `Cargo.lock`,
+    корневой `Cargo.toml`, тулчейн, `.cargo/`. Единственное описание этого признака:
+    по нему очередь берёт полный набор, а гейт готовности — весь workspace.
+    """
+    return next((path for path in paths if WHOLE_BUILD.match(path)
+                 and not (path == "Cargo.lock" and lock_is_internal)), None)
+
+
 def choose(paths: list[str], directories: dict[str, str], dependents: dict[str, set[str]] | None = None, *,
            force_full: bool = False, find: Callable[[str], list[str]] = mentions, lock_is_internal: bool = False) -> Choice:
     if force_full:
@@ -126,12 +145,11 @@ def choose(paths: list[str], directories: dict[str, str], dependents: dict[str, 
         return Choice(True, (), "пустой diff")
     if all(NO_RUST.match(path) for path in paths):
         return Choice(False, (), "Rust не нужен: сайт, правила, навыки, проза", no_rust=True)
+    whole = whole_build(paths, lock_is_internal=lock_is_internal)
+    if whole:
+        return Choice(True, (), f"общая сборка: {whole}")
     selected, edited = set(), set()
     for path in paths:
-        if path == "Cargo.lock" and lock_is_internal:
-            continue
-        if WHOLE_BUILD.match(path):
-            return Choice(True, (), f"общая сборка: {path}")
         crate = crate_of(path, directories)
         if crate:
             edited.add(crate)
@@ -141,10 +159,29 @@ def choose(paths: list[str], directories: dict[str, str], dependents: dict[str, 
             selected.update(crate for text in texts for crate in (crate_of(item, directories) for item in find(text)) if crate)
     # Cargo отказывает в `--workspace`, из которого исключены все члены, а `small`
     # остальных крейтов тогда запускать не для кого: это и есть полный набор.
-    if set(directories.values()) - {"ureq"} <= selected:
+    if set(directories.values()) <= selected:
         return Choice(True, (), "выбраны все крейты")
     reached = sorted({name for crate in edited for name in (dependents or {}).get(crate, set())} - selected)
     return Choice(False, tuple(sorted(selected)), f"medium: {sorted(selected) or 'нет'}, цели зависимых: {reached or 'нет'}", tuple(reached))
+
+
+def product_crates(dependents: dict[str, set[str]], product: str = PRODUCT) -> set[str]:
+    """`product` и все крейты, от которых он зависит прямо или транзитивно."""
+    found = {product}
+    changed = True
+    while changed:
+        changed = False
+        for crate, users in dependents.items():
+            if crate not in found and users & found:
+                found.add(crate)
+                changed = True
+    return found
+
+
+def needs_acceptance(paths: list[str], directories: dict[str, str], dependents: dict[str, set[str]]) -> bool:
+    """Меняет ли запись ответы, замороженные в приёмке, или саму приёмку."""
+    product = product_crates(dependents)
+    return any(ACCEPTANCE.match(path) or crate_of(path, directories) in product for path in paths)
 
 
 def memory_temp(root: Path = MEMORY_TEMP_ROOT, min_free: int = MEMORY_TEMP_MIN_FREE_BYTES,
@@ -195,12 +232,10 @@ def commands(packages: tuple[str, ...], runner, dependents: tuple[str, ...] = ()
     и `--exclude` Cargo объединял бы признаки по другому набору пакетов, и следующий
     вызов пересобирал бы общие зависимости заново; с одним набором сборка одна.
     """
-    # `ureq` не член рабочей области: его набор идёт из своего манифеста ниже.
-    members = tuple(package for package in packages if package != "ureq")
-    chosen = " | ".join(f"package({package})" for package in members)
-    others = ("--workspace", "-E", f"not ({chosen})") if members else ("--workspace",)
+    chosen = " | ".join(f"package({package})" for package in packages)
+    others = ("--workspace", "-E", f"not ({chosen})") if packages else ("--workspace",)
     planned = [[*runner.rust_command("pr", others), "--no-tests=pass"]]
-    if members:
+    if packages:
         selection = ("--workspace", "-E", chosen)
         planned.append([*runner.rust_command("queue", selection), "--no-tests=pass"])
     if dependents:
@@ -209,8 +244,6 @@ def commands(packages: tuple[str, ...], runner, dependents: tuple[str, ...] = ()
         planned.append([*runner.rust_command("queue", selection), "--no-tests=pass"])
     if {"unica-daemon", "unica-product"} & set(packages):
         planned.append(runner.rust_command("queue", runner.LEDGER_FEATURE_SELECTION))
-    if "ureq" in packages:
-        planned.append(runner.rust_command("queue", runner.UREQ_RECYCLING_SELECTION))
     return planned
 
 
@@ -226,13 +259,17 @@ def main(argv: list[str] | None = None) -> int:
         paths = [path for path in paths if path]
         lock_is_internal = "Cargo.lock" in paths and lock_keeps_external(args.base, args.head, set(directories.values()))
         choice = choose(paths, directories, dependents, force_full=os.environ.get("QUEUE_FULL_TESTS") == "true", lock_is_internal=lock_is_internal)
+        acceptance = not choice.full and needs_acceptance(paths, directories, dependents)
     except (subprocess.CalledProcessError, OSError, ValueError) as error:
         choice = Choice(True, (), f"выбор не определён: {error}")
+        acceptance = False
     print(f"{'полный набор' if choice.full else 'выбор'}: {choice.reason}", flush=True)
+    print(f"приёмка отдельным заданием: {'да' if acceptance else 'нет'}", flush=True)
     outputs = os.environ.get("GITHUB_OUTPUT")
     if outputs:
         with open(outputs, "a", encoding="utf-8") as stream:
             stream.write(f"full={str(choice.full).lower()}\n")
+            stream.write(f"acceptance={str(acceptance).lower()}\n")
     if args.dry_run:
         return 0
     runner = load_runner()

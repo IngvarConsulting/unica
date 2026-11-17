@@ -95,10 +95,7 @@
                 {
                   "name": "Double",
                   "expression": "Amount * 2",
-                  "title": {
-                    "ru": "Двойное",
-                    "en": "Double"
-                  },
+                  "title": "ru = 'Двойное'; en = 'Double'",
                   "useRestriction": {
                     "condition": true,
                     "order": true

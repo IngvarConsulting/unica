@@ -2,8 +2,14 @@
 use crate::root::FORM_LOGFORM_NS;
 use roxmltree::Node;
 use unica_forms::events::*;
+use unica_source_contract::format_identity::PlatformLine;
 const FORM_V8_NS: &str = "http://v8.1c.ru/8.1/data/core";
-pub fn context_from_root(root: Node<'_, '_>) -> FormEventContext {
+/// Контекст события формы по её XML. Линия набора приходит извне: по XML её
+/// не видно, а каталог возможных событий выбирает именно она.
+pub fn context_from_root(
+    root: Node<'_, '_>,
+    platform_line: Option<PlatformLine>,
+) -> FormEventContext {
     let base_form = direct_logform_child(root, "BaseForm");
     let definition = if base_form.is_some() {
         FormDefinitionKind::Extension
@@ -53,6 +59,7 @@ pub fn context_from_root(root: Node<'_, '_>) -> FormEventContext {
         main_attribute_provenance,
         main_attribute_name,
         metadata_owner: None,
+        platform_line,
     }
 }
 

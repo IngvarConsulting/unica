@@ -129,7 +129,7 @@ fn catalog_tabular_native_context_requires_proved_configuration_source_kind() {
 
 #[test]
 fn catalog_tabular_native_context_requires_exact_literal_export_version() {
-    for version in ["2.19", "2.21", "02.20", "2&#x2e;20", ""] {
+    for version in ["2.19", "2.23", "02.20", "2&#x2e;20", ""] {
         let xml = CATALOG.replacen("version=\"2.20\"", &format!("version=\"{version}\""), 1);
         assert_ne!(xml, CATALOG, "the native export version must be replaced");
         let info = read(&xml, "Catalog.Валюты", Some(SourceSetKind::Configuration));

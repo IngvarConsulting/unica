@@ -315,6 +315,11 @@ const ADDRESS_KINDS: &[AddressKind] = &[
     kind("Language", &["Язык"], &["Languages", "Языки"]),
     kind("Subsystem", &["Подсистема"], &["Subsystems", "Подсистемы"]),
     kind(
+        "PaletteColor",
+        &["ЦветПалитры"],
+        &["PaletteColors", "ЦветаПалитры"],
+    ),
+    kind(
         "StyleItem",
         &["ЭлементСтиля"],
         &["StyleItems", "ЭлементыСтиля"],
@@ -383,6 +388,7 @@ const ADDRESS_KINDS: &[AddressKind] = &[
         &["РегламентноеЗадание"],
         &["ScheduledJobs", "РегламентныеЗадания"],
     ),
+    kind("Queue", &["Очередь"], &["Queues", "Очереди"]),
     kind(
         "SettingsStorage",
         &["ХранилищеНастроек"],

@@ -170,7 +170,7 @@ SEARCH_INTEGRATION_PATHS = {
     "crates/unica-coder/src/infrastructure/platform_xml_source_targets.rs",
     "crates/unica-coder/src/infrastructure/source_roots.rs",
     "crates/unica-coder/src/infrastructure/workspace_services.rs",
-    "crates/unica-daemon/src/interfaces/mcp.rs",
+    "crates/unica-mcp/src/lib.rs",
 }
 # The long BSP assessment runs the packaged runtime end to end, so it follows
 # the search contour it exercises. These paths add what that contour does not
@@ -231,7 +231,7 @@ def _is_rust_path(path: str) -> bool:
     candidate = PurePosixPath(path)
     return (
         len(candidate.parts) >= 2
-        and (candidate.parts[0] == "crates" or path.startswith("vendor/ureq/"))
+        and candidate.parts[0] == "crates"
         and candidate.suffix == ".rs"
     )
 
@@ -240,7 +240,6 @@ def _is_toolchain_path(path: str) -> bool:
     candidate = PurePosixPath(path)
     return (
         path in TOOLCHAIN_PATHS
-        or path in {"vendor/ureq/Cargo.toml", "vendor/ureq/Cargo.lock", "vendor/ureq/.config/nextest.toml"}
         or path.startswith(".cargo/")
         or (len(candidate.parts) >= 3 and candidate.parts[0] == "crates" and candidate.name == "Cargo.toml")
     )
