@@ -96,6 +96,9 @@
         },
         "oldRev": {
           "pointer": "/data/items/0/rev"
+        },
+        "originSource": {
+          "pointer": "/data/items/0/sourceAt"
         }
       }
     },
@@ -123,7 +126,7 @@
     {
       "tool": "unica.view",
       "args": {
-        "at": "main:Catalog.Команды.Form.ФормаСписка.Module.Form.Method.Start.Body"
+        "at": "$capture.originSource"
       },
       "expect": [
         "ok"
@@ -132,6 +135,10 @@
         {
           "pointer": "/rev",
           "eq": "$capture.oldRev"
+        },
+        {
+          "pointer": "/data/at",
+          "eq": "main:Catalog.Команды.Form.ФормаСписка.Module.Form.Method.Start.Body#L4-L4"
         }
       ]
     },

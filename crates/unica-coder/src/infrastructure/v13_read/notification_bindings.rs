@@ -22,11 +22,12 @@ enum Receiver<'a> {
 }
 
 impl Receiver<'_> {
-    fn names(&self, name: &str) -> bool {
+    fn names(&self, name: &str, in_form: bool) -> bool {
         let key = name_key(name);
+        let this_form = in_form && matches!(key.as_str(), "thisobject" | "этотобъект");
         match self {
-            Self::ThisForm => matches!(key.as_str(), "thisobject" | "этотобъект"),
-            Self::CommonModule(expected) => key == *expected,
+            Self::ThisForm => this_form,
+            Self::CommonModule(expected) => !this_form && key == *expected,
         }
     }
 }
@@ -53,6 +54,7 @@ impl NotificationBindings {
             return;
         }
         let target_name = name_key(&target.name);
+        let in_form = origin.summary().props.role == ModuleRole::Form.as_str();
         let declarations = parsed.local_methods();
         let lines = LineIndex::new(source);
         let rev = module_text_revision(source.as_bytes());
@@ -64,7 +66,7 @@ impl NotificationBindings {
                 || site
                     .receiver
                     .as_deref()
-                    .is_some_and(|name| !receiver.names(name))
+                    .is_some_and(|name| !receiver.names(name, in_form))
             {
                 continue;
             }
@@ -90,6 +92,7 @@ impl NotificationBindings {
                 "at": method.at,
                 "kind": NodeKind::Method.as_str(),
                 "binding": "notifyDescription",
+                "sourceAt": format!("{}.Body#L{}-L{}", method.at, line + 1, end_line + 1),
                 "range": {
                     "start": {"line": line, "character": character},
                     "end": {"line": end_line, "character": end_character},
@@ -284,4 +287,19 @@ fn compatible_context(
                         .is_some_and(|contexts| contexts.contains(context))
                 })
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Receiver;
+
+    #[test]
+    fn a_forms_intrinsic_receiver_cannot_name_a_common_module() {
+        for (alias, key) in [("ThisObject", "thisobject"), ("ЭтотОбъект", "этотобъект")]
+        {
+            assert!(Receiver::ThisForm.names(alias, true));
+            assert!(!Receiver::CommonModule(key).names(alias, true));
+            assert!(Receiver::CommonModule(key).names(alias, false));
+        }
+    }
 }

@@ -1574,7 +1574,7 @@ function markLeaf(row) {
   row.nextElementSibling.hidden = true;
 }
 
-function makeRow(label, at, meta, count) {
+function makeRow(label, at, meta, count, binding) {
   const wrap = document.createElement("div");
   const row = document.createElement("div");
   row.className = "row";
@@ -1615,7 +1615,7 @@ function makeRow(label, at, meta, count) {
       event.stopPropagation();
       if (event.detail <= 1) toggle();
     };
-    row.onclick = (event) => { if (event.detail <= 1) select(at, row); };
+    row.onclick = (event) => { if (event.detail <= 1) select(at, row, undefined, binding); };
     row.ondblclick = (event) => {
       event.preventDefault();
       event.stopPropagation();
@@ -1694,8 +1694,9 @@ async function fill(container, at, cursor) {
       const title = item.title && item.title !== item.at && item.title !== shortLabel(item.at, parent)
         ? ` <span class="cnt">${esc(item.title)}</span>` : "";
       const size = count === undefined ? "" : ` <span class="cnt">${count}</span>`;
-      const state = data.kind === "Binding" ? bindingBadge(item) : "";
-      container.appendChild(makeRow(shortLabel(item.at, parent), item.at, meta + title + size + state, count));
+      const binding = data.kind === "Binding" ? item : undefined;
+      const state = binding ? bindingBadge(binding) : "";
+      container.appendChild(makeRow(shortLabel(item.at, parent), item.at, meta + title + size + state, count, binding));
     } else {
       // Строка данных без адреса (например, строка исходника): адреса у неё нет.
       container.appendChild(makeRow(JSON.stringify(item).slice(0, 160)));
@@ -1805,10 +1806,10 @@ function renderNode(at, answer) {
   }
   if (data.kind === "Binding" && data.items?.length) {
     html += '<section><h3>Привязки</h3><table>';
-    for (const item of data.items) {
-      if (typeof item?.at !== "string") continue;
-      html += `<tr><td><a href="#" data-at="${esc(item.at)}" class="at">${esc(item.at)}</a></td><td>${bindingBadge(item)}</td></tr>`;
-    }
+    data.items.forEach((item, index) => {
+      if (typeof item?.at !== "string") return;
+      html += `<tr><td><a href="#" data-at="${esc(item.at)}" data-binding="${index}" class="at">${esc(item.at)}</a></td><td>${bindingBadge(item)}</td></tr>`;
+    });
     html += "</table></section>";
   }
   if ("can" in data) {
@@ -1839,7 +1840,10 @@ function renderNode(at, answer) {
   highlightCodeBlocks(node, answer.sourceText);
   const reveal = $("revealNode");
   if (reveal) reveal.onclick = () => revealSelectedInTree(reveal, $("revealStatus"), nodeAt, data.kind);
-  node.querySelectorAll("a[data-at]").forEach((a) => a.onclick = (event) => { event.preventDefault(); select(a.dataset.at); });
+  node.querySelectorAll("a[data-at]").forEach((a) => a.onclick = (event) => {
+    event.preventDefault();
+    select(a.dataset.at, undefined, undefined, data.items?.[a.dataset.binding]);
+  });
   node.querySelectorAll("button[data-contract]").forEach((b) => b.onclick = () => showContract(nodeAt, data.can[+b.dataset.contract]));
   node.querySelectorAll("button[data-preview]").forEach((b) => b.onclick = () => showPreview(nodeAt, data.can[+b.dataset.preview]));
   // Открытая форма инструмента следует за выбранным узлом.
@@ -1847,7 +1851,51 @@ function renderNode(at, answer) {
   if (atField && nodeAt) { atField.value = nodeAt; atField.dispatchEvent(new Event("input", {bubbles: true})); }
 }
 
-async function select(at, row, fresh) {
+async function showBindingSource(binding, version) {
+  const {sourceAt, range, rev} = binding || {};
+  if (binding?.binding !== "notifyDescription" || !sourceAt || !range || !rev) return;
+  const section = document.createElement("section");
+  const title = section.appendChild(document.createElement("h3"));
+  title.textContent = "Место создания оповещения";
+  const status = section.appendChild(document.createElement("p"));
+  status.className = "cnt";
+  status.textContent = "Загрузка фрагмента…";
+  $("node").querySelector("dl").after(section);
+  try {
+    const answer = await view(sourceAt, undefined, true);
+    if (version !== selectionVersion) return;
+    const text = answer.sourceText;
+    if (!answer.result?.ok || typeof text !== "string") {
+      status.textContent = answer.result?.diagnostics?.[0]?.message || "Фрагмент недоступен";
+      return;
+    }
+    if (answer.result.rev !== rev) {
+      status.textContent = "Ревизия исходника изменилась. Откройте привязку заново.";
+      return;
+    }
+    const {start, end} = range;
+    const lines = text.split("\n");
+    const endLine = end.line - start.line;
+    const from = start.character;
+    const to = lines.slice(0, endLine).reduce((offset, line) => offset + line.length + 1, end.character);
+    if (endLine < 0 || endLine >= lines.length || from < 0 || to <= from || to > text.length) {
+      status.textContent = "Диапазон отсутствует во фрагменте";
+      return;
+    }
+    const pre = document.createElement("pre");
+    pre.className = "source-text";
+    const code = pre.appendChild(document.createElement("code"));
+    const highlight = document.createElement("mark");
+    highlight.textContent = text.slice(from, to);
+    code.append(text.slice(0, from), highlight, text.slice(to));
+    status.replaceWith(pre);
+    highlight.scrollIntoView({block: "nearest", inline: "nearest"});
+  } catch (error) {
+    if (version === selectionVersion) status.textContent = error.message;
+  }
+}
+
+async function select(at, row, fresh, binding) {
   const version = ++selectionVersion;
   highlightTreeRow(row);
   $("node").innerHTML = `<p class="cnt" id="nodeLoading"></p>`;
@@ -1857,6 +1905,7 @@ async function select(at, row, fresh) {
     stop();
     if (version !== selectionVersion) return;
     renderNode(at, answer);
+    void showBindingSource(binding, version);
     const result = answer.result || {};
     const data = result.data || {};
     if (result.ok && !result.cursor && !formHandlerTarget(data) && !notificationIndexing(data) &&

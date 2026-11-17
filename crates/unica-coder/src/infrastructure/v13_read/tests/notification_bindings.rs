@@ -64,3 +64,28 @@ fn notification_bindings_read_registered_candidates_in_the_selected_source_set()
         }
     }
 }
+
+#[test]
+fn notification_bindings_refuse_a_form_with_parse_errors() {
+    let fixture = RealReaderFixture::new();
+    let module = fixture
+        .source
+        .join("Reports/ParityReport/Forms/MainForm/Ext/Form/Module.bsl");
+    fs::write(
+        &module,
+        concat!(
+            "&AtClient\nProcedure Finish() Export\nEndProcedure\n",
+            "&AtClient\nProcedure Start()\n  Callback = New NotifyDescription(\"Finish, ThisObject\nEndProcedure\n"
+        ),
+    )
+    .unwrap();
+    let service = fixture.view_service();
+    let binding = "main:Report.ParityReport.Form.MainForm.Module.Form.Method.Finish.Binding";
+    let answer = service.view(ViewRequest::new(binding).unwrap());
+    assert!(!answer.ok);
+    assert_eq!(answer.diagnostics[0]["code"], "provider_unavailable");
+    assert!(answer.diagnostics[0]["message"]
+        .as_str()
+        .unwrap()
+        .contains("parser reported"));
+}
