@@ -45,12 +45,7 @@ LARGE_LIBRARY_MODULES: dict[tuple[str, str], tuple[str, str]] = {}
 LARGE_TARGETS = {"daemon_receipt_ledger"} | {binary for binary, _ in LARGE_LIBRARY_MODULES}
 
 # Expected command is independent of the runner's production constant.
-UREQ_SELECTION = (
-    "--manifest-path", "vendor/ureq/Cargo.toml", "--locked", "--lib",
-    "--features", "json,serde_json/preserve_order,serde_json/float_roundtrip",
-    "--config-file", "vendor/ureq/.config/nextest.toml", "--target-dir", "target",
-    "-E", "test(/^completed_response_recycling::/)",
-)
+
 
 
 # Integration targets whose root tests stay in the nightly-only catalogue
@@ -173,7 +168,7 @@ class GateProfileCompositionTests(unittest.TestCase):
         for profile in ("queue", "main", "release", "all", "large"):
             with self.subTest(profile=profile):
                 selections = self.run_tests.rust_selections(profile)
-                self.assertEqual(selections, [("--workspace",), expected, UREQ_SELECTION])
+                self.assertEqual(selections, [("--workspace",), expected])
                 self.assertNotIn("--features", selections[0])
                 self.assertNotIn("--workspace", selections[1])
                 self.assertNotIn("--lib", selections[1])
@@ -253,11 +248,7 @@ class GateProfileCompositionTests(unittest.TestCase):
         deadlines = [o for o in profiles["default"]["overrides"] if "slow-timeout" in o]
         self.assertIs(deadlines[0], deadline)
         for command in self.run_tests.rust_commands("large"):
-            if "--manifest-path" in command:
-                self.assertEqual(command, ["cargo", "nextest", "run", *UREQ_SELECTION, "--profile", "ureq-recycling"])
-                self.assertNotIn("--no-tests=pass", command, "the named vendor regressions must never be empty")
-            else:
-                self.assertNotIn("--no-tests=pass", command, "full nightly inventory must never be empty")
+            self.assertNotIn("--no-tests=pass", command, "full nightly inventory must never be empty")
 
     def test_pr_gate_excludes_the_shared_medium_and_large_expressions(self) -> None:
         # Одно выражение `medium` на два места: ворота `pr` его исключают,
@@ -273,28 +264,6 @@ class GateProfileCompositionTests(unittest.TestCase):
         self.assertEqual(profiles["pr"]["default-filter"].strip(), f"not (\n{medium}\n) & not (\n{large}\n)")
         self.assertEqual(medium_deadline["slow-timeout"], {"period": "300s", "terminate-after": 2})
         self.assertTrue(medium.startswith("kind(test)"))
-
-    def test_dependency_regressions_have_a_standalone_config_and_no_retry_at_admitting_gates(self) -> None:
-        config = tomllib.loads((REPO_ROOT / "vendor/ureq/.config/nextest.toml").read_text(encoding="utf-8"))
-        profile = config["profile"]["ureq-recycling"]
-        self.assertEqual(profile["default-filter"], "test(/^completed_response_recycling::/)")
-        self.assertEqual(profile["retries"], 0)
-        self.assertFalse(profile["fail-fast"])
-        self.assertEqual(profile["junit"]["path"], "junit.xml")
-        self.assertEqual(profile["junit"]["report-skipped"], "none")
-        self.assertEqual(self.run_tests.UREQ_RECYCLING_SELECTION, UREQ_SELECTION)
-        self.assertEqual(self.run_tests.rust_selections("pr"), [("--workspace",)])
-        for gate in ("queue", "main", "release", "all", "large"):
-            with self.subTest(gate=gate):
-                self.assertEqual(self.run_tests.rust_selections(gate)[2], UREQ_SELECTION)
-                self.assertEqual(self.run_tests.rust_list_commands(gate)[2], [
-                    "cargo", "nextest", "list", *UREQ_SELECTION, "--profile", "ureq-recycling",
-                    "--run-ignored", "all", "--message-format", "json",
-                ])
-                command = self.run_tests.rust_commands(gate)[2]
-                self.assertEqual(command, ["cargo", "nextest", "run", *UREQ_SELECTION, "--profile", "ureq-recycling"])
-                self.assertNotIn("--no-tests=pass", command)
-                self.assertEqual(self.run_tests.nextest_junit(gate, UREQ_SELECTION), REPO_ROOT / "vendor/ureq/target/nextest/ureq-recycling/junit.xml")
 
     def test_large_tier_names_only_attributed_tests_of_the_declared_targets(self) -> None:
         """Ярус объявлен именами: переименованный тест выпал бы из ночи молча."""

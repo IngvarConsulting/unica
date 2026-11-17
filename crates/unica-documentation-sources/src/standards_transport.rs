@@ -82,7 +82,10 @@ impl StandardsAdapter {
                     "unica.standards.{operation} completed through internal v8std MCP proxy"
                 ),
                 errors: Vec::new(),
-                artifacts: vec![endpoint.to_string(), remote_method.to_string()],
+                artifacts: vec![
+                    unica_network::diagnostic_endpoint(endpoint),
+                    remote_method.to_string(),
+                ],
                 data: object.remove("result"),
             },
             Ok(_) => StandardsOutcome::failure(
@@ -118,7 +121,10 @@ impl StandardsOutcome {
             ok: false,
             summary,
             errors: vec![error],
-            artifacts: vec![endpoint.to_string(), remote_method.to_string()],
+            artifacts: vec![
+                unica_network::diagnostic_endpoint(endpoint),
+                remote_method.to_string(),
+            ],
             data: None,
         }
     }

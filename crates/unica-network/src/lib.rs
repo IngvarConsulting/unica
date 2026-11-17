@@ -11,7 +11,7 @@
 //!   в хранилище ОС нет ни одного корня (Linux-образ без `ca-certificates`);
 //!   два набора не смешиваются, см. [`TrustSource`];
 //! - прокси берётся из переменных окружения, порядок описан в [`proxy`];
-//! - редиректы проходятся здесь, а не в `ureq`: для каждого шага заново
+//! - редиректы проходятся здесь, в этом модуле: для каждого шага заново
 //!   выбирается маршрут по `NO_PROXY`, и ни один шаг не уводит с HTTPS на HTTP;
 //! - каждый запрос называет себя [`USER_AGENT`]: имя и версия Unica, без
 //!   сведений о машине и пользователе. Поставщики документации уточняют
@@ -23,6 +23,7 @@
 
 mod failure;
 mod proxy;
+mod response;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 
@@ -32,6 +33,8 @@ use std::time::{Duration, Instant};
 
 pub use failure::{NetworkError, NetworkFailure};
 use proxy::{EnvLookup, ProxyChoice, ProxySettings};
+use response::run_io;
+pub use response::NetworkResponse;
 use rustls_platform_verifier::BuilderVerifierExt;
 
 /// Значение `User-Agent` с назначением запроса. Только имя и версия пакета
@@ -92,14 +95,14 @@ const READ_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// HTTP-клиент процесса: одна конфигурация TLS, одни настройки прокси.
 ///
-/// `ureq` 2 задаёт прокси на весь агент и не знает `NO_PROXY`, поэтому внутри
-/// по агенту на маршрут: прямой и по одному на каждый различный прокси. Все
+/// Для явной маршрутизации внутри по HTTP-клиенту на маршрут: прямой и по
+/// одному на каждый различный прокси. Все
 /// делят одну конфигурацию TLS.
 pub struct NetworkClient {
     settings: ProxySettings,
     trust: TrustSource,
-    direct: ureq::Agent,
-    proxied: HashMap<String, ureq::Agent>,
+    direct: reqwest::Client,
+    proxied: HashMap<String, reqwest::Client>,
 }
 
 /// Чему доверяет клиент при проверке цепочки сертификатов.
@@ -156,28 +159,45 @@ impl NetworkClient {
     pub fn from_environment(lookup: EnvLookup<'_>) -> Result<Self, NetworkError> {
         let settings = ProxySettings::from_lookup(lookup);
         let (tls, trust) = tls_config()?;
-        let build = |proxy: Option<&ProxyChoice>| {
-            let mut builder = ureq::AgentBuilder::new()
-                .tls_config(Arc::clone(&tls))
-                .user_agent(USER_AGENT)
-                .try_proxy_from_env(false)
-                .timeout_connect(CONNECT_TIMEOUT)
-                .timeout_read(READ_TIMEOUT)
-                .redirects(0);
+        Self::build(settings, tls, trust, READ_TIMEOUT)
+    }
+
+    fn build(
+        settings: ProxySettings,
+        tls: Arc<rustls::ClientConfig>,
+        trust: TrustSource,
+        read_timeout: Duration,
+    ) -> Result<Self, NetworkError> {
+        let build_client = |proxy: Option<&ProxyChoice>| {
+            let mut builder = reqwest::Client::builder()
+                .tls_backend_preconfigured((*tls).clone())
+                .no_proxy()
+                .connect_timeout(CONNECT_TIMEOUT)
+                .read_timeout(read_timeout)
+                .connection_verbose(false)
+                .redirect(reqwest::redirect::Policy::none())
+                .retry(reqwest::retry::never())
+                .http1_only()
+                .pool_max_idle_per_host(1);
             if let Some(choice) = proxy {
                 builder = builder.proxy(choice.proxy.clone());
             }
-            builder.build()
+            builder.build().map_err(|_| {
+                NetworkError::new(
+                    NetworkFailure::Configuration,
+                    "cannot build the shared HTTP transport",
+                )
+            })
         };
         let mut proxied = HashMap::new();
         for choice in settings.choices() {
-            proxied
-                .entry(choice.key().to_owned())
-                .or_insert_with(|| build(Some(choice)));
+            if !proxied.contains_key(choice.key()) {
+                proxied.insert(choice.key().to_owned(), build_client(Some(choice))?);
+            }
         }
         Ok(Self {
             trust,
-            direct: build(None),
+            direct: build_client(None)?,
             proxied,
             settings,
         })
@@ -188,72 +208,135 @@ impl NetworkClient {
         self.trust
     }
 
-    /// GET с проходом редиректов. Ответ `4xx`/`5xx` — отказ
-    /// [`NetworkFailure::Status`]. `timeout` — общий срок всего вызова,
-    /// включая редиректы, как было у агента `ureq`.
+    /// GET with explicit redirects and an optional total request deadline.
     pub fn get(
         &self,
         url: &str,
         headers: Headers<'_>,
         timeout: Option<Duration>,
-    ) -> Result<ureq::Response, NetworkError> {
-        let deadline = timeout.map(|timeout| Instant::now() + timeout);
+    ) -> Result<NetworkResponse, NetworkError> {
+        let deadline = timeout.and_then(|timeout| Instant::now().checked_add(timeout));
         let mut current = parse(url)?;
+        let mut redirected_headers = None;
+        let mut headers = headers;
         for _ in 0..=MAX_REDIRECTS {
-            let (agent, route) = self.route(&current)?;
-            let mut request = agent.request_url("GET", &current);
-            for (name, value) in headers {
-                request = request.set(name, value);
-            }
-            if let Some(deadline) = deadline {
-                request = request.timeout(deadline.saturating_duration_since(Instant::now()));
-            }
-            let response = request.call().map_err(|error| {
-                NetworkError::from_transport(error, host(&current), &route, self.trust)
-            })?;
+            let response = self.send(reqwest::Method::GET, &current, headers, None, deadline)?;
             if !(300..400).contains(&response.status()) {
                 return Ok(response);
             }
             let Some(location) = response.header("Location") else {
                 return Ok(response);
             };
-            current = next_hop(&current, location)?;
+            let next = next_hop(&current, location)?;
+            if current.origin() != next.origin() && redirected_headers.is_none() {
+                redirected_headers = Some(
+                    headers
+                        .iter()
+                        .copied()
+                        .filter(|(name, _)| !is_sensitive_header(name))
+                        .collect::<Vec<_>>(),
+                );
+                headers = redirected_headers
+                    .as_deref()
+                    .expect("redirect headers prepared");
+            }
+            current = next;
         }
         Err(NetworkError::new(
             NetworkFailure::Transport,
-            format!("{url}: more than {MAX_REDIRECTS} redirects"),
+            format!(
+                "{}: more than {MAX_REDIRECTS} redirects",
+                diagnostic_url(url)
+            ),
         ))
     }
 
-    /// POST тела без прохода редиректов: перевод JSON-RPC в GET бессмыслен.
+    /// POST без редиректов: перевод JSON-RPC в GET бессмыслен.
     pub fn post(
         &self,
         url: &str,
         headers: Headers<'_>,
         body: &str,
         timeout: Option<Duration>,
-    ) -> Result<ureq::Response, NetworkError> {
-        let current = parse(url)?;
-        let (agent, route) = self.route(&current)?;
-        let mut request = agent.request_url("POST", &current);
-        for (name, value) in headers {
-            request = request.set(name, value);
-        }
-        if let Some(timeout) = timeout {
-            request = request.timeout(timeout);
-        }
-        request.send_string(body).map_err(|error| {
-            NetworkError::from_transport(error, host(&current), &route, self.trust)
-        })
+    ) -> Result<NetworkResponse, NetworkError> {
+        let deadline = timeout.and_then(|timeout| Instant::now().checked_add(timeout));
+        self.send(
+            reqwest::Method::POST,
+            &parse(url)?,
+            headers,
+            Some(body),
+            deadline,
+        )
     }
 
-    /// Агент и описание маршрута для текста отказа.
-    fn route(&self, url: &url::Url) -> Result<(&ureq::Agent, String), NetworkError> {
+    fn send(
+        &self,
+        method: reqwest::Method,
+        url: &url::Url,
+        headers: Headers<'_>,
+        body: Option<&str>,
+        deadline: Option<Instant>,
+    ) -> Result<NetworkResponse, NetworkError> {
+        use reqwest::header::{
+            HeaderMap, HeaderName, HeaderValue, AUTHORIZATION, USER_AGENT as HEADER_AGENT,
+        };
+
+        let (client, route) = self.route(url)?;
+        let mut request_headers = HeaderMap::new();
+        request_headers.insert(HEADER_AGENT, HeaderValue::from_static(USER_AGENT));
+        for (name, value) in headers {
+            let name = HeaderName::from_bytes(name.as_bytes()).map_err(|_| invalid_headers())?;
+            let mut value = HeaderValue::from_str(value).map_err(|_| invalid_headers())?;
+            value.set_sensitive(is_sensitive_header(name.as_str()));
+            request_headers.insert(name, value);
+        }
+
+        // Keep URL credentials out of library request state and all request
+        // formatters. Preserve the old Basic auth behavior (escaped username
+        // and password from the URL) when the caller supplies no header.
+        let mut request = client.request(method, without_userinfo(url));
+        let password = url.password().unwrap_or_default();
+        if !request_headers.contains_key(AUTHORIZATION)
+            && (!url.username().is_empty() || !password.is_empty())
+        {
+            request = request.basic_auth(url.username(), Some(password));
+        }
+        request = request.headers(request_headers);
+        if let Some(body) = body {
+            request = request.body(body.to_owned());
+        }
+        if let Some(deadline) = deadline {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(NetworkError::timed_out(host(url), &route));
+            }
+            request = request.timeout(remaining);
+        }
+        let addr = host(url).to_owned();
+        let trust = self.trust;
+        run_io(async move {
+            let response = request
+                .send()
+                .await
+                .map_err(|error| NetworkError::from_transport(&error, &addr, &route, trust))?;
+            let status = response.status();
+            if status.is_client_error() || status.is_server_error() {
+                return Err(NetworkError::new(
+                    NetworkFailure::Status(status.as_u16()),
+                    format!("{addr} answered HTTP {} ({route})", status.as_u16()),
+                ));
+            }
+            Ok(NetworkResponse::new(response, addr, route, trust))
+        })?
+    }
+
+    /// Клиент и описание маршрута для текста отказа.
+    fn route(&self, url: &url::Url) -> Result<(&reqwest::Client, String), NetworkError> {
         match self.settings.route(url) {
             Ok(Some(choice)) => Ok((
                 self.proxied
                     .get(choice.key())
-                    .expect("an agent is built for every configured proxy"),
+                    .expect("a client is built for every configured proxy"),
                 format!("through proxy {} from {}", choice.shown, choice.variable),
             )),
             Ok(None) => Ok((&self.direct, "direct connection".to_owned())),
@@ -262,19 +345,35 @@ impl NetworkClient {
     }
 }
 
+fn is_sensitive_header(name: &str) -> bool {
+    [
+        "authorization",
+        "proxy-authorization",
+        "cookie",
+        "cookie2",
+        "set-cookie",
+    ]
+    .iter()
+    .any(|secret| name.eq_ignore_ascii_case(secret))
+}
+
+fn invalid_headers() -> NetworkError {
+    NetworkError::new(NetworkFailure::Configuration, "invalid HTTP request header")
+}
+
 /// Куда ведёт редирект. Относительный адрес разрешается от текущего;
 /// уход с HTTPS на HTTP запрещён на любом шаге.
 fn next_hop(current: &url::Url, location: &str) -> Result<url::Url, NetworkError> {
-    let next = current.join(location).map_err(|error| {
+    let next = current.join(location).map_err(|_| {
         NetworkError::new(
             NetworkFailure::Transport,
-            format!("{current} redirected to an invalid location {location}: {error}"),
+            format!("{} redirected to an invalid URL", host(current)),
         )
     })?;
     if current.scheme() == "https" && next.scheme() != "https" {
         return Err(NetworkError::new(
             NetworkFailure::InsecureRedirect,
-            format!("{current} redirected to a non-HTTPS URL: {next}"),
+            format!("{} redirected to a non-HTTPS URL", host(current)),
         ));
     }
     Ok(next)
@@ -284,9 +383,48 @@ fn parse(url: &str) -> Result<url::Url, NetworkError> {
     url::Url::parse(url).map_err(|error| {
         NetworkError::new(
             NetworkFailure::Configuration,
-            format!("invalid URL {url}: {error}"),
+            format!("invalid request URL: {error}"),
         )
     })
+}
+
+fn without_userinfo(url: &url::Url) -> url::Url {
+    let mut sanitized = url.clone();
+    let _ = sanitized.set_password(None);
+    let _ = sanitized.set_username("");
+    sanitized
+}
+
+/// An address safe for user-facing errors. Paths and query values can carry
+/// credentials (including signed asset URLs).
+pub fn diagnostic_url(raw: &str) -> String {
+    url::Url::parse(raw)
+        .ok()
+        .and_then(|url| {
+            let host = url.host_str()?;
+            Some(match url.port() {
+                Some(port) => format!("{}://{host}:{port}", url.scheme()),
+                None => format!("{}://{host}", url.scheme()),
+            })
+        })
+        .unwrap_or_else(|| "<invalid URL>".to_owned())
+}
+
+/// Preserve an ordinary endpoint as provenance. For configured credentials or
+/// query strings, only the origin is suitable for outgoing diagnostics.
+pub fn diagnostic_endpoint(raw: &str) -> String {
+    match url::Url::parse(raw) {
+        Ok(url)
+            if url.has_host()
+                && url.username().is_empty()
+                && url.password().is_none()
+                && url.query().is_none()
+                && url.fragment().is_none() =>
+        {
+            raw.to_owned()
+        }
+        _ => diagnostic_url(raw),
+    }
 }
 
 fn host(url: &url::Url) -> &str {
@@ -299,8 +437,7 @@ fn bundled_roots() -> rustls::RootCertStore {
 }
 
 /// TLS поверх доверия ОС, а при пустом хранилище ОС — поверх вшитого набора
-/// Mozilla. Криптопровайдер — `ring`, как у самого `ureq`: второй провайдер
-/// в сборке сделал бы выбор по умолчанию неоднозначным.
+/// Mozilla. Криптопровайдер явно выбирается здесь.
 fn tls_config() -> Result<(Arc<rustls::ClientConfig>, TrustSource), NetworkError> {
     let builder = rustls::ClientConfig::builder_with_provider(Arc::new(
         rustls::crypto::ring::default_provider(),
@@ -348,8 +485,10 @@ mod medium_tests {
                     if reader.read_line(&mut line).unwrap_or(0) == 0 || line.trim().is_empty() {
                         break;
                     }
-                    if let Some(value) = line.strip_prefix("Range: ") {
-                        range = Some(value.trim().to_owned());
+                    if let Some((key, value)) = line.split_once(':') {
+                        if key.eq_ignore_ascii_case("Range") {
+                            range = Some(value.trim().to_owned());
+                        }
                     }
                 }
                 let request_line = request_line.trim().to_owned();
@@ -520,3 +659,6 @@ mod medium_tests {
         assert_eq!(seen.lock().expect("log").len(), 1);
     }
 }
+
+#[cfg(test)]
+mod transport_tests;

@@ -17,7 +17,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import allure_results  # noqa: E402
-from cargo_target import cargo_target_dir, vendor_target_arg, vendor_target_dir  # noqa: E402
+from cargo_target import cargo_target_dir  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 RUN_UNITTEST = Path(__file__).with_name("run-unittest.py")
@@ -39,8 +39,6 @@ NEXTEST_PROFILES = {
 
 
 def nextest_profile(profile: str, selection: tuple[str, ...] | None = None) -> str:
-    if selection == UREQ_RECYCLING_SELECTION:
-        return "ureq-recycling"
     try:
         return NEXTEST_PROFILES[profile]
     except KeyError:
@@ -49,7 +47,7 @@ def nextest_profile(profile: str, selection: tuple[str, ...] | None = None) -> s
 
 def nextest_junit(profile: str, selection: tuple[str, ...] | None = None) -> Path:
     """Nextest хранит JUnit в каталоге сборки выбранного workspace."""
-    target = vendor_target_dir(REPO_ROOT, "ureq") if selection == UREQ_RECYCLING_SELECTION else cargo_target_dir(REPO_ROOT)
+    target = cargo_target_dir(REPO_ROOT)
     return target / "nextest" / nextest_profile(profile, selection) / "junit.xml"
 
 
@@ -70,17 +68,6 @@ LEDGER_FEATURE_SELECTION = (
     "--test", "daemon_receipt_ledger",
     "-E", "binary(daemon_receipt_ledger)",
 )
-
-# A dependency's cfg(test) is not compiled by workspace tests. Its pinned
-# Content-Length fault regressions use the same plan/result path, with no retry.
-UREQ_RECYCLING_PREFIX = "completed_response_recycling::"
-UREQ_RECYCLING_SELECTION = (
-    "--manifest-path", "vendor/ureq/Cargo.toml", "--locked", "--lib",
-    "--features", "json,serde_json/preserve_order,serde_json/float_roundtrip",
-    "--config-file", "vendor/ureq/.config/nextest.toml", "--target-dir", "target",  # cargo-target: mapped
-    "-E", f"test(/^{UREQ_RECYCLING_PREFIX}/)",
-)
-
 
 # Вызов с признаком пересобирает `target/debug/unica` с другим набором
 # признаков. Windows не даёт заменить файл, пока его исполняет живой процесс,
@@ -121,24 +108,14 @@ def rust_selections(profile: str) -> list[tuple[str, ...]]:
     selections = [("--workspace",)]
     if set(ADMITTED[profile]) & {"medium", "large"}:
         selections.append(LEDGER_FEATURE_SELECTION)
-        selections.append(UREQ_RECYCLING_SELECTION)
     return selections
-
-
-def targeted(selection: tuple[str, ...]) -> list[str]:
-    """Отбор с каталогом сборки сессии: `--target-dir target` вендорного workspace
-    уходит в `CARGO_TARGET_DIR`, если переменная задана."""
-    arguments = list(selection)
-    if "--target-dir" in arguments and selection == UREQ_RECYCLING_SELECTION:
-        arguments[arguments.index("--target-dir") + 1] = vendor_target_arg(REPO_ROOT, "ureq")
-    return arguments
 
 
 def rust_command(profile: str, selection: tuple[str, ...]) -> list[str]:
     # nextest: процесс на тест и JUnit из коробки. Число потоков, повторы
     # и отчёт описаны в `.config/nextest.toml`, а не здесь: конвейер и
     # локальный прогон обязаны идти одной настройкой.
-    return ["cargo", "nextest", "run", *targeted(selection), "--profile", nextest_profile(profile, selection)]
+    return ["cargo", "nextest", "run", *selection, "--profile", nextest_profile(profile, selection)]
 
 
 def rust_commands(profile: str) -> list[list[str]]:
@@ -149,7 +126,7 @@ def rust_commands(profile: str) -> list[list[str]]:
 def rust_list_commands(profile: str) -> list[list[str]]:
     """Состав тех же отборов: план обязан перечислять то, что прогон гоняет."""
     return [
-        ["cargo", "nextest", "list", *targeted(selection), "--profile", nextest_profile(profile, selection),
+        ["cargo", "nextest", "list", *selection, "--profile", nextest_profile(profile, selection),
          "--run-ignored", "all", "--message-format", "json"]
         for selection in rust_selections(profile)
     ]
@@ -241,9 +218,6 @@ def write_rust_plan(results: Path, profile: str) -> int:
     entries = []
     for selection, command in zip(rust_selections(profile), rust_list_commands(profile), strict=True):
         cases = allure_results.nextest_list(REPO_ROOT, command)
-        for case in cases:
-            if rust_case_medium(selection, case["binary"], case["name"]):
-                case["size"] = "medium"
         entries.extend(cases)
     allure_results.write_plan(results, entries)
     return len(entries)
@@ -260,10 +234,6 @@ def write_python_plan(profile: str, results: Path, runner: str, suite: str | Non
     return sum(1 for entry in entries if entry.get("ecosystem") == "python")
 
 
-def rust_case_medium(selection: tuple[str, ...] | None, binary: str, name: str) -> bool:
-    return selection == UREQ_RECYCLING_SELECTION and binary == "ureq" and name.startswith(UREQ_RECYCLING_PREFIX)
-
-
 def emit_rust(
     results: Path, profile: str, runner: str, junit: Path | None = None,
     *, selection: tuple[str, ...] | None = None,
@@ -273,11 +243,6 @@ def emit_rust(
     reasons = allure_results.ignore_reasons(REPO_ROOT)
     entries = allure_results.junit_records(junit, runner=runner, profile=profile, reasons=reasons)
     for entry in entries:
-        binary, _, name = entry["fullName"].partition("::")
-        if rust_case_medium(selection, binary, name):
-            for label in entry["labels"]:
-                if label["name"] == "size":
-                    label["value"] = "medium"
         allure_results.write(results, entry)
     return len(entries)
 
