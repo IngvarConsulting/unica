@@ -217,6 +217,8 @@ impl NetworkClient {
     ) -> Result<NetworkResponse, NetworkError> {
         let deadline = timeout.and_then(|timeout| Instant::now().checked_add(timeout));
         let mut current = parse(url)?;
+        let mut redirected_headers = None;
+        let mut headers = headers;
         for _ in 0..=MAX_REDIRECTS {
             let response = self.send(reqwest::Method::GET, &current, headers, None, deadline)?;
             if !(300..400).contains(&response.status()) {
@@ -225,7 +227,20 @@ impl NetworkClient {
             let Some(location) = response.header("Location") else {
                 return Ok(response);
             };
-            current = next_hop(&current, location)?;
+            let next = next_hop(&current, location)?;
+            if current.origin() != next.origin() && redirected_headers.is_none() {
+                redirected_headers = Some(
+                    headers
+                        .iter()
+                        .copied()
+                        .filter(|(name, _)| !is_sensitive_header(name))
+                        .collect::<Vec<_>>(),
+                );
+                headers = redirected_headers
+                    .as_deref()
+                    .expect("redirect headers prepared");
+            }
+            current = next;
         }
         Err(NetworkError::new(
             NetworkFailure::Transport,
@@ -272,10 +287,7 @@ impl NetworkClient {
         for (name, value) in headers {
             let name = HeaderName::from_bytes(name.as_bytes()).map_err(|_| invalid_headers())?;
             let mut value = HeaderValue::from_str(value).map_err(|_| invalid_headers())?;
-            value.set_sensitive(matches!(
-                name.as_str(),
-                "authorization" | "proxy-authorization" | "cookie" | "set-cookie"
-            ));
+            value.set_sensitive(is_sensitive_header(name.as_str()));
             request_headers.insert(name, value);
         }
 
@@ -331,6 +343,18 @@ impl NetworkClient {
             Err(error) => Err(NetworkError::proxy_setting(error.message.clone())),
         }
     }
+}
+
+fn is_sensitive_header(name: &str) -> bool {
+    [
+        "authorization",
+        "proxy-authorization",
+        "cookie",
+        "cookie2",
+        "set-cookie",
+    ]
+    .iter()
+    .any(|secret| name.eq_ignore_ascii_case(secret))
 }
 
 fn invalid_headers() -> NetworkError {

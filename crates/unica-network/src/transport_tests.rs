@@ -381,3 +381,76 @@ fn medium_http_proxy_and_server_authorization_survive_redacted_errors() {
         vec![vec!["Basic dTpw".to_string()]]
     );
 }
+
+#[test]
+fn medium_cross_origin_redirect_drops_credentials_and_keeps_range() {
+    let (second, second_base) = listener();
+    let (first, first_base) = listener();
+    let server = thread::spawn(move || {
+        for (path, location) in [("/start", "/same"), ("/same", &second_base)] {
+            let mut stream = accept(&first);
+            let request = read_request(&mut stream);
+            assert!(request.starts_with(&format!("GET {path} ")));
+            assert!(request.contains("authorization: Bearer local-secret\r\n"));
+            assert!(request.contains("cookie: local-cookie\r\n"));
+            assert!(request.contains("range: bytes=10-\r\n"));
+            write!(stream, "HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+        }
+        let mut stream = accept(&second);
+        let request = read_request(&mut stream);
+        assert!(request.starts_with("GET / HTTP/1.1\r\n"));
+        assert!(!request.contains("authorization:"));
+        assert!(!request.contains("cookie:"));
+        assert!(request.contains("range: bytes=10-\r\n"));
+        stream.write_all(b"HTTP/1.1 206 Partial Content\r\nContent-Length: 4\r\nConnection: close\r\n\r\ntail").unwrap();
+    });
+    let first_base = first_base.replacen("http://", "http://url-user:url-password@", 1);
+    let client = client_with_timeout(READ_TIMEOUT);
+    let response = client
+        .get(
+            &format!("{first_base}/start"),
+            &[
+                ("Authorization", "Bearer local-secret"),
+                ("Cookie", "local-cookie"),
+                ("Range", "bytes=10-"),
+            ],
+            None,
+        )
+        .unwrap();
+    assert_eq!(response.status(), 206);
+    assert_eq!(response.into_string().unwrap(), "tail");
+    server.join().unwrap();
+}
+
+#[test]
+fn medium_text_body_keeps_the_limit_and_lossy_utf8() {
+    let client = client_with_timeout(READ_TIMEOUT);
+    let stand = test_support::HttpStand::start(b"ok \xff".to_vec(), "text/plain");
+    assert_eq!(
+        client
+            .get(&stand.url(""), &[], None)
+            .unwrap()
+            .into_string()
+            .unwrap(),
+        "ok \u{fffd}"
+    );
+    let limit = 10 * 1024 * 1024;
+    let at_cap = test_support::HttpStand::start(vec![b'a'; limit], "text/plain");
+    let oversized = test_support::HttpStand::start(vec![b'a'; limit + 1], "text/plain");
+    assert_eq!(
+        client
+            .get(&at_cap.url(""), &[], None)
+            .unwrap()
+            .into_string()
+            .unwrap()
+            .len(),
+        limit
+    );
+    assert!(client
+        .get(&oversized.url(""), &[], None)
+        .unwrap()
+        .into_string()
+        .unwrap_err()
+        .to_string()
+        .contains("response too big"));
+}

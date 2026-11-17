@@ -43,6 +43,9 @@ fn transport(message: &str) -> NetworkError {
     NetworkError::new(NetworkFailure::Transport, message)
 }
 
+/// Limit retained from the previous string response reader.
+const MAX_TEXT_RESPONSE_BYTES: u64 = 10 * 1024 * 1024;
+
 /// HTTP headers and a body read lazily, one network chunk at a time.
 pub struct NetworkResponse {
     response: reqwest::Response,
@@ -91,9 +94,14 @@ impl NetworkResponse {
     }
 
     pub fn into_string(self) -> io::Result<String> {
-        let mut text = String::new();
-        self.into_reader().read_to_string(&mut text)?;
-        Ok(text)
+        let mut text = Vec::new();
+        self.into_reader()
+            .take(MAX_TEXT_RESPONSE_BYTES + 1)
+            .read_to_end(&mut text)?;
+        if text.len() as u64 > MAX_TEXT_RESPONSE_BYTES {
+            return Err(io::Error::other("response too big for into_string"));
+        }
+        Ok(String::from_utf8_lossy(&text).into_owned())
     }
 }
 
