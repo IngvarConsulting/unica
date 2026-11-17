@@ -10,7 +10,9 @@ default = []
 test-support = ["dep:rcgen"]
 
 [dependencies]
-ureq.workspace = true
+reqwest.workspace = true
+bytes.workspace = true
+tokio.workspace = true
 rustls.workspace = true
 rustls-platform-verifier.workspace = true
 webpki-roots.workspace = true
@@ -19,6 +21,8 @@ rcgen = { workspace = true, optional = true }
 
 [dev-dependencies]
 rcgen.workspace = true
+log = "0.4"
+socket2 = "0.6"
 
 [package.metadata.unica]
 component = "service"
