@@ -269,11 +269,7 @@ fn parse_owners(xml: &str, remaining_parts: &mut usize) -> Option<(Owners, bool)
             incomplete = true;
             continue;
         }
-        if *remaining_parts < owner.len() {
-            incomplete = true;
-            break;
-        }
-        *remaining_parts -= owner.len();
+        *remaining_parts = remaining_parts.checked_sub(owner.len())?;
         owner.reverse();
         let properties = if namespace == MD_NS {
             child(node, MD_NS, "Properties")?
