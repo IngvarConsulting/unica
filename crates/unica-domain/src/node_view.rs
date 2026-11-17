@@ -186,11 +186,23 @@ pub struct TextView {
     node: NodeView,
     #[serde(skip)]
     text: SourceText,
+    #[serde(skip)]
+    revision: Option<String>,
 }
 
 impl TextView {
     pub fn new(node: NodeView, text: SourceText) -> Self {
-        Self { node, text }
+        Self {
+            node,
+            text,
+            revision: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_revision(mut self, revision: Option<String>) -> Self {
+        self.revision = revision;
+        self
     }
 }
 
@@ -230,11 +242,11 @@ impl NodeViewData {
     }
 
     /// Отделяет исходный текст: узел остаётся без него.
-    pub fn take_text(&mut self) -> Option<SourceText> {
+    pub fn take_text(&mut self) -> Option<(SourceText, Option<String>)> {
         match self {
-            Self::Text(text) => Some(std::mem::replace(
-                &mut text.text,
-                SourceText::Whole(String::new()),
+            Self::Text(text) => Some((
+                std::mem::replace(&mut text.text, SourceText::Whole(String::new())),
+                text.revision.take(),
             )),
             Self::Node(_) | Self::Collection(_) => None,
         }

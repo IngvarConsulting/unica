@@ -3020,6 +3020,7 @@ dependencies = [
  "serde_json",
  "unica-daemon-protocol",
  "unica-lsp-contract",
+ "unica-source-contract",
 ]
 
 [[package]]
@@ -3262,6 +3263,7 @@ version = "0.15.0-rc.1"
 dependencies = [
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "unica-address",
 ]
 

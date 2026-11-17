@@ -1544,6 +1544,7 @@ fn module_projection_view_data(
                 requested,
                 projections.method_text(method),
                 method.text_from_line,
+                projections.source_text(),
             )
         }
         (NodeKind::Region, None, None) => module_collection(
@@ -1625,7 +1626,12 @@ fn module_projection_view_data(
                     format!("event `{name}` was not found"),
                 )
             }),
-        (NodeKind::Body, None, None) => module_text(requested, projections.source_text(), 1),
+        (NodeKind::Body, None, None) => module_text(
+            requested,
+            projections.source_text(),
+            1,
+            projections.source_text(),
+        ),
         _ => Err(ViewError::new(
             RefusalCode::NotFound,
             "module projection suffix is not available",
@@ -1638,6 +1644,7 @@ fn module_text(
     requested: &QualifiedAddress,
     text: &str,
     first_line: usize,
+    module_source: &str,
 ) -> Result<NodeViewData, ViewError> {
     let count = text.lines().count();
     let (from, to) = requested.line_range().map_or(
@@ -1668,31 +1675,42 @@ fn module_text(
     } else {
         text
     };
-    let text = if admit_text(text).is_ok() {
-        SourceText::Whole(text.to_string())
+    let (text, revision) = if admit_text(text).is_ok() {
+        (
+            SourceText::Whole(text.to_string()),
+            Some(unica_source_contract::read::module_text_revision(
+                module_source.as_bytes(),
+            )),
+        )
     } else {
-        SourceText::Oversized {
-            bytes: text.len() as u64,
-            prefix: unica_execution_contract::source_text_budget::complete_prefix(
-                text,
-                unica_bootstrap::MAX_RESPONSE_BUDGET,
-            )
-            .to_string(),
-        }
+        (
+            SourceText::Oversized {
+                bytes: text.len() as u64,
+                prefix: unica_execution_contract::source_text_budget::complete_prefix(
+                    text,
+                    unica_bootstrap::MAX_RESPONSE_BUDGET,
+                )
+                .to_string(),
+            },
+            None,
+        )
     };
-    Ok(NodeViewData::Text(TextView::new(
-        NodeView::new(
-            requested.to_string(),
-            NodeKind::Body.as_str(),
-            NodeKind::Body.as_str(),
-            Map::new(),
-        ),
-        SourceText::Window {
-            text: Box::new(text),
-            from,
-            to,
-        },
-    )))
+    Ok(NodeViewData::Text(
+        TextView::new(
+            NodeView::new(
+                requested.to_string(),
+                NodeKind::Body.as_str(),
+                NodeKind::Body.as_str(),
+                Map::new(),
+            ),
+            SourceText::Window {
+                text: Box::new(text),
+                from,
+                to,
+            },
+        )
+        .with_revision(revision),
+    ))
 }
 
 fn selected_lines(at: &QualifiedAddress, full: ResolvedLines) -> Result<ResolvedLines, ViewError> {
