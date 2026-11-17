@@ -1462,6 +1462,7 @@ fn module_projection_view(
     requested: &QualifiedAddress,
     prefix_len: usize,
     projections: &ModuleProjectionSet,
+    bindings: BTreeMap<String, Vec<Value>>,
 ) -> Result<NodeViewData, ViewError> {
     let unknown = projections
         .summary()
@@ -1469,7 +1470,7 @@ fn module_projection_view(
         .common_module
         .as_ref()
         .is_some_and(|common| !common.execution_environment_known());
-    let view = module_projection_view_data(requested, prefix_len, projections)?;
+    let view = module_projection_view_data(requested, prefix_len, projections, bindings)?;
     // Предел сообщает, что для заимствованного модуля известны не все флаги среды.
     Ok(if unknown {
         view.with_limit(UNKNOWN_CONTEXTS_LIMIT)
@@ -1482,6 +1483,7 @@ fn module_projection_view_data(
     requested: &QualifiedAddress,
     prefix_len: usize,
     projections: &ModuleProjectionSet,
+    mut bindings: BTreeMap<String, Vec<Value>>,
 ) -> Result<NodeViewData, ViewError> {
     let suffix = &requested.segments()[prefix_len..];
     if suffix.is_empty() {
@@ -1521,14 +1523,16 @@ fn module_projection_view_data(
             projections
                 .methods()
                 .iter()
-                .map(method_node_value)
+                .map(|method| {
+                    method_node_value(method, bindings.get(&method.at).map_or(0, Vec::len))
+                })
                 .collect(),
         ),
         (NodeKind::Method, Some(name), None) => projections
             .methods()
             .iter()
             .find(|method| method.name == name)
-            .map(method_node)
+            .map(|method| method_node(method, bindings.get(&method.at).map_or(0, Vec::len)))
             .map(NodeViewData::Node)
             .ok_or_else(|| {
                 ViewError::new(
@@ -1544,6 +1548,16 @@ fn module_projection_view_data(
                 requested,
                 projections.method_text(method),
                 method.text_from_line,
+            )
+        }
+        (NodeKind::Method, Some(name), Some(detail))
+            if detail.name().is_none() && detail.kind() == NodeKind::Binding =>
+        {
+            let method = find_method(projections, name)?;
+            module_collection(
+                requested,
+                NodeKind::Binding,
+                bindings.remove(&method.at).unwrap_or_default(),
             )
         }
         (NodeKind::Region, None, None) => module_collection(
@@ -1753,7 +1767,7 @@ fn find_method<'a>(
         })
 }
 
-fn method_node(method: &MethodProjection) -> NodeView {
+fn method_node(method: &MethodProjection, binding_count: usize) -> NodeView {
     let mut props = Map::from_iter([
         ("signature".to_string(), json!(method.signature)),
         ("methodKind".to_string(), json!(method.method_kind)),
@@ -1780,13 +1794,22 @@ fn method_node(method: &MethodProjection) -> NodeView {
     if let Some(area) = method.area {
         props.insert("area".to_string(), json!(area));
     }
-    NodeView::new(&method.at, NodeKind::Method.as_str(), &method.name, props).with_branches(vec![
-        BranchRef::new(format!("{}.Body", method.at), method.text_line_count()),
-    ])
+    let mut branches = vec![BranchRef::new(
+        format!("{}.Body", method.at),
+        method.text_line_count(),
+    )];
+    if binding_count > 0 {
+        branches.push(BranchRef::new(
+            format!("{}.Binding", method.at),
+            binding_count,
+        ));
+    }
+    NodeView::new(&method.at, NodeKind::Method.as_str(), &method.name, props)
+        .with_branches(branches)
 }
 
-fn method_node_value(method: &MethodProjection) -> Value {
-    serde_json::to_value(method_node(method)).unwrap_or(Value::Null)
+fn method_node_value(method: &MethodProjection, binding_count: usize) -> Value {
+    serde_json::to_value(method_node(method, binding_count)).unwrap_or(Value::Null)
 }
 
 fn region_node(requested: &QualifiedAddress, region: &RegionProjection) -> NodeView {
