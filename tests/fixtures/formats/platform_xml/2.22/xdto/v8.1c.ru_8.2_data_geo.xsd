@@ -1,0 +1,408 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:ns1="http://v8.1c.ru/8.1/data/core" xmlns:ns2="http://v8.1c.ru/8.1/data/ui" xmlns:tns="http://v8.1c.ru/8.2/data/geo" xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="http://v8.1c.ru/8.2/data/geo" attributeFormDefault="unqualified" elementFormDefault="qualified">
+	<xs:import namespace="http://v8.1c.ru/8.1/data/core"/>
+	<xs:import namespace="http://v8.1c.ru/8.1/data/ui"/>
+	<xs:simpleType name="GeographicalSchemaDataSourceOrganizationType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="AtRow"/>
+			<xs:enumeration value="AtIntersection"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="GeographicalSchemaLayerSeriesShowMode">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="DontShow"/>
+			<xs:enumeration value="Text"/>
+			<xs:enumeration value="Column"/>
+			<xs:enumeration value="ShapeSize"/>
+			<xs:enumeration value="ShapeColor"/>
+			<xs:enumeration value="ShapeColorHue"/>
+			<xs:enumeration value="Picture"/>
+			<xs:enumeration value="Pie"/>
+			<xs:enumeration value="SizedPie"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="GeographicalSchemaLegendItemShowScaleType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="DontShow"/>
+			<xs:enumeration value="ShowByValues"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="GeographicalSchemaLineType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="None"/>
+			<xs:enumeration value="Solid"/>
+			<xs:enumeration value="Dotted"/>
+			<xs:enumeration value="Dashed"/>
+			<xs:enumeration value="DashDotted"/>
+			<xs:enumeration value="DashDottedDotted"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="GeographicalSchemaMarkerType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="None"/>
+			<xs:enumeration value="Pin"/>
+			<xs:enumeration value="Darts"/>
+			<xs:enumeration value="LittleCircle"/>
+			<xs:enumeration value="BigCircle"/>
+			<xs:enumeration value="LittleSquare"/>
+			<xs:enumeration value="BigSquare"/>
+			<xs:enumeration value="LittleTriangle"/>
+			<xs:enumeration value="BigTriangle"/>
+			<xs:enumeration value="QuestionMark"/>
+			<xs:enumeration value="ExclamationPoint"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="GeographicalSchemaPointObjectDrawingType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Char"/>
+			<xs:enumeration value="Marker"/>
+			<xs:enumeration value="Picture"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="GeographicalSchemaProjection">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="CylindricalMillerProjection"/>
+			<xs:enumeration value="CylindricalLambertEqualAreaProjection"/>
+			<xs:enumeration value="CylindricalGallStereographicProjection"/>
+			<xs:enumeration value="CylindricalEquidistantProjection"/>
+			<xs:enumeration value="PseudoCylindricalSinusoidalProjection"/>
+			<xs:enumeration value="PseudoCylindricalMollweideProjection"/>
+			<xs:enumeration value="PseudoCylindricalRobinsonProjection"/>
+			<xs:enumeration value="PseudoCylindricalEckert1Projection"/>
+			<xs:enumeration value="PseudoCylindricalEckert2Projection"/>
+			<xs:enumeration value="PseudoCylindricalEckert3Projection"/>
+			<xs:enumeration value="PseudoCylindricalEckert4Projection"/>
+			<xs:enumeration value="PseudoCylindricalEckert5Projection"/>
+			<xs:enumeration value="PseudoCylindricalEckert6Projection"/>
+			<xs:enumeration value="PseudoCylindricalHatanoAsymetricalEqualAreaProjection"/>
+			<xs:enumeration value="PseudoCylindricalLoximutalProjection"/>
+			<xs:enumeration value="PseudoCylindricalMcBrydeThomasFlatPolarParabolicProjection"/>
+			<xs:enumeration value="PseudoCylindricalMcBrydeThomasFlatPolarQuarticProjection"/>
+			<xs:enumeration value="PseudoCylindricalMcBrydeThomasFlatPolarSinusoidalProjection"/>
+			<xs:enumeration value="PseudoCylindricalPutninP2Projection"/>
+			<xs:enumeration value="PseudoCylindricalPutninP5Projection"/>
+			<xs:enumeration value="PseudoCylindricalWinkel1Projection"/>
+			<xs:enumeration value="PseudoCylindricalBoggsEumorphicProjection"/>
+			<xs:enumeration value="AzimuthalHammerProjection"/>
+			<xs:enumeration value="AzimuthalWagner7Projection"/>
+			<xs:enumeration value="AzimuthalAitoffProjection"/>
+			<xs:enumeration value="AzimuthalWinkelTripelProjection"/>
+			<xs:enumeration value="AzimuthalEquidistantProjection"/>
+			<xs:enumeration value="AzimuthalLambertEqualAreaProjection"/>
+			<xs:enumeration value="MiscellaneousAugustEpicycloidalProjection"/>
+			<xs:enumeration value="MiscellaneousBaconGlobularProjection"/>
+			<xs:enumeration value="MiscellaneousNicolosiGlobularProjection"/>
+			<xs:enumeration value="MiscellaneousApianGlobular1Projection"/>
+			<xs:enumeration value="MiscellaneousOrteliusOvalProjection"/>
+			<xs:enumeration value="MiscellaneousVanDerGrinten1Projection"/>
+			<xs:enumeration value="MiscellaneousVanDerGrinten2Projection"/>
+			<xs:enumeration value="MiscellaneousVanDerGrinten3Projection"/>
+			<xs:enumeration value="ConicLambertEqualAreaProjection"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="GeographicalSchemaShowMode">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="ScaleDefined"/>
+			<xs:enumeration value="AllData"/>
+			<xs:enumeration value="SpecifiedArea"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="PaintingReferencePointPosition">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="LeftTop"/>
+			<xs:enumeration value="LeftCenter"/>
+			<xs:enumeration value="LeftBottom"/>
+			<xs:enumeration value="CenterTop"/>
+			<xs:enumeration value="Center"/>
+			<xs:enumeration value="CenterBottom"/>
+			<xs:enumeration value="RightTop"/>
+			<xs:enumeration value="RightCenter"/>
+			<xs:enumeration value="RightBottom"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="SeriesValuesDrawingMode">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="ShowAsValue"/>
+			<xs:enumeration value="ShowAsPart"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:complexType name="GeographicalSchema">
+		<xs:sequence>
+			<xs:element name="pic" type="ns2:Picture" minOccurs="0"/>
+			<xs:element name="layer" type="tns:layer" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="po" type="tns:po" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="legend" type="tns:legend"/>
+			<xs:element name="title" type="tns:title"/>
+			<xs:element name="drawing" type="tns:drawing"/>
+		</xs:sequence>
+		<xs:attribute name="curId" type="xs:decimal"/>
+		<xs:attribute name="latShift" type="xs:decimal"/>
+		<xs:attribute name="longShift" type="xs:decimal"/>
+		<xs:attribute name="proj" type="tns:GeographicalSchemaProjection"/>
+		<xs:attribute name="showMode" type="tns:GeographicalSchemaShowMode"/>
+		<xs:attribute name="scale" type="xs:decimal"/>
+		<xs:attribute name="xmn" type="xs:decimal"/>
+		<xs:attribute name="xmx" type="xs:decimal"/>
+		<xs:attribute name="ymn" type="xs:decimal"/>
+		<xs:attribute name="ymx" type="xs:decimal"/>
+		<xs:attribute name="dxn" type="xs:decimal"/>
+		<xs:attribute name="dxx" type="xs:decimal"/>
+		<xs:attribute name="dyn" type="xs:decimal"/>
+		<xs:attribute name="dyx" type="xs:decimal"/>
+		<xs:attribute name="vxn" type="xs:decimal"/>
+		<xs:attribute name="vxx" type="xs:decimal"/>
+		<xs:attribute name="vyn" type="xs:decimal"/>
+		<xs:attribute name="vyx" type="xs:decimal"/>
+		<xs:attribute name="useOutput" type="ns2:UseOutput"/>
+	</xs:complexType>
+	<xs:complexType name="dp">
+		<xs:attribute name="x" type="xs:decimal"/>
+		<xs:attribute name="y" type="xs:decimal"/>
+	</xs:complexType>
+	<xs:complexType name="dps">
+		<xs:sequence>
+			<xs:element name="p" type="tns:dp" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="drawing">
+		<xs:sequence>
+			<xs:element name="brdr" type="ns2:Border" minOccurs="0"/>
+			<xs:element name="bkClr" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="clr" type="ns2:Color" minOccurs="0"/>
+		</xs:sequence>
+		<xs:attribute name="trnsprnt" type="xs:boolean"/>
+		<xs:attribute name="left" type="xs:decimal"/>
+		<xs:attribute name="right" type="xs:decimal"/>
+		<xs:attribute name="top" type="xs:decimal"/>
+		<xs:attribute name="bottom" type="xs:decimal"/>
+	</xs:complexType>
+	<xs:complexType name="dsi">
+		<xs:sequence>
+			<xs:element name="bc" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="tc" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="tf" type="ns2:Font" minOccurs="0"/>
+			<xs:element name="v" minOccurs="0"/>
+		</xs:sequence>
+		<xs:attribute name="oi" type="xs:decimal"/>
+		<xs:attribute name="n" type="xs:string"/>
+		<xs:attribute name="t" type="xs:string"/>
+		<xs:attribute name="f" type="xs:string"/>
+		<xs:attribute name="dt" type="tns:GeographicalSchemaLayerSeriesShowMode"/>
+		<xs:attribute name="g" type="xs:string"/>
+		<xs:attribute name="to" type="xs:decimal"/>
+		<xs:attribute name="vdt" type="tns:SeriesValuesDrawingMode"/>
+	</xs:complexType>
+	<xs:complexType name="ipsv">
+		<xs:sequence>
+			<xs:element name="p" type="tns:sps" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+		<xs:attribute name="i" type="xs:decimal"/>
+	</xs:complexType>
+	<xs:complexType name="layer">
+		<xs:sequence>
+			<xs:element name="gsc" type="tns:scsi"/>
+			<xs:element name="series" type="tns:dsi" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="pnt" type="tns:ps" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="mpnt" type="tns:mps" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="pln" type="tns:pls" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="plgn" type="tns:pgs" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="data" type="tns:oas" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+		<xs:attribute name="oi" type="xs:decimal"/>
+		<xs:attribute name="name" type="xs:string"/>
+		<xs:attribute name="text" type="xs:string"/>
+		<xs:attribute name="xmn" type="xs:decimal"/>
+		<xs:attribute name="xmx" type="xs:decimal"/>
+		<xs:attribute name="ymn" type="xs:decimal"/>
+		<xs:attribute name="ymx" type="xs:decimal"/>
+		<xs:attribute name="vis" type="xs:boolean"/>
+		<xs:attribute name="sel" type="xs:boolean"/>
+		<xs:attribute name="srb" type="xs:decimal"/>
+		<xs:attribute name="sre" type="xs:decimal"/>
+		<xs:attribute name="dsr" type="xs:string"/>
+		<xs:attribute name="ct" type="tns:GeographicalSchemaDataSourceOrganizationType"/>
+		<xs:attribute name="et" type="ns1:UUID"/>
+	</xs:complexType>
+	<xs:complexType name="legItem">
+		<xs:sequence>
+			<xs:element name="stc" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="stf" type="ns2:Font" minOccurs="0"/>
+			<xs:element name="pic" type="ns2:Picture" minOccurs="0"/>
+		</xs:sequence>
+		<xs:attribute name="oi" type="xs:decimal"/>
+		<xs:attribute name="loi" type="xs:decimal"/>
+		<xs:attribute name="soi" type="xs:decimal"/>
+		<xs:attribute name="st" type="xs:string"/>
+		<xs:attribute name="ct" type="xs:string"/>
+		<xs:attribute name="sct" type="tns:GeographicalSchemaLegendItemShowScaleType"/>
+	</xs:complexType>
+	<xs:complexType name="legend">
+		<xs:sequence>
+			<xs:element name="clr" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="brdr" type="ns2:Border" minOccurs="0"/>
+			<xs:element name="brdrClr" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="fnt" type="ns2:Font" minOccurs="0"/>
+			<xs:element name="bkClr" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="item" type="tns:legItem" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+		<xs:attribute name="show" type="xs:boolean"/>
+		<xs:attribute name="trnsprnt" type="xs:boolean"/>
+		<xs:attribute name="scale" type="xs:boolean"/>
+		<xs:attribute name="left" type="xs:decimal"/>
+		<xs:attribute name="right" type="xs:decimal"/>
+		<xs:attribute name="top" type="xs:decimal"/>
+		<xs:attribute name="bottom" type="xs:decimal"/>
+	</xs:complexType>
+	<xs:complexType name="lobj">
+		<xs:sequence>
+			<xs:element name="det" minOccurs="0"/>
+			<xs:element name="val" minOccurs="0"/>
+		</xs:sequence>
+		<xs:attribute name="oi" type="xs:decimal"/>
+		<xs:attribute name="tt" type="xs:string"/>
+		<xs:attribute name="sld" type="xs:boolean"/>
+		<xs:attribute name="vis" type="xs:boolean"/>
+		<xs:attribute name="xn" type="xs:decimal"/>
+		<xs:attribute name="xx" type="xs:decimal"/>
+		<xs:attribute name="yn" type="xs:decimal"/>
+		<xs:attribute name="yx" type="xs:decimal"/>
+		<xs:attribute name="dxn" type="xs:decimal"/>
+		<xs:attribute name="dxx" type="xs:decimal"/>
+		<xs:attribute name="dyn" type="xs:decimal"/>
+		<xs:attribute name="dyx" type="xs:decimal"/>
+	</xs:complexType>
+	<xs:complexType name="mps">
+		<xs:complexContent>
+			<xs:extension base="tns:lobj">
+				<xs:sequence>
+					<xs:element name="pnt" type="tns:sps" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="dps" type="tns:dps" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="clr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="fnt" type="ns2:Font" minOccurs="0"/>
+					<xs:element name="pic" type="ns2:Picture" minOccurs="0"/>
+				</xs:sequence>
+				<xs:attribute name="smbl" type="xs:string"/>
+				<xs:attribute name="pn" type="tns:GeographicalSchemaMarkerType"/>
+				<xs:attribute name="pp" type="tns:PaintingReferencePointPosition"/>
+				<xs:attribute name="dt" type="tns:GeographicalSchemaPointObjectDrawingType"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="oas">
+		<xs:sequence>
+			<xs:element name="d" type="tns:sad" maxOccurs="unbounded"/>
+		</xs:sequence>
+		<xs:attribute name="i" type="xs:decimal"/>
+	</xs:complexType>
+	<xs:complexType name="pgs">
+		<xs:complexContent>
+			<xs:extension base="tns:lobj">
+				<xs:sequence>
+					<xs:element name="clr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="bClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="cnt" type="tns:ipsv" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="dps" type="tns:dps" minOccurs="0" maxOccurs="unbounded"/>
+				</xs:sequence>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="pls">
+		<xs:complexContent>
+			<xs:extension base="tns:lobj">
+				<xs:sequence>
+					<xs:element name="clr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="ln" type="ns2:Line" minOccurs="0"/>
+					<xs:element name="sg" type="tns:ipsv" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="dps" type="tns:dps" minOccurs="0" maxOccurs="unbounded"/>
+				</xs:sequence>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="po">
+		<xs:sequence>
+			<xs:element name="val" minOccurs="0"/>
+		</xs:sequence>
+		<xs:attribute name="key" type="xs:decimal"/>
+	</xs:complexType>
+	<xs:complexType name="ps">
+		<xs:complexContent>
+			<xs:extension base="tns:lobj">
+				<xs:sequence>
+					<xs:element name="clr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="fnt" type="ns2:Font" minOccurs="0"/>
+					<xs:element name="pic" type="ns2:Picture" minOccurs="0"/>
+				</xs:sequence>
+				<xs:attribute name="x" type="xs:decimal"/>
+				<xs:attribute name="y" type="xs:decimal"/>
+				<xs:attribute name="a" type="xs:decimal"/>
+				<xs:attribute name="b" type="xs:decimal"/>
+				<xs:attribute name="smbl" type="xs:string"/>
+				<xs:attribute name="pn" type="tns:GeographicalSchemaMarkerType"/>
+				<xs:attribute name="pp" type="tns:PaintingReferencePointPosition"/>
+				<xs:attribute name="dt" type="tns:GeographicalSchemaPointObjectDrawingType"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="sad">
+		<xs:sequence>
+			<xs:element name="v" type="tns:vi"/>
+		</xs:sequence>
+		<xs:attribute name="i" type="xs:decimal"/>
+	</xs:complexType>
+	<xs:complexType name="scsi">
+		<xs:sequence>
+			<xs:element name="name" type="xs:string"/>
+			<xs:element name="dName" type="xs:string"/>
+			<xs:element name="sName" type="xs:string"/>
+			<xs:element name="smjAxs" type="xs:decimal"/>
+			<xs:element name="smnAxs" type="xs:decimal"/>
+			<xs:element name="invfl" type="xs:decimal"/>
+			<xs:element name="aun" type="xs:string"/>
+			<xs:element name="rpu" type="xs:decimal"/>
+			<xs:element name="pmn" type="xs:string"/>
+			<xs:element name="pml" type="xs:decimal"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="sps">
+		<xs:attribute name="i" type="xs:decimal"/>
+		<xs:attribute name="x" type="xs:decimal"/>
+		<xs:attribute name="y" type="xs:decimal"/>
+		<xs:attribute name="a" type="xs:decimal"/>
+		<xs:attribute name="b" type="xs:decimal"/>
+	</xs:complexType>
+	<xs:complexType name="title">
+		<xs:sequence>
+			<xs:element name="brdr" type="ns2:Border" minOccurs="0"/>
+			<xs:element name="brdrClr" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="fnt" type="ns2:Font" minOccurs="0"/>
+			<xs:element name="txt" type="ns1:LocalStringType" minOccurs="0"/>
+			<xs:element name="txtClr" type="ns2:Color" minOccurs="0"/>
+			<xs:element name="bckClr" type="ns2:Color" minOccurs="0"/>
+		</xs:sequence>
+		<xs:attribute name="show" type="xs:boolean"/>
+		<xs:attribute name="algn" type="ns2:HorizontalAlign"/>
+		<xs:attribute name="trnsprnt" type="xs:boolean"/>
+		<xs:attribute name="left" type="xs:decimal"/>
+		<xs:attribute name="right" type="xs:decimal"/>
+		<xs:attribute name="top" type="xs:decimal"/>
+		<xs:attribute name="bottom" type="xs:decimal"/>
+	</xs:complexType>
+	<xs:complexType name="vi">
+		<xs:sequence>
+			<xs:element name="v" minOccurs="0"/>
+			<xs:element name="d" minOccurs="0"/>
+			<xs:element name="p" type="tns:dp" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="r" type="xs:decimal" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+		<xs:attribute name="i" type="xs:decimal"/>
+		<xs:attribute name="t" type="xs:string"/>
+		<xs:attribute name="vs" type="xs:string"/>
+		<xs:attribute name="vn" type="xs:decimal"/>
+		<xs:attribute name="vb" type="xs:boolean"/>
+		<xs:attribute name="vd" type="xs:dateTime"/>
+		<xs:attribute name="ds" type="xs:string"/>
+		<xs:attribute name="dn" type="xs:decimal"/>
+		<xs:attribute name="db" type="xs:boolean"/>
+		<xs:attribute name="dd" type="xs:dateTime"/>
+	</xs:complexType>
+</xs:schema>

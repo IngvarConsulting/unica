@@ -1,0 +1,107 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:tns="http://v8.1c.ru/8.1/xdto" xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="http://v8.1c.ru/8.1/xdto" attributeFormDefault="unqualified" elementFormDefault="qualified">
+	<xs:element name="model" type="tns:Model"/>
+	<xs:element name="package" type="tns:Package"/>
+	<xs:simpleType name="Whitespace">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="preserve"/>
+			<xs:enumeration value="replace"/>
+			<xs:enumeration value="collapse"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="Variety">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Atomic"/>
+			<xs:enumeration value="List"/>
+			<xs:enumeration value="Union"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="Form">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Attribute"/>
+			<xs:enumeration value="Element"/>
+			<xs:enumeration value="Text"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="MemberTypes">
+		<xs:list itemType="xs:QName"/>
+	</xs:simpleType>
+	<xs:complexType name="Import">
+		<xs:attribute name="namespace" type="xs:anyURI"/>
+	</xs:complexType>
+	<xs:complexType name="Type" abstract="true">
+		<xs:attribute name="name" type="xs:NCName"/>
+		<xs:attribute name="base" type="xs:QName"/>
+	</xs:complexType>
+	<xs:complexType name="ValueType">
+		<xs:complexContent>
+			<xs:extension base="tns:Type">
+				<xs:sequence>
+					<xs:element name="typeDef" type="tns:ValueType" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="pattern" type="xs:string" minOccurs="0" maxOccurs="unbounded"/>
+					<xs:element name="enumeration" minOccurs="0" maxOccurs="unbounded"/>
+				</xs:sequence>
+				<xs:attribute name="variety" type="tns:Variety"/>
+				<xs:attribute name="itemType" type="xs:QName"/>
+				<xs:attribute name="memberTypes" type="tns:MemberTypes"/>
+				<xs:attribute name="length" type="xs:nonNegativeInteger"/>
+				<xs:attribute name="minLength" type="xs:nonNegativeInteger"/>
+				<xs:attribute name="maxLength" type="xs:nonNegativeInteger"/>
+				<xs:attribute name="whiteSpace" type="tns:Whitespace"/>
+				<xs:attribute name="minInclusive"/>
+				<xs:attribute name="minExclusive"/>
+				<xs:attribute name="maxInclusive"/>
+				<xs:attribute name="maxExclusive"/>
+				<xs:attribute name="totalDigits" type="xs:positiveInteger"/>
+				<xs:attribute name="fractionDigits" type="xs:nonNegativeInteger"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="Property">
+		<xs:sequence>
+			<xs:element name="typeDef" type="tns:Type" minOccurs="0"/>
+		</xs:sequence>
+		<xs:attribute name="name" type="xs:NCName"/>
+		<xs:attribute name="ref" type="xs:QName"/>
+		<xs:attribute name="type" type="xs:QName"/>
+		<xs:attribute name="lowerBound" type="xs:nonNegativeInteger" default="1"/>
+		<xs:attribute name="upperBound" type="xs:integer" default="1"/>
+		<xs:attribute name="nillable" type="xs:boolean" default="false"/>
+		<xs:attribute name="fixed" type="xs:boolean" default="false"/>
+		<xs:attribute name="default" type="xs:string"/>
+		<xs:attribute name="form" type="tns:Form" default="Element"/>
+		<xs:attribute name="localName" type="xs:NCName"/>
+		<xs:attribute name="qualified" type="xs:boolean"/>
+	</xs:complexType>
+	<xs:complexType name="ObjectType">
+		<xs:complexContent>
+			<xs:extension base="tns:Type">
+				<xs:sequence>
+					<xs:element name="property" type="tns:Property" minOccurs="0" maxOccurs="unbounded"/>
+				</xs:sequence>
+				<xs:attribute name="open" type="xs:boolean" default="false"/>
+				<xs:attribute name="abstract" type="xs:boolean" default="false"/>
+				<xs:attribute name="mixed" type="xs:boolean" default="false"/>
+				<xs:attribute name="ordered" type="xs:boolean" default="true"/>
+				<xs:attribute name="sequenced" type="xs:boolean" default="false"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="Package">
+		<xs:sequence>
+			<xs:element name="import" type="tns:Import" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="property" type="tns:Property" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="valueType" type="tns:ValueType" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="objectType" type="tns:ObjectType" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+		<xs:attribute name="targetNamespace" type="xs:anyURI"/>
+		<xs:attribute name="elementFormQualified" type="xs:boolean" default="true"/>
+		<xs:attribute name="attributeFormQualified" type="xs:boolean" default="false"/>
+	</xs:complexType>
+	<xs:complexType name="Model">
+		<xs:sequence>
+			<xs:element name="import" type="tns:Import" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element ref="tns:package" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+</xs:schema>

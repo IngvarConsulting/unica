@@ -1,16 +1,55 @@
 //! Файловые фикстуры корня конфигурации для модульных тестов.
 //!
 //! Пустая конфигурация 8.3.27 / 2.20 — выгрузка платформы
-//! `tests/fixtures/platform_8_3_27/template-new-xml/seed/` без её отчёта.
+//! `tests/fixtures/formats/platform_xml/2.20/template-new-xml/seed/` без её отчёта.
 //! Тесты, которым нужен корень набора, берут его отсюда, а не строят
 //! писателем. Объекты для чтения описания лежат рядом, в `meta_info_surface/`.
 
 use std::path::{Path, PathBuf};
 
+/// Создание ссылки отказало только потому, что у хоста нет привилегии ссылок
+/// (на Windows — `ERROR_PRIVILEGE_NOT_HELD`, 1314; такого кода errno нет).
+pub(crate) fn link_privilege_missing(error: &std::io::Error) -> bool {
+    error.raw_os_error() == Some(1314)
+        || matches!(
+            error.kind(),
+            std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::Unsupported
+        )
+}
+
+fn link_or_skip(created: Option<std::io::Result<()>>) -> bool {
+    match created.expect("symlink fixtures exist on Unix and Windows") {
+        Ok(()) => true,
+        Err(error) if link_privilege_missing(&error) => {
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::Symlink,
+                &format!("creating a link fixture needs the symlink privilege: {error}"),
+            );
+            false
+        }
+        Err(error) => panic!("link fixture failed: {error}"),
+    }
+}
+
+/// Создаёт ссылку-каталог для теста. Если у хоста нет привилегии ссылок,
+/// объявляет пропуск по возможности и возвращает `false`: тест сразу выходит.
+pub(crate) fn dir_link_or_skip(target: impl AsRef<Path>, link: impl AsRef<Path>) -> bool {
+    link_or_skip(unica_workspace::test_support::create_dir_symlink_for_test(
+        target, link,
+    ))
+}
+
+/// То же для ссылки на файл.
+pub(crate) fn file_link_or_skip(target: impl AsRef<Path>, link: impl AsRef<Path>) -> bool {
+    link_or_skip(unica_workspace::test_support::create_file_symlink_for_test(
+        target, link,
+    ))
+}
+
 /// Каталог фикстуры: `v8project.yaml` и набор `src/`.
 pub(crate) fn empty_configuration_fixture() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tests/fixtures/platform_8_3_27/empty_configuration")
+        .join("../../tests/fixtures/formats/platform_xml/2.20/empty_configuration")
 }
 
 /// Копирует фикстуру в `workspace`: набор `main` в `src/` и его объявление.
@@ -23,7 +62,7 @@ pub(crate) fn copy_empty_configuration(workspace: &Path) {
 /// без роли). Набор в `v8project.yaml` не объявлен: это делает тест.
 pub(crate) fn empty_extension_fixture() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tests/fixtures/platform_8_3_27/empty_extension")
+        .join("../../tests/fixtures/formats/platform_xml/2.20/empty_extension")
 }
 
 /// Копирует корень пустого расширения в `workspace/ext`.
@@ -52,7 +91,7 @@ pub(crate) fn copy_tree(from: &Path, to: &Path) {
 /// чтения описания: справочник, константа, регистр сведений, перечисление.
 pub(crate) fn meta_info_surface_fixture(part: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tests/fixtures/platform_8_3_27/meta_info_surface")
+        .join("../../tests/fixtures/formats/platform_xml/2.20/meta_info_surface")
         .join(part)
 }
 

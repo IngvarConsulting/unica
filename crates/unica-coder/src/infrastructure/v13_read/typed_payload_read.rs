@@ -260,6 +260,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
                         "form route has no typed target",
                     )
                 })?,
+                Some(self.platform_profile().line()),
                 &mut || self.read_checkpoint(),
             );
         }
@@ -945,6 +946,9 @@ impl<'a> LogicalViewReadAuthority<'a> {
                 support
                     .limits
                     .push(format!("support of the members is unknown: {error}"));
+                for name in names {
+                    support.states.insert(name.to_string(), json!("unknown"));
+                }
                 return Ok(support);
             }
             Err(error) => return Err(error),
@@ -963,11 +967,14 @@ impl<'a> LogicalViewReadAuthority<'a> {
                 Ok(state) => {
                     support.states.insert(name.to_string(), json!(state));
                 }
-                Err(error) => support.limits.push(format!(
-                    "support of `{}:{}` is unknown: {error}",
-                    source_set,
-                    owner.as_str()
-                )),
+                Err(error) => {
+                    support.states.insert(name.to_string(), json!("unknown"));
+                    support.limits.push(format!(
+                        "support of `{}:{}` is unknown: {error}",
+                        source_set,
+                        owner.as_str()
+                    ))
+                }
             }
         }
         Ok(support)

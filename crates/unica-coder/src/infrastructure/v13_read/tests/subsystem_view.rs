@@ -489,10 +489,10 @@ fn a_nested_subsystem_read_rejects_a_descriptor_that_names_another_subsystem() {
 #[test]
 fn subsystem_text_properties_preserve_presence_and_damage_at_every_depth() {
     for (fragment, comment, explanation, damaged) in [
-        ("<Comment/><Explanation/>", Some(""), Some(""), false),
-        ("<Comment></Comment><Explanation></Explanation>", Some(""), Some(""), false),
-        ("<Comment>  </Comment><Explanation>  </Explanation>", Some("  "), Some(""), false),
-        ("<Comment>а<![CDATA[б]]>в</Comment><Explanation><v8:item><v8:lang>en</v8:lang><v8:content>English</v8:content></v8:item><v8:item><v8:lang>ru</v8:lang><v8:content>Пояснение</v8:content></v8:item></Explanation>", Some("абв"), Some("Пояснение"), false),
+        ("<Comment/><Explanation/>", Some(""), None, false),
+        ("<Comment></Comment><Explanation></Explanation>", Some(""), None, false),
+        ("<Comment>  </Comment><Explanation>  </Explanation>", Some("  "), None, false),
+        ("<Comment>а<![CDATA[б]]>в</Comment><Explanation><v8:item><v8:lang>en</v8:lang><v8:content>English</v8:content></v8:item><v8:item><v8:lang>ru</v8:lang><v8:content>Пояснение</v8:content></v8:item></Explanation>", Some("абв"), Some("en = 'English'; ru = 'Пояснение'"), false),
         ("", None, None, false),
         ("<Comment><Bad/></Comment><Explanation>garbage</Explanation>", None, None, true),
         ("<Comment attr=\"x\"/><Explanation attr=\"x\"/>", None, None, true),

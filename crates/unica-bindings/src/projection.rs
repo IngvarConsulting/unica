@@ -1,27 +1,27 @@
 use unica_bsl::event_text::RequiredEventDirective;
 use unica_bsl::projection::{
-    BodyLine, CommonModuleProperties, CompilationFacts, CompilationProjection, EventProjection,
-    EventState, ExtensionKind, ExtensionProjection, HandleProjection, InterfaceKind,
-    InterfaceProjection, MethodArea, MethodKind, MethodParameter, MethodProjection, ModuleIdentity,
-    ModuleProjectionSet, ModuleProperties, RegionProjection,
+    BodyLine, CommonModuleProperties, CompilationFacts, CompilationProjection, EventHandlerBinding,
+    EventProjection, EventState, ExtensionKind, ExtensionProjection, HandleProjection,
+    InterfaceKind, InterfaceProjection, MethodArea, MethodKind, MethodParameter, MethodProjection,
+    ModuleIdentity, ModuleProjectionSet, ModuleProperties, RegionProjection,
 };
 use unica_metadata::event::BindingFact;
 
 use std::cell::OnceCell;
 use std::collections::HashMap;
-use unica_address::address::QualifiedAddress;
+use unica_address::address::{NodeKind, QualifiedAddress};
 use unica_address::module_routes::ModuleRole;
-use unica_bsl::event_catalog::module_event_catalog_8_3_27;
-use unica_bsl::profile::ModuleCapability;
+use unica_bsl::event_catalog::module_event_catalog;
+use unica_bsl::profile::{ModuleCapability, PlatformProfile};
 use unica_bsl_parser::{
     parse as parse_bsl_syntax, AnnotationFact, CodeOutlineMethodKind, ExtensionAnnotationKind,
     ParsedModule,
 };
 use unica_forms::events::{
-    foreign_handler_signature_8_3_27, form_event_catalog_8_3_27,
-    form_event_handler_signature_8_3_27, form_owner_event_parameters_8_3_27,
-    validate_property_event_binding, FormElementKind, FormEventBinding, FormEventContext,
-    FormEventOwnerKind, FormEventParameterForms, FormEventTarget,
+    foreign_handler_signature, form_event_catalog, form_event_handler_signature,
+    form_owner_event_parameters, validate_property_event_binding, FormElementKind,
+    FormEventBinding, FormEventContext, FormEventOwnerKind, FormEventParameterForms,
+    FormEventTarget,
 };
 use unica_metadata::event_catalog::PlatformEventSpec;
 use unica_refusal::RefusalCode;
@@ -96,6 +96,8 @@ impl FormBindingOwner {
 pub struct FormEventBindingInput {
     owner: FormBindingOwner,
     at: String,
+    owner_at: String,
+    module_at: Option<String>,
     event: String,
     handler: String,
     call_type: Option<String>,
@@ -172,13 +174,49 @@ impl FormEventBindingInput {
         handler: &str,
         call_type: Option<&str>,
     ) -> Self {
+        let qualified = QualifiedAddress::parse(at).ok();
+        let owner_at = qualified
+            .as_ref()
+            .filter(|address| {
+                address
+                    .segments()
+                    .last()
+                    .is_some_and(|last| last.kind() == NodeKind::Event)
+            })
+            .map_or_else(
+                || at.to_string(),
+                |address| address.prefix(address.segments().len() - 1).to_string(),
+            );
+        let module_at = qualified.and_then(|address| {
+            let form_depth = match address.segments() {
+                [form, ..] if form.kind() == NodeKind::CommonForm && form.name().is_some() => 1,
+                [owner, form, ..]
+                    if owner.kind().is_metadata_kind()
+                        && owner.name().is_some()
+                        && form.kind() == NodeKind::Form
+                        && form.name().is_some() =>
+                {
+                    2
+                }
+                _ => return None,
+            };
+            Some(format!("{}.Module.Form", address.prefix(form_depth)))
+        });
         Self {
             owner,
             at: at.to_string(),
+            owner_at,
+            module_at,
             event: event.to_string(),
             handler: handler.to_string(),
             call_type: call_type.map(str::to_string),
         }
+    }
+
+    fn implementation_at(&self, method: &str) -> Option<String> {
+        self.module_at
+            .as_ref()
+            .map(|module| format!("{module}.Method.{method}"))
     }
 }
 
@@ -192,6 +230,8 @@ pub struct DeclarativeBinding<'a> {
 
 pub struct ModuleProjectionRequest<'a> {
     pub at: &'a QualifiedAddress,
+    /// Профиль линии набора: он выбирает каталог возможных событий.
+    pub platform: PlatformProfile,
     pub capability: ModuleCapability,
     pub title: String,
     pub rev: &'a str,
@@ -259,7 +299,7 @@ impl std::fmt::Display for DirectiveRuleError {
 impl std::error::Error for DirectiveRuleError {}
 
 pub fn project_module(request: ModuleProjectionRequest<'_>) -> Result<ModuleProjectionSet, String> {
-    let specs = module_event_catalog_8_3_27(request.capability);
+    let specs = module_event_catalog(request.platform, request.capability);
     project_module_with_specs(request, specs)
 }
 
@@ -267,7 +307,7 @@ pub fn project_module_event_record(
     request: ModuleProjectionRequest<'_>,
     event_at: &str,
 ) -> Result<PlatformEventProjectionRecord, PlatformEventProjectionRecordError> {
-    let specs = module_event_catalog_8_3_27(request.capability);
+    let specs = module_event_catalog(request.platform, request.capability);
     let projection = project_module_with_specs(request, specs)
         .map_err(PlatformEventProjectionRecordError::InvalidSource)?;
     let index = projection
@@ -439,7 +479,39 @@ fn project_module_events(
                 return available_module_event(at, spec, write);
             };
             let duplicate = matching.len() > 1;
-            let method = &mut methods[method_index];
+            let event_at = format!("{at}.Event.{}", spec.event_id);
+            let handlers = if duplicate {
+                let mut counts = HashMap::<_, usize>::new();
+                for &index in &matching {
+                    *counts
+                        .entry(methods[index].name.to_lowercase())
+                        .or_default() += 1;
+                }
+                matching
+                    .iter()
+                    .map(|&index| {
+                        let method = &methods[index];
+                        EventHandlerBinding {
+                            handler: method.name.clone(),
+                            call_type: None,
+                            implementation_at: (counts[&method.name.to_lowercase()] == 1)
+                                .then(|| method.at.clone()),
+                        }
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            for &index in &matching {
+                methods[index].handles.push(HandleProjection {
+                    owner: "module".to_string(),
+                    event: spec.event_id.to_string(),
+                    at: event_at.clone(),
+                    binding: BindingFact::Platform,
+                    call_type: None,
+                });
+            }
+            let method = &methods[method_index];
             let compatible = method_matches_event(
                 method.method_kind,
                 &method.signature,
@@ -448,14 +520,6 @@ fn project_module_events(
                 capability,
                 spec,
             );
-            let event_at = format!("{at}.Event.{}", spec.event_id);
-            method.handles.push(HandleProjection {
-                owner: "module".to_string(),
-                event: spec.event_id.to_string(),
-                at: event_at.clone(),
-                binding: BindingFact::Platform,
-                call_type: None,
-            });
             EventProjection {
                 at: event_at,
                 event_id: spec.event_id.to_string(),
@@ -464,14 +528,26 @@ fn project_module_events(
                 } else {
                     EventState::Invalid
                 },
-                signature: spec.signature_ru.clone(),
+                signature: if duplicate {
+                    String::new()
+                } else {
+                    spec.signature_ru.clone()
+                },
                 contexts: spec.contexts.clone(),
                 binding: spec.binding,
-                handler: spec.handler_ru.clone(),
-                handler_en: spec.handler_en.clone(),
-                implementation_at: Some(method.at.clone()),
+                handler: if duplicate {
+                    String::new()
+                } else {
+                    spec.handler_ru.clone()
+                },
+                handler_en: if duplicate {
+                    String::new()
+                } else {
+                    spec.handler_en.clone()
+                },
+                implementation_at: (!duplicate).then(|| method.at.clone()),
                 call_type: None,
-                handlers: Vec::new(),
+                handlers,
                 can: Vec::new(),
             }
         })
@@ -616,6 +692,11 @@ fn method_projections(
                 from_line,
                 to_line: closing_line,
                 text_from_line,
+                declaration_line: header_line,
+                name_column: node
+                    .name_range
+                    .as_ref()
+                    .map(|range| lines.utf16_column(range.start)),
                 body_from_line,
                 body_to_line,
                 area: None,
@@ -1223,7 +1304,7 @@ fn form_method_matches_event(
         MethodKind::Function => "function",
     };
     kind == spec.method_kind
-        && foreign_handler_signature_8_3_27(
+        && foreign_handler_signature(
             owner_events,
             &spec.event_id,
             &method
@@ -1336,13 +1417,8 @@ pub fn project_form_events(
     let mut owners = Vec::new();
     let mut seen = std::collections::HashSet::new();
     for binding in bindings {
-        let owner_at = binding
-            .at
-            .split(".Event.")
-            .next()
-            .unwrap_or(binding.at.as_str());
-        if seen.insert((owner_at.to_string(), binding.owner.catalog_owner())) {
-            owners.push(FormEventOwnerInput::new(binding.owner, owner_at));
+        if seen.insert((binding.owner_at.clone(), binding.owner.catalog_owner())) {
+            owners.push(FormEventOwnerInput::new(binding.owner, &binding.owner_at));
         }
     }
     project_form_owner_events(context, &owners, bindings, methods)
@@ -1361,7 +1437,7 @@ pub fn project_form_owner_event_record(
     methods: &[FormMethodFact<'_>],
     event_at: &str,
 ) -> Option<FormEventProjectionRecord> {
-    let catalog = form_event_catalog_8_3_27(
+    let catalog = form_event_catalog(
         context,
         owner.owner.catalog_owner(),
         owner.data_path.as_deref(),
@@ -1396,7 +1472,7 @@ pub fn project_form_owner_events(
         if !projected_owners.insert(owner_key) {
             continue;
         }
-        let catalog = form_event_catalog_8_3_27(
+        let catalog = form_event_catalog(
             context,
             owner.owner.catalog_owner(),
             owner.data_path.as_deref(),
@@ -1421,12 +1497,7 @@ pub fn project_form_owner_events(
         let mut unknown = std::collections::BTreeMap::<&str, Vec<&FormEventBindingInput>>::new();
         for binding in bindings.iter().filter(|candidate| {
             candidate.owner.catalog_owner() == owner.owner.catalog_owner()
-                && candidate
-                    .at
-                    .split(".Event.")
-                    .next()
-                    .unwrap_or(candidate.at.as_str())
-                    == owner.at.as_str()
+                && candidate.owner_at == owner.at
                 && !known.contains(candidate.event.as_str())
         }) {
             unknown
@@ -1456,7 +1527,7 @@ pub fn project_form_owner_events(
                 handler_en: String::new(),
                 implementation_at: method
                     .filter(|_| !duplicate)
-                    .map(|method| form_method_at(actual.at.as_str(), method.name)),
+                    .and_then(|method| actual.implementation_at(method.name)),
                 call_type: actual.call_type.clone().filter(|_| !duplicate),
                 handlers: if duplicate {
                     event_handler_bindings(&actuals, methods)
@@ -1486,8 +1557,7 @@ fn event_handler_bindings(
             unica_bsl::projection::EventHandlerBinding {
                 handler: binding.handler.clone(),
                 call_type: binding.call_type.clone(),
-                implementation_at: method
-                    .map(|method| form_method_at(binding.at.as_str(), method.name)),
+                implementation_at: method.and_then(|method| binding.implementation_at(method.name)),
             }
         })
         .collect()
@@ -1507,12 +1577,7 @@ fn project_known_form_event(
         .iter()
         .filter(|candidate| {
             candidate.owner.catalog_owner() == owner.owner.catalog_owner()
-                && candidate
-                    .at
-                    .split(".Event.")
-                    .next()
-                    .unwrap_or(candidate.at.as_str())
-                    == owner_prefix
+                && candidate.owner_at == owner_prefix
                 && spec.event_id == candidate.event
         })
         .collect::<Vec<_>>();
@@ -1557,7 +1622,7 @@ fn project_known_form_event(
                 spec,
                 owner,
                 owner_events.get_or_init(|| {
-                    form_owner_event_parameters_8_3_27(
+                    form_owner_event_parameters(
                         context,
                         owner.owner.catalog_owner(),
                         owner.data_path.as_deref(),
@@ -1578,7 +1643,7 @@ fn project_known_form_event(
             |binding| format!("Процедура {}(Команда)", binding.handler),
         )
     } else {
-        form_event_handler_signature_8_3_27(owner.owner.catalog_owner(), spec)
+        form_event_handler_signature(owner.owner.catalog_owner(), spec)
     };
     let can = match state {
         EventState::Available if context.direct_part_writable => {
@@ -1616,9 +1681,8 @@ fn project_known_form_event(
         } else {
             spec.handler_en.clone()
         },
-        implementation_at: actual.and_then(|binding| {
-            method.map(|method| form_method_at(binding.at.as_str(), method.name))
-        }),
+        implementation_at: actual
+            .and_then(|binding| method.and_then(|method| binding.implementation_at(method.name))),
         call_type: actual.and_then(|binding| binding.call_type.clone()),
         handlers: if duplicate {
             event_handler_bindings(&actuals, methods)
@@ -1627,19 +1691,6 @@ fn project_known_form_event(
         },
         can,
     }
-}
-
-fn form_method_at(event_at: &str, handler: &str) -> String {
-    let owner_at = event_at.split(".Event.").next().unwrap_or(event_at);
-    let item = owner_at.find(".Item.");
-    let command = owner_at.find(".Command.");
-    let boundary = match (item, command) {
-        (Some(left), Some(right)) => Some(left.min(right)),
-        (Some(index), None) | (None, Some(index)) => Some(index),
-        (None, None) => None,
-    };
-    let form_at = boundary.map_or(owner_at, |index| &owner_at[..index]);
-    format!("{form_at}.Module.Form.Method.{handler}")
 }
 
 struct LineIndex<'a> {
@@ -1665,6 +1716,14 @@ impl<'a> LineIndex<'a> {
         }
     }
 
+    fn utf16_column(&self, offset: usize) -> usize {
+        let line = self.line_of(offset as u32);
+        self.text[self.starts[line - 1]..offset]
+            .encode_utf16()
+            .count()
+            + 1
+    }
+
     fn text(&self, line: usize) -> Option<&'a str> {
         let start = *self.starts.get(line.checked_sub(1)?)?;
         let end = self
@@ -1674,5 +1733,19 @@ impl<'a> LineIndex<'a> {
             .unwrap_or(self.text.len())
             .saturating_sub(usize::from(line < self.starts.len()));
         self.text.get(start..end)
+    }
+}
+
+#[cfg(test)]
+mod position_tests {
+    use super::LineIndex;
+
+    #[test]
+    fn name_column_counts_utf16_units_from_current_line() {
+        let source = "// Earlier 😀\r\n\tЯ😀 Name";
+        let lines = LineIndex::new(source);
+        let name = source.find("Name").unwrap();
+        assert_eq!(lines.line_of(name as u32), 2);
+        assert_eq!(lines.utf16_column(name), 6);
     }
 }

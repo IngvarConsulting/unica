@@ -26,6 +26,7 @@ fn parse_metadata_plan_operation_in(
         &MetadataDecodeContext {
             source_set_name: binding.source_set_name(),
             source_kind: binding.source_kind(),
+            source_line: binding.source_profile().semantic_line(),
             registry: crate::domain::apply::operation_registry(),
         },
     )

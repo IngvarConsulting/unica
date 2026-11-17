@@ -16,7 +16,6 @@ use unica_execution::invocation_store::ToolIdentity;
 // problem: неизвестно
 // on-reach: Отказ проверки запроса «canonical invocation response budget must be within 0..=7000 ms».
 // decision: закреплено правилом
-// decision-date: 2026-10-21
 // decision-source: arch/rules/runtime/invocation-handoff.md
 pub(crate) const MAX_TASK_WAIT_MS: u64 = 7_000;
 
@@ -111,6 +110,18 @@ impl InvocationRequest {
 
     pub(crate) fn workspace_origin(&self) -> Option<&unica_bootstrap::WorkspaceOrigin> {
         self.workspace_origin.as_ref()
+    }
+
+    /// The same request of `tool` with other `arguments`: the same workspace,
+    /// its origin and the response budget.
+    pub(crate) fn with_call(&self, tool: ToolIdentity, arguments: Map<String, Value>) -> Self {
+        Self {
+            tool,
+            arguments,
+            workspace_hint: self.workspace_hint.clone(),
+            workspace_origin: self.workspace_origin.clone(),
+            response_budget_ms: self.response_budget_ms,
+        }
     }
 
     pub(crate) fn workspace_hint(&self) -> &str {

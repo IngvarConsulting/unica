@@ -246,6 +246,35 @@ def latest_alpha(releases: list, repo: str) -> dict[str, str]:
     }
 
 
+def alpha_list(releases: list, repo: str) -> list[dict[str, str]]:
+    """Все опубликованные alpha для их страницы, новейшая первой.
+
+    Старые alpha удаляет `release-alpha.py prune`, поэтому список — ровно то,
+    что сейчас лежит в Releases. Скрипт страницы освежает его оттуда же.
+    """
+    rules = channel_rules()
+    found = []
+    for release in releases:
+        tag = str(release["tag_name"])
+        try:
+            if rules.channel(tag) == "none" and "-alpha." in tag:
+                found.append((rules.precedence(tag), release))
+        except rules.TagError:
+            continue
+    items = []
+    for _, release in sorted(found, key=lambda item: item[0], reverse=True):
+        # Срез записан в описании релиза: родитель служебного коммита вне main.
+        slice_ = re.search(r"main@([0-9a-f]{40})", str(release.get("body") or ""))
+        items.append({
+            "item_tag": str(release["tag_name"]),
+            "item_url": str(release["html_url"]),
+            "item_date": human(moment(release["published_at"])),
+            "item_commit": slice_[1][:7] if slice_ else "—",
+            "item_commit_url": f"https://github.com/{repo}/commit/{slice_[1]}" if slice_ else str(release["html_url"]),
+        })
+    return items
+
+
 ALPHA_RULES = Path(__file__).with_name("release-alpha.py")
 HOST_NAMES = (("ubuntu", "Linux"), ("macos", "macOS"), ("windows", "Windows"))
 
@@ -303,6 +332,11 @@ def skipped_by_host(by_host: dict[str, dict[str, int]]) -> str:
     return " · ".join(parts) if parts else "—"
 
 
+# Куда ведёт «Как поставить» карточки: стабильную ставят по разделу установки,
+# кандидата — с канала next, alpha — с её страницы.
+INSTALL_URLS = {"Стабильная": "#install", "Кандидат": "next.html", "Alpha": "alpha.html"}
+
+
 def version_card(kind: str, release: dict, data: Path | None, repo: str) -> dict[str, str]:
     """Карточка версии: тег, дата, проверенный коммит и тесты прогона на нём.
 
@@ -325,6 +359,7 @@ def version_card(kind: str, release: dict, data: Path | None, repo: str) -> dict
     card = {
         "version_kind": kind,
         "version_tag": tag,
+        "install_url": INSTALL_URLS[kind],
         "version_notes_url": str(release["html_url"]),
         "version_published": human(moment(release["published_at"])),
         "version_commit": sha[:7] or "—",
@@ -438,6 +473,7 @@ def main() -> int:
 
     status["candidates"] = candidates(status, releases)
     status.update(latest_alpha(releases, args.repo))
+    status["alphas"] = alpha_list(releases, args.repo)
     if args.print_versions:
         print("\n".join(str(release["tag_name"]) for _, release in site_versions(status, releases)))
         return 0

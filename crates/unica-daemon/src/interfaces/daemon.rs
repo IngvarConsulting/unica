@@ -145,6 +145,15 @@ fn configured_idle_grace(read_env: &dyn Fn(&str) -> Option<OsString>) -> Result<
     Ok(duration)
 }
 
+/// Connect the stdio MCP door to the user daemon of the default state root,
+/// starting it if it is absent. The error is the line the door prints.
+pub fn connect_user_daemon() -> Result<V5DaemonClient, String> {
+    let state_root = default_user_daemon_state_root()
+        .map_err(|error| format!("failed to resolve unica user daemon state: {error}"))?;
+    connect_default_user_daemon(&state_root)
+        .map_err(|error| format!("failed to connect to unica user daemon: {error}"))
+}
+
 /// Connect to the production protocol-v5 user daemon, starting it if it is absent.
 pub(crate) fn connect_default_user_daemon(state_root: &Path) -> Result<V5DaemonClient, String> {
     let executable = std::env::current_exe()

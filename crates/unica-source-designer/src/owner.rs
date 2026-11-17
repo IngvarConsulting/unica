@@ -179,8 +179,8 @@ pub fn prove_already_read_metadata_owner(
     path: &Path,
     raw: &[u8],
 ) -> Result<PlatformXmlSourceSetOwnerEvidence, PlatformXmlOwnerError> {
-    parse_platform_xml_owner(path, raw.to_vec(), OwnerExpectation::Standalone)?;
     let (source, document) = parse_platform_xml_document(path, raw)?;
+    classify_platform_xml_owner(path, &document, OwnerExpectation::Standalone)?;
     let root = document.root_element();
     if root.tag_name().namespace() != Some(MD_CLASSES_NS)
         || root.tag_name().name() != "MetaDataObject"
@@ -242,6 +242,25 @@ pub fn parse_platform_xml_owner(
     expectation: OwnerExpectation,
 ) -> Result<PlatformXmlOwner, PlatformXmlOwnerError> {
     let (source, document) = parse_platform_xml_document(path, &raw)?;
+    let kind = classify_platform_xml_owner(path, &document, expectation)?;
+    let version = root_version_literal(source, document.root_element());
+    drop(document);
+    Ok(PlatformXmlOwner {
+        kind,
+        path: path.to_path_buf(),
+        version,
+        raw,
+    })
+}
+
+/// The owner kind of an already parsed platform XML document, with the same
+/// checks as [`parse_platform_xml_owner`]: a caller that has the document
+/// does not parse its bytes a second time.
+fn classify_platform_xml_owner(
+    path: &Path,
+    document: &Document<'_>,
+    expectation: OwnerExpectation,
+) -> Result<PlatformXmlOwnerKind, PlatformXmlOwnerError> {
     let root = document.root_element();
     let root_qname = (root.tag_name().namespace(), root.tag_name().name());
     let artifact_children = root
@@ -311,12 +330,7 @@ pub fn parse_platform_xml_owner(
             }
         }
     };
-    Ok(PlatformXmlOwner {
-        kind,
-        path: path.to_path_buf(),
-        version: root_version_literal(source, root),
-        raw,
-    })
+    Ok(kind)
 }
 
 pub fn parse_platform_xml_document<'a>(

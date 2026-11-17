@@ -44,7 +44,8 @@ fn shape(
         region: match owner {
             EventImplementationOwner::Form => "ОбработчикиСобытийФормы",
             _ => "ОбработчикиСобытий",
-        },
+        }
+        .to_string(),
     }
 }
 
@@ -74,7 +75,7 @@ fn absent_module_emission_has_exact_platform_bom_lf_and_terminal_newline() {
             &method.signature,
             method.method_kind,
             method.directive,
-            method.region,
+            &method.region,
         )
     }
     .unwrap();
@@ -116,7 +117,7 @@ fn module_emitter_preserves_profiles_untouched_bytes_and_exact_directives() {
             &method.signature,
             method.method_kind,
             method.directive,
-            method.region,
+            &method.region,
         )
     }
     .unwrap();
@@ -137,7 +138,7 @@ fn module_emitter_preserves_profiles_untouched_bytes_and_exact_directives() {
             &method.signature,
             method.method_kind,
             method.directive,
-            method.region,
+            &method.region,
         )
     }
     .unwrap();
@@ -159,7 +160,7 @@ fn module_emitter_preserves_profiles_untouched_bytes_and_exact_directives() {
                 &method.signature,
                 method.method_kind,
                 method.directive,
-                method.region,
+                &method.region,
             )
         }
         .unwrap(),
@@ -183,7 +184,7 @@ fn module_emitter_fails_closed_on_source_region_and_unicode_method_ambiguity() {
         "#Область ОбработчикиСобытийФормы\n#КонецОбласти\n#Область обработчикисобытийформы\n#КонецОбласти\n",
         "#Область Outer\n#Область ОбработчикиСобытийФормы\n#КонецОбласти\n#КонецОбласти\n",
     ] {
-        let error = { let method = &shape; emit_event_module(Some(source.as_bytes()), &method.handler, &method.signature, method.method_kind, method.directive, method.region) }.unwrap_err();
+        let error = { let method = &shape; emit_event_module(Some(source.as_bytes()), &method.handler, &method.signature, method.method_kind, method.directive, &method.region) }.unwrap_err();
         assert_eq!(error.kind(), ApplyPlanErrorKind::InvalidSource, "{source:?}");
     }
     for source in [
@@ -198,7 +199,7 @@ fn module_emitter_fails_closed_on_source_region_and_unicode_method_ambiguity() {
                 &method.signature,
                 method.method_kind,
                 method.directive,
-                method.region,
+                &method.region,
             )
         }
         .unwrap_err();
@@ -223,7 +224,7 @@ fn module_emitter_uses_the_terminal_site_in_mixed_sources_and_rejects_an_ambiguo
                 &method.signature,
                 method.method_kind,
                 method.directive,
-                method.region,
+                &method.region,
             )
         }
         .expect("the terminal insertion site has an unambiguous LF profile"),
@@ -247,7 +248,7 @@ fn module_emitter_uses_the_terminal_site_in_mixed_sources_and_rejects_an_ambiguo
             &method.signature,
             method.method_kind,
             method.directive,
-            method.region,
+            &method.region,
         )
     }
     .expect_err("different EOLs adjacent to the real region site are ambiguous");

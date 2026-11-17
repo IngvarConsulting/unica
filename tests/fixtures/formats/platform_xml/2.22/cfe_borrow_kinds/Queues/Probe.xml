@@ -1,0 +1,23 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:app="http://v8.1c.ru/8.2/managed-application/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:cmi="http://v8.1c.ru/8.2/managed-application/cmi" xmlns:ent="http://v8.1c.ru/8.1/data/enterprise" xmlns:lf="http://v8.1c.ru/8.2/managed-application/logform" xmlns:pal="http://v8.1c.ru/8.1/data/ui/colors/palette" xmlns:style="http://v8.1c.ru/8.1/data/ui/style" xmlns:sys="http://v8.1c.ru/8.1/data/ui/fonts/system" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:v8ui="http://v8.1c.ru/8.1/data/ui" xmlns:web="http://v8.1c.ru/8.1/data/ui/colors/web" xmlns:win="http://v8.1c.ru/8.1/data/ui/colors/windows" xmlns:xen="http://v8.1c.ru/8.3/xcf/enums" xmlns:xpr="http://v8.1c.ru/8.3/xcf/predef" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.22">
+	<Queue uuid="63a2d8b7-ca44-8014-a5ea-69f5457300df">
+		<InternalInfo>
+			<xr:GeneratedType name="QueueMessage.Probe" category="Record">
+				<xr:TypeId>7d2aabbd-b08c-8a23-91ba-894eb61f9c30</xr:TypeId>
+				<xr:ValueId>3c112a51-99de-81b9-af57-44cf41793e13</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="QueueManager.Probe" category="Manager">
+				<xr:TypeId>f6be22dd-c3b2-85b3-8564-685102062d3f</xr:TypeId>
+				<xr:ValueId>2966b332-b0fb-88f7-b6da-04c8478b8669</xr:ValueId>
+			</xr:GeneratedType>
+		</InternalInfo>
+		<Properties>
+			<ObjectBelonging>Adopted</ObjectBelonging>
+			<Name>Probe</Name>
+			<Comment/>
+			<ExtendedConfigurationObject>7b6c2a14-9f03-4d58-8e21-c4a5d7f10b62</ExtendedConfigurationObject>
+			<ActionOnConfigurationObjectMissing>Auto</ActionOnConfigurationObjectMissing>
+		</Properties>
+		<ChildObjects/>
+	</Queue>
+</MetaDataObject>

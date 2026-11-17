@@ -16,7 +16,113 @@
           "pointer": "/data/effectiveSourceSet",
           "eq": "main"
         }
-      ]
+      ],
+      "captures": {
+        "unchanged1": {
+          "file": "src/Catalogs/Items/Ext/ObjectModule.bsl",
+          "kind": "sha256"
+        },
+        "unchanged2": {
+          "file": "src/Catalogs/Items/Forms/Auxiliary/Ext/Form/Module.bsl",
+          "kind": "sha256"
+        },
+        "unchanged3": {
+          "file": "src/Catalogs/Items/Forms/Auxiliary/Ext/Form.xml",
+          "kind": "sha256"
+        },
+        "unchanged4": {
+          "file": "src/Catalogs/Items/Forms/Auxiliary.xml",
+          "kind": "sha256"
+        },
+        "unchanged5": {
+          "file": "src/Catalogs/Items/Forms/List/Ext/Form/Module.bsl",
+          "kind": "sha256"
+        },
+        "unchanged6": {
+          "file": "src/Catalogs/Items/Forms/List/Ext/Form.xml",
+          "kind": "sha256"
+        },
+        "unchanged7": {
+          "file": "src/Catalogs/Items/Forms/List.xml",
+          "kind": "sha256"
+        },
+        "unchanged8": {
+          "file": "src/Catalogs/Items/Forms/Main/Ext/Form/Module.bsl",
+          "kind": "sha256"
+        },
+        "unchanged9": {
+          "file": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
+          "kind": "sha256"
+        },
+        "unchanged10": {
+          "file": "src/Catalogs/Items/Forms/Main.xml",
+          "kind": "sha256"
+        },
+        "unchanged11": {
+          "file": "src/Catalogs/Items.xml",
+          "kind": "sha256"
+        },
+        "unchanged12": {
+          "file": "src/ConfigDumpInfo.xml",
+          "kind": "sha256"
+        },
+        "unchanged13": {
+          "file": "src/Configuration.xml",
+          "kind": "sha256"
+        },
+        "unchanged14": {
+          "file": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256"
+        },
+        "unchanged15": {
+          "file": "src/InformationRegisters/History/Ext/RecordSetModule.bsl",
+          "kind": "sha256"
+        },
+        "unchanged16": {
+          "file": "src/InformationRegisters/History/Forms/Auxiliary/Ext/Form/Module.bsl",
+          "kind": "sha256"
+        },
+        "unchanged17": {
+          "file": "src/InformationRegisters/History/Forms/Auxiliary/Ext/Form.xml",
+          "kind": "sha256"
+        },
+        "unchanged18": {
+          "file": "src/InformationRegisters/History/Forms/Auxiliary.xml",
+          "kind": "sha256"
+        },
+        "unchanged19": {
+          "file": "src/InformationRegisters/History/Forms/List/Ext/Form/Module.bsl",
+          "kind": "sha256"
+        },
+        "unchanged20": {
+          "file": "src/InformationRegisters/History/Forms/List/Ext/Form.xml",
+          "kind": "sha256"
+        },
+        "unchanged21": {
+          "file": "src/InformationRegisters/History/Forms/List.xml",
+          "kind": "sha256"
+        },
+        "unchanged22": {
+          "file": "src/InformationRegisters/History/Forms/Main/Ext/Form/Module.bsl",
+          "kind": "sha256"
+        },
+        "unchanged23": {
+          "file": "src/InformationRegisters/History/Forms/Main/Ext/Form.xml",
+          "kind": "sha256"
+        },
+        "unchanged24": {
+          "file": "src/InformationRegisters/History/Forms/Main.xml",
+          "kind": "sha256"
+        },
+        "unchanged25": {
+          "file": "src/InformationRegisters/History.xml",
+          "kind": "sha256"
+        },
+        "unchanged26": {
+          "file": "src/Languages/Русский.xml",
+          "kind": "sha256"
+        }
+      }
     },
     {
       "tool": "unica.view",
@@ -129,132 +235,132 @@
         {
           "path": "src/Catalogs/Items/Ext/ObjectModule.bsl",
           "kind": "sha256",
-          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+          "eq": "$capture.unchanged1"
         },
         {
           "path": "src/Catalogs/Items/Forms/Auxiliary/Ext/Form/Module.bsl",
           "kind": "sha256",
-          "eq": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
+          "eq": "$capture.unchanged2"
         },
         {
           "path": "src/Catalogs/Items/Forms/Auxiliary/Ext/Form.xml",
           "kind": "sha256",
-          "eq": "c805079d51b56e80a5982ecbb6c2d1e9b0ae4af2c5f1ee20abe22bc1697789b3"
+          "eq": "$capture.unchanged3"
         },
         {
           "path": "src/Catalogs/Items/Forms/Auxiliary.xml",
           "kind": "sha256",
-          "eq": "3a653150eb222476979e4363ea5850d9ceba997768c6916247b947cc6eee2c07"
+          "eq": "$capture.unchanged4"
         },
         {
           "path": "src/Catalogs/Items/Forms/List/Ext/Form/Module.bsl",
           "kind": "sha256",
-          "eq": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
+          "eq": "$capture.unchanged5"
         },
         {
           "path": "src/Catalogs/Items/Forms/List/Ext/Form.xml",
           "kind": "sha256",
-          "eq": "41a626ef48da2b4a082401b7ed99dc13b7dc37e0cd307214f15e5656a2992f21"
+          "eq": "$capture.unchanged6"
         },
         {
           "path": "src/Catalogs/Items/Forms/List.xml",
           "kind": "sha256",
-          "eq": "1ec1b4b3d9e132b0b2bc3841aa7eac89fb4a584fdbf2309a66b9f73fa96f6136"
+          "eq": "$capture.unchanged7"
         },
         {
           "path": "src/Catalogs/Items/Forms/Main/Ext/Form/Module.bsl",
           "kind": "sha256",
-          "eq": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
+          "eq": "$capture.unchanged8"
         },
         {
           "path": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
           "kind": "sha256",
-          "eq": "c805079d51b56e80a5982ecbb6c2d1e9b0ae4af2c5f1ee20abe22bc1697789b3"
+          "eq": "$capture.unchanged9"
         },
         {
           "path": "src/Catalogs/Items/Forms/Main.xml",
           "kind": "sha256",
-          "eq": "51dcf39bc9fef785443eeabaeaf5b066ceca3c238c7bf455f4a626c5789474f4"
+          "eq": "$capture.unchanged10"
         },
         {
           "path": "src/Catalogs/Items.xml",
           "kind": "sha256",
-          "eq": "e538d48e7af910b9640dd7f3c33d05bdd4c1a7258be0f1e12ee06f0e51e8eb05"
+          "eq": "$capture.unchanged11"
         },
         {
           "path": "src/ConfigDumpInfo.xml",
           "kind": "sha256",
-          "eq": "438abe08db5c26c99431c04e60c9f5e02898ffd9ce464d37b53c777c4260272f"
+          "eq": "$capture.unchanged12"
         },
         {
           "path": "src/Configuration.xml",
           "kind": "sha256",
-          "eq": "b19297d2af3c378ebdcfbd4af8d3567e6cc1b8a2e7f74f04855f855bb8a824a7"
+          "eq": "$capture.unchanged13"
         },
         {
           "path": "src/Ext/ClientApplicationInterface.xml",
           "kind": "sha256",
-          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+          "eq": "$capture.unchanged14"
         },
         {
           "path": "src/InformationRegisters/History/Ext/RecordSetModule.bsl",
           "kind": "sha256",
-          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+          "eq": "$capture.unchanged15"
         },
         {
           "path": "src/InformationRegisters/History/Forms/Auxiliary/Ext/Form/Module.bsl",
           "kind": "sha256",
-          "eq": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
+          "eq": "$capture.unchanged16"
         },
         {
           "path": "src/InformationRegisters/History/Forms/Auxiliary/Ext/Form.xml",
           "kind": "sha256",
-          "eq": "d8d62ceee315b36b28b578c6ce7b9a3bc52e7bb99b8fb8ba2522fec16f1086fb"
+          "eq": "$capture.unchanged17"
         },
         {
           "path": "src/InformationRegisters/History/Forms/Auxiliary.xml",
           "kind": "sha256",
-          "eq": "15fcd4a0ef6dcced5798c5937c94a2a9167b0aeda1904dde599741fbcd0b958e"
+          "eq": "$capture.unchanged18"
         },
         {
           "path": "src/InformationRegisters/History/Forms/List/Ext/Form/Module.bsl",
           "kind": "sha256",
-          "eq": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
+          "eq": "$capture.unchanged19"
         },
         {
           "path": "src/InformationRegisters/History/Forms/List/Ext/Form.xml",
           "kind": "sha256",
-          "eq": "bfe03b41fa24751543c40dfc588e8ca1171b6ead7d5ffb9f5da74f999ca2f332"
+          "eq": "$capture.unchanged20"
         },
         {
           "path": "src/InformationRegisters/History/Forms/List.xml",
           "kind": "sha256",
-          "eq": "fdaa8092546012983992eafa187582dcfa68bf797b66a9050d802f0a9072c2a3"
+          "eq": "$capture.unchanged21"
         },
         {
           "path": "src/InformationRegisters/History/Forms/Main/Ext/Form/Module.bsl",
           "kind": "sha256",
-          "eq": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
+          "eq": "$capture.unchanged22"
         },
         {
           "path": "src/InformationRegisters/History/Forms/Main/Ext/Form.xml",
           "kind": "sha256",
-          "eq": "d8d62ceee315b36b28b578c6ce7b9a3bc52e7bb99b8fb8ba2522fec16f1086fb"
+          "eq": "$capture.unchanged23"
         },
         {
           "path": "src/InformationRegisters/History/Forms/Main.xml",
           "kind": "sha256",
-          "eq": "162185e37c6ac0ac60b7b0b08263fbab9676f4882ccbe00e654039589187481f"
+          "eq": "$capture.unchanged24"
         },
         {
           "path": "src/InformationRegisters/History.xml",
           "kind": "sha256",
-          "eq": "31c79ec34a415f935ef62f49e2cfe97a3467d8d23db539208af60d8d057d10ed"
+          "eq": "$capture.unchanged25"
         },
         {
           "path": "src/Languages/Русский.xml",
           "kind": "sha256",
-          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+          "eq": "$capture.unchanged26"
         }
       ]
     },
@@ -280,122 +386,122 @@
         {
           "path": "src/Catalogs/Items/Ext/ObjectModule.bsl",
           "kind": "sha256",
-          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+          "eq": "$capture.unchanged1"
         },
         {
           "path": "src/Catalogs/Items/Forms/Auxiliary/Ext/Form/Module.bsl",
           "kind": "sha256",
-          "eq": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
+          "eq": "$capture.unchanged2"
         },
         {
           "path": "src/Catalogs/Items/Forms/Auxiliary/Ext/Form.xml",
           "kind": "sha256",
-          "eq": "c805079d51b56e80a5982ecbb6c2d1e9b0ae4af2c5f1ee20abe22bc1697789b3"
+          "eq": "$capture.unchanged3"
         },
         {
           "path": "src/Catalogs/Items/Forms/Auxiliary.xml",
           "kind": "sha256",
-          "eq": "3a653150eb222476979e4363ea5850d9ceba997768c6916247b947cc6eee2c07"
+          "eq": "$capture.unchanged4"
         },
         {
           "path": "src/Catalogs/Items/Forms/List/Ext/Form/Module.bsl",
           "kind": "sha256",
-          "eq": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
+          "eq": "$capture.unchanged5"
         },
         {
           "path": "src/Catalogs/Items/Forms/List/Ext/Form.xml",
           "kind": "sha256",
-          "eq": "41a626ef48da2b4a082401b7ed99dc13b7dc37e0cd307214f15e5656a2992f21"
+          "eq": "$capture.unchanged6"
         },
         {
           "path": "src/Catalogs/Items/Forms/List.xml",
           "kind": "sha256",
-          "eq": "1ec1b4b3d9e132b0b2bc3841aa7eac89fb4a584fdbf2309a66b9f73fa96f6136"
+          "eq": "$capture.unchanged7"
         },
         {
           "path": "src/Catalogs/Items/Forms/Main/Ext/Form/Module.bsl",
           "kind": "sha256",
-          "eq": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
+          "eq": "$capture.unchanged8"
         },
         {
           "path": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
           "kind": "sha256",
-          "eq": "c805079d51b56e80a5982ecbb6c2d1e9b0ae4af2c5f1ee20abe22bc1697789b3"
+          "eq": "$capture.unchanged9"
         },
         {
           "path": "src/Catalogs/Items/Forms/Main.xml",
           "kind": "sha256",
-          "eq": "51dcf39bc9fef785443eeabaeaf5b066ceca3c238c7bf455f4a626c5789474f4"
+          "eq": "$capture.unchanged10"
         },
         {
           "path": "src/ConfigDumpInfo.xml",
           "kind": "sha256",
-          "eq": "438abe08db5c26c99431c04e60c9f5e02898ffd9ce464d37b53c777c4260272f"
+          "eq": "$capture.unchanged12"
         },
         {
           "path": "src/Configuration.xml",
           "kind": "sha256",
-          "eq": "b19297d2af3c378ebdcfbd4af8d3567e6cc1b8a2e7f74f04855f855bb8a824a7"
+          "eq": "$capture.unchanged13"
         },
         {
           "path": "src/Ext/ClientApplicationInterface.xml",
           "kind": "sha256",
-          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+          "eq": "$capture.unchanged14"
         },
         {
           "path": "src/InformationRegisters/History/Ext/RecordSetModule.bsl",
           "kind": "sha256",
-          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+          "eq": "$capture.unchanged15"
         },
         {
           "path": "src/InformationRegisters/History/Forms/Auxiliary/Ext/Form/Module.bsl",
           "kind": "sha256",
-          "eq": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
+          "eq": "$capture.unchanged16"
         },
         {
           "path": "src/InformationRegisters/History/Forms/Auxiliary/Ext/Form.xml",
           "kind": "sha256",
-          "eq": "d8d62ceee315b36b28b578c6ce7b9a3bc52e7bb99b8fb8ba2522fec16f1086fb"
+          "eq": "$capture.unchanged17"
         },
         {
           "path": "src/InformationRegisters/History/Forms/Auxiliary.xml",
           "kind": "sha256",
-          "eq": "15fcd4a0ef6dcced5798c5937c94a2a9167b0aeda1904dde599741fbcd0b958e"
+          "eq": "$capture.unchanged18"
         },
         {
           "path": "src/InformationRegisters/History/Forms/List/Ext/Form/Module.bsl",
           "kind": "sha256",
-          "eq": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
+          "eq": "$capture.unchanged19"
         },
         {
           "path": "src/InformationRegisters/History/Forms/List/Ext/Form.xml",
           "kind": "sha256",
-          "eq": "bfe03b41fa24751543c40dfc588e8ca1171b6ead7d5ffb9f5da74f999ca2f332"
+          "eq": "$capture.unchanged20"
         },
         {
           "path": "src/InformationRegisters/History/Forms/List.xml",
           "kind": "sha256",
-          "eq": "fdaa8092546012983992eafa187582dcfa68bf797b66a9050d802f0a9072c2a3"
+          "eq": "$capture.unchanged21"
         },
         {
           "path": "src/InformationRegisters/History/Forms/Main/Ext/Form/Module.bsl",
           "kind": "sha256",
-          "eq": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
+          "eq": "$capture.unchanged22"
         },
         {
           "path": "src/InformationRegisters/History/Forms/Main/Ext/Form.xml",
           "kind": "sha256",
-          "eq": "d8d62ceee315b36b28b578c6ce7b9a3bc52e7bb99b8fb8ba2522fec16f1086fb"
+          "eq": "$capture.unchanged23"
         },
         {
           "path": "src/InformationRegisters/History/Forms/Main.xml",
           "kind": "sha256",
-          "eq": "162185e37c6ac0ac60b7b0b08263fbab9676f4882ccbe00e654039589187481f"
+          "eq": "$capture.unchanged24"
         },
         {
           "path": "src/Languages/Русский.xml",
           "kind": "sha256",
-          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+          "eq": "$capture.unchanged26"
         },
         {
           "path": "src/Catalogs/Items.xml",
@@ -478,122 +584,122 @@
         {
           "path": "src/Catalogs/Items/Ext/ObjectModule.bsl",
           "kind": "sha256",
-          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+          "eq": "$capture.unchanged1"
         },
         {
           "path": "src/Catalogs/Items/Forms/Auxiliary/Ext/Form/Module.bsl",
           "kind": "sha256",
-          "eq": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
+          "eq": "$capture.unchanged2"
         },
         {
           "path": "src/Catalogs/Items/Forms/Auxiliary/Ext/Form.xml",
           "kind": "sha256",
-          "eq": "c805079d51b56e80a5982ecbb6c2d1e9b0ae4af2c5f1ee20abe22bc1697789b3"
+          "eq": "$capture.unchanged3"
         },
         {
           "path": "src/Catalogs/Items/Forms/Auxiliary.xml",
           "kind": "sha256",
-          "eq": "3a653150eb222476979e4363ea5850d9ceba997768c6916247b947cc6eee2c07"
+          "eq": "$capture.unchanged4"
         },
         {
           "path": "src/Catalogs/Items/Forms/List/Ext/Form/Module.bsl",
           "kind": "sha256",
-          "eq": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
+          "eq": "$capture.unchanged5"
         },
         {
           "path": "src/Catalogs/Items/Forms/List/Ext/Form.xml",
           "kind": "sha256",
-          "eq": "41a626ef48da2b4a082401b7ed99dc13b7dc37e0cd307214f15e5656a2992f21"
+          "eq": "$capture.unchanged6"
         },
         {
           "path": "src/Catalogs/Items/Forms/List.xml",
           "kind": "sha256",
-          "eq": "1ec1b4b3d9e132b0b2bc3841aa7eac89fb4a584fdbf2309a66b9f73fa96f6136"
+          "eq": "$capture.unchanged7"
         },
         {
           "path": "src/Catalogs/Items/Forms/Main/Ext/Form/Module.bsl",
           "kind": "sha256",
-          "eq": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
+          "eq": "$capture.unchanged8"
         },
         {
           "path": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
           "kind": "sha256",
-          "eq": "c805079d51b56e80a5982ecbb6c2d1e9b0ae4af2c5f1ee20abe22bc1697789b3"
+          "eq": "$capture.unchanged9"
         },
         {
           "path": "src/Catalogs/Items/Forms/Main.xml",
           "kind": "sha256",
-          "eq": "51dcf39bc9fef785443eeabaeaf5b066ceca3c238c7bf455f4a626c5789474f4"
+          "eq": "$capture.unchanged10"
         },
         {
           "path": "src/ConfigDumpInfo.xml",
           "kind": "sha256",
-          "eq": "438abe08db5c26c99431c04e60c9f5e02898ffd9ce464d37b53c777c4260272f"
+          "eq": "$capture.unchanged12"
         },
         {
           "path": "src/Configuration.xml",
           "kind": "sha256",
-          "eq": "b19297d2af3c378ebdcfbd4af8d3567e6cc1b8a2e7f74f04855f855bb8a824a7"
+          "eq": "$capture.unchanged13"
         },
         {
           "path": "src/Ext/ClientApplicationInterface.xml",
           "kind": "sha256",
-          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+          "eq": "$capture.unchanged14"
         },
         {
           "path": "src/InformationRegisters/History/Ext/RecordSetModule.bsl",
           "kind": "sha256",
-          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+          "eq": "$capture.unchanged15"
         },
         {
           "path": "src/InformationRegisters/History/Forms/Auxiliary/Ext/Form/Module.bsl",
           "kind": "sha256",
-          "eq": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
+          "eq": "$capture.unchanged16"
         },
         {
           "path": "src/InformationRegisters/History/Forms/Auxiliary/Ext/Form.xml",
           "kind": "sha256",
-          "eq": "d8d62ceee315b36b28b578c6ce7b9a3bc52e7bb99b8fb8ba2522fec16f1086fb"
+          "eq": "$capture.unchanged17"
         },
         {
           "path": "src/InformationRegisters/History/Forms/Auxiliary.xml",
           "kind": "sha256",
-          "eq": "15fcd4a0ef6dcced5798c5937c94a2a9167b0aeda1904dde599741fbcd0b958e"
+          "eq": "$capture.unchanged18"
         },
         {
           "path": "src/InformationRegisters/History/Forms/List/Ext/Form/Module.bsl",
           "kind": "sha256",
-          "eq": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
+          "eq": "$capture.unchanged19"
         },
         {
           "path": "src/InformationRegisters/History/Forms/List/Ext/Form.xml",
           "kind": "sha256",
-          "eq": "bfe03b41fa24751543c40dfc588e8ca1171b6ead7d5ffb9f5da74f999ca2f332"
+          "eq": "$capture.unchanged20"
         },
         {
           "path": "src/InformationRegisters/History/Forms/List.xml",
           "kind": "sha256",
-          "eq": "fdaa8092546012983992eafa187582dcfa68bf797b66a9050d802f0a9072c2a3"
+          "eq": "$capture.unchanged21"
         },
         {
           "path": "src/InformationRegisters/History/Forms/Main/Ext/Form/Module.bsl",
           "kind": "sha256",
-          "eq": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
+          "eq": "$capture.unchanged22"
         },
         {
           "path": "src/InformationRegisters/History/Forms/Main/Ext/Form.xml",
           "kind": "sha256",
-          "eq": "d8d62ceee315b36b28b578c6ce7b9a3bc52e7bb99b8fb8ba2522fec16f1086fb"
+          "eq": "$capture.unchanged23"
         },
         {
           "path": "src/InformationRegisters/History/Forms/Main.xml",
           "kind": "sha256",
-          "eq": "162185e37c6ac0ac60b7b0b08263fbab9676f4882ccbe00e654039589187481f"
+          "eq": "$capture.unchanged24"
         },
         {
           "path": "src/Languages/Русский.xml",
           "kind": "sha256",
-          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+          "eq": "$capture.unchanged26"
         },
         {
           "path": "src/InformationRegisters/History.xml",
@@ -676,122 +782,122 @@
         {
           "path": "src/Catalogs/Items/Ext/ObjectModule.bsl",
           "kind": "sha256",
-          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+          "eq": "$capture.unchanged1"
         },
         {
           "path": "src/Catalogs/Items/Forms/Auxiliary/Ext/Form/Module.bsl",
           "kind": "sha256",
-          "eq": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
+          "eq": "$capture.unchanged2"
         },
         {
           "path": "src/Catalogs/Items/Forms/Auxiliary/Ext/Form.xml",
           "kind": "sha256",
-          "eq": "c805079d51b56e80a5982ecbb6c2d1e9b0ae4af2c5f1ee20abe22bc1697789b3"
+          "eq": "$capture.unchanged3"
         },
         {
           "path": "src/Catalogs/Items/Forms/Auxiliary.xml",
           "kind": "sha256",
-          "eq": "3a653150eb222476979e4363ea5850d9ceba997768c6916247b947cc6eee2c07"
+          "eq": "$capture.unchanged4"
         },
         {
           "path": "src/Catalogs/Items/Forms/List/Ext/Form/Module.bsl",
           "kind": "sha256",
-          "eq": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
+          "eq": "$capture.unchanged5"
         },
         {
           "path": "src/Catalogs/Items/Forms/List/Ext/Form.xml",
           "kind": "sha256",
-          "eq": "41a626ef48da2b4a082401b7ed99dc13b7dc37e0cd307214f15e5656a2992f21"
+          "eq": "$capture.unchanged6"
         },
         {
           "path": "src/Catalogs/Items/Forms/List.xml",
           "kind": "sha256",
-          "eq": "1ec1b4b3d9e132b0b2bc3841aa7eac89fb4a584fdbf2309a66b9f73fa96f6136"
+          "eq": "$capture.unchanged7"
         },
         {
           "path": "src/Catalogs/Items/Forms/Main/Ext/Form/Module.bsl",
           "kind": "sha256",
-          "eq": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
+          "eq": "$capture.unchanged8"
         },
         {
           "path": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
           "kind": "sha256",
-          "eq": "c805079d51b56e80a5982ecbb6c2d1e9b0ae4af2c5f1ee20abe22bc1697789b3"
+          "eq": "$capture.unchanged9"
         },
         {
           "path": "src/Catalogs/Items/Forms/Main.xml",
           "kind": "sha256",
-          "eq": "51dcf39bc9fef785443eeabaeaf5b066ceca3c238c7bf455f4a626c5789474f4"
+          "eq": "$capture.unchanged10"
         },
         {
           "path": "src/ConfigDumpInfo.xml",
           "kind": "sha256",
-          "eq": "438abe08db5c26c99431c04e60c9f5e02898ffd9ce464d37b53c777c4260272f"
+          "eq": "$capture.unchanged12"
         },
         {
           "path": "src/Configuration.xml",
           "kind": "sha256",
-          "eq": "b19297d2af3c378ebdcfbd4af8d3567e6cc1b8a2e7f74f04855f855bb8a824a7"
+          "eq": "$capture.unchanged13"
         },
         {
           "path": "src/Ext/ClientApplicationInterface.xml",
           "kind": "sha256",
-          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+          "eq": "$capture.unchanged14"
         },
         {
           "path": "src/InformationRegisters/History/Ext/RecordSetModule.bsl",
           "kind": "sha256",
-          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+          "eq": "$capture.unchanged15"
         },
         {
           "path": "src/InformationRegisters/History/Forms/Auxiliary/Ext/Form/Module.bsl",
           "kind": "sha256",
-          "eq": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
+          "eq": "$capture.unchanged16"
         },
         {
           "path": "src/InformationRegisters/History/Forms/Auxiliary/Ext/Form.xml",
           "kind": "sha256",
-          "eq": "d8d62ceee315b36b28b578c6ce7b9a3bc52e7bb99b8fb8ba2522fec16f1086fb"
+          "eq": "$capture.unchanged17"
         },
         {
           "path": "src/InformationRegisters/History/Forms/Auxiliary.xml",
           "kind": "sha256",
-          "eq": "15fcd4a0ef6dcced5798c5937c94a2a9167b0aeda1904dde599741fbcd0b958e"
+          "eq": "$capture.unchanged18"
         },
         {
           "path": "src/InformationRegisters/History/Forms/List/Ext/Form/Module.bsl",
           "kind": "sha256",
-          "eq": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
+          "eq": "$capture.unchanged19"
         },
         {
           "path": "src/InformationRegisters/History/Forms/List/Ext/Form.xml",
           "kind": "sha256",
-          "eq": "bfe03b41fa24751543c40dfc588e8ca1171b6ead7d5ffb9f5da74f999ca2f332"
+          "eq": "$capture.unchanged20"
         },
         {
           "path": "src/InformationRegisters/History/Forms/List.xml",
           "kind": "sha256",
-          "eq": "fdaa8092546012983992eafa187582dcfa68bf797b66a9050d802f0a9072c2a3"
+          "eq": "$capture.unchanged21"
         },
         {
           "path": "src/InformationRegisters/History/Forms/Main/Ext/Form/Module.bsl",
           "kind": "sha256",
-          "eq": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
+          "eq": "$capture.unchanged22"
         },
         {
           "path": "src/InformationRegisters/History/Forms/Main/Ext/Form.xml",
           "kind": "sha256",
-          "eq": "d8d62ceee315b36b28b578c6ce7b9a3bc52e7bb99b8fb8ba2522fec16f1086fb"
+          "eq": "$capture.unchanged23"
         },
         {
           "path": "src/InformationRegisters/History/Forms/Main.xml",
           "kind": "sha256",
-          "eq": "162185e37c6ac0ac60b7b0b08263fbab9676f4882ccbe00e654039589187481f"
+          "eq": "$capture.unchanged24"
         },
         {
           "path": "src/Languages/Русский.xml",
           "kind": "sha256",
-          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+          "eq": "$capture.unchanged26"
         },
         {
           "path": "src/Catalogs/Items.xml",
@@ -874,122 +980,122 @@
         {
           "path": "src/Catalogs/Items/Ext/ObjectModule.bsl",
           "kind": "sha256",
-          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+          "eq": "$capture.unchanged1"
         },
         {
           "path": "src/Catalogs/Items/Forms/Auxiliary/Ext/Form/Module.bsl",
           "kind": "sha256",
-          "eq": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
+          "eq": "$capture.unchanged2"
         },
         {
           "path": "src/Catalogs/Items/Forms/Auxiliary/Ext/Form.xml",
           "kind": "sha256",
-          "eq": "c805079d51b56e80a5982ecbb6c2d1e9b0ae4af2c5f1ee20abe22bc1697789b3"
+          "eq": "$capture.unchanged3"
         },
         {
           "path": "src/Catalogs/Items/Forms/Auxiliary.xml",
           "kind": "sha256",
-          "eq": "3a653150eb222476979e4363ea5850d9ceba997768c6916247b947cc6eee2c07"
+          "eq": "$capture.unchanged4"
         },
         {
           "path": "src/Catalogs/Items/Forms/List/Ext/Form/Module.bsl",
           "kind": "sha256",
-          "eq": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
+          "eq": "$capture.unchanged5"
         },
         {
           "path": "src/Catalogs/Items/Forms/List/Ext/Form.xml",
           "kind": "sha256",
-          "eq": "41a626ef48da2b4a082401b7ed99dc13b7dc37e0cd307214f15e5656a2992f21"
+          "eq": "$capture.unchanged6"
         },
         {
           "path": "src/Catalogs/Items/Forms/List.xml",
           "kind": "sha256",
-          "eq": "1ec1b4b3d9e132b0b2bc3841aa7eac89fb4a584fdbf2309a66b9f73fa96f6136"
+          "eq": "$capture.unchanged7"
         },
         {
           "path": "src/Catalogs/Items/Forms/Main/Ext/Form/Module.bsl",
           "kind": "sha256",
-          "eq": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
+          "eq": "$capture.unchanged8"
         },
         {
           "path": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
           "kind": "sha256",
-          "eq": "c805079d51b56e80a5982ecbb6c2d1e9b0ae4af2c5f1ee20abe22bc1697789b3"
+          "eq": "$capture.unchanged9"
         },
         {
           "path": "src/Catalogs/Items/Forms/Main.xml",
           "kind": "sha256",
-          "eq": "51dcf39bc9fef785443eeabaeaf5b066ceca3c238c7bf455f4a626c5789474f4"
+          "eq": "$capture.unchanged10"
         },
         {
           "path": "src/ConfigDumpInfo.xml",
           "kind": "sha256",
-          "eq": "438abe08db5c26c99431c04e60c9f5e02898ffd9ce464d37b53c777c4260272f"
+          "eq": "$capture.unchanged12"
         },
         {
           "path": "src/Configuration.xml",
           "kind": "sha256",
-          "eq": "b19297d2af3c378ebdcfbd4af8d3567e6cc1b8a2e7f74f04855f855bb8a824a7"
+          "eq": "$capture.unchanged13"
         },
         {
           "path": "src/Ext/ClientApplicationInterface.xml",
           "kind": "sha256",
-          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+          "eq": "$capture.unchanged14"
         },
         {
           "path": "src/InformationRegisters/History/Ext/RecordSetModule.bsl",
           "kind": "sha256",
-          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+          "eq": "$capture.unchanged15"
         },
         {
           "path": "src/InformationRegisters/History/Forms/Auxiliary/Ext/Form/Module.bsl",
           "kind": "sha256",
-          "eq": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
+          "eq": "$capture.unchanged16"
         },
         {
           "path": "src/InformationRegisters/History/Forms/Auxiliary/Ext/Form.xml",
           "kind": "sha256",
-          "eq": "d8d62ceee315b36b28b578c6ce7b9a3bc52e7bb99b8fb8ba2522fec16f1086fb"
+          "eq": "$capture.unchanged17"
         },
         {
           "path": "src/InformationRegisters/History/Forms/Auxiliary.xml",
           "kind": "sha256",
-          "eq": "15fcd4a0ef6dcced5798c5937c94a2a9167b0aeda1904dde599741fbcd0b958e"
+          "eq": "$capture.unchanged18"
         },
         {
           "path": "src/InformationRegisters/History/Forms/List/Ext/Form/Module.bsl",
           "kind": "sha256",
-          "eq": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
+          "eq": "$capture.unchanged19"
         },
         {
           "path": "src/InformationRegisters/History/Forms/List/Ext/Form.xml",
           "kind": "sha256",
-          "eq": "bfe03b41fa24751543c40dfc588e8ca1171b6ead7d5ffb9f5da74f999ca2f332"
+          "eq": "$capture.unchanged20"
         },
         {
           "path": "src/InformationRegisters/History/Forms/List.xml",
           "kind": "sha256",
-          "eq": "fdaa8092546012983992eafa187582dcfa68bf797b66a9050d802f0a9072c2a3"
+          "eq": "$capture.unchanged21"
         },
         {
           "path": "src/InformationRegisters/History/Forms/Main/Ext/Form/Module.bsl",
           "kind": "sha256",
-          "eq": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
+          "eq": "$capture.unchanged22"
         },
         {
           "path": "src/InformationRegisters/History/Forms/Main/Ext/Form.xml",
           "kind": "sha256",
-          "eq": "d8d62ceee315b36b28b578c6ce7b9a3bc52e7bb99b8fb8ba2522fec16f1086fb"
+          "eq": "$capture.unchanged23"
         },
         {
           "path": "src/InformationRegisters/History/Forms/Main.xml",
           "kind": "sha256",
-          "eq": "162185e37c6ac0ac60b7b0b08263fbab9676f4882ccbe00e654039589187481f"
+          "eq": "$capture.unchanged24"
         },
         {
           "path": "src/Languages/Русский.xml",
           "kind": "sha256",
-          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+          "eq": "$capture.unchanged26"
         },
         {
           "path": "src/InformationRegisters/History.xml",
@@ -1072,122 +1178,122 @@
         {
           "path": "src/Catalogs/Items/Ext/ObjectModule.bsl",
           "kind": "sha256",
-          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+          "eq": "$capture.unchanged1"
         },
         {
           "path": "src/Catalogs/Items/Forms/Auxiliary/Ext/Form/Module.bsl",
           "kind": "sha256",
-          "eq": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
+          "eq": "$capture.unchanged2"
         },
         {
           "path": "src/Catalogs/Items/Forms/Auxiliary/Ext/Form.xml",
           "kind": "sha256",
-          "eq": "c805079d51b56e80a5982ecbb6c2d1e9b0ae4af2c5f1ee20abe22bc1697789b3"
+          "eq": "$capture.unchanged3"
         },
         {
           "path": "src/Catalogs/Items/Forms/Auxiliary.xml",
           "kind": "sha256",
-          "eq": "3a653150eb222476979e4363ea5850d9ceba997768c6916247b947cc6eee2c07"
+          "eq": "$capture.unchanged4"
         },
         {
           "path": "src/Catalogs/Items/Forms/List/Ext/Form/Module.bsl",
           "kind": "sha256",
-          "eq": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
+          "eq": "$capture.unchanged5"
         },
         {
           "path": "src/Catalogs/Items/Forms/List/Ext/Form.xml",
           "kind": "sha256",
-          "eq": "41a626ef48da2b4a082401b7ed99dc13b7dc37e0cd307214f15e5656a2992f21"
+          "eq": "$capture.unchanged6"
         },
         {
           "path": "src/Catalogs/Items/Forms/List.xml",
           "kind": "sha256",
-          "eq": "1ec1b4b3d9e132b0b2bc3841aa7eac89fb4a584fdbf2309a66b9f73fa96f6136"
+          "eq": "$capture.unchanged7"
         },
         {
           "path": "src/Catalogs/Items/Forms/Main/Ext/Form/Module.bsl",
           "kind": "sha256",
-          "eq": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
+          "eq": "$capture.unchanged8"
         },
         {
           "path": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
           "kind": "sha256",
-          "eq": "c805079d51b56e80a5982ecbb6c2d1e9b0ae4af2c5f1ee20abe22bc1697789b3"
+          "eq": "$capture.unchanged9"
         },
         {
           "path": "src/Catalogs/Items/Forms/Main.xml",
           "kind": "sha256",
-          "eq": "51dcf39bc9fef785443eeabaeaf5b066ceca3c238c7bf455f4a626c5789474f4"
+          "eq": "$capture.unchanged10"
         },
         {
           "path": "src/ConfigDumpInfo.xml",
           "kind": "sha256",
-          "eq": "438abe08db5c26c99431c04e60c9f5e02898ffd9ce464d37b53c777c4260272f"
+          "eq": "$capture.unchanged12"
         },
         {
           "path": "src/Configuration.xml",
           "kind": "sha256",
-          "eq": "b19297d2af3c378ebdcfbd4af8d3567e6cc1b8a2e7f74f04855f855bb8a824a7"
+          "eq": "$capture.unchanged13"
         },
         {
           "path": "src/Ext/ClientApplicationInterface.xml",
           "kind": "sha256",
-          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+          "eq": "$capture.unchanged14"
         },
         {
           "path": "src/InformationRegisters/History/Ext/RecordSetModule.bsl",
           "kind": "sha256",
-          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+          "eq": "$capture.unchanged15"
         },
         {
           "path": "src/InformationRegisters/History/Forms/Auxiliary/Ext/Form/Module.bsl",
           "kind": "sha256",
-          "eq": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
+          "eq": "$capture.unchanged16"
         },
         {
           "path": "src/InformationRegisters/History/Forms/Auxiliary/Ext/Form.xml",
           "kind": "sha256",
-          "eq": "d8d62ceee315b36b28b578c6ce7b9a3bc52e7bb99b8fb8ba2522fec16f1086fb"
+          "eq": "$capture.unchanged17"
         },
         {
           "path": "src/InformationRegisters/History/Forms/Auxiliary.xml",
           "kind": "sha256",
-          "eq": "15fcd4a0ef6dcced5798c5937c94a2a9167b0aeda1904dde599741fbcd0b958e"
+          "eq": "$capture.unchanged18"
         },
         {
           "path": "src/InformationRegisters/History/Forms/List/Ext/Form/Module.bsl",
           "kind": "sha256",
-          "eq": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
+          "eq": "$capture.unchanged19"
         },
         {
           "path": "src/InformationRegisters/History/Forms/List/Ext/Form.xml",
           "kind": "sha256",
-          "eq": "bfe03b41fa24751543c40dfc588e8ca1171b6ead7d5ffb9f5da74f999ca2f332"
+          "eq": "$capture.unchanged20"
         },
         {
           "path": "src/InformationRegisters/History/Forms/List.xml",
           "kind": "sha256",
-          "eq": "fdaa8092546012983992eafa187582dcfa68bf797b66a9050d802f0a9072c2a3"
+          "eq": "$capture.unchanged21"
         },
         {
           "path": "src/InformationRegisters/History/Forms/Main/Ext/Form/Module.bsl",
           "kind": "sha256",
-          "eq": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
+          "eq": "$capture.unchanged22"
         },
         {
           "path": "src/InformationRegisters/History/Forms/Main/Ext/Form.xml",
           "kind": "sha256",
-          "eq": "d8d62ceee315b36b28b578c6ce7b9a3bc52e7bb99b8fb8ba2522fec16f1086fb"
+          "eq": "$capture.unchanged23"
         },
         {
           "path": "src/InformationRegisters/History/Forms/Main.xml",
           "kind": "sha256",
-          "eq": "162185e37c6ac0ac60b7b0b08263fbab9676f4882ccbe00e654039589187481f"
+          "eq": "$capture.unchanged24"
         },
         {
           "path": "src/Languages/Русский.xml",
           "kind": "sha256",
-          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+          "eq": "$capture.unchanged26"
         },
         {
           "path": "src/Catalogs/Items.xml",
@@ -1200,7 +1306,7 @@
         {
           "path": "src/Catalogs/Items.xml",
           "kind": "sha256",
-          "eq": "e538d48e7af910b9640dd7f3c33d05bdd4c1a7258be0f1e12ee06f0e51e8eb05"
+          "eq": "$capture.unchanged11"
         }
       ]
     },
@@ -1275,132 +1381,132 @@
         {
           "path": "src/Catalogs/Items/Ext/ObjectModule.bsl",
           "kind": "sha256",
-          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+          "eq": "$capture.unchanged1"
         },
         {
           "path": "src/Catalogs/Items/Forms/Auxiliary/Ext/Form/Module.bsl",
           "kind": "sha256",
-          "eq": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
+          "eq": "$capture.unchanged2"
         },
         {
           "path": "src/Catalogs/Items/Forms/Auxiliary/Ext/Form.xml",
           "kind": "sha256",
-          "eq": "c805079d51b56e80a5982ecbb6c2d1e9b0ae4af2c5f1ee20abe22bc1697789b3"
+          "eq": "$capture.unchanged3"
         },
         {
           "path": "src/Catalogs/Items/Forms/Auxiliary.xml",
           "kind": "sha256",
-          "eq": "3a653150eb222476979e4363ea5850d9ceba997768c6916247b947cc6eee2c07"
+          "eq": "$capture.unchanged4"
         },
         {
           "path": "src/Catalogs/Items/Forms/List/Ext/Form/Module.bsl",
           "kind": "sha256",
-          "eq": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
+          "eq": "$capture.unchanged5"
         },
         {
           "path": "src/Catalogs/Items/Forms/List/Ext/Form.xml",
           "kind": "sha256",
-          "eq": "41a626ef48da2b4a082401b7ed99dc13b7dc37e0cd307214f15e5656a2992f21"
+          "eq": "$capture.unchanged6"
         },
         {
           "path": "src/Catalogs/Items/Forms/List.xml",
           "kind": "sha256",
-          "eq": "1ec1b4b3d9e132b0b2bc3841aa7eac89fb4a584fdbf2309a66b9f73fa96f6136"
+          "eq": "$capture.unchanged7"
         },
         {
           "path": "src/Catalogs/Items/Forms/Main/Ext/Form/Module.bsl",
           "kind": "sha256",
-          "eq": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
+          "eq": "$capture.unchanged8"
         },
         {
           "path": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
           "kind": "sha256",
-          "eq": "c805079d51b56e80a5982ecbb6c2d1e9b0ae4af2c5f1ee20abe22bc1697789b3"
+          "eq": "$capture.unchanged9"
         },
         {
           "path": "src/Catalogs/Items/Forms/Main.xml",
           "kind": "sha256",
-          "eq": "51dcf39bc9fef785443eeabaeaf5b066ceca3c238c7bf455f4a626c5789474f4"
+          "eq": "$capture.unchanged10"
         },
         {
           "path": "src/Catalogs/Items.xml",
           "kind": "sha256",
-          "eq": "e538d48e7af910b9640dd7f3c33d05bdd4c1a7258be0f1e12ee06f0e51e8eb05"
+          "eq": "$capture.unchanged11"
         },
         {
           "path": "src/ConfigDumpInfo.xml",
           "kind": "sha256",
-          "eq": "438abe08db5c26c99431c04e60c9f5e02898ffd9ce464d37b53c777c4260272f"
+          "eq": "$capture.unchanged12"
         },
         {
           "path": "src/Configuration.xml",
           "kind": "sha256",
-          "eq": "b19297d2af3c378ebdcfbd4af8d3567e6cc1b8a2e7f74f04855f855bb8a824a7"
+          "eq": "$capture.unchanged13"
         },
         {
           "path": "src/Ext/ClientApplicationInterface.xml",
           "kind": "sha256",
-          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+          "eq": "$capture.unchanged14"
         },
         {
           "path": "src/InformationRegisters/History/Ext/RecordSetModule.bsl",
           "kind": "sha256",
-          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+          "eq": "$capture.unchanged15"
         },
         {
           "path": "src/InformationRegisters/History/Forms/Auxiliary/Ext/Form/Module.bsl",
           "kind": "sha256",
-          "eq": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
+          "eq": "$capture.unchanged16"
         },
         {
           "path": "src/InformationRegisters/History/Forms/Auxiliary/Ext/Form.xml",
           "kind": "sha256",
-          "eq": "d8d62ceee315b36b28b578c6ce7b9a3bc52e7bb99b8fb8ba2522fec16f1086fb"
+          "eq": "$capture.unchanged17"
         },
         {
           "path": "src/InformationRegisters/History/Forms/Auxiliary.xml",
           "kind": "sha256",
-          "eq": "15fcd4a0ef6dcced5798c5937c94a2a9167b0aeda1904dde599741fbcd0b958e"
+          "eq": "$capture.unchanged18"
         },
         {
           "path": "src/InformationRegisters/History/Forms/List/Ext/Form/Module.bsl",
           "kind": "sha256",
-          "eq": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
+          "eq": "$capture.unchanged19"
         },
         {
           "path": "src/InformationRegisters/History/Forms/List/Ext/Form.xml",
           "kind": "sha256",
-          "eq": "bfe03b41fa24751543c40dfc588e8ca1171b6ead7d5ffb9f5da74f999ca2f332"
+          "eq": "$capture.unchanged20"
         },
         {
           "path": "src/InformationRegisters/History/Forms/List.xml",
           "kind": "sha256",
-          "eq": "fdaa8092546012983992eafa187582dcfa68bf797b66a9050d802f0a9072c2a3"
+          "eq": "$capture.unchanged21"
         },
         {
           "path": "src/InformationRegisters/History/Forms/Main/Ext/Form/Module.bsl",
           "kind": "sha256",
-          "eq": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
+          "eq": "$capture.unchanged22"
         },
         {
           "path": "src/InformationRegisters/History/Forms/Main/Ext/Form.xml",
           "kind": "sha256",
-          "eq": "d8d62ceee315b36b28b578c6ce7b9a3bc52e7bb99b8fb8ba2522fec16f1086fb"
+          "eq": "$capture.unchanged23"
         },
         {
           "path": "src/InformationRegisters/History/Forms/Main.xml",
           "kind": "sha256",
-          "eq": "162185e37c6ac0ac60b7b0b08263fbab9676f4882ccbe00e654039589187481f"
+          "eq": "$capture.unchanged24"
         },
         {
           "path": "src/InformationRegisters/History.xml",
           "kind": "sha256",
-          "eq": "31c79ec34a415f935ef62f49e2cfe97a3467d8d23db539208af60d8d057d10ed"
+          "eq": "$capture.unchanged25"
         },
         {
           "path": "src/Languages/Русский.xml",
           "kind": "sha256",
-          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+          "eq": "$capture.unchanged26"
         }
       ]
     },
@@ -1456,132 +1562,132 @@
         {
           "path": "src/Catalogs/Items/Ext/ObjectModule.bsl",
           "kind": "sha256",
-          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+          "eq": "$capture.unchanged1"
         },
         {
           "path": "src/Catalogs/Items/Forms/Auxiliary/Ext/Form/Module.bsl",
           "kind": "sha256",
-          "eq": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
+          "eq": "$capture.unchanged2"
         },
         {
           "path": "src/Catalogs/Items/Forms/Auxiliary/Ext/Form.xml",
           "kind": "sha256",
-          "eq": "c805079d51b56e80a5982ecbb6c2d1e9b0ae4af2c5f1ee20abe22bc1697789b3"
+          "eq": "$capture.unchanged3"
         },
         {
           "path": "src/Catalogs/Items/Forms/Auxiliary.xml",
           "kind": "sha256",
-          "eq": "3a653150eb222476979e4363ea5850d9ceba997768c6916247b947cc6eee2c07"
+          "eq": "$capture.unchanged4"
         },
         {
           "path": "src/Catalogs/Items/Forms/List/Ext/Form/Module.bsl",
           "kind": "sha256",
-          "eq": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
+          "eq": "$capture.unchanged5"
         },
         {
           "path": "src/Catalogs/Items/Forms/List/Ext/Form.xml",
           "kind": "sha256",
-          "eq": "41a626ef48da2b4a082401b7ed99dc13b7dc37e0cd307214f15e5656a2992f21"
+          "eq": "$capture.unchanged6"
         },
         {
           "path": "src/Catalogs/Items/Forms/List.xml",
           "kind": "sha256",
-          "eq": "1ec1b4b3d9e132b0b2bc3841aa7eac89fb4a584fdbf2309a66b9f73fa96f6136"
+          "eq": "$capture.unchanged7"
         },
         {
           "path": "src/Catalogs/Items/Forms/Main/Ext/Form/Module.bsl",
           "kind": "sha256",
-          "eq": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
+          "eq": "$capture.unchanged8"
         },
         {
           "path": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
           "kind": "sha256",
-          "eq": "c805079d51b56e80a5982ecbb6c2d1e9b0ae4af2c5f1ee20abe22bc1697789b3"
+          "eq": "$capture.unchanged9"
         },
         {
           "path": "src/Catalogs/Items/Forms/Main.xml",
           "kind": "sha256",
-          "eq": "51dcf39bc9fef785443eeabaeaf5b066ceca3c238c7bf455f4a626c5789474f4"
+          "eq": "$capture.unchanged10"
         },
         {
           "path": "src/Catalogs/Items.xml",
           "kind": "sha256",
-          "eq": "e538d48e7af910b9640dd7f3c33d05bdd4c1a7258be0f1e12ee06f0e51e8eb05"
+          "eq": "$capture.unchanged11"
         },
         {
           "path": "src/ConfigDumpInfo.xml",
           "kind": "sha256",
-          "eq": "438abe08db5c26c99431c04e60c9f5e02898ffd9ce464d37b53c777c4260272f"
+          "eq": "$capture.unchanged12"
         },
         {
           "path": "src/Configuration.xml",
           "kind": "sha256",
-          "eq": "b19297d2af3c378ebdcfbd4af8d3567e6cc1b8a2e7f74f04855f855bb8a824a7"
+          "eq": "$capture.unchanged13"
         },
         {
           "path": "src/Ext/ClientApplicationInterface.xml",
           "kind": "sha256",
-          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+          "eq": "$capture.unchanged14"
         },
         {
           "path": "src/InformationRegisters/History/Ext/RecordSetModule.bsl",
           "kind": "sha256",
-          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+          "eq": "$capture.unchanged15"
         },
         {
           "path": "src/InformationRegisters/History/Forms/Auxiliary/Ext/Form/Module.bsl",
           "kind": "sha256",
-          "eq": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
+          "eq": "$capture.unchanged16"
         },
         {
           "path": "src/InformationRegisters/History/Forms/Auxiliary/Ext/Form.xml",
           "kind": "sha256",
-          "eq": "d8d62ceee315b36b28b578c6ce7b9a3bc52e7bb99b8fb8ba2522fec16f1086fb"
+          "eq": "$capture.unchanged17"
         },
         {
           "path": "src/InformationRegisters/History/Forms/Auxiliary.xml",
           "kind": "sha256",
-          "eq": "15fcd4a0ef6dcced5798c5937c94a2a9167b0aeda1904dde599741fbcd0b958e"
+          "eq": "$capture.unchanged18"
         },
         {
           "path": "src/InformationRegisters/History/Forms/List/Ext/Form/Module.bsl",
           "kind": "sha256",
-          "eq": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
+          "eq": "$capture.unchanged19"
         },
         {
           "path": "src/InformationRegisters/History/Forms/List/Ext/Form.xml",
           "kind": "sha256",
-          "eq": "bfe03b41fa24751543c40dfc588e8ca1171b6ead7d5ffb9f5da74f999ca2f332"
+          "eq": "$capture.unchanged20"
         },
         {
           "path": "src/InformationRegisters/History/Forms/List.xml",
           "kind": "sha256",
-          "eq": "fdaa8092546012983992eafa187582dcfa68bf797b66a9050d802f0a9072c2a3"
+          "eq": "$capture.unchanged21"
         },
         {
           "path": "src/InformationRegisters/History/Forms/Main/Ext/Form/Module.bsl",
           "kind": "sha256",
-          "eq": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
+          "eq": "$capture.unchanged22"
         },
         {
           "path": "src/InformationRegisters/History/Forms/Main/Ext/Form.xml",
           "kind": "sha256",
-          "eq": "d8d62ceee315b36b28b578c6ce7b9a3bc52e7bb99b8fb8ba2522fec16f1086fb"
+          "eq": "$capture.unchanged23"
         },
         {
           "path": "src/InformationRegisters/History/Forms/Main.xml",
           "kind": "sha256",
-          "eq": "162185e37c6ac0ac60b7b0b08263fbab9676f4882ccbe00e654039589187481f"
+          "eq": "$capture.unchanged24"
         },
         {
           "path": "src/InformationRegisters/History.xml",
           "kind": "sha256",
-          "eq": "31c79ec34a415f935ef62f49e2cfe97a3467d8d23db539208af60d8d057d10ed"
+          "eq": "$capture.unchanged25"
         },
         {
           "path": "src/Languages/Русский.xml",
           "kind": "sha256",
-          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+          "eq": "$capture.unchanged26"
         }
       ]
     },
@@ -1607,122 +1713,122 @@
         {
           "path": "src/Catalogs/Items/Ext/ObjectModule.bsl",
           "kind": "sha256",
-          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+          "eq": "$capture.unchanged1"
         },
         {
           "path": "src/Catalogs/Items/Forms/Auxiliary/Ext/Form/Module.bsl",
           "kind": "sha256",
-          "eq": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
+          "eq": "$capture.unchanged2"
         },
         {
           "path": "src/Catalogs/Items/Forms/Auxiliary/Ext/Form.xml",
           "kind": "sha256",
-          "eq": "c805079d51b56e80a5982ecbb6c2d1e9b0ae4af2c5f1ee20abe22bc1697789b3"
+          "eq": "$capture.unchanged3"
         },
         {
           "path": "src/Catalogs/Items/Forms/Auxiliary.xml",
           "kind": "sha256",
-          "eq": "3a653150eb222476979e4363ea5850d9ceba997768c6916247b947cc6eee2c07"
+          "eq": "$capture.unchanged4"
         },
         {
           "path": "src/Catalogs/Items/Forms/List/Ext/Form/Module.bsl",
           "kind": "sha256",
-          "eq": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
+          "eq": "$capture.unchanged5"
         },
         {
           "path": "src/Catalogs/Items/Forms/List/Ext/Form.xml",
           "kind": "sha256",
-          "eq": "41a626ef48da2b4a082401b7ed99dc13b7dc37e0cd307214f15e5656a2992f21"
+          "eq": "$capture.unchanged6"
         },
         {
           "path": "src/Catalogs/Items/Forms/List.xml",
           "kind": "sha256",
-          "eq": "1ec1b4b3d9e132b0b2bc3841aa7eac89fb4a584fdbf2309a66b9f73fa96f6136"
+          "eq": "$capture.unchanged7"
         },
         {
           "path": "src/Catalogs/Items/Forms/Main/Ext/Form/Module.bsl",
           "kind": "sha256",
-          "eq": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
+          "eq": "$capture.unchanged8"
         },
         {
           "path": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
           "kind": "sha256",
-          "eq": "c805079d51b56e80a5982ecbb6c2d1e9b0ae4af2c5f1ee20abe22bc1697789b3"
+          "eq": "$capture.unchanged9"
         },
         {
           "path": "src/Catalogs/Items/Forms/Main.xml",
           "kind": "sha256",
-          "eq": "51dcf39bc9fef785443eeabaeaf5b066ceca3c238c7bf455f4a626c5789474f4"
+          "eq": "$capture.unchanged10"
         },
         {
           "path": "src/ConfigDumpInfo.xml",
           "kind": "sha256",
-          "eq": "438abe08db5c26c99431c04e60c9f5e02898ffd9ce464d37b53c777c4260272f"
+          "eq": "$capture.unchanged12"
         },
         {
           "path": "src/Configuration.xml",
           "kind": "sha256",
-          "eq": "b19297d2af3c378ebdcfbd4af8d3567e6cc1b8a2e7f74f04855f855bb8a824a7"
+          "eq": "$capture.unchanged13"
         },
         {
           "path": "src/Ext/ClientApplicationInterface.xml",
           "kind": "sha256",
-          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+          "eq": "$capture.unchanged14"
         },
         {
           "path": "src/InformationRegisters/History/Ext/RecordSetModule.bsl",
           "kind": "sha256",
-          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+          "eq": "$capture.unchanged15"
         },
         {
           "path": "src/InformationRegisters/History/Forms/Auxiliary/Ext/Form/Module.bsl",
           "kind": "sha256",
-          "eq": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
+          "eq": "$capture.unchanged16"
         },
         {
           "path": "src/InformationRegisters/History/Forms/Auxiliary/Ext/Form.xml",
           "kind": "sha256",
-          "eq": "d8d62ceee315b36b28b578c6ce7b9a3bc52e7bb99b8fb8ba2522fec16f1086fb"
+          "eq": "$capture.unchanged17"
         },
         {
           "path": "src/InformationRegisters/History/Forms/Auxiliary.xml",
           "kind": "sha256",
-          "eq": "15fcd4a0ef6dcced5798c5937c94a2a9167b0aeda1904dde599741fbcd0b958e"
+          "eq": "$capture.unchanged18"
         },
         {
           "path": "src/InformationRegisters/History/Forms/List/Ext/Form/Module.bsl",
           "kind": "sha256",
-          "eq": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
+          "eq": "$capture.unchanged19"
         },
         {
           "path": "src/InformationRegisters/History/Forms/List/Ext/Form.xml",
           "kind": "sha256",
-          "eq": "bfe03b41fa24751543c40dfc588e8ca1171b6ead7d5ffb9f5da74f999ca2f332"
+          "eq": "$capture.unchanged20"
         },
         {
           "path": "src/InformationRegisters/History/Forms/List.xml",
           "kind": "sha256",
-          "eq": "fdaa8092546012983992eafa187582dcfa68bf797b66a9050d802f0a9072c2a3"
+          "eq": "$capture.unchanged21"
         },
         {
           "path": "src/InformationRegisters/History/Forms/Main/Ext/Form/Module.bsl",
           "kind": "sha256",
-          "eq": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
+          "eq": "$capture.unchanged22"
         },
         {
           "path": "src/InformationRegisters/History/Forms/Main/Ext/Form.xml",
           "kind": "sha256",
-          "eq": "d8d62ceee315b36b28b578c6ce7b9a3bc52e7bb99b8fb8ba2522fec16f1086fb"
+          "eq": "$capture.unchanged23"
         },
         {
           "path": "src/InformationRegisters/History/Forms/Main.xml",
           "kind": "sha256",
-          "eq": "162185e37c6ac0ac60b7b0b08263fbab9676f4882ccbe00e654039589187481f"
+          "eq": "$capture.unchanged24"
         },
         {
           "path": "src/Languages/Русский.xml",
           "kind": "sha256",
-          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+          "eq": "$capture.unchanged26"
         },
         {
           "path": "src/Catalogs/Items.xml",
@@ -1735,7 +1841,7 @@
         {
           "path": "src/Catalogs/Items.xml",
           "kind": "sha256",
-          "eq": "e538d48e7af910b9640dd7f3c33d05bdd4c1a7258be0f1e12ee06f0e51e8eb05"
+          "eq": "$capture.unchanged11"
         }
       ]
     },
@@ -1791,132 +1897,132 @@
         {
           "path": "src/Catalogs/Items/Ext/ObjectModule.bsl",
           "kind": "sha256",
-          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+          "eq": "$capture.unchanged1"
         },
         {
           "path": "src/Catalogs/Items/Forms/Auxiliary/Ext/Form/Module.bsl",
           "kind": "sha256",
-          "eq": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
+          "eq": "$capture.unchanged2"
         },
         {
           "path": "src/Catalogs/Items/Forms/Auxiliary/Ext/Form.xml",
           "kind": "sha256",
-          "eq": "c805079d51b56e80a5982ecbb6c2d1e9b0ae4af2c5f1ee20abe22bc1697789b3"
+          "eq": "$capture.unchanged3"
         },
         {
           "path": "src/Catalogs/Items/Forms/Auxiliary.xml",
           "kind": "sha256",
-          "eq": "3a653150eb222476979e4363ea5850d9ceba997768c6916247b947cc6eee2c07"
+          "eq": "$capture.unchanged4"
         },
         {
           "path": "src/Catalogs/Items/Forms/List/Ext/Form/Module.bsl",
           "kind": "sha256",
-          "eq": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
+          "eq": "$capture.unchanged5"
         },
         {
           "path": "src/Catalogs/Items/Forms/List/Ext/Form.xml",
           "kind": "sha256",
-          "eq": "41a626ef48da2b4a082401b7ed99dc13b7dc37e0cd307214f15e5656a2992f21"
+          "eq": "$capture.unchanged6"
         },
         {
           "path": "src/Catalogs/Items/Forms/List.xml",
           "kind": "sha256",
-          "eq": "1ec1b4b3d9e132b0b2bc3841aa7eac89fb4a584fdbf2309a66b9f73fa96f6136"
+          "eq": "$capture.unchanged7"
         },
         {
           "path": "src/Catalogs/Items/Forms/Main/Ext/Form/Module.bsl",
           "kind": "sha256",
-          "eq": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
+          "eq": "$capture.unchanged8"
         },
         {
           "path": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
           "kind": "sha256",
-          "eq": "c805079d51b56e80a5982ecbb6c2d1e9b0ae4af2c5f1ee20abe22bc1697789b3"
+          "eq": "$capture.unchanged9"
         },
         {
           "path": "src/Catalogs/Items/Forms/Main.xml",
           "kind": "sha256",
-          "eq": "51dcf39bc9fef785443eeabaeaf5b066ceca3c238c7bf455f4a626c5789474f4"
+          "eq": "$capture.unchanged10"
         },
         {
           "path": "src/Catalogs/Items.xml",
           "kind": "sha256",
-          "eq": "e538d48e7af910b9640dd7f3c33d05bdd4c1a7258be0f1e12ee06f0e51e8eb05"
+          "eq": "$capture.unchanged11"
         },
         {
           "path": "src/ConfigDumpInfo.xml",
           "kind": "sha256",
-          "eq": "438abe08db5c26c99431c04e60c9f5e02898ffd9ce464d37b53c777c4260272f"
+          "eq": "$capture.unchanged12"
         },
         {
           "path": "src/Configuration.xml",
           "kind": "sha256",
-          "eq": "b19297d2af3c378ebdcfbd4af8d3567e6cc1b8a2e7f74f04855f855bb8a824a7"
+          "eq": "$capture.unchanged13"
         },
         {
           "path": "src/Ext/ClientApplicationInterface.xml",
           "kind": "sha256",
-          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+          "eq": "$capture.unchanged14"
         },
         {
           "path": "src/InformationRegisters/History/Ext/RecordSetModule.bsl",
           "kind": "sha256",
-          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+          "eq": "$capture.unchanged15"
         },
         {
           "path": "src/InformationRegisters/History/Forms/Auxiliary/Ext/Form/Module.bsl",
           "kind": "sha256",
-          "eq": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
+          "eq": "$capture.unchanged16"
         },
         {
           "path": "src/InformationRegisters/History/Forms/Auxiliary/Ext/Form.xml",
           "kind": "sha256",
-          "eq": "d8d62ceee315b36b28b578c6ce7b9a3bc52e7bb99b8fb8ba2522fec16f1086fb"
+          "eq": "$capture.unchanged17"
         },
         {
           "path": "src/InformationRegisters/History/Forms/Auxiliary.xml",
           "kind": "sha256",
-          "eq": "15fcd4a0ef6dcced5798c5937c94a2a9167b0aeda1904dde599741fbcd0b958e"
+          "eq": "$capture.unchanged18"
         },
         {
           "path": "src/InformationRegisters/History/Forms/List/Ext/Form/Module.bsl",
           "kind": "sha256",
-          "eq": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
+          "eq": "$capture.unchanged19"
         },
         {
           "path": "src/InformationRegisters/History/Forms/List/Ext/Form.xml",
           "kind": "sha256",
-          "eq": "bfe03b41fa24751543c40dfc588e8ca1171b6ead7d5ffb9f5da74f999ca2f332"
+          "eq": "$capture.unchanged20"
         },
         {
           "path": "src/InformationRegisters/History/Forms/List.xml",
           "kind": "sha256",
-          "eq": "fdaa8092546012983992eafa187582dcfa68bf797b66a9050d802f0a9072c2a3"
+          "eq": "$capture.unchanged21"
         },
         {
           "path": "src/InformationRegisters/History/Forms/Main/Ext/Form/Module.bsl",
           "kind": "sha256",
-          "eq": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
+          "eq": "$capture.unchanged22"
         },
         {
           "path": "src/InformationRegisters/History/Forms/Main/Ext/Form.xml",
           "kind": "sha256",
-          "eq": "d8d62ceee315b36b28b578c6ce7b9a3bc52e7bb99b8fb8ba2522fec16f1086fb"
+          "eq": "$capture.unchanged23"
         },
         {
           "path": "src/InformationRegisters/History/Forms/Main.xml",
           "kind": "sha256",
-          "eq": "162185e37c6ac0ac60b7b0b08263fbab9676f4882ccbe00e654039589187481f"
+          "eq": "$capture.unchanged24"
         },
         {
           "path": "src/InformationRegisters/History.xml",
           "kind": "sha256",
-          "eq": "31c79ec34a415f935ef62f49e2cfe97a3467d8d23db539208af60d8d057d10ed"
+          "eq": "$capture.unchanged25"
         },
         {
           "path": "src/Languages/Русский.xml",
           "kind": "sha256",
-          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+          "eq": "$capture.unchanged26"
         }
       ]
     },
@@ -1942,132 +2048,132 @@
         {
           "path": "src/Catalogs/Items/Ext/ObjectModule.bsl",
           "kind": "sha256",
-          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+          "eq": "$capture.unchanged1"
         },
         {
           "path": "src/Catalogs/Items/Forms/Auxiliary/Ext/Form/Module.bsl",
           "kind": "sha256",
-          "eq": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
+          "eq": "$capture.unchanged2"
         },
         {
           "path": "src/Catalogs/Items/Forms/Auxiliary/Ext/Form.xml",
           "kind": "sha256",
-          "eq": "c805079d51b56e80a5982ecbb6c2d1e9b0ae4af2c5f1ee20abe22bc1697789b3"
+          "eq": "$capture.unchanged3"
         },
         {
           "path": "src/Catalogs/Items/Forms/Auxiliary.xml",
           "kind": "sha256",
-          "eq": "3a653150eb222476979e4363ea5850d9ceba997768c6916247b947cc6eee2c07"
+          "eq": "$capture.unchanged4"
         },
         {
           "path": "src/Catalogs/Items/Forms/List/Ext/Form/Module.bsl",
           "kind": "sha256",
-          "eq": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
+          "eq": "$capture.unchanged5"
         },
         {
           "path": "src/Catalogs/Items/Forms/List/Ext/Form.xml",
           "kind": "sha256",
-          "eq": "41a626ef48da2b4a082401b7ed99dc13b7dc37e0cd307214f15e5656a2992f21"
+          "eq": "$capture.unchanged6"
         },
         {
           "path": "src/Catalogs/Items/Forms/List.xml",
           "kind": "sha256",
-          "eq": "1ec1b4b3d9e132b0b2bc3841aa7eac89fb4a584fdbf2309a66b9f73fa96f6136"
+          "eq": "$capture.unchanged7"
         },
         {
           "path": "src/Catalogs/Items/Forms/Main/Ext/Form/Module.bsl",
           "kind": "sha256",
-          "eq": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
+          "eq": "$capture.unchanged8"
         },
         {
           "path": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
           "kind": "sha256",
-          "eq": "c805079d51b56e80a5982ecbb6c2d1e9b0ae4af2c5f1ee20abe22bc1697789b3"
+          "eq": "$capture.unchanged9"
         },
         {
           "path": "src/Catalogs/Items/Forms/Main.xml",
           "kind": "sha256",
-          "eq": "51dcf39bc9fef785443eeabaeaf5b066ceca3c238c7bf455f4a626c5789474f4"
+          "eq": "$capture.unchanged10"
         },
         {
           "path": "src/Catalogs/Items.xml",
           "kind": "sha256",
-          "eq": "e538d48e7af910b9640dd7f3c33d05bdd4c1a7258be0f1e12ee06f0e51e8eb05"
+          "eq": "$capture.unchanged11"
         },
         {
           "path": "src/ConfigDumpInfo.xml",
           "kind": "sha256",
-          "eq": "438abe08db5c26c99431c04e60c9f5e02898ffd9ce464d37b53c777c4260272f"
+          "eq": "$capture.unchanged12"
         },
         {
           "path": "src/Configuration.xml",
           "kind": "sha256",
-          "eq": "b19297d2af3c378ebdcfbd4af8d3567e6cc1b8a2e7f74f04855f855bb8a824a7"
+          "eq": "$capture.unchanged13"
         },
         {
           "path": "src/Ext/ClientApplicationInterface.xml",
           "kind": "sha256",
-          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+          "eq": "$capture.unchanged14"
         },
         {
           "path": "src/InformationRegisters/History/Ext/RecordSetModule.bsl",
           "kind": "sha256",
-          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+          "eq": "$capture.unchanged15"
         },
         {
           "path": "src/InformationRegisters/History/Forms/Auxiliary/Ext/Form/Module.bsl",
           "kind": "sha256",
-          "eq": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
+          "eq": "$capture.unchanged16"
         },
         {
           "path": "src/InformationRegisters/History/Forms/Auxiliary/Ext/Form.xml",
           "kind": "sha256",
-          "eq": "d8d62ceee315b36b28b578c6ce7b9a3bc52e7bb99b8fb8ba2522fec16f1086fb"
+          "eq": "$capture.unchanged17"
         },
         {
           "path": "src/InformationRegisters/History/Forms/Auxiliary.xml",
           "kind": "sha256",
-          "eq": "15fcd4a0ef6dcced5798c5937c94a2a9167b0aeda1904dde599741fbcd0b958e"
+          "eq": "$capture.unchanged18"
         },
         {
           "path": "src/InformationRegisters/History/Forms/List/Ext/Form/Module.bsl",
           "kind": "sha256",
-          "eq": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
+          "eq": "$capture.unchanged19"
         },
         {
           "path": "src/InformationRegisters/History/Forms/List/Ext/Form.xml",
           "kind": "sha256",
-          "eq": "bfe03b41fa24751543c40dfc588e8ca1171b6ead7d5ffb9f5da74f999ca2f332"
+          "eq": "$capture.unchanged20"
         },
         {
           "path": "src/InformationRegisters/History/Forms/List.xml",
           "kind": "sha256",
-          "eq": "fdaa8092546012983992eafa187582dcfa68bf797b66a9050d802f0a9072c2a3"
+          "eq": "$capture.unchanged21"
         },
         {
           "path": "src/InformationRegisters/History/Forms/Main/Ext/Form/Module.bsl",
           "kind": "sha256",
-          "eq": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
+          "eq": "$capture.unchanged22"
         },
         {
           "path": "src/InformationRegisters/History/Forms/Main/Ext/Form.xml",
           "kind": "sha256",
-          "eq": "d8d62ceee315b36b28b578c6ce7b9a3bc52e7bb99b8fb8ba2522fec16f1086fb"
+          "eq": "$capture.unchanged23"
         },
         {
           "path": "src/InformationRegisters/History/Forms/Main.xml",
           "kind": "sha256",
-          "eq": "162185e37c6ac0ac60b7b0b08263fbab9676f4882ccbe00e654039589187481f"
+          "eq": "$capture.unchanged24"
         },
         {
           "path": "src/InformationRegisters/History.xml",
           "kind": "sha256",
-          "eq": "31c79ec34a415f935ef62f49e2cfe97a3467d8d23db539208af60d8d057d10ed"
+          "eq": "$capture.unchanged25"
         },
         {
           "path": "src/Languages/Русский.xml",
           "kind": "sha256",
-          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+          "eq": "$capture.unchanged26"
         }
       ]
     },

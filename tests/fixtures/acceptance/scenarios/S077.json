@@ -11,7 +11,7 @@
             "op": "dimension.set",
             "args": {
               "values": {
-                "synonym": "Код субъекта"
+                "synonym": "ru = 'Код субъекта'"
               }
             }
           }

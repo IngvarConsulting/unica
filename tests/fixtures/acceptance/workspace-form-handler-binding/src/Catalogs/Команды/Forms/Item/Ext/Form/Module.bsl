@@ -1,0 +1,3 @@
+&AtClient
+Procedure SharedHandler()
+EndProcedure

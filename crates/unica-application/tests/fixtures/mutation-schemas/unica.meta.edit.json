@@ -1165,6 +1165,11 @@
                     "IncludeHelpInContents": {
                       "type": "boolean"
                     },
+                    "Key": {
+                      "maxLength": 128,
+                      "pattern": "^[^\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F\\uFFFE\\uFFFF]*$",
+                      "type": "string"
+                    },
                     "LevelCount": {
                       "maximum": 4294967295,
                       "minimum": 0,
@@ -1347,6 +1352,7 @@
                       "type": "string"
                     },
                     "Synonym": {
+                      "pattern": "^\\s*(?:[A-Za-z0-9_-]+\\s*=\\s*'(?:[^']|'')*'\\s*(?:;\\s*[A-Za-z0-9_-]+\\s*=\\s*'(?:[^']|'')*'\\s*)*;?\\s*)?$",
                       "type": "string"
                     },
                     "Type": {
@@ -2235,6 +2241,7 @@
                         "type": "boolean"
                       },
                       "synonym": {
+                        "pattern": "^\\s*(?:[A-Za-z0-9_-]+\\s*=\\s*'(?:[^']|'')*'\\s*(?:;\\s*[A-Za-z0-9_-]+\\s*=\\s*'(?:[^']|'')*'\\s*)*;?\\s*)?$",
                         "type": "string"
                       },
                       "templateType": {
@@ -2336,6 +2343,7 @@
                         "type": "boolean"
                       },
                       "synonym": {
+                        "pattern": "^\\s*(?:[A-Za-z0-9_-]+\\s*=\\s*'(?:[^']|'')*'\\s*(?:;\\s*[A-Za-z0-9_-]+\\s*=\\s*'(?:[^']|'')*'\\s*)*;?\\s*)?$",
                         "type": "string"
                       },
                       "templateType": {

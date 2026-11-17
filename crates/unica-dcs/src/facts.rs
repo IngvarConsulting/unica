@@ -49,7 +49,8 @@ pub struct DcsInfoField {
     pub data_path: String,
     /// The query column behind the field; `null` when the field declares none.
     pub field: Option<String>,
-    pub title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<serde_json::Value>,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -71,7 +72,8 @@ pub struct DcsInfoLink {
 pub struct DcsInfoCalculatedField {
     pub data_path: String,
     pub expression: Option<String>,
-    pub title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<serde_json::Value>,
     /// Which uses `useRestriction` bars, in schema order: `field`, `condition`,
     /// `group`, `order`. On a field the element is structured, not a flag, so a
     /// boolean cannot carry the answer the retired `calculated` report printed.
@@ -93,9 +95,14 @@ pub struct DcsInfoTotalField {
 #[serde(rename_all = "camelCase")]
 pub struct DcsInfoParameter {
     pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value_type: Option<&'static str>,
     #[serde(rename = "type")]
     pub type_name: Option<String>,
-    pub value: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value: Option<serde_json::Value>,
     pub expression: Option<String>,
     /// True when `useRestriction` hides the parameter from the user.
     pub restricted: bool,
@@ -112,7 +119,8 @@ pub struct DcsInfoParameter {
 /// variant as an empty shell, so this section is bound to `dcsset` throughout.
 pub struct DcsInfoVariant {
     pub name: String,
-    pub presentation: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub presentation: Option<serde_json::Value>,
     pub selection: Vec<String>,
     pub order: Vec<DcsInfoOrderItem>,
     /// How many filter items the variant declares.

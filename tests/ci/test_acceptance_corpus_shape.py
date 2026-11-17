@@ -58,9 +58,7 @@ class AcceptanceCorpusShapeTests(unittest.TestCase):
         fault = {s["id"] for s in select_profile(self.corpus, "fault-injection")["scenarios"]}
         self.assertFalse(fault & (source | delivery | agent))
         self.assertFalse(source & delivery or source & agent or delivery & agent)
-        runtime = {s["id"] for s in select_profile(self.corpus, "runtime-fault")["scenarios"]}
-        self.assertFalse(runtime & (source | delivery | agent | fault))
-        self.assertEqual(source | delivery | agent | fault | runtime, {s["id"] for s in self.corpus["scenarios"]})
+        self.assertEqual(source | delivery | agent | fault, {s["id"] for s in self.corpus["scenarios"]})
         # The closed S### block keeps its profiles; a per-file scenario
         # declares its own and is admitted by select_profile, so two added
         # scenarios never edit these sets.
@@ -75,7 +73,7 @@ class AcceptanceCorpusShapeTests(unittest.TestCase):
             workspace = scenario.get("workspace", self.corpus["workspace"])
             self.assertIn(
                 workspace,
-                SOURCE_WORKSPACES | {SYMBOL_WORKSPACE, DIAGNOSTICS_WORKSPACE, FORM_RUNTIME_WORKSPACE, PULL_VALIDATION_WORKSPACE},
+                SOURCE_WORKSPACES | {SYMBOL_WORKSPACE, DIAGNOSTICS_WORKSPACE, FORM_RUNTIME_WORKSPACE},
                 f"{scenario['id']}: a scenario runs on one of the registered fixture workspaces",
             )
             for index, step in enumerate(scenario["wire"]):

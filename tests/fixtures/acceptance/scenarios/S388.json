@@ -30,7 +30,7 @@
                 {
                   "name": "Comment",
                   "type": "String",
-                  "title": "Comment"
+                  "title": "en = 'Comment'"
                 }
               ]
             }
@@ -43,14 +43,14 @@
                 {
                   "name": "Header",
                   "type": "Group",
-                  "title": "Header"
+                  "title": "en = 'Header'"
                 },
                 {
                   "name": "CommentField",
                   "path": "Comment",
-                  "title": "Comment field",
-                  "tooltip": "Comment hint",
-                  "inputHint": "Type a comment"
+                  "title": "en = 'Comment field'",
+                  "tooltip": "en = 'Comment hint'",
+                  "inputHint": "en = 'Type a comment'"
                 }
               ]
             }
@@ -62,7 +62,7 @@
               "items": [
                 {
                   "name": "Refresh",
-                  "title": "Refresh"
+                  "title": "en = 'Refresh'"
                 }
               ]
             }
@@ -139,7 +139,7 @@
               "items": [
                 {
                   "dataPath": "Quantity",
-                  "title": "Quantity"
+                  "title": "en = 'Quantity'"
                 }
               ]
             }
@@ -149,7 +149,7 @@
             "args": {
               "at": "cf:Report.Sales.Template.SalesSchema.DataSet.SalesData.Field.Amount",
               "values": {
-                "title": "Total amount"
+                "title": "en = 'Total amount'"
               }
             }
           },
@@ -159,7 +159,7 @@
               "items": [
                 {
                   "name": "Period",
-                  "title": "Period"
+                  "title": "en = 'Period'"
                 }
               ]
             }
@@ -169,7 +169,7 @@
             "args": {
               "at": "cf:Report.Sales.Template.SalesSchema.Setting.Main",
               "values": {
-                "title": "Main variant"
+                "title": "en = 'Main variant'"
               }
             }
           }

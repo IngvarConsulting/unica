@@ -111,7 +111,11 @@ def audit(records):
                     or not str(document.get("applicableVersion", "")).startswith("8.3.27.")
                     or not document.get("text") or result.get("cursor")):
                 raise ValueError("event-data evidence needs full vendor pages of the selected platform line")
-            documents[document["documentId"]] = document
+            document_id = document["documentId"]
+            versioned_prefix = f'platform-syntax-help:{document["applicableVersion"]}:'
+            if document_id.startswith(versioned_prefix):
+                document_id = "platform-syntax-help:" + document_id.removeprefix(versioned_prefix)
+            documents[document_id] = document
     expected = {line.strip() for line in (SOURCE_FIXTURE / SOURCE_FILE).read_text().splitlines() if line.strip()}
     if not expected <= read_lines:
         raise ValueError("agent did not read the complete synthetic object module")

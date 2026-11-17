@@ -1,0 +1,2 @@
+# Preserve the bytes of the native platform export.
+src/** -text -whitespace

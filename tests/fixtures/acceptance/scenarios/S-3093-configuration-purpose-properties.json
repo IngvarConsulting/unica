@@ -1,0 +1,51 @@
+{
+  "id": "S-3093-configuration-purpose-properties",
+  "issue": 3093,
+  "area": "Свойства конфигурации",
+  "workspace": "tests/fixtures/acceptance/workspace-configuration-purpose",
+  "task": "Прочитать назначения использования, роли по умолчанию, мобильные функциональности и включение справки корня Configuration: порядок списков, логические ссылки и false сохраняются без изменения XML.",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Configuration"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/properties/usePurposes",
+          "eq": [
+            "MobilePlatformApplication",
+            "PlatformApplication"
+          ]
+        },
+        {
+          "pointer": "/data/props/properties/defaultRoles",
+          "eq": [
+            "main:Role.Operator",
+            "main:Role.Administrator"
+          ]
+        },
+        {
+          "pointer": "/data/props/properties/usedMobileApplicationFunctionalities",
+          "eq": [
+            {
+              "functionality": "Location",
+              "use": false
+            },
+            {
+              "functionality": "Biometrics",
+              "use": true
+            }
+          ]
+        },
+        {
+          "pointer": "/data/props/properties/includeHelpInContents",
+          "eq": false
+        }
+      ]
+    }
+  ]
+}

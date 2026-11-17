@@ -1,5 +1,5 @@
 use super::info_projection::{
-    direct_md_child, meta_info_property_value_is_valid, parsed_localized_meta_info_property_value,
+    direct_md_child, localized_node_as_nstr, meta_info_property_value_is_valid,
 };
 use super::validation_context::inspect_form_metadata_image_identity;
 use super::xml_model::MD_CLASSES_NS;
@@ -63,16 +63,7 @@ pub fn observe_form_property(property: roxmltree::Node<'_, '_>) -> Result<Option
     let name = property.tag_name().name();
     let value = match name {
         "Synonym" | "ExtendedPresentation" | "Explanation" => {
-            if !direct_text_is_formatting(property)
-                || !meta_info_property_value_is_valid(
-                    property,
-                    MetaInfoPropertyValueKind::LocalizedString,
-                )
-            {
-                return Err("malformed localized text".into());
-            }
-            serde_json::to_value(parsed_localized_meta_info_property_value(property))
-                .map_err(|error| error.to_string())?
+            return localized_node_as_nstr(property).map(|value| value.map(Value::String));
         }
         "UsePurposes" => {
             if property.attributes().len() != 0 || !direct_text_is_formatting(property) {
@@ -96,7 +87,15 @@ pub fn observe_form_property(property: roxmltree::Node<'_, '_>) -> Result<Option
             }
             json!(unica_xml_format::read::direct_text(property) == "true")
         }
-        "Name" | "Comment" | "FormType" => {
+        // `UseInInterfaceCompatibilityMode` exists from 8.5.1 (format 2.21);
+        // a borrowed form of 8.5.4 (format 2.22) names its actions on a
+        // missing configuration object and on an extension change error.
+        "Name"
+        | "Comment"
+        | "FormType"
+        | "UseInInterfaceCompatibilityMode"
+        | "ActionOnConfigurationObjectMissing"
+        | "ActionOnConfigurationExtensionChangeError" => {
             if !meta_info_property_value_is_valid(property, MetaInfoPropertyValueKind::String) {
                 return Err("value is not a scalar string".into());
             }
@@ -114,6 +113,45 @@ mod tests {
     use super::parse_form_metadata_properties;
     use serde_json::json;
     use unica_address::source_target::MetadataAddress;
+
+    /// A form of a later line reads its interface compatibility mode, without
+    /// a read limit (INV.SOURCE.PROFILE-CAPABILITIES).
+    #[test]
+    fn a_form_of_format_2_21_reads_its_interface_compatibility_mode() {
+        for descriptor in [
+            include_str!("../../../tests/fixtures/formats/platform_xml/2.21/all_kinds/src/Catalogs/Валюты/Forms/ФормаСписка.xml"),
+            include_str!("../../../tests/fixtures/formats/platform_xml/2.22/all_kinds/src/Catalogs/Валюты/Forms/ФормаСписка.xml"),
+        ] {
+            let target = MetadataAddress::parse_logical("Catalog.Валюты.Form.ФормаСписка").unwrap();
+            let (properties, limits) =
+                parse_form_metadata_properties(descriptor.as_bytes(), &target).unwrap();
+            assert_eq!(properties["UseInInterfaceCompatibilityMode"], json!("Any"));
+            assert!(limits.is_empty(), "{limits:?}");
+        }
+    }
+
+    /// A form borrowed into an extension of 8.5.4 reads its actions on a
+    /// missing configuration object and on an extension change error,
+    /// without a read limit.
+    /// rule: INV.SOURCE.PROFILE-CAPABILITIES
+    #[test]
+    fn a_borrowed_form_of_format_2_22_reads_its_actions() {
+        let descriptor = include_str!(
+            "../../../tests/fixtures/formats/platform_xml/2.22/cfe_borrow/extension-form-borrowed.xml"
+        );
+        let target = MetadataAddress::parse_logical("Catalog.Валюты.Form.ФормаЭлемента").unwrap();
+        let (properties, limits) =
+            parse_form_metadata_properties(descriptor.as_bytes(), &target).unwrap();
+        assert_eq!(
+            properties["ActionOnConfigurationObjectMissing"],
+            json!("Auto")
+        );
+        assert_eq!(
+            properties["ActionOnConfigurationExtensionChangeError"],
+            json!("Warning")
+        );
+        assert!(limits.is_empty(), "{limits:?}");
+    }
 
     /// rule: INV.SOURCE.INCOMPLETE-METADATA-READ
     #[test]

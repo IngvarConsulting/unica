@@ -17,13 +17,15 @@ use unica_address::address::QualifiedAddress;
 use unica_code_intelligence::completion::{CompletionMethod, PlatformMember};
 use unica_code_intelligence::symbols::SymbolRequestContext;
 use unica_diagnostics::model::DiagnosticProviderRegistry;
-use unica_execution_contract::invocation::SafeIdentityHash;
-use unica_lsp::{
-    AdmittedWorkspace, LspAnalysis, LspDiagnosticGap, LspDiagnostics, LspFinding, LspModuleReads,
-    LspSymbolAnswer, LspSymbolOperation, LspSymbolRequest, LspSymbols, LspWorkspaces,
-    ModuleSourceRead, SourceSetLayout,
+use unica_editor_analysis::{
+    AdmittedWorkspace, LspAnalysis, LspAnalysisProgress, LspDiagnosticGap, LspDiagnostics,
+    LspFinding, LspModuleReads, LspSymbolAnswer, LspSymbolOperation, LspSymbolRequest, LspSymbols,
+    LspWorkspaces, ModuleSourceRead, SourceSetLayout,
 };
-use unica_lsp::{LspCompletion, LspCompletionAnswer, LspCompletionRequest, ModuleDocument};
+use unica_editor_analysis::{
+    LspCompletion, LspCompletionAnswer, LspCompletionRequest, ModuleDocument,
+};
+use unica_execution_contract::invocation::SafeIdentityHash;
 use unica_lsp_contract::protocol::V5LspFailure;
 use unica_refusal::RefusalCode;
 use unica_work_control::cancellation::CancellationToken;
@@ -40,6 +42,9 @@ pub(super) struct ProductLspWorkspaces {
     platform: Arc<PlatformContexts>,
     /// The platform installation whose global context a workspace sees.
     installation: Arc<Installation>,
+    /// The working copy of each admitted folder: its editor sessions keep
+    /// the held live Designer agent of the working copy.
+    roots: std::sync::Mutex<std::collections::HashMap<std::path::PathBuf, std::path::PathBuf>>,
 }
 
 impl ProductLspWorkspaces {
@@ -54,7 +59,16 @@ impl ProductLspWorkspaces {
             installation: Arc::new(
                 crate::infrastructure::application_ports::platform_installation_root,
             ),
+            roots: Default::default(),
         }
+    }
+
+    fn root_of(&self, folder: &Path) -> Option<std::path::PathBuf> {
+        self.roots
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .get(folder)
+            .cloned()
     }
 
     /// A fixed installation, whose global context the test has loaded.
@@ -79,9 +93,39 @@ impl ProductLspWorkspaces {
 }
 
 impl LspWorkspaces for ProductLspWorkspaces {
+    /// An editor session does not start the live Designer agent; while the
+    /// working copy has one, Unica does not let go of its held agent for
+    /// idleness.
+    fn session_opened(&self, folder: &Path) {
+        if let Some(root) = self.root_of(folder) {
+            super::live_agent::live_agents().editor_session_opened(&root);
+        }
+    }
+
+    /// With the last editor session of the working copy, Unica lets go of its
+    /// held live Designer agent, apart from the editor's close.
+    fn session_closed(&self, folder: &Path) {
+        let Some(root) = self
+            .root_of(folder)
+            .and_then(|root| super::live_agent::live_agents().editor_session_closed(&root))
+        else {
+            return;
+        };
+        let _ = std::thread::Builder::new()
+            .name("unica-live-agent-release".to_string())
+            .spawn(move || {
+                super::live_agent::live_agents()
+                    .release(&super::runner::PinnedRunner::default(), &root);
+            });
+    }
+
     fn admit(&self, folder: &Path, deadline: Instant) -> Option<AdmittedWorkspace> {
         let admitted = admit_editor_folder(folder, &self.actors, deadline)?;
         let (actor, bindings, identity) = (admitted.actor, admitted.bindings, admitted.identity);
+        self.roots
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .insert(folder.to_path_buf(), actor.context().workspace_root.clone());
         let source_sets = bindings
             .iter()
             .map(|binding| {
@@ -378,6 +422,35 @@ impl LspDiagnostics for ProductDiagnostics {
                 gaps: vec![LspDiagnosticGap::AnalysisNotReady],
             }
         }
+    }
+
+    fn prepare(
+        &self,
+        source_set: &str,
+        progress: &dyn Fn(LspAnalysisProgress),
+        cancellation: &CancellationToken,
+    ) {
+        let Ok((actor, binding, artifacts)) = self.space.bound(source_set) else {
+            return;
+        };
+        let Some(profile) = bsl_profile_for_source(binding.source_profile()) else {
+            return;
+        };
+        let authority = LogicalViewReadAuthority::with_read_authority_and_registration_cache(
+            cancellation,
+            self.space.saved_read(binding),
+            profile,
+            ProviderDeadline::no_deadline(),
+            artifacts,
+        );
+        super::lsp_diagnostics::prepare(
+            self.registry.as_ref(),
+            &authority,
+            actor.context(),
+            source_set,
+            progress,
+            cancellation,
+        );
     }
 }
 

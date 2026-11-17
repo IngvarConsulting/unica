@@ -5,7 +5,10 @@
 //! paths: a page path is the key that matches the two languages.
 
 mod applied;
+pub mod article;
 mod cache;
+pub mod doc_comment;
+mod doc_field;
 mod model;
 mod page;
 
@@ -13,6 +16,12 @@ pub use applied::{
     AppliedFacet, AppliedMembers, AppliedMethod, AppliedProperty, AppliedType, AppliedTypes,
     NoAppliedTypes,
 };
+pub use article::{
+    Article, ArticleHeader, ArticleKind, ArticleLink, ArticleName, MemberList, Parameter,
+    ReturnValue, SyntaxVariant,
+};
+pub use doc_comment::{DocComment, DocParameter, DocReturn};
+pub use doc_field::{Field, UnparsedReason};
 
 pub use cache::{catalog_path, load_or_build, CatalogError, Containers, HelpPages};
 pub use model::{
@@ -26,7 +35,7 @@ use std::collections::{BTreeMap, BTreeSet};
 /// The version of the rules a catalog is built by. A change of what the
 /// catalog holds or how pages are read raises it, so no old catalog is
 /// served by new rules.
-pub const GENERATOR: u32 = 1;
+pub const GENERATOR: u32 = 2;
 
 /// The catalog of one installation from its help pages: Russian pages and
 /// English pages as `(path, html)`.

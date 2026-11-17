@@ -134,7 +134,9 @@ pub(crate) fn resolve_typed_metadata_object(
                 .with_metadata_path(metadata_path.clone()),
             )
         })?;
-    if descriptor.root_element().attribute("version") != Some(ACTIVE_FORMAT_PROFILE.export_format) {
+    if !unica_source_designer::format_profile::is_writable_root_version(
+        descriptor.root_element().attribute("version"),
+    ) {
         return Err(unica_metadata_designer::edit::typed_diagnostic(
             MetaDiagnosticCode::CapabilityUnavailable,
             format!(
@@ -198,6 +200,20 @@ pub(crate) fn prepare_typed_edit(
     context: &WorkspaceContext,
 ) -> Result<Box<dyn PreparedMetadataMutation>, unica_metadata::request::MetaFailure> {
     let target = request.metadata_path.clone();
+    if resolved.handle.source_set_kind() != unica_source_contract::SourceSetKind::Configuration
+        && request.operations.iter().any(|operation| {
+            matches!(operation, unica_metadata::MetaEditOperation::Update { elements, .. }
+                if elements.iter().any(|element| element.tool_tip.is_some()))
+        })
+    {
+        return Err(unica_metadata_designer::edit::typed_diagnostic(
+            MetaDiagnosticCode::InvalidArguments,
+            "toolTip requires a catalog tabular-section attribute in an ordinary configuration",
+            Some("toolTip"),
+        )
+        .with_metadata_path(target)
+        .into());
+    }
     let diagnostics = Vec::new();
     match evaluate_resolved_support_guard(
         &resolved.descriptor_path,
@@ -971,6 +987,81 @@ pub(crate) mod tests {
         .is_err());
     }
 
+    /// #2163: `props.set` takes the synonym as one NStr string, the whole
+    /// value: the element then holds exactly the listed languages; text
+    /// without a language code is refused.
+    #[test]
+    fn synonym_takes_the_whole_value_in_nstr_form() {
+        use unica_metadata::MetadataKind::Catalog;
+        let (mut xml, _) =
+            unica_metadata_designer::template_catalog::minimal_metadata_xml_for_tests(
+                Catalog, "Evidence",
+            )
+            .unwrap();
+        let set = |xml: &mut String, value: &str| {
+            let changes = unica_metadata::request::parse_property_changes(
+                serde_json::json!({ "Synonym": value }).as_object().unwrap(),
+                Catalog,
+            )
+            .unwrap();
+            apply_typed_operations(xml, &[MetaEditOperation::SetProperties { values: changes }])
+                .unwrap();
+        };
+        let synonym = |xml: &str| {
+            let document = roxmltree::Document::parse(xml.trim_start_matches('\u{feff}')).unwrap();
+            let properties = document
+                .descendants()
+                .find(|node| node.has_tag_name("Properties"))
+                .unwrap();
+            let synonym = properties
+                .children()
+                .find(|node| node.has_tag_name("Synonym"))
+                .unwrap();
+            synonym
+                .descendants()
+                .filter(|node| node.tag_name().name() == "item")
+                .map(|item| {
+                    let text = |name: &str| {
+                        item.children()
+                            .find(|node| node.tag_name().name() == name)
+                            .and_then(|node| node.text())
+                            .unwrap_or_default()
+                            .to_string()
+                    };
+                    (text("lang"), text("content"))
+                })
+                .collect::<Vec<_>>()
+        };
+        set(&mut xml, "ru = 'Товары ''склада'''; en = 'Goods'");
+        assert_eq!(
+            synonym(&xml),
+            [
+                ("ru".into(), "Товары 'склада'".into()),
+                ("en".into(), "Goods".into())
+            ]
+        );
+        let before = xml.clone();
+        set(&mut xml, "ru = 'Товары ''склада'''; en = 'Goods'");
+        assert_eq!(xml, before, "the value read back is written without change");
+        set(&mut xml, "en = 'Items'");
+        assert_eq!(synonym(&xml), [("en".into(), "Items".into())]);
+        set(&mut xml, "");
+        assert!(synonym(&xml).is_empty());
+        for value in [
+            serde_json::json!("Товары"),
+            serde_json::json!("ru = 'А'; ru = 'Б'"),
+            serde_json::json!("ru = 'А"),
+            serde_json::json!(1),
+        ] {
+            let error = unica_metadata::request::parse_property_changes(
+                serde_json::json!({ "Synonym": value }).as_object().unwrap(),
+                Catalog,
+            )
+            .unwrap_err();
+            assert_eq!(error.field.as_deref(), Some("values.Synonym"), "{value}");
+        }
+    }
+
     #[test]
     fn typed_set_properties_and_relations_apply_without_legacy_dsl() {
         let mut xml = object_xml(
@@ -1440,7 +1531,9 @@ pub(crate) mod tests {
                 });
 
                 let expected_xml = match value {
-                    MetaPropertyValue::Type(_) => unreachable!("scalar property test matrix"),
+                    MetaPropertyValue::Type(_) | MetaPropertyValue::Localized(_) => {
+                        unreachable!("scalar property test matrix")
+                    }
                     MetaPropertyValue::String(value) => {
                         format!(
                             "<{xml_tag}>{}</{xml_tag}>",
@@ -1866,7 +1959,10 @@ pub(crate) mod tests {
                     MetaElementInput::named("СуммаЗакупокЗа30Дней"),
                     MetaElementInput {
                         name: "СуммаПродажЗа30Дней".into(),
-                        synonym: Some("Сумма продаж за месяц".into()),
+                        synonym: Some(vec![unica_metadata::LocalizedItem::new(
+                            "ru",
+                            "Сумма продаж за месяц",
+                        )]),
                         ..MetaElementInput::default()
                     },
                 ],
@@ -3186,7 +3282,10 @@ pub(crate) mod tests {
                 None,
                 vec![MetaElementUpdateInput {
                     name: "Missing".into(),
-                    synonym: Some("must not upsert".into()),
+                    synonym: Some(vec![unica_metadata::LocalizedItem::new(
+                        "ru",
+                        "must not upsert",
+                    )]),
                     ..MetaElementUpdateInput::default()
                 }],
             )
@@ -5127,7 +5226,7 @@ pub(crate) mod tests {
         std::fs::create_dir_all(form_content.parent().unwrap()).unwrap();
         std::fs::write(
             &form_content,
-            minimal_typed_form_content("Document", "Order").as_bytes(),
+            minimal_typed_form_content("Document", "Order", "2.20").as_bytes(),
         )
         .unwrap();
         let child_before = std::fs::read(&child_descriptor).unwrap();
