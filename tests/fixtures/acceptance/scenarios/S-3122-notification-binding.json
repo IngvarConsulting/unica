@@ -1,0 +1,413 @@
+{
+  "id": "S-3122-notification-binding",
+  "issue": 3122,
+  "area": "Код BSL",
+  "task": "Читать места создания оповещений, обходить цепочку по реальным адресам и сохранять снимок курсора при записи кода.",
+  "workspace": "tests/fixtures/acceptance/workspace-notification-binding",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Команды.Form.ФормаСписка.Module.Form.Method.Step"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches",
+          "contains": {
+            "at": "main:Catalog.Команды.Form.ФормаСписка.Module.Form.Method.Step.Binding"
+          }
+        },
+        {
+          "pointer": "/data/branches",
+          "contains": {
+            "at": "main:Catalog.Команды.Form.ФормаСписка.Module.Form.Method.Step.Caller"
+          }
+        },
+        {
+          "pointer": "/data/props/handles",
+          "absent": true
+        },
+        {
+          "pointer": "/data/delivery",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Команды.Form.ФормаСписка.Module.Form.Method.Step.Binding"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:Catalog.Команды.Form.ФормаСписка.Module.Form.Method.Start"
+        },
+        {
+          "pointer": "/data/items/0/binding",
+          "eq": "notifyDescription"
+        },
+        {
+          "pointer": "/data/items/0/range/start",
+          "eq": {
+            "line": 3,
+            "character": 15
+          }
+        },
+        {
+          "pointer": "/data/items/0/range/end",
+          "eq": {
+            "line": 3,
+            "character": 56
+          }
+        },
+        {
+          "pointer": "/data/items/1/range/start",
+          "eq": {
+            "line": 3,
+            "character": 58
+          }
+        },
+        {
+          "pointer": "/data/items/2/range/start",
+          "eq": {
+            "line": 4,
+            "character": 15
+          }
+        },
+        {
+          "pointer": "/data/items/3",
+          "absent": true
+        },
+        {
+          "pointer": "/data/limits/0",
+          "contains": "dynamic name or receiver"
+        }
+      ],
+      "captures": {
+        "origin": {
+          "pointer": "/data/items/0/at"
+        },
+        "oldRev": {
+          "pointer": "/data/items/0/rev"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.origin"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:Catalog.Команды.Form.ФормаСписка.Module.Form.Method.Start"
+        },
+        {
+          "pointer": "/data/branches",
+          "contains": {
+            "at": "main:Catalog.Команды.Form.ФормаСписка.Module.Form.Method.Start.Callee"
+          }
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Команды.Form.ФормаСписка.Module.Form.Method.Start.Body"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/rev",
+          "eq": "$capture.oldRev"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Команды.Form.ФормаСписка.Module.Form.Method.Done.Binding"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:Catalog.Команды.Form.ФормаСписка.Module.Form.Method.Step"
+        },
+        {
+          "pointer": "/data/items/1",
+          "absent": true
+        }
+      ],
+      "captures": {
+        "previousHandler": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.previousHandler"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:Catalog.Команды.Form.ФормаСписка.Module.Form.Method.Step"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Команды.Form.ФормаСписка.Module.Form.Method.Duplicate.Binding"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": []
+        },
+        {
+          "pointer": "/data/limits/0",
+          "contains": "unique handler"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "ext:Catalog.Команды.Form.ФормаСписка.Module.Form.Method.Step.Binding"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "ext:Catalog.Команды.Form.ФормаСписка.Module.Form.Method.Start"
+        },
+        {
+          "pointer": "/data/items/1",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule.Notifications.Method.Finish"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches",
+          "contains": {
+            "at": "main:CommonModule.Notifications.Method.Finish.Binding"
+          }
+        },
+        {
+          "pointer": "/data/delivery",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule.Notifications.Method.Finish.Binding"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/notificationIndex",
+          "eq": "indexing"
+        },
+        {
+          "pointer": "/data/items",
+          "eq": []
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Команды.Form.ФормаСписка.Module.Form.Method.Step.Binding",
+        "limit": 1
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:Catalog.Команды.Form.ФормаСписка.Module.Form.Method.Start"
+        },
+        {
+          "pointer": "/data/items/0/range/start",
+          "eq": {
+            "line": 3,
+            "character": 15
+          }
+        }
+      ],
+      "captures": {
+        "savedPage": {
+          "pointer": "/cursor"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Команды.Form.ФормаСписка.Module.Form.Method.Start.Body",
+        "ops": [
+          {
+            "op": "code.replace",
+            "args": {
+              "text": "&AtClient\nProcedure Start()\n    Step();\n    Show(\"😀\", New NotifyDescription(\"Step\", ThisObject));\n    Callback = Новый ОписаниеОповещения(\"Step\", ЭтотОбъект);\n    Computed = New NotifyDescription(GetName(), ThisObject);\n    Dynamic = New NotifyDescription(\"Step\", GetReceiver());\n    Duplicated = New NotifyDescription(\"Duplicate\", ThisObject);\n    Shared = New NotifyDescription(\"Finish\", Notifications);\n#If Server Then\n    Unreachable = New NotifyDescription(\"Finish\", Notifications);\n    Unreachable = New NotifyDescription(\"Step\", ThisObject);\n#EndIf\nEndProcedure",
+              "ifRev": "$capture.oldRev"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "captures": {
+        "token": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.token"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Команды.Form.ФормаСписка.Module.Form.Method.Step.Binding"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:Catalog.Команды.Form.ФормаСписка.Module.Form.Method.Start"
+        },
+        {
+          "pointer": "/data/items/0/range/start",
+          "eq": {
+            "line": 3,
+            "character": 15
+          }
+        },
+        {
+          "pointer": "/data/items/1/range/start",
+          "eq": {
+            "line": 4,
+            "character": 15
+          }
+        },
+        {
+          "pointer": "/data/items/2",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/0/rev",
+          "notEq": "$capture.oldRev"
+        }
+      ],
+      "captures": {
+        "newRev": {
+          "pointer": "/data/items/0/rev"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Команды.Form.ФормаСписка.Module.Form.Method.Start.Body"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/rev",
+          "eq": "$capture.newRev"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Команды.Form.ФормаСписка.Module.Form.Method.Step.Binding",
+        "limit": 1,
+        "cursor": "$capture.savedPage"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:Catalog.Команды.Form.ФормаСписка.Module.Form.Method.Start"
+        },
+        {
+          "pointer": "/data/items/0/range/start",
+          "eq": {
+            "line": 3,
+            "character": 58
+          }
+        },
+        {
+          "pointer": "/data/items/0/rev",
+          "eq": "$capture.oldRev"
+        }
+      ]
+    }
+  ]
+}

@@ -239,7 +239,8 @@ fn module_projection_suffix_is_valid(suffix: &[AddressSegment], role: ModuleRole
             if method.kind() == NodeKind::Method
                 && method.name().is_some()
                 && (projection.kind() == NodeKind::Body
-                    || (projection.kind() == NodeKind::Binding && role == ModuleRole::Form))
+                    || (projection.kind() == NodeKind::Binding
+                        && matches!(role, ModuleRole::Form | ModuleRole::Common)))
                 && projection.name().is_none() =>
         {
             true
@@ -366,7 +367,6 @@ mod tests {
             "main:CommonForm.Main.Module.Form.Binding",
             "main:CommonForm.Main.Module.Form.Method.Handler.Binding.Name",
             "main:CommonForm.Main.Module.Form.Method.Handler.Binding.Event.OnOpen",
-            "main:CommonModule.Main.Method.Handler.Binding",
             "main:Catalog.Main.Module.Object.Method.Handler.Binding",
         ] {
             let module = QualifiedAddress::parse(at)
@@ -375,6 +375,17 @@ mod tests {
                 .and_then(module_prefix_route);
             assert_eq!(module, None, "{at}");
         }
+    }
+
+    /// rule: CTR.SOURCE.QUALIFIED-LOGICAL-ADDRESS
+    #[test]
+    fn binding_is_addressable_on_a_common_module_method() {
+        let address =
+            QualifiedAddress::parse("main:CommonModule.Main.Method.Handler.Binding").unwrap();
+        assert_eq!(
+            module_prefix_route(&address).unwrap().role(),
+            ModuleRole::Common
+        );
     }
 
     /// Очередь держит один прямой модуль — менеджера. Модуля объекта у неё

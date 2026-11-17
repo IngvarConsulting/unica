@@ -1,6 +1,7 @@
 //! Owned syntax facts for the existing BSL readers and planners.
 
 mod editor;
+mod notify;
 mod outline;
 pub mod symbols;
 
@@ -13,6 +14,7 @@ pub use editor::{
     CallSite, ClassifiedToken, CompletionSite, EditorParameter, EditorSymbol, EditorSymbolKind,
     FoldBlock, FoldKind, TokenClass, VisibleNames,
 };
+pub use notify::NotifyDescriptionSite;
 pub use outline::{
     bsl_method_parameters, exact_bsl_method_facts, exported_bsl_procedure_matches,
     first_exported_bsl_procedure, misplaced_variable_declarations, outline_regions,

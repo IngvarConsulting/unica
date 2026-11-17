@@ -1544,6 +1544,7 @@ async function view(at, cursor, fresh) {
   cache.set(key, record);
   try {
     const answer = await pending;
+    if (notificationIndexing(answer.result?.data) && cache.get(key) === record) cache.delete(key);
     setTimeout(() => { record.settledBefore = true; });
     return answer;
   } catch (error) { cache.delete(key); throw error; }
@@ -1592,12 +1593,18 @@ function makeRow(label, at, meta, count) {
   if (at !== undefined) {
     wrap.dataset.at = at;
     let loading;
+    let retry = false;
     const setOpen = async (open) => {
       if (!tog.textContent) return;
+      if (open && retry) {
+        kids.replaceChildren();
+        loading = undefined;
+        retry = false;
+      }
       loading ??= fill(kids, at).catch(error => {
         kids.insertAdjacentHTML("beforeend", `<div class="err">ошибка страницы: ${esc(error.message)}</div>`);
       });
-      await loading;
+      retry = (await loading) === true;
       if (!tog.textContent) return;
       kids.hidden = !open;
       tog.textContent = open ? "▾" : "▸";
@@ -1629,6 +1636,19 @@ function formHandlerTarget(data) {
       entry.state === "implemented" && typeof entry.implementationAt === "string") {
     return entry.implementationAt;
   }
+}
+
+function notificationIndexing(data) {
+  return data?.kind === "Binding" && data.props?.notificationIndex === "indexing";
+}
+
+function bindingBadge(item) {
+  if (item.state === "invalid") return ' <span class="badge">недопустимая привязка</span>';
+  if (item.binding !== "notifyDescription") return "";
+  const {line, character} = item.range?.start || {};
+  const position = Number.isSafeInteger(line) && line >= 0 &&
+    Number.isSafeInteger(character) && character >= 0 ? ` · ${line + 1}:${character + 1}` : "";
+  return ` <span class="badge">ОписаниеОповещения${position}</span>`;
 }
 
 async function fill(container, at, cursor) {
@@ -1674,8 +1694,7 @@ async function fill(container, at, cursor) {
       const title = item.title && item.title !== item.at && item.title !== shortLabel(item.at, parent)
         ? ` <span class="cnt">${esc(item.title)}</span>` : "";
       const size = count === undefined ? "" : ` <span class="cnt">${count}</span>`;
-      const state = data.kind === "Binding" && item.state === "invalid"
-        ? ' <span class="badge">недопустимая привязка</span>' : "";
+      const state = data.kind === "Binding" ? bindingBadge(item) : "";
       container.appendChild(makeRow(shortLabel(item.at, parent), item.at, meta + title + size + state, count));
     } else {
       // Строка данных без адреса (например, строка исходника): адреса у неё нет.
@@ -1691,6 +1710,13 @@ async function fill(container, at, cursor) {
     let loadingPage;
     more.onclick = () => loadingPage ??= fill(container, at, result.cursor).finally(() => more.remove());
     container.appendChild(more);
+  }
+  if (notificationIndexing(data)) {
+    const note = document.createElement("div");
+    note.className = "cnt";
+    note.textContent = "Индекс имён строится. Раскройте ветвь снова.";
+    container.appendChild(note);
+    return true;
   }
   if (!container.childElementCount) markLeaf(container.previousElementSibling);
 }
@@ -1777,6 +1803,14 @@ function renderNode(at, answer) {
     for (const b of data.branches) html += `<tr><td><a href="#" data-at="${esc(b.at)}" class="at">${esc(b.at)}</a></td><td>${esc(b.count ?? "")}</td></tr>`;
     html += `</table></section>`;
   }
+  if (data.kind === "Binding" && data.items?.length) {
+    html += '<section><h3>Привязки</h3><table>';
+    for (const item of data.items) {
+      if (typeof item?.at !== "string") continue;
+      html += `<tr><td><a href="#" data-at="${esc(item.at)}" class="at">${esc(item.at)}</a></td><td>${bindingBadge(item)}</td></tr>`;
+    }
+    html += "</table></section>";
+  }
   if ("can" in data) {
     html += `<section><h3>can (${data.can.length})</h3>`;
     if (!data.can.length) {
@@ -1825,7 +1859,7 @@ async function select(at, row, fresh) {
     renderNode(at, answer);
     const result = answer.result || {};
     const data = result.data || {};
-    if (result.ok && !result.cursor && !formHandlerTarget(data) &&
+    if (result.ok && !result.cursor && !formHandlerTarget(data) && !notificationIndexing(data) &&
         !["branches", "items", "sourceSets"].some((key) => (data[key] || []).length)) markLeaf(row);
   }
   catch (error) {
