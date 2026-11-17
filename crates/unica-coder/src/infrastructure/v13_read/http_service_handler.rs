@@ -13,16 +13,29 @@ impl LogicalViewReadAuthority<'_> {
             if owner.kind() == NodeKind::HttpService && owner.name().is_some()
                 && template.kind() == NodeKind::UrlTemplate && operation.kind() == NodeKind::Method);
         let declarations = if relevant {
-            payload
+            let templates = payload
                 .pointer("/details/details/urlTemplates")
                 .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
+                .map(Vec::as_slice)
+                .unwrap_or_default();
+            let mut template_names = BTreeSet::new();
+            let mut ambiguous_templates = BTreeSet::new();
+            for template in templates {
+                if let Some(name) = template.get("name").and_then(Value::as_str) {
+                    let folded = name.to_lowercase();
+                    if !template_names.insert(folded.clone()) {
+                        ambiguous_templates.insert(folded);
+                    }
+                }
+            }
+            templates
+                .iter()
                 .flat_map(|template| {
                     let template_name = template
                         .get("name")
                         .and_then(Value::as_str)
                         .unwrap_or_default();
+                    let ambiguous = ambiguous_templates.contains(&template_name.to_lowercase());
                     template
                         .get("methods")
                         .and_then(Value::as_array)
@@ -31,7 +44,7 @@ impl LogicalViewReadAuthority<'_> {
                         .filter_map(move |method| {
                             Some((
                                 format!("{}.{}", template_name, method.get("name")?.as_str()?),
-                                method.get("handler")?.as_str()?.to_owned(),
+                                (!ambiguous).then_some(method.get("handler")?.as_str()?.to_owned()),
                             ))
                         })
                 })
@@ -41,7 +54,7 @@ impl LogicalViewReadAuthority<'_> {
                         declarations
                             .entry(name.to_lowercase())
                             .and_modify(|value| *value = None)
-                            .or_insert(Some(procedure));
+                            .or_insert(procedure);
                         declarations
                     },
                 )

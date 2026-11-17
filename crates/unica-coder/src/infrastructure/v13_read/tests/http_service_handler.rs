@@ -103,6 +103,54 @@ fn http_service_handler_refuses_ambiguous_raw_method_names() {
 }
 
 #[test]
+fn http_service_handler_refuses_ambiguous_raw_template_names() {
+    for second_name in ["Metrics", "metrics"] {
+        let fixture = RealReaderFixture::new();
+        let path = fixture.source.join("HTTPServices/ExternalAPI.xml");
+        let xml = std::fs::read_to_string(&path)
+            .unwrap()
+            .replace("MetricsGet", "First");
+        let start = xml.find("<URLTemplate ").unwrap();
+        let end = xml[start..].find("</URLTemplate>").unwrap() + start + "</URLTemplate>".len();
+        let second = xml[start..end]
+            .replace(
+                "<Name>Metrics</Name>",
+                &format!("<Name>{second_name}</Name>"),
+            )
+            .replace("<Name>Get</Name>", "<Name>Post</Name>")
+            .replace("First", "Second")
+            .replace("555555555556", "555555555558")
+            .replace("555555555557", "555555555559");
+        write(&path, &format!("{}{}{}", &xml[..end], second, &xml[end..]));
+        write(
+            &fixture
+                .source
+                .join("HTTPServices/ExternalAPI/Ext/Module.bsl"),
+            "Procedure First() Export\nEndProcedure\nProcedure Second() Export\nEndProcedure\n",
+        );
+        let service = fixture.view_service();
+        for at in [
+            "main:HTTPService.ExternalAPI.URLTemplate.Metrics.Method",
+            "main:HTTPService.ExternalAPI.URLTemplate.Metrics.Method.Get",
+        ] {
+            let result = service.view(ViewRequest::new(at).unwrap());
+            assert!(result.ok, "{result:?}");
+            let data = result.data.unwrap();
+            let rows = data
+                .get("items")
+                .and_then(|items| items.as_array())
+                .cloned()
+                .unwrap_or_else(|| vec![data]);
+            assert!(!rows.is_empty());
+            for row in rows {
+                assert!(row["props"]["implementationAt"].is_null(), "{row}");
+                assert!(!row["limits"].as_array().unwrap().is_empty());
+            }
+        }
+    }
+}
+
+#[test]
 fn http_routes_sharing_a_handler_open_the_same_method() {
     let fixture = RealReaderFixture::new();
     let path = fixture.source.join("HTTPServices/ExternalAPI.xml");
