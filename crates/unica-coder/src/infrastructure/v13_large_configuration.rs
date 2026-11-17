@@ -31,6 +31,7 @@ use xml::reader::{ParserConfig, XmlEvent};
 // problem: неизвестно
 // on-reach: порция сбрасывается, чтение продолжается следующей
 const REGISTRATION_RUN_BYTES: usize = 1024 * 1024;
+const DATA_CORE_NS: &str = "http://v8.1c.ru/8.1/data/core";
 const MD_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
 
 /// Kind, name and the position in `ChildObjects`; a repeated key keeps the
@@ -911,6 +912,7 @@ pub(super) fn read_configuration_root(
         version,
         total_objects,
         registrations,
+        property_limits,
         ..
     } = state;
     let mut counts = BTreeMap::<String, usize>::new();
@@ -959,7 +961,7 @@ pub(super) fn read_configuration_root(
             .collect::<serde_json::Map<_, _>>();
         (!parts.is_empty()).then_some(Value::Object(parts))
     };
-    let payload = json!({
+    let mut payload = json!({
         "format": version,
         "name": property("Name").unwrap_or_default(),
         "synonym": optional("Synonym"),
@@ -1008,6 +1010,16 @@ pub(super) fn read_configuration_root(
         "interface": interface,
         "panels": panels,
     });
+    if !property_limits.is_empty() {
+        payload["propertyLimits"] = json!(property_limits);
+    }
+    for (tag, key) in unica_metadata::descriptor_operations::CONFIGURATION_LOCALIZED_PROPERTIES {
+        if !matches!(*key, "synonym" | "caption" | "shortCaption") {
+            if let Some(value) = optional(tag) {
+                payload["properties"][key] = json!(value);
+            }
+        }
+    }
     Ok(StreamedConfigurationRoot { payload, counts })
 }
 
@@ -1272,6 +1284,7 @@ struct RootState {
     saw_first_child_objects: bool,
     version: String,
     properties: BTreeMap<String, String>,
+    property_limits: Vec<String>,
     purpose: unica_metadata::configuration::CfPurposeProperties,
     total_objects: usize,
     registrations: RegistrationSorter,
@@ -1342,13 +1355,11 @@ impl RootState {
                 role = FrameRole::ChildObjects { primary };
             }
             Some(FrameRole::Properties) if md => {
-                if let Some(property) = localized_root_property(&name.local_name)
-                    .filter(|property| !self.properties.contains_key(*property))
-                {
+                if let Some(property) = localized_root_property(&name.local_name) {
                     role = FrameRole::Synonym {
                         property,
-                        ru: None,
-                        fallback: None,
+                        values: Vec::new(),
+                        malformed: !attributes.is_empty() || self.properties.contains_key(property),
                     };
                 } else if is_root_property(&name.local_name)
                     && !self.properties.contains_key(&name.local_name)
@@ -1400,20 +1411,48 @@ impl RootState {
                 *name_seen = true;
                 role = FrameRole::RegistrationName;
             }
-            Some(FrameRole::Synonym { .. }) => {
+            Some(FrameRole::Synonym { .. })
+                if name.namespace.as_deref() == Some(DATA_CORE_NS) && name.local_name == "item" =>
+            {
                 role = FrameRole::SynonymItem {
-                    lang: String::new(),
-                    last_content: String::new(),
-                    first_content: None,
-                }
+                    lang: None,
+                    content: None,
+                    malformed: !attributes.is_empty(),
+                };
             }
-            Some(FrameRole::SynonymItem { .. }) if name.local_name == "lang" => {
+            Some(FrameRole::SynonymItem { .. })
+                if name.namespace.as_deref() == Some(DATA_CORE_NS)
+                    && attributes.is_empty()
+                    && name.local_name == "lang" =>
+            {
                 role = FrameRole::SynonymLang
             }
-            Some(FrameRole::SynonymItem { .. }) if name.local_name == "content" => {
+            Some(FrameRole::SynonymItem { .. })
+                if name.namespace.as_deref() == Some(DATA_CORE_NS)
+                    && attributes.is_empty()
+                    && name.local_name == "content" =>
+            {
                 role = FrameRole::SynonymContent
             }
             _ => {}
+        }
+        if matches!(role, FrameRole::Other) {
+            if let Some(parent) = self.stack.last_mut() {
+                match &mut parent.role {
+                    FrameRole::Synonym { malformed, .. }
+                    | FrameRole::SynonymItem { malformed, .. } => *malformed = true,
+                    FrameRole::SynonymLang | FrameRole::SynonymContent => {
+                        if let Some(Frame {
+                            role: FrameRole::SynonymItem { malformed, .. },
+                            ..
+                        }) = self.stack.iter_mut().rev().nth(1)
+                        {
+                            *malformed = true;
+                        }
+                    }
+                    _ => {}
+                }
+            }
         }
         if matches!(role, FrameRole::Other) {
             self.ignored_depth = 1;
@@ -1432,6 +1471,13 @@ impl RootState {
             return;
         }
         if let Some(frame) = self.stack.last_mut() {
+            if !text.trim().is_empty() {
+                match &mut frame.role {
+                    FrameRole::Synonym { malformed, .. }
+                    | FrameRole::SynonymItem { malformed, .. } => *malformed = true,
+                    _ => {}
+                }
+            }
             if !frame.first_text_closed
                 && matches!(
                     &frame.role,
@@ -1453,7 +1499,12 @@ impl RootState {
     fn text_boundary(&mut self) {
         if self.ignored_depth == 0 {
             if let Some(frame) = self.stack.last_mut() {
-                frame.first_text_closed = true;
+                if !matches!(
+                    frame.role,
+                    FrameRole::SynonymLang | FrameRole::SynonymContent
+                ) {
+                    frame.first_text_closed = true;
+                }
             }
         }
     }
@@ -1478,56 +1529,66 @@ impl RootState {
             }
             FrameRole::Synonym {
                 property,
-                ru,
-                fallback,
+                values,
+                malformed,
             } => {
-                self.properties
-                    .entry(property.to_string())
-                    .or_insert(ru.or(fallback).unwrap_or_default());
+                match (!malformed)
+                    .then(|| unica_metadata::format_nstr(&values))
+                    .flatten()
+                {
+                    Some(value) => {
+                        self.properties.insert(property.to_string(), value);
+                    }
+                    None => {
+                        self.properties.insert(property.to_string(), String::new());
+                        self.property_limits.push(format!(
+                            "Configuration properties.{property} is unreadable as NStr"
+                        ));
+                    }
+                }
             }
             FrameRole::SynonymItem {
                 lang,
-                last_content,
-                first_content,
+                content,
+                malformed,
             } => {
                 if let Some(Frame {
-                    role: FrameRole::Synonym { ru, fallback, .. },
-                    ..
-                }) = self.stack.last_mut()
-                {
-                    if ru.is_none() && lang == "ru" && !last_content.is_empty() {
-                        *ru = Some(last_content);
-                    }
-                    if fallback.is_none() {
-                        *fallback = first_content;
-                    }
-                }
-            }
-            FrameRole::SynonymLang => {
-                if let Some(Frame {
-                    role: FrameRole::SynonymItem { lang, .. },
-                    ..
-                }) = self.stack.last_mut()
-                {
-                    *lang = frame.first_text.unwrap_or_default();
-                }
-            }
-            FrameRole::SynonymContent => {
-                if let Some(Frame {
                     role:
-                        FrameRole::SynonymItem {
-                            last_content,
-                            first_content,
+                        FrameRole::Synonym {
+                            values,
+                            malformed: parent,
                             ..
                         },
                     ..
                 }) = self.stack.last_mut()
                 {
-                    let content = frame.first_text.unwrap_or_default();
-                    if first_content.is_none() && !content.is_empty() {
-                        *first_content = Some(content.clone());
+                    match (lang, content, malformed) {
+                        (Some(lang), Some(content), false) => {
+                            values.push(unica_metadata::LocalizedItem::new(lang, content))
+                        }
+                        _ => *parent = true,
                     }
-                    *last_content = content;
+                }
+            }
+            FrameRole::SynonymLang | FrameRole::SynonymContent => {
+                if let Some(Frame {
+                    role:
+                        FrameRole::SynonymItem {
+                            lang,
+                            content,
+                            malformed,
+                        },
+                    ..
+                }) = self.stack.last_mut()
+                {
+                    let field = if matches!(frame.role, FrameRole::SynonymLang) {
+                        lang
+                    } else {
+                        content
+                    };
+                    *malformed |= field
+                        .replace(frame.first_text.unwrap_or_default())
+                        .is_some();
                 }
             }
             FrameRole::RegistrationName if self.stack.len() >= 2 => {
@@ -1589,28 +1650,24 @@ enum FrameRole {
         name_seen: bool,
     },
     RegistrationName,
-    /// A localized root property: `Synonym`, or `Caption` and
-    /// `ShortCaption` from 8.5.1.
     Synonym {
         property: &'static str,
-        ru: Option<String>,
-        fallback: Option<String>,
+        values: Vec<unica_metadata::LocalizedItem>,
+        malformed: bool,
     },
     SynonymItem {
-        lang: String,
-        last_content: String,
-        first_content: Option<String>,
+        lang: Option<String>,
+        content: Option<String>,
+        malformed: bool,
     },
     SynonymLang,
     SynonymContent,
 }
 
-/// The localized root properties the view reads in Russian or the first
-/// language; a set whose line lacks one has no such element.
 fn localized_root_property(name: &str) -> Option<&'static str> {
-    ["Synonym", "Caption", "ShortCaption"]
-        .into_iter()
-        .find(|property| *property == name)
+    unica_metadata::descriptor_operations::CONFIGURATION_LOCALIZED_PROPERTIES
+        .iter()
+        .find_map(|(tag, _)| (*tag == name).then_some(*tag))
 }
 
 /// The root properties of named parts the view reads, from 8.5.4.

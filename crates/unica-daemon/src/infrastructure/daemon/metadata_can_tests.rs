@@ -62,7 +62,7 @@ fn props_set_common_module_can_is_contextual_and_previews_without_writes() {
 fn props_set_role_can_is_contextual_and_previews_without_writes() {
     assert_props_can_and_preview(
         "main:Role.SalesReader",
-        json!({"values":{"synonym":"Properties role preview","Comment":"Independent alias groups"}}),
+        json!({"values":{"synonym":"ru = 'Properties role preview'","Comment":"Independent alias groups"}}),
         &[
             (json!({"values":{"Synonym":"","comment":""}}), true),
             (json!({"values":{"synonym":"","Comment":""}}), true),
@@ -724,7 +724,7 @@ fn canonical_foreign_form_file_keeps_catalog_structure_and_reports_provider_unav
     assert!(viewed.ok, "{viewed:?}");
     let data = viewed.data.as_ref().unwrap();
     assert_eq!(data["title"], "Products");
-    assert_eq!(data["props"]["Synonym"], "Products");
+    assert_eq!(data["props"]["Synonym"], "ru = 'Products'");
     assert!(
         data["branches"]
             .as_array()
@@ -1359,7 +1359,7 @@ fn canonical_unmodelled_type_is_a_localized_warning_in_check_and_view() {
         &fixture,
         "main:Catalog.Products.Attribute.Article",
     );
-    assert_eq!(attribute["props"]["synonym"], "Article");
+    assert_eq!(attribute["props"]["synonym"], "ru = 'Article'");
     assert_eq!(attribute["props"]["incomplete"], true);
     assert!(attribute["props"].get("type").is_none(), "{attribute}");
     assert!(
@@ -1369,7 +1369,7 @@ fn canonical_unmodelled_type_is_a_localized_warning_in_check_and_view() {
         "{attribute}"
     );
     let constant = view(&runtime, &fixture, "main:Constant.Rate");
-    assert_eq!(constant["props"]["Synonym"], "Rate");
+    assert_eq!(constant["props"]["Synonym"], "ru = 'Rate'");
     // Тип не прочитан: значения нет, причина — в пределах узла.
     assert!(constant["props"]["Type"].is_null(), "{constant}");
     assert!(
@@ -2489,7 +2489,7 @@ fn oversized_role_synonym_is_named_by_its_platform_name() {
     );
     let whole = view(&runtime, &fixture, &format!("{at}.Props.Synonym"));
     assert!(
-        whole["props"]["Synonym"] == synonym,
+        whole["props"]["Synonym"] == format!("ru = '{synonym}'"),
         "the synonym reads whole at its address"
     );
     let plain = view(&runtime, &Fixture::new("workspace"), at);
@@ -2552,7 +2552,7 @@ fn an_oversized_synonym_leaves_a_bounded_marked_title() {
         );
         let whole = view(&runtime, &fixture, &format!("{at}.Props.Synonym"));
         assert!(
-            whole["props"]["Synonym"] == synonym,
+            whole["props"]["Synonym"] == format!("ru = '{synonym}'"),
             "{at}: the synonym reads whole at its address"
         );
         let rows = view(&runtime, &fixture, collection);
@@ -2573,6 +2573,7 @@ fn an_oversized_synonym_leaves_a_bounded_marked_title() {
 
 /// A form item title longer than the property limit leaves a bounded
 /// marked title and a limit naming the address it reads whole at.
+/// rule: INV.SOURCE.LOCALIZED-STRING-NSTR
 #[test]
 fn an_oversized_form_item_title_is_named_by_a_limit() {
     let fixture = Fixture::new("workspace");
@@ -2609,8 +2610,9 @@ fn an_oversized_form_item_title_is_named_by_a_limit() {
         "a limit names the title address"
     );
     let whole = view(&runtime, &fixture, &format!("{at}.Props.title"));
-    assert!(
-        whole["props"]["title"] == title,
-        "the title reads whole at its address"
+    assert_eq!(
+        whole["props"]["title"],
+        format!("ru = '{title}'"),
+        "the full title retains its NStr form at the property address"
     );
 }

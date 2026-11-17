@@ -26,8 +26,49 @@ fn article_of(kind: ArticleKind) -> HelpArticle {
         collection_element: ArticleField::Empty,
         member_lists: Vec::new(),
         links: Vec::new(),
+        see_also: Vec::new(),
         other_sections: Vec::new(),
     }
+}
+
+/// rule: INV.APP.DOCUMENTATION-ARTICLE-FIELDS
+#[test]
+fn see_also_projects_member_and_document_links_separately_from_flat_links() {
+    let mut source = article_of(ArticleKind::Type);
+    let owner = ArticleLink {
+        label: "Пользователь".into(),
+        document_id: "platform-syntax-help:syntax-context:objects/User.html".into(),
+    };
+    let member = ArticleLink {
+        label: "Имя".into(),
+        document_id: "platform-syntax-help:syntax-context:objects/User/properties/Name1.html"
+            .into(),
+    };
+    assert_eq!(article(&source)["seeAlso"], json!([]));
+    source.links = vec![owner.clone(), member.clone()];
+    source.see_also = vec![
+        SeeAlsoEntry::Member {
+            owner: owner.label.clone(),
+            kind: ArticleKind::Property,
+            link: member.clone(),
+        },
+        SeeAlsoEntry::Document(owner.clone()),
+    ];
+    let value = article(&source);
+    assert_eq!(
+        value["seeAlso"],
+        json!([
+            {"kind":"property","owner":"Пользователь","name":"Имя","documentId":member.document_id},
+            {"kind":"document","name":"Пользователь","documentId":owner.document_id},
+        ])
+    );
+    assert_eq!(
+        value["links"],
+        json!([
+            {"label":"Пользователь","documentId":owner.document_id},
+            {"label":"Имя","documentId":member.document_id},
+        ])
+    );
 }
 
 /// Какого понятия у вида статьи не бывает, того нет и ключом: набор ключей

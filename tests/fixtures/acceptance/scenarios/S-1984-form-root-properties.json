@@ -14,7 +14,7 @@
       "op": "props.set",
       "args": {
        "values": {
-        "Title": "Валюта",
+        "Title": "ru = 'Валюта'",
         "AutoTitle": false,
         "Width": 60,
         "WindowOpeningMode": "LockOwnerWindow"
@@ -102,6 +102,10 @@
     {
      "pointer": "/data/title",
      "eq": "Валюта"
+    },
+    {
+     "pointer": "/data/props/title",
+     "eq": "ru = 'Валюта'"
     },
     {
      "pointer": "/data/props/properties/Width",

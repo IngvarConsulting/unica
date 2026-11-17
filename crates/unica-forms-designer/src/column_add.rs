@@ -73,11 +73,7 @@ pub(crate) fn observed_value_table_type(attribute: Node<'_, '_>) -> Option<Strin
         .map(|()| "ValueTable".to_string())
 }
 
-fn emit(
-    addition: &ColumnAddition,
-    id: usize,
-    lang: Option<&str>,
-) -> Result<String, ColumnAddError> {
+fn emit(addition: &ColumnAddition, id: usize) -> Result<String, ColumnAddError> {
     if !unica_xml_format::names::xml_ncname_is_valid(&addition.name)
         || addition.type_name.trim().is_empty()
     {
@@ -85,7 +81,14 @@ fn emit(
     }
     let mut lines = Vec::new();
     if let Some(title) = &addition.title {
-        crate::codec::emit_form_mltext(&mut lines, "\t", "Title", title, lang).map_err(invalid)?;
+        crate::codec::emit_form_mltext(
+            &mut lines,
+            "\t",
+            "Title",
+            title,
+            crate::codec::FormTextMode::NStr(None),
+        )
+        .map_err(invalid)?;
     }
     crate::codec::emit_form_type(&mut lines, &addition.type_name, "\t").map_err(invalid)?;
     let body = lines.join("\n");
@@ -131,7 +134,6 @@ pub(crate) fn apply(
     xml: &mut String,
     attribute: &str,
     additions: &[ColumnAddition],
-    lang: Option<&str>,
 ) -> Result<(), ColumnAddError> {
     if additions.is_empty() {
         return Err(invalid("At least one column is required"));
@@ -204,7 +206,7 @@ pub(crate) fn apply(
         max_id = max_id
             .checked_add(1)
             .ok_or_else(|| invalid("Column id range is exhausted"))?;
-        rendered.push(emit(addition, max_id, lang)?);
+        rendered.push(emit(addition, max_id)?);
     }
     let body = rendered.join("\n");
     let content = if columns.is_some() {
@@ -314,25 +316,20 @@ mod tests {
                 + &table("B", "<Columns><Column name=\"Other\" id=\"2\"/></Columns>")),
         );
         let mut after = before.clone();
-        apply(&mut after, "A", &[addition("NewA")], None).unwrap();
-        apply(&mut after, "B", &[addition("NewB")], None).unwrap();
+        apply(&mut after, "A", &[addition("NewA")]).unwrap();
+        apply(&mut after, "B", &[addition("NewB")]).unwrap();
         assert!(after.contains(OLD));
         assert!(after.starts_with('\u{feff}'));
         assert!(!after.replace("\r\n", "").contains('\n'));
         let expected = before.replacen(
             "</Columns>",
-            &(emit(&addition("NewA"), 8, None)
-                .unwrap()
-                .replace('\n', "\r\n")
-                + "</Columns>"),
+            &(emit(&addition("NewA"), 8).unwrap().replace('\n', "\r\n") + "</Columns>"),
             1,
         );
         let expected = expected.replacen(
             "<Column name=\"Other\" id=\"2\"/></Columns>",
             &("<Column name=\"Other\" id=\"2\"/>".to_owned()
-                + &emit(&addition("NewB"), 3, None)
-                    .unwrap()
-                    .replace('\n', "\r\n")
+                + &emit(&addition("NewB"), 3).unwrap().replace('\n', "\r\n")
                 + "</Columns>"),
             1,
         );
@@ -355,7 +352,7 @@ mod tests {
             "<f:Columns xmlns:f=\"http://v8.1c.ru/8.3/xcf/logform\" />",
         ] {
             let mut xml = form(&table("A", columns));
-            apply(&mut xml, "A", &[addition("Новая")], None).unwrap();
+            apply(&mut xml, "A", &[addition("Новая")]).unwrap();
             let doc = Document::parse(xml.trim_start_matches('\u{feff}')).unwrap();
             assert_eq!(
                 doc.descendants()
@@ -388,7 +385,7 @@ mod tests {
             let before = form(&table("A", &columns));
             let mut after = before.clone();
             assert!(matches!(
-                apply(&mut after, "A", &[addition("New")], None),
+                apply(&mut after, "A", &[addition("New")]),
                 Err(ColumnAddError::Invalid(_))
             ));
             assert_eq!(after, before);
@@ -406,7 +403,7 @@ mod tests {
             ],
         ] {
             let mut after = before.clone();
-            assert!(apply(&mut after, "A", &additions, None).is_err());
+            assert!(apply(&mut after, "A", &additions).is_err());
             assert_eq!(after, before);
         }
     }
@@ -415,7 +412,7 @@ mod tests {
         let before = form(&table("A", ""));
         let mut after = before.clone();
         assert!(matches!(
-            apply(&mut after, "Missing", &[addition("New")], None),
+            apply(&mut after, "Missing", &[addition("New")]),
             Err(ColumnAddError::Missing(_))
         ));
         assert_eq!(after, before);
@@ -425,23 +422,31 @@ mod tests {
         ] {
             let mut after = before.clone();
             assert!(matches!(
-                apply(&mut after, "A", &[addition("New")], None),
+                apply(&mut after, "A", &[addition("New")]),
                 Err(ColumnAddError::Invalid(_))
             ));
             assert_eq!(after, before);
         }
     }
     #[test]
-    fn title_is_escaped_and_requires_resolved_language() {
+    fn title_is_escaped_and_requires_nstr() {
         let before = form(&table("A", ""));
         let mut after = before.clone();
         let addition = ColumnAddition {
             title: Some("A & <B>".into()),
             ..addition("New")
         };
-        assert!(apply(&mut after, "A", std::slice::from_ref(&addition), None).is_err());
+        assert!(apply(&mut after, "A", std::slice::from_ref(&addition)).is_err());
         assert_eq!(after, before);
-        apply(&mut after, "A", &[addition], Some("ru")).unwrap();
+        apply(
+            &mut after,
+            "A",
+            &[ColumnAddition {
+                title: Some("ru = 'A & <B>'".to_string()),
+                ..addition
+            }],
+        )
+        .unwrap();
         assert!(after.contains("A &amp; &lt;B&gt;"));
     }
 
@@ -454,7 +459,7 @@ mod tests {
         .replace("xmlns:v8=", "xmlns:core=")
         .replace("v8:", "core:");
         let mut after = before.clone();
-        apply(&mut after, "A", &[addition("New")], None).unwrap();
+        apply(&mut after, "A", &[addition("New")]).unwrap();
         assert!(after.contains("name=\"Old\" id=\"0\""));
         assert!(after.contains("name=\"New\" id=\"1\""));
         let mut unchanged = before.clone();
@@ -462,7 +467,7 @@ mod tests {
             title: Some("bad\u{1}".into()),
             ..addition("Bad")
         };
-        assert!(apply(&mut unchanged, "A", &[addition("Good"), bad], Some("ru")).is_err());
+        assert!(apply(&mut unchanged, "A", &[addition("Good"), bad]).is_err());
         assert_eq!(unchanged, before);
     }
 }

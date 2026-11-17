@@ -117,7 +117,7 @@ fn nine_nested_facts_reach_public_collection_and_detail_without_writes() {
     let before = tree_snapshot(&fixture.source);
     for (_, collection, name, expected) in cases() {
         for node in views(&fixture, collection, name) {
-            assert_eq!(node["props"]["synonym"], "Observed member");
+            assert_eq!(node["props"]["synonym"], "ru = 'Observed member'");
             assert_eq!(node["title"], "Observed member");
             for (key, value) in expected.as_object().unwrap() {
                 assert_eq!(&node["props"][key], value, "{collection}.{name}: {node}");

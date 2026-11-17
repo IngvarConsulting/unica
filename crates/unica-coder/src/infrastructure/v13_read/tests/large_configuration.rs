@@ -68,7 +68,7 @@ fn large_configuration_root_keeps_legacy_duplicate_and_namespace_semantics() {
     let expected = serde_json::to_value(legacy.with_branch(module_branch)).unwrap();
     assert_eq!(
         expected["props"]["properties"]["forms"]["defaultSearchForm"],
-        "CommonForm.Поиск"
+        "main:CommonForm.Поиск"
     );
 
     fs::write(

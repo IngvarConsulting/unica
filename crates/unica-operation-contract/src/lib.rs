@@ -145,6 +145,15 @@ impl<'a> ArgumentShape<'a> {
     /// Compound domain invariants remain with their typed converters;
     /// this is deliberately not a full JSON Schema interpreter.
     pub fn validate_field(self, value: &Value, path: &str) -> Result<(), ContractError> {
+        self.validate_field_with_formats(value, path, &[])
+    }
+
+    pub fn validate_field_with_formats(
+        self,
+        value: &Value,
+        path: &str,
+        format_validators: &[FormatValidator],
+    ) -> Result<(), ContractError> {
         if value.is_object() || value.is_array() {
             // The typed converter visits the members and checks compound
             // constraints in its established order. Check only the container
@@ -152,7 +161,9 @@ impl<'a> ArgumentShape<'a> {
             // conversion error in another item.
             self.validate_type(value, path)
         } else {
-            validate(self.schema, value, path)
+            let validator = Validator { format_validators };
+            validator.admit_formats(self.schema, path)?;
+            validator.validate(self.schema, value, path)
         }
     }
 

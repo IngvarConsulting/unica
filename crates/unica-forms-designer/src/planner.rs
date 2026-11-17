@@ -1889,25 +1889,17 @@ pub fn stage_form_edit(
                 continue;
             }
             FormEditStep::AddColumns { attribute, columns } => {
-                if columns.iter().any(|column| column.title.is_some()) && lang.is_none() {
-                    lang = Some(unica_source_designer::language::staged_text_language(
-                        staged,
-                        authority.source_kind(),
-                        op_index,
-                    )?);
-                }
-                crate::column_add::apply(&mut xml_text, attribute, columns, lang.as_deref())
-                    .map_err(|error| {
-                        let (kind, message) = match error {
-                            crate::column_add::ColumnAddError::Missing(message) => {
-                                (ApplyPlanErrorKind::NotFound, message)
-                            }
-                            crate::column_add::ColumnAddError::Invalid(message) => {
-                                (ApplyPlanErrorKind::BadValue, message)
-                            }
-                        };
-                        ApplyPlanError::new(kind, message).at_path(args_path.clone())
-                    })?;
+                crate::column_add::apply(&mut xml_text, attribute, columns).map_err(|error| {
+                    let (kind, message) = match error {
+                        crate::column_add::ColumnAddError::Missing(message) => {
+                            (ApplyPlanErrorKind::NotFound, message)
+                        }
+                        crate::column_add::ColumnAddError::Invalid(message) => {
+                            (ApplyPlanErrorKind::BadValue, message)
+                        }
+                    };
+                    ApplyPlanError::new(kind, message).at_path(args_path.clone())
+                })?;
                 continue;
             }
             FormEditStep::Move { request, location } => {
@@ -1929,7 +1921,7 @@ pub fn stage_form_edit(
                 definition,
                 &absolute,
                 root_start,
-                lang,
+                crate::codec::FormTextMode::NStr(lang),
                 script_variant,
                 // Линия набора известна праву правки: она и выбирает каталог.
                 authority.source_profile().semantic_line(),
@@ -1953,6 +1945,13 @@ pub fn stage_form_edit(
         result.map_err(|message| {
             ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message).at_path(args_path.clone())
         })?;
+    }
+    // An unchanged root-property edit also preserves whether the source had a BOM.
+    if definitions.iter().all(|step| {
+        matches!(step, FormEditStep::Definition(value) if value.get("rootProperties").is_some())
+    }) && xml_text.as_bytes() == preimage.strip_prefix(UTF8_BOM).unwrap_or(&preimage)
+    {
+        return Ok(());
     }
     // Перенос сохраняет исходное состояние BOM. Остальные определения
     // используют прежнюю нормализацию писателя формы.
@@ -2293,7 +2292,8 @@ mod column_add_tests {
     #[test]
     fn column_add_targets_only_an_existing_form_data_attribute() {
         let at = "main:Catalog.Items.Form.Main.Attribute.Rows";
-        let args = json!({"at":at,"items":[{"name":"Added","type":"Boolean","title":"New"}]});
+        let args =
+            json!({"at":at,"items":[{"name":"Added","type":"Boolean","title":"en = 'New'"}]});
         let plan = parse_form_operation(
             FormOperation::ColumnAdd,
             args.as_object().unwrap(),
@@ -2315,7 +2315,7 @@ mod column_add_tests {
         };
         assert_eq!(attribute, "Rows");
         assert_eq!(columns[0].name, "Added");
-        assert_eq!(columns[0].title.as_deref(), Some("New"));
+        assert_eq!(columns[0].title.as_deref(), Some("en = 'New'"));
         for at in [
             "main:Catalog.Items.Form.Main",
             "main:Catalog.Items.Form.Main.Attribute.Rows.Column",

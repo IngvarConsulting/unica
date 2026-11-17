@@ -72,6 +72,17 @@
             "at": "main:Subsystem.Администрирование",
             "property": "CommandInterface"
           }
+        },
+        {
+          "pointer": "/data/cache",
+          "absent": true
+        },
+        {
+          "pointer": "/changed",
+          "contains": {
+            "at": "main:Catalog.Валюты",
+            "event": "MetadataChanged"
+          }
         }
       ]
     },

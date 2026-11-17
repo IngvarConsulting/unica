@@ -1382,6 +1382,14 @@ fn form_info_element(child: roxmltree::Node<'_, '_>) -> FormInfoElement {
         tag: form_element_tag(child),
         event_kind: FormElementKind::from_xml_tag(child.tag_name().name()),
         title: form_title_differs(child, &name),
+        localized: form_localized_properties(
+            child,
+            &[
+                ("Title", "title"),
+                ("ToolTip", "tooltip"),
+                ("InputHint", "inputHint"),
+            ],
+        ),
         name,
         binding: form_info_binding(data_path.as_deref(), command_name.as_deref()),
         data_path,
@@ -1428,6 +1436,7 @@ fn form_info_attributes(attrs: roxmltree::Node<'_, '_>) -> Vec<FormInfoAttribute
                         form_children(columns, "Column")
                             .into_iter()
                             .map(|column| FormInfoColumn {
+                                localized: form_localized_properties(column, &[("Title", "title")]),
                                 parent_type: crate::column_type::observed_parent_type(column),
                                 name: column.attribute("name").unwrap_or("").to_string(),
                                 type_name: form_child(column, "Type")
@@ -1441,6 +1450,7 @@ fn form_info_attributes(attrs: roxmltree::Node<'_, '_>) -> Vec<FormInfoAttribute
                 Vec::new()
             };
             FormInfoAttribute {
+                localized: form_localized_properties(attr, &[("Title", "title")]),
                 name: attr.attribute("name").unwrap_or("").to_string(),
                 type_name,
                 is_main: form_child_text(attr, "MainAttribute").as_deref() == Some("true"),
@@ -1558,6 +1568,7 @@ pub fn parse_form_info_xml(
     Ok(FormInfoData {
         name: form_name,
         title: form_title,
+        localized: form_localized_properties(root, &[("Title", "title")]),
         object_context: (!object_context.is_empty()).then_some(object_context),
         is_extension,
         base_form_version: base_form
@@ -1688,6 +1699,96 @@ pub fn form_validation_child_text(
     form_validation_child(node, local_name)
         .map(form_ml_text)
         .filter(|value| !value.is_empty())
+}
+
+/// Preserve the XML language order and distinguish an empty text from an absent property.
+fn form_localized_properties(
+    node: roxmltree::Node<'_, '_>,
+    names: &[(&str, &str)],
+) -> FormLocalizedProperties {
+    let mut report = FormLocalizedProperties::default();
+    for &(xml_name, name) in names {
+        let mut properties = node
+            .children()
+            .filter(|child| child.is_element() && child.tag_name().name() == xml_name);
+        let Some(property) = properties.next() else {
+            continue;
+        };
+        let items = (properties.next().is_none()
+            && property.has_tag_name((FORM_LOGFORM_NS, xml_name)))
+        .then(|| form_localized_value(property));
+        match items {
+            Some(Ok(Some(nstr))) => {
+                report.localized_properties.insert(name.to_owned(), nstr);
+            }
+            Some(Ok(None)) => {}
+            _ => report.localized_limits.push(format!(
+                "{name} is unreadable: malformed multilingual value"
+            )),
+        }
+    }
+    report
+}
+
+pub(crate) fn form_localized_value(
+    node: roxmltree::Node<'_, '_>,
+) -> Result<Option<String>, String> {
+    let has_text = |node: roxmltree::Node<'_, '_>| {
+        node.children().any(|child| {
+            child.is_text() && child.text().is_some_and(|text| !text.trim().is_empty())
+        })
+    };
+    let malformed = || "malformed multilingual value".to_owned();
+    if has_text(node)
+        || node.attributes().any(|attribute| {
+            !(node.tag_name().name() == "Title"
+                && attribute.namespace().is_none()
+                && attribute.name() == "formatted"
+                && matches!(attribute.value(), "true" | "false" | "1" | "0"))
+        })
+    {
+        return Err(malformed());
+    }
+    let mut values = Vec::new();
+    for item in node.children().filter(roxmltree::Node::is_element) {
+        if !item.has_tag_name((FORM_V8_NS, "item"))
+            || item.attributes().len() != 0
+            || has_text(item)
+        {
+            return Err(malformed());
+        }
+        let children = item
+            .children()
+            .filter(roxmltree::Node::is_element)
+            .collect::<Vec<_>>();
+        let (Some(lang), Some(content)) = (
+            children
+                .iter()
+                .find(|child| child.has_tag_name((FORM_V8_NS, "lang"))),
+            children
+                .iter()
+                .find(|child| child.has_tag_name((FORM_V8_NS, "content"))),
+        ) else {
+            return Err(malformed());
+        };
+        if children.len() != 2
+            || [lang, content].iter().any(|child| {
+                child.attributes().len() != 0 || child.children().any(|child| child.is_element())
+            })
+        {
+            return Err(malformed());
+        }
+        values.push(unica_metadata::LocalizedItem::new(
+            unica_xml_format::read::direct_text(*lang),
+            unica_xml_format::read::direct_text(*content),
+        ));
+    }
+    if values.is_empty() {
+        return Ok(None);
+    }
+    unica_metadata::format_nstr(&values)
+        .map(Some)
+        .ok_or_else(|| "translations cannot be represented as NStr".to_owned())
 }
 
 pub fn form_ml_text(node: roxmltree::Node<'_, '_>) -> String {
@@ -3650,7 +3751,7 @@ pub fn form_edit_apply_definition(
         defn,
         form_path,
         form_root_start,
-        lang,
+        FormTextMode::Legacy(lang),
         ScriptVariant::Russian,
         platform_line,
     )
@@ -3661,7 +3762,7 @@ pub fn form_edit_apply_definition_with_variant(
     defn: &Value,
     form_path: &Path,
     form_root_start: usize,
-    lang: Option<&str>,
+    lang: FormTextMode<'_>,
     script_variant: ScriptVariant,
     platform_line: Option<PlatformLine>,
 ) -> Result<FormEditApplied, String> {
@@ -3700,7 +3801,7 @@ fn form_edit_apply_definition_lf(
     defn: &Value,
     form_path: &Path,
     form_root_start: usize,
-    lang: Option<&str>,
+    lang: FormTextMode<'_>,
     script_variant: ScriptVariant,
     platform_line: Option<PlatformLine>,
 ) -> Result<FormEditApplied, String> {
@@ -5437,7 +5538,7 @@ fn form_edit_expected_element_fingerprint(
     xml_text: &str,
     element: &Value,
     in_command_bar: bool,
-    lang: Option<&str>,
+    lang: FormTextMode<'_>,
     script_variant: ScriptVariant,
 ) -> Result<FormEditElementFingerprint, String> {
     let mut lines = Vec::new();
@@ -5551,7 +5652,7 @@ fn form_edit_elements_are_idempotent_noop(
     elements: &[Value],
     into_name: Option<&str>,
     after_name: Option<&str>,
-    lang: Option<&str>,
+    lang: FormTextMode<'_>,
     script_variant: ScriptVariant,
 ) -> Result<bool, String> {
     let document =
@@ -6251,7 +6352,7 @@ pub fn emit_form_edit_attribute_item(
     name: &str,
     id: usize,
     indent: &str,
-    lang: Option<&str>,
+    lang: FormTextMode<'_>,
 ) -> Result<(), String> {
     lines.push(format!(
         "{indent}<Attribute name=\"{}\" id=\"{id}\">",
@@ -6297,7 +6398,7 @@ pub fn emit_form_command(
     name: &str,
     id: usize,
     indent: &str,
-    lang: Option<&str>,
+    lang: FormTextMode<'_>,
 ) -> Result<(), String> {
     lines.push(format!(
         "{indent}<Command name=\"{}\" id=\"{id}\">",
@@ -6742,7 +6843,7 @@ pub fn form_compile_xml(
         form_edit_validate_new_element_event_tree(elements, &context)?;
     }
 
-    let lang = Some(LEGACY_FORM_TEXT_LANGUAGE);
+    let lang = FormTextMode::Legacy(Some(LEGACY_FORM_TEXT_LANGUAGE));
     let mut ids = FormEmissionContext::new();
     let mut lines = Vec::<String>::new();
     lines.push("<?xml version=\"1.0\" encoding=\"UTF-8\"?>".to_string());
@@ -7336,6 +7437,22 @@ pub fn form_element_has_command_bar(element: &Value) -> bool {
     false
 }
 
+/// The canonical operations take complete NStr values. The independent form
+/// compiler and editor DSL still interpret strings as literal captions.
+#[derive(Clone, Copy)]
+pub enum FormTextMode<'a> {
+    Legacy(Option<&'a str>),
+    NStr(Option<&'a str>),
+}
+
+impl<'a> FormTextMode<'a> {
+    fn default_language(self) -> Option<&'a str> {
+        match self {
+            Self::Legacy(language) | Self::NStr(language) => language,
+        }
+    }
+}
+
 /// Language of multilingual values written by the pre-v0.13 form commands
 /// (`unica.form.add`, `unica.form.compile`, `unica.form.edit`). They take no
 /// source-set language profile and keep `ru`; the v0.13 form operations
@@ -7346,46 +7463,65 @@ pub const LEGACY_FORM_TEXT_LANGUAGE: &str = "ru";
 /// [`form_edit_apply_definition`].
 pub const FORM_TEXT_LANGUAGE_REQUIRED: &str = "a plain-string form text needs the default language";
 
-/// Writes `text` as a multilingual `tag` in the `lang` language
-/// (`LanguageCode`); an empty `text` writes the empty element. A non-empty
-/// `text` without a language fails with [`FORM_TEXT_LANGUAGE_REQUIRED`].
+/// Emits the complete NStr value, or the separate form compiler's plain text
+/// in `lang`. An empty `text` emits the empty property.
 pub fn emit_form_mltext(
     lines: &mut Vec<String>,
     indent: &str,
     tag: &str,
     text: &str,
-    lang: Option<&str>,
+    lang: FormTextMode<'_>,
 ) -> Result<(), String> {
     if text.is_empty() {
         lines.push(format!("{indent}<{tag}/>"));
         return Ok(());
     }
-    let lang = lang
-        .filter(|lang| !lang.is_empty())
-        .ok_or_else(|| FORM_TEXT_LANGUAGE_REQUIRED.to_string())?;
-    lines.push(format!("{indent}<{tag}>"));
-    lines.push(format!("{indent}\t<v8:item>"));
-    lines.push(format!(
-        "{indent}\t\t<v8:lang>{}</v8:lang>",
-        unica_xml_format::text::escape_xml(lang)
-    ));
-    lines.push(format!(
-        "{indent}\t\t<v8:content>{}</v8:content>",
-        unica_xml_format::text::escape_xml(text)
-    ));
-    lines.push(format!("{indent}\t</v8:item>"));
-    lines.push(format!("{indent}</{tag}>"));
+    let values = match lang {
+        FormTextMode::NStr(_) => unica_metadata::parse_nstr(text)?,
+        FormTextMode::Legacy(lang) => {
+            let lang = lang
+                .filter(|lang| !lang.is_empty())
+                .ok_or_else(|| FORM_TEXT_LANGUAGE_REQUIRED.to_string())?;
+            vec![unica_metadata::LocalizedItem::new(lang, text)]
+        }
+    };
+    emit_form_localized_items(lines, indent, tag, &values);
     Ok(())
 }
 
-/// Writes a multilingual `tag` from `value`: a plain string in the `lang`
-/// language, a language-to-text object as given.
+pub(crate) fn emit_form_localized_items(
+    lines: &mut Vec<String>,
+    indent: &str,
+    tag: &str,
+    values: &[unica_metadata::LocalizedItem],
+) {
+    if values.is_empty() {
+        lines.push(format!("{indent}<{tag}/>"));
+        return;
+    }
+    lines.push(format!("{indent}<{tag}>"));
+    for value in values {
+        lines.push(format!("{indent}\t<v8:item>"));
+        lines.push(format!(
+            "{indent}\t\t<v8:lang>{}</v8:lang>",
+            unica_xml_format::text::escape_xml(&value.language)
+        ));
+        lines.push(format!(
+            "{indent}\t\t<v8:content>{}</v8:content>",
+            unica_xml_format::text::escape_xml(&value.content).replace('\r', "&#13;")
+        ));
+        lines.push(format!("{indent}\t</v8:item>"));
+    }
+    lines.push(format!("{indent}</{tag}>"));
+}
+
+/// Emits NStr or text and language maps from the separate form compiler DSL.
 pub fn emit_form_mltext_value(
     lines: &mut Vec<String>,
     indent: &str,
     tag: &str,
     value: &Value,
-    lang: Option<&str>,
+    lang: FormTextMode<'_>,
 ) -> Result<(), String> {
     if let Some(text) = value.as_str() {
         if text.is_empty() {
@@ -7410,20 +7546,11 @@ pub fn emit_form_mltext_value(
         return Ok(());
     }
 
-    lines.push(format!("{indent}<{tag}>"));
-    for (language, text) in texts {
-        lines.push(format!("{indent}\t<v8:item>"));
-        lines.push(format!(
-            "{indent}\t\t<v8:lang>{}</v8:lang>",
-            unica_xml_format::text::escape_xml(language)
-        ));
-        lines.push(format!(
-            "{indent}\t\t<v8:content>{}</v8:content>",
-            unica_xml_format::text::escape_xml(text)
-        ));
-        lines.push(format!("{indent}\t</v8:item>"));
-    }
-    lines.push(format!("{indent}</{tag}>"));
+    let values = texts
+        .into_iter()
+        .map(|(language, text)| unica_metadata::LocalizedItem::new(language, text))
+        .collect::<Vec<_>>();
+    emit_form_localized_items(lines, indent, tag, &values);
     Ok(())
 }
 
@@ -7431,7 +7558,7 @@ pub fn emit_form_element_tooltip(
     lines: &mut Vec<String>,
     element: &Map<String, Value>,
     indent: &str,
-    lang: Option<&str>,
+    lang: FormTextMode<'_>,
 ) -> Result<(), String> {
     if let Some(tooltip) = element.get("tooltip") {
         emit_form_mltext_value(lines, indent, "ToolTip", tooltip, lang)?;
@@ -7820,7 +7947,7 @@ pub fn emit_form_element(
     element: &Value,
     indent: &str,
     ids: &mut FormEmissionContext,
-    lang: Option<&str>,
+    lang: FormTextMode<'_>,
 ) -> Result<(), String> {
     emit_form_element_with_context(lines, element, indent, ids, false, lang)
 }
@@ -7831,7 +7958,7 @@ fn emit_form_element_with_context(
     indent: &str,
     ids: &mut FormEmissionContext,
     in_command_bar: bool,
-    lang: Option<&str>,
+    lang: FormTextMode<'_>,
 ) -> Result<(), String> {
     let Some(object) = element.as_object() else {
         return Err("a form element must be an object".to_string());
@@ -7921,7 +8048,7 @@ pub fn emit_form_group(
     name: &str,
     indent: &str,
     ids: &mut FormEmissionContext,
-    lang: Option<&str>,
+    lang: FormTextMode<'_>,
 ) -> Result<(), String> {
     let id = ids.allocate()?;
     lines.push(format!(
@@ -8000,7 +8127,7 @@ pub fn emit_form_pages(
     name: &str,
     indent: &str,
     ids: &mut FormEmissionContext,
-    lang: Option<&str>,
+    lang: FormTextMode<'_>,
 ) -> Result<(), String> {
     let id = ids.allocate()?;
     lines.push(format!(
@@ -8046,7 +8173,7 @@ pub fn emit_form_page(
     name: &str,
     indent: &str,
     ids: &mut FormEmissionContext,
-    lang: Option<&str>,
+    lang: FormTextMode<'_>,
 ) -> Result<(), String> {
     let id = ids.allocate()?;
     lines.push(format!(
@@ -8092,7 +8219,7 @@ pub fn emit_form_children(
     element: &Map<String, Value>,
     indent: &str,
     ids: &mut FormEmissionContext,
-    lang: Option<&str>,
+    lang: FormTextMode<'_>,
 ) -> Result<(), String> {
     let Some(children) = element.get("children").and_then(Value::as_array) else {
         return Ok(());
@@ -8218,7 +8345,7 @@ pub fn emit_form_check(
     name: &str,
     indent: &str,
     ids: &mut FormEmissionContext,
-    lang: Option<&str>,
+    lang: FormTextMode<'_>,
 ) -> Result<(), String> {
     let id = ids.allocate()?;
     lines.push(format!(
@@ -8286,7 +8413,7 @@ pub fn emit_form_input(
     name: &str,
     indent: &str,
     ids: &mut FormEmissionContext,
-    lang: Option<&str>,
+    lang: FormTextMode<'_>,
 ) -> Result<(), String> {
     let id = ids.allocate()?;
     lines.push(format!(
@@ -8423,7 +8550,7 @@ pub fn emit_form_button(
     indent: &str,
     ids: &mut FormEmissionContext,
     in_command_bar: bool,
-    lang: Option<&str>,
+    lang: FormTextMode<'_>,
 ) -> Result<(), String> {
     let id = ids.allocate()?;
     lines.push(format!(
@@ -8552,7 +8679,7 @@ pub fn emit_form_command_bar_element(
     name: &str,
     indent: &str,
     ids: &mut FormEmissionContext,
-    lang: Option<&str>,
+    lang: FormTextMode<'_>,
 ) -> Result<(), String> {
     let id = ids.allocate()?;
     lines.push(format!(
@@ -8607,7 +8734,7 @@ pub fn emit_form_label_decoration(
     name: &str,
     indent: &str,
     ids: &mut FormEmissionContext,
-    lang: Option<&str>,
+    lang: FormTextMode<'_>,
 ) -> Result<(), String> {
     let id = ids.allocate()?;
     lines.push(format!(
@@ -8677,16 +8804,16 @@ fn emit_form_decoration_title(
     element: &Map<String, Value>,
     name: &str,
     indent: &str,
-    lang: Option<&str>,
+    lang: FormTextMode<'_>,
 ) -> Result<(), String> {
     // A decoration without an explicit title takes its own name, the way the
     // platform does; writing nothing left the element unlabelled (#450 review).
     let fallback;
-    let title = match element.get("title") {
-        Some(title) => title,
+    let (title, lang) = match element.get("title") {
+        Some(title) => (title, lang),
         None => {
             fallback = Value::String(name.to_string());
-            &fallback
+            (&fallback, FormTextMode::Legacy(lang.default_language()))
         }
     };
     let formatted = title
@@ -8717,7 +8844,7 @@ fn emit_form_document_field(
     name: &str,
     indent: &str,
     ids: &mut FormEmissionContext,
-    lang: Option<&str>,
+    lang: FormTextMode<'_>,
     field_tag: &str,
 ) -> Result<(), String> {
     let id = ids.allocate()?;
@@ -8804,7 +8931,7 @@ pub fn emit_form_label_field(
     name: &str,
     indent: &str,
     ids: &mut FormEmissionContext,
-    lang: Option<&str>,
+    lang: FormTextMode<'_>,
 ) -> Result<(), String> {
     let id = ids.allocate()?;
     lines.push(format!(
@@ -8849,7 +8976,7 @@ pub fn emit_form_table(
     name: &str,
     indent: &str,
     ids: &mut FormEmissionContext,
-    lang: Option<&str>,
+    lang: FormTextMode<'_>,
 ) -> Result<(), String> {
     let id = ids.allocate()?;
     lines.push(format!(
@@ -9276,7 +9403,7 @@ pub fn emit_form_attributes(
     attrs: Option<&Value>,
     indent: &str,
     ids: &mut FormEmissionContext,
-    lang: Option<&str>,
+    lang: FormTextMode<'_>,
 ) -> Result<(), String> {
     let Some(attrs) = attrs.and_then(Value::as_array) else {
         return Ok(());
@@ -9343,7 +9470,7 @@ pub fn emit_form_attribute_columns(
     lines: &mut Vec<String>,
     columns: Option<&Value>,
     indent: &str,
-    lang: Option<&str>,
+    lang: FormTextMode<'_>,
 ) -> Result<(), String> {
     emit_form_attribute_columns_with_ids(lines, columns, indent, |index| Ok(index + 1), lang)
 }
@@ -9353,7 +9480,7 @@ fn emit_form_compile_attribute_columns(
     columns: Option<&Value>,
     indent: &str,
     ids: &mut FormEmissionContext,
-    lang: Option<&str>,
+    lang: FormTextMode<'_>,
 ) -> Result<(), String> {
     emit_form_attribute_columns_with_ids(lines, columns, indent, |_| ids.allocate(), lang)
 }
@@ -9363,7 +9490,7 @@ fn emit_form_attribute_columns_with_ids(
     columns: Option<&Value>,
     indent: &str,
     mut next_id: impl FnMut(usize) -> Result<usize, String>,
-    lang: Option<&str>,
+    lang: FormTextMode<'_>,
 ) -> Result<(), String> {
     let Some(columns) = columns else {
         return Ok(());
@@ -9526,7 +9653,7 @@ pub fn emit_form_commands(
     cmds: Option<&Value>,
     indent: &str,
     ids: &mut FormEmissionContext,
-    lang: Option<&str>,
+    lang: FormTextMode<'_>,
 ) -> Result<(), String> {
     let Some(cmds) = cmds.and_then(Value::as_array) else {
         return Ok(());

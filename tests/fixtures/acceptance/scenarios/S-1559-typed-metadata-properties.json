@@ -2,7 +2,7 @@
   "id": "S-1559-typed-metadata-properties",
   "issue": 1559,
   "area": "Метаданные",
-  "task": "Прочитать все шесть фактов #1559 из независимой XML-фикстуры: табличная часть → КодЯзыка → ПараметрыПрописи. Коллекция и детали сохраняют LineNumberLength/Use, Indexing/FullTextSearch/DataHistory, локализованный ToolTip ru/en, типы строк 10/200 переменной длины, synonym, required:false и адреса. Повреждение подсказки локально; чтение сохраняет исходники и разрешения attribute.set.",
+  "task": "Прочитать все шесть фактов #1559 из независимой XML-фикстуры: табличная часть → КодЯзыка → ПараметрыПрописи. Коллекция и детали сохраняют LineNumberLength/Use, Indexing/FullTextSearch/DataHistory, локализованный ToolTip ru/en, типы строк 10/200 переменной длины, synonym, required:false и адреса. Повреждение подсказки локально; чтение сохраняет исходники и разрешения attribute.set. Изменение и очистка ToolTip сохраняют исходный язык, синоним и соседний реквизит.",
   "workspace": "tests/fixtures/acceptance/catalog-attribute-tooltip",
   "wire": [
     {
@@ -154,24 +154,15 @@
         },
         {
           "pointer": "/data/items/1/props/ToolTip",
-          "eq": [
-            {
-              "language": "ru",
-              "content": "Настройки представления суммы прописью"
-            },
-            {
-              "language": "en",
-              "content": "Amount spelling settings & presentation"
-            }
-          ]
+          "eq": "ru = 'Настройки представления суммы прописью'; en = 'Amount spelling settings & presentation'"
         },
         {
           "pointer": "/data/items/0/props/synonym",
-          "eq": "Код языка"
+          "eq": "ru = 'Код языка'"
         },
         {
           "pointer": "/data/items/1/props/synonym",
-          "eq": "Параметры прописи"
+          "eq": "ru = 'Параметры прописи'"
         },
         {
           "pointer": "/data/items/1/props/required",
@@ -244,7 +235,7 @@
         },
         {
           "pointer": "/data/props/synonym",
-          "eq": "Код языка"
+          "eq": "ru = 'Код языка'"
         },
         {
           "pointer": "/data/props/type/variants/0/length",
@@ -321,7 +312,7 @@
         },
         {
           "pointer": "/data/props/synonym",
-          "eq": "Параметры прописи"
+          "eq": "ru = 'Параметры прописи'"
         },
         {
           "pointer": "/data/props/type/variants/0/length",
@@ -333,16 +324,7 @@
         },
         {
           "pointer": "/data/props/ToolTip",
-          "eq": [
-            {
-              "language": "ru",
-              "content": "Настройки представления суммы прописью"
-            },
-            {
-              "language": "en",
-              "content": "Amount spelling settings & presentation"
-            }
-          ]
+          "eq": "ru = 'Настройки представления суммы прописью'; en = 'Amount spelling settings & presentation'"
         }
       ],
       "fileAssertions": [
@@ -618,7 +600,7 @@
         },
         {
           "pointer": "/data/props/synonym",
-          "eq": "Параметры прописи"
+          "eq": "ru = 'Параметры прописи'"
         },
         {
           "pointer": "/data/props/type/variants/0/length",
@@ -666,8 +648,8 @@
           ]
         },
         {
-          "pointer": "/data/props/contract/argsSchema/properties/values/properties/toolTip",
-          "absent": true
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/toolTip/type",
+          "eq": "string"
         },
         {
           "pointer": "/data/props/contract/argsSchema/properties/values/properties/fullTextSearch",
@@ -698,6 +680,145 @@
           "kind": "sha256",
           "path": "v8project.yaml",
           "eq": "$capture.unchanged4"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Items.TabularSection.Представления.Attribute.ПараметрыПрописи",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "toolTip": "ru = 'Настройки представления суммы прописью'; en = 'Amount''s display'"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "toolTipUpdate": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ]
+    },
+    {
+      "tool": "unica.diff",
+      "args": {
+        "executionToken": "$capture.toolTipUpdate"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/chunks/0/content",
+          "contains": "Amount spelling settings &amp; presentation"
+        },
+        {
+          "pointer": "/data/chunks/1/content",
+          "contains": "Amount's display"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Items.xml",
+          "eq": "$capture.unchanged2"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.toolTipUpdate"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.TabularSection.Представления.Attribute.ПараметрыПрописи.Props.ToolTip"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/ToolTip",
+          "eq": "ru = 'Настройки представления суммы прописью'; en = 'Amount''s display'"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Items.TabularSection.Представления.Attribute.ПараметрыПрописи",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "toolTip": ""
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "toolTipClear": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.toolTipClear"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.TabularSection.Представления.Attribute.ПараметрыПрописи"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/ToolTip",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/synonym",
+          "eq": "ru = 'Параметры прописи'"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Damaged.xml",
+          "eq": "$capture.unchanged1"
         }
       ]
     }

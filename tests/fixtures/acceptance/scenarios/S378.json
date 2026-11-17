@@ -100,10 +100,7 @@
               "items": [
                 {
                   "kind": "Folder",
-                  "title": {
-                    "ru": "Основная группа",
-                    "en": "Main folder"
-                  }
+                  "title": "ru = 'Основная группа'; en = 'Main folder'"
                 },
                 {
                   "field": "RootKeep"
@@ -117,7 +114,7 @@
               "items": [
                 {
                   "kind": "Folder",
-                  "title": "Вложенная группа",
+                  "title": "ru = 'Вложенная группа'",
                   "parentIndexes": [
                     0
                   ]

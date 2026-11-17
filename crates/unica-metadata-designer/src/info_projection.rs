@@ -1532,7 +1532,9 @@ pub fn observe_meta_info_property(
             MetaInfoPropertyValue::String(direct_text_content(node))
         }
         MetaInfoPropertyValueKind::LegacyLocalizedString => {
-            MetaInfoPropertyValue::String(super::xml_model::meta_info_ml_text(node))
+            let value = localized_node_as_nstr(node)
+                .map_err(|error| ProjectionError::malformed(&field, error))?;
+            return Ok(value.map(MetaInfoPropertyValue::String));
         }
         MetaInfoPropertyValueKind::LocalizedString => {
             MetaInfoPropertyValue::Structured(parsed_localized_meta_info_property_value(node))
@@ -1572,6 +1574,40 @@ pub fn parsed_typed_meta_info_property_value(
     node: roxmltree::Node<'_, '_>,
 ) -> Option<MetaObservedPropertyValue> {
     parse_typed_or_nil_value(node, "properties").ok()
+}
+
+/// Observe a localized XML property as the complete, round-trippable value.
+pub fn localized_property_as_nstr(
+    properties: roxmltree::Node<'_, '_>,
+    owner: &str,
+    name: &str,
+) -> Result<Option<String>, String> {
+    let Some(node) =
+        direct_meta_info_property(properties, owner, name).map_err(|error| error.message)?
+    else {
+        return Ok(None);
+    };
+    localized_node_as_nstr(node).map_err(|error| format!("{owner} properties.{name}: {error}"))
+}
+
+pub(crate) fn localized_node_as_nstr(
+    node: roxmltree::Node<'_, '_>,
+) -> Result<Option<String>, String> {
+    let Some(MetaObservedPropertyValue::LocalizedString { values }) =
+        strict_localized_meta_info_property_value(node)
+    else {
+        return Err("malformed multilingual value".to_string());
+    };
+    if values.is_empty() {
+        return Ok(None);
+    }
+    let items = values
+        .into_iter()
+        .map(|value| unica_metadata::LocalizedItem::new(value.language, value.content))
+        .collect::<Vec<_>>();
+    unica_metadata::format_nstr(&items)
+        .map(Some)
+        .ok_or_else(|| "translations cannot be represented as NStr".to_string())
 }
 
 pub fn parsed_localized_meta_info_property_value(

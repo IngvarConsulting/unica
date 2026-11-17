@@ -13,6 +13,8 @@ pub struct CfInfoData {
     /// From 8.5.1; `null` in a set of an earlier line.
     pub caption: Option<String>,
     pub short_caption: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub property_limits: Vec<String>,
     pub version: Option<String>,
     pub vendor: Option<String>,
     pub extension_purpose: Option<String>,
@@ -61,6 +63,8 @@ pub struct CfInfoProperties {
     pub comment: Option<String>,
     pub name_prefix: Option<String>,
     pub update_catalog_address: Option<String>,
+    #[serde(flatten)]
+    pub localized_properties: serde_json::Map<String, serde_json::Value>,
     /// The form slots of the root its line has, by camel-case name: the
     /// common form each names, `null` when empty (`ROOT_FORM_SLOTS`).
     pub forms: serde_json::Map<String, serde_json::Value>,
