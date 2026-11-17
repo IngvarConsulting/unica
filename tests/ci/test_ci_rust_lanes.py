@@ -98,13 +98,12 @@ class RustLaneTests(unittest.TestCase):
                 self.assertFalse((destination / "plan.json").exists())
                 self.assertFalse((destination / "lane.json").exists())
 
-    def test_production_receipt_vendor_configs_are_separate_and_all_admitted(self):
+    def test_production_and_receipt_configs_are_separate_and_admitted(self):
         for host in lanes.HOSTS:
             self.assertEqual(lanes.lanes("pr", host), ("ordinary",))
             for profile in ("release", "large", "all"):
-                self.assertEqual(lanes.lanes(profile, host), ("ordinary", "receipt", "vendor"))
+                self.assertEqual(lanes.lanes(profile, host), ("ordinary", "receipt"))
         for profile in ("queue", "main"):
-            # Vendor moved to the nightly and the tag.
             self.assertEqual(lanes.lanes(profile, "ubuntu-latest"), ("ordinary", "receipt"))
         # The queue has no macOS runner; `main` runs both lanes there.
         self.assertNotIn("macos-15", lanes.profile_hosts("queue"))
@@ -116,7 +115,6 @@ class RustLaneTests(unittest.TestCase):
         self.assertNotIn("--workspace", receipt)
         self.assertNotIn("-E", receipt)
         self.assertIn("-E", lanes.reuse_command("run", Path("/repo"), Path("a.tar.zst"), "receipt", "queue"))
-        self.assertEqual(lanes.archive_command("vendor", Path("a.tar.zst")).count("--locked"), 1)
 
     def test_archive_execution_does_not_accept_cargo_compile_selection(self):
         for lane in lanes.LANES:
@@ -201,7 +199,7 @@ class RustLaneTests(unittest.TestCase):
                 lanes.verify_union(Path(temporary), "large", ["windows-latest"], "a" * 40)
             report = json.loads((Path(temporary) / "verification.json").read_text())
             self.assertFalse(report["mandatoryComplete"])
-            self.assertEqual(len(report["errors"]), 3)
+            self.assertEqual(len(report["errors"]), 2)
             with self.assertRaises(ValueError):
                 lanes.verify_union(Path(temporary), "large", [], "a" * 40)
 
@@ -237,9 +235,8 @@ class HostLaneTests(unittest.TestCase):
     def test_run_host_runs_every_built_lane_after_a_red_one(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            for lane in ("ordinary", "receipt", "vendor"):
-                if lane != "vendor":
-                    lanes.write(root / "work" / lane / "lane.json", manifest(lane, profile="large"))
+            for lane in lanes.LANES:
+                lanes.write(root / "work" / lane / "lane.json", manifest(lane, profile="large"))
             calls = []
 
             def run(_root, prepared, destination, lane, profile, host, index, line, shadow):
@@ -493,8 +490,7 @@ class ArchiveFixtureBinaryTests(unittest.TestCase):
         self.assertEqual([kind for kind, _ in calls], ["run", "list", "run"])
         self.assertEqual(calls[0][1], calls[2][1])
         self.assertIsNone(calls[1][1], "listing does not receive fixture execution inputs")
-        for lane in ("receipt", "vendor"):
-            self.assertEqual(self.run_fixture(lane), [("run", {})])
+        self.assertEqual(self.run_fixture("receipt"), [("run", {})])
 
     def test_first_ordinary_shard_reports_the_doctest_outcome(self):
         def records(directory):
@@ -503,9 +499,8 @@ class ArchiveFixtureBinaryTests(unittest.TestCase):
         self.run_fixture(inspect=lambda directory: seen.update(ordinary=records(directory)))
         self.assertEqual([(entry["fullName"], entry["status"]) for entry in seen["ordinary"]],
                          [("rustdoc::workspace::doctests", "passed")])
-        for lane in ("receipt", "vendor"):
-            self.run_fixture(lane, inspect=lambda directory, lane=lane: seen.update({lane: records(directory)}))
-            self.assertEqual(seen[lane], [])
+        self.run_fixture("receipt", inspect=lambda directory: seen.update(receipt=records(directory)))
+        self.assertEqual(seen["receipt"], [])
 
     def test_missing_half_malformed_escaping_and_wrong_target_descriptors_stop_before_execution(self):
         self.run_fixture(mutate=lambda plan: plan.pop("fixtureBinary"))
@@ -697,7 +692,7 @@ class ShadowArchiveTests(unittest.TestCase):
             prepared.mkdir()
             archive = prepared / "tests.tar.zst"
             archive.write_bytes(b"immutable test archive fixture")
-            package = "ureq" if lane == "vendor" else "unica-coder"
+            package = "unica-coder"
             case = {"binary": package, "name": "lane_case", "ignored": False}
             plan = manifest(lane)
             plan.update(workspace=str(root.resolve()), nextestVersion="fixture nextest", runId="123", attempt="2",
@@ -751,38 +746,37 @@ class ShadowArchiveTests(unittest.TestCase):
         self.assertEqual(len(shadow["records"]), 1)
         self.assertEqual(shadow["frameworkAnnotations"][0]["id"], "unica-coder::outside_lane_ignored")
 
-    def test_vendor_candidate_outside_archive_records_no_shadow_after_full_pass(self):
-        status, commands, shadow, full = self.run_shadow("vendor", ["unica-dcs", "unica-coder"])
+    def test_receipt_candidate_outside_archive_records_no_shadow_after_full_pass(self):
+        status, commands, shadow, full = self.run_shadow("receipt", ["unica-dcs"])
         self.assertEqual(status, 0)
         self.assertEqual(len(commands), 1)
         self.assertEqual(commands[0][2], "run")
-        self.assertEqual(full["records"], [{"id": "ureq::lane_case", "status": "passed"}])
+        self.assertEqual(full["records"], [{"id": "unica-coder::lane_case", "status": "passed"}])
         self.assertEqual(shadow["selected"], 0)
         self.assertTrue(shadow["shadowNotRun"])
         self.assertEqual(shadow["selectedPackages"], [])
 
-    def test_nonempty_vendor_and_receipt_candidates_intersect_lane_once(self):
-        for lane, package in (("vendor", "ureq"), ("receipt", "unica-coder")):
-            with self.subTest(lane=lane):
-                status, commands, shadow, full = self.run_shadow(lane, [package, "unica-dcs"])
-                self.assertEqual(status, 0)
-                self.assertEqual([command[2] for command in commands], ["run", "list", "run"])
-                self.assertEqual(shadow["selectedPackages"], [package])
-                self.assertEqual(shadow["selected"], 1)
-                self.assertFalse(shadow["shadowNotRun"])
-                self.assertEqual(len(full["records"]), 1)
-                for command in commands[1:]:
-                    self.assertEqual(command.count("-E"), 1)
-                    expression = command[command.index("-E") + 1]
-                    self.assertIn(lanes.filters(lane)[1], expression)
-                    self.assertIn(" & ", expression)
-                    self.assertNotIn("package(=unica-dcs)", expression)
+    def test_nonempty_receipt_candidates_intersect_lane_once(self):
+        lane, package = "receipt", "unica-coder"
+        status, commands, shadow, full = self.run_shadow(lane, [package, "unica-dcs"])
+        self.assertEqual(status, 0)
+        self.assertEqual([command[2] for command in commands], ["run", "list", "run"])
+        self.assertEqual(shadow["selectedPackages"], [package])
+        self.assertEqual(shadow["selected"], 1)
+        self.assertFalse(shadow["shadowNotRun"])
+        self.assertEqual(len(full["records"]), 1)
+        for command in commands[1:]:
+            self.assertEqual(command.count("-E"), 1)
+            expression = command[command.index("-E") + 1]
+            self.assertIn(lanes.filters(lane)[1], expression)
+            self.assertIn(" & ", expression)
+            self.assertNotIn("package(=unica-dcs)", expression)
 
     def test_known_shadow_errors_and_mandatory_failure_remain_fail_closed(self):
         with self.assertRaises(subprocess.CalledProcessError):
-            self.run_shadow("vendor", ["ureq"], listing_failure=True)
+            self.run_shadow("receipt", ["unica-coder"], listing_failure=True)
         with self.assertRaisesRegex(ValueError, "required shard test failed"):
-            self.run_shadow("vendor", ["unica-dcs"], full_failure=True)
+            self.run_shadow("receipt", ["unica-dcs"], full_failure=True)
 
 
 class PreviousInventoryTests(unittest.TestCase):
@@ -933,6 +927,26 @@ class PreviousInventoryTests(unittest.TestCase):
         report = self.verify(self.baseline(old, reset=True), "queue", hosts=["ubuntu-latest"])
         self.assertTrue(report["mandatoryComplete"])
         self.assertTrue(report["previousInventory"]["resetSuppressed"])
+
+    def test_retired_ureq_lane_requires_its_explicit_target_removal(self):
+        previous = self.previous("large")
+        vendor_case = "ureq::completed_response_recycling::complete_empty_response_survives_read_reset_failure"
+        for host in self.HOSTS:
+            previous["inventory"]["configurations"].append({
+                "runner": host, "lane": "vendor", "binaries": ["ureq"],
+                "selected": {"ureq": 1}, "cases": [vendor_case],
+            })
+        with self.assertRaisesRegex(ValueError, "vendor: configuration and its results disappeared"):
+            self.verify(previous, "large")
+
+        previous["explanations"]["removedTargets"] = ["ureq"]
+        report = self.verify(previous, "large")
+        self.assertEqual(report["previousInventory"]["removedCases"],
+                         {f"{host}/vendor": [vendor_case] for host in self.HOSTS})
+
+        previous["inventory"]["configurations"][-1]["binaries"].append("unexpected")
+        with self.assertRaisesRegex(ValueError, "vendor: configuration and its results disappeared"):
+            self.verify(previous, "large")
 
     def test_vanished_configuration_and_its_results_fail_within_one_profile(self):
         previous = self.previous()

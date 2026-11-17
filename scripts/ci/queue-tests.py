@@ -110,7 +110,7 @@ def needle(path: str) -> str:
 
 
 def mentions(text: str, root: Path = ROOT) -> list[str]:
-    completed = subprocess.run(["git", "grep", "-lF", text, "--", "crates", "vendor"], cwd=root, capture_output=True, text=True, encoding="utf-8")
+    completed = subprocess.run(["git", "grep", "-lF", text, "--", "crates"], cwd=root, capture_output=True, text=True, encoding="utf-8")
     if completed.returncode not in (0, 1):
         raise OSError(completed.stderr)
     return completed.stdout.split()
@@ -232,12 +232,10 @@ def commands(packages: tuple[str, ...], runner, dependents: tuple[str, ...] = ()
     и `--exclude` Cargo объединял бы признаки по другому набору пакетов, и следующий
     вызов пересобирал бы общие зависимости заново; с одним набором сборка одна.
     """
-    # `ureq` не член рабочей области: его набор идёт из своего манифеста ниже.
-    members = tuple(package for package in packages if package != "ureq")
-    chosen = " | ".join(f"package({package})" for package in members)
-    others = ("--workspace", "-E", f"not ({chosen})") if members else ("--workspace",)
+    chosen = " | ".join(f"package({package})" for package in packages)
+    others = ("--workspace", "-E", f"not ({chosen})") if packages else ("--workspace",)
     planned = [[*runner.rust_command("pr", others), "--no-tests=pass"]]
-    if members:
+    if packages:
         selection = ("--workspace", "-E", chosen)
         planned.append([*runner.rust_command("queue", selection), "--no-tests=pass"])
     if dependents:
@@ -246,8 +244,6 @@ def commands(packages: tuple[str, ...], runner, dependents: tuple[str, ...] = ()
         planned.append([*runner.rust_command("queue", selection), "--no-tests=pass"])
     if {"unica-daemon", "unica-product"} & set(packages):
         planned.append(runner.rust_command("queue", runner.LEDGER_FEATURE_SELECTION))
-    if "ureq" in packages:
-        planned.append(runner.rust_command("queue", runner.UREQ_RECYCLING_SELECTION))
     return planned
 
 

@@ -58,10 +58,6 @@ tests/fixtures/acceptance/workspace-mxl/src/cf/Reports/F06Report/Templates/Platf
 # Keep the native-validated whole-template-removal fixture bytes on every host.
 tests/fixtures/acceptance/workspace-whole-template-removal/** -text -whitespace
 
-# Vendored archive and delivered license hashes describe the original bytes.
-/vendor/ureq/** -text
-/plugins/unica/third-party/licenses/ureq/** -text
-
 # Raw template XML exports and the complete native Report seed retain their bytes.
 /tests/fixtures/formats/platform_xml/2.20/template-new-xml/*.xml -text whitespace=cr-at-eol
 /tests/fixtures/formats/platform_xml/2.20/template-new-xml/seed/** -text whitespace=cr-at-eol

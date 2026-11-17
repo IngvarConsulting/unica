@@ -20,7 +20,7 @@ queue = importlib.util.module_from_spec(SPEC)
 sys.modules["queue_tests"] = queue
 SPEC.loader.exec_module(queue)
 
-DIRS = {"crates/a": "unica-a", "crates/b": "unica-b", "crates/coder": "unica-coder", "vendor/ureq": "ureq"}
+DIRS = {"crates/a": "unica-a", "crates/b": "unica-b", "crates/coder": "unica-coder"}
 DEPENDENTS = {"unica-a": {"unica-b", "unica-coder"}, "unica-b": {"unica-coder"}}
 
 
@@ -53,7 +53,7 @@ class ChoiceTests(unittest.TestCase):
 
     def test_the_dependent_filter_keeps_integration_targets_without_the_ledger(self) -> None:
         self.assertEqual(queue.DEPENDENT_FILTER, "kind(test) & not binary(daemon_receipt_ledger)")
-        runner = mock.Mock(LEDGER_FEATURE_SELECTION=("ledger",), UREQ_RECYCLING_SELECTION=("ureq",))
+        runner = mock.Mock(LEDGER_FEATURE_SELECTION=("ledger",))
         runner.rust_command.side_effect = lambda profile, selection: [profile, *selection]
         planned = queue.commands(("unica-a",), runner, ("unica-coder",))
         self.assertEqual(planned[-1], [
@@ -163,7 +163,7 @@ class ChoiceTests(unittest.TestCase):
 
     def test_every_crate_selected_runs_the_full_set_in_the_real_workspace(self) -> None:
         directories, dependents = queue.workspace()
-        members = [path for path, name in directories.items() if name != "ureq"]
+        members = list(directories)
         choice = queue.choose([f"{path}/Cargo.toml" for path in members], directories, dependents)
         self.assertTrue(choice.full, choice.reason)
         # Один незатронутый крейт оставляет обычный выбор.
@@ -172,23 +172,23 @@ class ChoiceTests(unittest.TestCase):
         self.assertNotIn(directories[members[0]], choice.packages)
 
     def test_small_runs_everywhere_and_selected_crates_are_not_run_twice(self) -> None:
-        runner = mock.Mock(LEDGER_FEATURE_SELECTION=("ledger",), UREQ_RECYCLING_SELECTION=("ureq",))
+        runner = mock.Mock(LEDGER_FEATURE_SELECTION=("ledger",))
         runner.rust_command.side_effect = lambda profile, selection: [profile, *selection]
         self.assertEqual(queue.commands((), runner), [["pr", "--workspace", "--no-tests=pass"]])
         self.assertEqual(queue.commands(("unica-a", "unica-b"), runner), [
             ["pr", "--workspace", "-E", "not (package(unica-a) | package(unica-b))", "--no-tests=pass"],
             ["queue", "--workspace", "-E", "package(unica-a) | package(unica-b)", "--no-tests=pass"],
         ])
-        planned = queue.commands(("unica-daemon", "ureq"), runner)
+        planned = queue.commands(("unica-daemon",), runner)
         self.assertEqual(planned[1], ["queue", "--workspace", "-E", "package(unica-daemon)", "--no-tests=pass"])
-        self.assertEqual(planned[2:], [["queue", "ledger"], ["queue", "ureq"]])
+        self.assertEqual(planned[2:], [["queue", "ledger"]])
         # Фасад журнала живёт в демоне: правка нижнего слоя его не запускает.
         self.assertNotIn(["queue", "ledger"], queue.commands(("unica-coder",), runner))
 
     def test_every_workspace_call_builds_the_same_package_set(self) -> None:
         # С `-p` или `--exclude` Cargo объединяет признаки по другому набору
         # пакетов и пересобирает общие зависимости в следующем вызове.
-        runner = mock.Mock(LEDGER_FEATURE_SELECTION=("ledger",), UREQ_RECYCLING_SELECTION=("ureq",))
+        runner = mock.Mock(LEDGER_FEATURE_SELECTION=("ledger",))
         runner.rust_command.side_effect = lambda profile, selection: [profile, *selection]
         planned = queue.commands(("unica-a", "unica-coder"), runner, ("unica-b",))
         self.assertEqual(len(planned), 3)
@@ -197,20 +197,6 @@ class ChoiceTests(unittest.TestCase):
                 self.assertEqual(command[1], "--workspace")
                 self.assertNotIn("-p", command)
                 self.assertNotIn("--exclude", command)
-
-    def test_a_vendored_patch_is_selected_in_the_real_workspace(self) -> None:
-        directories, dependents = queue.workspace()
-        self.assertEqual(directories["vendor/ureq"], "ureq")
-        choice = queue.choose(["vendor/ureq/src/stream.rs"], directories, dependents)
-        self.assertFalse(choice.full)
-        self.assertEqual(choice.packages, ("ureq",))
-        # Cargo не принимает `-p` для пакета вне рабочей области.
-        runner = queue.load_runner()
-        planned = queue.commands(choice.packages, runner, choice.dependents)
-        self.assertIn(runner.rust_command("queue", runner.UREQ_RECYCLING_SELECTION), planned)
-        for command in planned:
-            self.assertNotIn(["-p", "ureq"], [command[index:index + 2] for index in range(len(command) - 1)], command)
-            self.assertNotIn(["--exclude", "ureq"], [command[index:index + 2] for index in range(len(command) - 1)], command)
 
     def test_a_failed_diff_runs_everything(self) -> None:
         with tempfile.TemporaryDirectory() as directory, mock.patch.dict(os.environ, {"GITHUB_OUTPUT": str(Path(directory) / "o")}):
