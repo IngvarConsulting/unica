@@ -108,7 +108,7 @@ async function check(at, kind, expected, message) {
 const assert = require("node:assert/strict");
 const vm = require("node:vm");
 const page = require("node:fs").readFileSync(0, "utf8");
-const source = page.slice(page.indexOf("async function fill("), page.indexOf("function highlightTreeRow"));
+const source = page.slice(page.indexOf("function handlerTarget("), page.indexOf("function highlightTreeRow"));
 let data;
 const context = vm.createContext({
   document: {createElement: () => ({remove() {}})},
@@ -116,6 +116,7 @@ const context = vm.createContext({
   view: async () => ({result: {ok: true, data}}),
   makeRow: (label, at) => ({label, at}),
   markLeaf: () => {}, shortLabel: () => "", isGraph: () => false,
+  esc: value => value,
 });
 vm.runInContext(source, context);
 (async () => {
@@ -127,6 +128,19 @@ vm.runInContext(source, context);
     const handlers = rows.filter(row => row.label === "Handler");
     assert.equal(handlers.length, target ? 1 : 0);
     if (target) assert.equal(handlers[0].at, target);
+    assert.equal(context.handlerTarget(data), target);
+  }
+  const target = "main:Catalog.Items.Form.Item.Module.Form.Method.Open";
+  for (const [binding, state, expected] of [
+    ["property", "implemented", target],
+    ["property", "missing", undefined],
+    ["notifyDescription", "implemented", undefined],
+  ]) {
+    data = {kind: "Event", props: {binding, state, implementationAt: target}};
+    assert.equal(context.handlerTarget(data), expected);
+    const rows = [];
+    await context.fill({appendChild: row => rows.push(row)}, "main:Catalog.Items.Form.Item.Event.Open");
+    assert.equal(rows.filter(row => row.label === "Handler").length, expected ? 1 : 0);
   }
 })().catch(error => {console.error(error); process.exitCode = 1;});
 """

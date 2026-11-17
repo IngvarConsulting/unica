@@ -60,7 +60,7 @@ fn a_queue_is_written_and_back_to_the_platform_export() {
     );
 
     let node = view(&runtime, &fixture, "main:Queue.Probe");
-    assert_eq!(node["props"]["Synonym"], "Проба");
+    assert_eq!(node["props"]["Synonym"], "ru = 'Проба'");
     assert_eq!(node["props"]["Transactioned"], true);
     assert_eq!(node["props"]["ProcessingPortionSize"], 1000);
     assert_eq!(node["props"]["AutoProcessing"], true);
@@ -77,7 +77,7 @@ fn a_queue_is_written_and_back_to_the_platform_export() {
     }
     assert_eq!(
         view(&runtime, &fixture, "main:Queue.Probe.Dimension.Измерение")["props"]["synonym"],
-        "Измерение"
+        "ru = 'Измерение'"
     );
 
     let path = fixture.source.join("Queues/Probe.xml");

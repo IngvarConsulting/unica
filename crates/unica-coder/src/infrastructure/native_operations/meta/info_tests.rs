@@ -451,7 +451,7 @@ fn typed_info_keeps_localized_root_properties_as_text() {
 
     assert_eq!(
         values,
-        serde_json::json!([{"key": "Synonym", "value": "Номенклатура"}])
+        serde_json::json!([{"key": "Synonym", "value": "ru = 'Номенклатура'"}])
     );
 }
 

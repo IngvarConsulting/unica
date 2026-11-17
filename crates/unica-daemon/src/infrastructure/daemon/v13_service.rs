@@ -214,7 +214,11 @@ impl CanonicalInvocationService for CanonicalV13ReadService {
                 | ToolIdentity::Search
                 | ToolIdentity::Check
                 | ToolIdentity::Diff
-        ) {
+        ) && !(invocation.tool() == ToolIdentity::View
+            && result.ok
+            && result.source_text.is_some()
+            && result.data.as_ref().and_then(|data| data["kind"].as_str()) == Some("Body"))
+        {
             result.rev = None;
         }
         Ok(result)
@@ -1188,6 +1192,7 @@ pub(super) fn apply_plan_error_result(error: &ApplyPlanError) -> DomainResult {
     let at = error.path().map(str::to_string);
     let code = match error.kind() {
         ApplyPlanErrorKind::BadValue => RefusalCode::BadValue,
+        ApplyPlanErrorKind::Conflict => RefusalCode::Conflict,
         ApplyPlanErrorKind::NotFound => RefusalCode::NotFound,
         ApplyPlanErrorKind::ProviderUnavailable => RefusalCode::ProviderUnavailable,
         ApplyPlanErrorKind::InvalidState => RefusalCode::InvalidState,

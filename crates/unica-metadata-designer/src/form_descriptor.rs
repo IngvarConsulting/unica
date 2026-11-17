@@ -258,7 +258,7 @@ fn verify(
                 expected.sort();
                 observed == expected
             }),
-            DescriptorPropertyValue::Parts(_) => false,
+            DescriptorPropertyValue::Parts(_) | DescriptorPropertyValue::Languages(_) => false,
         };
         if !matches {
             return Err(format!(

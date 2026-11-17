@@ -15,7 +15,7 @@ fn direct<'a, 'input>(parent: Node<'a, 'input>, tag: &str) -> Result<Node<'a, 'i
     }
 }
 
-fn descriptor_properties<'a, 'input>(
+pub(crate) fn descriptor_properties<'a, 'input>(
     document: &'a Document<'input>,
     kind: &str,
 ) -> Result<Node<'a, 'input>, String> {

@@ -484,12 +484,12 @@ impl DiagnosticProvider for BslAnalyzerDiagnosticProvider<'_> {
         &BSL_ANALYZER_DIAGNOSTIC_DESCRIPTOR
     }
 
-    fn editor_finding(
+    fn editor_message(
         &self,
         code: &str,
         severity: unica_diagnostics::model::DiagnosticSeverity,
-    ) -> unica_diagnostics::model::EditorFinding {
-        crate::editor_codes::editor_finding(code, severity)
+    ) -> &'static str {
+        crate::editor_codes::editor_message(code, severity)
     }
 
     fn execute(

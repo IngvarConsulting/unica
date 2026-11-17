@@ -729,6 +729,11 @@ pub fn parse_template_set(
                     .at_path(location.clone())
             })?;
         }
+        if field == "synonym" {
+            unica_metadata::parse_nstr(text).map_err(|message| {
+                ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message).at_path(location.clone())
+            })?;
+        }
         check_input_field(values_shape, field, value, &location)?;
     }
     Ok(MetadataPlanKind::TemplateSet {
@@ -1418,6 +1423,15 @@ pub fn parse_attribute_set(
             "attribute.set values must not repeat the target name",
         )
         .at_path(format!("ops[{op_index}].args.values.name")));
+    }
+    if values.contains_key("toolTip")
+        && binding.source_kind != unica_source_contract::SourceSetKind::Configuration
+    {
+        return Err(ApplyPlanError::new(
+            ApplyPlanErrorKind::BadValue,
+            "toolTip requires a catalog tabular-section attribute in an ordinary configuration",
+        )
+        .at_path(format!("ops[{op_index}].args.values.toolTip")));
     }
     let mut legacy = json!({"op": "update", "collection": "attributes", "elements": [values]});
     if let Some(section) = scope {

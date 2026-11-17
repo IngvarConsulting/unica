@@ -42,6 +42,10 @@ pub enum OperationApplicability {
     Subsystem,
     SupportRule,
 }
+pub fn support_configuration_root(segments: &[unica_address::address::AddressSegment]) -> bool {
+    matches!(segments, [root] if root.kind() == NodeKind::Configuration && root.name().is_none())
+}
+
 /// The nodes that carry an own vendor support record: a top-level metadata
 /// object, and below it a form, template or command, an attribute, a tabular
 /// section and its attribute, a dimension, a resource, and a nested
@@ -87,7 +91,7 @@ impl OperationApplicability {
             Self::Metadata => "`Kind.Name`",
             Self::MetadataOrCommonTemplate => "`Kind.Name` or `CommonTemplate.Name`",
             Self::SupportRule => {
-                "`Kind.Name` or its node with an own support record: `.Form.F`, `.Template.T`, `.Command.C`, `.Attribute.A`, `.TabularSection.T[.Attribute.A]`, `.Dimension.D`, `.Resource.R`; `Subsystem.A[.Subsystem.B…]`"
+                "`Configuration` of a configuration, `Kind.Name` or its node with an own support record: `.Form.F`, `.Template.T`, `.Command.C`, `.Attribute.A`, `.TabularSection.T[.Attribute.A]`, `.Dimension.D`, `.Resource.R`; `Subsystem.A[.Subsystem.B…]`"
             }
             Self::MetadataOrRoleOrSubsystem => {
                 "`Configuration`, `Kind.Name`, `CommonForm.Name.Metadata`, `Kind.Name.Form.Name.Metadata`, `Role.Name` or `Subsystem.Name[.Subsystem.Child]`"
@@ -243,7 +247,11 @@ impl OperationApplicability {
                             segment.kind() == NodeKind::Subsystem && segment.name().is_some()
                         }))
             }
-            Self::SupportRule => support_record_path(segments),
+            Self::SupportRule => {
+                (site.source().kind() == SourceSetKind::Configuration
+                    && support_configuration_root(segments))
+                    || support_record_path(segments)
+            }
             Self::Event => {
                 terminal.kind() == NodeKind::Event
                     && terminal.name().is_some()

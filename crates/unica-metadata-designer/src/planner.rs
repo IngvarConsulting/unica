@@ -1379,6 +1379,23 @@ pub fn set_ml_property(
     })
 }
 
+/// Writes a multilingual property of the descriptor's own `<Properties>` as
+/// exactly the given languages (#2163).
+fn set_localized_property(
+    text: &str,
+    tag: &str,
+    indent: &str,
+    items: &[unica_metadata::LocalizedItem],
+) -> Option<String> {
+    let values = items
+        .iter()
+        .map(|item| (item.language.clone(), item.content.clone()))
+        .collect::<Vec<_>>();
+    edit_descriptor_property(text, tag, |source, property| {
+        unica_xml_format::localized::replace_language_values(source, property, indent, &values)
+    })
+}
+
 /// Sets a plain-text property of the descriptor's own `<Properties>`,
 /// spelled with the element name the source uses.
 fn set_plain_property(text: &str, tag: &str, value: &str) -> Option<String> {
@@ -1399,6 +1416,48 @@ fn set_plain_property(text: &str, tag: &str, value: &str) -> Option<String> {
             )
         }
     })
+}
+
+fn set_configuration_name(source: &str, value: &str) -> Result<String, String> {
+    use unica_source_designer::owner::{validate_source_set_owner, MD_CLASSES_NS};
+    use unica_xml_format::read::{child_element_in_namespace, child_elements_in_namespace};
+
+    let doc = roxmltree::Document::parse(source).map_err(|error| error.to_string())?;
+    let root = doc.root_element();
+    validate_source_set_owner(
+        root,
+        SourceSetKind::Configuration,
+        Path::new("Configuration.xml"),
+    )
+    .map_err(|error| error.message)?;
+    let artifact = child_element_in_namespace(root, "Configuration", MD_CLASSES_NS)
+        .expect("validated configuration owner");
+    let properties = child_elements_in_namespace(artifact, "Properties", MD_CLASSES_NS);
+    let [properties] = properties.as_slice() else {
+        return Err("the configuration root must have one Properties element".into());
+    };
+    let names = child_elements_in_namespace(*properties, "Name", MD_CLASSES_NS);
+    let [name] = names.as_slice() else {
+        return Err("the configuration root must have one Name property".into());
+    };
+    if name.children().any(|child| child.is_element()) {
+        return Err("the configuration Name must contain only text".into());
+    }
+    // Configuration view reports the first DOM text node. Use the same
+    // value for the no-op check, including when comments split the text.
+    if name.text().unwrap_or_default() == value {
+        return Ok(source.to_string());
+    }
+
+    let range = name.range();
+    let tag = source[range.start + 1..range.end]
+        .split(|ch: char| ch.is_whitespace() || ch == '>' || ch == '/')
+        .next()
+        .expect("parsed Name element");
+    let escaped = unica_xml_format::text::escape_xml_text(value).replace('\r', "&#13;");
+    let mut updated = source.to_string();
+    updated.replace_range(range, &format!("<{tag}>{escaped}</{tag}>"));
+    Ok(updated)
 }
 
 /// Rewrites the named parts of the composite property `tag` of the first
@@ -1920,13 +1979,8 @@ fn stage_descriptor_properties(
             let mut text = source.clone();
             let indent = "\t\t\t";
             if let Some(synonym) = synonym {
-                let lang = unica_source_designer::language::staged_text_language(
-                    staged,
-                    source_kind,
-                    op_index,
-                )?;
                 text =
-                    set_ml_property(&text, "Synonym", indent, &lang, synonym).ok_or_else(|| {
+                    set_localized_property(&text, "Synonym", indent, synonym).ok_or_else(|| {
                         ApplyPlanError::new(
                             ApplyPlanErrorKind::InvalidSource,
                             "the role descriptor has no Synonym property",
@@ -1982,40 +2036,17 @@ fn stage_descriptor_properties(
                 )
                 .at_path(at_path.clone())
             };
-            let lang = if synonym.is_some() || explanation.is_some() {
-                Some(unica_source_designer::language::staged_text_language(
-                    staged,
-                    source_kind,
-                    op_index,
-                )?)
-            } else {
-                None
-            };
             if let Some(synonym) = synonym {
-                text = set_ml_property(
-                    &text,
-                    "Synonym",
-                    indent,
-                    lang.as_deref()
-                        .expect("localized patch retained its language"),
-                    synonym,
-                )
-                .ok_or_else(|| missing("Synonym"))?;
+                text = set_localized_property(&text, "Synonym", indent, synonym)
+                    .ok_or_else(|| missing("Synonym"))?;
             }
             if let Some(comment) = comment {
                 text = set_plain_property(&text, "Comment", comment)
                     .ok_or_else(|| missing("Comment"))?;
             }
             if let Some(explanation) = explanation {
-                text = set_ml_property(
-                    &text,
-                    "Explanation",
-                    indent,
-                    lang.as_deref()
-                        .expect("localized patch retained its language"),
-                    explanation,
-                )
-                .ok_or_else(|| missing("Explanation"))?;
+                text = set_localized_property(&text, "Explanation", indent, explanation)
+                    .ok_or_else(|| missing("Explanation"))?;
             }
             if let Some(value) = include_help_in_contents {
                 text = set_plain_property(&text, "IncludeHelpInContents", &value.to_string())
@@ -2042,38 +2073,24 @@ fn stage_descriptor_properties(
                 )
                 .at_path(at_path.clone())
             };
-            let lang = if changes.iter().any(|(property, _)| property.localized()) {
-                Some(unica_source_designer::language::staged_text_language(
-                    staged,
-                    source_kind,
-                    op_index,
-                )?)
-            } else {
-                None
-            };
             for (property, value) in changes {
                 let tag = property.names()[0];
-                let value = match value {
-                    DescriptorPropertyValue::Text(value) => value.clone(),
-                    DescriptorPropertyValue::Boolean(value) => value.to_string(),
-                    DescriptorPropertyValue::Parts(parts) => {
-                        text = set_property_parts(&text, tag, parts).ok_or_else(|| missing(tag))?;
-                        continue;
+                text = match value {
+                    DescriptorPropertyValue::Languages(items) => {
+                        set_localized_property(&text, tag, "\t\t\t", items)
                     }
-                    // The configuration root profile has no list property.
+                    DescriptorPropertyValue::Text(value) if tag == "Name" => {
+                        Some(set_configuration_name(&text, value).map_err(|message| {
+                            ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)
+                                .at_path(at_path.clone())
+                        })?)
+                    }
+                    DescriptorPropertyValue::Text(value) => set_plain_property(&text, tag, value),
+                    DescriptorPropertyValue::Boolean(value) => {
+                        set_plain_property(&text, tag, &value.to_string())
+                    }
+                    DescriptorPropertyValue::Parts(parts) => set_property_parts(&text, tag, parts),
                     DescriptorPropertyValue::List(_) => return Err(missing(tag)),
-                };
-                text = if property.localized() {
-                    set_ml_property(
-                        &text,
-                        tag,
-                        "\t\t\t",
-                        lang.as_deref()
-                            .expect("localized patch retained its language"),
-                        &value,
-                    )
-                } else {
-                    set_plain_property(&text, tag, &value)
                 }
                 .ok_or_else(|| missing(tag))?;
             }
@@ -2645,12 +2662,12 @@ fn stage_template_set(
     };
     let indent = "\t\t\t";
     if let Some(synonym) = string_value("synonym")? {
-        let lang = unica_source_designer::language::staged_text_language(
-            staged,
-            authority.source_kind(),
-            op_index,
-        )?;
-        text = set_ml_property(&text, "Synonym", indent, &lang, &synonym).ok_or_else(|| {
+        // The whole value in NStr form names its languages (#2163).
+        let items = unica_metadata::parse_nstr(&synonym).map_err(|message| {
+            ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message)
+                .at_path(format!("ops[{op_index}].args.values.synonym"))
+        })?;
+        text = set_localized_property(&text, "Synonym", indent, &items).ok_or_else(|| {
             ApplyPlanError::new(
                 ApplyPlanErrorKind::InvalidSource,
                 "the template descriptor has no Synonym property",
@@ -3151,6 +3168,23 @@ fn stage_help_create<R: MetadataPlanningRead>(
 
 #[cfg(test)]
 mod prefixed_property_block_tests {
+    #[test]
+    fn configuration_name_noop_uses_the_value_observed_by_view() {
+        let prefixed = concat!(
+            "<md:MetaDataObject xmlns:md=\"http://v8.1c.ru/8.3/MDClasses\">",
+            "<md:Configuration><md:Properties><md:Name>A<!--memo-->B</md:Name></md:Properties>",
+            "</md:Configuration></md:MetaDataObject>"
+        );
+        assert_eq!(
+            super::set_configuration_name(prefixed, "A").unwrap(),
+            prefixed
+        );
+        assert_eq!(
+            super::set_configuration_name(prefixed, "AB").unwrap(),
+            prefixed.replace("A<!--memo-->B", "AB")
+        );
+    }
+
     #[test]
     fn a_prefixed_descriptor_keeps_its_prefix_in_the_replaced_block() {
         let prefixed = concat!(

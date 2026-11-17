@@ -340,7 +340,7 @@ mod tests {
         );
         for input in [
             json!({"items":[{"name":"Value","type":"CatalogRef.Items"}]}),
-            json!({"items":[{"name":"Value","type":"string(40)","title":"Value"}]}),
+            json!({"items":[{"name":"Value","type":"string(40)","title":"en = 'Value'"}]}),
         ] {
             assert!(contract.normalize(&input, "args").is_ok());
         }

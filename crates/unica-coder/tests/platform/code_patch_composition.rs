@@ -2038,6 +2038,7 @@ fn method_replacement_owns_supplied_documentation_and_repeats_without_duplicates
                 );
                 let expected = format!("{prefix}{expected_doc}&AtServer\nProcedure Base()\n    Value = 2;\nEndProcedure\n{suffix}").replace('\n', eol);
                 let operation = CodePlanOperation::Replace(CodeReplaceArgs {
+                    if_rev: None,
                     at: unica_address::address::QualifiedAddress::parse(
                         "main:CommonModule.Sample.Method.Base",
                     )
@@ -2122,6 +2123,7 @@ fn framed_method_body_text_replaces_its_closing_comment_and_repeats_as_noop() {
                 let before = format!("{read}{neighbor}");
                 let edited = read.replace("1;", "2;");
                 let operation = CodePlanOperation::Replace(CodeReplaceArgs {
+                    if_rev: None,
                     at: unica_address::address::QualifiedAddress::parse(
                         "main:CommonModule.Sample.Method.Base.Body",
                     )
@@ -2146,6 +2148,7 @@ fn method_body_replacement_keeps_executable_tail_on_its_closing_line() {
         let before =
             format!("Procedure Base() EndProcedure Procedure Neighbor() EndProcedure{eol}");
         let operation = CodePlanOperation::Replace(CodeReplaceArgs {
+            if_rev: None,
             at: unica_address::address::QualifiedAddress::parse(
                 "main:CommonModule.Sample.Method.Base.Body",
             )
@@ -4068,6 +4071,30 @@ fn staged_code_effects_omit_a_module_restored_to_its_original_preimage() {
     fixture.cleanup();
 }
 
+/// rule: INV.SOURCE.CODE-REPLACE-TEXT-REVISION
+#[test]
+fn a_replacement_with_an_old_text_revision_preserves_an_external_edit() {
+    let original = b"Procedure Base()\nEndProcedure\n";
+    let fixture = staged_code_fixture("stale-text-revision", original);
+    let module = fixture.source.join("CommonModules/Sample/Ext/Module.bsl");
+    let old_revision = unica_source_contract::read::module_text_revision(original);
+    let external = b"Procedure Base()\r\nEndProcedure\r\n";
+    fs::write(&module, external).unwrap();
+    let args = json!({
+        "at": "main:CommonModule.Sample.Body",
+        "text": "Procedure Edited()\nEndProcedure\n",
+        "ifRev": old_revision,
+    });
+    let guarded = parse_code_plan_operation("code.replace", &args, 0, "main").unwrap();
+    let admission = staged_code_admission(&fixture, true);
+    let error = plan_admitted_code(&admission, &fixture.binding, &[guarded]).unwrap_err();
+    assert_eq!(error.kind(), ApplyPlanErrorKind::Conflict);
+    assert_eq!(error.path(), Some("ops[0].args.ifRev"));
+    assert_eq!(fs::read(&module).unwrap(), external);
+    drop(admission);
+    fixture.cleanup();
+}
+
 #[test]
 fn shared_apply_plan_error_and_effect_contract_is_complete() {
     let fixture = staged_code_fixture("error-projections", b"Procedure Base()\nEndProcedure\n");
@@ -4547,6 +4574,7 @@ fn staged_insert(
 
 fn staged_replace(at: &str, text: &str, anchor: Option<&str>) -> CodePlanOperation {
     CodePlanOperation::Replace(CodeReplaceArgs {
+        if_rev: None,
         at: unica_address::address::QualifiedAddress::parse(at).unwrap(),
         text: text.to_string(),
         anchor: anchor.map(str::to_string),

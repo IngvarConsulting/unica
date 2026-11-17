@@ -327,6 +327,7 @@ fn parse_panels_operation(
 fn parse_home_page_operation(
     args: &Map<String, Value>,
     op_index: usize,
+    source_set: &str,
 ) -> Result<MetadataResourcePlan, ApplyPlanError> {
     let values = values_object(args, op_index)?;
     let template = values
@@ -350,7 +351,14 @@ fn parse_home_page_operation(
         items
             .iter()
             .enumerate()
-            .map(|(index, item)| home_page_item(item, &format!("values.{key}[{index}]"), op_index))
+            .map(|(index, item)| {
+                home_page_item(
+                    item,
+                    &format!("values.{key}[{index}]"),
+                    op_index,
+                    source_set,
+                )
+            })
             .collect()
     };
     let page = HomePage {
@@ -374,6 +382,7 @@ fn home_page_item(
     item: &Value,
     path: &str,
     op_index: usize,
+    source_set: &str,
 ) -> Result<HomePageItem, ApplyPlanError> {
     let item = item
         .as_object()
@@ -382,6 +391,22 @@ fn home_page_item(
         .get("form")
         .and_then(Value::as_str)
         .ok_or_else(|| bad(op_index, &format!("{path}.form"), "`form` is required"))?;
+    let form = if form.contains(':') {
+        QualifiedAddress::parse(form)
+            .ok()
+            .filter(|address| address.source_set() == source_set)
+            .map(|address| address.logical_path())
+            .filter(|logical| home_page_reference(logical, false).is_some())
+            .ok_or_else(|| {
+                bad(
+                    op_index,
+                    &format!("{path}.form"),
+                    format!("expected a qualified form address in source set `{source_set}`"),
+                )
+            })?
+    } else {
+        form.to_string()
+    };
     let height = match item.get("height") {
         None => 10,
         Some(height) => height
@@ -423,7 +448,7 @@ fn home_page_item(
         roles.push((name.to_string(), visible));
     }
     Ok(HomePageItem {
-        form: form.to_string(),
+        form,
         height,
         common,
         roles,
@@ -689,7 +714,7 @@ pub fn parse_subsystem_operation(
         return if operation == "panels.set" {
             parse_panels_operation(args, op_index)
         } else {
-            parse_home_page_operation(args, op_index)
+            parse_home_page_operation(args, op_index, target.source_set())
         };
     }
     if operation == "subsystem.create" {
@@ -763,6 +788,7 @@ pub fn parse_support_operation(
     args: &Map<String, Value>,
     op_index: usize,
     source_set_name: &str,
+    source_kind: unica_source_contract::SourceSetKind,
 ) -> Result<MetadataResourcePlan, ApplyPlanError> {
     let target =
         unica_source_contract::proposal::input::qualified_target(args, op_index, source_set_name)?;
@@ -833,11 +859,19 @@ pub fn parse_support_operation(
                     ))
                 }
             };
+            if source_kind == unica_source_contract::SourceSetKind::Configuration
+                && unica_metadata::applicability::support_configuration_root(target.segments())
+            {
+                return Ok(MetadataResourcePlan::SupportRule {
+                    target: "Configuration".to_string(),
+                    rule,
+                });
+            }
             if !unica_metadata::applicability::support_record_path(target.segments()) {
                 return Err(bad(
                     op_index,
                     "at",
-                    "supportRule.set targets a node with its own support record: a top-level metadata object, its form, template, command, attribute, tabular section and its attribute, dimension or resource, or a nested subsystem",
+                    "supportRule.set targets a node with its own support record: the configuration root, a top-level metadata object, its form, template, command, attribute, tabular section and its attribute, dimension or resource, or a nested subsystem",
                 ));
             }
             let raw = target
@@ -877,7 +911,7 @@ fn subsystem_stub_xml(name: &str, format_version: &str, uuid: &str) -> String {
 }
 
 /// The uuid of the support record of `target`: the root uuid of the
-/// descriptor of an object, form, template, command or nested subsystem, or
+/// descriptor of the configuration, an object, form, template, command or nested subsystem, or
 /// the uuid of an attribute, tabular section, dimension or resource declared
 /// in its owner's descriptor. A form proves its registration first, as
 /// before; a declared node is found by its declared chain.
@@ -890,6 +924,23 @@ fn support_record_uuid(
     let not_found = |message: String| {
         ApplyPlanError::new(ApplyPlanErrorKind::NotFound, message).at_path(at_path.to_string())
     };
+    let read = |staged: &mut ApplyProposal<'_>, relative: &std::path::Path| {
+        staged
+            .read(relative)
+            .map_err(|error| ApplyPlanError::staging(error, at_path.to_string()))
+    };
+    if target == "Configuration" {
+        let path = std::path::Path::new("Configuration.xml");
+        let descriptor = read(staged, path)?
+            .ok_or_else(|| not_found("Configuration.xml was not found".to_string()))?;
+        return crate::support::configuration_support_uuid(&descriptor).ok_or_else(|| {
+            ApplyPlanError::new(
+                ApplyPlanErrorKind::InvalidSource,
+                "Configuration.xml carries no valid configuration uuid",
+            )
+            .at_path(at_path.to_string())
+        });
+    }
     let parts: Vec<&str> = target.split('.').collect();
     let [owner_kind, owner_name, rest @ ..] = parts.as_slice() else {
         return Err(not_found("support target has no owner".to_string()));
@@ -903,11 +954,6 @@ fn support_record_uuid(
     .map_err(|message| {
         ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message).at_path(at_path.to_string())
     })?;
-    let read = |staged: &mut ApplyProposal<'_>, relative: &std::path::Path| {
-        staged
-            .read(relative)
-            .map_err(|error| ApplyPlanError::staging(error, at_path.to_string()))
-    };
     let mut descriptor = read(staged, &relative)?
         .ok_or_else(|| not_found("metadata descriptor was not found".to_string()))?;
     let mut chain = String::new();
