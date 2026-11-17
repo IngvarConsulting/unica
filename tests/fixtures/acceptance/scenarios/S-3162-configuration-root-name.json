@@ -1,0 +1,336 @@
+{
+  "id": "S-3162-configuration-root-name",
+  "issue": 3162,
+  "area": "Свойства конфигурации",
+  "task": "Изменить имя корня, сохранив его адрес, UUID и регистрацию; перечитать два значения, отклонить недопустимый символ и проверить байтовую идемпотентность и сохранность сопутствующих файлов.",
+  "workspace": "tests/fixtures/acceptance/workspace-nested-member-properties",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Configuration"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/name",
+          "eq": "CorpusConfiguration"
+        }
+      ],
+      "captures": {
+        "original": {
+          "kind": "sha256",
+          "file": "src/Configuration.xml"
+        },
+        "sidecar": {
+          "kind": "sha256",
+          "file": "src/ConfigDumpInfo.xml"
+        },
+        "interface": {
+          "kind": "sha256",
+          "file": "src/Ext/ClientApplicationInterface.xml"
+        },
+        "module": {
+          "kind": "sha256",
+          "file": "src/Ext/ManagedApplicationModule.bsl"
+        },
+        "child": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Items.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Configuration.Can.props.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/Name/type",
+          "eq": "string"
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/name/type",
+          "eq": "string"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Name": "Недопустимо\u0000"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: text does not match the supported argument grammar",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.values.Name"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "$capture.original"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Name": "Имя корня"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "awaitTask": true,
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "$capture.original"
+        }
+      ],
+      "captures": {
+        "firstToken": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.firstToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "awaitTask": true,
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Configuration"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:Configuration"
+        },
+        {
+          "pointer": "/data/props/name",
+          "eq": "Имя корня"
+        }
+      ],
+      "captures": {
+        "afterFirst": {
+          "kind": "sha256",
+          "file": "src/Configuration.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "name": "NewConfiguration"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "awaitTask": true,
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "$capture.afterFirst"
+        }
+      ],
+      "captures": {
+        "secondToken": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.secondToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "awaitTask": true,
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Configuration"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:Configuration"
+        },
+        {
+          "pointer": "/data/props/name",
+          "eq": "NewConfiguration"
+        }
+      ],
+      "captures": {
+        "afterSecond": {
+          "kind": "sha256",
+          "file": "src/Configuration.xml"
+        }
+      },
+      "fileAssertions": [
+        {
+          "kind": "xml",
+          "path": "src/Configuration.xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Configuration[@uuid='829019ad-9973-4df8-bd04-63ec82ad0830']/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/*",
+          "eq": [
+            "Русский",
+            "Items",
+            "Orders",
+            "Entries",
+            "Facts",
+            "Movements"
+          ]
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ConfigDumpInfo.xml",
+          "eq": "$capture.sidecar"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "eq": "$capture.interface"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Ext/ManagedApplicationModule.bsl",
+          "eq": "$capture.module"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Items.xml",
+          "eq": "$capture.child"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Name": "NewConfiguration"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "awaitTask": true,
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 0
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "$capture.afterSecond"
+        }
+      ]
+    }
+  ]
+}

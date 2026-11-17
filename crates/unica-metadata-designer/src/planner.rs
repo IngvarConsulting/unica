@@ -1418,6 +1418,48 @@ fn set_plain_property(text: &str, tag: &str, value: &str) -> Option<String> {
     })
 }
 
+fn set_configuration_name(source: &str, value: &str) -> Result<String, String> {
+    use unica_source_designer::owner::{validate_source_set_owner, MD_CLASSES_NS};
+    use unica_xml_format::read::{child_element_in_namespace, child_elements_in_namespace};
+
+    let doc = roxmltree::Document::parse(source).map_err(|error| error.to_string())?;
+    let root = doc.root_element();
+    validate_source_set_owner(
+        root,
+        SourceSetKind::Configuration,
+        Path::new("Configuration.xml"),
+    )
+    .map_err(|error| error.message)?;
+    let artifact = child_element_in_namespace(root, "Configuration", MD_CLASSES_NS)
+        .expect("validated configuration owner");
+    let properties = child_elements_in_namespace(artifact, "Properties", MD_CLASSES_NS);
+    let [properties] = properties.as_slice() else {
+        return Err("the configuration root must have one Properties element".into());
+    };
+    let names = child_elements_in_namespace(*properties, "Name", MD_CLASSES_NS);
+    let [name] = names.as_slice() else {
+        return Err("the configuration root must have one Name property".into());
+    };
+    if name.children().any(|child| child.is_element()) {
+        return Err("the configuration Name must contain only text".into());
+    }
+    // Configuration view reports the first DOM text node. Use the same
+    // value for the no-op check, including when comments split the text.
+    if name.text().unwrap_or_default() == value {
+        return Ok(source.to_string());
+    }
+
+    let range = name.range();
+    let tag = source[range.start + 1..range.end]
+        .split(|ch: char| ch.is_whitespace() || ch == '>' || ch == '/')
+        .next()
+        .expect("parsed Name element");
+    let escaped = unica_xml_format::text::escape_xml_text(value).replace('\r', "&#13;");
+    let mut updated = source.to_string();
+    updated.replace_range(range, &format!("<{tag}>{escaped}</{tag}>"));
+    Ok(updated)
+}
+
 /// Rewrites the named parts of the composite property `tag` of the first
 /// `<Properties>`, each in its own spelling; a part the file lacks gives
 /// `None`. The values are closed platform names and need no escaping.
@@ -2036,6 +2078,12 @@ fn stage_descriptor_properties(
                 text = match value {
                     DescriptorPropertyValue::Languages(items) => {
                         set_localized_property(&text, tag, "\t\t\t", items)
+                    }
+                    DescriptorPropertyValue::Text(value) if tag == "Name" => {
+                        Some(set_configuration_name(&text, value).map_err(|message| {
+                            ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)
+                                .at_path(at_path.clone())
+                        })?)
                     }
                     DescriptorPropertyValue::Text(value) => set_plain_property(&text, tag, value),
                     DescriptorPropertyValue::Boolean(value) => {
@@ -3120,6 +3168,23 @@ fn stage_help_create<R: MetadataPlanningRead>(
 
 #[cfg(test)]
 mod prefixed_property_block_tests {
+    #[test]
+    fn configuration_name_noop_uses_the_value_observed_by_view() {
+        let prefixed = concat!(
+            "<md:MetaDataObject xmlns:md=\"http://v8.1c.ru/8.3/MDClasses\">",
+            "<md:Configuration><md:Properties><md:Name>A<!--memo-->B</md:Name></md:Properties>",
+            "</md:Configuration></md:MetaDataObject>"
+        );
+        assert_eq!(
+            super::set_configuration_name(prefixed, "A").unwrap(),
+            prefixed
+        );
+        assert_eq!(
+            super::set_configuration_name(prefixed, "AB").unwrap(),
+            prefixed.replace("A<!--memo-->B", "AB")
+        );
+    }
+
     #[test]
     fn a_prefixed_descriptor_keeps_its_prefix_in_the_replaced_block() {
         let prefixed = concat!(

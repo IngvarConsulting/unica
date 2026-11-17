@@ -2,7 +2,7 @@
   "id": "S-1721-properties-contextual",
   "issue": 1721,
   "area": "Свойства метаданных",
-  "task": "Прочитать подробный contextual Can общего модуля, роли и подсистемы, построить preview независимых aliases, false и очистки; отвергнуть неверные типы, пустой patch, alias collision и чужие поля до поиска ресурса. Существующий соседний владелец вне outer at отклоняется. Корень конфигурации не принимает имя, метод не получает props.set. Preview и отказы сохраняют все исходные байты. Для вложенной подсистемы построить preview изменения Comment, опубликовать его по полученному токену и перечитать узел: изменяется только Comment собственного XML, остальные байты этого файла, родительские файлы и соседи сохраняются.",
+  "task": "Прочитать подробный contextual Can общего модуля, роли и подсистемы, построить preview независимых aliases, false и очистки; отвергнуть неверные типы, пустой patch, alias collision и чужие поля до поиска ресурса. Существующий соседний владелец вне outer at отклоняется. Корень конфигурации отклоняет NamePrefix, метод не получает props.set. Preview и отказы сохраняют все исходные байты. Для вложенной подсистемы построить preview изменения Comment, опубликовать его по полученному токену и перечитать узел: изменяется только Comment собственного XML, остальные байты этого файла, родительские файлы и соседи сохраняются.",
   "wire": [
     {
       "tool": "unica.view",
@@ -4095,7 +4095,7 @@
             "op": "props.set",
             "args": {
               "values": {
-                "Name": "no expansion"
+                "NamePrefix": "no expansion"
               }
             }
           }
@@ -4104,7 +4104,7 @@
       "expect": [
         "refused"
       ],
-      "refusal": "bad_value: unknown field `Name`",
+      "refusal": "bad_value: unknown field `NamePrefix`",
       "assertions": [
         {
           "pointer": "/diagnostics/0/code",
@@ -4112,7 +4112,7 @@
         },
         {
           "pointer": "/at",
-          "eq": "ops[0].args.values.Name"
+          "eq": "ops[0].args.values.NamePrefix"
         },
         {
           "pointer": "/data",
