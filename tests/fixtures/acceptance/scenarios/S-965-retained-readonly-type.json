@@ -44,7 +44,7 @@
             "args": {
               "values": {
                 "comment": "Independent comment",
-                "synonym": "Independent synonym"
+                "synonym": "ru = 'Independent synonym'"
               }
             }
           }
@@ -124,7 +124,7 @@
         },
         {
           "pointer": "/data/props/synonym",
-          "eq": "Independent synonym"
+          "eq": "ru = 'Independent synonym'"
         }
       ],
       "captures": {
@@ -192,7 +192,7 @@
             "args": {
               "values": {
                 "comment": "Independent comment",
-                "synonym": "Independent synonym"
+                "synonym": "ru = 'Independent synonym'"
               }
             }
           }

@@ -51,6 +51,24 @@ fn attribute_image(bytes: &[u8], name: &str) -> Vec<u8> {
     bytes[offset + node.range().start..offset + node.range().end].to_vec()
 }
 
+fn attribute_uuid(bytes: &[u8], name: &str) -> String {
+    let text = std::str::from_utf8(bytes).unwrap();
+    let xml = roxmltree::Document::parse(text.trim_start_matches('\u{feff}')).unwrap();
+    let attribute = xml
+        .descendants()
+        .find(|node| {
+            node.has_tag_name("Attribute")
+                && node.children().any(|props| {
+                    props.has_tag_name("Properties")
+                        && props.children().any(|property| {
+                            property.has_tag_name("Name") && property.text() == Some(name)
+                        })
+                })
+        })
+        .unwrap();
+    attribute.attribute("uuid").unwrap().to_string()
+}
+
 fn assert_read_only(runtime: &V5CanonicalInvocationRuntime, fixture: &Fixture) {
     let viewed = call(runtime, fixture, ToolIdentity::View, json!({"at":AT}));
     assert!(viewed.ok, "{viewed:?}");
@@ -66,18 +84,19 @@ fn assert_read_only(runtime: &V5CanonicalInvocationRuntime, fixture: &Fixture) {
 /// rule: INV.SOURCE.RETAINED-UNEDITABLE-TYPE
 #[test]
 fn canonical_independent_attribute_edits_preserve_read_only_type_bytes() {
-    for (property, xml_name) in [("comment", "Comment"), ("synonym", "Synonym")] {
+    for (property, xml_name, value) in [
+        ("comment", "Comment", "Independent property"),
+        ("synonym", "Synonym", "ru = 'Independent property'"),
+    ] {
         let fixture = Fixture::new("workspace-metadata-values");
         let runtime = runtime();
         assert_read_only(&runtime, &fixture);
         let before = tree_snapshot(&fixture.source);
         let descriptor_before = &before[Path::new(DESCRIPTOR)];
         let type_before = property_image(descriptor_before, "Type");
-        assert_eq!(
-            type_before,
-            b"<Type><v8:TypeSet>cfg:Characteristic.Properties</v8:TypeSet></Type>"
-        );
-        let args = json!({"at":AT,"ops":[{"op":"attribute.set","args":{"values":{(property):"Independent property"}}}]});
+        let uuid_before = attribute_uuid(descriptor_before, "Value");
+        let args =
+            json!({"at":AT,"ops":[{"op":"attribute.set","args":{"values":{(property):value}}}]});
         publish(&runtime, &fixture, args.clone());
         let after = tree_snapshot(&fixture.source);
         let descriptor_after = &after[Path::new(DESCRIPTOR)];
@@ -90,17 +109,12 @@ fn canonical_independent_attribute_edits_preserve_read_only_type_bytes() {
         }
         let viewed = call(&runtime, &fixture, ToolIdentity::View, json!({"at":AT}));
         assert!(viewed.ok, "{viewed:?}");
-        assert_eq!(
-            viewed.data.as_ref().unwrap()["props"][property],
-            "Independent property"
-        );
+        assert_eq!(viewed.data.as_ref().unwrap()["props"][property], value);
         let changed_property = property_image(descriptor_after, xml_name);
         assert!(std::str::from_utf8(&changed_property)
             .unwrap()
             .contains("Independent property"));
-        assert!(std::str::from_utf8(descriptor_after)
-            .unwrap()
-            .contains("uuid=\"c38560bd-f077-54d3-bfaa-7db00a8c6acd\""));
+        assert_eq!(attribute_uuid(descriptor_after, "Value"), uuid_before);
         for (path, bytes) in &before {
             if path != Path::new(DESCRIPTOR) {
                 assert_eq!(&after[path], bytes, "independent edit changed {path:?}");
