@@ -66,7 +66,7 @@ fn medium_completed_post_and_detached_body_survive_connection_close() {
             .unwrap();
         // The complete response cannot be recycled, even without a
         // Connection: close header. Reset after the client has proved it
-        // received every byte to avoid racing the kernel's send queue.
+        // received a part of the response to avoid racing the initial write.
         ack.recv_timeout(Duration::from_secs(4)).unwrap();
         socket2::SockRef::from(&first)
             .set_linger(Some(Duration::ZERO))
@@ -84,8 +84,11 @@ fn medium_completed_post_and_detached_body_survive_connection_close() {
         .post(&format!("{base}/rpc"), &[], "one mutation", None)
         .unwrap()
         .into_reader();
-    let mut recovered = Vec::new();
     let mut buffer = [0; 3];
+    body.read_exact(&mut buffer).unwrap();
+    let mut recovered = buffer.to_vec();
+    finish.send(()).unwrap();
+    reset.recv_timeout(Duration::from_secs(4)).unwrap();
     loop {
         let count = body.read(&mut buffer).unwrap();
         if count == 0 {
@@ -94,8 +97,6 @@ fn medium_completed_post_and_detached_body_survive_connection_close() {
         recovered.extend_from_slice(&buffer[..count]);
     }
     assert_eq!(recovered, b"final bytes");
-    finish.send(()).unwrap();
-    reset.recv_timeout(Duration::from_secs(4)).unwrap();
     // The backend can observe a stale idle socket racing its peer's reset.
     // Use a fresh client here; ordinary pooling is verified separately.
     let fresh = client_with_timeout(READ_TIMEOUT);
@@ -106,6 +107,40 @@ fn medium_completed_post_and_detached_body_survive_connection_close() {
             .into_string()
             .unwrap(),
         ""
+    );
+    server.join().unwrap();
+}
+
+#[test]
+fn medium_post_that_may_have_been_delivered_is_not_replayed() {
+    let (listener, base) = listener();
+    let server = thread::spawn(move || {
+        let mut stream = accept(&listener);
+        assert!(read_request(&mut stream).ends_with("mutating payload"));
+        socket2::SockRef::from(&stream)
+            .set_linger(Some(Duration::ZERO))
+            .unwrap();
+        drop(stream);
+
+        listener.set_nonblocking(true).unwrap();
+        let until = Instant::now() + Duration::from_millis(300);
+        while Instant::now() < until {
+            match listener.accept() {
+                Ok(_) => panic!("client replayed an ambiguous POST"),
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => panic!("{error}"),
+            }
+        }
+    });
+    let client = client_with_timeout(READ_TIMEOUT);
+    assert_eq!(
+        client
+            .post(&base, &[], "mutating payload", Some(Duration::from_secs(1)))
+            .unwrap_err()
+            .failure(),
+        NetworkFailure::Transport,
     );
     server.join().unwrap();
 }
