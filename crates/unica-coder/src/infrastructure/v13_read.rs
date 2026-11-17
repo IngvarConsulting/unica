@@ -164,9 +164,11 @@ mod method_doc;
 mod module_body_read;
 mod module_variables;
 mod notification_bindings;
-use module_variables::{find_variable, variable_node, variable_node_value};
+mod scheduled_job_handler;
 mod typed_payload_read;
 mod validation_input;
+
+use module_variables::{find_variable, variable_node, variable_node_value};
 
 impl<'a> LogicalViewReadAuthority<'a> {
     #[cfg(any(test, feature = "test-support"))]
@@ -720,12 +722,15 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
             self.form_view(&route, admitted)?
         } else {
             let payload = self.typed_payload_for(&route, admitted)?;
+            let handler = payload.pointer("/details/details/method").cloned();
             let projected =
                 crate::infrastructure::v13_read_projection::project_typed_payload_for_source(
                     &route,
                     payload,
                     self.read.source_set_kind(),
                 )?;
+            let projected =
+                self.with_scheduled_job_handler(projected, at, handler.as_ref(), admitted)?;
             self.with_template_body_branches(projected, &route)?
         };
         let projected = match projected {

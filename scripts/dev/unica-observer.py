@@ -1630,10 +1630,11 @@ function shortLabel(at, parent) {
   return at;
 }
 
-function formHandlerTarget(data) {
+function handlerTarget(data) {
   const entry = data.props;
-  if (data.kind === "Event" && entry?.binding === "property" &&
-      entry.state === "implemented" && typeof entry.implementationAt === "string") {
+  if ((data.kind === "ScheduledJob" ||
+       (data.kind === "Event" && entry?.binding === "property" && entry.state === "implemented")) &&
+      typeof entry?.implementationAt === "string") {
     return entry.implementationAt;
   }
 }
@@ -1683,7 +1684,7 @@ async function fill(container, at, cursor) {
     const badges = `<span class="cnt">${branch.count ?? ""}</span>` + (isGraph(branch.at) ? ' <span class="badge graph">граф вызовов</span>' : "");
     container.appendChild(makeRow(shortLabel(branch.at, parent), branch.at, " " + badges));
   }
-  const handler = formHandlerTarget(data);
+  const handler = handlerTarget(data);
   if (handler) {
     container.appendChild(makeRow("Handler", handler, ` <span class="cnt">${esc(handler)}</span>`));
   }
@@ -1908,7 +1909,7 @@ async function select(at, row, fresh, binding) {
     void showBindingSource(binding, version);
     const result = answer.result || {};
     const data = result.data || {};
-    if (result.ok && !result.cursor && !formHandlerTarget(data) && !notificationIndexing(data) &&
+    if (result.ok && !result.cursor && !handlerTarget(data) && !notificationIndexing(data) &&
         !["branches", "items", "sourceSets"].some((key) => (data[key] || []).length)) markLeaf(row);
   }
   catch (error) {
