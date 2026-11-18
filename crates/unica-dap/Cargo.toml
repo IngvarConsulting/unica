@@ -1,0 +1,20 @@
+[package]
+name = "unica-dap"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+base64.workspace = true
+reqwest = { workspace = true, features = ["blocking"] }
+roxmltree.workspace = true
+rustls.workspace = true
+serde_json.workspace = true
+unica-source-contract = { path = "../unica-source-contract" }
+uuid.workspace = true
+
+[package.metadata.unica]
+component = "service"
+file-io = "none"

@@ -1795,7 +1795,9 @@ checksum = "16a1cfa75cc186dd73d5818e510e042e40927bccc9c236b061cea97e1eb08029"
 dependencies = [
  "base64 0.23.1",
  "bytes",
+ "futures-channel",
  "futures-core",
+ "futures-util",
  "http",
  "http-body",
  "http-body-util",
@@ -3045,6 +3047,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "unica-dap"
+version = "0.15.0-rc.1"
+dependencies = [
+ "base64 0.22.1",
+ "reqwest",
+ "roxmltree",
+ "rustls",
+ "serde_json",
+ "unica-source-contract",
+ "uuid",
+]
+
+[[package]]
 name = "unica-dcs"
 version = "0.16.0"
 dependencies = [
@@ -3437,6 +3452,7 @@ dependencies = [
  "unica-bootstrap",
  "unica-daemon",
  "unica-daemon-protocol",
+ "unica-dap",
  "unica-execution",
  "unica-lsp",
  "unica-mcp",
@@ -3510,6 +3526,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "unica-address",
+ "uuid",
 ]
 
 [[package]]
