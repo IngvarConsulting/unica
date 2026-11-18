@@ -688,6 +688,14 @@ jobs:
           --out-dir ".build/tool-bundles/${{ matrix.target }}"
           --work-dir .build/tool-work
           --metrics-file ".build/cargo-metrics/${{ matrix.target }}.json"
+      # Компилятор образа сам выбирает набор инструкций C-кода; без проверки
+      # AVX2 доехал до выпуска и ронял загрузчик на старых CPU (#3190).
+      - name: Check linux-x64 binaries need only baseline x86-64
+        if: matrix.target == 'linux-x64'
+        run: >
+          python scripts/ci/check-linux-x64-baseline.py
+          .build/tool-bundles/linux-x64/bin/linux-x64/unica
+          .build/tool-bundles/linux-x64/bootstrap/bin/linux-x64/unica-bootstrap
       - name: Build, install, and verify local development on Windows
         if: matrix.target == 'win-x64'
         shell: bash
