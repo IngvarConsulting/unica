@@ -249,6 +249,7 @@ struct Frame {
     level: usize,
     body: Value,
     variable_paths: HashMap<u64, Vec<String>>,
+    evaluated_children: HashMap<u64, Vec<ContextVariable>>,
 }
 
 struct Session {
@@ -361,6 +362,7 @@ impl Session {
                 self.frame(id)?;
                 json!({"scopes":[{"name":"Locals","presentationHint":"locals","variablesReference":id,"expensive":false}]})
             }
+            "evaluate" => self.evaluate(args, events)?,
             "variables" => {
                 let variables = self.variables(number(args, "variablesReference")?, events)?;
                 json!({"variables":variables})
@@ -442,7 +444,7 @@ impl Session {
     }
 
     fn variables(&mut self, reference: u64, events: &mut Vec<Value>) -> Result<Vec<Value>> {
-        let (target, frame, level, path) = self
+        let (target, frame, level, path, evaluated_children) = self
             .targets
             .values()
             .find_map(|target| {
@@ -452,13 +454,23 @@ impl Session {
                     } else {
                         frame.variable_paths.get(&reference)?.clone()
                     };
-                    Some((target.id, frame.id, frame.level, path))
+                    Some((
+                        target.id,
+                        frame.id,
+                        frame.level,
+                        path,
+                        frame.evaluated_children.get(&reference).cloned(),
+                    ))
                 })
             })
             .ok_or("unknown or expired variable reference")?;
-        let evaluation = Uuid::new_v4();
-        let reply = self.rdbg.variables(target, level, evaluation, &path)?;
-        let values = self.wait_for_variables(reply, evaluation, events)?;
+        let values = if let Some(children) = evaluated_children {
+            children
+        } else {
+            let evaluation = Uuid::new_v4();
+            let reply = self.rdbg.variables(target, level, evaluation, &path)?;
+            self.wait_for_calculation(reply, evaluation, events, read_context)?
+        };
         let frame = self
             .targets
             .values_mut()
@@ -468,21 +480,15 @@ impl Session {
         let mut result = Vec::with_capacity(values.len());
         for value in values {
             let mut reference = 0;
-            if value.expandable && (!path.is_empty() || is_identifier(&value.name)) {
+            if value.expandable
+                && path.first().map_or_else(
+                    || is_identifier(&value.name),
+                    |root| root.split('.').all(is_identifier),
+                )
+            {
                 let mut child_path = path.clone();
                 child_path.push(value.name.clone());
-                reference = match frame
-                    .variable_paths
-                    .iter()
-                    .find(|(_, path)| **path == child_path)
-                {
-                    Some((id, _)) => *id,
-                    None => {
-                        self.next_id += 1;
-                        frame.variable_paths.insert(self.next_id, child_path);
-                        self.next_id
-                    }
-                };
+                reference = frame.reference_for(child_path, &mut self.next_id);
             }
             result.push(json!({"name":value.name,"value":value.summary,
                 "type":value.type_name,"variablesReference":reference}));
@@ -490,14 +496,54 @@ impl Session {
         Ok(result)
     }
 
-    fn wait_for_variables(
+    fn evaluate(&mut self, args: &Value, events: &mut Vec<Value>) -> Result<Value> {
+        let frame_id = number(args, "frameId")?;
+        let (target, level) = self.frame(frame_id)?;
+        let expression = string(args, "expression")?;
+        if expression.trim().is_empty() {
+            return Err("Введите выражение для вычисления".into());
+        }
+        if expression.chars().any(|ch| {
+            !matches!(ch, '\u{9}' | '\u{a}' | '\u{d}' | '\u{20}'..='\u{d7ff}' | '\u{e000}'..='\u{fffd}' | '\u{10000}'..='\u{10ffff}')
+        }) {
+            return Err("Выражение содержит недопустимый символ".into());
+        }
+        let path = vec![expression.to_owned()];
+        let evaluation = Uuid::new_v4();
+        let reply = self.rdbg.variables(target, level, evaluation, &path)?;
+        let (value, children) =
+            self.wait_for_calculation(reply, evaluation, events, read_expression)?;
+        let frame = self
+            .targets
+            .values_mut()
+            .flat_map(|target| &mut target.frames)
+            .find(|frame| frame.id == frame_id)
+            .ok_or("unknown or expired frame")?;
+        let reference = if value.expandable {
+            self.next_id += 1;
+            let reference = self.next_id;
+            frame.variable_paths.insert(reference, path);
+            frame.evaluated_children.insert(reference, children);
+            reference
+        } else {
+            0
+        };
+        let mut response = json!({"result": value.summary, "variablesReference": reference});
+        if !value.type_name.is_empty() {
+            response["type"] = json!(value.type_name);
+        }
+        Ok(response)
+    }
+
+    fn wait_for_calculation<T>(
         &mut self,
         initial: String,
         evaluation: Uuid,
         events: &mut Vec<Value>,
-    ) -> Result<Vec<ContextVariable>> {
-        if let Some(variables) = read_context(&initial, evaluation)? {
-            return Ok(variables);
+        parse: fn(Node<'_, '_>) -> Result<T>,
+    ) -> Result<T> {
+        if let Some(value) = read_calculation(&initial, evaluation, parse)? {
+            return Ok(value);
         }
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
@@ -516,11 +562,11 @@ impl Session {
                 }
             };
             self.consume(&reply, events)?;
-            if let Some(variables) = read_context(&reply, evaluation)? {
-                return Ok(variables);
+            if let Some(value) = read_calculation(&reply, evaluation, parse)? {
+                return Ok(value);
             }
         }
-        Err("rdbg did not return variables".into())
+        Err("rdbg did not return the calculation result".into())
     }
 
     fn start_event_reader(&mut self) -> Result<()> {
@@ -725,11 +771,27 @@ impl Session {
                     body["source"] = json!({"name":address,"path":address});
                 }
             }
-            Ok(Frame { id, level, body, variable_paths: HashMap::new() })
+            Ok(Frame { id, level, body, variable_paths: HashMap::new(), evaluated_children: HashMap::new() })
         }).collect()
     }
 }
 
+impl Frame {
+    fn reference_for(&mut self, path: Vec<String>, next_id: &mut u64) -> u64 {
+        if let Some((&id, _)) = self
+            .variable_paths
+            .iter()
+            .find(|(id, existing)| **existing == path && !self.evaluated_children.contains_key(id))
+        {
+            return id;
+        }
+        *next_id += 1;
+        self.variable_paths.insert(*next_id, path);
+        *next_id
+    }
+}
+
+#[derive(Clone)]
 struct ContextVariable {
     name: String,
     summary: String,
@@ -745,7 +807,11 @@ fn is_identifier(name: &str) -> bool {
         && chars.all(|ch| ch == '_' || ch.is_alphanumeric())
 }
 
-fn read_context(xml: &str, evaluation: Uuid) -> Result<Option<Vec<ContextVariable>>> {
+fn read_calculation<T>(
+    xml: &str,
+    evaluation: Uuid,
+    parse: fn(Node<'_, '_>) -> Result<T>,
+) -> Result<Option<T>> {
     if xml.trim().is_empty() {
         return Ok(None);
     }
@@ -756,12 +822,49 @@ fn read_context(xml: &str, evaluation: Uuid) -> Result<Option<Vec<ContextVariabl
     }) else {
         return Ok(None);
     };
+    parse(result).map(Some)
+}
+
+fn read_expression(result: Node<'_, '_>) -> Result<(ContextVariable, Vec<ContextVariable>)> {
+    if field(result, "evalResultState") != Some("correctly")
+        || field(result, "errorOccurred") == Some("true")
+    {
+        let detail = decode(field(result, "exceptionStr"))?;
+        return if detail.is_empty() {
+            Err("Не удалось вычислить выражение в выбранном кадре".into())
+        } else {
+            Err(detail.into())
+        };
+    }
+    let value = child(result, "resultValueInfo").ok_or("rdbg returned no expression value")?;
+    let value = read_value(String::new(), value)?;
+    let children = child(result, "calculationResult")
+        .map(read_context_children)
+        .transpose()?
+        .unwrap_or_default();
+    Ok((value, children))
+}
+
+fn read_value(name: String, value: Node<'_, '_>) -> Result<ContextVariable> {
+    Ok(ContextVariable {
+        name,
+        summary: decode(field(value, "pres"))?,
+        type_name: field(value, "typeName").unwrap_or_default().to_owned(),
+        expandable: field(value, "isExpandable") == Some("true"),
+    })
+}
+
+fn read_context(result: Node<'_, '_>) -> Result<Vec<ContextVariable>> {
     if field(result, "evalResultState") != Some("correctly") {
         return Err("rdbg could not read variables".into());
     }
     let context =
         child(result, "calculationResult").ok_or("rdbg did not return a local context")?;
-    let values = context
+    read_context_children(context)
+}
+
+fn read_context_children(context: Node<'_, '_>) -> Result<Vec<ContextVariable>> {
+    context
         .children()
         .filter(|node| node.has_tag_name("valueOfContextPropInfo"))
         .map(|item| {
@@ -778,15 +881,9 @@ fn read_context(xml: &str, evaluation: Uuid) -> Result<Option<Vec<ContextVariabl
                 });
             }
             let value = child(item, "valueInfo").ok_or("missing variable value")?;
-            Ok(ContextVariable {
-                name,
-                summary: decode(field(value, "pres"))?,
-                type_name: field(value, "typeName").unwrap_or_default().to_owned(),
-                expandable: field(value, "isExpandable") == Some("true"),
-            })
+            read_value(name, value)
         })
-        .collect::<Result<Vec<_>>>()?;
-    Ok(Some(values))
+        .collect()
 }
 
 fn decode(text: Option<&str>) -> Result<String> {
@@ -885,6 +982,34 @@ mod tests {
     }
 
     #[test]
+    fn evaluate_reads_value_and_reports_the_platform_error() {
+        let evaluation = Uuid::new_v4();
+        let reply = format!(
+            "<result><expressionResultID>{evaluation}</expressionResultID>\
+             <evalResultState>correctly</evalResultState><resultValueInfo>\
+             <pres>ODI=</pres><typeName>Число</typeName><isExpandable>false</isExpandable>\
+             </resultValueInfo></result>"
+        );
+        let (value, children) = read_calculation(&reply, evaluation, read_expression)
+            .unwrap()
+            .unwrap();
+        assert!(children.is_empty());
+        assert_eq!(value.summary, "82");
+        assert_eq!(value.type_name, "Число");
+        assert!(!value.expandable);
+
+        let exception = STANDARD.encode("Переменная не определена");
+        let reply = format!(
+            "<result><expressionResultID>{evaluation}</expressionResultID>\
+             <errorOccurred>true</errorOccurred><exceptionStr>{exception}</exceptionStr></result>"
+        );
+        let Err(error) = read_calculation(&reply, evaluation, read_expression) else {
+            panic!("expression error must fail the request");
+        };
+        assert_eq!(error.to_string(), "Переменная не определена");
+    }
+
+    #[test]
     fn context_read_keeps_expandable_and_unreadable_properties_distinct() {
         let evaluation = Uuid::new_v4();
         let xml = format!(
@@ -905,13 +1030,17 @@ mod tests {
                 </result>
             </response>"#
         );
-        let properties = read_context(&xml, evaluation).unwrap().unwrap();
+        let properties = read_calculation(&xml, evaluation, read_context)
+            .unwrap()
+            .unwrap();
         assert_eq!(properties.len(), 2);
         assert_eq!(properties[0].name, "Вложенная");
         assert_eq!(properties[0].type_name, "Структура");
         assert!(properties[0].expandable);
         assert_eq!(properties[1].summary, "error");
         assert!(!properties[1].expandable);
-        assert!(read_context(&xml, Uuid::new_v4()).unwrap().is_none());
+        assert!(read_calculation(&xml, Uuid::new_v4(), read_context)
+            .unwrap()
+            .is_none());
     }
 }
