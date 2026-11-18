@@ -193,9 +193,9 @@ fn parse_startup(startup: &Value) -> Option<ObservedStartup> {
     let consistent = match outcome {
         StartupOutcome::Started => event_at.is_some() && exit_code.is_none(),
         StartupOutcome::AuthFailed => event_at.is_some(),
-        StartupOutcome::StartFailed => {
-            event_at.is_none() && exit_code.is_some_and(|code| code != 0)
-        }
+        // Клиент может выйти с ненулевым кодом и после входа, например когда
+        // ему нужно окно при /DisableStartupDialogs: время входа остаётся.
+        StartupOutcome::StartFailed => exit_code.is_some_and(|code| code != 0),
         StartupOutcome::Closed => exit_code == Some(0),
         StartupOutcome::Unconfirmed => true,
     };
@@ -2131,6 +2131,14 @@ fn main() {
                 Some(("provider_failed", None)),
                 false,
             ),
+            (
+                "start_failed",
+                json!(at),
+                json!(1),
+                false,
+                Some(("provider_failed", None)),
+                false,
+            ),
             ("closed", Value::Null, json!(0), true, None, false),
             ("unconfirmed", Value::Null, Value::Null, true, None, true),
         ];
@@ -2219,7 +2227,7 @@ fn main() {
             json!({"outcome": "started", "event_at": "yesterday"}),
             json!({"outcome": "auth_failed", "exit_code": 1}),
             json!({"outcome": "start_failed", "exit_code": 0}),
-            json!({"outcome": "start_failed", "event_at": at, "exit_code": 1}),
+            json!({"outcome": "start_failed", "event_at": at, "exit_code": null}),
             json!({"outcome": "closed", "exit_code": 1}),
             json!({"outcome": "unconfirmed", "message": "Пользователь ИБ не идентифицирован"}),
         ];
