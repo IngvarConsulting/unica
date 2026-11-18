@@ -1,0 +1,58 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:app="http://v8.1c.ru/8.2/managed-application/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:cmi="http://v8.1c.ru/8.2/managed-application/cmi" xmlns:ent="http://v8.1c.ru/8.1/data/enterprise" xmlns:lf="http://v8.1c.ru/8.2/managed-application/logform" xmlns:style="http://v8.1c.ru/8.1/data/ui/style" xmlns:sys="http://v8.1c.ru/8.1/data/ui/fonts/system" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:v8ui="http://v8.1c.ru/8.1/data/ui" xmlns:web="http://v8.1c.ru/8.1/data/ui/colors/web" xmlns:win="http://v8.1c.ru/8.1/data/ui/colors/windows" xmlns:xen="http://v8.1c.ru/8.3/xcf/enums" xmlns:xpr="http://v8.1c.ru/8.3/xcf/predef" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.20">
+	<ChartOfCalculationTypes uuid="239117b8-eae5-8985-827b-b5bfb453f882">
+		<InternalInfo>
+			<xr:GeneratedType name="ChartOfCalculationTypesObject.ВидыРасчета" category="Object">
+				<xr:TypeId>b4951302-dcea-8df6-aa80-7e7fc16223f4</xr:TypeId>
+				<xr:ValueId>37198d43-27f6-8bc0-b04f-c6ae2f4e8bbb</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="ChartOfCalculationTypesRef.ВидыРасчета" category="Ref">
+				<xr:TypeId>85c81c9f-1e4f-83bd-b604-e30e689fdb6d</xr:TypeId>
+				<xr:ValueId>2235e29a-e9de-876e-b20d-66e26383b084</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="ChartOfCalculationTypesSelection.ВидыРасчета" category="Selection">
+				<xr:TypeId>15e96b27-26a3-8c5b-b54b-fb213fe0f163</xr:TypeId>
+				<xr:ValueId>c1b6740f-fe90-89b0-b30a-43ab448f209b</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="ChartOfCalculationTypesList.ВидыРасчета" category="List">
+				<xr:TypeId>f3d9dbcf-941b-898e-adf7-5e481bc73677</xr:TypeId>
+				<xr:ValueId>ff31403f-49ec-84a3-8b7f-7d0ffb5fe12b</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="ChartOfCalculationTypesManager.ВидыРасчета" category="Manager">
+				<xr:TypeId>f30ea70b-aab0-8e88-a270-b553cf1b9878</xr:TypeId>
+				<xr:ValueId>87604144-93dd-8c77-94a7-704432850103</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="DisplacingCalculationTypes.ВидыРасчета" category="DisplacingCalculationTypes">
+				<xr:TypeId>f4e64cec-8537-89d4-9759-8c2bcd004a6e</xr:TypeId>
+				<xr:ValueId>ec217af3-99cd-8c8b-884e-3b10d8e1d8de</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="DisplacingCalculationTypesRow.ВидыРасчета" category="DisplacingCalculationTypesRow">
+				<xr:TypeId>1969df80-abd7-8464-b9c3-3ff0e0d30dfc</xr:TypeId>
+				<xr:ValueId>b527ec7b-117d-88a2-a646-bbd773ae81ed</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="BaseCalculationTypes.ВидыРасчета" category="BaseCalculationTypes">
+				<xr:TypeId>0c5ff91a-389b-88ae-8ec0-42d85cea61ba</xr:TypeId>
+				<xr:ValueId>9c189019-7698-8551-93d7-31deec902ffc</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="BaseCalculationTypesRow.ВидыРасчета" category="BaseCalculationTypesRow">
+				<xr:TypeId>82a3b2c6-872d-87d4-aa11-538afb3fa02f</xr:TypeId>
+				<xr:ValueId>5b31d0db-3cdd-867d-9e6c-151f8dd0fba2</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="LeadingCalculationTypes.ВидыРасчета" category="LeadingCalculationTypes">
+				<xr:TypeId>44844a6c-4480-8f1a-a6ca-51033c21a854</xr:TypeId>
+				<xr:ValueId>08f898c8-87ea-8eef-b10d-af10d687e86a</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="LeadingCalculationTypesRow.ВидыРасчета" category="LeadingCalculationTypesRow">
+				<xr:TypeId>826b854e-e2c8-87db-a42b-41bade7bce43</xr:TypeId>
+				<xr:ValueId>605b4157-2489-8b65-96af-f744b42b5185</xr:ValueId>
+			</xr:GeneratedType>
+		</InternalInfo>
+		<Properties>
+			<ObjectBelonging>Adopted</ObjectBelonging>
+			<Name>ВидыРасчета</Name>
+			<Comment/>
+			<ExtendedConfigurationObject>6a48f32a-b124-57aa-b962-51cc40da3aa0</ExtendedConfigurationObject>
+		</Properties>
+		<ChildObjects/>
+	</ChartOfCalculationTypes>
+</MetaDataObject>

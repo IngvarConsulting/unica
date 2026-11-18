@@ -37,7 +37,7 @@ def dcs_physical_fixture(root, *, keep_source=True, keep_variant=True, keep_grou
     ET.SubElement(item, v + "content").text = "Added"
     old.find(".//" + t + "groupItems/" + t + "item/" + t + "field").text = "Amount"
     old.write(workspace / dcs_driver.XML, encoding="utf-8")
-    scaffold = (dcs_driver.REPO / "tests/fixtures/platform_8_3_27/template-new-xml/native-canonical-dcs-content.xml"
+    scaffold = (dcs_driver.REPO / "tests/fixtures/formats/platform_xml/2.20/template-new-xml/native-canonical-dcs-content.xml"
                 if platform_scaffold else dcs_driver.FIXTURE / "template-add-scaffold.xml")
     new = ET.parse(scaffold)
     for child in list(new.getroot()):

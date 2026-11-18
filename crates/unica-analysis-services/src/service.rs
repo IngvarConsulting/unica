@@ -86,7 +86,6 @@ pub const SERVICE_SCHEMA_VERSION: u32 = 5;
 // problem: неизвестно
 // on-reach: сервис без запросов завершается и удаляет свою запись; значение меняется через UNICA_WORKSPACE_SERVICE_IDLE_SECS или --idle-secs
 // decision: закреплено правилом INV.RUNTIME.SERVICE-LIFETIME
-// decision-date: 2026-10-06
 // decision-source: arch/rules/runtime/service-lifetime.md
 pub const DEFAULT_IDLE_SECS: u64 = 7200;
 // resource-limit: service.connect-timeout
@@ -122,7 +121,6 @@ pub const SERVICE_CONTROL_CONNECT_TIMEOUT: Duration = Duration::from_millis(500)
 // problem: неизвестно
 // on-reach: запрос прерывается ошибкой срока; больший срок вызывающего не сокращается
 // decision: закреплено правилом
-// decision-date: 2026-10-21
 // decision-source: arch/rules/runtime/service-caller-budget.md
 pub const SERVICE_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 // resource-limit: service.shutdown-grace
@@ -160,7 +158,6 @@ pub const SERVICE_RESPONSE_LINE_LIMIT: usize = 8 * 1024 * 1024;
 // problem: незавершённый запрос не удерживает сервис бесконечно
 // on-reach: ответ-ошибка «request line exceeds 8388608 bytes», следующая строка разбирается отдельно
 // decision: закреплено правилом
-// decision-date: 2026-10-21
 // decision-source: arch/rules/runtime/service-request-framing.md
 pub const SERVICE_REQUEST_LINE_LIMIT: usize = 8 * 1024 * 1024;
 // resource-limit: service.request-header-timeout
@@ -174,7 +171,6 @@ pub const SERVICE_REQUEST_LINE_LIMIT: usize = 8 * 1024 * 1024;
 // problem: незавершённый запрос не удерживает сервис бесконечно
 // on-reach: соединение закрывается по сроку, другие соединения не затрагиваются
 // decision: закреплено правилом
-// decision-date: 2026-10-21
 // decision-source: arch/rules/runtime/service-request-framing.md
 pub const SERVICE_REQUEST_HEADER_TIMEOUT: Duration = Duration::from_secs(5);
 // resource-limit: service.session-teardown-grace
@@ -3003,8 +2999,11 @@ impl<B: BslBackend> Drop for OperationGuard<B> {
             .ok()
             .and_then(|mut operations| operations.remove(&self.operation_id))
             .is_some();
+        // Drop never panics: a panic here during unwinding aborts the test
+        // binary. While unwinding the test has already failed, so its hook is
+        // not called; a hook's own assertion otherwise fails it as usual.
         #[cfg(any(test, feature = "test-support"))]
-        if removed {
+        if removed && !std::thread::panicking() {
             let hook = self
                 .runtime
                 .actor
@@ -3012,7 +3011,7 @@ impl<B: BslBackend> Drop for OperationGuard<B> {
                 .0
                 .operation_retired_hook
                 .lock()
-                .unwrap()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .clone();
             if let Some(hook) = hook {
                 hook(&self.operation_id);

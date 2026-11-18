@@ -953,7 +953,7 @@ pub fn call_tool_with_runtime_admission(
             if let Some(target) = role_target.as_ref() {
                 format_guard_warning = Some(target.warning(
                     "format_guard_warning",
-                    "the role export is outside the supported platform 8.3.27 / format 2.20 profile",
+                    "the role export is outside the writable export formats",
                 ));
             } else if let Some(target) = xdto_target.as_ref() {
                 format_guard_warning = Some(target.warning(
@@ -1835,8 +1835,9 @@ fn role_guard_failure_reason(code: &str) -> &'static str {
         "support_locked" => "the logical role target is protected by support policy",
         "support_guard_failed" => "the support policy could not be evaluated safely",
         "cache_unavailable" => "the logical cache projection is unavailable",
+        "formatVersionMixed" => "the role source set records different export formats",
         "formatMigrationAvailable" | "platformVersionUnsupported" | "formatVersionInvalid" => {
-            "the role export is outside the supported platform 8.3.27 / format 2.20 profile"
+            "the role export is outside the writable export formats"
         }
         _ => "the role mutation could not pass its preflight checks",
     }

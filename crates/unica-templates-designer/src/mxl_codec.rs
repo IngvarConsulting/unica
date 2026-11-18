@@ -2799,7 +2799,7 @@ pub mod test_support {
     use std::path::PathBuf;
     pub fn platform_mxl_fixture() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../tests/fixtures/platform_8_3_27/mxl/Template.xml")
+            .join("../../tests/fixtures/formats/platform_xml/2.20/mxl/Template.xml")
     }
 
     use super::{mxl_compile_document, Value};

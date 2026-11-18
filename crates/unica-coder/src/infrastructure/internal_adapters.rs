@@ -946,7 +946,7 @@ mod tests {
             .outcome
             .warnings
             .iter()
-            .any(|warning| warning.contains("retry once")));
+            .any(|warning| warning.contains("streams no progress")));
         cleanup_context(&context);
     }
 
@@ -975,7 +975,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_job_request_carries_one_full_fallback() {
+    fn runtime_job_request_keeps_the_default_build() {
         let mut context = temp_context("runtime-job-request-supported-configuration");
         configure_supported_designer_source(&mut context);
         let mut args = Map::new();
@@ -998,10 +998,6 @@ mod tests {
         .unwrap();
 
         assert_runtime_args_with_primary(&context, request.raw_argv(), &["build"]);
-        let fallback = request
-            .full_rebuild_fallback_argv()
-            .expect("durable full fallback");
-        assert_runtime_args_with_primary(&context, fallback, &["build", "--full-rebuild"]);
         cleanup_context(&context);
     }
 
@@ -1039,7 +1035,7 @@ mod tests {
         assert!(outcome
             .warnings
             .iter()
-            .any(|warning| warning.contains("retry once")));
+            .any(|warning| warning.contains("streams no progress")));
         cleanup_context(&context);
     }
 
@@ -1109,7 +1105,7 @@ mod tests {
         assert!(invocation
             .warnings
             .iter()
-            .any(|warning| warning.contains("retry once")));
+            .any(|warning| warning.contains("streams no progress")));
         cleanup_context(&context);
     }
 
@@ -1158,7 +1154,7 @@ mod tests {
         fs::write(
             context.workspace_root.join("extension/Configuration.xml"),
             include_bytes!(
-                "../../../../tests/fixtures/platform_8_3_27/support-edit-bin-only/src/Configuration.xml"
+                "../../../../tests/fixtures/formats/platform_xml/2.20/support-edit-bin-only/src/Configuration.xml"
             ),
         )
         .unwrap();
@@ -1212,7 +1208,7 @@ mod tests {
         assert!(outcome
             .warnings
             .iter()
-            .any(|warning| warning.contains("retry once")));
+            .any(|warning| warning.contains("streams no progress")));
         cleanup_context(&context);
     }
 
@@ -2217,6 +2213,10 @@ mod tests {
     fn runtime_adapter_maps_each_runtime_operation_to_expected_argv() {
         let cases = vec![
             (json!({"operation": "init"}), vec!["init"]),
+            (
+                json!({"operation": "dump", "mode": "full", "sourceSet": "main"}),
+                vec!["dump", "--force", "--source-set", "main"],
+            ),
             (
                 json!({
                     "operation": "dump",
@@ -3675,18 +3675,35 @@ analyze_timeout_seconds = 900
         );
     }
 
+    mod medium_diagnostics_process_failure;
+
+    const PARTIAL_FINDING_THEN_INVALID: &str = concat!(
+        "{\"type\":\"start\",\"total_files\":1,\"version\":\"0.2.62\"}\n",
+        "{\"type\":\"file\",\"path\":\"CommonModules/Probe/Ext/Module.bsl\",",
+        "\"diagnostics\":[{\"code\":\"LineLength\",\"message\":\"partial-finding-sentinel\",",
+        "\"severity\":\"Warning\",\"start_line\":1,\"start_column\":0,",
+        "\"end_line\":1,\"end_column\":1,\"tags\":[]}]}\n",
+        "invalid-jsonl-sentinel\n",
+    );
+
+    /// rule: INV.ANALYSIS.ANALYZER-PROCESS-FAILURE
     #[test]
     fn diagnostics_analyze_process_failure_takes_priority_over_invalid_stream() {
-        for (index, (cancelled, timed_out, expected)) in [
-            (true, false, "cancelled:"),
-            (false, true, "timed out"),
-            (false, false, "exit status: 2"),
+        for (index, (cancelled, timed_out, expected, kind)) in [
+            (true, false, "cancelled:", AnalyzerRunFailureKind::Cancelled),
+            (false, true, "timed out", AnalyzerRunFailureKind::TimedOut),
+            (
+                false,
+                false,
+                "exit status: 2",
+                AnalyzerRunFailureKind::Exited,
+            ),
         ]
         .into_iter()
         .enumerate()
         {
             let context = temp_context(&format!("diagnostics-process-priority-{index}"));
-            let mut output = analyze_process_output("invalid-event");
+            let mut output = analyze_process_output(PARTIAL_FINDING_THEN_INVALID);
             output.status_success = false;
             output.cancelled = cancelled;
             output.timed_out = timed_out;
@@ -3704,6 +3721,8 @@ analyze_timeout_seconds = 900
             cleanup_context(&context);
             assert!(!result.outcome.ok);
             assert!(result.diagnostics.is_none());
+            assert!(result.data.is_none());
+            assert_eq!(result.run_failure, Some(kind));
             assert!(result.outcome.stdout.is_none());
             assert!(
                 result
@@ -4578,7 +4597,7 @@ analyze_timeout_seconds = 900
         fs::write(
             source_root.join("Configuration.xml"),
             include_bytes!(
-                "../../../../tests/fixtures/platform_8_3_27/support-edit-bin-only/src/Configuration.xml"
+                "../../../../tests/fixtures/formats/platform_xml/2.20/support-edit-bin-only/src/Configuration.xml"
             ),
         )
         .unwrap();
@@ -4594,7 +4613,7 @@ analyze_timeout_seconds = 900
         fs::write(
             marker,
             include_bytes!(
-                "../../../../tests/fixtures/platform_8_3_27/support-edit-bin-only/src/Ext/ParentConfigurations.bin"
+                "../../../../tests/fixtures/formats/platform_xml/2.20/support-edit-bin-only/src/Ext/ParentConfigurations.bin"
             ),
         )
         .unwrap();

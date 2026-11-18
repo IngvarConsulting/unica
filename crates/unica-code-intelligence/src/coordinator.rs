@@ -1,4 +1,3 @@
-use crate::deadlines::CodeIntelligenceDeadlines;
 use crate::model::CodeIntelligenceContext;
 use crate::model::CodeIntelligenceProvider;
 use crate::model::CodeIntelligenceReadRequest;
@@ -22,6 +21,9 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
+/// The deadlines the coordinator takes. The type belongs to `unica-configuration`;
+/// it is re-exported here for callers that reach analysis through this port.
+pub use unica_configuration::deadlines::CodeIntelligenceDeadlines;
 use unica_work_control::cancellation::{cancelled_error, CancellationToken};
 use unica_work_control::progress::ProgressSink;
 use unica_work_control::provider_deadline::ProviderDeadline;
@@ -70,10 +72,7 @@ impl ProviderProgressSink for ChannelProviderProgressSink {
 impl CodeSearchCoordinator {
     #[cfg(test)]
     pub fn new(registry: CodeIntelligenceRegistry) -> Self {
-        Self::with_deadlines(
-            registry,
-            crate::deadlines::CodeIntelligenceDeadlines::compiled_defaults(),
-        )
+        Self::with_deadlines(registry, CodeIntelligenceDeadlines::compiled_defaults())
     }
 
     pub fn with_deadlines(
@@ -440,7 +439,11 @@ impl CodeSearchCoordinator {
     }
 
     fn provider_budget(&self, role: ProviderRole) -> Duration {
-        self.deadlines.search_timeout_for(role)
+        match role {
+            ProviderRole::Semantic => self.deadlines.search_semantic_timeout(),
+            ProviderRole::Symbol => self.deadlines.search_total_timeout(),
+            ProviderRole::Lexical => self.deadlines.search_git_grep_timeout(),
+        }
     }
 }
 
@@ -736,7 +739,6 @@ mod tests {
         arbitrate_provider_read_result, execute_provider_read_with_policy, CodeSearchCoordinator,
         ProviderWorkerLifecycle,
     };
-    use crate::deadlines::CodeIntelligenceDeadlines;
     use crate::model::CodeIntelligenceContext;
     use crate::model::CodeIntelligenceProvider;
     use crate::model::CodeIntelligenceReadRequest;
@@ -757,6 +759,7 @@ mod tests {
     use std::sync::{mpsc, Arc, Barrier, Condvar, Mutex};
     use std::thread;
     use std::time::Duration;
+    use unica_configuration::deadlines::CodeIntelligenceDeadlines;
     use unica_source_contract::location::SourceLocation;
     use unica_source_contract::workspace::ResolvedSourceRoot;
     use unica_source_contract::workspace::WorkspaceContext;

@@ -1,4 +1,5 @@
 use super::*;
+use crate::TypeName;
 
 fn page(body: &str) -> String {
     format!("\u{feff}<html><head></head><body>{body}</body></html>")

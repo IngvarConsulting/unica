@@ -1,6 +1,7 @@
 use crate::domain::apply::SourceSetWriteSupport;
 
 mod borrow;
+mod compatibility_warnings;
 pub(crate) mod dcs_mxl;
 pub(crate) mod form_resource;
 #[cfg(any(test, feature = "test-support"))]
@@ -11,6 +12,7 @@ use unica_operations::OperationDescriptor;
 use unica_operations::OperationFamily;
 use unica_source_contract::proposal::{
     hidden_apply_family_unimplemented, ApplyPlanError, ApplyPlanErrorKind, PlannedApplyEffects,
+    ReadOnlyMode, SupportLock, SupportLockKind,
 };
 use unica_source_contract::proposal::{
     reconcile_effects, IndexedPlanOperation, ProvisionalApplyEffect,
@@ -19,11 +21,42 @@ use unica_source_contract::SourceSetKind;
 use unica_workspace::actor::{ApplyAdmission, ProviderRootBinding};
 use unica_workspace::apply::ApplyStagedState;
 
+/// Every family section of plan details that an apply plan may carry; the
+/// planner below fills exactly these.
+pub const PLAN_DETAIL_KEYS: &[unica_source_contract::proposal::PlanDetailKey] = &[
+    unica_xdto::results::XDTO_OBJECTS,
+    unica_metadata::EXCHANGE_CONTENT,
+];
+
 /// The writable platform XML profile is single (`DEC.2026-08-21.SINGLE-WRITABLE-PLATFORM-XML-PROFILE`):
 /// a write outside it refuses before the first byte. The retired v0.12
 /// mutators proved this through the dispatcher's format guard; the canonical
 /// planner proves it here, over the owner chain of the addressed node, read
 /// through the staged state so no ambient file is touched after admission.
+/// The compatibility mode the request sets when all it does is set the
+/// set's own mode property on its root (`props.set` at `Configuration`).
+fn raised_compatibility_mode(
+    request: &ApplyRequest,
+    source_kind: SourceSetKind,
+) -> Option<unica_source_contract::compatibility::CompatibilityMode> {
+    let property = unica_source_designer::extension_mode::compatibility_mode_property(source_kind)?;
+    let mut raised = None;
+    for operation in request.ops() {
+        let at_root = operation.at().segments().len() == 1
+            && operation.at().segments()[0].kind()
+                == unica_address::address::NodeKind::Configuration;
+        let values = operation.args().get("values")?.as_object()?;
+        if operation.name() != "props.set" || !at_root || values.len() != 1 {
+            return None;
+        }
+        let mode = unica_source_contract::compatibility::CompatibilityMode::parse(
+            values.get(property)?.as_str()?,
+        )?;
+        raised = Some(mode);
+    }
+    raised
+}
+
 fn refuse_targets_outside_writable_profile(
     request: &ApplyRequest,
     binding: &ProviderRootBinding,
@@ -49,13 +82,38 @@ fn refuse_targets_outside_writable_profile(
             continue;
         };
         if let Some(finding) =
-            crate::infrastructure::format_guard::classify_staged_platform_xml_root(
-                &relative, &bytes,
+            crate::infrastructure::format_guard::classify_staged_platform_xml_root_in_set(
+                &relative,
+                &bytes,
+                binding.source_profile().serialization_format(),
             )
         {
-            return Err(
-                ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, finding.message).at_path(at),
-            );
+            let set_format = binding.source_profile().serialization_format();
+            // An older or mixed export the person may re-export in a writable
+            // format (INV.SOURCE.WRITABLE-PROFILE); other findings have no way out.
+            let reexport = match (finding.code, finding.actual.clone(), set_format) {
+                ("formatMigrationAvailable", Some(actual), _) => {
+                    Some(unica_source_contract::proposal::FormatReexportKind::Old { actual })
+                }
+                ("formatVersionMixed", Some(other), Some(set_format)) => {
+                    Some(unica_source_contract::proposal::FormatReexportKind::Mixed {
+                        set_format: set_format.to_string(),
+                        other,
+                    })
+                }
+                _ => None,
+            };
+            let error =
+                ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, finding.message).at_path(at);
+            return Err(match reexport {
+                Some(kind) => {
+                    error.with_format_reexport(unica_source_contract::proposal::FormatReexport {
+                        source_set: binding.source_set_name().to_string(),
+                        kind,
+                    })
+                }
+                None => error,
+            });
         }
     }
     Ok(())
@@ -176,165 +234,738 @@ fn changes_support_state(
 /// support with changes disabled, refuses `invalid_state` before any family
 /// stages a byte when the actor's support policy is `deny`; under `warn` it
 /// proceeds and returns the `support_locked` warning the plan carries; `off`
-/// is silent. Removal follows the same policy: an editable vendor object is
-/// removed while staying on support, and only a `locked` rule on the object
-/// or on one of its own child objects refuses under `deny` or warns under
-/// `warn`. The marker is not changed by the removal.
+/// is silent. Removal follows the same policy: an editable vendor object, or
+/// a node of it with its own record, is removed while staying on support, and
+/// only a `locked` rule on it, above it or on a node under it with its own
+/// record refuses under `deny` or warns under `warn`. The marker is not
+/// changed by the removal.
 /// The owner is the top-level metadata object of the addressed node, or the
-/// configuration root for root-level targets; nested forms, templates and
-/// attributes inherit the rule of their owner, as they do in the platform.
+/// configuration root for root-level targets. A node below it with its own
+/// record (a form, an attribute, a nested subsystem) closes itself and
+/// everything under it when its rule is `locked`, as in the configurator.
+/// Every operation target is checked, not only the request's node.
+/// What locks a target is decided by [`support_gate_facts`], which `view`
+/// also asks, so the editability a node shows is this gate's answer.
 fn refuse_targets_on_locked_vendor_objects(
     request: &ApplyRequest,
     binding: &ProviderRootBinding,
     admission: &ApplyAdmission,
     staged: &mut ApplyStagedState,
-) -> Result<Option<serde_json::Value>, ApplyPlanError> {
-    use unica_metadata_designer::support::{
-        parse_support_state_compat_bytes, support_root_uuid_from_bytes,
-    };
+) -> Result<Vec<GateWarning>, ApplyPlanError> {
+    let policy = admission.support_policy_mode();
+    let mut warnings = Vec::new();
+    for (target, removes) in gate_targets(request, binding) {
+        warnings.extend(refuse_target_on_locked_vendor_object(
+            target, removes, policy, binding, staged,
+        )?);
+    }
+    Ok(warnings)
+}
+
+/// Every lock of the gate on the targets of `request`, not only the first:
+/// the locks a person may be asked about in the current support state.
+/// Another refusal of the gate (support that cannot be read) is returned.
+fn locks_on_targets(
+    request: &ApplyRequest,
+    binding: &ProviderRootBinding,
+    admission: &ApplyAdmission,
+    staged: &mut ApplyStagedState,
+) -> Result<Vec<SupportLock>, ApplyPlanError> {
+    let policy = admission.support_policy_mode();
+    let mut locks = Vec::new();
+    for (target, removes) in gate_targets(request, binding) {
+        match refuse_target_on_locked_vendor_object(target, removes, policy, binding, staged) {
+            Ok(_) => {}
+            Err(error) => match error.support_lock() {
+                Some(lock) => locks.push(lock.clone()),
+                None => return Err(error),
+            },
+        }
+    }
+    Ok(locks)
+}
+
+/// The targets the gate checks: every operation answers for its own target,
+/// since an `args.at` below the request's node may sit under a node with its
+/// own `locked` record; with whether an operation removes it.
+fn gate_targets<'a>(
+    request: &'a ApplyRequest,
+    binding: &ProviderRootBinding,
+) -> Vec<(&'a unica_address::address::QualifiedAddress, bool)> {
+    let mut targets: Vec<(&unica_address::address::QualifiedAddress, bool)> = Vec::new();
+    for operation in request.ops() {
+        if changes_support_state(operation.name(), Some(operation.at()), binding) {
+            continue;
+        }
+        let removes = removes_support_node(operation.name(), operation.at());
+        match targets.iter_mut().find(|(at, _)| *at == operation.at()) {
+            Some((_, target_removes)) => *target_removes |= removes,
+            None => targets.push((operation.at(), removes)),
+        }
+    }
+    targets
+}
+
+/// Whether the operation `name` removes the node it addresses and that node
+/// can carry its own support record: the object itself (`object.remove`) or
+/// a node below it (`tabularSection.remove`, `form.remove`,
+/// `childSubsystem.remove`…). Such a removal answers for the locked nodes
+/// under the removed one, not only for the path to it.
+pub(crate) fn removes_support_node(
+    name: &str,
+    at: &unica_address::address::QualifiedAddress,
+) -> bool {
+    use unica_metadata::apply_operations::MetadataOperation;
+    use unica_operation_contract::OperationSkeleton;
+
+    if MetadataOperation::named(name) == Some(MetadataOperation::ObjectRemove) {
+        return true;
+    }
+    name.ends_with(".remove")
+        && unica_metadata::applicability::support_record_path(at.segments())
+        && crate::domain::apply::operation_registry()
+            .named(name)
+            .any(|descriptor| descriptor.skeleton() == OperationSkeleton::Target)
+}
+
+/// A `support_locked` warning of the gate under `warn`, with the source
+/// paths it speaks for.
+struct GateWarning {
+    warning: serde_json::Value,
+    /// The paths of a locked node below its owner: the warning stands only
+    /// when the plan changes one of them. `None`: any change of the plan.
+    scope: Option<Vec<std::path::PathBuf>>,
+}
+
+/// The gate's warnings that the plan's changes bear out, one per node: a
+/// locked node whose files the plan leaves as they were edited nothing
+/// protected.
+fn planned_gate_warnings(
+    warnings: Vec<GateWarning>,
+    changed: &[unica_source_contract::proposal::StagedApplyChange],
+) -> Vec<serde_json::Value> {
+    let mut kept: Vec<serde_json::Value> = Vec::new();
+    for GateWarning { warning, scope } in warnings {
+        let touched = match &scope {
+            None => !changed.is_empty(),
+            Some(scope) => changed.iter().any(|change| {
+                scope
+                    .iter()
+                    .any(|path| change.relative_path.starts_with(path))
+            }),
+        };
+        if touched && !kept.iter().any(|seen| seen["at"] == warning["at"]) {
+            kept.push(warning);
+        }
+    }
+    kept
+}
+
+/// The support gate for one operation target; `removes` asks about removing
+/// the target itself (`removes_support_node`).
+fn refuse_target_on_locked_vendor_object(
+    target: &unica_address::address::QualifiedAddress,
+    removes: bool,
+    policy: unica_source_contract::proposal::SupportPolicyMode,
+    binding: &ProviderRootBinding,
+    staged: &mut ApplyStagedState,
+) -> Result<Option<GateWarning>, ApplyPlanError> {
     use unica_source_contract::proposal::SupportPolicyMode;
 
-    let deny = match admission.support_policy_mode() {
-        SupportPolicyMode::Deny => true,
-        SupportPolicyMode::Warn => false,
-        SupportPolicyMode::Off => return Ok(None),
-    };
-    if request
-        .ops()
-        .iter()
-        .all(|operation| changes_support_state(operation.name(), Some(operation.at()), binding))
-    {
-        return Ok(None);
-    }
+    // `off` silences locks but not a support state that cannot be read: the
+    // gate reads the marker under every policy.
+    let deny = policy == SupportPolicyMode::Deny;
     let support_locked = |owner: &str, message: String| {
         serde_json::json!({
             "code": "support_locked",
             "severity": "warning",
-            "at": format!("{}:{owner}", request.at().source_set()),
+            "at": format!("{}:{owner}", target.source_set()),
             "message": message,
         })
     };
-    let at = request.at().to_string();
-    let source_set = request.at().source_set();
-    let removes = request.ops().iter().any(|operation| {
-        unica_metadata::apply_operations::MetadataOperation::named(operation.name())
-            == Some(unica_metadata::apply_operations::MetadataOperation::ObjectRemove)
-    });
-    let marker_path = std::path::Path::new("Ext/ParentConfigurations.bin");
-    let marker = staged
-        .read(marker_path)
-        .map_err(|error| ApplyPlanError::staging(error, at.clone()))?;
-    let Some(state) = parse_support_state_compat_bytes(marker.as_deref()) else {
+    let at = target.to_string();
+    let source_set = target.source_set();
+    let staged = std::cell::RefCell::new(staged);
+    let facts = support_gate_facts(
+        target,
+        binding.source_kind(),
+        // `off` asks only whether the marker can be read: no child listing.
+        removes && policy != SupportPolicyMode::Off,
+        &mut |relative| staged.borrow_mut().read(relative),
+        &mut |relative| {
+            staged
+                .borrow_mut()
+                .enumerate_tree_with_root_absence(relative)
+                .map(|(files, _)| files)
+        },
+    )
+    .map_err(|error| ApplyPlanError::staging(error, at.clone()))?;
+    // Support that cannot be read is not the absence of support
+    // (INV.APP.SUPPORT-STATE): `deny` and `off` refuse before any byte is
+    // written, `warn` permits the edit with a warning.
+    if let Some(unreadable) = facts.unreadable {
+        let reason = unreadable.reason;
+        if policy == SupportPolicyMode::Warn {
+            let owner = support_owner_relative(target, binding.source_kind())
+                .map_or_else(|| "Configuration".to_string(), |(owner, _)| owner);
+            return Ok(Some(GateWarning {
+                warning: support_locked(
+                    &owner,
+                    format!("{reason}; the project support policy `warn` permits this edit"),
+                ),
+                scope: None,
+            }));
+        }
+        if !unreadable.marker {
+            return Err(ApplyPlanError::new(
+                ApplyPlanErrorKind::InvalidSource,
+                format!(
+                    "{reason}; restore the descriptor from version control or export the set again"
+                ),
+            )
+            .at_path(at));
+        }
+        return Err(ApplyPlanError::new(
+            ApplyPlanErrorKind::InvalidSource,
+            format!("{reason}; restore the infobase from a backup and export the set again, or take the configuration off support entirely"),
+        )
+        .at_path(at)
+        .with_support_state_unreadable());
+    }
+    if policy == SupportPolicyMode::Off {
         return Ok(None);
+    }
+    let Some(lock) = facts.lock else {
+        return Ok(None);
+    };
+    let support_lock = unica_source_contract::proposal::SupportLock {
+        kind: lock.kind,
+        source_set: source_set.to_string(),
+        owner: lock.owner.clone(),
+    };
+    let message = match (lock.kind, deny) {
+        (SupportLockKind::ConfigurationLocked, false) => {
+            let permits = if removes { "its removal" } else { "this edit" };
+            format!("{}; the project support policy `warn` permits {permits}", lock.reason)
+        }
+        (SupportLockKind::ConfigurationLocked, true) => {
+            let before = if removes { "removal" } else { "ordinary edits" };
+            format!(
+                "{}; enable editing with `supportCapability.set` in a separate apply before {before}",
+                lock.reason
+            )
+        }
+        (SupportLockKind::RemovalLocked, false) => format!(
+            "{}; the project support policy `warn` permits its removal",
+            lock.reason
+        ),
+        (SupportLockKind::RemovalLocked, true) => format!(
+            "{}; take the object off support with `supportRule.set` and the rule `off-support` in a separate apply before removal",
+            lock.reason
+        ),
+        (_, false) => format!(
+            "{}; the project support policy `warn` permits this edit",
+            lock.reason
+        ),
+        (SupportLockKind::ObjectLocked, true) if lock.owner == "Configuration" => format!(
+            "{}; set `supportRule.set` with rule `editable` on `{source_set}:Configuration` in a separate apply before ordinary edits",
+            lock.reason
+        ),
+        (_, true) => format!(
+            "{}; allow editing with `supportRule.set` in a separate apply before ordinary edits",
+            lock.reason
+        ),
+    };
+    if !deny {
+        return Ok(Some(GateWarning {
+            warning: support_locked(&lock.owner, message),
+            scope: lock.scope,
+        }));
+    }
+    let mut error = ApplyPlanError::new(ApplyPlanErrorKind::InvalidState, message)
+        .at_path(at)
+        .with_support_lock(support_lock);
+    if lock.kind == SupportLockKind::ObjectLocked
+        && lock.owner == "Configuration"
+        && binding.source_kind() == SourceSetKind::Configuration
+    {
+        error = error.with_next(serde_json::json!({
+            "tool": "unica.apply",
+            "args": {
+                "at": format!("{source_set}:Configuration"),
+                "ops": [{"op": "supportRule.set", "args": {"values": {"rule": "editable"}}}],
+            },
+            "reason": "preview the separate change of the configuration root support rule before retrying the edit",
+        }));
+    }
+    Err(error)
+}
+
+/// Reads one source file relative to the source root: `None` when absent.
+pub(crate) type GateRead<'a, E> = dyn FnMut(&std::path::Path) -> Result<Option<Vec<u8>>, E> + 'a;
+/// Lists the regular files under a relative directory, recursively.
+pub(crate) type GateEnumerate<'a, E> =
+    dyn FnMut(&std::path::Path) -> Result<Vec<std::path::PathBuf>, E> + 'a;
+
+/// What the vendor-support marker says about one target before the project
+/// policy is applied: the lock that stands in the way of an edit (or of a
+/// removal), and the rule of the target's owner.
+pub(crate) struct SupportGateFacts {
+    /// The parsed marker, or `None` when the set has none or the
+    /// compatible reader cannot read it (the gate then does not lock).
+    pub(crate) marker: Option<SupportGateMarker>,
+    /// The rule of the owner's own record: 0 `locked`, 1 editable with
+    /// support, 2 taken off support; `None` without a record.
+    pub(crate) owner_rule: Option<u8>,
+    /// The owner's descriptor was read but names no uuid: its rule cannot
+    /// be looked up, and its support is unreadable.
+    pub(crate) owner_uuid_missing: bool,
+    /// The rule of the addressed node's own record when the node is not the
+    /// owner itself and has one (a form, an attribute, a nested subsystem).
+    pub(crate) node_rule: Option<u8>,
+    pub(crate) lock: Option<SupportGateLock>,
+    /// Why the support of the target cannot be read. Not the absence of
+    /// support (INV.APP.SUPPORT-STATE).
+    pub(crate) unreadable: Option<SupportUnreadable>,
+}
+
+/// Support that cannot be read: the marker itself, or the owner's
+/// descriptor that names no uuid to look its rule up.
+pub(crate) struct SupportUnreadable {
+    pub(crate) reason: String,
+    /// The marker is damaged: taking the configuration off support entirely
+    /// repairs it. A descriptor without a uuid is repaired by restoring it.
+    pub(crate) marker: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SupportGateMarker {
+    /// The configuration was taken off support as a whole.
+    Removed,
+    /// On support; whether its changes are enabled.
+    Supported { editing_enabled: bool },
+}
+
+pub(crate) struct SupportGateLock {
+    pub(crate) kind: SupportLockKind,
+    /// The owner path as the lock names it (`Catalog.Items`, `Configuration`).
+    pub(crate) owner: String,
+    pub(crate) reason: String,
+    /// The source paths of a locked node below the owner: its own descriptor
+    /// and directory, or the descriptor that declares it. `None` for a lock of
+    /// the owner or of the configuration.
+    pub(crate) scope: Option<Vec<std::path::PathBuf>>,
+}
+
+/// The support facts of one target, read through `read` and `enumerate`
+/// relative to the source root: the staged state of `apply` or the retained
+/// root of `view`. `removes` asks about removing the target itself.
+pub(crate) fn support_gate_facts<E>(
+    at: &unica_address::address::QualifiedAddress,
+    source_kind: SourceSetKind,
+    removes: bool,
+    read: &mut GateRead<'_, E>,
+    enumerate: &mut GateEnumerate<'_, E>,
+) -> Result<SupportGateFacts, E> {
+    use unica_metadata_designer::support::{
+        configuration_support_uuid, parse_support_state_strict_bytes, support_root_uuid_from_bytes,
+    };
+
+    let free = |marker, owner_rule| SupportGateFacts {
+        marker,
+        owner_rule,
+        owner_uuid_missing: false,
+        node_rule: None,
+        lock: None,
+        unreadable: None,
+    };
+    let source_set = at.source_set();
+    let marker = read(std::path::Path::new("Ext/ParentConfigurations.bin"))?;
+    let state = match parse_support_state_strict_bytes(marker.as_deref()) {
+        Ok(Some(state)) => state,
+        Ok(None) => return Ok(free(None, None)),
+        Err(error) => {
+            return Ok(SupportGateFacts {
+                marker: None,
+                owner_rule: None,
+                owner_uuid_missing: false,
+                node_rule: None,
+                lock: None,
+                unreadable: Some(SupportUnreadable {
+                    reason: format!("the vendor support state `Ext/ParentConfigurations.bin` cannot be read ({error}); Unica does not take an unreadable support state for no support"),
+                    marker: true,
+                }),
+            })
+        }
     };
     if state.removed() {
-        return Ok(None);
+        return Ok(free(Some(SupportGateMarker::Removed), None));
     }
-    if !state.global_editing_enabled() {
-        if !deny {
-            let owner = support_owner_relative(request, binding.source_kind())
-                .map_or_else(|| "Configuration".to_string(), |(owner, _)| owner);
-            let permits = if removes { "its removal" } else { "this edit" };
-            return Ok(Some(support_locked(
-                &owner,
-                format!("the configuration is on vendor support with changes disabled; the project support policy `warn` permits {permits}"),
-            )));
+    let editing_enabled = state.global_editing_enabled();
+    let marker = Some(SupportGateMarker::Supported { editing_enabled });
+    let owner = support_owner_relative(at, source_kind);
+    if !editing_enabled {
+        // The node still names its own rule, as `view` shows it.
+        let mut node_rule = None;
+        if let Some((owner, owner_relative)) = &owner {
+            if let Some(bytes) = read(owner_relative)? {
+                node_rule =
+                    support_records_on_path(at, owner, owner_relative, &bytes, &state, read)?
+                        .node_rule;
+            }
         }
-        let before = if removes { "removal" } else { "ordinary edits" };
-        return Err(ApplyPlanError::new(
-            ApplyPlanErrorKind::InvalidState,
-            format!("the configuration is on vendor support with changes disabled; enable editing with `supportCapability.set` in a separate apply before {before}"),
-        )
-        .at_path(at));
+        let owner = owner.map_or_else(|| "Configuration".to_string(), |(owner, _)| owner);
+        return Ok(SupportGateFacts {
+            marker,
+            owner_rule: None,
+            owner_uuid_missing: false,
+            node_rule,
+            lock: Some(SupportGateLock {
+                kind: SupportLockKind::ConfigurationLocked,
+                owner,
+                reason: "the configuration is on vendor support with changes disabled".to_string(),
+                scope: None,
+            }),
+            unreadable: None,
+        });
     }
-    let Some((owner, owner_relative)) = support_owner_relative(request, binding.source_kind())
-    else {
-        return Ok(None);
+    let Some((owner, owner_relative)) = owner else {
+        return Ok(free(marker, None));
     };
-    let Some(bytes) = staged
-        .read(&owner_relative)
-        .map_err(|error| ApplyPlanError::staging(error, at.clone()))?
-    else {
-        return Ok(None);
+    let Some(bytes) = read(&owner_relative)? else {
+        return Ok(free(marker, None));
     };
-    let support_rule =
-        support_root_uuid_from_bytes(&bytes).and_then(|uuid| state.object_rule(&uuid));
-    if removes {
+    let owner_uuid = if owner == "Configuration" && source_kind == SourceSetKind::Configuration {
+        configuration_support_uuid(&bytes)
+    } else {
+        support_root_uuid_from_bytes(&bytes)
+    };
+    let owner_uuid_missing = owner_uuid.is_none();
+    if owner_uuid_missing {
+        // An owner whose descriptor names no uuid has a rule nobody can look
+        // up: its support cannot be read (INV.APP.SUPPORT-STATE).
+        return Ok(SupportGateFacts {
+            marker,
+            owner_rule: None,
+            owner_uuid_missing,
+            node_rule: None,
+            lock: None,
+            unreadable: Some(SupportUnreadable {
+                reason: format!("the descriptor of `{source_set}:{owner}` names no uuid, so its vendor support rule cannot be read"),
+                marker: false,
+            }),
+        });
+    }
+    let support_rule = owner_uuid.and_then(|uuid| state.object_rule(&uuid));
+    let free = |marker, owner_rule| SupportGateFacts {
+        marker,
+        owner_rule,
+        owner_uuid_missing,
+        node_rule: None,
+        lock: None,
+        unreadable: None,
+    };
+    let locked = |kind, reason: String| SupportGateFacts {
+        marker,
+        owner_rule: support_rule,
+        owner_uuid_missing,
+        node_rule: None,
+        lock: Some(SupportGateLock {
+            kind,
+            owner: owner.clone(),
+            reason,
+            scope: None,
+        }),
+        unreadable: None,
+    };
+    // The removal of a node below the owner edits the nodes above it and
+    // answers for the nodes under it.
+    let removes_owner = removes && at.segments().len() == 1;
+    if removes_owner {
         // An editable vendor object is removed without leaving support, as
         // the configurator does; only a lock on it or on one of its own
         // child objects stands in the way.
         // An object taken off support no longer answers for its children.
-        let reason = if support_rule == Some(0) {
-            format!("`{source_set}:{owner}` is a vendor object with the support rule `locked`")
-        } else if support_rule != Some(1) {
-            return Ok(None);
-        } else {
-            let children = locked_vendor_children(
-                &state,
-                source_set,
-                &owner,
-                &owner_relative,
-                &bytes,
-                staged,
-                &at,
-            )?;
-            if children.is_empty() {
-                return Ok(None);
-            }
+        if support_rule == Some(0) {
+            return Ok(locked(
+                SupportLockKind::RemovalLocked,
+                format!("`{source_set}:{owner}` is a vendor object with the support rule `locked`"),
+            ));
+        }
+        if support_rule != Some(1) {
+            return Ok(free(marker, support_rule));
+        }
+        let children = locked_vendor_descendants(
+            &state,
+            source_set,
+            DescendantRoot {
+                base: &owner,
+                prefix: "",
+                descriptor: &bytes,
+                directory: Some(&owner_relative.with_extension("")),
+            },
+            read,
+            enumerate,
+        )?;
+        if children.is_empty() {
+            return Ok(free(marker, support_rule));
+        }
+        return Ok(locked(
+            SupportLockKind::RemovalLocked,
             format!(
                 "`{source_set}:{owner}` has vendor child objects with the support rule `locked`: {}",
                 children.join(", ")
-            )
-        };
-        if !deny {
-            return Ok(Some(support_locked(
-                &owner,
-                format!("{reason}; the project support policy `warn` permits its removal"),
-            )));
-        }
-        return Err(ApplyPlanError::new(
-            ApplyPlanErrorKind::InvalidState,
-            format!(
-                "{reason}; take the object off support with `supportRule.set` and the rule `off-support` in a separate apply before removal"
             ),
-        )
-        .at_path(at));
+        ));
     }
+    // A node under the owner with its own record answers for itself too:
+    // the first `locked` record on the path closes the target.
+    let path = support_records_on_path(at, &owner, &owner_relative, &bytes, &state, read)?;
     if support_rule == Some(0) {
-        if !deny {
-            return Ok(Some(support_locked(
-                &owner,
-                format!("`{source_set}:{owner}` is a vendor object with the support rule `locked`; the project support policy `warn` permits this edit"),
-            )));
-        }
-        return Err(ApplyPlanError::new(
-            ApplyPlanErrorKind::InvalidState,
-            format!(
-                "`{source_set}:{owner}` is a vendor object with the support rule `locked`; allow editing with `supportRule.set` in a separate apply before ordinary edits"
-            ),
-        )
-        .at_path(at));
+        let subject = if owner == "Configuration" {
+            "has its own vendor support rule `locked`"
+        } else {
+            "is a vendor object with the support rule `locked`"
+        };
+        let mut facts = locked(
+            SupportLockKind::ObjectLocked,
+            format!("`{source_set}:{owner}` {subject}"),
+        );
+        facts.node_rule = path.node_rule;
+        return Ok(facts);
     }
-    Ok(None)
+    let reached = path.reached.as_ref().filter(|_| removes);
+    if let Some((node, scope)) = path.locked {
+        // The removed node's own `locked` rule refuses its removal as the
+        // object's own rule does; a lock above it refuses the edit.
+        if reached.is_some_and(|reached| reached.node == node) {
+            let mut facts = locked(
+                SupportLockKind::RemovalLocked,
+                format!("`{source_set}:{node}` is a vendor object with the support rule `locked`"),
+            );
+            facts.node_rule = path.node_rule;
+            if let Some(lock) = facts.lock.as_mut() {
+                lock.owner = node;
+            }
+            return Ok(facts);
+        }
+        return Ok(SupportGateFacts {
+            marker,
+            owner_rule: support_rule,
+            owner_uuid_missing,
+            node_rule: path.node_rule,
+            lock: Some(SupportGateLock {
+                kind: SupportLockKind::ObjectLocked,
+                reason: format!(
+                    "`{source_set}:{node}` is a vendor object with the support rule `locked`"
+                ),
+                owner: node,
+                scope: Some(scope),
+            }),
+            unreadable: None,
+        });
+    }
+    // A removed node editable with support answers for the nodes under it
+    // with their own `locked` rule; one taken off support no longer does.
+    if let Some(reached) = reached.filter(|_| path.node_rule == Some(1)) {
+        let children = locked_vendor_descendants(
+            &state,
+            source_set,
+            DescendantRoot {
+                base: &reached.base,
+                prefix: &reached.prefix,
+                descriptor: &reached.descriptor,
+                directory: reached.directory.as_deref(),
+            },
+            read,
+            enumerate,
+        )?;
+        if !children.is_empty() {
+            let mut facts = locked(
+                SupportLockKind::RemovalLocked,
+                format!(
+                    "`{source_set}:{}` has vendor child objects with the support rule `locked`: {}",
+                    reached.node,
+                    children.join(", ")
+                ),
+            );
+            facts.node_rule = path.node_rule;
+            if let Some(lock) = facts.lock.as_mut() {
+                lock.owner = reached.node.clone();
+            }
+            return Ok(facts);
+        }
+    }
+    let mut facts = free(marker, support_rule);
+    facts.node_rule = path.node_rule;
+    Ok(facts)
 }
 
-/// The child objects of a removed vendor object that carry their own
-/// `locked` rule: attributes, tabular sections and other nodes declared in
-/// its descriptor, and forms, templates and commands described in their own
-/// descriptors under its directory.
-fn locked_vendor_children(
-    state: &unica_metadata_designer::support::SupportState,
-    source_set: &str,
+/// The own support records on the path from the owner to `at`.
+struct PathRecords {
+    /// The first node (owner excluded) whose own record is `locked`, with
+    /// the source paths that hold it.
+    locked: Option<(String, Vec<std::path::PathBuf>)>,
+    /// The rule of `at`'s own record when `at` is below the owner.
+    node_rule: Option<u8>,
+    /// `at` itself when the walk reaches it below the owner: where the nodes
+    /// under it are described.
+    reached: Option<ReachedNode>,
+}
+
+/// A node below the owner that the walk reached, and the descriptor that
+/// declares the nodes under it.
+struct ReachedNode {
+    /// The node path without the source set (`Catalog.X.TabularSection.T`).
+    node: String,
+    /// The object `descriptor` describes.
+    base: String,
+    /// The node's own `.Kind.Name…` chain in `descriptor`; empty when the
+    /// descriptor is the node's own.
+    prefix: String,
+    descriptor: Vec<u8>,
+    /// The node's own directory with nested descriptors (a form, a nested
+    /// subsystem); `None` for a node declared in another descriptor.
+    directory: Option<std::path::PathBuf>,
+}
+
+/// Walks `at` below its owner over the nodes that `supportRule.set` can
+/// address (`support_record_path`), so a lock found here can be lifted. A
+/// segment is a node declared in the current descriptor (an attribute, a
+/// tabular section and its attribute, a dimension, a resource) or a node with
+/// a descriptor of its own (a form, a template, a command, a nested
+/// subsystem); each may carry its own record by uuid. Any other segment (a
+/// module, a form item, an enum value) has no record of its own and ends the
+/// walk: it follows the nearest node above it.
+fn support_records_on_path<E>(
+    at: &unica_address::address::QualifiedAddress,
     owner: &str,
     owner_relative: &std::path::Path,
     owner_bytes: &[u8],
-    staged: &mut ApplyStagedState,
-    at: &str,
-) -> Result<Vec<String>, ApplyPlanError> {
+    state: &unica_metadata_designer::support::SupportState,
+    read: &mut GateRead<'_, E>,
+) -> Result<PathRecords, E> {
+    use unica_address::address::NodeKind;
+    use unica_metadata_designer::support::support_root_uuid_from_bytes;
+
+    let mut records = PathRecords {
+        locked: None,
+        node_rule: None,
+        reached: None,
+    };
+    let segments = at.segments();
+    let Some(first) = segments.first() else {
+        return Ok(records);
+    };
+    if first.kind() == NodeKind::Configuration || !first.kind().is_metadata_kind() {
+        return Ok(records);
+    }
+    let mut node = owner.to_string();
+    let mut descriptor = owner_bytes.to_vec();
+    let mut descriptor_relative = owner_relative.to_path_buf();
+    let mut chain = String::new();
+    let mut base = owner.to_string();
+    // A nested subsystem lives in `Subsystems/<A>/Subsystems/<B>.xml`.
+    let mut directory = owner_relative.with_extension("");
+    let last = segments.len().saturating_sub(1);
+    for (index, segment) in segments.iter().enumerate().skip(1) {
+        if !unica_metadata::applicability::support_record_path(&segments[..=index]) {
+            break;
+        }
+        let Some(name) = segment.name() else {
+            break;
+        };
+        let kind = segment.kind().as_str();
+        node.push_str(&format!(".{kind}.{name}"));
+        let declared = format!("{chain}.{kind}.{name}");
+        let (uuid, scope, own_directory) = if let Some(uuid) = declared_uuid(&descriptor, &declared)
+        {
+            chain = declared;
+            (Some(uuid), vec![descriptor_relative.clone()], false)
+        } else if matches!(kind, "Form" | "Template" | "Command" | "Subsystem") && chain.is_empty()
+        {
+            let folder = match kind {
+                "Form" => "Forms",
+                "Template" => "Templates",
+                "Command" => "Commands",
+                _ => "Subsystems",
+            };
+            let relative = directory.join(folder).join(format!("{name}.xml"));
+            let Some(bytes) = read(&relative)? else {
+                break;
+            };
+            directory = directory.join(folder).join(name);
+            let uuid = support_root_uuid_from_bytes(&bytes);
+            descriptor = bytes;
+            descriptor_relative = relative.clone();
+            base = node.clone();
+            (uuid, vec![relative, directory.clone()], true)
+        } else {
+            break;
+        };
+        let rule = uuid.and_then(|uuid| state.object_rule(&uuid));
+        if rule == Some(0) && records.locked.is_none() {
+            records.locked = Some((node.clone(), scope));
+        }
+        if index == last {
+            records.node_rule = rule;
+            records.reached = Some(ReachedNode {
+                node: node.clone(),
+                base: base.clone(),
+                prefix: chain.clone(),
+                descriptor: descriptor.clone(),
+                directory: own_directory.then(|| directory.clone()),
+            });
+        }
+    }
+    Ok(records)
+}
+
+/// The uuid of the node declared in `descriptor` under the chain
+/// `.Kind.Name…` below the described object, as `declared_chain` spells it.
+fn declared_uuid(descriptor: &[u8], chain: &str) -> Option<String> {
+    use unica_metadata_designer::remove::{declared_chain, declared_name};
+
+    let text = std::str::from_utf8(descriptor).ok()?;
+    let document = roxmltree::Document::parse(text.trim_start_matches('\u{feff}')).ok()?;
+    document
+        .descendants()
+        .filter(|node| node.is_element() && node.has_attribute("uuid"))
+        .filter(|node| declared_name(*node).is_some())
+        .find(|node| declared_chain(*node).concat() == chain)
+        .and_then(|node| node.attribute("uuid"))
+        .map(str::to_ascii_lowercase)
+}
+
+/// Where the nodes under a removed node are described.
+struct DescendantRoot<'a> {
+    /// The object `descriptor` describes.
+    base: &'a str,
+    /// The removed node's `.Kind.Name…` chain in `descriptor`; empty when
+    /// it is the described object itself.
+    prefix: &'a str,
+    descriptor: &'a [u8],
+    /// The directory of nested descriptors under the removed node.
+    directory: Option<&'a std::path::Path>,
+}
+
+/// The nodes under a removed vendor node that carry their own `locked` rule:
+/// attributes, tabular sections and other nodes declared under it in its
+/// descriptor, and forms, templates, commands and nested subsystems described
+/// in their own descriptors under its directory.
+fn locked_vendor_descendants<E>(
+    state: &unica_metadata_designer::support::SupportState,
+    source_set: &str,
+    root: DescendantRoot<'_>,
+    read: &mut GateRead<'_, E>,
+    enumerate: &mut GateEnumerate<'_, E>,
+) -> Result<Vec<String>, E> {
     use unica_metadata_designer::remove::{declared_chain, declared_name};
 
     let mut locked = Vec::new();
-    let mut collect = |base: &str, bytes: &[u8]| {
+    // `prefix` of `None`: every declared node of the descriptor, its own
+    // root included, lies under the removed node.
+    let mut collect = |base: &str, bytes: &[u8], prefix: Option<&str>| {
         let Some(document) = std::str::from_utf8(bytes)
             .ok()
             .and_then(|text| roxmltree::Document::parse(text.trim_start_matches('\u{feff}')).ok())
@@ -348,19 +979,24 @@ fn locked_vendor_children(
             if state.object_rule(uuid) != Some(0) || declared_name(node).is_none() {
                 continue;
             }
-            let chain = declared_chain(node);
-            // The owner's own rule is checked by the caller.
-            if chain.is_empty() && base == owner {
-                continue;
+            let chain = declared_chain(node).concat();
+            // The removed node's own rule is checked by the caller.
+            if let Some(prefix) = prefix {
+                let below = chain
+                    .strip_prefix(prefix)
+                    .is_some_and(|rest| rest.starts_with('.'));
+                if !below {
+                    continue;
+                }
             }
-            locked.push(format!("`{source_set}:{base}{}`", chain.concat()));
+            locked.push(format!("`{source_set}:{base}{chain}`"));
         }
     };
-    collect(owner, owner_bytes);
-    let directory = owner_relative.with_extension("");
-    let (files, _) = staged
-        .enumerate_tree_with_root_absence(&directory)
-        .map_err(|error| ApplyPlanError::staging(error, at.to_string()))?;
+    collect(root.base, root.descriptor, Some(root.prefix));
+    let Some(directory) = root.directory else {
+        return Ok(locked);
+    };
+    let files = enumerate(directory)?;
     for relative in files {
         let (base, descriptor) = unica_metadata_designer::remove::meta_remove_referrer(&relative);
         let is_xml = relative
@@ -370,11 +1006,8 @@ fn locked_vendor_children(
         if !descriptor || !is_xml {
             continue;
         }
-        if let Some(bytes) = staged
-            .read(&relative)
-            .map_err(|error| ApplyPlanError::staging(error, at.to_string()))?
-        {
-            collect(&base, &bytes);
+        if let Some(bytes) = read(&relative)? {
+            collect(&base, &bytes, None);
         }
     }
     Ok(locked)
@@ -382,15 +1015,15 @@ fn locked_vendor_children(
 
 /// The descriptor that carries the support rule of the addressed node: the
 /// top-level metadata object, or the configuration root for root targets.
-fn support_owner_relative(
-    request: &ApplyRequest,
+pub(crate) fn support_owner_relative(
+    at: &unica_address::address::QualifiedAddress,
     source_kind: SourceSetKind,
 ) -> Option<(String, std::path::PathBuf)> {
     use unica_address::address::NodeKind;
     use unica_address::source_target::MetadataAddress;
     use unica_source_designer::layout::metadata_descriptor_relative;
 
-    let segments = request.at().segments();
+    let segments = at.segments();
     let owner = segments.first()?;
     let root_owned = matches!(
         source_kind,
@@ -702,6 +1335,7 @@ fn parse_family_operation(
                 &unica_metadata_designer::decode::MetadataDecodeContext {
                     source_set_name: binding.source_set_name(),
                     source_kind: binding.source_kind(),
+                    source_line: binding.source_profile().semantic_line(),
                     registry: crate::domain::apply::operation_registry(),
                 },
             )?;
@@ -1026,30 +1660,34 @@ fn staged_form_xml(
 }
 
 /// Есть ли узел `at` в стадированном состоянии допуска. Узел с собственным
-/// описанием есть, когда есть его файл; член объекта метаданных (реквизит,
-/// табличная часть) при существующем описании владельца считается
-/// отсутствующим — отказ «не найден» по адресу операции говорит о нём.
+/// описанием есть, когда есть его файл; член объекта метаданных и узел СКД
+/// проверяются штатным читателем представления и публичной проекцией.
 /// `None` — по описаниям этого не установить.
 pub fn staged_node_existence(
     admission: &ApplyAdmission,
     binding: &ProviderRootBinding,
     at: &unica_address::address::QualifiedAddress,
 ) -> Option<bool> {
+    if matches!(at.segments(), [root] if root.kind() == unica_address::address::NodeKind::Configuration)
+    {
+        return Some(
+            admission
+                .staged_state()
+                .ok()?
+                .read(std::path::Path::new("Configuration.xml"))
+                .ok()?
+                .is_some(),
+        );
+    }
     let (address, covered) = descriptor_node(at)?;
     let relative = unica_source_designer::layout::metadata_descriptor_relative(
         &address,
         binding.source_kind(),
     )
     .ok()?;
-    if admission
-        .staged_state()
-        .ok()?
-        .read(&relative)
-        .ok()?
-        .is_none()
-    {
+    let Some(descriptor) = admission.staged_state().ok()?.read(&relative).ok()? else {
         return Some(false);
-    }
+    };
     if covered == at.segments().len() {
         // Описание есть: «не найден» касается присоединённого ресурса
         // (`Rights.xml`, `Form.xml`), а не узла.
@@ -1057,8 +1695,9 @@ pub fn staged_node_existence(
     }
     let route = crate::domain::logical_route::classify_route(
         at,
-        crate::domain::source_capabilities::bsl_profile_for_source(binding.source_profile())
-            .unwrap_or_else(unica_bsl::profile::PlatformProfile::v8_3_27),
+        unica_bsl::profile::PlatformProfile::for_line_or_base(
+            binding.source_profile().semantic_line(),
+        ),
     )?;
     // Запись прав роли и область макета живут в присоединённом файле: их
     // создаёт операция родителя (`right.add`, `area.add`, #1354).
@@ -1075,7 +1714,60 @@ pub fn staged_node_existence(
         admission.staged_state().ok()?.read(&relative).ok()?
     };
     match (route, terminal.kind(), at.segments().len() - covered) {
-        (RouteClass::Metadata, _, _) => Some(false),
+        (RouteClass::Metadata, _, _) => {
+            let tail = &at.segments()[covered..];
+            let (member, scope) = match tail {
+                [member] => (member, None),
+                [section, member]
+                    if section.kind() == NodeKind::TabularSection
+                        && member.kind() == NodeKind::Attribute =>
+                {
+                    (member, section.name())
+                }
+                _ => return None,
+            };
+            let text = std::str::from_utf8(&descriptor).ok()?;
+            match unica_metadata_designer::edit::find_typed_element_identity(
+                text,
+                member.kind().as_str(),
+                scope,
+                member.name()?,
+            ) {
+                Ok(_) => Some(true),
+                Err(error) if error.code == unica_metadata::MetaDiagnosticCode::TargetNotFound => {
+                    Some(false)
+                }
+                Err(_) => None,
+            }
+        }
+        (RouteClass::Dcs, _, _) => {
+            let bytes = resource("Template.xml")?;
+            let text = std::str::from_utf8(&bytes).ok()?;
+            // Membership does not consume or expose support properties.
+            let facts = crate::infrastructure::family_codecs::dcs_codec()
+                .read(
+                    text,
+                    unica_metadata::support_state::ObjectSupportData {
+                        state: unica_metadata::support_state::ObjectSupportState::NotSupported,
+                        direct_edit_safe: None,
+                    },
+                )
+                .ok()?;
+            let profile = crate::domain::source_capabilities::bsl_profile_for_source(
+                binding.source_profile(),
+            )?;
+            let logical =
+                crate::infrastructure::logical_tree::route_logical_address(at, profile).ok()?;
+            match crate::infrastructure::v13_read_projection::project_typed_payload_for_source(
+                &logical,
+                serde_json::to_value(facts).ok()?,
+                binding.source_kind(),
+            ) {
+                Ok(_) => Some(true),
+                Err(error) if error.code() == unica_refusal::RefusalCode::NotFound => Some(false),
+                Err(_) => None,
+            }
+        }
         (RouteClass::Role, NodeKind::Right, 1) => {
             let (kind, name) = terminal.name()?.split_once('_')?;
             unica_roles_designer::planner::staged_rights_entry_exists(
@@ -1125,7 +1817,92 @@ pub fn plan_hidden_v13_apply(
     binding: &ProviderRootBinding,
     admission: &ApplyAdmission,
 ) -> Result<(ApplyStagedState, PlannedApplyEffects), ApplyPlanError> {
-    let parsed = request
+    plan_apply(
+        request,
+        binding,
+        admission,
+        PersonChosenChanges {
+            mode_raise: None,
+            support: Vec::new(),
+            remove_support: false,
+        },
+    )
+}
+
+/// The change of vendor support a person chose in the question about a
+/// `deny` lock: the support operations that lift exactly `lock`, planned
+/// before the edits of the same request (INV.SOURCE.SUPPORT-SEPARATE-APPLY).
+pub struct PersonChosenSupportChange<'a> {
+    pub lock: &'a SupportLock,
+    pub operations: &'a [crate::domain::apply::ApplyOp],
+}
+
+/// Plans `request` together with the support change a person chose: both
+/// go into one plan and publish together. The change lifts only the lock
+/// the person was asked about; the targets are then checked against the
+/// support it leaves, and another lock, or none, refuses as before.
+pub fn plan_hidden_v13_apply_with_person_chosen_support(
+    request: &ApplyRequest,
+    binding: &ProviderRootBinding,
+    admission: &ApplyAdmission,
+    change: PersonChosenSupportChange<'_>,
+) -> Result<(ApplyStagedState, PlannedApplyEffects), ApplyPlanError> {
+    plan_apply(
+        request,
+        binding,
+        admission,
+        PersonChosenChanges {
+            mode_raise: None,
+            support: vec![change],
+            remove_support: false,
+        },
+    )
+}
+
+/// The raise of a read-only compatibility mode a person chose in the
+/// question about it (INV.SOURCE.WRITABLE-PROFILE): `request` sets the
+/// set's own mode property on its root and nothing else.
+pub struct PersonChosenModeRaise<'a> {
+    pub read_only: &'a ReadOnlyMode,
+    pub request: &'a ApplyRequest,
+}
+
+/// Everything a person chose for one call, planned before its edits: the
+/// vendor support changes first, then the raise of the set's mode.
+pub struct PersonChosenChanges<'a> {
+    pub mode_raise: Option<PersonChosenModeRaise<'a>>,
+    /// The support changes in the order the person was asked about them:
+    /// each lifts the lock the gate showed after the changes before it.
+    pub support: Vec<PersonChosenSupportChange<'a>>,
+    /// The person took the configuration off vendor support entirely: its
+    /// unreadable marker is replaced by the platform's marker of removed
+    /// support before the edits (INV.SAFETY.APPLY-SUPPORT-GATE).
+    pub remove_support: bool,
+}
+
+/// Plans `request` together with the changes a person chose: all of them go
+/// into one plan and publish together, or none does.
+pub fn plan_hidden_v13_apply_with_person_choices(
+    request: &ApplyRequest,
+    binding: &ProviderRootBinding,
+    admission: &ApplyAdmission,
+    chosen: PersonChosenChanges<'_>,
+) -> Result<(ApplyStagedState, PlannedApplyEffects), ApplyPlanError> {
+    plan_apply(request, binding, admission, chosen)
+}
+
+fn plan_apply(
+    request: &ApplyRequest,
+    binding: &ProviderRootBinding,
+    admission: &ApplyAdmission,
+    chosen: PersonChosenChanges<'_>,
+) -> Result<(ApplyStagedState, PlannedApplyEffects), ApplyPlanError> {
+    let PersonChosenChanges {
+        mode_raise,
+        support: chosen_support,
+        remove_support,
+    } = chosen;
+    let mut parsed = request
         .ops()
         .iter()
         .enumerate()
@@ -1135,9 +1912,84 @@ pub fn plan_hidden_v13_apply(
     let mut staged = admission
         .staged_state()
         .map_err(|error| ApplyPlanError::staging(error, "ops"))?;
+    // A set older than the oldest editable compatibility mode is read-only.
+    let configuration = staged
+        .read(std::path::Path::new("Configuration.xml"))
+        .map_err(|error| ApplyPlanError::staging(error, request.at().to_string()))?;
+    let mode_check = unica_source_designer::extension_mode::refuse_edit_below_minimum_mode(
+        configuration.as_deref(),
+        binding.source_kind(),
+        raised_compatibility_mode(request, binding.source_kind()),
+        &request.at().to_string(),
+    );
+    match (&mode_raise, mode_check) {
+        (None, check) => check?,
+        // The person raises exactly the mode they were asked about.
+        (Some(raise), Err(error)) if error.read_only_mode() == Some(raise.read_only) => {
+            if raise.request.at().to_string() != format!("{}:Configuration", binding.source_set_name())
+                || raised_compatibility_mode(raise.request, binding.source_kind())
+                    .is_none_or(|mode| !mode.editable())
+            {
+                return Err(ApplyPlanError::new(
+                    ApplyPlanErrorKind::InvalidState,
+                    "a person-chosen mode raise sets only the set's own compatibility mode",
+                )
+                .at_path("ops"));
+            }
+        }
+        (Some(_), Err(error)) => return Err(error),
+        (Some(_), Ok(())) => {
+            return Err(ApplyPlanError::new(
+                ApplyPlanErrorKind::InvalidState,
+                "the compatibility mode changed after the person's answer; repeat the apply to be asked again",
+            )
+            .at_path(request.at().to_string()))
+        }
+    }
     refuse_targets_outside_writable_profile(request, binding, &mut staged)?;
-    let support_warning =
-        refuse_targets_on_locked_vendor_objects(request, binding, admission, &mut staged)?;
+    let gate = refuse_targets_on_locked_vendor_objects(request, binding, admission, &mut staged);
+    let gate = match gate {
+        // The person takes the configuration off support: its unreadable
+        // marker no longer stands in the way.
+        Err(error) if remove_support && error.support_state_unreadable() => Ok(Vec::new()),
+        Err(error) => Err(error),
+        Ok(_) if remove_support => {
+            return Err(ApplyPlanError::new(
+                ApplyPlanErrorKind::InvalidState,
+                "the vendor support state changed after the person's answer; repeat the apply to be asked again",
+            )
+            .at_path(request.at().to_string()))
+        }
+        Ok(warning) => Ok(warning),
+    };
+    if remove_support {
+        let marker = std::path::Path::new("Ext/ParentConfigurations.bin");
+        let current = staged
+            .read(marker)
+            .map_err(|error| ApplyPlanError::staging(error, request.at().to_string()))?
+            .ok_or_else(|| {
+                ApplyPlanError::new(
+                    ApplyPlanErrorKind::InvalidState,
+                    "the vendor support state changed after the person's answer; repeat the apply to be asked again",
+                )
+                .at_path(request.at().to_string())
+            })?;
+        staged
+            .replace(
+                marker,
+                &current,
+                unica_metadata_designer::support::REMOVED_SUPPORT_MARKER.to_vec(),
+            )
+            .map_err(|error| ApplyPlanError::staging(error, request.at().to_string()))?;
+    }
+    let mut support_warning = match gate {
+        Ok(warnings) => warnings,
+        // A lock the person answered is checked again below, against the
+        // support their answers leave.
+        Err(error) if !chosen_support.is_empty() && error.support_lock().is_some() => Vec::new(),
+        Err(error) => return Err(error),
+    };
+    // The request the model composed never mixes support and ordinary edits.
     let support_operations = request
         .ops()
         .iter()
@@ -1150,13 +2002,101 @@ pub fn plan_hidden_v13_apply(
         )
         .at_path("ops"));
     }
+    if let Some(raise) = &mode_raise {
+        // The raise edits the configuration root: vendor support guards it
+        // as any edit. Only the lock of the whole configuration the person
+        // also lifted lets it pass.
+        match refuse_targets_on_locked_vendor_objects(
+            raise.request,
+            binding,
+            admission,
+            &mut staged,
+        ) {
+            Ok(warnings) => support_warning.extend(warnings),
+            Err(error)
+                if error.support_lock().is_some_and(|lock| {
+                    lock.kind == SupportLockKind::ConfigurationLocked
+                        && chosen_support.iter().any(|chosen| {
+                            chosen.lock.kind == SupportLockKind::ConfigurationLocked
+                                && chosen.lock.source_set == lock.source_set
+                        })
+                }) => {}
+            Err(error) => return Err(error),
+        }
+        let mut raised = Vec::with_capacity(raise.request.ops().len() + parsed.len());
+        for operation in raise.request.ops() {
+            raised.push(parse_apply_operation(0, operation, binding)?);
+        }
+        raised.append(&mut parsed);
+        parsed = raised;
+    }
+    // The chosen support changes are planned first, each against the
+    // support the ones before it leave: a change lifts the lock it was asked
+    // about only while the gate still shows that lock. Then every target is
+    // checked against the support the answers leave, so a lock the answers
+    // did not lift refuses and asks its own question.
+    let mut chosen_planned = Vec::new();
+    for chosen in &chosen_support {
+        let lock = chosen.lock;
+        if !locks_on_targets(request, binding, admission, &mut staged)?.contains(lock) {
+            // The answer does not lift a lock the gate shows: the gate's own
+            // refusal stands, and without one the support changed.
+            refuse_targets_on_locked_vendor_objects(request, binding, admission, &mut staged)?;
+            return Err(ApplyPlanError::new(
+                ApplyPlanErrorKind::InvalidState,
+                "the vendor support state changed after the person's answer; repeat the apply to be asked again",
+            )
+            .at_path(request.at().to_string()));
+        }
+        let owner = format!("{}:{}", lock.source_set, lock.owner);
+        let root = format!("{}:Configuration", lock.source_set);
+        let mut support = Vec::with_capacity(chosen.operations.len());
+        for operation in chosen.operations {
+            let target = operation.at().to_string();
+            let lifts_this_lock = target == owner
+                || (target == root && lock.kind == SupportLockKind::ConfigurationLocked);
+            if !lifts_this_lock
+                || !changes_support_state(operation.name(), Some(operation.at()), binding)
+            {
+                return Err(ApplyPlanError::new(
+                    ApplyPlanErrorKind::InvalidState,
+                    "a person-chosen support change carries only support operations",
+                )
+                .at_path("ops"));
+            }
+            match parse_apply_operation(0, operation, binding)? {
+                ParsedApplyOperation::FormResource(operation) => support.push(operation),
+                _ => {
+                    return Err(ApplyPlanError::new(
+                        ApplyPlanErrorKind::InvalidState,
+                        "a person-chosen support change carries only support operations",
+                    )
+                    .at_path("ops"))
+                }
+            }
+        }
+        let authority = admission.form_resource_planning_authority(binding)?;
+        chosen_planned.extend(form_resource::plan_form_resource_batch(
+            &mut staged.proposal(),
+            &authority,
+            &support,
+        )?);
+    }
+    if !chosen_support.is_empty() {
+        support_warning.extend(refuse_targets_on_locked_vendor_objects(
+            request,
+            binding,
+            admission,
+            &mut staged,
+        )?);
+    }
     let code_type_plan = unica_metadata_designer::planner::PredefinedCodeTypePlan::from_operations(
         parsed.iter().filter_map(|operation| match operation {
             ParsedApplyOperation::Metadata(operation) => Some(operation),
             _ => None,
         }),
     );
-    let mut provisional = Vec::new();
+    let mut provisional = chosen_planned;
     let mut code_support_warnings = Vec::new();
     let mut xdto_validation = unica_xdto_designer::planner::XdtoValidationLedger::default();
     let mut borrowing = Vec::new();
@@ -1236,8 +2176,8 @@ pub fn plan_hidden_v13_apply(
                             "an issued metadata authority has the exact writable source profile",
                         ),
                         &operations,
-                    )
-                    ?;
+                        cursor,
+                    )?;
                 provisional.extend(batch_effects_as_provisional(
                     &before, &staged, planned, cursor,
                 ));
@@ -1256,6 +2196,7 @@ pub fn plan_hidden_v13_apply(
                     &authority,
                     &operations,
                     &mut xdto_validation,
+                    crate::infrastructure::family_codecs::SUPPORT_MARKER_READER,
                 )?;
                 provisional.extend(planned);
             }
@@ -1346,6 +2287,7 @@ pub fn plan_hidden_v13_apply(
                 ParsedApplyOperation::Xdto(operation) => Some(operation),
                 _ => None,
             }),
+            crate::infrastructure::family_codecs::SUPPORT_MARKER_READER,
         )?;
     }
     let xdto_operations = parsed
@@ -1372,16 +2314,27 @@ pub fn plan_hidden_v13_apply(
             _ => None,
         }),
     )?;
+    // Values the compatibility mode of the set forbids are refused before the
+    // apply publishes; the platform would refuse them on import.
+    unica_metadata_designer::mode_checks::check_changed_descriptors(
+        &mut staged.proposal(),
+        binding.source_kind(),
+    )?;
     let legacy_inline = collapse_legacy_inline_registrations(&mut staged, binding)?;
     let mut effects = reconcile_effects(staged.planned_changes(), provisional);
+    // A plan whose operations cancel out edits nothing protected. The gate's
+    // warnings go first: a module whose own owner is the locked node then
+    // reports it once.
+    for warning in planned_gate_warnings(support_warning, &staged.planned_changes()) {
+        effects.push_warning(warning);
+    }
     for warning in code_support_warnings {
         warning.append_if_changed(&staged.planned_changes(), &mut effects);
     }
-    // A plan whose operations cancel out edits nothing protected.
-    if let Some(warning) = support_warning.filter(|_| !staged.planned_changes().is_empty()) {
+    for warning in legacy_inline {
         effects.push_warning(warning);
     }
-    for warning in legacy_inline {
+    for warning in compatibility_warnings::warnings(&staged, binding, admission)? {
         effects.push_warning(warning);
     }
     let detail_error = |error: serde_json::Error| {
@@ -1399,6 +2352,9 @@ pub fn plan_hidden_v13_apply(
 
 #[cfg(test)]
 mod calculation_code_type_tests;
+
+#[cfg(test)]
+mod mode_rule_tests;
 
 #[cfg(test)]
 mod inherited_content_tests;

@@ -1,0 +1,35 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:app="http://v8.1c.ru/8.2/managed-application/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:cmi="http://v8.1c.ru/8.2/managed-application/cmi" xmlns:ent="http://v8.1c.ru/8.1/data/enterprise" xmlns:lf="http://v8.1c.ru/8.2/managed-application/logform" xmlns:pal="http://v8.1c.ru/8.1/data/ui/colors/palette" xmlns:style="http://v8.1c.ru/8.1/data/ui/style" xmlns:sys="http://v8.1c.ru/8.1/data/ui/fonts/system" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:v8ui="http://v8.1c.ru/8.1/data/ui" xmlns:web="http://v8.1c.ru/8.1/data/ui/colors/web" xmlns:win="http://v8.1c.ru/8.1/data/ui/colors/windows" xmlns:xen="http://v8.1c.ru/8.3/xcf/enums" xmlns:xpr="http://v8.1c.ru/8.3/xcf/predef" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.22">
+	<Task uuid="421e92ec-cd3d-89cf-9e7a-a3332073ce95">
+		<InternalInfo>
+			<xr:GeneratedType name="TaskObject.Work" category="Object">
+				<xr:TypeId>844d6200-5e70-8689-93c4-94b6e2641ac0</xr:TypeId>
+				<xr:ValueId>a56d00a9-c221-829b-9265-2115b8efd131</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="TaskRef.Work" category="Ref">
+				<xr:TypeId>6b7c0f36-b9ab-8805-88cd-17a2f1fec65f</xr:TypeId>
+				<xr:ValueId>a5f51c62-45a9-8937-b86f-be3a2b8ca24a</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="TaskSelection.Work" category="Selection">
+				<xr:TypeId>f2af3876-ce7d-8c11-92b5-6560b9c4627c</xr:TypeId>
+				<xr:ValueId>400b4cfb-669c-8c9e-84b6-26c65a9aedb6</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="TaskList.Work" category="List">
+				<xr:TypeId>92b57cc6-928e-8a8a-afb1-522461e1b563</xr:TypeId>
+				<xr:ValueId>f292647c-70c2-8154-ac4b-3526b32c79b0</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="TaskManager.Work" category="Manager">
+				<xr:TypeId>d8fe75c2-ee21-80fd-9cf2-b1c1eb6cabc6</xr:TypeId>
+				<xr:ValueId>975cb606-454b-82fe-a513-3ef9dd0a00da</xr:ValueId>
+			</xr:GeneratedType>
+		</InternalInfo>
+		<Properties>
+			<ObjectBelonging>Adopted</ObjectBelonging>
+			<Name>Work</Name>
+			<Comment/>
+			<ExtendedConfigurationObject>160265e6-85f9-5308-b915-a18969251420</ExtendedConfigurationObject>
+			<ActionOnConfigurationObjectMissing>Auto</ActionOnConfigurationObjectMissing>
+		</Properties>
+		<ChildObjects/>
+	</Task>
+</MetaDataObject>

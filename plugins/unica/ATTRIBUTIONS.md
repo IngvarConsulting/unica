@@ -18,25 +18,6 @@
 объединяет их через один типизированный MCP-сервер `unica`; это объединение не
 заменяет и не отменяет лицензии отдельных компонентов.
 
-## Библиотеки с локальными исправлениями
-
-### ureq
-
-<!-- unica-attribution: library ureq -->
-
-- Репозиторий: [algesten/ureq](https://github.com/algesten/ureq)
-- Автор: [Martin Algesten и участники ureq](https://github.com/algesten/ureq/graphs/contributors)
-- Исходная версия: `2.12.1`, commit `ba4555d54fd72e16fc737f7e8fcc812efb131260`
-- Лицензия: [MIT OR Apache-2.0](third-party/licenses/ureq/LICENSE-MIT);
-  [Apache-2.0](third-party/licenses/ureq/LICENSE-APACHE)
-- Отдельные лицензии декодера chunked:
-  [MIT](third-party/licenses/ureq/src/chunked/LICENSE-MIT),
-  [Apache-2.0](third-party/licenses/ureq/src/chunked/LICENSE-APACHE)
-
-Библиотека входит в бинарники Unica. Локальное исправление сохраняет полностью
-полученный ответ при ошибке подготовки соединения к повторному использованию.
-Исходники и сведения об исправлении доступны в `vendor/ureq` репозитория Unica.
-
 ## Встроенные инструменты
 
 ### BSL Analyzer
@@ -45,12 +26,8 @@
 
 - Репозиторий: [itrous/bsl-analyzer](https://github.com/itrous/bsl-analyzer)
 - Автор: [BSL Analyzer Contributors](https://github.com/itrous/bsl-analyzer/graphs/contributors)
-- Закреплённая версия: `0.2.86`, commit `53d8765288adf3b9277b7a4112dba167e51690b7`
-- Лицензия: [LGPL-3.0-or-later](third-party/licenses/bsl-analyzer/LICENSE-LGPL)
-- Полный набор текстов лицензий компонентов: [MIT](third-party/licenses/bsl-analyzer/LICENSE-MIT),
-  [Apache-2.0](third-party/licenses/bsl-analyzer/LICENSE-APACHE),
-  [LGPL-3.0-or-later](third-party/licenses/bsl-analyzer/LICENSE-LGPL) и
-  [GPL-3.0](third-party/licenses/bsl-analyzer/LICENSE-GPL)
+- Закреплённая версия: `0.4.6`, commit `0a82ed78e597dc3ffb1bbaebc66a98974a988435`
+- Лицензия: [MIT](third-party/licenses/bsl-analyzer/LICENSE-MIT)
 - Дополнительные условия и происхождение: [NOTICE](third-party/licenses/bsl-analyzer/NOTICE)
 
 Unica поставляет LSP-бинарник `bsl-analyzer` и локальный снимок описаний
@@ -59,10 +36,9 @@ Unica поставляет LSP-бинарник `bsl-analyzer` и локальн
 и контрольные суммы страниц входят в `diagnostic-rules.json` в исходниках
 поставщика документации. Тексты страниц сохраняются без редактирования.
 Его лицензионная заметка
-объясняет смешанную модель workspace: итоговый бинарник статически связывает
-компоненты уровня LGPL и поэтому распространяется как LGPL-3.0-or-later; там же
-перечислены архитектурные источники, тестовые данные и материалы платформы 1С
-с отдельными условиями.
+объясняет, что весь workspace и поставляемый бинарник распространяются под MIT;
+там же перечислены история происхождения, архитектурные источники, тестовые
+данные и материалы платформы 1С с отдельными условиями.
 
 ### v8-runner
 
@@ -71,8 +47,8 @@ Unica поставляет LSP-бинарник `bsl-analyzer` и локальн
 - Репозиторий: [IngvarConsulting/v8-runner-rust](https://github.com/IngvarConsulting/v8-runner-rust)
 - Автор: [v8-runner contributors](https://github.com/alkoleft/v8-runner-rust/graphs/contributors)
 - Исходный проект: [alkoleft/v8-runner-rust](https://github.com/alkoleft/v8-runner-rust)
-- Закреплённая версия: `0.15.3`, source tag и asset tag `v0.15.3`,
-  commit `319db061eb89123030c606cb93cfebcb6f0961e7`
+- Закреплённая версия: `0.17.4`, source tag и asset tag `v0.17.4`,
+  commit `0781c9b125a72231e4b17ce24253c29901750f63`
 - Лицензия: [AGPL-3.0-only](third-party/licenses/v8-runner/LICENSE)
 
 `v8-runner` запускается Unica как отдельный внутренний процесс. На его

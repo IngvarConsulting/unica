@@ -29,13 +29,19 @@ def events(actor):
     return {"nodes": [{"actor": {"login": actor}}] if actor else []}
 
 
-def issue(number, milestone=True):
-    return {"number": number, "milestone": {"number": 1} if milestone else None}
+def milestone(title):
+    return {"id": title, "title": title}
 
 
-def response(actor=OWNER, assignees=1, issues=()) -> dict:
-    return {"data": {"repository": {"pullRequest": {
-        "milestone": {"number": 1} if actor else None,
+def issue(number, title="v0.16", *, repository="unica", actor=OWNER):
+    return {"number": number, "repository": {"id": repository},
+            "milestone": milestone(title) if title else None, "timelineItems": events(actor)}
+
+
+def response(actor=OWNER, assignees=1, issues=(), draft=False, title="v0.16") -> dict:
+    return {"data": {"repository": {"id": "unica", "pullRequest": {
+        "isDraft": draft,
+        "milestone": milestone(title) if actor else None,
         "assignees": {"totalCount": assignees},
         "timelineItems": events(actor),
         "closingIssuesReferences": {"nodes": list(issues)},
@@ -80,6 +86,14 @@ class WorkflowShapeTests(unittest.TestCase):
         self.assertEqual(check["env"]["MILESTONE_OWNER"], gate["env"]["MILESTONE_OWNER"])
         self.assertEqual(check["env"]["STRICT"], "true")
         self.assertEqual(gate["env"]["STRICT"], "false")
+
+    def test_the_gate_asks_github_whether_the_pr_is_a_draft(self) -> None:
+        # Сохранённое событие прогона знает черновиковость на момент события;
+        # выживший прогон и его перезапуск должны спрашивать, что истинно сейчас.
+        gate = next(step for step in self.gate["steps"] if step["id"] == "admission")
+        self.assertEqual(gate["if"], "${{ github.event_name == 'pull_request' }}")
+        self.assertNotIn("draft", gate["if"])
+        self.assertIn("isDraft", gate["run"])
 
     def test_tests_wait_for_the_gate_and_the_queue_is_always_admitted(self) -> None:
         self.assertEqual(self.tests["needs"], "admission")
@@ -130,7 +144,7 @@ class GuardTests(unittest.TestCase):
 
 @unittest.skipUnless(shutil.which("jq"), "шаг читает ответ через jq; на раннере он есть")
 class CheckStepTests(unittest.TestCase):
-    def run_step(self, answer: dict, *, strict=True, **env: str) -> tuple[subprocess.CompletedProcess, str, str]:
+    def run_step(self, answer: dict, *, strict=True, working="v0.16", **env: str) -> tuple[subprocess.CompletedProcess, str, str]:
         script = load(METADATA)["jobs"]["metadata"]["steps"][0]["run"]
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -142,6 +156,7 @@ class CheckStepTests(unittest.TestCase):
                 **os.environ, "PATH": f"{root}{os.pathsep}{os.environ['PATH']}", "GITHUB_REPOSITORY": "o/r",
                 "GITHUB_REF": "refs/pull/7/merge", "PR_NUMBER": "7", "MILESTONE_OWNER": OWNER,
                 "STRICT": "true" if strict else "false", "GITHUB_OUTPUT": "output.txt",
+                "WORKING_MILESTONE": working,
                 "FAKE_RESPONSE": "response.json", "FAKE_ARGS": "args.txt", **env,
             }
             completed = subprocess.run(["bash", "-c", script.replace("\r\n", "\n")], cwd=root, env=variables,
@@ -161,11 +176,46 @@ class CheckStepTests(unittest.TestCase):
         self.assert_verdict(response(actor="agent"), False, "Веху на PR поставил agent, нужна от zeegin")
         self.assert_verdict(response(actor=None), False, "Поставьте веху: на PR без issue её ставит zeegin")
 
-    def test_a_linked_issue_needs_any_milestone_the_guard_removes_foreign_ones(self) -> None:
+    def test_a_closing_pr_can_copy_its_approved_issues_milestone(self) -> None:
         self.assert_verdict(response(actor="agent", issues=[issue(5)]), True)
         self.assert_verdict(response(actor=None, issues=[issue(5)]), False, "Поставьте веху: скопируйте её с issue")
-        self.assert_verdict(response(actor="agent", issues=[issue(5), issue(8, False)]), False,
+        self.assert_verdict(response(actor="agent", issues=[issue(5), issue(8, None)]), False,
                             "Issue #8 без вехи, PR не рассматривается")
+        self.assert_verdict(response(actor="agent", issues=[issue(5, "v0.15")]), False,
+                            "Веха PR должна совпадать с вехой одной из закрываемых задач этого репозитория")
+        self.assert_verdict(response(actor="agent", issues=[issue(5, repository="other")]), False,
+                            "Веху на PR поставил agent, нужна от zeegin")
+        self.assert_verdict(response(actor="agent", issues=[issue(5, actor="agent")]), False,
+                            "Веху issue #5 должен подтвердить zeegin")
+
+    def test_the_required_check_refuses_future_milestones_but_pr_tests_can_run(self) -> None:
+        future = response(actor="agent", title="v0.17", issues=[issue(5, "v0.17")])
+        self.assert_verdict(future, False, "Веха PR v0.17 выше рабочей v0.16")
+        completed, _, output = self.run_step(future, strict=False, working="")
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        self.assertIn("admitted=true", output)
+        self.assert_verdict(response(title="v0.17"), False, "Веха PR v0.17 выше рабочей v0.16")
+
+    def test_a_current_pr_cannot_close_a_future_issue(self) -> None:
+        self.assert_verdict(response(actor="agent", issues=[issue(5), issue(8, "v0.17")]), False,
+                            "Веха issue #8 v0.17 выше рабочей v0.16")
+        self.assert_verdict(response(actor="agent", issues=[issue(5), issue(8, "v0.15")]), True)
+
+    def test_release_lines_are_compared_numerically(self) -> None:
+        self.assert_verdict(response(title="v0.9"), True)
+        self.assert_verdict(response(title="v1.0"), False, "Веха PR v1.0 выше рабочей v0.16")
+        self.assert_verdict(response(title="prototype"), False, "У вехи PR prototype нужен формат vN.N")
+
+    def test_an_invalid_working_milestone_blocks_merging(self) -> None:
+        completed, _, _ = self.run_step(response(), working="")
+        self.assertEqual(completed.returncode, 1, completed.stdout + completed.stderr)
+        self.assertIn("::error::Рабочая веха должна быть задана в формате vN.N", completed.stdout)
+
+    def test_the_queue_rejects_a_future_milestone(self) -> None:
+        ref = "refs/heads/gh-readonly-queue/main/pr-7-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        completed, _, _ = self.run_step(response(title="v0.17"), GITHUB_REF=ref, PR_NUMBER="")
+        self.assertEqual(completed.returncode, 1, completed.stdout + completed.stderr)
+        self.assertIn("::error::Веха PR v0.17 выше рабочей v0.16", completed.stdout)
 
     def test_a_missing_assignee_reddens_the_check_but_does_not_stop_the_tests(self) -> None:
         self.assert_verdict(response(assignees=0), True, "Укажите ответственного", passes=False)
@@ -180,6 +230,17 @@ class CheckStepTests(unittest.TestCase):
         self.assertIn("admitted=false", output)
         self.assertIn("::notice::", completed.stdout)
         self.assertNotIn("::error::", completed.stdout)
+
+    def test_a_draft_withholds_the_tests_without_reddening_the_check(self) -> None:
+        for strict in (False, True):
+            with self.subTest(strict=strict):
+                completed, _, output = self.run_step(response(draft=True), strict=strict)
+                self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+                self.assertIn("admitted=false", output)
+                self.assertIn("::notice::PR #7 — черновик", completed.stdout)
+                self.assertNotIn("::error::", completed.stdout)
+        completed, _, output = self.run_step(response(draft=False), strict=False)
+        self.assertIn("admitted=true", output)
 
     def test_the_queue_takes_the_number_from_the_ref_and_checks_again(self) -> None:
         ref = "refs/heads/gh-readonly-queue/main/pr-2494-b8d576dca6e9ffa40b9b10fe006472736fcc5a23"

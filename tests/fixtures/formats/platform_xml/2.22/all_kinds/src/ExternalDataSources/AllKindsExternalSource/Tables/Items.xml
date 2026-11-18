@@ -1,0 +1,117 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:app="http://v8.1c.ru/8.2/managed-application/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:cmi="http://v8.1c.ru/8.2/managed-application/cmi" xmlns:ent="http://v8.1c.ru/8.1/data/enterprise" xmlns:lf="http://v8.1c.ru/8.2/managed-application/logform" xmlns:pal="http://v8.1c.ru/8.1/data/ui/colors/palette" xmlns:style="http://v8.1c.ru/8.1/data/ui/style" xmlns:sys="http://v8.1c.ru/8.1/data/ui/fonts/system" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:v8ui="http://v8.1c.ru/8.1/data/ui" xmlns:web="http://v8.1c.ru/8.1/data/ui/colors/web" xmlns:win="http://v8.1c.ru/8.1/data/ui/colors/windows" xmlns:xen="http://v8.1c.ru/8.3/xcf/enums" xmlns:xpr="http://v8.1c.ru/8.3/xcf/predef" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.22">
+	<Table uuid="072b8ab6-8343-5f19-8b69-7c1ef655b09b">
+		<InternalInfo>
+			<xr:GeneratedType name="ExternalDataSourceTableManager.AllKindsExternalSource.Items" category="Manager">
+				<xr:TypeId>542a2587-908b-5dd8-a10c-eaefa76e3b5a</xr:TypeId>
+				<xr:ValueId>197fccdc-8382-5cdc-9c05-23279c59beed</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="ExternalDataSourceTableObject.AllKindsExternalSource.Items" category="Object">
+				<xr:TypeId>256c9e31-4897-5a8c-bbe5-38471e280386</xr:TypeId>
+				<xr:ValueId>0968242d-1af3-5210-9a2b-aef369cac177</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="ExternalDataSourceTableRef.AllKindsExternalSource.Items" category="Ref">
+				<xr:TypeId>f64b7188-2c11-5080-ab7f-ac0856358c78</xr:TypeId>
+				<xr:ValueId>c4a3accf-cc51-5479-b92b-5d61375f8fee</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="ExternalDataSourceTableList.AllKindsExternalSource.Items" category="List">
+				<xr:TypeId>a1946d99-384f-5ba1-a0db-c4a41f50fa8b</xr:TypeId>
+				<xr:ValueId>a2b1dbc6-156e-5019-9ee9-5032dcc430fd</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="ExternalDataSourceTableRecord.AllKindsExternalSource.Items" category="Record">
+				<xr:TypeId>122a2e94-4f06-572b-8b26-2fbec33c08b1</xr:TypeId>
+				<xr:ValueId>d5cd1746-36d1-5573-a31c-991bbb17c711</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="ExternalDataSourceTableRecordSet.AllKindsExternalSource.Items" category="RecordSet">
+				<xr:TypeId>db07f6a5-9bba-5c0a-912a-07f82deda80d</xr:TypeId>
+				<xr:ValueId>4115d596-8252-5ae3-9faf-952a2cbb9ef2</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="ExternalDataSourceTableRecordKey.AllKindsExternalSource.Items" category="RecordKey">
+				<xr:TypeId>bd09db19-69fc-5a40-b557-207341658541</xr:TypeId>
+				<xr:ValueId>8ba50ec3-d16b-5dac-bcf2-381ab03c4f6b</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="ExternalDataSourceTableRecordManager.AllKindsExternalSource.Items" category="RecordManager">
+				<xr:TypeId>00bc93eb-bb46-51ae-ae3c-c5d931001d81</xr:TypeId>
+				<xr:ValueId>a8aa6b28-32bc-5243-ac80-921060993cfc</xr:ValueId>
+			</xr:GeneratedType>
+		</InternalInfo>
+		<Properties>
+			<Name>Items</Name>
+			<Synonym/>
+			<Comment/>
+			<TableType>Table</TableType>
+			<NameInDataSource>items</NameInDataSource>
+			<ExpressionInDataSource/>
+			<TableDataType>NonobjectData</TableDataType>
+			<KeyFields/>
+			<PresentationField/>
+			<ParentField/>
+			<UnfilledParentValue xsi:nil="true"/>
+			<Characteristics/>
+			<UseStandardCommands>true</UseStandardCommands>
+			<QuickChoice>false</QuickChoice>
+			<InputByString/>
+			<CreateOnInput>Auto</CreateOnInput>
+			<SearchStringModeOnInputByString>Begin</SearchStringModeOnInputByString>
+			<ChoiceDataGetModeOnInputByString>Directly</ChoiceDataGetModeOnInputByString>
+			<ChoiceHistoryOnInput>Auto</ChoiceHistoryOnInput>
+			<DefaultObjectForm/>
+			<DefaultRecordForm/>
+			<DefaultListForm/>
+			<DefaultChoiceForm/>
+			<ObjectPresentation/>
+			<ExtendedObjectPresentation/>
+			<RecordPresentation/>
+			<ExtendedRecordPresentation/>
+			<ListPresentation/>
+			<ExtendedListPresentation/>
+			<Explanation/>
+			<IncludeHelpInContents>false</IncludeHelpInContents>
+			<ReadOnly>false</ReadOnly>
+			<TransactionsIsolationLevel>Auto</TransactionsIsolationLevel>
+			<DataVersionField/>
+			<EditType>InDialog</EditType>
+			<BasedOn/>
+			<DataLockFields/>
+			<DataLockControlMode>Automatic</DataLockControlMode>
+		</Properties>
+		<ChildObjects>
+			<Field uuid="9ff1e2c8-e0b1-51c5-b64d-68b6b4c8f866">
+				<Properties>
+					<Name>Code</Name>
+					<Synonym/>
+					<Comment/>
+					<Type>
+						<v8:Type>xs:string</v8:Type>
+						<v8:StringQualifiers>
+							<v8:Length>10</v8:Length>
+							<v8:AllowedLength>Variable</v8:AllowedLength>
+						</v8:StringQualifiers>
+					</Type>
+					<PasswordMode>false</PasswordMode>
+					<Format/>
+					<EditFormat/>
+					<ToolTip/>
+					<MarkNegatives>false</MarkNegatives>
+					<Mask/>
+					<MultiLine>false</MultiLine>
+					<ExtendedEdit>false</ExtendedEdit>
+					<MinValue xsi:nil="true"/>
+					<MaxValue xsi:nil="true"/>
+					<FillFromFillingValue>false</FillFromFillingValue>
+					<FillValue xsi:type="xs:string"/>
+					<FillChecking>DontCheck</FillChecking>
+					<ChoiceParameterLinks/>
+					<ChoiceParameters/>
+					<QuickChoice>Auto</QuickChoice>
+					<CreateOnInput>Auto</CreateOnInput>
+					<ChoiceHistoryOnInput>Auto</ChoiceHistoryOnInput>
+					<ChoiceForm/>
+					<NameInDataSource>code</NameInDataSource>
+					<ReadOnly>false</ReadOnly>
+					<AllowNull>true</AllowNull>
+				</Properties>
+			</Field>
+		</ChildObjects>
+	</Table>
+</MetaDataObject>

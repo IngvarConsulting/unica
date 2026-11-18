@@ -1,0 +1,503 @@
+{
+  "id": "S-2880-collection-selection",
+  "issue": 2880,
+  "area": "Metadata",
+  "task": "Выбрать страницу offset или from в порядке регистраций, продолжить и повторить курсор, вернуть пустую позицию total без изменения файлов.",
+  "workspace": "tests/fixtures/acceptance/workspace-collection-selection",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule",
+        "limit": 2,
+        "offset": 0
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/offset",
+          "eq": 0
+        },
+        {
+          "pointer": "/data/total",
+          "eq": 5
+        },
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:CommonModule.Zulu"
+        }
+      ],
+      "captures": {
+        "f0": {
+          "file": "src/CommonModules/Alpha.xml",
+          "kind": "sha256"
+        },
+        "f1": {
+          "file": "src/CommonModules/Other.xml",
+          "kind": "sha256"
+        },
+        "f2": {
+          "file": "src/CommonModules/Zulu.xml",
+          "kind": "sha256"
+        },
+        "f3": {
+          "file": "src/CommonModules/ОбщийМодуль.xml",
+          "kind": "sha256"
+        },
+        "f4": {
+          "file": "src/CommonModules/ОбщийСервер.xml",
+          "kind": "sha256"
+        },
+        "f5": {
+          "file": "src/Configuration.xml",
+          "kind": "sha256"
+        },
+        "f6": {
+          "file": "v8project.yaml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule",
+        "limit": 2,
+        "from": "ОБЩ"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/offset",
+          "eq": 1
+        },
+        {
+          "pointer": "/data/total",
+          "eq": 5
+        },
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:CommonModule.ОбщийМодуль"
+        }
+      ],
+      "captures": {
+        "c1": {
+          "pointer": "/cursor"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/CommonModules/Alpha.xml",
+          "kind": "sha256",
+          "eq": "$capture.f0"
+        },
+        {
+          "path": "src/CommonModules/Other.xml",
+          "kind": "sha256",
+          "eq": "$capture.f1"
+        },
+        {
+          "path": "src/CommonModules/Zulu.xml",
+          "kind": "sha256",
+          "eq": "$capture.f2"
+        },
+        {
+          "path": "src/CommonModules/ОбщийМодуль.xml",
+          "kind": "sha256",
+          "eq": "$capture.f3"
+        },
+        {
+          "path": "src/CommonModules/ОбщийСервер.xml",
+          "kind": "sha256",
+          "eq": "$capture.f4"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.f5"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "$capture.f6"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule",
+        "limit": 2,
+        "cursor": "$capture.c1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/offset",
+          "eq": 3
+        },
+        {
+          "pointer": "/data/total",
+          "eq": 5
+        },
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:CommonModule.ОбщийСервер"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonModules/Alpha.xml",
+          "kind": "sha256",
+          "eq": "$capture.f0"
+        },
+        {
+          "path": "src/CommonModules/Other.xml",
+          "kind": "sha256",
+          "eq": "$capture.f1"
+        },
+        {
+          "path": "src/CommonModules/Zulu.xml",
+          "kind": "sha256",
+          "eq": "$capture.f2"
+        },
+        {
+          "path": "src/CommonModules/ОбщийМодуль.xml",
+          "kind": "sha256",
+          "eq": "$capture.f3"
+        },
+        {
+          "path": "src/CommonModules/ОбщийСервер.xml",
+          "kind": "sha256",
+          "eq": "$capture.f4"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.f5"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "$capture.f6"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule",
+        "limit": 2,
+        "cursor": "$capture.c1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/offset",
+          "eq": 3
+        },
+        {
+          "pointer": "/data/total",
+          "eq": 5
+        },
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:CommonModule.ОбщийСервер"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonModules/Alpha.xml",
+          "kind": "sha256",
+          "eq": "$capture.f0"
+        },
+        {
+          "path": "src/CommonModules/Other.xml",
+          "kind": "sha256",
+          "eq": "$capture.f1"
+        },
+        {
+          "path": "src/CommonModules/Zulu.xml",
+          "kind": "sha256",
+          "eq": "$capture.f2"
+        },
+        {
+          "path": "src/CommonModules/ОбщийМодуль.xml",
+          "kind": "sha256",
+          "eq": "$capture.f3"
+        },
+        {
+          "path": "src/CommonModules/ОбщийСервер.xml",
+          "kind": "sha256",
+          "eq": "$capture.f4"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.f5"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "$capture.f6"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule",
+        "limit": 2,
+        "offset": 3
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/offset",
+          "eq": 3
+        },
+        {
+          "pointer": "/data/total",
+          "eq": 5
+        },
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:CommonModule.ОбщийСервер"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonModules/Alpha.xml",
+          "kind": "sha256",
+          "eq": "$capture.f0"
+        },
+        {
+          "path": "src/CommonModules/Other.xml",
+          "kind": "sha256",
+          "eq": "$capture.f1"
+        },
+        {
+          "path": "src/CommonModules/Zulu.xml",
+          "kind": "sha256",
+          "eq": "$capture.f2"
+        },
+        {
+          "path": "src/CommonModules/ОбщийМодуль.xml",
+          "kind": "sha256",
+          "eq": "$capture.f3"
+        },
+        {
+          "path": "src/CommonModules/ОбщийСервер.xml",
+          "kind": "sha256",
+          "eq": "$capture.f4"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.f5"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "$capture.f6"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule",
+        "limit": 2,
+        "from": "aL"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/offset",
+          "eq": 4
+        },
+        {
+          "pointer": "/data/total",
+          "eq": 5
+        },
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:CommonModule.Alpha"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonModules/Alpha.xml",
+          "kind": "sha256",
+          "eq": "$capture.f0"
+        },
+        {
+          "path": "src/CommonModules/Other.xml",
+          "kind": "sha256",
+          "eq": "$capture.f1"
+        },
+        {
+          "path": "src/CommonModules/Zulu.xml",
+          "kind": "sha256",
+          "eq": "$capture.f2"
+        },
+        {
+          "path": "src/CommonModules/ОбщийМодуль.xml",
+          "kind": "sha256",
+          "eq": "$capture.f3"
+        },
+        {
+          "path": "src/CommonModules/ОбщийСервер.xml",
+          "kind": "sha256",
+          "eq": "$capture.f4"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.f5"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "$capture.f6"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule",
+        "limit": 2,
+        "from": "absent"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/offset",
+          "eq": 5
+        },
+        {
+          "pointer": "/data/total",
+          "eq": 5
+        },
+        {
+          "pointer": "/data/items/0",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonModules/Alpha.xml",
+          "kind": "sha256",
+          "eq": "$capture.f0"
+        },
+        {
+          "path": "src/CommonModules/Other.xml",
+          "kind": "sha256",
+          "eq": "$capture.f1"
+        },
+        {
+          "path": "src/CommonModules/Zulu.xml",
+          "kind": "sha256",
+          "eq": "$capture.f2"
+        },
+        {
+          "path": "src/CommonModules/ОбщийМодуль.xml",
+          "kind": "sha256",
+          "eq": "$capture.f3"
+        },
+        {
+          "path": "src/CommonModules/ОбщийСервер.xml",
+          "kind": "sha256",
+          "eq": "$capture.f4"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.f5"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "$capture.f6"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule",
+        "limit": 2,
+        "offset": 99
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/offset",
+          "eq": 5
+        },
+        {
+          "pointer": "/data/total",
+          "eq": 5
+        },
+        {
+          "pointer": "/data/items/0",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonModules/Alpha.xml",
+          "kind": "sha256",
+          "eq": "$capture.f0"
+        },
+        {
+          "path": "src/CommonModules/Other.xml",
+          "kind": "sha256",
+          "eq": "$capture.f1"
+        },
+        {
+          "path": "src/CommonModules/Zulu.xml",
+          "kind": "sha256",
+          "eq": "$capture.f2"
+        },
+        {
+          "path": "src/CommonModules/ОбщийМодуль.xml",
+          "kind": "sha256",
+          "eq": "$capture.f3"
+        },
+        {
+          "path": "src/CommonModules/ОбщийСервер.xml",
+          "kind": "sha256",
+          "eq": "$capture.f4"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.f5"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "$capture.f6"
+        }
+      ]
+    }
+  ]
+}

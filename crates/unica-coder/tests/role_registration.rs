@@ -131,9 +131,9 @@ fn compile_registration_with_declarations(entry: &str, metadata: &str, form: &st
             pub const fn bind<T: 'static>(_: &'static TypedOperationBundle<T>) -> Self {{ Self }}
         }}
         enum OperationApplicability {{
-            Configuration, ExtensionRoot, Metadata, MetadataOrCommonTemplate, Role, RoleRight, SupportRule, MetadataAttributeContainer,
+            Configuration, ExtensionRoot, Metadata, MetadataRelations, MetadataOrCommonTemplate, Role, RoleRight, SupportRule, MetadataAttributeContainer,
             CatalogTabularAttribute,
-            MetadataAttribute, MetadataCommands, MetadataCommand, MetadataForms,
+            MetadataAttribute, MetadataCommands, MetadataCommand, MetadataForms, FormSlots,
             Form, FormAttribute, FormProperties, FormItemContainer, FormItem, FormEvent,
             MetadataTabularSections, MetadataTabularSection,
             MetadataDimensions, MetadataDimension, MetadataResources, MetadataResource,
@@ -231,7 +231,7 @@ fn typed_contextual_registrations_compile_and_migrated_raw_tuples_are_rejected()
             (MetadataOperation::CommandSet), (MetadataOperation::CommandRemove),
             (FormOperation::Add), (FormOperation::Set), (FormOperation::Remove),
             (FormOperation::ItemAdd), (FormOperation::ItemRemove), (FormOperation::ItemMove),
-            (FormOperation::AttributeAdd), (FormOperation::ColumnAdd), (FormOperation::CommandAdd),
+            (FormOperation::AttributeAdd), (FormOperation::AttributeRemove), (FormOperation::ColumnAdd), (FormOperation::CommandAdd),
             (FormOperation::EventBind),
             (MetadataOperation::ObjectCreate)"#,
     );
@@ -258,7 +258,7 @@ fn typed_contextual_registrations_compile_and_migrated_raw_tuples_are_rejected()
         ("Metadata", "command.set", "MetadataCommand", "Values"),
         ("Metadata", "command.remove", "MetadataCommand", "Target"),
         ("Form", "form.add", "MetadataForms", "Items"),
-        ("Form", "form.set", "MetadataForms", "Values"),
+        ("Form", "form.set", "FormSlots", "Values"),
         ("Form", "form.remove", "Form", "Target"),
         ("Form", "item.add", "FormItemContainer", "Items"),
         ("Form", "item.remove", "FormItem", "Target"),
@@ -391,9 +391,19 @@ fn remaining_metadata_registrations_require_their_typed_variants() {
             "MetadataOrCommonTemplate",
             "Target",
         ),
-        ("RelationAdd", "relation.add", "Metadata", "Values"),
-        ("RelationRemove", "relation.remove", "Metadata", "Values"),
-        ("RelationReplace", "relation.replace", "Metadata", "Values"),
+        ("RelationAdd", "relation.add", "MetadataRelations", "Values"),
+        (
+            "RelationRemove",
+            "relation.remove",
+            "MetadataRelations",
+            "Values",
+        ),
+        (
+            "RelationReplace",
+            "relation.replace",
+            "MetadataRelations",
+            "Values",
+        ),
         ("HelpCreate", "help.create", "Metadata", "Values"),
         ("TemplateAdd", "template.add", "MetadataTemplates", "Items"),
         ("TemplateSet", "template.set", "MetadataTemplate", "Values"),
@@ -506,7 +516,12 @@ fn raw_metadata_guards_follow_literals_while_the_form_family_requires_typed_regi
             "ObjectRemove",
             "object.remove",
         ),
-        ("Metadata", "Metadata", "RelationAdd", "relation.add"),
+        (
+            "Metadata",
+            "MetadataRelations",
+            "RelationAdd",
+            "relation.add",
+        ),
         ("Metadata", "Metadata", "HelpCreate", "help.create"),
         (
             "Metadata",

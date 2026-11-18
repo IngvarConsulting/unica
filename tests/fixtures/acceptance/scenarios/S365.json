@@ -130,7 +130,7 @@
                     "Amount"
                   ],
                   "appearance": {
-                    "Format": "ЧДЦ=2"
+                    "Format": "ru = 'ЧДЦ=2'"
                   }
                 }
               ]

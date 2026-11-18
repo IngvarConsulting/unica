@@ -33,7 +33,7 @@ impl MetadataOperations {
             context,
             cancellation,
         )?;
-        let (local, validation_subject) = read_typed_meta_info(
+        let (mut local, validation_subject) = read_typed_meta_info(
             &resolved,
             &request.source_set,
             &request.metadata_path,
@@ -44,6 +44,30 @@ impl MetadataOperations {
             cancellation,
             support_reader,
         )?;
+        // Values the compatibility mode of the set forbids (kind (б)): the
+        // mode is read from the registering root, the same check `apply`
+        // runs before publishing.
+        if let Some(mode) = unica_source_designer::extension_mode::source_set_compatibility_mode(
+            &resolved.owner_preimage,
+            resolved.handle.source_set_kind(),
+        ) {
+            let rules = unica_source_contract::compatibility::CompatibilityRules::for_mode(mode);
+            local.diagnostics.extend(
+                unica_metadata_designer::mode_checks::descriptor_mode_findings(
+                    &resolved.descriptor_preimage,
+                    rules,
+                )
+                .into_iter()
+                .map(|finding| {
+                    unica_metadata::MetaDiagnostic::error(
+                        unica_metadata::MetaDiagnosticCode::ValidationFailed,
+                        finding.message,
+                    )
+                    .with_field("type")
+                    .with_metadata_path(request.metadata_path.clone())
+                }),
+            );
+        }
         Ok(unica_metadata::validation_subject::MetadataRead {
             local,
             validation_subject,
@@ -3334,13 +3358,11 @@ pub(crate) mod medium_tests {
         let prepared =
             MetadataOperations::prepare_mutation(&request, &fixture.context, &cancellation)
                 .unwrap();
-        let expected_content = concat!(
-            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
-            "<Form xmlns=\"http://v8.1c.ru/8.3/xcf/logform\" version=\"2.20\">\n",
-            "\t<AutoCommandBar name=\"ФормаКоманднаяПанель\" id=\"-1\"/>\n",
-            "</Form>"
-        )
-        .as_bytes();
+        // The seed of a new form, whose root the forms codec proves against
+        // the platform export.
+        let expected_content =
+            unica_forms_designer::planner::minimal_typed_form_content("", "", "2.20").into_bytes();
+        let expected_content = expected_content.as_slice();
         assert!(prepared
             .validation_subject()
             .resources
@@ -3540,13 +3562,7 @@ pub(crate) mod medium_tests {
         assert!(String::from_utf8_lossy(&descriptor_bytes).contains("replacement"));
         assert_eq!(
             fs::read(payload_root.join("Ext/Form.xml")).unwrap(),
-            concat!(
-                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
-                "<Form xmlns=\"http://v8.1c.ru/8.3/xcf/logform\" version=\"2.20\">\n",
-                "\t<AutoCommandBar name=\"ФормаКоманднаяПанель\" id=\"-1\"/>\n",
-                "</Form>"
-            )
-            .as_bytes()
+            unica_forms_designer::planner::minimal_typed_form_content("", "", "2.20").into_bytes()
         );
         assert!(!stale_module.exists());
     }
@@ -3931,7 +3947,7 @@ pub(crate) mod medium_tests {
                 None,
                 vec![MetaElementUpdateInput {
                     name: "Print".into(),
-                    synonym: Some("Print".into()),
+                    synonym: Some(vec![unica_metadata::LocalizedItem::new("ru", "Print")]),
                     ..MetaElementUpdateInput::default()
                 }],
             )
@@ -3953,7 +3969,10 @@ pub(crate) mod medium_tests {
             None,
             vec![MetaElementUpdateInput {
                 name: "Print".into(),
-                synonym: Some("Печатная форма".into()),
+                synonym: Some(vec![unica_metadata::LocalizedItem::new(
+                    "ru",
+                    "Печатная форма",
+                )]),
                 ..MetaElementUpdateInput::default()
             }],
         )
@@ -4024,7 +4043,10 @@ pub(crate) mod medium_tests {
             None,
             vec![MetaElementUpdateInput {
                 name: "Print".into(),
-                synonym: Some("Печатная форма".into()),
+                synonym: Some(vec![unica_metadata::LocalizedItem::new(
+                    "ru",
+                    "Печатная форма",
+                )]),
                 ..MetaElementUpdateInput::default()
             }],
         )
@@ -4423,7 +4445,7 @@ pub(crate) mod medium_tests {
             ),
             (
                 "version",
-                br#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.21"/>"#.as_slice(),
+                br#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.23"/>"#.as_slice(),
             ),
         ] {
             let fixture = Fixture::new(&format!("retained-form-invalid-{label}"));
@@ -5311,7 +5333,10 @@ pub(crate) mod medium_tests {
                         None,
                         vec![MetaElementUpdateInput {
                             name: "Missing".into(),
-                            synonym: Some("must not upsert".into()),
+                            synonym: Some(vec![unica_metadata::LocalizedItem::new(
+                                "ru",
+                                "must not upsert",
+                            )]),
                             ..MetaElementUpdateInput::default()
                         }],
                     )

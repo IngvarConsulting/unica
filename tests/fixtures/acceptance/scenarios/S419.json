@@ -34,7 +34,7 @@
             "args": {
               "values": {
                 "name": "Основной",
-                "title": "Версии"
+                "title": "ru = 'Версии'"
               }
             }
           }
@@ -71,7 +71,7 @@
             "op": "variant.set",
             "args": {
               "values": {
-                "title": "Версии"
+                "title": "ru = 'Версии'"
               }
             }
           }
@@ -108,7 +108,7 @@
             "args": {
               "values": {
                 "name": "Период",
-                "title": "Период"
+                "title": "ru = 'Период'"
               }
             }
           }
@@ -145,7 +145,7 @@
             "op": "field.set",
             "args": {
               "values": {
-                "title": "Число версий",
+                "title": "ru = 'Число версий'",
                 "dataPath": "Количество"
               }
             }
@@ -183,7 +183,7 @@
             "op": "field.set",
             "args": {
               "values": {
-                "title": "Число версий"
+                "title": "ru = 'Число версий'"
               }
             }
           },

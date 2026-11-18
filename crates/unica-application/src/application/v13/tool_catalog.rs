@@ -44,6 +44,7 @@ pub enum RunIntent {
     InfobaseCreate,
     SourceImport,
     SourceExport,
+    SourceReexport,
     ArtifactBuild,
     CfExport,
     CfImport,
@@ -58,7 +59,7 @@ pub enum RunIntent {
 
 /// Why `upload`, `apply` and `reset` are unavailable with the pinned runner and
 /// what remains: the gap issue names the acceptance criteria.
-const RUNNER_LOAD_GAP: &str = "unavailable with the v8-runner 0.15 adapter: v8-runner 0.15 has push --no-apply, apply and reset, but the adapter does not run them yet, and the runner's upload of a CF/CFE file still applies the database configuration. Sources go through push, which applies the database configuration. Gap: https://github.com/IngvarConsulting/unica/issues/1246";
+const RUNNER_LOAD_GAP: &str = "unavailable with the pinned v8-runner adapter: the runner has push --no-apply, apply and reset, but the adapter does not run them yet, and the runner's upload of a CF/CFE file still applies the database configuration. Sources go through push, which applies the database configuration. Gap: https://github.com/IngvarConsulting/unica/issues/1246";
 
 #[derive(Debug)]
 pub struct RunOperation {
@@ -74,6 +75,7 @@ impl RunOperation {
             RunIntent::InfobaseCreate => "infobase.create",
             RunIntent::SourceImport => "push",
             RunIntent::SourceExport => "pull",
+            RunIntent::SourceReexport => "source.reexport",
             RunIntent::ArtifactBuild => "make",
             RunIntent::CfExport => "download",
             RunIntent::CfImport => "upload",
@@ -97,6 +99,9 @@ impl RunOperation {
             }
             RunIntent::SourceExport => {
                 "Fully replace a source set from the infobase with explicit force. Local-work protection and merge are unavailable."
+            }
+            RunIntent::SourceReexport => {
+                "Re-export a source set in a writable export format through a temporary file infobase: the set is loaded into it with the platform line of the format and exported back in full, replacing the files of the set. The project infobase and files stay unchanged."
             }
             RunIntent::ArtifactBuild => {
                 "Build a CF, CFE, EPF or ERF artifact from attached sources. External artifacts require a singleton Designer sourceSet and a declared main configuration."
@@ -127,7 +132,7 @@ impl RunOperation {
                 Some(RUNNER_LOAD_GAP)
             }
             RunIntent::SourceImport => Some("source push applies the database configuration; the generation check covers only the sets the runner loads, force:true overwrites the infobase without it, and noApply:true is unavailable"),
-            RunIntent::SourceExport => Some("pull requires force:true and replaces one full source set, deleting its uncommitted and untracked files without a copy; local-work protection and all mode are unavailable"),
+            RunIntent::SourceExport => Some("pull exports one source set with the runner; without force the runner chooses a partial or full export by its memory of earlier exchanges, force:true exports in full and replaces uncommitted and untracked files; Unica keeps no copy of the previous sources, and a failed export may leave a partial target"),
             RunIntent::InfobaseCreate => Some("creates an absent infobase; a file infobase gets the main configuration of the project from its sources, a cluster infobase is created empty; the answer names whether sources were loaded (initializesSources)"),
             _ => None,
         }
@@ -146,6 +151,7 @@ impl RunOperation {
             RunIntent::SourceExport | RunIntent::CfExport | RunIntent::InfobaseExport => {
                 &["infobaseRead", "workspaceFiles"]
             }
+            RunIntent::SourceReexport => &["workspaceFiles"],
             RunIntent::InfobaseCreate
             | RunIntent::SourceImport
             | RunIntent::CfImport
@@ -207,8 +213,11 @@ impl RunOperation {
                 },
                 "required": ["output"]
             })),
+            RunIntent::SourceReexport => Some(
+                json!({"type":"object","additionalProperties":false,"required":["sourceSet","format"],"properties":{"sourceSet":{"type":"string","description":"Declared source set to re-export."},"format":{"type":"string","description":"Writable export format: 2.20 is written by 1C 8.3.27, 2.21 by 8.5.1, 2.22 by 8.5.4; that platform line must be installed. Another value is refused with the list of writable formats."}}}),
+            ),
             RunIntent::SourceExport => Some(
-                json!({"type":"object","additionalProperties":false,"required":["force"],"properties":{"sourceSet":{"type":"string","description":"Declared source set to fully replace from the infobase; omit for the main configuration."},"extension":{"type":"string","description":"1C extension name; required for an extension source set and must match it."},"force":{"const":true,"description":"Must be true; pull fully replaces one source set without protecting local changes."}}}),
+                json!({"type":"object","additionalProperties":false,"properties":{"sourceSet":{"type":"string","description":"Declared source set to export from the infobase; omit for the main configuration."},"extension":{"type":"string","description":"1C extension name; required for an extension source set and must match it."},"force":{"type":"boolean","description":"true exports the whole set and replaces it, including uncommitted and untracked files. Omit to let the runner choose a partial or full export by its memory of earlier exchanges."}}}),
             ),
             RunIntent::SourceImport => Some(
                 json!({"type":"object","additionalProperties":false,"properties":{"sourceSet":{"type":"string","description":"Declared source set to push; omit to push all declared sets."},"full":{"type":"boolean","description":"Request a full rebuild instead of letting the runner choose the loading mode."},"force":{"type":"boolean","description":"true overwrites the infobase: every selected set is loaded in full without checking the infobase generation or this working copy's memory of it, and changes made in the infobase are lost. Omit to push with the generation check."},"noApply":{"const":false,"description":"Must be false if supplied; source push always applies the database configuration."},"delete":{"type":"string","description":"Installed extension platform name to delete, including its data. Exclusive with source sending options."}},"oneOf":[{"required":["delete"],"not":{"anyOf":[{"required":["sourceSet"]},{"required":["full"]},{"required":["force"]},{"required":["noApply"]}]}},{"not":{"required":["delete"]}}]}),
@@ -273,7 +282,7 @@ pub fn catalog_for(release: SurfaceRelease) -> Option<V13Catalog> {
             tools: vec![
                 V13ToolContract {
                     name: "view",
-                    description: "Inspect the workspace with no arguments, or read one logical 1C node by address.",
+                    description: "Inspect the workspace with no arguments, or read one logical 1C node by address. Collection pages report data.offset and data.total. Root metadata collections keep Configuration.xml registration order. offset and from start a fresh question; cursor continues its immutable snapshot.",
                     input_schema: schema(
                         json!({
                             "at": logical_address_with("Qualified logical address: <sourceSet>:<Kind>[.<Name>...]. A node answer lists its operations in can; append .Can.<op> for one operation's argument contract. Omit for the workspace."),
@@ -282,6 +291,8 @@ pub fn catalog_for(release: SurfaceRelease) -> Option<V13Catalog> {
                             "limit": {"type": "integer", "minimum": 1, "maximum": 50,
                                 "description": "Maximum child items per addressed view page, from 1 to 50; valid only with at. Omit for 20. A preferred 64 KiB page size may stop earlier, but an indivisible item remains whole."},
                             "cursor": cursor("Continuation cursor from an earlier addressed view."),
+                            "offset": {"type":"integer", "minimum":0, "description":"Start a collection page at this zero-based position, without reading prior pages. Exclusive with from and cursor. Positions beyond the end return an empty page with data.offset equal to data.total."},
+                            "from": {"type":"string", "description":"Start at the first registered name beginning with this prefix, ignoring Unicode case. Exclusive with offset and cursor. No match returns an empty page with data.offset equal to data.total. Names, not synonyms, are matched."},
                         }),
                         json!([]),
                     ),
@@ -372,7 +383,7 @@ pub fn catalog_for(release: SurfaceRelease) -> Option<V13Catalog> {
                     input_schema: schema(
                         json!({
                             "op": {"type": "string", "description": "Runner 1.0 operation name; omit to list the target dictionary and adapter support."},
-                            "infobase": {"type":"string", "description":"Named infobase; defaults to origin. The runner 0.15 adapter supports only origin."},
+                            "infobase": {"type":"string", "description":"Named infobase; defaults to origin. The pinned runner adapter supports only origin."},
                             "args": data_object("Typed arguments for the selected operation."),
                             "dryRun": {"type": "boolean", "description": "Required by previewApply operations: true returns a non-mutating preview; false executes with the current arguments without requiring a prior preview."},
                         }),
@@ -384,7 +395,7 @@ pub fn catalog_for(release: SurfaceRelease) -> Option<V13Catalog> {
                     description: "Search bundled Unica and safe 1C documentation by topic, or open a document locator. Search hits and long document text use pages; each search source reports whether its retrieved window is complete.",
                     input_schema: schema(
                         json!({
-                            "query": {"type": "string", "description": "Documentation question or search phrase."},
+                            "query": {"type": "string", "description": "Documentation question, search phrase, or an exact documentId returned by this tool. Platform-help locators include the installation build: `platform-syntax-help:<platform-build>:<corpus>:<path>`."},
                             "source": {"type": "string", "description": "Optional documented source kind, not a provider identity."},
                             "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 20, "description": "Maximum hits per search page or text fragments per long document page, from 1 to 50. A text fragment is one line or at most 16 KiB of a longer line; short documents still arrive whole."},
                             "cursor": cursor("Continue the same documentation search or long document. A document cursor checks its complete text and metadata for changes; concatenate document.text fragments in page order."),
@@ -500,6 +511,7 @@ fn run_dictionary() -> Vec<RunOperation> {
         RunIntent::InfobaseCreate,
         RunIntent::SourceImport,
         RunIntent::SourceExport,
+        RunIntent::SourceReexport,
         RunIntent::ArtifactBuild,
         RunIntent::CfExport,
         RunIntent::CfImport,
@@ -516,7 +528,7 @@ fn run_dictionary() -> Vec<RunOperation> {
         intent,
         terminal: intent == RunIntent::ClientRun,
         rejects_sessions: intent == RunIntent::ClientRun,
-        // Runner 0.15 has push --no-apply, apply and reset, but its upload still applies
+        // The pinned runner has push --no-apply, apply and reset, but its upload still applies
         // the database configuration and the adapter does not run apply or reset yet
         // (#1246): these are not listed, and their call is refused with that reason.
         implemented: !matches!(
@@ -605,6 +617,7 @@ mod tests {
                 "infobase.create",
                 "push",
                 "pull",
+                "source.reexport",
                 "make",
                 "download",
                 "upload",
@@ -634,12 +647,12 @@ mod tests {
                 .unwrap();
             assert!(
                 op.support_reason().is_some(),
-                "{name} must not claim full 1.0 semantics with runner 0.15"
+                "{name} must not claim full 1.0 semantics with the pinned runner"
             );
             assert_eq!(
                 op.implemented,
                 !["upload", "apply", "reset"].contains(&name),
-                "{name}: only the proven runner 0.15 subset is executable"
+                "{name}: only the proven pinned-runner subset is executable"
             );
         }
     }
@@ -807,7 +820,7 @@ mod tests {
             &catalog.tools,
             "view",
             json!([]),
-            &["at", "limit", "cursor"],
+            &["at", "limit", "cursor", "offset", "from"],
         );
         assert_schema(
             &catalog.tools,
@@ -1034,6 +1047,7 @@ mod tests {
                 RunIntent::InfobaseCreate,
                 RunIntent::SourceImport,
                 RunIntent::SourceExport,
+                RunIntent::SourceReexport,
                 RunIntent::ArtifactBuild,
                 RunIntent::CfExport,
                 RunIntent::CfImport,
@@ -1068,6 +1082,7 @@ mod tests {
                 "infobase.create",
                 "push",
                 "pull",
+                "source.reexport",
                 "make",
                 "download",
                 "infobase.dump",
@@ -1076,7 +1091,7 @@ mod tests {
                 "extensions.list",
                 "extensions.set",
             ],
-            "only operations whose target semantics are proven on runner 0.15 are executable"
+            "only operations whose target semantics are proven on the pinned runner are executable"
         );
 
         let output = &catalog.result_envelope_schema;
@@ -1187,6 +1202,7 @@ mod tests {
                 "infobase.create",
                 "push",
                 "pull",
+                "source.reexport",
                 "make",
                 "download",
                 "upload",
@@ -1225,6 +1241,7 @@ mod tests {
                 "infobase.create",
                 "push",
                 "pull",
+                "source.reexport",
                 "make",
                 "download",
                 "infobase.dump",
@@ -1233,7 +1250,7 @@ mod tests {
                 "extensions.list",
                 "extensions.set",
             ],
-            "only operations whose target semantics are proven on runner 0.15 are executable"
+            "only operations whose target semantics are proven on the pinned runner are executable"
         );
     }
 
@@ -1258,7 +1275,7 @@ mod tests {
                 .iter()
                 .filter(|operation| operation.implemented)
                 .count()
-                == 10,
+                == 11,
             "only the proven runner 0.14 subset is implemented"
         );
     }
@@ -1272,7 +1289,12 @@ mod tests {
             .find(|op| op.name() == "pull")
             .unwrap();
         assert!(op.implemented);
-        assert!(op.support_reason().unwrap().contains("protection"));
+        assert!(op.support_reason().unwrap().contains("keeps no copy"));
+        assert!(op.args_schema().unwrap().get("required").is_none());
+        assert_eq!(
+            op.args_schema().unwrap()["properties"]["force"]["type"],
+            "boolean"
+        );
         assert_eq!(op.args_schema().unwrap()["additionalProperties"], false);
         assert!(op.args_schema().unwrap()["properties"]
             .get("mode")
@@ -1331,7 +1353,7 @@ mod tests {
             .expect("upload belongs to the v0.13 dictionary");
         assert!(
             !import.implemented,
-            "the runner 0.15 adapter cannot upload without applying (#1246)"
+            "the pinned runner adapter cannot upload without applying (#1246)"
         );
         assert_eq!(import.execution(), "previewApply");
         assert_eq!(import.effects(), &["infobase"]);

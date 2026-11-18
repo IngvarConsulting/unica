@@ -156,10 +156,5 @@ fn standards_answer_through_https_proxy() {
     );
 
     assert_eq!(proxy.targets(), vec![stand.authority()]);
-    // Через HTTP-прокси `ureq` пишет адрес запроса в абсолютной форме даже
-    // внутри туннеля CONNECT; сервер обязан её принимать (RFC 9112, 3.2.2).
-    assert_eq!(
-        stand.requests(),
-        vec![format!("POST {} HTTP/1.1", stand.url("mcp"))]
-    );
+    assert_eq!(stand.requests(), vec!["POST /mcp HTTP/1.1"]);
 }
