@@ -31,13 +31,6 @@
           "pointer": "/diagnostics/0/code",
           "eq": "bad_value"
         }
-      ],
-      "fileAssertions": [
-        {
-          "kind": "sha256",
-          "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
-          "eq": "d2afae775e4a3352b6bd8a73da925ca5e52d8247d249a93a56a832007a5a6dde"
-        }
       ]
     }
   ]

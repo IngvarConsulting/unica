@@ -288,7 +288,7 @@ fn catalog_tabular_profile_does_not_publish_unknown_or_wrong_context_facts() {
 fn catalog_tabular_profile_requires_the_exact_declared_xml_version() {
     for declaration in [
         " version=\"2.19\"",
-        " version=\"2.21\"",
+        " version=\"2.23\"",
         "",
         " version=\"2&#x2e;20\"",
     ] {

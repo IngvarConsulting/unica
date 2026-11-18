@@ -31,6 +31,9 @@ pub fn metadata_property_schemas(kind: Option<MetadataKind>) -> Map<String, Valu
             })
             .as_object_mut()
             .expect("root property schema is always an object");
+        if let Some(max_length) = spec.string_max_length {
+            entry.insert("maxLength".into(), json!(max_length));
+        }
         if let Some(pattern) = spec.string_pattern {
             entry.insert("pattern".into(), Value::String(pattern.to_string()));
         }

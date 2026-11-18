@@ -16,6 +16,38 @@
       "captures": {
         "parent": {
           "pointer": "/data/items/0/at"
+        },
+        "unchanged1": {
+          "file": "src/Configuration.xml",
+          "kind": "sha256"
+        },
+        "unchanged2": {
+          "file": "src/Subsystems/Parent.xml",
+          "kind": "sha256"
+        },
+        "unchanged3": {
+          "file": "src/Subsystems/Parent/Ext/CommandInterface.xml",
+          "kind": "sha256"
+        },
+        "unchanged4": {
+          "file": "src/Subsystems/Parent/Subsystems/Child.xml",
+          "kind": "sha256"
+        },
+        "unchanged5": {
+          "file": "src/Subsystems/Parent/Subsystems/Child/Ext/CommandInterface.xml",
+          "kind": "sha256"
+        },
+        "unchanged6": {
+          "file": "src/Subsystems/Parent/Subsystems/Child/Subsystems/Leaf.xml",
+          "kind": "sha256"
+        },
+        "unchanged7": {
+          "file": "src/Subsystems/Missing.xml",
+          "kind": "sha256"
+        },
+        "unchanged8": {
+          "file": "src/Subsystems/Damaged.xml",
+          "kind": "sha256"
         }
       },
       "assertions": [
@@ -52,42 +84,42 @@
         {
           "path": "src/Configuration.xml",
           "kind": "sha256",
-          "eq": "2ee660be4f7f5a8ba005d19fdaca39aa8f8127b30522805a3c637d5150a0f038"
+          "eq": "$capture.unchanged1"
         },
         {
           "path": "src/Subsystems/Parent.xml",
           "kind": "sha256",
-          "eq": "e66fb3fbbcc3c7060c47396d44a001bac5baa70f8c2f1878c08998ace245c357"
+          "eq": "$capture.unchanged2"
         },
         {
           "path": "src/Subsystems/Parent/Ext/CommandInterface.xml",
           "kind": "sha256",
-          "eq": "2db7ea6634813413000ca71d5a73282d51531f62efb22ed83aa50eeb43e1ee63"
+          "eq": "$capture.unchanged3"
         },
         {
           "path": "src/Subsystems/Parent/Subsystems/Child.xml",
           "kind": "sha256",
-          "eq": "7f99a7eee3d701ed8bcf94bbeb6361f18457c311cb701a0364d4f4a78b6d81d8"
+          "eq": "$capture.unchanged4"
         },
         {
           "path": "src/Subsystems/Parent/Subsystems/Child/Ext/CommandInterface.xml",
           "kind": "sha256",
-          "eq": "2db7ea6634813413000ca71d5a73282d51531f62efb22ed83aa50eeb43e1ee63"
+          "eq": "$capture.unchanged5"
         },
         {
           "path": "src/Subsystems/Parent/Subsystems/Child/Subsystems/Leaf.xml",
           "kind": "sha256",
-          "eq": "9d3f221aeeee9d9eda85886e0d5723a1e5487d89ae97d6dbe2a4cb5eb78e25ab"
+          "eq": "$capture.unchanged6"
         },
         {
           "path": "src/Subsystems/Missing.xml",
           "kind": "sha256",
-          "eq": "a65aeb1de5c3682efdb588b79a6ffcd84f1f6adaf05a0604bde59de5253aa9f3"
+          "eq": "$capture.unchanged7"
         },
         {
           "path": "src/Subsystems/Damaged.xml",
           "kind": "sha256",
-          "eq": "b0a7d84908b06fd75a1218e6533ae409d3ec10d8e36dbdbc7de81ed26cae8e0f"
+          "eq": "$capture.unchanged8"
         },
         {
           "path": "src/Subsystems/Parent.xml",
@@ -243,42 +275,42 @@
         {
           "path": "src/Configuration.xml",
           "kind": "sha256",
-          "eq": "2ee660be4f7f5a8ba005d19fdaca39aa8f8127b30522805a3c637d5150a0f038"
+          "eq": "$capture.unchanged1"
         },
         {
           "path": "src/Subsystems/Parent.xml",
           "kind": "sha256",
-          "eq": "e66fb3fbbcc3c7060c47396d44a001bac5baa70f8c2f1878c08998ace245c357"
+          "eq": "$capture.unchanged2"
         },
         {
           "path": "src/Subsystems/Parent/Ext/CommandInterface.xml",
           "kind": "sha256",
-          "eq": "2db7ea6634813413000ca71d5a73282d51531f62efb22ed83aa50eeb43e1ee63"
+          "eq": "$capture.unchanged3"
         },
         {
           "path": "src/Subsystems/Parent/Subsystems/Child.xml",
           "kind": "sha256",
-          "eq": "7f99a7eee3d701ed8bcf94bbeb6361f18457c311cb701a0364d4f4a78b6d81d8"
+          "eq": "$capture.unchanged4"
         },
         {
           "path": "src/Subsystems/Parent/Subsystems/Child/Ext/CommandInterface.xml",
           "kind": "sha256",
-          "eq": "2db7ea6634813413000ca71d5a73282d51531f62efb22ed83aa50eeb43e1ee63"
+          "eq": "$capture.unchanged5"
         },
         {
           "path": "src/Subsystems/Parent/Subsystems/Child/Subsystems/Leaf.xml",
           "kind": "sha256",
-          "eq": "9d3f221aeeee9d9eda85886e0d5723a1e5487d89ae97d6dbe2a4cb5eb78e25ab"
+          "eq": "$capture.unchanged6"
         },
         {
           "path": "src/Subsystems/Missing.xml",
           "kind": "sha256",
-          "eq": "a65aeb1de5c3682efdb588b79a6ffcd84f1f6adaf05a0604bde59de5253aa9f3"
+          "eq": "$capture.unchanged7"
         },
         {
           "path": "src/Subsystems/Damaged.xml",
           "kind": "sha256",
-          "eq": "b0a7d84908b06fd75a1218e6533ae409d3ec10d8e36dbdbc7de81ed26cae8e0f"
+          "eq": "$capture.unchanged8"
         },
         {
           "path": "src/Subsystems/Parent.xml",

@@ -852,8 +852,9 @@ fn metadata_node_props_lay_out_the_per_kind_facts_by_role() {
 /// Сервис в том виде, в каком его выгружает Конфигуратор 8.3.27: у шаблона
 /// и метода есть `Synonym` и `<Comment/>` (#634).
 fn install_configurator_http_service(fixture: &RealReaderFixture, edit: impl Fn(&str) -> String) {
-    let xml = fixture_text("platform_8_3_27/meta_info/edge/http-service-configurator.xml")
-        .replace("<Name>ПроверкаСвязи</Name>", "<Name>ExternalAPI</Name>");
+    let xml =
+        fixture_text("formats/platform_xml/2.20/meta_info/edge/http-service-configurator.xml")
+            .replace("<Name>ПроверкаСвязи</Name>", "<Name>ExternalAPI</Name>");
     write(
         &fixture.source.join("HTTPServices/ExternalAPI.xml"),
         &edit(&xml),
@@ -913,7 +914,7 @@ fn configurator_web_service_view_opens_its_operations_and_parameters() {
     let fixture = RealReaderFixture::new();
     write(
         &fixture.source.join("WebServices/Exchange.xml"),
-        &fixture_text("platform_8_3_27/meta_info/edge/web-service-configurator.xml")
+        &fixture_text("formats/platform_xml/2.20/meta_info/edge/web-service-configurator.xml")
             .replace("<Name>ОбменДанными</Name>", "<Name>Exchange</Name>"),
     );
     let service = fixture.view_service();

@@ -1309,7 +1309,7 @@ fn remove_form_prefers_newer_child_over_older_descriptor_without_deleting_either
     );
     write_file(
         &form_xml,
-        r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.21"/>"#,
+        r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.23"/>"#,
     );
     let before = [
         (root_xml.clone(), fs::read(&root_xml).unwrap()),
@@ -1326,8 +1326,8 @@ fn remove_form_prefers_newer_child_over_older_descriptor_without_deleting_either
 
     assert!(!outcome.ok, "{outcome:?}");
     let diagnostics = outcome.errors.join("\n");
-    assert!(diagnostics.contains("2.21"), "{diagnostics}");
-    assert!(diagnostics.contains("1C 8.5"), "{diagnostics}");
+    assert!(diagnostics.contains("2.23"), "{diagnostics}");
+    assert!(diagnostics.contains("2.22"), "{diagnostics}");
     assert!(
         !diagnostics.contains("older than supported"),
         "{diagnostics}"
@@ -4938,7 +4938,7 @@ fn form_compile_rejects_newer_parent_owner_that_appears_after_probe() {
         .join("src/Catalogs/Goods/Forms/ItemForm/Ext/Form.xml");
     write_file(&definition_path, "{}");
     let newer_owner = empty_catalog_xml("\n", true)
-        .replacen(r#"version="2.20""#, r#"version="2.21""#, 1)
+        .replacen(r#"version="2.20""#, r#"version="2.23""#, 1)
         .into_bytes();
     let owner_for_hook = owner_path.clone();
     let newer_for_hook = newer_owner.clone();
@@ -4962,7 +4962,7 @@ fn form_compile_rejects_newer_parent_owner_that_appears_after_probe() {
     );
 
     assert!(!outcome.ok, "{outcome:?}");
-    assert!(outcome.errors.join("\n").contains("2.21"), "{outcome:?}");
+    assert!(outcome.errors.join("\n").contains("2.23"), "{outcome:?}");
     assert_eq!(fs::read(&owner_path).unwrap(), newer_owner);
     assert!(!output_path.exists());
     let _ = fs::remove_dir_all(&context.cwd);

@@ -142,6 +142,9 @@ pub struct LspClientInbox(Arc<Outbox>);
 struct Outbox {
     state: Mutex<OutboxState>,
     arrived: Condvar,
+    /// The editor answers `workspace/diagnostic/refresh`: told when the
+    /// analysis it lacked is ready, it asks again by itself.
+    hears_refresh: bool,
 }
 
 struct OutboxState {
@@ -151,13 +154,15 @@ struct OutboxState {
 
 impl LspClientChannel {
     /// Новая очередь сессии: канал отдаётся службе, приёмник остаётся у транспорта.
-    pub fn pair() -> (Self, LspClientInbox) {
+    /// `hears_refresh` — редактор объявил поддержку `workspace/diagnostic/refresh`.
+    pub fn pair(hears_refresh: bool) -> (Self, LspClientInbox) {
         let outbox = Arc::new(Outbox {
             state: Mutex::new(OutboxState {
                 items: VecDeque::new(),
                 closed: false,
             }),
             arrived: Condvar::new(),
+            hears_refresh,
         });
         (Self(Arc::clone(&outbox)), LspClientInbox(outbox))
     }
@@ -165,7 +170,13 @@ impl LspClientChannel {
     /// A channel no editor reads, for driving a service without the lane.
     #[cfg(any(test, feature = "test-support"))]
     pub fn detached_for_test() -> Self {
-        Self::pair().0
+        Self::pair(false).0
+    }
+
+    /// Редактор переспрашивает о находках по `workspace/diagnostic/refresh`,
+    /// поэтому запросу незачем ждать анализ до своего срока.
+    pub fn hears_refresh(&self) -> bool {
+        self.0.hears_refresh
     }
 
     /// Поставить уведомление в очередь. `false` — сессия закрыта или

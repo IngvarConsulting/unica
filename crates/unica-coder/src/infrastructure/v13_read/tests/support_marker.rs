@@ -27,7 +27,9 @@ pub(crate) fn typed_reads_parse_the_support_marker_once_per_actor_revision() {
     let fixture = RealReaderFixture::new();
     fs::create_dir_all(fixture.source.join("Ext")).unwrap();
     fs::copy(
-        fixture_path("platform_8_3_27/support-edit-bin-only/src/Ext/ParentConfigurations.bin"),
+        fixture_path(
+            "formats/platform_xml/2.20/support-edit-bin-only/src/Ext/ParentConfigurations.bin",
+        ),
         fixture.source.join("Ext/ParentConfigurations.bin"),
     )
     .unwrap();
@@ -64,7 +66,9 @@ fn replaced_support_marker_never_reaches_a_retained_root_with_the_old_state() {
     let marker = fixture.source.join("Ext/ParentConfigurations.bin");
     fs::create_dir_all(marker.parent().unwrap()).unwrap();
     fs::copy(
-        fixture_path("platform_8_3_27/support-edit-bin-only/src/Ext/ParentConfigurations.bin"),
+        fixture_path(
+            "formats/platform_xml/2.20/support-edit-bin-only/src/Ext/ParentConfigurations.bin",
+        ),
         &marker,
     )
     .unwrap();

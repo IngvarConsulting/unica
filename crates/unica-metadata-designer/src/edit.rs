@@ -792,7 +792,7 @@ where
                 .with_operation_index(operation_index),
             )
         })?;
-        validate_metadata_8_3_27_boolean_contract(&working, "meta.edit").map_err(|_| {
+        validate_metadata_boolean_contract(&working, "meta.edit").map_err(|_| {
             unica_metadata::request::MetaFailure::from(
                 typed_diagnostic(
                     MetaDiagnosticCode::ValidationFailed,
@@ -802,7 +802,7 @@ where
                 .with_operation_index(operation_index),
             )
         })?;
-        validate_metadata_8_3_27_enum_contract(&working, "meta.edit").map_err(|_| {
+        validate_metadata_enum_contract(&working, "meta.edit").map_err(|_| {
             unica_metadata::request::MetaFailure::from(
                 typed_diagnostic(
                     MetaDiagnosticCode::ValidationFailed,
@@ -1463,14 +1463,21 @@ pub fn apply_typed_properties(
             None,
         )
     })?;
-    let properties =
+    let changes_key = changes
+        .entries()
+        .iter()
+        .any(|(key, _)| *key == MetaPropertyKey::Key);
+    let properties = if changes_key {
+        super::scheduled_job_key::properties(object)?
+    } else {
         unica_xml_format::read::child_element(object, "Properties").ok_or_else(|| {
             typed_diagnostic(
                 MetaDiagnosticCode::ProviderUnavailable,
                 "metadata descriptor has no Properties",
                 None,
             )
-        })?;
+        })?
+    };
     let kind = MetadataKind::parse(object.tag_name().name()).map_err(|_| {
         typed_diagnostic(
             MetaDiagnosticCode::ProviderUnavailable,
@@ -1550,13 +1557,21 @@ pub fn apply_typed_properties(
             continue;
         }
         let tag = spec.xml_name;
-        let property = unica_xml_format::read::child_element(properties, tag).ok_or_else(|| {
-            typed_diagnostic(
-                MetaDiagnosticCode::InvalidArguments,
-                format!("property `{tag}` is not present on this metadata object"),
-                Some("values"),
-            )
-        })?;
+        let property = if *key == MetaPropertyKey::Key {
+            let (node, previous) = super::scheduled_job_key::leaf(properties)?;
+            if matches!(value, MetaPropertyValue::String(next) if next == &previous) {
+                continue;
+            }
+            node
+        } else {
+            unica_xml_format::read::child_element(properties, tag).ok_or_else(|| {
+                typed_diagnostic(
+                    MetaDiagnosticCode::InvalidArguments,
+                    format!("property `{tag}` is not present on this metadata object"),
+                    Some("values"),
+                )
+            })?
+        };
         if *key == MetaPropertyKey::DataHistory {
             let same_name_count = properties
                 .children()
@@ -1745,6 +1760,15 @@ pub fn apply_typed_properties(
                     lang,
                     value,
                 )
+            }
+            (MetaPropertyKey::Key, MetaPropertyValue::String(value)) => {
+                // XML readers normalize literal CR; references preserve the requested value.
+                let escaped = unica_xml_format::text::escape_xml(value).replace('\r', "&#13;");
+                if value.is_empty() {
+                    format!("{indent}{opening}/>")
+                } else {
+                    format!("{indent}{opening}>{escaped}</{qname}>")
+                }
             }
             (MetaPropertyKey::Comment, MetaPropertyValue::String(value)) if value.is_empty() => {
                 format!("{indent}{opening}/>")
@@ -3797,14 +3821,17 @@ pub fn typed_child_descriptor_image(
     tag: &str,
     name: &str,
 ) -> Result<Vec<u8>, unica_metadata::request::MetaFailure> {
+    let version = crate::dialect::root_version::of_set(owner_xml);
     typed_child_element_xml(owner_xml, tag, name)
-        .map(|child_xml| wrap_standalone_descriptor(&child_xml))
+        .map(|child_xml| wrap_standalone_descriptor(&child_xml, &version))
 }
 
-pub fn wrap_standalone_descriptor(child_xml: &str) -> Vec<u8> {
+/// A standalone descriptor of one child in the format `version` of its set.
+pub fn wrap_standalone_descriptor(child_xml: &str, version: &str) -> Vec<u8> {
     format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<MetaDataObject {} version=\"2.20\">\n{}\n</MetaDataObject>",
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<MetaDataObject {} version=\"{}\">\n{}\n</MetaDataObject>",
         crate::template_catalog::meta_xmlns_decl(),
+        version,
         child_xml
     )
     .into_bytes()

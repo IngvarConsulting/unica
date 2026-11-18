@@ -33,8 +33,19 @@ mod tests {
             assert_eq!(unknown.semantic_line(), None, "{unknown:?}");
             assert_eq!(bsl_profile_for_source(unknown), None, "{unknown:?}");
         }
+        for (raw, line) in [
+            ("2.21", PlatformLine::new(8, 5, 1)),
+            ("2.22", PlatformLine::new(8, 5, 4)),
+        ] {
+            let release =
+                SourceProfile::platform_xml_for_export_format(raw).expect("a profile row");
+            assert_eq!(
+                bsl_profile_for_source(release).map(PlatformProfile::line),
+                Some(line)
+            );
+        }
         // A line without described capabilities has no semantic profile yet.
-        assert_eq!(PlatformProfile::for_line(PlatformLine::new(8, 5, 4)), None);
+        assert_eq!(PlatformProfile::for_line(PlatformLine::new(8, 5, 2)), None);
         assert_eq!(
             PlatformProfile::for_line(PlatformLine::new(8, 3, 27)).map(PlatformProfile::line),
             Some(PlatformLine::new(8, 3, 27))
