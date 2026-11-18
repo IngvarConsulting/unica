@@ -28,22 +28,19 @@ use super::{
     CANONICAL_SEARCH_MAX_LINE_BYTES, CANONICAL_SEARCH_MAX_UNCOVERED_DETAILS,
 };
 use crate::application::v13::view::ViewReadAuthority;
+use crate::infrastructure::analysis_composition::candidate_lines;
 use crate::infrastructure::event_sources::module_address_for_relative;
 use crate::infrastructure::v13_large_configuration::{RegistrationCache, RegistrationIndex};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
+use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use unica_adapter_lexical::lines::{
-    holds_foreign_work_tree, inside_work_tree, stream_candidate_lines, CandidateCorpus,
-    CandidateEnd, CandidatePattern,
-};
 use unica_address::address::{NodeKind, QualifiedAddress};
+use unica_code_intelligence::candidate_lines::{CandidateCorpus, CandidateEnd, CandidatePattern};
 use unica_execution_contract::view_error::ViewError;
 use unica_navigation::result_store::SearchResume;
-use unica_process::runner::system_process_runner;
-use unica_process::StreamControl;
 use unica_refusal::RefusalCode;
 use unica_source_contract::read::{SourceDirectory, SourceEntry};
 use unica_source_contract::SourceSetKind;
@@ -754,14 +751,12 @@ pub(in crate::infrastructure::daemon) fn choose_engine(
         sources.iter().all(|source| {
             let retained = source.source.retained_root();
             let root = retained.path();
-            inside_work_tree(system_process_runner(), root, cancellation)
-                && !holds_foreign_work_tree(
-                    system_process_runner(),
-                    root,
-                    &candidate_corpus(source),
-                    CANONICAL_SEARCH_MAX_LINE_BYTES,
-                    cancellation,
-                )
+            candidate_lines().reads(
+                root,
+                &candidate_corpus(source),
+                CANONICAL_SEARCH_MAX_LINE_BYTES,
+                cancellation,
+            )
         })
     };
     if query.candidates.is_some() && all_in_git() {
@@ -857,8 +852,7 @@ fn git_source(
     let mut current: Option<Vec<u8>> = None;
     let mut skip_file = false;
     let mut stopped = false;
-    let (end, stream) = stream_candidate_lines(
-        system_process_runner(),
+    let (end, stream) = candidate_lines().stream(
         root.path(),
         pattern,
         &candidate_corpus(source),
@@ -872,7 +866,7 @@ fn git_source(
                     Err(_) => {
                         collector.unaddressable_record("invalid_path");
                         skip_file = true;
-                        return StreamControl::Continue;
+                        return ControlFlow::Continue(());
                     }
                 };
                 match collector.file(&relative) {
@@ -880,22 +874,22 @@ fn git_source(
                     FileStep::Skip => skip_file = true,
                     FileStep::Stop => {
                         stopped = true;
-                        return StreamControl::Stop;
+                        return ControlFlow::Break(());
                     }
                 }
             }
             if skip_file {
-                return StreamControl::Continue;
+                return ControlFlow::Continue(());
             }
             match collector.line(record.line, record.text) {
-                LineStep::Continue => StreamControl::Continue,
+                LineStep::Continue => ControlFlow::Continue(()),
                 LineStep::SkipFile => {
                     skip_file = true;
-                    StreamControl::Continue
+                    ControlFlow::Continue(())
                 }
                 LineStep::Stop => {
                     stopped = true;
-                    StreamControl::Stop
+                    ControlFlow::Break(())
                 }
             }
         },

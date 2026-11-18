@@ -134,7 +134,9 @@ pub(crate) fn resolve_typed_metadata_object(
                 .with_metadata_path(metadata_path.clone()),
             )
         })?;
-    if descriptor.root_element().attribute("version") != Some(ACTIVE_FORMAT_PROFILE.export_format) {
+    if !unica_source_designer::format_profile::is_writable_root_version(
+        descriptor.root_element().attribute("version"),
+    ) {
         return Err(unica_metadata_designer::edit::typed_diagnostic(
             MetaDiagnosticCode::CapabilityUnavailable,
             format!(
@@ -380,7 +382,7 @@ pub(crate) mod tests {
         )
     }
 
-    use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+    use unica_address::source_target::MetadataAddress;
     use unica_metadata::{
         DateFractions, MetaCollection, MetaEditOperation, MetaElementInput, MetaElementUpdateInput,
         MetaEventSource, MetaFillValue, MetaPosition, MetaPropertyChanges, MetaPropertyInput,
@@ -436,11 +438,7 @@ pub(crate) mod tests {
         for variant in [
             MetadataTypeVariant::Boolean,
             MetadataTypeVariant::Reference {
-                metadata_path: MetadataAddress::parse(
-                    PLATFORM_XML_8_3_27_FORMAT_2_20,
-                    "Catalog.Items",
-                )
-                .unwrap(),
+                metadata_path: MetadataAddress::parse_logical("Catalog.Items").unwrap(),
             },
         ] {
             let metadata_type = MetadataType::new(vec![variant]).unwrap();
@@ -631,7 +629,7 @@ pub(crate) mod tests {
 
     fn metadata_reference(path: &str) -> MetadataReference {
         MetadataReference {
-            metadata_path: MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, path).unwrap(),
+            metadata_path: MetadataAddress::parse_logical(path).unwrap(),
         }
     }
 
@@ -2433,11 +2431,7 @@ pub(crate) mod tests {
                 .iter()
                 .map(|path| {
                     MetaRelationTarget::EventSource(MetaEventSource::Object {
-                        metadata_path: MetadataAddress::parse(
-                            PLATFORM_XML_8_3_27_FORMAT_2_20,
-                            path,
-                        )
-                        .unwrap(),
+                        metadata_path: MetadataAddress::parse_logical(path).unwrap(),
                     })
                 })
                 .collect(),
@@ -2492,11 +2486,7 @@ pub(crate) mod tests {
             relation: MetaRelation::Source,
             mode: RelationEditMode::Remove,
             targets: vec![MetaRelationTarget::EventSource(MetaEventSource::Manager {
-                metadata_path: MetadataAddress::parse(
-                    PLATFORM_XML_8_3_27_FORMAT_2_20,
-                    "Constant.setting",
-                )
-                .unwrap(),
+                metadata_path: MetadataAddress::parse_logical("Constant.setting").unwrap(),
                 source_class: Some(unica_metadata::EventSourceClass::ConstantValueManager),
             })],
         };
@@ -2681,11 +2671,7 @@ pub(crate) mod tests {
 
         // The visible logical members unchanged: an exact-byte no-op.
         let visible = source_replace(vec![MetaEventSource::Object {
-            metadata_path: MetadataAddress::parse(
-                PLATFORM_XML_8_3_27_FORMAT_2_20,
-                "Catalog.Settings",
-            )
-            .unwrap(),
+            metadata_path: MetadataAddress::parse_logical("Catalog.Settings").unwrap(),
         }]);
         let before = xml.clone();
         apply_typed_operations(&mut xml, std::slice::from_ref(&visible)).unwrap();
@@ -2714,18 +2700,10 @@ pub(crate) mod tests {
         let before = xml.clone();
         let operation = source_replace(vec![
             MetaEventSource::Object {
-                metadata_path: MetadataAddress::parse(
-                    PLATFORM_XML_8_3_27_FORMAT_2_20,
-                    "Document.Sale",
-                )
-                .unwrap(),
+                metadata_path: MetadataAddress::parse_logical("Document.Sale").unwrap(),
             },
             MetaEventSource::Object {
-                metadata_path: MetadataAddress::parse(
-                    PLATFORM_XML_8_3_27_FORMAT_2_20,
-                    "Catalog.Items",
-                )
-                .unwrap(),
+                metadata_path: MetadataAddress::parse_logical("Catalog.Items").unwrap(),
             },
         ]);
 
@@ -2745,8 +2723,7 @@ pub(crate) mod tests {
         let mut xml = event_subscription_alias_xml(source);
         let before = xml.clone();
         let object = MetaEventSource::Object {
-            metadata_path: MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Catalog.Items")
-                .unwrap(),
+            metadata_path: MetadataAddress::parse_logical("Catalog.Items").unwrap(),
         };
 
         apply_typed_operations(
@@ -2771,8 +2748,7 @@ pub(crate) mod tests {
             )
             .replace(r#" xmlns:s="http://www.w3.org/2001/XMLSchema""#, "");
         let target = MetaEventSource::Object {
-            metadata_path: MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Catalog.Items")
-                .unwrap(),
+            metadata_path: MetadataAddress::parse_logical("Catalog.Items").unwrap(),
         };
 
         apply_typed_operations(&mut xml, &[source_replace(vec![target])]).unwrap();
@@ -2800,8 +2776,7 @@ pub(crate) mod tests {
             .replacen(r#" xmlns:d="http://v8.1c.ru/8.1/data/core""#, "", 1)
             .replacen(r#" xmlns:s="http://www.w3.org/2001/XMLSchema""#, "", 1);
         let target = MetaEventSource::Object {
-            metadata_path: MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Catalog.Items")
-                .unwrap(),
+            metadata_path: MetadataAddress::parse_logical("Catalog.Items").unwrap(),
         };
 
         apply_typed_operations(&mut xml, &[source_replace(vec![target])]).unwrap();
@@ -2818,9 +2793,7 @@ pub(crate) mod tests {
         let mut preimage = b"\xef\xbb\xbf".to_vec();
         preimage.extend_from_slice(lf.replace('\n', "\r\n").as_bytes());
         let operation = source_replace(vec![catalog_family()]);
-        let target =
-            MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "EventSubscription.Events")
-                .unwrap();
+        let target = MetadataAddress::parse_logical("EventSubscription.Events").unwrap();
         let context = unica_source_contract::workspace::WorkspaceContext {
             cwd: std::path::PathBuf::from("/unused"),
             workspace_root: std::path::PathBuf::from("/unused"),
@@ -2877,9 +2850,7 @@ pub(crate) mod tests {
             .replace('\n', "\r")
             .into_bytes();
         let operation = source_replace(vec![catalog_family()]);
-        let target =
-            MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "EventSubscription.Events")
-                .unwrap();
+        let target = MetadataAddress::parse_logical("EventSubscription.Events").unwrap();
         let context = unica_source_contract::workspace::WorkspaceContext {
             cwd: std::path::PathBuf::from("/unused"),
             workspace_root: std::path::PathBuf::from("/unused"),
@@ -2917,9 +2888,7 @@ pub(crate) mod tests {
     fn typed_event_source_build_rejects_mixed_eol_before_source_only_serialization() {
         let mixed = event_subscription_xml("<Source/>").replacen('\n', "\r\n", 1);
         let operation = source_replace(vec![catalog_family()]);
-        let target =
-            MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "EventSubscription.Events")
-                .unwrap();
+        let target = MetadataAddress::parse_logical("EventSubscription.Events").unwrap();
         let context = unica_source_contract::workspace::WorkspaceContext {
             cwd: std::path::PathBuf::from("/unused"),
             workspace_root: std::path::PathBuf::from("/unused"),
@@ -5160,7 +5129,7 @@ pub(crate) mod tests {
         std::fs::create_dir_all(form_content.parent().unwrap()).unwrap();
         std::fs::write(
             &form_content,
-            minimal_typed_form_content("Document", "Order").as_bytes(),
+            minimal_typed_form_content("Document", "Order", "2.20").as_bytes(),
         )
         .unwrap();
         let child_before = std::fs::read(&child_descriptor).unwrap();

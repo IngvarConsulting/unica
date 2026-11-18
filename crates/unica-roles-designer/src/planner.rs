@@ -2,7 +2,7 @@
 use serde_json::{Map, Value};
 use std::path::PathBuf;
 use unica_address::address::{member_address, NodeKind, QualifiedAddress};
-use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+use unica_address::source_target::MetadataAddress;
 use unica_roles::operations::RoleOperation;
 use unica_source_contract::events::{DomainEvent, DomainEventKind};
 use unica_source_contract::proposal::input::{bad, creation_name, required_values};
@@ -67,11 +67,8 @@ fn role_of(
         _ => None,
     }
     .ok_or_else(|| bad(op_index, "at", shape))?;
-    MetadataAddress::parse(
-        PLATFORM_XML_8_3_27_FORMAT_2_20,
-        &format!("Role.{role_name}"),
-    )
-    .map_err(|error| bad(op_index, "at", error.to_string()))
+    MetadataAddress::parse_logical(&format!("Role.{role_name}"))
+        .map_err(|error| bad(op_index, "at", error.to_string()))
 }
 pub fn parse_role_operation(
     operation: RoleOperation,
@@ -304,16 +301,18 @@ pub fn parse_role_operation(
         }
     }
 }
-fn minimal_rights_xml() -> String {
-    concat!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
-        "<Rights xmlns=\"http://v8.1c.ru/8.2/roles\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xsi:type=\"Rights\" version=\"2.20\">\n",
-        "\t<setForNewObjects>false</setForNewObjects>\n",
-        "\t<setForAttributesByDefault>true</setForAttributesByDefault>\n",
-        "\t<independentRightsOfChildObjects>false</independentRightsOfChildObjects>\n",
-        "</Rights>\n",
+fn minimal_rights_xml(version: &str) -> String {
+    format!(
+        concat!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
+            "<Rights xmlns=\"http://v8.1c.ru/8.2/roles\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xsi:type=\"Rights\" version=\"{}\">\n",
+            "\t<setForNewObjects>false</setForNewObjects>\n",
+            "\t<setForAttributesByDefault>true</setForAttributesByDefault>\n",
+            "\t<independentRightsOfChildObjects>false</independentRightsOfChildObjects>\n",
+            "</Rights>\n",
+        ),
+        version
     )
-    .to_string()
 }
 /// Ensures `<object><name>X</name></object>` exists in the rights document.
 /// Читает права роли, применяет правку и стадирует результат с проверкой
@@ -610,7 +609,7 @@ pub fn stage_role_plan(
             unica_source_designer::registration::stage_new_file(
                 staged,
                 &rights_relative,
-                minimal_rights_xml().as_bytes(),
+                minimal_rights_xml(authority.expected_format()).as_bytes(),
                 &name_path,
             )?;
             touched.push(rights_relative);

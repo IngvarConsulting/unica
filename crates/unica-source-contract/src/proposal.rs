@@ -59,6 +59,28 @@ pub enum ApplyPlanErrorKind {
     Postcondition,
 }
 
+/// What a vendor-support lock forbids in a refused apply.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SupportLockKind {
+    /// The owner object carries the rule `locked`.
+    ObjectLocked,
+    /// The whole configuration is on support with changes disabled.
+    ConfigurationLocked,
+    /// The removed object, or one of its own child objects, is `locked`.
+    RemovalLocked,
+}
+
+/// The vendor-support lock that refused an apply under `deny`: the person
+/// may lift it for this owner only (INV.SAFETY.APPLY-SUPPORT-GATE).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SupportLock {
+    pub kind: SupportLockKind,
+    pub source_set: String,
+    /// The top-level object the edit belongs to, `<Kind>.<Name>`, or
+    /// `Configuration` for an edit of the configuration root.
+    pub owner: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApplyPlanError {
     kind: ApplyPlanErrorKind,
@@ -69,6 +91,8 @@ pub struct ApplyPlanError {
     /// The causes the refusal names after its own diagnostic, each with
     /// its code, message and place (INV.WIRE.V13-REFUSAL-CHANNEL).
     diagnostics: Vec<serde_json::Value>,
+    /// The vendor-support lock behind an `invalid_state` refusal.
+    support_lock: Option<Box<SupportLock>>,
 }
 
 impl ApplyPlanError {
@@ -79,7 +103,17 @@ impl ApplyPlanError {
             message: message.into(),
             next: None,
             diagnostics: Vec::new(),
+            support_lock: None,
         }
+    }
+
+    pub fn with_support_lock(mut self, lock: SupportLock) -> Self {
+        self.support_lock = Some(Box::new(lock));
+        self
+    }
+
+    pub fn support_lock(&self) -> Option<&SupportLock> {
+        self.support_lock.as_deref()
     }
 
     pub fn with_diagnostics(mut self, diagnostics: Vec<serde_json::Value>) -> Self {

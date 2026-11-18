@@ -6,6 +6,7 @@ license.workspace = true
 repository.workspace = true
 
 [package.metadata.unica]
+version-literal-baseline = 3
 component = "coordinator"
 file-io = "domain"
 

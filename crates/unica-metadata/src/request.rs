@@ -6,9 +6,7 @@ use crate::contracts::{
 use crate::*;
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
-use unica_address::source_target::{
-    metadata_address_kind_spellings, MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20,
-};
+use unica_address::source_target::{metadata_address_kind_spellings, MetadataAddress};
 use unica_operation_contract::ArgumentShape;
 const INFO_SECTIONS: &[(&str, MetaInfoSection)] = &[
     ("roles", MetaInfoSection::Roles),
@@ -1256,7 +1254,7 @@ pub fn required_metadata_path(
     parse_address(&raw, field)
 }
 pub fn parse_address(raw: &str, field: &str) -> Result<MetadataAddress, MetaDiagnostic> {
-    MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, raw).map_err(|error| {
+    MetadataAddress::parse_logical(raw).map_err(|error| {
         invalid(
             field,
             format!("invalid logical metadata address: {}", error.message),

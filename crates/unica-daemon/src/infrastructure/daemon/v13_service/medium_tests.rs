@@ -4,8 +4,8 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
+use unica_code_intelligence::coordinator::CodeIntelligenceDeadlines;
 use unica_code_intelligence::coordinator::CodeSearchExecution;
-use unica_code_intelligence::deadlines::CodeIntelligenceDeadlines;
 use unica_code_intelligence::model::CodeIntelligenceContext;
 use unica_code_intelligence::model::CodeIntelligenceProvider;
 use unica_code_intelligence::model::CodeIntelligenceRegistry;
@@ -1881,9 +1881,7 @@ fn body_line_read_validates_the_tail_and_continuation_reopens_exact_bytes() {
 /// rule: INV.APP.CODE-SEARCH-HIT-ADDRESS
 #[test]
 fn body_line_provider_search_uses_current_spans_and_preserves_evidence() {
-    use unica_address::source_target::{
-        MetadataAddress, TargetKind, PLATFORM_XML_8_3_27_FORMAT_2_20,
-    };
+    use unica_address::source_target::{MetadataAddress, TargetKind};
     use unica_code_intelligence::model::ProviderSearchHit;
     use unica_execution::invocation_store::ToolIdentity;
     use unica_source_contract::location::SourceLocation;
@@ -1904,11 +1902,7 @@ fn body_line_provider_search_uses_current_spans_and_preserves_evidence() {
             location: SourceLocation::Addressed {
                 source_set: "main".into(),
                 metadata_path: Some(
-                    MetadataAddress::parse(
-                        PLATFORM_XML_8_3_27_FORMAT_2_20,
-                        "CommonModule.Probe.Module",
-                    )
-                    .unwrap(),
+                    MetadataAddress::parse_logical("CommonModule.Probe.Module").unwrap(),
                 ),
                 target_kind: TargetKind::Module,
             },
@@ -3621,14 +3615,15 @@ fn literal_search_reads_submodules_and_embedded_repositories() {
             );
             git(workspace.path(), &["add", "src/Aaa"]);
         }
-        let corpus = unica_adapter_lexical::lines::CandidateCorpus {
+        let corpus = unica_code_intelligence::candidate_lines::CandidateCorpus {
             subtree: None,
             excluded: Vec::new(),
             excluded_name_prefixes: Vec::new(),
         };
+        // Both roots lie inside the outer work tree, so the engine refuses a
+        // root exactly when it holds a work tree of its own.
         let foreign = |root: &std::path::Path| {
-            unica_adapter_lexical::lines::holds_foreign_work_tree(
-                unica_process::runner::system_process_runner(),
+            !crate::infrastructure::analysis_composition::candidate_lines().reads(
                 root,
                 &corpus,
                 1 << 16,

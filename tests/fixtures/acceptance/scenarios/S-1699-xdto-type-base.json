@@ -121,7 +121,13 @@
             "valueType"
           ]
         }
-      ]
+      ],
+      "captures": {
+        "unchanged1": {
+          "file": "src/XDTOPackages/Пример/Ext/Package.bin",
+          "kind": "sha256"
+        }
+      }
     },
     {
       "tool": "unica.view",
@@ -190,7 +196,7 @@
         {
           "path": "src/XDTOPackages/Пример/Ext/Package.bin",
           "kind": "sha256",
-          "eq": "cdd2ef6df0d4e49ba5c7737f7fe2ba278267830a45379e022bfcd862b964f90c"
+          "eq": "$capture.unchanged1"
         }
       ]
     },
@@ -216,7 +222,13 @@
             "valueType"
           ]
         }
-      ]
+      ],
+      "captures": {
+        "unchanged2": {
+          "file": "src/XDTOPackages/Пример/Ext/Package.bin",
+          "kind": "sha256"
+        }
+      }
     },
     {
       "tool": "unica.apply",
@@ -246,7 +258,7 @@
         {
           "path": "src/XDTOPackages/Пример/Ext/Package.bin",
           "kind": "sha256",
-          "eq": "c874de02d65c7b7f378614e20ee8f90615c93e476ee21d9ee3307d2ef3c33c2a"
+          "eq": "$capture.unchanged2"
         }
       ]
     },
@@ -273,7 +285,7 @@
         {
           "path": "src/XDTOPackages/Пример/Ext/Package.bin",
           "kind": "sha256",
-          "eq": "c874de02d65c7b7f378614e20ee8f90615c93e476ee21d9ee3307d2ef3c33c2a"
+          "eq": "$capture.unchanged2"
         }
       ]
     },
@@ -300,7 +312,7 @@
         {
           "path": "src/XDTOPackages/Пример/Ext/Package.bin",
           "kind": "sha256",
-          "eq": "c874de02d65c7b7f378614e20ee8f90615c93e476ee21d9ee3307d2ef3c33c2a"
+          "eq": "$capture.unchanged2"
         }
       ]
     },
@@ -327,7 +339,7 @@
         {
           "path": "src/XDTOPackages/Пример/Ext/Package.bin",
           "kind": "sha256",
-          "eq": "c874de02d65c7b7f378614e20ee8f90615c93e476ee21d9ee3307d2ef3c33c2a"
+          "eq": "$capture.unchanged2"
         }
       ]
     },
@@ -354,7 +366,7 @@
         {
           "path": "src/XDTOPackages/Пример/Ext/Package.bin",
           "kind": "sha256",
-          "eq": "c874de02d65c7b7f378614e20ee8f90615c93e476ee21d9ee3307d2ef3c33c2a"
+          "eq": "$capture.unchanged2"
         }
       ]
     },
@@ -380,7 +392,7 @@
         {
           "path": "src/XDTOPackages/Пример/Ext/Package.bin",
           "kind": "sha256",
-          "eq": "c874de02d65c7b7f378614e20ee8f90615c93e476ee21d9ee3307d2ef3c33c2a"
+          "eq": "$capture.unchanged2"
         }
       ]
     },

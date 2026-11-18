@@ -2,11 +2,11 @@ use crate::fallback::{
     classify_partial_platform_failure, full_rebuild_argv, BuildAttempt, PARTIAL_FALLBACK_WARNING,
 };
 use crate::preflight::RuntimeBuildPreflight;
-use unica_process::runtime_job::RuntimeJobOutput;
-use unica_runner::{
+use unica_execution::runner::{
     attempt::{CompletedAttempt, RuntimeAttempt},
     operation::RuntimeJobOperation,
 };
+use unica_process::runtime_job::RuntimeJobOutput;
 type JobResult<T> = Result<T, String>;
 const RUNTIME_SECRET_VALUE_FLAGS: &[&str] =
     &["password", "pwd", "token", "secret", "connection", "c"];
@@ -222,14 +222,14 @@ impl RuntimeAttempt for RuntimeJobRequest {
     }
     fn retry_start_warning(
         &self,
-        stage: unica_runner::attempt::RetryStartFailure,
+        stage: unica_execution::runner::attempt::RetryStartFailure,
         error: &str,
     ) -> String {
         match stage {
-            unica_runner::attempt::RetryStartFailure::Authorization => format!(
+            unica_execution::runner::attempt::RetryStartFailure::Authorization => format!(
                 "full rebuild fallback was not started because build identity changed: {error}"
             ),
-            unica_runner::attempt::RetryStartFailure::Spawn => format!(
+            unica_execution::runner::attempt::RetryStartFailure::Spawn => format!(
                 "full rebuild fallback was not started because v8-runner failed to spawn: {error}"
             ),
         }
@@ -246,8 +246,8 @@ impl RuntimeJobRequest {
     pub fn bound_scope(
         &self,
         cwd: std::path::PathBuf,
-    ) -> unica_runner::attempt::RuntimeAttemptScope {
-        unica_runner::attempt::RuntimeAttemptScope {
+    ) -> unica_execution::runner::attempt::RuntimeAttemptScope {
+        unica_execution::runner::attempt::RuntimeAttemptScope {
             operation: self.operation,
             cwd,
             safe_target: self.safe_target.clone(),

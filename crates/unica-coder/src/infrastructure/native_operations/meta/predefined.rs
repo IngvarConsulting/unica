@@ -80,11 +80,7 @@ mod tests {
     }
 
     fn owner(kind: &str) -> MetadataAddress {
-        MetadataAddress::parse(
-            unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
-            &format!("{kind}.Items"),
-        )
-        .unwrap()
+        MetadataAddress::parse_logical(&format!("{kind}.Items")).unwrap()
     }
 
     #[test]
@@ -1232,11 +1228,7 @@ mod tests {
     #[test]
     fn add_equivalence_does_not_ignore_an_existing_child_subtree() {
         let mut xml = r#"<PredefinedData xmlns="http://v8.1c.ru/8.3/xcf/predef" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="CatalogPredefinedItems" version="2.20"><Item id="a7d2e6fc-3824-4b56-b4be-ae6be4944c0e"><Name>Main</Name><Code/><Description/><IsFolder>false</IsFolder><ChildItems><Item id="b7d2e6fc-3824-4b56-b4be-ae6be4944c0e"><Name>Child</Name></Item></ChildItems></Item></PredefinedData>"#.to_string();
-        let owner = MetadataAddress::parse(
-            unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
-            "Catalog.Items",
-        )
-        .unwrap();
+        let owner = MetadataAddress::parse_logical("Catalog.Items").unwrap();
         let element = MetaPredefinedItemAdd {
             id: "a7d2e6fc-3824-4b56-b4be-ae6be4944c0e".to_string(),
             name: "Main".to_string(),

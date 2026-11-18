@@ -12,7 +12,49 @@
       },
       "expect": [
         "ok"
-      ]
+      ],
+      "captures": {
+        "unchanged1": {
+          "file": "src/Catalogs/Editable/Commands/Open/Ext/CommandModule.bsl",
+          "kind": "sha256"
+        },
+        "unchanged2": {
+          "file": "src/Catalogs/Editable/Forms/Main/Ext/Form/Module.bsl",
+          "kind": "sha256"
+        },
+        "unchanged3": {
+          "file": "src/Catalogs/Editable/Forms/Main/Ext/Form.xml",
+          "kind": "sha256"
+        },
+        "unchanged4": {
+          "file": "src/Catalogs/Editable/Forms/Main.xml",
+          "kind": "sha256"
+        },
+        "unchanged5": {
+          "file": "src/Catalogs/Editable/Templates/Print/Ext/Template.txt",
+          "kind": "sha256"
+        },
+        "unchanged6": {
+          "file": "src/Catalogs/Editable/Templates/Print.xml",
+          "kind": "sha256"
+        },
+        "unchanged7": {
+          "file": "src/Catalogs/Editable.xml",
+          "kind": "sha256"
+        },
+        "unchanged8": {
+          "file": "src/Configuration.xml",
+          "kind": "sha256"
+        },
+        "unchanged9": {
+          "file": "src/Languages/Русский.xml",
+          "kind": "sha256"
+        },
+        "unchanged10": {
+          "file": "v8project.yaml",
+          "kind": "sha256"
+        }
+      }
     },
     {
       "tool": "unica.check",
@@ -67,52 +109,52 @@
         {
           "path": "src/Catalogs/Editable/Commands/Open/Ext/CommandModule.bsl",
           "kind": "sha256",
-          "eq": "64a9663667190daed4976862985dcf7ebfa07647be89c37f6d4c70a7b8efecae"
+          "eq": "$capture.unchanged1"
         },
         {
           "path": "src/Catalogs/Editable/Forms/Main/Ext/Form/Module.bsl",
           "kind": "sha256",
-          "eq": "4fb9fa510483d9cbe8b2c036715c7a4687afb59f9e9885a76376d91f5bfa6ccb"
+          "eq": "$capture.unchanged2"
         },
         {
           "path": "src/Catalogs/Editable/Forms/Main/Ext/Form.xml",
           "kind": "sha256",
-          "eq": "c62590a94019d3df1eeec53b8bdf883d1b60044364696515882da086526fdfa9"
+          "eq": "$capture.unchanged3"
         },
         {
           "path": "src/Catalogs/Editable/Forms/Main.xml",
           "kind": "sha256",
-          "eq": "4c028c76772cf0919f34718bb8ed002b46c6055867d9fa81bbcaef608f14c767"
+          "eq": "$capture.unchanged4"
         },
         {
           "path": "src/Catalogs/Editable/Templates/Print/Ext/Template.txt",
           "kind": "sha256",
-          "eq": "8f8f83766e65be0433ff93b49af748512ed54864912e565bd9a9680b1563050c"
+          "eq": "$capture.unchanged5"
         },
         {
           "path": "src/Catalogs/Editable/Templates/Print.xml",
           "kind": "sha256",
-          "eq": "6cdedfa446b86732b732a0952388dd42c966b3c6fa602ff1c819c54a3aca5f9a"
+          "eq": "$capture.unchanged6"
         },
         {
           "path": "src/Catalogs/Editable.xml",
           "kind": "sha256",
-          "eq": "83aee7f0f5e58bd629d4d77664a46148c810eea40d1285ddb28b7bccb9925d6c"
+          "eq": "$capture.unchanged7"
         },
         {
           "path": "src/Configuration.xml",
           "kind": "sha256",
-          "eq": "5a0ba96763eff2ddaa5d9acf47f7dbef378815b11f01caac7862dab5a52501e0"
+          "eq": "$capture.unchanged8"
         },
         {
           "path": "src/Languages/Русский.xml",
           "kind": "sha256",
-          "eq": "ef405fcde88a961d87c8e416062dc0780c19b4b438a9b5ca942830ab352ea875"
+          "eq": "$capture.unchanged9"
         },
         {
           "path": "v8project.yaml",
           "kind": "sha256",
-          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+          "eq": "$capture.unchanged10"
         }
       ]
     }

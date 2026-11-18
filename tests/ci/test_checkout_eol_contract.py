@@ -11,7 +11,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 # endings pinned, so a Windows checkout cannot hand them over with CRLF (#1988).
 PINNED_FIXTURE_ROOTS = (
     "tests/fixtures/acceptance",
-    "tests/fixtures/platform_8_3_27/mxl",
+    "tests/fixtures/formats/platform_xml/2.20/mxl",
     "tests/fixtures/unica_mcp_script_parity/dcs-validate",
 )
 
@@ -70,8 +70,8 @@ class CheckoutEolContractTests(unittest.TestCase):
 
     def test_platform_byte_fixtures_remain_outside_text_normalization(self) -> None:
         for path in [
-            "tests/fixtures/platform_8_3_27/staged_dump_roots/ConfigDumpInfo.xml",
-            "tests/fixtures/platform_8_3_27/support-edit-bin-only/src/Configuration.xml",
+            "tests/fixtures/formats/platform_xml/2.20/staged_dump_roots/ConfigDumpInfo.xml",
+            "tests/fixtures/formats/platform_xml/2.20/support-edit-bin-only/src/Configuration.xml",
             "tests/fixtures/xdto/enterprise-data-minimal/Configuration.xml",
         ]:
             self.assertEqual(attributes(path)["text"], "unset", path)

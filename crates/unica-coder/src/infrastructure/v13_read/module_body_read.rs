@@ -369,10 +369,10 @@ impl<'a> LogicalViewReadAuthority<'a> {
         // называет; непрочитанный состав подсистем узел называет пределом.
         if capability.role() == ModuleRole::Common && route.at().segments().len() == 1 {
             let target = route.at().segments()[0].name().and_then(|name| {
-                MetadataAddress::parse(
-                    PLATFORM_XML_8_3_27_FORMAT_2_20,
-                    &format!("{}.{name}", NodeKind::CommonModule.as_str()),
-                )
+                MetadataAddress::parse_logical(&format!(
+                    "{}.{name}",
+                    NodeKind::CommonModule.as_str()
+                ))
                 .ok()
             });
             if let (NodeViewData::Node(node), Some(target)) = (&view, target.as_ref()) {
@@ -415,10 +415,9 @@ impl<'a> LogicalViewReadAuthority<'a> {
         at: &QualifiedAddress,
     ) -> Result<(Option<Value>, Vec<String>), ViewError> {
         self.read_checkpoint()?;
-        let owner = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &at.logical_path())
-            .map_err(|error| {
-                ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
-            })?;
+        let owner = MetadataAddress::parse_logical(&at.logical_path()).map_err(|error| {
+            ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+        })?;
         let descriptor = self.read.metadata_descriptor(&owner)?;
         let text = std::str::from_utf8(&descriptor).map_err(|error| {
             ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
@@ -481,9 +480,9 @@ impl<'a> LogicalViewReadAuthority<'a> {
                         "common module owner is invalid",
                     )
                 })?;
-            let owner = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, owner).map_err(
-                |error| ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string()),
-            )?;
+            let owner = MetadataAddress::parse_logical(owner).map_err(|error| {
+                ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+            })?;
             let descriptor = self.read.metadata_descriptor(&owner)?;
             Some(common_module_properties(
                 &descriptor,

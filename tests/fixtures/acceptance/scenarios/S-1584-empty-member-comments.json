@@ -29,15 +29,24 @@
         },
         "attribute_absent": {
           "pointer": "/data/items/1/at"
+        },
+        "unchanged1": {
+          "file": "src/Catalogs/Items.xml",
+          "kind": "sha256"
+        },
+        "unchanged2": {
+          "file": "src/InformationRegisters/Rates.xml",
+          "kind": "sha256"
+        },
+        "unchanged3": {
+          "file": "src/DocumentJournals/Entries.xml",
+          "kind": "sha256"
+        },
+        "unchanged4": {
+          "file": "src/Enums/Codes.xml",
+          "kind": "sha256"
         }
-      },
-      "fileAssertions": [
-        {
-          "path": "src/Catalogs/Items.xml",
-          "kind": "sha256",
-          "eq": "340fa5fe7e2b3e936577cd762d5d8393718b38facdd1359e51a7e4d48effc705"
-        }
-      ]
+      }
     },
     {
       "tool": "unica.view",
@@ -65,7 +74,7 @@
         {
           "path": "src/Catalogs/Items.xml",
           "kind": "sha256",
-          "eq": "340fa5fe7e2b3e936577cd762d5d8393718b38facdd1359e51a7e4d48effc705"
+          "eq": "$capture.unchanged1"
         }
       ]
     },
@@ -95,7 +104,7 @@
         {
           "path": "src/Catalogs/Items.xml",
           "kind": "sha256",
-          "eq": "340fa5fe7e2b3e936577cd762d5d8393718b38facdd1359e51a7e4d48effc705"
+          "eq": "$capture.unchanged1"
         }
       ]
     },
@@ -129,7 +138,7 @@
         {
           "path": "src/Catalogs/Items.xml",
           "kind": "sha256",
-          "eq": "340fa5fe7e2b3e936577cd762d5d8393718b38facdd1359e51a7e4d48effc705"
+          "eq": "$capture.unchanged1"
         }
       ]
     },
@@ -155,7 +164,7 @@
         {
           "path": "src/Catalogs/Items.xml",
           "kind": "sha256",
-          "eq": "340fa5fe7e2b3e936577cd762d5d8393718b38facdd1359e51a7e4d48effc705"
+          "eq": "$capture.unchanged1"
         }
       ]
     },
@@ -181,7 +190,7 @@
         {
           "path": "src/Catalogs/Items.xml",
           "kind": "sha256",
-          "eq": "340fa5fe7e2b3e936577cd762d5d8393718b38facdd1359e51a7e4d48effc705"
+          "eq": "$capture.unchanged1"
         }
       ]
     },
@@ -215,7 +224,7 @@
         {
           "path": "src/InformationRegisters/Rates.xml",
           "kind": "sha256",
-          "eq": "c3137a98065aa7c1a6e396036d2ef231d1d1bbbf5a6ccf13e69a4810ad8200c7"
+          "eq": "$capture.unchanged2"
         }
       ]
     },
@@ -245,7 +254,7 @@
         {
           "path": "src/InformationRegisters/Rates.xml",
           "kind": "sha256",
-          "eq": "c3137a98065aa7c1a6e396036d2ef231d1d1bbbf5a6ccf13e69a4810ad8200c7"
+          "eq": "$capture.unchanged2"
         }
       ]
     },
@@ -275,7 +284,7 @@
         {
           "path": "src/InformationRegisters/Rates.xml",
           "kind": "sha256",
-          "eq": "c3137a98065aa7c1a6e396036d2ef231d1d1bbbf5a6ccf13e69a4810ad8200c7"
+          "eq": "$capture.unchanged2"
         }
       ]
     },
@@ -309,7 +318,7 @@
         {
           "path": "src/InformationRegisters/Rates.xml",
           "kind": "sha256",
-          "eq": "c3137a98065aa7c1a6e396036d2ef231d1d1bbbf5a6ccf13e69a4810ad8200c7"
+          "eq": "$capture.unchanged2"
         }
       ]
     },
@@ -339,7 +348,7 @@
         {
           "path": "src/InformationRegisters/Rates.xml",
           "kind": "sha256",
-          "eq": "c3137a98065aa7c1a6e396036d2ef231d1d1bbbf5a6ccf13e69a4810ad8200c7"
+          "eq": "$capture.unchanged2"
         }
       ]
     },
@@ -369,7 +378,7 @@
         {
           "path": "src/InformationRegisters/Rates.xml",
           "kind": "sha256",
-          "eq": "c3137a98065aa7c1a6e396036d2ef231d1d1bbbf5a6ccf13e69a4810ad8200c7"
+          "eq": "$capture.unchanged2"
         }
       ]
     },
@@ -403,7 +412,7 @@
         {
           "path": "src/DocumentJournals/Entries.xml",
           "kind": "sha256",
-          "eq": "f5455d5f8102918a5ebc66f572627bb8aabff2010d7735ace6b02d333b6c1639"
+          "eq": "$capture.unchanged3"
         }
       ]
     },
@@ -429,7 +438,7 @@
         {
           "path": "src/DocumentJournals/Entries.xml",
           "kind": "sha256",
-          "eq": "f5455d5f8102918a5ebc66f572627bb8aabff2010d7735ace6b02d333b6c1639"
+          "eq": "$capture.unchanged3"
         }
       ]
     },
@@ -455,7 +464,7 @@
         {
           "path": "src/DocumentJournals/Entries.xml",
           "kind": "sha256",
-          "eq": "f5455d5f8102918a5ebc66f572627bb8aabff2010d7735ace6b02d333b6c1639"
+          "eq": "$capture.unchanged3"
         }
       ]
     },
@@ -489,7 +498,7 @@
         {
           "path": "src/Enums/Codes.xml",
           "kind": "sha256",
-          "eq": "5771bd68140f880230f91597371c316f46805858b3be9f4a43a7c1135a8a8ee5"
+          "eq": "$capture.unchanged4"
         }
       ]
     },
@@ -515,7 +524,7 @@
         {
           "path": "src/Enums/Codes.xml",
           "kind": "sha256",
-          "eq": "5771bd68140f880230f91597371c316f46805858b3be9f4a43a7c1135a8a8ee5"
+          "eq": "$capture.unchanged4"
         }
       ]
     },
@@ -541,7 +550,7 @@
         {
           "path": "src/Enums/Codes.xml",
           "kind": "sha256",
-          "eq": "5771bd68140f880230f91597371c316f46805858b3be9f4a43a7c1135a8a8ee5"
+          "eq": "$capture.unchanged4"
         }
       ]
     }

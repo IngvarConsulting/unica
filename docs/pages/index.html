@@ -89,8 +89,9 @@
 
     <!-- Тесты показываются по версии, а не по ветке: стабильная, кандидат
          канала next и последние alpha. Каждая карточка — прогон, давший этот
-         тег: проверенный коммит, исходы, пропуски по ОС и отчёт Allure этого
-         прогона. Версия без сохранённого отчёта говорит это прямо. -->
+         тег: проверенный коммит, исходы, пропуски по ОС, как её поставить и
+         отчёт Allure этого прогона. Версия без сохранённого отчёта говорит это
+         прямо. -->
     <div class="cards" id="state">
       <!-- repeat: versions -->
       <div class="card card-line">
@@ -103,7 +104,10 @@
           <span class="stat"><span class="dot dot-skip"></span>{{tests_skipped}} {{tests_skipped_word}}</span>
         </div>
         <div class="sub">пропуски по ОС: {{tests_skipped_hosts}}</div>
-        <div class="card-foot"><a href="{{report_url}}" target="_blank" rel="noopener noreferrer">{{report_label}} <span class="vh">{{version_tag}}</span> <span aria-hidden="true">→</span></a></div>
+        <div class="card-foot">
+          <a href="{{install_url}}">Как поставить <span class="vh">{{version_tag}}</span> <span aria-hidden="true">→</span></a>
+          <a href="{{report_url}}" target="_blank" rel="noopener noreferrer">{{report_label}} <span class="vh">{{version_tag}}</span> <span aria-hidden="true">→</span></a>
+        </div>
       </div>
       <!-- /repeat -->
     </div>

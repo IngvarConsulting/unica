@@ -65,7 +65,7 @@ pub fn prove_owner_plan(
                 .expected_name
                 .as_deref()
                 .is_some_and(|name| actual.artifact_name() != Some(name))
-            || actual.version() != Some("2.20")
+            || !crate::format_profile::is_writable_root_version(actual.version())
             || (step.proof == EventOwnerDescriptorProof::SourceSet
                 && matches!(
                     plan.source_set_kind,

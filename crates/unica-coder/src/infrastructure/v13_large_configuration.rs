@@ -1757,10 +1757,9 @@ mod tests {
         let root = Arc::new(unica_workspace::read::open_source_directory(&path).unwrap());
         let cache = settled_cache();
         let module = |name: &str| {
-            unica_address::source_target::MetadataAddress::parse(
-                unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
-                &format!("CommonModule.{name}"),
-            )
+            unica_address::source_target::MetadataAddress::parse_logical(&format!(
+                "CommonModule.{name}"
+            ))
             .unwrap()
         };
 
@@ -1916,7 +1915,7 @@ mod tests {
             parser
                 .feed(
                     &std::fs::read(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(
-                        "../../tests/fixtures/platform_8_3_27/support-edit-bin-only/src/Ext/ParentConfigurations.bin",
+                        "../../tests/fixtures/formats/platform_xml/2.20/support-edit-bin-only/src/Ext/ParentConfigurations.bin",
                     ))
                     .unwrap(),
                 )

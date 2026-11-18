@@ -15,7 +15,7 @@ use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use unica_address::source_target::{
     MetadataAddress, SourceTarget, SourceTargetError, SourceTargetErrorCode,
-    SourceTargetErrorReason, TargetKind, PLATFORM_XML_8_3_27_FORMAT_2_20,
+    SourceTargetErrorReason, TargetKind,
 };
 use unica_execution_contract::adapter_outcome::AdapterOutcome;
 use unica_navigation::source_navigation::{
@@ -586,8 +586,7 @@ impl XdtoResolutionError {
             (SourceTargetErrorCode::TargetKindMismatch, _) => XdtoPublicErrorCode::NotAnXdtoPackage,
             (SourceTargetErrorCode::ContainmentDenied, _) => XdtoPublicErrorCode::ContainmentDenied,
             (SourceTargetErrorCode::MetadataAddressInvalid, _)
-            | (SourceTargetErrorCode::MetadataAddressNotFound, _)
-            | (SourceTargetErrorCode::AddressProfileUnsupported, _) => {
+            | (SourceTargetErrorCode::MetadataAddressNotFound, _) => {
                 XdtoPublicErrorCode::TargetNotFound
             }
         };
@@ -631,7 +630,7 @@ fn resolve_package(
         .map_err(|error| XdtoResolutionError::new(XdtoPublicErrorCode::SourceSetUnknown, error))?;
     let raw_address = required(args, "metadataPath")
         .map_err(|error| XdtoResolutionError::new(XdtoPublicErrorCode::TargetNotFound, error))?;
-    let address = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, raw_address)
+    let address = MetadataAddress::parse_logical(raw_address)
         .map_err(XdtoResolutionError::from_source_target)?;
     let parts = address.as_str().split('.').collect::<Vec<_>>();
     if parts.len() != 2 || parts[0] != "XDTOPackage" {
@@ -854,7 +853,7 @@ pub(crate) mod medium_tests {
     use unica_xdto_designer::test_support::{args, PACKAGE};
 
     use crate::infrastructure::native_operations::common::support_guard_violation;
-    use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+    use unica_address::source_target::MetadataAddress;
     use unica_source_contract::proposal::{ApplyPlanError, ApplyPlanErrorKind};
     use unica_source_contract::workspace::WorkspaceContext;
     use unica_workspace::single_file_publisher::with_before_commit_hook;
@@ -883,8 +882,7 @@ pub(crate) mod medium_tests {
             ("typeName", json!("ЛюбаяСсылка")),
         ]);
         let wrapper = info_with_data(&request, &context).unwrap().data.unwrap();
-        let address =
-            MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "XDTOPackage.Sample").unwrap();
+        let address = MetadataAddress::parse_logical("XDTOPackage.Sample").unwrap();
         let core = parse_xdto_info_bytes(
             &fs::read(&package).unwrap(),
             &fs::read(&descriptor).unwrap(),

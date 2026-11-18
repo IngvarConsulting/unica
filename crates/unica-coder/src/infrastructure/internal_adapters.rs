@@ -15,6 +15,7 @@ use unica_adapter_v8_runner::adapter::{validate_runtime_mapper_payload, RuntimeA
 use unica_adapter_v8_runner::preflight::RuntimeBuildPreflight;
 use unica_adapter_v8_runner::request::RuntimeJobRequest;
 use unica_artifact_delivery::engine::BundledTool;
+use unica_execution::runner::operation::RuntimeJobOperation;
 use unica_execution::runtime_jobs;
 use unica_execution_contract::adapter_outcome::cancelled_process_outcome;
 use unica_execution_contract::adapter_outcome::merge_warnings;
@@ -25,7 +26,6 @@ use unica_process::runner::{system_process_runner, ProcessCommand, ProcessRunner
 #[cfg(any(test, feature = "test-support"))]
 use unica_process::runner::{ProcessOutput, ProcessStreamFailure, ProcessStreamOutput};
 use unica_redaction::redactor;
-use unica_runner::operation::RuntimeJobOperation;
 use unica_source_contract::workspace::WorkspaceContext;
 #[cfg(any(test, feature = "test-support"))]
 use unica_workspace::paths::path_lock_identity;
@@ -1158,7 +1158,7 @@ mod tests {
         fs::write(
             context.workspace_root.join("extension/Configuration.xml"),
             include_bytes!(
-                "../../../../tests/fixtures/platform_8_3_27/support-edit-bin-only/src/Configuration.xml"
+                "../../../../tests/fixtures/formats/platform_xml/2.20/support-edit-bin-only/src/Configuration.xml"
             ),
         )
         .unwrap();
@@ -2217,6 +2217,10 @@ mod tests {
     fn runtime_adapter_maps_each_runtime_operation_to_expected_argv() {
         let cases = vec![
             (json!({"operation": "init"}), vec!["init"]),
+            (
+                json!({"operation": "dump", "mode": "full", "sourceSet": "main"}),
+                vec!["dump", "--force", "--source-set", "main"],
+            ),
             (
                 json!({
                     "operation": "dump",
@@ -4578,7 +4582,7 @@ analyze_timeout_seconds = 900
         fs::write(
             source_root.join("Configuration.xml"),
             include_bytes!(
-                "../../../../tests/fixtures/platform_8_3_27/support-edit-bin-only/src/Configuration.xml"
+                "../../../../tests/fixtures/formats/platform_xml/2.20/support-edit-bin-only/src/Configuration.xml"
             ),
         )
         .unwrap();
@@ -4594,7 +4598,7 @@ analyze_timeout_seconds = 900
         fs::write(
             marker,
             include_bytes!(
-                "../../../../tests/fixtures/platform_8_3_27/support-edit-bin-only/src/Ext/ParentConfigurations.bin"
+                "../../../../tests/fixtures/formats/platform_xml/2.20/support-edit-bin-only/src/Ext/ParentConfigurations.bin"
             ),
         )
         .unwrap();

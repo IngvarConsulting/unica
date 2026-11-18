@@ -270,6 +270,7 @@ fn diagnostics_reads_preserve_workspace_cache_staleness() {
                 readiness: Some(DiagnosticReadiness {
                     state: DiagnosticReadinessState::Ready,
                     retryable: false,
+                    progress: None,
                 }),
                 ..successful(Vec::new())
             },

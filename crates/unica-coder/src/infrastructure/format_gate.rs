@@ -40,7 +40,7 @@ pub(crate) fn incompatible_format_blocks_before_native_handler() {
 }
 
 pub(crate) fn public_metadata_mutators_refuse_old_and_new_profiles_without_side_effects() {
-    for version in ["2.19", "2.21"] {
+    for version in ["2.19", "2.23"] {
         for tool in ["unica.meta.add", "unica.meta.edit"] {
             let root = test_workspace_root(&format!(
                 "unica-meta-common-format-gate-{}-{version}",

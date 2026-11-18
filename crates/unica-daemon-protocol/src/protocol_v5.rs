@@ -459,6 +459,13 @@ pub enum V5ClientRequest {
     LspOpen {
         #[serde(rename = "workspaceFolders")]
         workspace_folders: Vec<V5LspWorkspaceFolder>,
+        /// The editor declared `workspace.diagnostics.refreshSupport`.
+        #[serde(
+            rename = "diagnosticsRefresh",
+            default,
+            skip_serializing_if = "std::ops::Not::not"
+        )]
+        diagnostics_refresh: bool,
     },
     LspNotify {
         session: V5LspSessionId,
@@ -545,7 +552,9 @@ impl V5ClientRequest {
             Self::WaitTask { wait_ms, .. } if *wait_ms > MAX_V5_WAIT_MS => {
                 Err("v5 task wait exceeds 7000 ms".to_string())
             }
-            Self::LspOpen { workspace_folders } => lsp::validate_open(workspace_folders),
+            Self::LspOpen {
+                workspace_folders, ..
+            } => lsp::validate_open(workspace_folders),
             Self::LspNotify {
                 session,
                 notification,
@@ -620,9 +629,13 @@ impl fmt::Debug for V5ClientRequest {
             }
             Self::CancelInvocation { .. } => formatter.write_str("V5CancelInvocation"),
             Self::FenceInvocationReceipt { .. } => formatter.write_str("V5FenceInvocationReceipt"),
-            Self::LspOpen { workspace_folders } => formatter
+            Self::LspOpen {
+                workspace_folders,
+                diagnostics_refresh,
+            } => formatter
                 .debug_struct("V5LspOpen")
                 .field("workspace_folders", &workspace_folders.len())
+                .field("diagnostics_refresh", diagnostics_refresh)
                 .finish(),
             Self::LspNotify { notification, .. } => formatter
                 .debug_struct("V5LspNotify")
@@ -1649,6 +1662,10 @@ mod medium_tests {
             (
                 V5ClientRequestKind::LspOpen,
                 "{\"kind\":\"lsp_open\",\"workspaceFolders\":[{\"uri\":\"file:///work\",\"name\":\"work\"}]}".into(),
+            ),
+            (
+                V5ClientRequestKind::LspOpen,
+                "{\"kind\":\"lsp_open\",\"workspaceFolders\":[],\"diagnosticsRefresh\":true}".into(),
             ),
             (
                 V5ClientRequestKind::LspNotify,
