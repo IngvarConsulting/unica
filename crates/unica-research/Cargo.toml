@@ -31,3 +31,16 @@ name = "platform"
 path = "platform/main.rs"
 
 [dependencies]
+serde_json = "1.0"
+unica-coder = { path = "../unica-coder", features = ["test-support"] }
+unica-adapter-v8-runner = { path = "../unica-adapter-v8-runner", features = ["test-support"] }
+unica-artifact-delivery = { path = "../unica-artifact-delivery" }
+unica-execution = { path = "../unica-execution" }
+unica-execution-contract = { path = "../unica-execution-contract" }
+unica-process = { path = "../unica-process" }
+unica-source-contract = { path = "../unica-source-contract" }
+unica-source-designer = { path = "../unica-source-designer" }
+unica-work-control = { path = "../unica-work-control" }
+
+[package.metadata.unica]
+inputs = ["plugins/unica", "tests/fixtures/formats/platform_xml"]

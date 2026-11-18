@@ -32,27 +32,27 @@
   "tools": [
     {
       "name": "bsl-analyzer",
-      "version": "0.2.86",
+      "version": "0.4.5",
       "repository": "https://github.com/itrous/bsl-analyzer",
-      "sourceTag": "v0.2.86",
-      "sourceCommit": "53d8765288adf3b9277b7a4112dba167e51690b7",
+      "sourceTag": "v0.4.5",
+      "sourceCommit": "ffae37b25c910991ecb8f05abe7a8148cd32b45c",
       "assetRepository": "https://github.com/IngvarConsulting/unica-toolchain",
-      "assetTag": "bsl-analyzer-v0.2.86-build.1",
-      "license": "LGPL-3.0-or-later",
+      "assetTag": "bsl-analyzer-v0.4.5-build.2",
+      "license": "MIT",
       "assetStrategy": "direct-release-asset",
       "binaryName": "bsl-analyzer",
       "assets": {
         "darwin-arm64": {
           "assetName": "bsl-analyzer-darwin-arm64",
-          "sha256": "dcca384a1f97761f017933235156a57696936f23992690cd0b92ab83a6e5de29"
+          "sha256": "8187f0feac797cfa8d0c470c4e6ec2ed1af768bd251e4a5eda0c645df1ec3369"
         },
         "linux-x64": {
           "assetName": "bsl-analyzer-linux-x64",
-          "sha256": "e0131a2c5f281e3ad1c5d5167fe67edad48e245a7a1e41e7efb9054b500335e6"
+          "sha256": "962b56152f214b20c076d9ccfe3bf480e1037169423085604701a13356066a06"
         },
         "win-x64": {
           "assetName": "bsl-analyzer-win-x64.exe",
-          "sha256": "3736453d18dd7ea12634b6a78839eed1fd3a8d821819b752b39f51afd91869d9"
+          "sha256": "a9ab55361a05275e0c998549e9dbe3cef84f300c8d271b36062dab5b1a36d554"
         }
       }
     },

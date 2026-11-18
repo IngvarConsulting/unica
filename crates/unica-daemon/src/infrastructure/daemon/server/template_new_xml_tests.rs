@@ -27,7 +27,7 @@ macro_rules! native {
     ($name:literal) => {
         include_bytes!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../tests/fixtures/platform_8_3_27/template-new-xml/",
+            "/../../tests/fixtures/formats/platform_xml/2.20/template-new-xml/",
             $name
         ))
     };

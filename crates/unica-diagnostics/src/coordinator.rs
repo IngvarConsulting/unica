@@ -2217,6 +2217,7 @@ mod tests {
             readiness: Some(DiagnosticReadiness {
                 state: DiagnosticReadinessState::Building,
                 retryable: true,
+                progress: None,
             }),
             error: None,
             suppressions: Vec::new(),
@@ -3502,6 +3503,7 @@ mod tests {
             readiness: Some(DiagnosticReadiness {
                 state: DiagnosticReadinessState::Ready,
                 retryable: false,
+                progress: None,
             }),
             ..successful(vec![diagnostic(
                 ANALYZER,

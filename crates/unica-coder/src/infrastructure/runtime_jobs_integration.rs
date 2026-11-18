@@ -4672,7 +4672,7 @@ pub(crate) mod tests {
         fs::write(
             source_root.join("Configuration.xml"),
             include_bytes!(
-                "../../../../tests/fixtures/platform_8_3_27/support-edit-bin-only/src/Configuration.xml"
+                "../../../../tests/fixtures/formats/platform_xml/2.20/support-edit-bin-only/src/Configuration.xml"
             ),
         )
         .expect("write configuration root");
@@ -4688,7 +4688,7 @@ pub(crate) mod tests {
         fs::write(
             marker,
             include_bytes!(
-                "../../../../tests/fixtures/platform_8_3_27/support-edit-bin-only/src/Ext/ParentConfigurations.bin"
+                "../../../../tests/fixtures/formats/platform_xml/2.20/support-edit-bin-only/src/Ext/ParentConfigurations.bin"
             ),
         )
         .expect("activate configuration support");

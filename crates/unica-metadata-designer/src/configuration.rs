@@ -1,4 +1,5 @@
 //! Existing configuration Designer algorithms; publication stays with trusted composition.
+use crate::dialect::root_version::{self, RootVersionReport};
 use roxmltree::Document;
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, HashSet};
@@ -8,9 +9,6 @@ use unica_metadata::support_state::ConfigurationSupportData;
 use unica_metadata::MetadataKind;
 use unica_source_contract::discovery::ProjectDiscoveryRead;
 use unica_source_designer::configuration_layout::*;
-use unica_source_designer::format_profile::{
-    classify_root_version, FormatCompatibility, ACTIVE_FORMAT_PROFILE,
-};
 use unica_source_designer::layout::metadata_kind;
 use unica_source_designer::read::{path_exists, path_is_dir, read_string, read_utf8_sig};
 use unica_source_designer::roots::root_version_literal;
@@ -1407,6 +1405,7 @@ pub fn cf_edit_panel_entry_xml(
 pub fn cf_edit_set_home_page(
     value: &Value,
     config_dir: &Path,
+    format_version: &str,
 ) -> Result<CfEditExternalFilePlan, String> {
     let layout = cf_edit_json_object(value, "set-home-page value must be valid JSON object")?;
     if layout.is_empty() {
@@ -1454,7 +1453,6 @@ pub fn cf_edit_set_home_page(
          \t<WorkingAreaTemplate>{template}</WorkingAreaTemplate>\r\n\
          {columns_xml}\r\n\
          </HomePageWorkArea>",
-        format_version = ACTIVE_FORMAT_PROFILE.export_format
     );
     Ok(CfEditExternalFilePlan {
         path: config_dir.join("Ext/HomePageWorkArea.xml"),
@@ -1919,12 +1917,10 @@ pub fn validate_cf_source(
         check1_ok = false;
     }
     let version_literal = root_version_literal(source, root);
-    match classify_root_version(version_literal.as_deref()) {
-        Ok(FormatCompatibility::Supported { .. }) => report.ok("Export format: 2.20"),
-        Ok(compatibility) => report.warn(
-            unica_source_designer::format_profile::format_compatibility_warning(&compatibility),
-        ),
-        Err(error) => report.error(error.to_string()),
+    match root_version::report(version_literal.as_deref()) {
+        RootVersionReport::Ok(line) => report.ok(line),
+        RootVersionReport::Warn(line) => report.warn(line),
+        RootVersionReport::Error(line) => report.error(line),
     }
     let version = version_literal.as_deref().unwrap_or("");
 
@@ -2096,7 +2092,12 @@ pub fn validate_cf_source(
             let value = cf_validate_child_text(props_node, property, Some(MD_NS));
             if !value.is_empty() {
                 let allowed = cf_validate_enum_allowed(property);
-                if !allowed.contains(&value.as_str()) {
+                let line_mode = matches!(
+                    *property,
+                    "CompatibilityMode" | "ConfigurationExtensionCompatibilityMode"
+                ) && crate::dialect::for_version(version_literal.as_deref())
+                    .knows_line_compatibility_mode(&value);
+                if !allowed.contains(&value.as_str()) && !line_mode {
                     report.error(format!(
                         "4. Property '{property}' has invalid value '{value}'"
                     ));
@@ -2580,7 +2581,8 @@ pub fn cf_edit_plan_image(
                 artifacts.push(path);
             }
             "set-home-page" => {
-                let plan = cf_edit_set_home_page(&op_value, config_dir)?;
+                let plan =
+                    cf_edit_set_home_page(&op_value, config_dir, &root_version::of_set(&text))?;
                 let path = plan.path.clone();
                 external_files.insert(plan.path, plan.bytes);
                 modify_count += 1;
@@ -2639,7 +2641,7 @@ pub fn cf_init_images(
         );
     let mobile_xml = mobile_functionality_xml();
     let contained_objects = contained_objects_xml(&contained_object_ids);
-    let format_version = ACTIVE_FORMAT_PROFILE.export_format;
+    let format_version = root_version::writable();
 
     let config_xml = format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>

@@ -44,6 +44,12 @@
       "skeleton": "Items"
     },
     {
+      "variant": "AttributeRemove",
+      "operation": "attribute.remove",
+      "applicability": "FormAttribute",
+      "skeleton": "Target"
+    },
+    {
       "variant": "ColumnAdd",
       "operation": "column.add",
       "applicability": "FormAttribute",

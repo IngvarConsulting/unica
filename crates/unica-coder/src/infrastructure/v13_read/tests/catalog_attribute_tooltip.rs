@@ -294,7 +294,7 @@ fn catalog_attribute_tooltip_never_inherits_section_header_or_sibling_values() {
 fn catalog_attribute_tooltip_requires_proved_catalog_configuration_and_literal_xml_220() {
     for version in [
         " version=\"2.19\"",
-        " version=\"2.21\"",
+        " version=\"2.23\"",
         "",
         " version=\"2&#x2e;20\"",
     ] {
