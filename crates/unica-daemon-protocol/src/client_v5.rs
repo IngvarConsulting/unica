@@ -1744,6 +1744,118 @@ mod medium_tests {
     }
 
     #[test]
+    #[ignore = "helper process for initial_startup_accepts_delayed_child_readiness"]
+    fn delayed_readiness_child_fixture() {
+        let root = PathBuf::from(std::env::var_os("UNICA_TEST_DELAYED_READINESS_ROOT").unwrap());
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let state = DaemonStateDirectory::open(&root, &CoreIdentity::production_v5()).unwrap();
+        std::fs::write(root.join("child-ready"), b"ready").unwrap();
+        while !root.join("publish").exists() {
+            assert!(
+                Instant::now() < deadline,
+                "parent did not release readiness gate"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let record = V5EndpointRecord::new(
+            CoreIdentity::production_v5(),
+            listener.local_addr().unwrap().port(),
+        )
+        .unwrap();
+        let _publication = state.publish_v5_endpoint_record(&record).unwrap();
+        let mut stream = loop {
+            match listener.accept() {
+                Ok((stream, _)) => break stream,
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    assert!(Instant::now() < deadline, "parent did not connect");
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => panic!("accept parent: {error}"),
+            }
+        };
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        stream
+            .set_write_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let mut hello = String::new();
+        reader.read_line(&mut hello).unwrap();
+        let hello: V5ClientRequest = serde_json::from_str(&hello).unwrap();
+        let (version, token, identity, lease) = hello.hello_parts().expect("authenticated hello");
+        assert_eq!(version, super::super::protocol_v5::DAEMON_PROTOCOL_VERSION);
+        assert_eq!(token, record.token());
+        assert_eq!(identity, record.core_identity());
+        assert!(!lease.is_empty());
+        writeln!(
+            stream,
+            "{}",
+            serde_json::to_string(&V5HandshakeServerResponse::ready(&record)).unwrap()
+        )
+        .unwrap();
+        let mut remaining = Vec::new();
+        reader.read_to_end(&mut remaining).unwrap();
+    }
+
+    #[test]
+    fn initial_startup_accepts_delayed_child_readiness() {
+        use unica_process::test_support::wait_for_detached_child_exit;
+        let (root, state) = state_directory();
+        let physical_root = std::fs::canonicalize(root.path()).unwrap();
+        let fixture_deadline = Instant::now() + Duration::from_secs(30);
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "client_v5::medium_tests::delayed_readiness_child_fixture",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env("UNICA_TEST_DELAYED_READINESS_ROOT", &physical_root);
+        let mut child =
+            ManagedStartupChild::spawn_configured_before(command, fixture_deadline).unwrap();
+        let pid = child.id();
+        while !root.path().join("child-ready").exists() {
+            assert!(
+                Instant::now() < fixture_deadline,
+                "child did not reach readiness gate"
+            );
+            assert!(
+                child.try_wait_status().unwrap().is_none(),
+                "fixture exited before its gate"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+        let started = Instant::now();
+        let deadline = started + STARTUP_READINESS_TIMEOUT;
+        let cleanup_reserve = (STARTUP_READINESS_TIMEOUT / 3).min(STARTUP_CLEANUP_TIMEOUT);
+        let result = thread::scope(|scope| {
+            scope.spawn(|| {
+                thread::sleep(Duration::from_secs(6));
+                std::fs::write(root.path().join("publish"), b"publish").unwrap();
+            });
+            V5DaemonProcessOwner::await_startup_before(
+                &mut child,
+                &state,
+                &CoreIdentity::production_v5(),
+                deadline - cleanup_reserve,
+                deadline,
+            )
+        });
+        let owner = result.expect("initial startup must accept delayed child readiness");
+        assert!(started.elapsed() >= Duration::from_secs(6));
+        assert_eq!(owner.daemon_pid(), pid);
+        drop(owner);
+        assert!(
+            wait_for_detached_child_exit(pid, Duration::from_secs(5)),
+            "readiness fixture outlived its connection"
+        );
+    }
+
+    #[test]
     fn failed_readiness_kills_the_child_within_the_original_budget() {
         use unica_process::test_support::{long_running_command, wait_for_process_exit};
         let (_root, state) = state_directory();
