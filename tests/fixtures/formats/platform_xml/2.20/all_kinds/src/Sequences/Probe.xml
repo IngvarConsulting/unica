@@ -1,0 +1,31 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:app="http://v8.1c.ru/8.2/managed-application/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:cmi="http://v8.1c.ru/8.2/managed-application/cmi" xmlns:ent="http://v8.1c.ru/8.1/data/enterprise" xmlns:lf="http://v8.1c.ru/8.2/managed-application/logform" xmlns:style="http://v8.1c.ru/8.1/data/ui/style" xmlns:sys="http://v8.1c.ru/8.1/data/ui/fonts/system" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:v8ui="http://v8.1c.ru/8.1/data/ui" xmlns:web="http://v8.1c.ru/8.1/data/ui/colors/web" xmlns:win="http://v8.1c.ru/8.1/data/ui/colors/windows" xmlns:xen="http://v8.1c.ru/8.3/xcf/enums" xmlns:xpr="http://v8.1c.ru/8.3/xcf/predef" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.20">
+	<Sequence uuid="5b8540f4-5d1c-50de-a24a-b4f78aea3cb6">
+		<InternalInfo>
+			<xr:GeneratedType name="SequenceRecord.Probe" category="Record">
+				<xr:TypeId>e8a9d8df-7470-5cbd-a8d1-193b1a4d218c</xr:TypeId>
+				<xr:ValueId>4741e5c9-6fad-5382-a851-618b34c27512</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="SequenceManager.Probe" category="Manager">
+				<xr:TypeId>6bff169a-659e-5f71-9cd3-fb4dfea68f90</xr:TypeId>
+				<xr:ValueId>ea6050e3-8759-58a4-8f22-aa7562ab7989</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="SequenceRecordSet.Probe" category="RecordSet">
+				<xr:TypeId>490a0e03-bc93-5375-81cb-b44d3e7efd13</xr:TypeId>
+				<xr:ValueId>1b3d9c56-6d23-59f1-945f-1b9be1de90d0</xr:ValueId>
+			</xr:GeneratedType>
+		</InternalInfo>
+		<Properties>
+			<Name>Probe</Name>
+			<Synonym/>
+			<Comment/>
+			<MoveBoundaryOnPosting>DontMove</MoveBoundaryOnPosting>
+			<Documents>
+				<xr:Item xsi:type="xr:MDObjectRef">Document.Orders</xr:Item>
+			</Documents>
+			<RegisterRecords/>
+			<DataLockControlMode>Managed</DataLockControlMode>
+		</Properties>
+		<ChildObjects/>
+	</Sequence>
+</MetaDataObject>

@@ -1702,12 +1702,12 @@ pub(crate) mod tests {
         let unrelated = context.cwd.join("src/Catalogs/Unrelated.xml");
         write_file(
             &unrelated,
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.21"><Catalog/></MetaDataObject>"#,
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.23"><Catalog/></MetaDataObject>"#,
         );
         let unregistered_extension = context.cwd.join("ext/Catalogs/Unregistered.xml");
         write_file(
             &unregistered_extension,
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.21"><Catalog/></MetaDataObject>"#,
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.23"><Catalog/></MetaDataObject>"#,
         );
         let extension_before = fs::read(&extension_owner).unwrap();
         let args = Map::from_iter([
@@ -1787,7 +1787,7 @@ pub(crate) mod tests {
         write_file(
             &deep_source,
             r#"<?xml version="1.0" encoding="UTF-8"?>
-<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" version="2.21">
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" version="2.23">
 	<Catalog uuid="eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee">
 		<Properties><Name>Counterparty</Name></Properties>
 		<ChildObjects>
@@ -1834,7 +1834,7 @@ pub(crate) mod tests {
         let language = context.cwd.join("ext/Languages/Russian.xml");
         write_file(
             &language,
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.21"><Language/></MetaDataObject>"#,
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.23"><Language/></MetaDataObject>"#,
         );
         let object = context.cwd.join("ext/Catalogs/Registered.xml");
         write_file(
@@ -1849,19 +1849,19 @@ pub(crate) mod tests {
         let form_wrapper = context.cwd.join("ext/Catalogs/Registered/Forms/Main.xml");
         write_file(
             &form_wrapper,
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.21"><Form/></MetaDataObject>"#,
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.23"><Form/></MetaDataObject>"#,
         );
         let form_xml = context
             .cwd
             .join("ext/Catalogs/Registered/Forms/Main/Ext/Form.xml");
         write_file(
             &form_xml,
-            r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.21"/>"#,
+            r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.23"/>"#,
         );
         let unregistered = context.cwd.join("ext/Catalogs/Unregistered.xml");
         write_file(
             &unregistered,
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.21"><Catalog/></MetaDataObject>"#,
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.23"><Catalog/></MetaDataObject>"#,
         );
         let extension_text = fs::read_to_string(&extension_owner)
             .unwrap()
@@ -1895,7 +1895,7 @@ pub(crate) mod tests {
         write_file(
             &registered,
             r#"<?xml version="1.0" encoding="UTF-8"?>
-<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.21">
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.23">
 	<Catalog uuid="bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb">
 		<Properties>
 			<ObjectBelonging>Adopted</ObjectBelonging>
@@ -1922,7 +1922,7 @@ pub(crate) mod tests {
             outcome
                 .errors
                 .join("\n")
-                .contains("newer than supported 2.20"),
+                .contains("newer than the newest supported 2.22"),
             "{outcome:?}"
         );
         assert_eq!(fs::read(&extension_owner).unwrap(), extension_before);
@@ -1939,7 +1939,7 @@ pub(crate) mod tests {
         let language = context.cwd.join("ext/Languages/Russian.xml");
         write_file(
             &language,
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.21"><Language uuid="bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"/></MetaDataObject>"#,
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.23"><Language uuid="bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"/></MetaDataObject>"#,
         );
         let extension_text = fs::read_to_string(&extension_owner).unwrap().replace(
             "<ChildObjects/>",
@@ -1956,7 +1956,7 @@ pub(crate) mod tests {
             outcome
                 .errors
                 .join("\n")
-                .contains("newer than supported 2.20"),
+                .contains("newer than the newest supported 2.22"),
             "{outcome:?}"
         );
         assert_eq!(fs::read(&extension_owner).unwrap(), extension_before);
@@ -1986,7 +1986,7 @@ pub(crate) mod tests {
             .join("ext/Catalogs/Items/Forms/Legacy/Ext/Form.xml");
         write_file(
             &form_xml,
-            r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.21"/>"#,
+            r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.23"/>"#,
         );
         let extension_text = fs::read_to_string(&extension_owner).unwrap().replace(
             "<ChildObjects/>",
@@ -2004,7 +2004,7 @@ pub(crate) mod tests {
             outcome
                 .errors
                 .join("\n")
-                .contains("newer than supported 2.20"),
+                .contains("newer than the newest supported 2.22"),
             "{outcome:?}"
         );
         assert_eq!(fs::read(&extension_owner).unwrap(), extension_before);
@@ -2398,7 +2398,7 @@ pub(crate) mod tests {
         let extension_before = fs::read(&extension_owner).unwrap();
         let concurrent_base = fs::read_to_string(&base_owner)
             .unwrap()
-            .replacen(r#"version="2.20""#, r#"version="2.21""#, 1)
+            .replacen(r#"version="2.20""#, r#"version="2.23""#, 1)
             .into_bytes();
         let base_for_hook = base_owner.clone();
         let concurrent_for_hook = concurrent_base.clone();
@@ -2635,7 +2635,7 @@ pub(crate) mod tests {
     #[test]
     fn borrow_cfe_rolled_back_borrow_publishes_no_mutation() {
         let context = temp_context("borrow-mutation-rollback");
-        write_minimal_borrow_fixture(&context, "2.20", "2.21", "2.20", None);
+        write_minimal_borrow_fixture(&context, "2.20", "2.23", "2.20", None);
 
         let execution = borrow_cfe_with_data(&minimal_borrow_args(), &context);
 
@@ -2652,15 +2652,21 @@ pub(crate) mod tests {
     fn borrow_cfe_rejects_newer_derived_source_xml_without_writes() {
         let context = temp_context("borrow-newer-derived-source");
         let (_, _, extension_owner) =
-            write_minimal_borrow_fixture(&context, "2.20", "2.21", "2.20", None);
+            write_minimal_borrow_fixture(&context, "2.20", "2.23", "2.20", None);
         let extension_before = fs::read(&extension_owner).unwrap();
 
         let outcome = borrow_cfe(&minimal_borrow_args(), &context);
 
         assert!(!outcome.ok, "{outcome:?}");
         let error = outcome.errors.join("\n");
-        assert!(error.contains("newer than supported 2.20"), "{error}");
-        assert!(error.contains("1C 8.5 support is planned"), "{error}");
+        assert!(
+            error.contains("newer than the newest supported 2.22"),
+            "{error}"
+        );
+        assert!(
+            error.contains("does not support this export yet"),
+            "{error}"
+        );
         assert!(!error.contains("re-export"), "{error}");
         assert_eq!(fs::read(&extension_owner).unwrap(), extension_before);
         assert!(!context.cwd.join("ext/Catalogs/Items.xml").exists());
@@ -2693,14 +2699,17 @@ pub(crate) mod tests {
     fn borrow_cfe_mixed_older_extension_and_newer_source_prioritizes_newer() {
         let context = temp_context("borrow-mixed-newer-priority");
         let (_, _, extension_owner) =
-            write_minimal_borrow_fixture(&context, "2.20", "2.21", "2.19", None);
+            write_minimal_borrow_fixture(&context, "2.20", "2.23", "2.19", None);
         let extension_before = fs::read(&extension_owner).unwrap();
 
         let outcome = borrow_cfe(&minimal_borrow_args(), &context);
 
         assert!(!outcome.ok, "{outcome:?}");
         let error = outcome.errors.join("\n");
-        assert!(error.contains("newer than supported 2.20"), "{error}");
+        assert!(
+            error.contains("newer than the newest supported 2.22"),
+            "{error}"
+        );
         assert!(!error.contains("re-export"), "{error}");
         assert_eq!(fs::read(&extension_owner).unwrap(), extension_before);
         assert!(!context.cwd.join("ext/Catalogs/Items.xml").exists());
@@ -2711,7 +2720,7 @@ pub(crate) mod tests {
     fn public_cfe_borrow_mixed_older_extension_and_newer_derived_source_prioritizes_newer() {
         let context = temp_context("public-borrow-mixed-newer-priority");
         let (_, _, extension_owner) =
-            write_minimal_borrow_fixture(&context, "2.20", "2.21", "2.19", None);
+            write_minimal_borrow_fixture(&context, "2.20", "2.23", "2.19", None);
         let extension_before = fs::read(&extension_owner).unwrap();
         let mut args = minimal_borrow_args();
         args.insert("cwd".to_string(), json!(context.cwd.display().to_string()));
@@ -2724,7 +2733,7 @@ pub(crate) mod tests {
         assert!(!result.ok, "{result:?}");
         let diagnostic = &result.diagnostics.as_ref().unwrap()["formatCompatibility"];
         assert_eq!(diagnostic["code"], "platformVersionUnsupported");
-        assert_eq!(diagnostic["actualFormat"], "2.21");
+        assert_eq!(diagnostic["actualFormat"], "2.23");
         let warning = result.warnings.join("\n");
         assert!(warning.contains("1С 8.5"), "{warning}");
         assert!(!warning.contains("миграц"), "{warning}");
@@ -2739,7 +2748,7 @@ pub(crate) mod tests {
     fn borrow_cfe_rejects_newer_existing_planned_xml_without_downgrade() {
         let context = temp_context("borrow-newer-existing-target");
         let (_, _, extension_owner) =
-            write_minimal_borrow_fixture(&context, "2.20", "2.20", "2.20", Some("2.21"));
+            write_minimal_borrow_fixture(&context, "2.20", "2.20", "2.20", Some("2.23"));
         let target = context.cwd.join("ext/Catalogs/Items.xml");
         let target_before = fs::read(&target).unwrap();
         let extension_before = fs::read(&extension_owner).unwrap();
@@ -2751,7 +2760,7 @@ pub(crate) mod tests {
             outcome
                 .errors
                 .join("\n")
-                .contains("newer than supported 2.20"),
+                .contains("newer than the newest supported 2.22"),
             "{outcome:?}"
         );
         assert_eq!(fs::read(&target).unwrap(), target_before);

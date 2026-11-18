@@ -363,7 +363,7 @@ class LocalDevInstallerTests(unittest.TestCase):
             "MSYS2",
             "Cygwin",
         )
-        for relative_path in ("README.md", "plugins/unica/README.md"):
+        for relative_path in ("CONTRIBUTING.md", "plugins/unica/README.md"):
             text = (REPO_ROOT / relative_path).read_text(encoding="utf-8")
             for value in required:
                 with self.subTest(path=relative_path, value=value):

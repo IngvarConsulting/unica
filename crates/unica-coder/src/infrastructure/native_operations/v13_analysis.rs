@@ -124,6 +124,21 @@ fn with_format_guard(
             warning,
             diagnostic,
         }) => Some(format_diagnostic(&warning, &diagnostic)),
+        // A read the export format forbids: the validator does not read the
+        // sources (INV.SOURCE.WRITABLE-PROFILE).
+        Ok(FormatGuardCheck::Block {
+            outcome,
+            diagnostic,
+            ..
+        }) if diagnostic.get("code").and_then(Value::as_str)
+            == Some("formatVersionUnsupported") =>
+        {
+            let code = "formatVersionUnsupported";
+            return NativeCheckOutcome::refused(CheckDiagnostic::error(
+                code,
+                &outcome.errors.join(" "),
+            ));
+        }
         Ok(FormatGuardCheck::Block {
             outcome,
             diagnostic,
@@ -479,7 +494,7 @@ mod medium_tests {
         fs::create_dir_all(root.join("src")).unwrap();
         fs::write(
             root.join("src/Configuration.xml"),
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.21"><Configuration><Properties><Name>Demo</Name></Properties><ChildObjects/></Configuration></MetaDataObject>"#,
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.23"><Configuration><Properties><Name>Demo</Name></Properties><ChildObjects/></Configuration></MetaDataObject>"#,
         )
         .unwrap();
         let at = QualifiedAddress::parse("main:Configuration").unwrap();
@@ -494,7 +509,7 @@ mod medium_tests {
             .first()
             .expect("the format warning leads the diagnostics");
         assert_eq!(first.severity(), "warning");
-        assert_eq!(first.code(), "platformVersionUnsupported");
+        assert_eq!(first.code(), "formatVersionUnverified");
         fs::remove_dir_all(root).unwrap();
     }
 

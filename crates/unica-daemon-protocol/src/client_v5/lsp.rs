@@ -46,10 +46,14 @@ impl V5DaemonProcessOwner {
     pub fn lsp_open_before(
         &mut self,
         workspace_folders: Vec<V5LspWorkspaceFolder>,
+        diagnostics_refresh: bool,
         deadline: Instant,
     ) -> Result<(V5LspSessionId, V5LspOpening), V5LspExchangeError> {
         match self.lsp_exchange(
-            V5ClientRequest::LspOpen { workspace_folders },
+            V5ClientRequest::LspOpen {
+                workspace_folders,
+                diagnostics_refresh,
+            },
             "lsp open",
             deadline,
         )? {

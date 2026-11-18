@@ -20,7 +20,7 @@ impl OperationApplicability {
         match self {
             Self::MetadataForms => "`Kind.Name` of a kind with forms",
             Self::Form => "`Kind.Name.Form.F`",
-            Self::FormAttribute => "`Kind.Name.Form.F.Attribute.A` of an existing ValueTable",
+            Self::FormAttribute => "`Kind.Name.Form.F.Attribute.A`",
             Self::FormProperties => {
                 "`Kind.Name.Form.F` or `Kind.Name.Form.F.Attribute.A.Column.C` of a ValueTable"
             }
