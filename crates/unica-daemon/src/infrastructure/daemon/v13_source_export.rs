@@ -15,6 +15,8 @@
 //! уходит относительным путём. Путь к платформе и командная строка наружу
 //! не идут.
 
+mod choice_warnings;
+
 use super::protocol::InvocationRequest;
 use super::v13_infobase_exports::{
     digest_optional_workspace_file, digest_required_workspace_file, missing_runner_rejection,
@@ -691,6 +693,15 @@ fn execute_with_resolved_runner(
             }
         }
     }
+    let choice_snapshot = (!prepared.dry_run && prepared.arguments.extension.is_some())
+        .then(|| {
+            let (_, directory) = selected_source_set(&root, &prepared.arguments)?;
+            let target = unica_workspace::paths::host_path_relative_to(&directory, &root)
+                .filter(|path| !path.as_os_str().is_empty())?;
+            let snapshot = choice_warnings::ChoiceSnapshot::capture(&root, &target, &cancellation);
+            Some((target, snapshot))
+        })
+        .flatten();
     // Исполнение вызывает раннер один раз; цель пишет сам раннер, а правки
     // набора через Unica на это время исключены блокировкой рабочей области.
     let envelope = match invoke_runner(prepared, tool, runner, &cancellation, prepared.dry_run) {
@@ -724,7 +735,25 @@ fn execute_with_resolved_runner(
         };
         preview_result(prepared, plan, &envelope, local)
     } else {
-        applied_result(prepared, plan, &envelope)
+        let check = prepared.arguments.extension.is_some()
+            && plan.performed_mode == "full"
+            && envelope["data"]["up_to_date"] != true
+            && plan.existed;
+        let warnings = if check {
+            match choice_snapshot {
+                Some((target, before)) if target == plan.target => {
+                    let after =
+                        choice_warnings::ChoiceSnapshot::capture(&root, &target, &cancellation);
+                    before.warnings(after)
+                }
+                _ => vec![choice_warnings::incomplete_warning()],
+            }
+        } else {
+            Vec::new()
+        };
+        let mut result = applied_result(prepared, plan, &envelope);
+        result.warnings.extend(warnings);
+        result
     }
 }
 
@@ -1707,6 +1736,89 @@ mod medium_tests {
                 .pop()
                 .ok_or_else(|| "unexpected v8-runner call".to_string())
         }
+    }
+
+    #[test]
+    fn full_extension_pull_warns_about_choice_settings_that_disappear() {
+        const FORM_BEFORE: &str = r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform"
+            xmlns:xr="http://v8.1c.ru/8.3/xcf/readable"><Attributes>
+            <Attribute name="Severity" id="1"><ListChoiceMode>true</ListChoiceMode>
+            <ChoiceList><xr:Item><xr:Value>Enum.Level.EnumValue.Error</xr:Value></xr:Item></ChoiceList></Attribute>
+            </Attributes><ChildItems><InputField name="Field" id="2"><ChoiceList>
+            <xr:Item><xr:Value>Enum.Level.EnumValue.Error</xr:Value></xr:Item>
+            </ChoiceList></InputField></ChildItems></Form>"#;
+        const FORM_AFTER: &str = r#"<f:Form xmlns:f="http://v8.1c.ru/8.3/xcf/logform"
+            xmlns:r="http://v8.1c.ru/8.3/xcf/readable"><f:ChildItems><f:InputField name="Field" id="4">
+            <f:ChoiceList><r:Item><r:Value>357df8f0-58b2-4d74-98ab-7a86108978d0</r:Value></r:Item>
+            </f:ChoiceList></f:InputField></f:ChildItems>
+            <f:Attributes><f:Attribute name="Severity" id="3"/></f:Attributes></f:Form>"#;
+        const DOCUMENT_BEFORE: &str = r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses"
+            xmlns:xr="http://v8.1c.ru/8.3/xcf/readable"><Document><Properties><Name>Orders</Name></Properties>
+            <ChildObjects><TabularSection><Properties><Name>Goods</Name></Properties><ChildObjects>
+            <Attribute><Properties><Name>Currency</Name><ChoiceParameterLinks><xr:Link>
+            <xr:DataPath>Document.Orders.TabularSection.Goods</xr:DataPath>
+            </xr:Link></ChoiceParameterLinks></Properties></Attribute></ChildObjects></TabularSection>
+            </ChildObjects></Document></MetaDataObject>"#;
+
+        let workspace = workspace();
+        let root = workspace.path();
+        let form = root.join("Sales/Documents/Orders/Forms/Item/Ext/Form.xml");
+        let document = root.join("Sales/Documents/Orders.xml");
+        fs::create_dir_all(form.parent().unwrap()).unwrap();
+        fs::write(&form, FORM_BEFORE).unwrap();
+        fs::write(&document, DOCUMENT_BEFORE).unwrap();
+        let document_after = DOCUMENT_BEFORE.replace(
+            "<ChoiceParameterLinks><xr:Link>
+            <xr:DataPath>Document.Orders.TabularSection.Goods</xr:DataPath>
+            </xr:Link></ChoiceParameterLinks>",
+            "<ChoiceParameterLinks/>",
+        );
+        struct TestRunner<'a> {
+            output: ProcessOutput,
+            form: &'a Path,
+            document: &'a Path,
+            document_after: &'a str,
+        }
+        impl ProcessRunner for TestRunner<'_> {
+            fn run(&self, _: &ProcessCommand) -> Result<ProcessOutput, String> {
+                fs::write(self.form, FORM_AFTER).unwrap();
+                fs::write(self.document, self.document_after).unwrap();
+                Ok(self.output.clone())
+            }
+        }
+        let runner = TestRunner {
+            output: process(envelope(root, "Sales", "FULL", Some("Sales"), true), true),
+            form: &form,
+            document: &document,
+            document_after: &document_after,
+        };
+        let arguments = prepared(root, ExportMode::Full, Some("Sales"), Some("Sales"), false);
+        let pull = || {
+            execute_with_resolved_runner(
+                &arguments,
+                &runner,
+                CancellationToken::new(),
+                &tool(root),
+                "0.17.4",
+            )
+        };
+        let result = pull();
+        assert!(result.ok, "{result:?}");
+        assert_eq!(fs::read_to_string(&form).unwrap(), FORM_AFTER);
+        assert_eq!(result.warnings.len(), 1, "{result:?}");
+        let warning = &result.warnings[0];
+        assert_eq!(warning["code"], "pull_choice_settings_disappeared");
+        assert_eq!(warning["count"], 3);
+        assert_eq!(
+            warning["examples"],
+            json!([
+                {"path":"Sales/Documents/Orders.xml", "owner":"Document.Orders.TabularSection.Goods.Attribute.Currency", "property":"ChoiceParameterLinks"},
+                {"path":"Sales/Documents/Orders/Forms/Item/Ext/Form.xml", "owner":"Attribute.Severity", "property":"ListChoiceMode"},
+                {"path":"Sales/Documents/Orders/Forms/Item/Ext/Form.xml", "owner":"Attribute.Severity", "property":"ChoiceList"},
+            ])
+        );
+        let repeated = pull();
+        assert!(repeated.ok && repeated.warnings.is_empty(), "{repeated:?}");
     }
 
     fn run(root: &Path, prepared: &PreparedSourceExport, runner: &SequenceRunner) -> DomainResult {

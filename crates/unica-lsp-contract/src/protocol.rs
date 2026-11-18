@@ -33,7 +33,7 @@ const MAX_LSP_URI_BYTES: usize = 4 * 1024;
 // problem: неизвестно
 // on-reach: ответ демона отвергается как нестрогий, initialize получает RequestFailed
 // issue: #2173
-const MAX_LSP_SPACE_BYTES: usize = 64;
+pub const MAX_LSP_SPACE_BYTES: usize = 64;
 /// Рабочих папок у одного соединения.
 // resource-limit: lsp.wire-workspace-folders
 // class: corpus
@@ -649,13 +649,16 @@ pub fn validate_notification(notification: &V5LspNotification) -> Result<(), Str
     notification.validate()
 }
 
-/// Пространство — сегмент адреса `unica://`: только буквы, цифры, `-`, `_`.
+/// Имя пространства передаётся без URI-кодирования. При построении
+/// `unica://` редактор кодирует компонент адреса отдельно.
 fn validate_space(space: &str) -> Result<(), String> {
     if space.is_empty()
         || space.len() > MAX_LSP_SPACE_BYTES
-        || !space
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        || !space.chars().all(|ch| {
+            ch.is_ascii_alphanumeric()
+                || matches!(ch, '-' | '_' | '.' | ' ')
+                || (!ch.is_ascii() && !ch.is_control())
+        })
     {
         return Err("v5 lsp workspace space is not an address segment".to_string());
     }
@@ -676,6 +679,18 @@ fn validate_short_text(value: &str, limit: usize, field: &str) -> Result<(), Str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn workspace_spaces_accept_dotted_and_cyrillic_folder_names() {
+        for name in ["fixture.zodc8u", "тестовая база.1с"] {
+            let space = V5LspWorkspaceSpace::opened("file:///workspace", name);
+            assert!(space.validate().is_ok(), "{name}");
+        }
+        for name in ["folder/child", "folder#fragment", "folder\nname"] {
+            let space = V5LspWorkspaceSpace::opened("file:///workspace", name);
+            assert!(space.validate().is_err(), "{name:?}");
+        }
+    }
 
     /// A frame of the first form of the route reads as all later
     /// capabilities off and is written back as it was; a capability on is

@@ -208,12 +208,6 @@ jobs:
           python-version: "3.12"
       - run: python -m pip install -r tests/ci/requirements.txt
         if: env.KEPT != 'true'
-      # На pull request проверки Python идут в фоне, пока раннер восстанавливает
-      # кэш Rust и гоняет fmt и Clippy: подряд они занимали бо́льшую часть
-      # стадии. Шаги ожидания ниже отдают их лог и исход как свои.
-      - name: Статические проверки Python (запуск)
-        if: ${{ github.event_name == 'pull_request' && env.KEPT != 'true' }}
-        run: python scripts/ci/background_step.py start static-python -- python scripts/ci/run-static-tests.py
       - name: Удалённые тесты (запуск)
         if: ${{ github.event_name == 'pull_request' && env.KEPT != 'true' }}
         env:
@@ -238,6 +232,13 @@ jobs:
         with:
           toolchain: stable
           components: rustfmt, clippy
+      # Статические тесты вызывают rustfmt. Запускаем их после установки
+      # toolchain, пока раннер восстанавливает
+      # кэш Rust и гоняет fmt и Clippy: подряд они занимали бо́льшую часть
+      # стадии. Шаги ожидания ниже отдают их лог и исход как свои.
+      - name: Статические проверки Python (запуск)
+        if: ${{ github.event_name == 'pull_request' && env.KEPT != 'true' }}
+        run: python scripts/ci/background_step.py start static-python -- python scripts/ci/run-static-tests.py
       # Версия — из `.config/nextest.toml`; готовый nextest не ставится заново.
       - if: ${{ github.event_name == 'merge_group' && env.KEPT != 'true' }}
         uses: ./.github/actions/install-nextest
@@ -252,9 +253,7 @@ jobs:
           save-if: false
       - name: Формат
         if: env.KEPT != 'true'
-        run: |
-          cargo fmt --all -- --check
-          python scripts/ci/check-discovered-modules-format.py
+        run: python scripts/ci/check-discovered-modules-format.py
       - name: Контракт версий
         if: env.KEPT != 'true'
         run: python scripts/ci/check-version-contract.py

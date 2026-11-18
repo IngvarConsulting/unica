@@ -83,6 +83,12 @@ class PullRequestLevelTests(unittest.TestCase):
         self.assertEqual(started["run"],
                          "python scripts/ci/background_step.py start static-python -- python scripts/ci/run-static-tests.py")
 
+    def test_static_python_starts_after_rustfmt_is_installed(self) -> None:
+        setup = next(index for index, step in enumerate(self.steps)
+                     if step.get("uses", "").startswith("dtolnay/rust-toolchain@"))
+        self.assertIn("rustfmt", self.steps[setup]["with"]["components"].split(", "))
+        self.assertLess(setup, self.steps.index(self.step("Статические проверки Python (запуск)")))
+
     def test_python_checks_start_before_rust_and_are_awaited_after_clippy(self) -> None:
         """Проверки Python идут параллельно с кэшем, fmt и Clippy, а исход отдают шаги ожидания."""
         names = [step.get("name") for step in self.steps]

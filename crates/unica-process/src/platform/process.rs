@@ -348,6 +348,13 @@ impl RuntimeProcessTreeHandle {
         child: &mut Child,
         deadline: Instant,
     ) -> io::Result<()> {
+        #[cfg(test)]
+        {
+            let probe = RUNTIME_TREE_DEADLINE_PROBE.with(|slot| slot.borrow_mut().take());
+            if let Some(probe) = probe {
+                probe(deadline);
+            }
+        }
         #[cfg(any(test, feature = "test-support"))]
         RUNTIME_TREE_CLEANUP_CALLS.with(|slot| slot.set(slot.get().saturating_add(1)));
         #[cfg(any(test, feature = "test-support"))]
@@ -929,6 +936,17 @@ pub fn assert_windows_runtime_process_tree_semantics_for_test() -> io::Result<()
     }
 
     process_tree.terminate_and_reap_bounded(&mut child, TERMINATION_WAIT_LIMIT)
+}
+
+#[cfg(test)]
+type CleanupDeadlineProbe = Box<dyn FnOnce(Instant)>;
+#[cfg(test)]
+thread_local! {
+    static RUNTIME_TREE_DEADLINE_PROBE: std::cell::RefCell<Option<CleanupDeadlineProbe>> = const { std::cell::RefCell::new(None) };
+}
+#[cfg(test)]
+pub(crate) fn set_runtime_tree_deadline_probe(probe: Option<CleanupDeadlineProbe>) {
+    RUNTIME_TREE_DEADLINE_PROBE.with(|slot| *slot.borrow_mut() = probe);
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -8426,6 +8444,29 @@ mod medium_tests {
         startup_child_cleanup_kills_descendants();
         #[cfg(windows)]
         process_tree_keeps_child_suspended_until_attach();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn detached_child_wait_observes_exit_without_terminating_the_child() {
+        use crate::test_support::wait_for_detached_child_exit;
+
+        let mut child = Command::new("/bin/sh")
+            .args(["-c", "read line"])
+            .stdin(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        let input = child.stdin.take().unwrap();
+        drop(child);
+
+        assert!(!wait_for_detached_child_exit(
+            pid,
+            Duration::from_millis(50)
+        ));
+        drop(input);
+        assert!(wait_for_detached_child_exit(pid, Duration::from_secs(5)));
+        assert!(!wait_for_detached_child_exit(pid, Duration::ZERO));
     }
 
     #[test]

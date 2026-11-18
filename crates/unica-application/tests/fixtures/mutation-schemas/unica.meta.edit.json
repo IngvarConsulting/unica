@@ -1332,6 +1332,13 @@
                       ],
                       "type": "string"
                     },
+                    "SequenceFilling": {
+                      "enum": [
+                        "AutoFill",
+                        "AutoFillOff"
+                      ],
+                      "type": "string"
+                    },
                     "Server": {
                       "type": "boolean"
                     },

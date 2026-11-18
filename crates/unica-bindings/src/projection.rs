@@ -26,6 +26,8 @@ use unica_forms::events::{
 use unica_metadata::event_catalog::PlatformEventSpec;
 use unica_refusal::RefusalCode;
 
+mod variables;
+
 const PLATFORM_CONTEXTS: &[&str] = &[
     "server",
     "externalConnection",
@@ -404,6 +406,7 @@ fn project_module_with_specs(
         request.extension_targets,
     )?;
     let regions = region_projections(&root, &lines, request.at, &methods);
+    let variables = variables::project(&root, &lines, request.at, &regions);
     assign_method_areas(&mut methods, &regions);
     let interfaces = interface_projections(&methods, &regions);
     let events = project_module_events(
@@ -431,7 +434,8 @@ fn project_module_with_specs(
         compilation,
         body,
     )
-    .with_source(source.to_string()))
+    .with_source(source.to_string())
+    .with_variables(variables))
 }
 
 fn available_module_event(

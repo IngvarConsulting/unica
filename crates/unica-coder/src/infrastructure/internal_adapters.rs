@@ -3675,18 +3675,35 @@ analyze_timeout_seconds = 900
         );
     }
 
+    mod medium_diagnostics_process_failure;
+
+    const PARTIAL_FINDING_THEN_INVALID: &str = concat!(
+        "{\"type\":\"start\",\"total_files\":1,\"version\":\"0.2.62\"}\n",
+        "{\"type\":\"file\",\"path\":\"CommonModules/Probe/Ext/Module.bsl\",",
+        "\"diagnostics\":[{\"code\":\"LineLength\",\"message\":\"partial-finding-sentinel\",",
+        "\"severity\":\"Warning\",\"start_line\":1,\"start_column\":0,",
+        "\"end_line\":1,\"end_column\":1,\"tags\":[]}]}\n",
+        "invalid-jsonl-sentinel\n",
+    );
+
+    /// rule: INV.ANALYSIS.ANALYZER-PROCESS-FAILURE
     #[test]
     fn diagnostics_analyze_process_failure_takes_priority_over_invalid_stream() {
-        for (index, (cancelled, timed_out, expected)) in [
-            (true, false, "cancelled:"),
-            (false, true, "timed out"),
-            (false, false, "exit status: 2"),
+        for (index, (cancelled, timed_out, expected, kind)) in [
+            (true, false, "cancelled:", AnalyzerRunFailureKind::Cancelled),
+            (false, true, "timed out", AnalyzerRunFailureKind::TimedOut),
+            (
+                false,
+                false,
+                "exit status: 2",
+                AnalyzerRunFailureKind::Exited,
+            ),
         ]
         .into_iter()
         .enumerate()
         {
             let context = temp_context(&format!("diagnostics-process-priority-{index}"));
-            let mut output = analyze_process_output("invalid-event");
+            let mut output = analyze_process_output(PARTIAL_FINDING_THEN_INVALID);
             output.status_success = false;
             output.cancelled = cancelled;
             output.timed_out = timed_out;
@@ -3704,6 +3721,8 @@ analyze_timeout_seconds = 900
             cleanup_context(&context);
             assert!(!result.outcome.ok);
             assert!(result.diagnostics.is_none());
+            assert!(result.data.is_none());
+            assert_eq!(result.run_failure, Some(kind));
             assert!(result.outcome.stdout.is_none());
             assert!(
                 result

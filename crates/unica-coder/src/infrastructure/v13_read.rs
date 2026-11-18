@@ -2,7 +2,7 @@ use crate::application::v13::resolve::{ModuleLine, ResolvedLines};
 use crate::application::v13::source_text::{admit_text, ModuleText};
 use unica_bsl::projection::{
     CommonModuleProperties, EventProjection, MethodProjection, ModuleProjectionSet,
-    RegionProjection,
+    RegionProjection, VariableProjection,
 };
 use unica_metadata::validation_subject::{MetadataChildProfile, MetadataTemplateType};
 use unica_metadata::{MetaDiagnosticCode, MetaDiagnosticSeverity, MetadataKind};
@@ -113,6 +113,7 @@ pub struct LogicalViewReadAuthority<'a> {
     deadline: ProviderDeadline,
     module_projections: Mutex<BTreeMap<ModuleProjectionCacheKey, Arc<ModuleProjectionSet>>>,
     configuration_payloads: Mutex<BTreeMap<RevisionCacheKey, Arc<Value>>>,
+    registered_owner_names: Mutex<BTreeMap<RevisionCacheKey, Arc<RegisteredOwnerNames>>>,
     verified_owners: Mutex<BTreeSet<OwnerProofCacheKey>>,
     owner_evidence: Mutex<BTreeMap<OwnerProofCacheKey, Arc<PlatformXmlSourceSetOwnerEvidence>>>,
     verified_owner_edges: Mutex<BTreeSet<OwnerEdgeCacheKey>>,
@@ -144,6 +145,8 @@ struct RevisionCacheKey {
     revision: String,
 }
 
+type RegisteredOwnerNames = BTreeSet<(String, String)>;
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct OwnerProofCacheKey {
     revision: RevisionCacheKey,
@@ -160,12 +163,17 @@ struct OwnerEdgeCacheKey {
 mod diagnostic_scope;
 mod editability_view;
 mod form_payload;
+mod http_service_handler;
 mod method_doc;
 mod module_body_read;
+mod module_variables;
 mod notification_bindings;
 mod scheduled_job_handler;
 mod typed_payload_read;
 mod validation_input;
+mod web_service_handler;
+
+use module_variables::{find_variable, variable_node, variable_node_value};
 
 impl<'a> LogicalViewReadAuthority<'a> {
     #[cfg(any(test, feature = "test-support"))]
@@ -238,6 +246,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
             deadline,
             module_projections: Mutex::new(BTreeMap::new()),
             configuration_payloads: Mutex::new(BTreeMap::new()),
+            registered_owner_names: Mutex::new(BTreeMap::new()),
             verified_owners: Mutex::new(BTreeSet::new()),
             owner_evidence: Mutex::new(BTreeMap::new()),
             verified_owner_edges: Mutex::new(BTreeSet::new()),
@@ -720,12 +729,15 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
         } else {
             let payload = self.typed_payload_for(&route, admitted)?;
             let handler = payload.pointer("/details/details/method").cloned();
-            let projected =
-                crate::infrastructure::v13_read_projection::project_typed_payload_for_source(
-                    &route,
-                    payload,
-                    self.read.source_set_kind(),
-                )?;
+            let projected = if at
+                .segments()
+                .first()
+                .is_some_and(|owner| owner.kind() == NodeKind::HttpService)
+            {
+                self.http_service_view(&route, payload, admitted)?
+            } else {
+                self.web_service_view(&route, payload, admitted)?
+            };
             let projected =
                 self.with_scheduled_job_handler(projected, at, handler.as_ref(), admitted)?;
             self.with_template_body_branches(projected, &route)?
@@ -1513,7 +1525,7 @@ fn module_projection_view_data(
     if (branch == NodeKind::Method && suffix.len() > 2)
         || (matches!(
             branch,
-            NodeKind::Interface | NodeKind::Event | NodeKind::Body
+            NodeKind::Interface | NodeKind::Event | NodeKind::Body | NodeKind::Variable
         ) && suffix.len() > 1)
     {
         return Err(ViewError::new(
@@ -1522,6 +1534,19 @@ fn module_projection_view_data(
         ));
     }
     match (branch, suffix[0].name(), suffix.get(1)) {
+        (NodeKind::Variable, None, None) => module_collection(
+            requested,
+            NodeKind::Variable,
+            projections
+                .variables()
+                .iter()
+                .map(variable_node_value)
+                .collect(),
+        ),
+        (NodeKind::Variable, Some(name), None) => {
+            let variable = find_variable(projections, name)?;
+            Ok(NodeViewData::Node(variable_node(variable)))
+        }
         (NodeKind::Method, None, None) => module_collection(
             requested,
             NodeKind::Method,

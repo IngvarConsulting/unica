@@ -4,7 +4,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::error::{BootstrapError, Failure, Result};
-use unica_network::{NetworkClient, NetworkError, NetworkFailure};
+use unica_network::{diagnostic_url, NetworkClient, NetworkError, NetworkFailure};
 
 pub trait Downloader: Send + Sync {
     fn download(
@@ -130,7 +130,8 @@ impl HttpDownloader {
                 BootstrapError::of(
                     Failure::Network,
                     format!(
-                        "failed to read runtime asset {url} after {} bytes: {error}",
+                        "failed to read runtime asset {} after {} bytes: {error}",
+                        diagnostic_url(url),
                         start + moved
                     ),
                 )
@@ -168,7 +169,8 @@ fn download_failure(url: &str, error: NetworkError) -> BootstrapError {
     let refusal = BootstrapError::of(
         failure,
         format!(
-            "failed to download runtime asset {url}: {}",
+            "failed to download runtime asset {}: {}",
+            diagnostic_url(url),
             error.message()
         ),
     )
@@ -189,7 +191,10 @@ impl Downloader for HttpDownloader {
         if !url.starts_with("https://") {
             return Err(BootstrapError::of(
                 Failure::Configuration,
-                format!("runtime download URL must use HTTPS: {url}"),
+                format!(
+                    "runtime download URL must use HTTPS: {}",
+                    diagnostic_url(url)
+                ),
             ));
         }
         self.transfer(url, destination, observer)
@@ -255,7 +260,10 @@ mod medium_tests {
                     if line.trim().is_empty() {
                         break;
                     }
-                    if let Some(value) = line.strip_prefix("Range: ") {
+                    if let Some((_, value)) = line
+                        .split_once(':')
+                        .filter(|(name, _)| name.eq_ignore_ascii_case("Range"))
+                    {
                         range = Some(value.trim().to_owned());
                     }
                 }

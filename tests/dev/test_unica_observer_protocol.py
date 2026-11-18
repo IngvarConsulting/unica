@@ -100,6 +100,96 @@ async function check(at, kind, expected, message) {
         )
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_http_handler_tree_row_uses_only_the_proven_address(self):
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("Node.js is required for Observer tree checks")
+        script = r"""
+const assert = require("node:assert/strict");
+const vm = require("node:vm");
+const page = require("node:fs").readFileSync(0, "utf8");
+const source = page.slice(page.indexOf("function handlerTarget("), page.indexOf("function highlightTreeRow"));
+let data;
+const context = vm.createContext({
+  document: {createElement: () => ({remove() {}})},
+  ticking: () => () => {},
+  view: async () => ({result: {ok: true, data}}),
+  makeRow: (label, at) => ({label, at}),
+  markLeaf: () => {}, shortLabel: () => "", isGraph: () => false,
+  esc: value => value,
+});
+vm.runInContext(source, context);
+(async () => {
+  const http = "main:HTTPService.ExternalAPI.Module.HTTPService.Method.MetricsGet";
+  const form = "main:CommonForm.Editor.Module.Form.Method.OnOpen";
+  const cases = [
+    [{kind: "Method", at: "main:HTTPService.ExternalAPI.URLTemplate.Metrics.Method.Get", props: {implementationAt: http}}, http],
+    [{kind: "Method", at: "main:HTTPService.ExternalAPI.URLTemplate.Metrics.Method.Get", props: {}}, undefined],
+    [{kind: "Method", at: "main:HTTPService.ExternalAPI.URLTemplate.Metrics.Method.Get", props: {implementationAt: 7}}, undefined],
+    [{kind: "Method", at: "main:CommonModule.Other.Method.Get", props: {implementationAt: http}}, undefined],
+    [{kind: "Event", at: "main:CommonForm.Editor.Event.OnOpen", props: {binding: "property", state: "implemented", implementationAt: form}}, form],
+    [{kind: "Event", props: {binding: "property", state: "available", implementationAt: form}}, undefined],
+    [{kind: "Operation", props: {implementationAt: http}}, undefined],
+  ];
+  for (const [value, target] of cases) {
+    data = value;
+    const rows = [];
+    const container = {appendChild: row => rows.push(row), childElementCount: 1};
+    await context.fill(container, data.at);
+    const handlers = rows.filter(row => row.label === "Handler");
+    assert.equal(handlers.length, target ? 1 : 0);
+    if (target) assert.equal(handlers[0].at, target);
+  }
+})().catch(error => {console.error(error); process.exitCode = 1;});
+"""
+        result = subprocess.run([node, "-e", script], input=observer.PAGE, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_soap_handler_tree_row_uses_only_the_proven_address(self):
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("Node.js is required for Observer tree checks")
+        script = r"""
+const assert = require("node:assert/strict");
+const vm = require("node:vm");
+const page = require("node:fs").readFileSync(0, "utf8");
+const source = page.slice(page.indexOf("function handlerTarget("), page.indexOf("function highlightTreeRow"));
+let data;
+const context = vm.createContext({
+  document: {createElement: () => ({remove() {}})},
+  ticking: () => () => {},
+  view: async () => ({result: {ok: true, data}}),
+  makeRow: (label, at) => ({label, at}),
+  markLeaf: () => {}, shortLabel: () => "", isGraph: () => false,
+  esc: value => value,
+});
+vm.runInContext(source, context);
+(async () => {
+  const soap = "main:WebService.Exchange.Module.WebService.Method.SendData";
+  const form = "main:CommonForm.Editor.Module.Form.Method.OnOpen";
+  const cases = [
+    [{kind: "Operation", at: "main:WebService.Exchange.Operation.Send", props: {implementationAt: soap}}, soap],
+    [{kind: "Operation", at: "main:WebService.Exchange.Operation.Send", props: {}}, undefined],
+    [{kind: "Operation", at: "main:WebService.Exchange.Operation.Send", props: {implementationAt: 7}}, undefined],
+    [{kind: "Operation", at: "main:Other.Exchange.Operation.Send", props: {implementationAt: soap}}, undefined],
+    [{kind: "Event", at: "main:CommonForm.Editor.Event.OnOpen", props: {binding: "property", state: "implemented", implementationAt: form}}, form],
+    [{kind: "Event", props: {binding: "property", state: "available", implementationAt: form}}, undefined],
+    [{kind: "Method", props: {implementationAt: soap}}, undefined],
+  ];
+  for (const [value, target] of cases) {
+    data = value;
+    const rows = [];
+    const container = {appendChild: row => rows.push(row), childElementCount: 1};
+    await context.fill(container, data.at);
+    const handlers = rows.filter(row => row.label === "Handler");
+    assert.equal(handlers.length, target ? 1 : 0);
+    if (target) assert.equal(handlers[0].at, target);
+  }
+})().catch(error => {console.error(error); process.exitCode = 1;});
+"""
+        result = subprocess.run([node, "-e", script], input=observer.PAGE, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_scheduled_job_handler_tree_row_uses_only_the_proven_address(self):
         node = shutil.which("node")
         if not node:

@@ -542,8 +542,11 @@ class DiffTests(unittest.TestCase):
         # Clippy as the PR gate runs it: the whole workspace, all targets and features.
         self.assertEqual(commands["clippy"][:6],
                          ["cargo", "clippy", "--workspace", "--all-targets", "--all-features", "--locked"])
-        self.assertEqual({"fmt", "modules-fmt", "version-contract", "open-marks", "python:tests/ci",
+        self.assertEqual({"fmt", "version-contract", "open-marks", "python:tests/ci",
                           "python:tests/dev"} - set(commands), set())
+        self.assertEqual([check.kind for check in planned.checks].count("fmt"), 1)
+        self.assertNotIn("modules-fmt", commands)
+        self.assertEqual(commands["fmt"], ["py", "scripts/ci/check-discovered-modules-format.py"])
         self.assertEqual(commands["open-marks"], ["py", "scripts/ci/open_marks.py", "pr", "--description", ""])
         self.assertEqual(len(planned.notes), 1)
 

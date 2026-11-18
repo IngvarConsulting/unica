@@ -123,6 +123,10 @@ mod medium_tests {
     use unica_analysis_services::provider_host::ProviderHostKey;
     use unica_source_contract::workspace::WorkspaceContext;
 
+    mod readiness_before_preparation {
+        include!("../workspace_service_support/readiness_before_preparation.rs");
+    }
+
     #[test]
     fn legacy_workspace_service_runtime_is_owned_by_the_workspace_actor_adapter() {
         let context = test_context("legacy-runtime-actor-owner");
@@ -521,7 +525,7 @@ mod medium_tests {
     }
 
     type WorkspaceControlTestServer = (
-        WorkspaceContext,
+        ServiceTestContext,
         WorkspaceServiceRecord,
         Arc<WorkspaceServiceRuntime>,
         Arc<BlockingWorkspaceExecutor>,
@@ -581,7 +585,7 @@ mod medium_tests {
         executor: Arc<dyn GenericWorkspaceServiceOperationExecutor<BslWorkspaceBackend>>,
         shutdown_grace: Duration,
     ) -> (
-        WorkspaceContext,
+        ServiceTestContext,
         WorkspaceServiceRecord,
         Arc<WorkspaceServiceRuntime>,
         thread::JoinHandle<Result<(), String>>,
@@ -2906,13 +2910,13 @@ fn main() {
     }
 
     struct WorkspaceAdmissionTestServer {
-        context: WorkspaceContext,
         record: WorkspaceServiceRecord,
         runtime: Arc<WorkspaceServiceRuntime>,
         executor: Arc<AdmissionTestExecutor>,
         server: Option<thread::JoinHandle<Result<(), String>>>,
         streams: Vec<TcpStream>,
         gates: Vec<AdmissionTestGate>,
+        context: ServiceTestContext,
     }
 
     impl WorkspaceAdmissionTestServer {
@@ -3457,10 +3461,10 @@ fn main() {
             }
         }
         struct Cleanup {
-            context: WorkspaceContext,
             runtime: Arc<WorkspaceServiceRuntime>,
             server: Option<thread::JoinHandle<Result<(), String>>>,
             release: mpsc::Sender<()>,
+            context: ServiceTestContext,
         }
         impl Drop for Cleanup {
             fn drop(&mut self) {
@@ -4132,7 +4136,12 @@ fn main() {
 
     fn stalling_runtime(
         name: &str,
-    ) -> (WorkspaceContext, WorkspaceServiceRuntime, PathBuf, PathBuf) {
+    ) -> (
+        ServiceTestContext,
+        WorkspaceServiceRuntime,
+        PathBuf,
+        PathBuf,
+    ) {
         let context = test_context(&format!("{name}-{}", Uuid::new_v4()));
         let fixture = compile_stall_first_call_fixture(&context);
         let pid_file = context.cache_root.join("stall-session-pids.txt");
@@ -7372,19 +7381,66 @@ fn main() {
         ));
     }
 
-    pub(super) fn test_context(name: &str) -> WorkspaceContext {
-        let root = std::env::temp_dir().join(format!(
-            "unica-workspace-service-{name}-{}",
-            std::process::id()
-        ));
+    pub(super) struct ServiceTestContext {
+        context: WorkspaceContext,
+        _directory: tempfile::TempDir,
+    }
+
+    impl std::ops::Deref for ServiceTestContext {
+        type Target = WorkspaceContext;
+
+        fn deref(&self) -> &Self::Target {
+            &self.context
+        }
+    }
+
+    impl std::ops::DerefMut for ServiceTestContext {
+        fn deref_mut(&mut self) -> &mut Self::Target {
+            &mut self.context
+        }
+    }
+
+    pub(super) fn test_context(name: &str) -> ServiceTestContext {
+        let directory = tempfile::Builder::new()
+            .prefix(&format!("unica-workspace-service-{name}-"))
+            .tempdir()
+            .expect("workspace service test directory");
+        let root = directory.path();
         let workspace = root.join("workspace");
         fs::create_dir_all(workspace.join("src/CommonModules")).unwrap();
         fs::create_dir_all(workspace.join("extension/CommonModules")).unwrap();
-        WorkspaceContext {
-            cwd: workspace.clone(),
-            workspace_root: workspace.clone(),
-            cache_root: root.join("cache"),
-            workspace_epoch: 1,
+        ServiceTestContext {
+            context: WorkspaceContext {
+                cwd: workspace.clone(),
+                workspace_root: workspace,
+                cache_root: root.join("cache"),
+                workspace_epoch: 1,
+            },
+            _directory: directory,
+        }
+    }
+
+    #[test]
+    fn service_test_context_removes_directory_after_return_and_unwind() {
+        for should_panic in [false, true] {
+            let mut observed_root = None;
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let context = test_context("cleanup");
+                let root = context.cache_root.parent().unwrap().to_path_buf();
+                assert!(root.is_dir());
+                observed_root = Some(root);
+                fs::write(context.workspace_root.join("src/Module.bsl"), "// fixture").unwrap();
+                if should_panic {
+                    panic!("controlled service fixture panic");
+                }
+            }));
+            assert_eq!(outcome.is_err(), should_panic);
+            let root = observed_root.expect("the fixture was created before the panic");
+            assert!(
+                !root.exists(),
+                "service fixture directory remains: {}",
+                root.display()
+            );
         }
     }
 

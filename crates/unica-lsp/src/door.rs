@@ -103,21 +103,29 @@ pub type SessionLost = Arc<dyn Fn() + Send + Sync>;
 /// Обслужить одно соединение редактора до `exit` или конца ввода.
 /// Возвращает код выхода процесса.
 pub fn serve(
-    mut input: impl BufRead,
+    input: impl BufRead,
     output: impl Write + Send + 'static,
     client: Arc<V5DaemonClient>,
     session_lost: SessionLost,
 ) -> i32 {
-    let mut frontend = Frontend {
-        client,
-        session_lost,
-        output: Arc::new(Mutex::new(Box::new(output))),
-        phase: Phase::Uninitialized,
-        in_flight: Arc::new(Mutex::new(HashMap::new())),
-        next_request: 0,
-        unsynced: std::collections::HashSet::new(),
-        progress: Arc::new(WorkDoneProgress::new(false)),
-    };
+    serve_frontend(input, Frontend::new(output, client, session_lost))
+}
+
+/// Обслужить тестовый stdio-поток с управляемой границей завершения worker.
+#[cfg(any(test, feature = "test-support"))]
+pub fn serve_with_worker_hook(
+    input: impl BufRead,
+    output: impl Write + Send + 'static,
+    client: Arc<V5DaemonClient>,
+    session_lost: SessionLost,
+    worker_hook: WorkerHook,
+) -> i32 {
+    let mut frontend = Frontend::new(output, client, session_lost);
+    frontend.worker_hook = Some(worker_hook);
+    serve_frontend(input, frontend)
+}
+
+fn serve_frontend(mut input: impl BufRead, mut frontend: Frontend) -> i32 {
     let code = loop {
         let body = match crate::codec::read_message(&mut input) {
             Ok(Some(body)) => body,
@@ -155,7 +163,20 @@ pub struct Frontend {
     unsynced: std::collections::HashSet<String>,
     /// Work done progress tokens of this editor.
     progress: Arc<WorkDoneProgress>,
+    #[cfg(any(test, feature = "test-support"))]
+    worker_hook: Option<WorkerHook>,
 }
+
+/// Границы завершения запроса для детерминированных тестов двери.
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum WorkerStage {
+    BeforePendingRemoval,
+    AfterPendingRemoval,
+}
+/// Наблюдение одного экземпляра frontend; аргумент — внутренний ticket.
+#[cfg(any(test, feature = "test-support"))]
+pub type WorkerHook = Arc<dyn Fn(u64, WorkerStage) + Send + Sync>;
 
 pub enum Phase {
     Uninitialized,
@@ -188,6 +209,24 @@ pub enum Flow {
 }
 
 impl Frontend {
+    fn new(
+        output: impl Write + Send + 'static,
+        client: Arc<V5DaemonClient>,
+        session_lost: SessionLost,
+    ) -> Self {
+        Self {
+            client,
+            session_lost,
+            output: Arc::new(Mutex::new(Box::new(output))),
+            phase: Phase::Uninitialized,
+            in_flight: Arc::new(Mutex::new(HashMap::new())),
+            next_request: 0,
+            unsynced: std::collections::HashSet::new(),
+            progress: Arc::new(WorkDoneProgress::new(false)),
+            #[cfg(any(test, feature = "test-support"))]
+            worker_hook: None,
+        }
+    }
     fn handle(&mut self, body: &[u8]) -> Flow {
         let Ok(message) = serde_json::from_slice::<Value>(body) else {
             self.send(error_response(
@@ -444,12 +483,33 @@ impl Frontend {
         let in_flight = Arc::clone(&self.in_flight);
         let output = Arc::clone(&self.output);
         let worker_key = key.clone();
+        #[cfg(any(test, feature = "test-support"))]
+        let worker_hook = self.worker_hook.clone();
         let spawned = thread::Builder::new()
             .name("unica-lsp-request".into())
             .spawn(move || {
                 let answer = call_daemon(&client, &session, request, call);
-                if let Some(pending) = lock(&in_flight).remove(&worker_key) {
+                #[cfg(any(test, feature = "test-support"))]
+                if let Some(hook) = &worker_hook {
+                    hook(request, WorkerStage::BeforePendingRemoval);
+                }
+                let pending = {
+                    let mut in_flight = lock(&in_flight);
+                    if in_flight
+                        .get(&worker_key)
+                        .is_some_and(|pending| pending.request == request)
+                    {
+                        in_flight.remove(&worker_key)
+                    } else {
+                        None
+                    }
+                };
+                if let Some(pending) = pending {
                     write(&output, &answer(pending.id));
+                }
+                #[cfg(any(test, feature = "test-support"))]
+                if let Some(hook) = &worker_hook {
+                    hook(request, WorkerStage::AfterPendingRemoval);
                 }
             });
         if spawned.is_err() {

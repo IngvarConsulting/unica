@@ -1632,6 +1632,14 @@ function shortLabel(at, parent) {
 
 function handlerTarget(data) {
   const entry = data.props;
+  if (data.kind === "Method" && data.at?.includes(":HTTPService.") &&
+      typeof entry?.implementationAt === "string") {
+    return entry.implementationAt;
+  }
+  if (data.kind === "Operation" && data.at?.includes(":WebService.") &&
+      typeof entry?.implementationAt === "string") {
+    return entry.implementationAt;
+  }
   if ((data.kind === "ScheduledJob" ||
        (data.kind === "Event" && entry?.binding === "property" && entry.state === "implemented")) &&
       typeof entry?.implementationAt === "string") {
