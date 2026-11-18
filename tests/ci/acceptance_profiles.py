@@ -298,29 +298,53 @@ def host_target(lock, system, machine):
 
 def stage_analyzer(plugin, *, builder=None, system=None, machine=None):
     """Provision the exact published analyzer, without changing an installed plugin."""
+    return stage_tools(plugin, ("bsl-analyzer",), builder=builder, system=system, machine=machine)
+
+
+def stage_tools(plugin, names, *, builder=None, system=None, machine=None):
+    """Provision the exact published engines named, without changing an installed plugin.
+
+    A bare asset lands under its binary name; a publisher's archive is unpacked
+    whole, the way the packaged plugin carries it.
+    """
     builder = builder or tools_builder()
     lock_path = REPO / "plugins/unica/third-party/tools.lock.json"
     lock = builder.load_lock(lock_path)
     target = host_target(lock, system or platform.system(), machine or platform.machine())
     config = lock["targets"][target]
-    tool = next(tool for tool in lock["tools"] if tool["name"] == "bsl-analyzer")
-    asset = tool["assets"][target]
-    binary = plugin / "bin" / target / (tool["binaryName"] + config["exe"])
-    # Три попытки по 25 с укладываются в 90 с, которые приёмка даёт подготовке.
-    builder.fetch_verified_asset(builder.release_asset_url(tool, asset), binary, asset,
-                                 tool_name=tool["name"], target=target, timeout=25)
-    builder.set_file_mode(binary, executable=True)
-    entry = builder.tool_entry(
-        target=target, target_triple=config["targetTriple"], name=tool["name"],
-        version=tool["version"], repository=tool["repository"], tag=tool["sourceTag"],
-        commit=tool["sourceCommit"], license_id=tool["license"], binary=binary,
-        relative_binary=binary.relative_to(plugin).as_posix(),
-        delivered_binary=binary.relative_to(plugin).as_posix(), artifact="bsl-analyzer",
-    )
+    entries = []
+    for name in names:
+        tool = next(tool for tool in lock["tools"] if tool["name"] == name)
+        asset = tool["assets"][target]
+        # Три попытки по 25 с укладываются в 90 с, которые приёмка даёт подготовке.
+        if tool["assetStrategy"] == "upstream-archive-release-asset":
+            archive = plugin.parent / f"{plugin.name}-downloads" / asset["assetName"]
+            builder.fetch_verified_asset(builder.release_asset_url(tool, asset), archive, asset,
+                                         tool_name=name, target=target, timeout=25)
+            members = builder.read_upstream_archive(archive, asset_name=asset["assetName"],
+                                                    binary=asset["archiveBinary"])
+            for member, payload, executable in members:
+                destination = plugin.joinpath("bin", target, *member.split("/"))
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_bytes(payload)
+                builder.set_file_mode(destination, executable=executable)
+            binary = plugin.joinpath("bin", target, *asset["archiveBinary"].split("/"))
+        else:
+            binary = plugin / "bin" / target / (tool["binaryName"] + config["exe"])
+            builder.fetch_verified_asset(builder.release_asset_url(tool, asset), binary, asset,
+                                         tool_name=name, target=target, timeout=25)
+            builder.set_file_mode(binary, executable=True)
+        entries.append(builder.tool_entry(
+            target=target, target_triple=config["targetTriple"], name=name,
+            version=tool["version"], repository=tool["repository"], tag=tool["sourceTag"],
+            commit=tool["sourceCommit"], license_id=tool["license"], binary=binary,
+            relative_binary=binary.relative_to(plugin).as_posix(),
+            delivered_binary=binary.relative_to(plugin).as_posix(), artifact=name,
+        ))
     (plugin / "third-party").mkdir(parents=True)
     shutil.copyfile(lock_path, plugin / "third-party/tools.lock.json")
     (plugin / "third-party/manifest.json").write_text(json.dumps({
-        "tools": [entry], "targetTriple": config["targetTriple"],
+        "tools": entries, "targetTriple": config["targetTriple"],
     }), encoding="utf-8")
     return plugin
 
