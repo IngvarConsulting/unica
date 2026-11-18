@@ -735,7 +735,7 @@ fn medium_an_lsp_hover_stream_does_not_delay_a_parallel_mcp_call() {
 /// A completes its daemon call before cancellation, but cannot remove pending
 /// until B has reused its public id and reached the same completion boundary.
 #[test]
-fn a_late_cancelled_worker_cannot_remove_a_reused_public_request_id() {
+fn medium_a_late_cancelled_worker_cannot_remove_a_reused_public_request_id() {
     let host = Arc::new(HeldHost::default());
     let daemon =
         LiveV5Daemon::start_with_lsp_host(canonical_v13_service(), host as Arc<dyn LspHost>);
