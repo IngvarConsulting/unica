@@ -11,6 +11,10 @@ const BASE: &str = "http://v8.1c.ru/8.3/debugger/debugBaseData";
 const BREAKPOINTS: &str = "http://v8.1c.ru/8.3/debugger/debugBreakpoints";
 const CALCULATIONS: &str = "http://v8.1c.ru/8.3/debugger/debugCalculations";
 const AUTO_ATTACH: &str = "http://v8.1c.ru/8.3/debugger/debugAutoAttach";
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
+// dbgs holds an idle event poll for about five seconds. Allow extra time
+// under load so that we do not abandon the response carrying a stop.
+const EVENT_POLL_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub(crate) struct Rdbg {
     http: reqwest::blocking::Client,
@@ -38,7 +42,6 @@ impl Rdbg {
                 .tls_backend_preconfigured(tls)
                 .no_proxy()
                 .redirect(reqwest::redirect::Policy::none())
-                .timeout(Duration::from_secs(3))
                 .build()?,
             url: format!("http://127.0.0.1:{port}/e1crdbg/rdbg"),
             alias: escape(alias),
@@ -89,10 +92,15 @@ impl Rdbg {
     }
 
     pub fn poll(&self) -> Result<String> {
+        self.poll_with_timeout(EVENT_POLL_TIMEOUT)
+    }
+
+    pub fn poll_with_timeout(&self, timeout: Duration) -> Result<String> {
         self.send(
             "pingDebugUIParams",
             &[("dbgui", &self.id.to_string())],
             None,
+            timeout,
         )
     }
 
@@ -163,15 +171,25 @@ impl Rdbg {
             "<request><infoBaseAlias xmlns=\"{REQUEST}\">{}</infoBaseAlias><idOfDebuggerUI xmlns=\"{REQUEST}\">{}</idOfDebuggerUI>{}</request>",
             self.alias, self.id, namespace_request_children(body)
         );
-        self.send(command, &[], Some(request))
+        self.send(command, &[], Some(request), REQUEST_TIMEOUT)
     }
 
-    fn send(&self, command: &str, query: &[(&str, &str)], body: Option<String>) -> Result<String> {
+    fn send(
+        &self,
+        command: &str,
+        query: &[(&str, &str)],
+        body: Option<String>,
+        timeout: Duration,
+    ) -> Result<String> {
         let mut url = reqwest::Url::parse(&self.url)?;
         url.query_pairs_mut()
             .append_pair("cmd", command)
             .extend_pairs(query);
-        let mut request = self.http.post(url).header("User-Agent", "1CV8");
+        let mut request = self
+            .http
+            .post(url)
+            .header("User-Agent", "1CV8")
+            .timeout(timeout);
         if let Some(body) = body {
             request = request
                 .header("Content-Type", "application/xml; charset=utf-8")

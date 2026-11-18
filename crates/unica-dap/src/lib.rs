@@ -475,13 +475,18 @@ impl Session {
             return Ok(variables);
         }
         let deadline = Instant::now() + Duration::from_secs(5);
-        while Instant::now() < deadline {
-            let reply = self.rdbg.poll()?;
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            let reply = self.rdbg.poll_with_timeout(remaining)?;
             self.consume(&reply, events)?;
             if let Some(variables) = read_context(&reply, evaluation)? {
                 return Ok(variables);
             }
-            std::thread::sleep(Duration::from_millis(50));
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            std::thread::sleep(Duration::from_millis(50).min(remaining));
         }
         Err("rdbg did not return variables".into())
     }
