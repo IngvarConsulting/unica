@@ -1253,7 +1253,10 @@ class BuildUnicaToolsTests(unittest.TestCase):
                 calls.append(env)
 
             with (
-                patch.dict(module.os.environ, {"CFLAGS": "-march=native"}),
+                patch.dict(module.os.environ, {
+                    "CFLAGS": "-march=native",
+                    "CFLAGS_x86_64-unknown-linux-gnu": "-march=native",
+                }),
                 patch.object(module, "run", side_effect=fake_run),
             ):
                 module.build_cargo_workspace_binaries(
@@ -1268,9 +1271,9 @@ class BuildUnicaToolsTests(unittest.TestCase):
                 )
 
         [env] = calls
-        self.assertEqual(env["CFLAGS_x86_64_unknown_linux_gnu"], "-march=x86-64")
-        self.assertEqual(env["CXXFLAGS_x86_64_unknown_linux_gnu"], "-march=x86-64")
-        self.assertEqual(env["CFLAGS"], "-march=native")
+        # cc-rs appends the hyphenated target variable last, so its -march wins.
+        self.assertEqual(env["CFLAGS_x86_64-unknown-linux-gnu"], "-march=x86-64")
+        self.assertEqual(env["CXXFLAGS_x86_64-unknown-linux-gnu"], "-march=x86-64")
 
     def test_workspace_binary_pairs_are_rejected_before_build_when_lock_is_malformed(self) -> None:
         module = load_build_module()

@@ -6,77 +6,123 @@ dependencies take the instruction set from the C compiler's default. GCC 15 of
 the ubuntu-26.04 image compiled ring's curve25519 with AVX2, and the published
 bootstrap died with SIGILL on a CPU with AVX but without AVX2 (#3190).
 
-The check disassembles every x86-64 ELF file under the given paths and looks
-for instructions beyond baseline: VEX/EVEX vector code (AVX, AVX2, AVX-512,
-FMA) and the BMI, BMI2, ADX and MOVBE scalar extensions. Such code is allowed
-only in functions that a CPU check selects at run time. Their names carry the
-extension (`..._avx2`, `SlimAVX2`, `x86_vaes256`, `..._adx`), and the
-hand-written assembly of ring whose names do not is listed explicitly.
+The check disassembles each given x86-64 ELF file and looks for instructions
+beyond baseline x86-64, which ends at SSE2: SSE3 to SSE4.2, POPCNT, AES-NI,
+PCLMULQDQ, SHA, VEX/EVEX vector code (AVX, AVX2, AVX-512, FMA) and the BMI,
+BMI2, ADX and MOVBE scalar extensions. Such code is allowed only in functions
+that a CPU check selects at run time. Their names carry the extension
+(`..._avx2`, `SlimAVX2`, `x86_vaes256`, `..._adx`); the hand-written assembly
+of ring whose names do not is listed explicitly.
 
-The check needs the symbol table, so it covers the binaries Unica builds
-itself. Stripped files are refused rather than passed.
+Function names come from the symbol table, so the check covers the binaries
+Unica builds itself and refuses a file without one rather than passing it.
 """
 
 from __future__ import annotations
 
 import argparse
 import re
+import struct
 import subprocess
 import sys
 from pathlib import Path
 
 ELF_MAGIC = b"\x7fELF"
+ELFCLASS64 = 2
 EM_X86_64 = 62
+SHT_SYMTAB = 2
 
 FUNCTION = re.compile(r"^[0-9a-f]+ <(?P<name>[^>]+)>:$")
 INSTRUCTION = re.compile(r"^\s+[0-9a-f]+:\s+(?P<mnemonic>[a-z][a-z0-9.]*)\s*(?P<operands>.*)$")
 VECTOR_REGISTER = re.compile(r"%[xyz]mm\d+")
-WIDE_REGISTER = re.compile(r"%[yz]mm\d+|%k[0-7]")
-SCALAR_EXTENSIONS = {
-    # BMI1, BMI2
+WIDE_REGISTER = re.compile(r"%[yz]mm\d+|%k[0-7]\b")
+BEYOND_BASELINE = {
+    # SSE3
+    "addsubpd", "addsubps", "haddpd", "haddps", "hsubpd", "hsubps",
+    "lddqu", "movddup", "movshdup", "movsldup",
+    # SSSE3
+    "pabsb", "pabsd", "pabsw", "palignr", "phaddd", "phaddsw", "phaddw",
+    "phsubd", "phsubsw", "phsubw", "pmaddubsw", "pmulhrsw", "pshufb",
+    "psignb", "psignd", "psignw",
+    # SSE4.1
+    "blendpd", "blendps", "blendvpd", "blendvps", "dppd", "dpps", "extractps",
+    "insertps", "movntdqa", "mpsadbw", "packusdw", "pblendvb", "pblendw",
+    "pcmpeqq", "pextrb", "pextrd", "pextrq", "phminposuw", "pinsrb", "pinsrd",
+    "pinsrq", "pmaxsb", "pmaxsd", "pmaxud", "pmaxuw", "pminsb", "pminsd",
+    "pminud", "pminuw", "pmovsxbd", "pmovsxbq", "pmovsxbw", "pmovsxdq",
+    "pmovsxwd", "pmovsxwq", "pmovzxbd", "pmovzxbq", "pmovzxbw", "pmovzxdq",
+    "pmovzxwd", "pmovzxwq", "pmuldq", "pmulld", "ptest", "roundpd", "roundps",
+    "roundsd", "roundss",
+    # SSE4.2, POPCNT
+    "pcmpestri", "pcmpestrm", "pcmpistri", "pcmpistrm", "pcmpgtq", "crc32",
+    "crc32b", "crc32w", "crc32l", "crc32q", "popcnt",
+    # AES-NI, PCLMULQDQ, SHA
+    "aesdec", "aesdeclast", "aesenc", "aesenclast", "aesimc", "aeskeygenassist",
+    "pclmulqdq", "pclmullqlqdq", "pclmulhqlqdq", "pclmullqhqdq", "pclmulhqhqdq",
+    "sha1msg1", "sha1msg2", "sha1nexte", "sha1rnds4",
+    "sha256msg1", "sha256msg2", "sha256rnds2",
+    # BMI1, BMI2, ADX, MOVBE, LZCNT (TZCNT is `rep bsf` and runs everywhere)
     "andn", "bextr", "blsi", "blsmsk", "blsr", "bzhi",
     "mulx", "pdep", "pext", "rorx", "sarx", "shlx", "shrx",
-    # ADX, MOVBE, LZCNT (TZCNT is `rep bsf` and runs everywhere)
     "adcx", "adox", "movbe", "lzcnt",
 }
 
-# Функции, которые выбирает проверка CPU во время выполнения.
+# Функции, которые выбирает проверка CPU во время выполнения: имя называет
+# расширение отдельным словом, а не случайными буквами хеша или слова.
 DISPATCHED_NAME = re.compile(
-    r"avx|vaes|vpclmulqdq|_adx|adx_|bmi|_mulx|mulx4x|sqrx|shaext|sha_ni",
-    re.IGNORECASE,
+    r"(?:^|[_\d])(?:avx(?:2|512)?|sse41)(?:[_\d.]|$)"  # ring *_avx2, memchr 4avx2, crc32fast calculate_avx512
+    r"|(?:Slim|Fat)(?:AVX2|SSSE3)"  # aho-corasick teddy
+    r"|\dx86_v?aes(?:256|512)?\w"  # aes backends x86_aes, x86_vaes256, x86_vaes512
+    r"|\dpclmulqdq\d"  # crc32fast specialized::pclmulqdq
+    r"|4sha2\d+sha\d+3x86"  # sha2 sha256::x86 (SHA-NI)
+    r"|_adx(?:[_.]|$)"  # ring x25519 *_adx
 )
-# Ассемблер AES-GCM ring на AVX и MOVBE: ring вызывает его только после
-# проверки CPU, а имя расширения не называет.
+# Ассемблер ring, который ring вызывает только после проверки CPU, а имя
+# расширения не называет: AES-NI, SSSE3, CLMUL, SHA и AVX-вариант AES-GCM,
+# вместе с его внутренними метками.
 DISPATCHED_ASSEMBLY = re.compile(
-    r"^ring_core_\d+_\d+_\d+__aesni_gcm_(?:en|de)crypt$|^_aesni_ctr32_(?:ghash_)?6x$"
+    r"^ring_core_\d+_\d+_\d+__(?:"
+    r"aes_hw_\w+|aesni_gcm_(?:en|de)crypt|vpaes_\w+"
+    r"|gcm_(?:init|gmult|ghash)_clmul|ChaCha20_ctr32_ssse3\w*"
+    r"|sha(?:256|512)_block_data_order_(?:hw|ssse3)"
+    r")$"
+    r"|^_aesni_(?:ctr32_(?:ghash_)?6x|encrypt\d)$|^_vpaes_\w+$|^process_extra_in_trailer$"
 )
 
 
-def is_x86_64_elf(path: Path) -> bool:
-    try:
-        with path.open("rb") as handle:
-            header = handle.read(20)
-    except OSError:
-        return False
+def is_x86_64_elf(header: bytes) -> bool:
     return (
-        len(header) == 20
+        len(header) >= 20
         and header[:4] == ELF_MAGIC
+        and header[4] == ELFCLASS64
         and int.from_bytes(header[18:20], "little") == EM_X86_64
     )
 
 
-def elf_files(paths: list[Path]) -> list[Path]:
-    found = []
-    for path in paths:
-        candidates = sorted(path.rglob("*")) if path.is_dir() else [path]
-        found.extend(p for p in candidates if p.is_file() and not p.is_symlink() and is_x86_64_elf(p))
-    return found
+def has_symbol_table(data: bytes) -> bool:
+    shoff = struct.unpack_from("<Q", data, 0x28)[0]
+    shentsize, shnum = struct.unpack_from("<HH", data, 0x3A)
+    if shoff == 0 or shentsize < 8 or shoff + shentsize * shnum > len(data):
+        return False
+    return any(
+        struct.unpack_from("<I", data, shoff + index * shentsize + 4)[0] == SHT_SYMTAB
+        for index in range(shnum)
+    )
+
+
+def require_checkable(path: Path) -> None:
+    """Refuse a given path that is not an x86-64 ELF file with a symbol table."""
+    if not path.is_file():
+        raise SystemExit(f"{path}: not a file")
+    data = path.read_bytes()
+    if not is_x86_64_elf(data[:20]):
+        raise SystemExit(f"{path}: not an x86-64 ELF file")
+    if not has_symbol_table(data):
+        raise SystemExit(f"{path}: no symbol table, the check needs function names")
 
 
 def beyond_baseline(mnemonic: str, operands: str) -> bool:
-    if mnemonic in SCALAR_EXTENSIONS:
-        return True
-    if WIDE_REGISTER.search(operands):
+    if mnemonic in BEYOND_BASELINE or WIDE_REGISTER.search(operands):
         return True
     # VEX-форма SSE: тот же регистр xmm, но инструкция AVX.
     return mnemonic.startswith("v") and (
@@ -88,50 +134,31 @@ def dispatched(function: str) -> bool:
     return bool(DISPATCHED_NAME.search(function) or DISPATCHED_ASSEMBLY.match(function))
 
 
-def violations(disassembly, limit_per_function: int = 1) -> dict[str, list[str]]:
-    """Map each non-dispatched function to its first instructions beyond baseline."""
-    found: dict[str, list[str]] = {}
+def violations(disassembly) -> dict[str, str]:
+    """Map each non-dispatched function to its first instruction beyond baseline."""
+    found: dict[str, str] = {}
     function = None
     allowed = True
-    named = False
     for line in disassembly:
-        line = line.rstrip("\n")
-        header = FUNCTION.match(line)
+        header = FUNCTION.match(line.rstrip("\n"))
         if header:
             function = header["name"]
-            # Без таблицы символов objdump называет код именем секции, и
-            # отличить функцию за проверкой CPU от обычной нечем.
-            named = named or not function.startswith(".")
             allowed = dispatched(function)
             continue
-        if allowed or function is None:
+        if allowed or function is None or function in found:
             continue
-        instruction = INSTRUCTION.match(line)
-        if not instruction:
-            continue
-        mnemonic, operands = instruction["mnemonic"], instruction["operands"]
-        if beyond_baseline(mnemonic, operands):
-            seen = found.setdefault(function, [])
-            if len(seen) < limit_per_function:
-                seen.append(f"{mnemonic} {operands}".strip())
-    if function is not None and not named:
-        raise StrippedBinary
+        instruction = INSTRUCTION.match(line.rstrip("\n"))
+        if instruction and beyond_baseline(instruction["mnemonic"], instruction["operands"]):
+            found[function] = f"{instruction['mnemonic']} {instruction['operands']}".strip()
     return found
 
 
-class StrippedBinary(Exception):
-    """The file has no function symbols, so dispatched code cannot be told apart."""
-
-
-def check_file(path: Path, objdump: str) -> dict[str, list[str]]:
+def check_file(path: Path, objdump: str) -> dict[str, str]:
+    require_checkable(path)
     command = [objdump, "-d", "--no-show-raw-insn", str(path)]
     with subprocess.Popen(command, stdout=subprocess.PIPE, text=True, errors="replace") as process:
         assert process.stdout is not None
-        try:
-            found = violations(process.stdout)
-        except StrippedBinary:
-            process.kill()
-            raise SystemExit(f"{path}: no symbol table, the check needs function names")
+        found = violations(process.stdout)
     if process.returncode != 0:
         raise SystemExit(f"{objdump} failed on {path} with code {process.returncode}")
     return found
@@ -139,25 +166,23 @@ def check_file(path: Path, objdump: str) -> dict[str, list[str]]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("paths", nargs="+", type=Path, help="файлы или каталоги поставки linux-x64")
+    parser.add_argument("binaries", nargs="+", type=Path, help="бинари linux-x64 с таблицей символов")
     parser.add_argument("--objdump", default="objdump")
     parser.add_argument("--show", type=int, default=20, help="сколько функций показать на файл")
     args = parser.parse_args(argv)
 
-    files = elf_files(args.paths)
-    if not files:
-        print("no x86-64 ELF files found", file=sys.stderr)
-        return 2
+    for path in args.binaries:
+        require_checkable(path)
     failed = False
-    for path in files:
+    for path in args.binaries:
         found = check_file(path, args.objdump)
         if not found:
             print(f"ok: {path}")
             continue
         failed = True
         print(f"{path}: {len(found)} functions need more than baseline x86-64 without a CPU check")
-        for function, instructions in sorted(found.items())[: args.show]:
-            print(f"  {function}: {instructions[0]}")
+        for function, instruction in sorted(found.items())[: args.show]:
+            print(f"  {function}: {instruction}")
     return 1 if failed else 0
 
 
