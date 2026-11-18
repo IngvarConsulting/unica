@@ -169,7 +169,7 @@ impl RetainedRootSecureRead {
         let mut file = open_regular_child_nofollow(&parent, name)?;
         let identity = file_identity(&file)?;
         emit_tree_phase(SecureTreePhase::BeforeReadEntry(logical_path.clone()));
-        let bytes = read_open_regular_file(&mut file, checkpoint)?;
+        let bytes = read_open_regular_file(&mut file, None, checkpoint)?;
         checkpoint()?;
         emit_tree_phase(SecureTreePhase::BeforeRebindEntry(logical_path.clone()));
         prove_regular_file_binding(&parent, name, identity)?;
@@ -373,6 +373,7 @@ enum RetainedChildKind {
 /// fingerprint, by visit order. The bytes went to the visitor (#1119).
 struct CaptureState<'visit> {
     files: Vec<FileFingerprint>,
+    remaining_bytes: Option<usize>,
     visit: &'visit mut dyn FnMut(SecureFileSnapshotEntry) -> io::Result<()>,
 }
 
@@ -602,6 +603,23 @@ pub fn visit_root_relative_regular_files(
     root: &Path,
     start: &Path,
     limits: SecureTreeCaptureLimits,
+    descend: impl FnMut(&Path) -> bool,
+    select: impl FnMut(&Path) -> bool,
+    visit: impl FnMut(SecureFileSnapshotEntry) -> io::Result<()>,
+    checkpoint: impl FnMut() -> io::Result<()>,
+) -> io::Result<SecureTreeVisit> {
+    visit_root_relative_regular_files_bounded(
+        root, start, limits, None, descend, select, visit, checkpoint,
+    )
+}
+
+/// Bound the total selected file bytes before reading or allocating each file.
+#[allow(clippy::too_many_arguments)]
+pub fn visit_root_relative_regular_files_bounded(
+    root: &Path,
+    start: &Path,
+    limits: SecureTreeCaptureLimits,
+    maximum_bytes: Option<usize>,
     mut descend: impl FnMut(&Path) -> bool,
     mut select: impl FnMut(&Path) -> bool,
     mut visit: impl FnMut(SecureFileSnapshotEntry) -> io::Result<()>,
@@ -638,6 +656,7 @@ pub fn visit_root_relative_regular_files(
     let start_handle = TraversalDirectory::new(retained_path.current().try_clone()?)?;
     let mut state = CaptureState {
         files: Vec::new(),
+        remaining_bytes: maximum_bytes,
         visit: &mut visit,
     };
     let tree = capture_directory(
@@ -760,7 +779,11 @@ fn capture_directory(
                         classification_anchor,
                         kind,
                     )?;
-                    let bytes = read_open_regular_file(&mut typed, checkpoint)?;
+                    let bytes =
+                        read_open_regular_file(&mut typed, state.remaining_bytes, checkpoint)?;
+                    if let Some(remaining) = &mut state.remaining_bytes {
+                        *remaining -= bytes.len();
+                    }
                     let logical_name = logical_utf8_path(&logical_path)?;
                     let index = state.files.len();
                     state.files.push(FileFingerprint::of(&bytes));
@@ -910,6 +933,7 @@ fn prove_directory_path(
 
 fn read_open_regular_file(
     file: &mut File,
+    maximum_bytes: Option<usize>,
     checkpoint: &mut impl FnMut() -> io::Result<()>,
 ) -> io::Result<Vec<u8>> {
     let opened = file.metadata()?;
@@ -925,6 +949,12 @@ fn read_open_regular_file(
             "secure-tree file exceeds addressable memory",
         )
     })?;
+    if maximum_bytes.is_some_and(|maximum| length > maximum) {
+        return Err(io::Error::new(
+            io::ErrorKind::FileTooLarge,
+            "secure tree exceeds the selected file byte budget",
+        ));
+    }
     let mut bytes = Vec::new();
     bytes
         .try_reserve_exact(length)
@@ -1188,6 +1218,31 @@ mod imp {
 
 #[cfg(all(test, unix))]
 mod tests {
+    #[test]
+    fn tree_byte_budget_refuses_before_visiting_the_excess_file() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("a.xml"), "1234").unwrap();
+        std::fs::write(root.path().join("b.xml"), "5678").unwrap();
+        let root = root.path().canonicalize().unwrap();
+        let mut visited = Vec::new();
+        let error = visit_root_relative_regular_files_bounded(
+            &root,
+            Path::new(""),
+            SecureTreeCaptureLimits { maximum_depth: 1 },
+            Some(7),
+            |_| true,
+            |_| true,
+            |file| {
+                visited.push(file.logical_path);
+                Ok(())
+            },
+            || Ok(()),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::FileTooLarge);
+        assert_eq!(visited, ["a.xml"]);
+    }
+
     use super::*;
     use std::fs;
     use std::os::unix::fs::symlink;
