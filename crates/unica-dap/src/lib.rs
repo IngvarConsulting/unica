@@ -7,11 +7,15 @@ use std::{
     collections::HashMap,
     io::{self, BufRead, Read, Write},
     path::Path,
-    sync::mpsc,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
     time::{Duration, Instant},
 };
 
 use base64::{engine::general_purpose::STANDARD, Engine};
+use crossbeam_channel::{bounded, never, select, Receiver, RecvTimeoutError};
 use modules::Modules;
 use rdbg::{child, field, Rdbg, TargetAttachment};
 use roxmltree::{Document, Node};
@@ -44,7 +48,7 @@ const DEBUG_TARGET_TYPES: &[&str] = &[
 ];
 
 pub fn run_stdio(resolve_modules: ResolveModules) -> i32 {
-    let (tx, rx) = mpsc::sync_channel(8);
+    let (tx, rx) = bounded(8);
     std::thread::spawn(move || {
         let mut input = io::stdin().lock();
         loop {
@@ -118,29 +122,24 @@ struct Adapter<W> {
 }
 
 impl<W: Write> Adapter<W> {
-    fn run(&mut self, requests: mpsc::Receiver<Result<Value>>) -> Result<()> {
+    fn run(&mut self, requests: Receiver<Result<Value>>) -> Result<()> {
+        let no_events = never();
         loop {
-            let command = match requests.recv_timeout(Duration::from_millis(100)) {
-                Ok(request) => request?,
-                Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(()),
-                Err(mpsc::RecvTimeoutError::Timeout) => {
-                    if let Some(session) = &mut self.session {
-                        match session.poll() {
-                            Ok(events) => self.emit(events)?,
-                            Err(error) => {
-                                self.session = None;
-                                self.emit(vec![
-                                    event(
-                                        "output",
-                                        json!({"category":"stderr","output":format!("{error}\n")}),
-                                    ),
-                                    event("terminated", json!({})),
-                                ])?;
-                            }
-                        }
-                    }
+            let reader = self
+                .session
+                .as_ref()
+                .and_then(|session| session.event_reader.as_ref())
+                .unwrap_or(&no_events);
+            let command = select! {
+                recv(reader) -> reply => {
+                    let reply = reply.unwrap_or_else(|_| Err("dbgs event reader stopped".into()));
+                    self.handle_events(reply)?;
                     continue;
                 }
+                recv(requests) -> request => match request {
+                    Ok(request) => request?,
+                    Err(_) => return Ok(()),
+                },
             };
             let name = string(&command, "command")?;
             let mut response = json!({
@@ -161,6 +160,25 @@ impl<W: Write> Adapter<W> {
                 return Ok(());
             }
         }
+    }
+
+    fn handle_events(&mut self, reply: Result<String>) -> Result<()> {
+        let mut events = Vec::new();
+        let session = self
+            .session
+            .as_mut()
+            .expect("only an active session reads events");
+        if let Err(error) = reply.and_then(|xml| session.consume(&xml, &mut events)) {
+            self.session = None;
+            events = vec![
+                event(
+                    "output",
+                    json!({"category":"stderr","output":format!("{error}\n")}),
+                ),
+                event("terminated", json!({})),
+            ];
+        }
+        self.emit(events)
     }
 
     fn handle(&mut self, name: &str, args: &Value, events: &mut Vec<Value>) -> Result<Value> {
@@ -234,12 +252,13 @@ struct Frame {
 }
 
 struct Session {
-    rdbg: Rdbg,
+    rdbg: Arc<Rdbg>,
     modules: Modules,
     breakpoints: HashMap<DebugModuleId, Vec<u32>>,
     targets: HashMap<u64, Target>,
     next_id: u64,
-    configured: bool,
+    event_reader: Option<Receiver<Result<String>>>,
+    stop_reader: Arc<AtomicBool>,
     auto_attach_types: Vec<&'static str>,
 }
 
@@ -268,17 +287,21 @@ impl Session {
             }
         }
         let modules = Modules::new(sources)?;
-        let rdbg = Rdbg::attach(port.try_into()?, alias)?;
-        rdbg.set_auto_attach_types(&DEFAULT_AUTO_ATTACH_TYPES)?;
-        Ok(Self {
+        let rdbg = Arc::new(Rdbg::attach(port.try_into()?, alias)?);
+        let session = Self {
             modules,
             rdbg,
             breakpoints: HashMap::new(),
             targets: HashMap::new(),
             next_id: 0,
-            configured: false,
+            event_reader: None,
+            stop_reader: Arc::new(AtomicBool::new(false)),
             auto_attach_types: DEFAULT_AUTO_ATTACH_TYPES.to_vec(),
-        })
+        };
+        session
+            .rdbg
+            .set_auto_attach_types(&DEFAULT_AUTO_ATTACH_TYPES)?;
+        Ok(session)
     }
 
     fn request(&mut self, name: &str, args: &Value, events: &mut Vec<Value>) -> Result<Value> {
@@ -289,7 +312,9 @@ impl Session {
                         self.add_target(target.id, events)?;
                     }
                 }
-                self.configured = true;
+                if self.event_reader.is_none() {
+                    self.start_event_reader()?;
+                }
                 json!({})
             }
             "unica/debugTargets" => self.debug_targets()?,
@@ -480,26 +505,62 @@ impl Session {
             if remaining.is_zero() {
                 break;
             }
-            let reply = self.rdbg.poll_with_timeout(remaining)?;
+            let Some(reader) = &self.event_reader else {
+                break;
+            };
+            let reply = match reader.recv_timeout(remaining) {
+                Ok(reply) => reply?,
+                Err(RecvTimeoutError::Timeout) => break,
+                Err(RecvTimeoutError::Disconnected) => {
+                    return Err("dbgs event reader stopped".into())
+                }
+            };
             self.consume(&reply, events)?;
             if let Some(variables) = read_context(&reply, evaluation)? {
                 return Ok(variables);
             }
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            std::thread::sleep(Duration::from_millis(50).min(remaining));
         }
         Err("rdbg did not return variables".into())
     }
 
-    fn poll(&mut self) -> Result<Vec<Value>> {
-        if !self.configured {
-            return Ok(Vec::new());
-        }
-        let mut events = Vec::new();
-        self.consume(&self.rdbg.poll()?, &mut events)?;
-        Ok(events)
+    fn start_event_reader(&mut self) -> Result<()> {
+        let (tx, rx) = bounded(1);
+        let rdbg = Arc::clone(&self.rdbg);
+        let stop = Arc::clone(&self.stop_reader);
+        std::thread::Builder::new()
+            .name("unica-dap-events".into())
+            .spawn(move || {
+                while !stop.load(Ordering::Acquire) {
+                    match rdbg.poll() {
+                        Ok(xml) if xml.trim().is_empty() => {
+                            std::thread::sleep(Duration::from_millis(10));
+                        }
+                        Ok(xml) => {
+                            if tx.send(Ok(xml)).is_err() {
+                                break;
+                            }
+                        }
+                        Err(error) => {
+                            let _ = tx.send(Err(error));
+                            break;
+                        }
+                    }
+                }
+            })?;
+        self.event_reader = Some(rx);
+        Ok(())
     }
+}
 
+impl Drop for Session {
+    fn drop(&mut self) {
+        self.stop_reader.store(true, Ordering::Release);
+        self.event_reader = None;
+        self.rdbg.detach();
+    }
+}
+
+impl Session {
     fn debug_targets(&self) -> Result<Value> {
         let targets: Vec<_> = available_targets(&self.rdbg.targets()?)?
             .into_iter()

@@ -67,7 +67,15 @@ impl Rdbg {
             alias: escape(alias),
             id: uuid::Uuid::new_v4(),
         };
-        let xml = client.call(
+        if let Err(error) = client.register() {
+            client.detach();
+            return Err(error);
+        }
+        Ok(client)
+    }
+
+    fn register(&self) -> Result<()> {
+        let xml = self.call(
             "attachDebugUI",
             "<options><foregroundAbility>false</foregroundAbility></options>",
         )?;
@@ -77,7 +85,7 @@ impl Rdbg {
         if status != "registered" {
             return Err(format!("rdbg attach rejected: {status}").into());
         }
-        Ok(client)
+        Ok(())
     }
 
     pub fn set_auto_attach_types(&self, types: &[&str]) -> Result<()> {
@@ -112,15 +120,11 @@ impl Rdbg {
     }
 
     pub fn poll(&self) -> Result<String> {
-        self.poll_with_timeout(EVENT_POLL_TIMEOUT)
-    }
-
-    pub fn poll_with_timeout(&self, timeout: Duration) -> Result<String> {
         self.send(
             "pingDebugUIParams",
             &[("dbgui", &self.id.to_string())],
             None,
-            timeout,
+            EVENT_POLL_TIMEOUT,
         )
     }
 
@@ -237,10 +241,8 @@ impl Rdbg {
         }
         Ok(xml)
     }
-}
 
-impl Drop for Rdbg {
-    fn drop(&mut self) {
+    pub fn detach(&self) {
         let _ = self.call("detachDebugUI", "");
     }
 }
