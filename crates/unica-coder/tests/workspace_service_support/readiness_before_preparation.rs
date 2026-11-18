@@ -46,7 +46,7 @@ impl BslBackend for HeldPreparation {
 }
 
 struct RunningStartup {
-    context: Option<WorkspaceContext>,
+    context: Option<ServiceTestContext>,
     identity: WorkspaceServiceIdentity,
     preparation: Arc<HeldPreparation>,
     done: mpsc::Receiver<Result<(), String>>,
@@ -165,7 +165,7 @@ impl RunningStartup {
     }
 }
 struct StartupCleanup {
-    context: WorkspaceContext,
+    context: ServiceTestContext,
     identity: WorkspaceServiceIdentity,
     done: mpsc::Receiver<Result<(), String>>,
     server: Option<thread::JoinHandle<()>>,
