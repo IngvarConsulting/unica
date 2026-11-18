@@ -197,6 +197,7 @@ impl<W: Write> Adapter<W> {
                 Ok(json!({
                     "supportsConfigurationDoneRequest": true,
                     "supportsConditionalBreakpoints": true,
+                    "supportsSetExpression": true,
                     "supportsExceptionFilterOptions": true,
                     "supportsExceptionInfoRequest": true,
                     "exceptionBreakpointFilters": [
@@ -397,6 +398,7 @@ impl Session {
                 json!({"scopes":[{"name":"Locals","presentationHint":"locals","variablesReference":id,"expensive":false}]})
             }
             "evaluate" => self.evaluate(args, events)?,
+            "setExpression" => self.set_expression(args, events)?,
             "variables" => {
                 let variables = self.variables(number(args, "variablesReference")?, events)?;
                 json!({"variables":variables})
@@ -554,6 +556,71 @@ impl Session {
         let reply = self.rdbg.variables(target, level, evaluation, &path)?;
         let (value, children) =
             self.wait_for_calculation(reply, evaluation, events, read_expression)?;
+        self.calculation_response(frame_id, path, value, children, "result")
+    }
+
+    fn set_expression(&mut self, args: &Value, events: &mut Vec<Value>) -> Result<Value> {
+        let frame_id = number(args, "frameId")?;
+        let (target, level) = self.frame(frame_id)?;
+        let name = string(args, "expression")?.trim();
+        if !is_identifier(name) {
+            return Err("Укажите имя переменной выбранного кадра".into());
+        }
+        let value = string(args, "value")?;
+        if value.trim().is_empty() {
+            return Err("Введите выражение нового значения".into());
+        }
+        let lookup = Uuid::new_v4();
+        let reply = self.rdbg.variables(target, level, lookup, &[])?;
+        let locals = self.wait_for_calculation(reply, lookup, events, read_context)?;
+        self.frame(frame_id)?;
+        let name_key = name.to_lowercase();
+        let local = locals
+            .into_iter()
+            .find(|local| local.name.to_lowercase() == name_key)
+            .ok_or("Переменная не найдена в выбранном кадре")?;
+        let path = vec![local.name];
+        let evaluation = Uuid::new_v4();
+        // A timed-out write may still have reached the platform. Retire the
+        // snapshots before sending it, and never retry a write automatically.
+        if let Some(thread) = self.thread_of(target) {
+            for frame in &mut self
+                .targets
+                .get_mut(&thread)
+                .expect("thread was found")
+                .frames
+            {
+                frame
+                    .variable_paths
+                    .retain(|id, _| !frame.evaluated_children.contains_key(id));
+                frame.evaluated_children.clear();
+            }
+        }
+        let reply = self
+            .rdbg
+            .modify_value(target, level, evaluation, &path, value)?;
+        if !reply.trim().is_empty() {
+            let doc = Document::parse(&reply)?;
+            if let Some(error) = field(doc.root_element(), "errorDescr") {
+                let description = decode(Some(error))?;
+                if !description.is_empty() {
+                    return Err(description.into());
+                }
+            }
+        }
+        let (value, children) =
+            self.wait_for_calculation(reply, evaluation, events, read_modified_value)?;
+        self.calculation_response(frame_id, path, value, children, "value")
+    }
+
+    fn calculation_response(
+        &mut self,
+        frame_id: u64,
+        path: Vec<String>,
+        value: ContextVariable,
+        children: Vec<ContextVariable>,
+        key: &str,
+    ) -> Result<Value> {
         let frame = self
             .targets
             .values_mut()
@@ -569,7 +636,7 @@ impl Session {
         } else {
             0
         };
-        let mut response = json!({"result": value.summary, "variablesReference": reference});
+        let mut response = json!({(key): value.summary, "variablesReference": reference});
         if !value.type_name.is_empty() {
             response["type"] = json!(value.type_name);
         }
@@ -926,6 +993,16 @@ fn read_calculation<T>(
         return Ok(None);
     };
     parse(result).map(Some)
+}
+
+fn read_modified_value(result: Node<'_, '_>) -> Result<(ContextVariable, Vec<ContextVariable>)> {
+    if let Some(error) = result.parent().and_then(|parent| field(parent, "errorStr")) {
+        let description = decode(Some(error))?;
+        if !description.is_empty() {
+            return Err(description.into());
+        }
+    }
+    read_expression(result)
 }
 
 fn read_expression(result: Node<'_, '_>) -> Result<(ContextVariable, Vec<ContextVariable>)> {

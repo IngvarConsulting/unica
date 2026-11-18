@@ -194,25 +194,29 @@ impl Rdbg {
         evaluation: uuid::Uuid,
         path: &[String],
     ) -> Result<String> {
-        let mut items = String::new();
-        for (index, name) in path.iter().enumerate() {
-            let name = escape(name);
-            let (kind, expression, property) = if index == 0 {
-                ("expression", name.as_str(), "")
-            } else {
-                ("property", "", name.as_str())
-            };
-            items.push_str(&format!(
-                "<calcItem><itemType>{kind}</itemType><expression>{expression}</expression><property>{property}</property></calcItem>"
-            ));
-        }
         let command = if path.is_empty() {
             "evalLocalVariables"
         } else {
             "evalExpr"
         };
+        let source = calculation_source(level, evaluation, path);
         self.call(command, &format!(
-            "<calcWaitingTime>100</calcWaitingTime><targetID><id xmlns=\"{BASE}\">{target}</id></targetID><expr><stackLevel xmlns=\"{CALCULATIONS}\">{level}</stackLevel><srcCalcInfo xmlns=\"{CALCULATIONS}\"><expressionResultID>{evaluation}</expressionResultID>{items}<interfaces>context</interfaces></srcCalcInfo><presOptions xmlns=\"{CALCULATIONS}\"><maxTextSize>307200</maxTextSize><stopOnFirstEOL>false</stopOnFirstEOL></presOptions></expr>"
+            "<calcWaitingTime>100</calcWaitingTime><targetID><id xmlns=\"{BASE}\">{target}</id></targetID><expr>{source}</expr>"
+        ))
+    }
+
+    pub fn modify_value(
+        &self,
+        target: uuid::Uuid,
+        level: usize,
+        evaluation: uuid::Uuid,
+        path: &[String],
+        value: &str,
+    ) -> Result<String> {
+        let source = calculation_source(level, evaluation, path);
+        let value = escape(value);
+        self.call("modifyValue", &format!(
+            "<targetID><id xmlns=\"{BASE}\">{target}</id></targetID><modifyDataPath>{source}</modifyDataPath><newValueInfo><variant xmlns=\"{CALCULATIONS}\">expr</variant><valueExpression xmlns=\"{CALCULATIONS}\">{value}</valueExpression></newValueInfo><timeout>3000</timeout>"
         ))
     }
 
@@ -287,6 +291,24 @@ fn namespace_request_children(body: &str) -> Result<String> {
         result.push_str(&text[split..]);
     }
     Ok(result)
+}
+
+fn calculation_source(level: usize, evaluation: uuid::Uuid, path: &[String]) -> String {
+    let mut items = String::new();
+    for (index, name) in path.iter().enumerate() {
+        let name = escape(name);
+        let (kind, expression, property) = if index == 0 {
+            ("expression", name.as_str(), "")
+        } else {
+            ("property", "", name.as_str())
+        };
+        items.push_str(&format!(
+                "<calcItem><itemType>{kind}</itemType><expression>{expression}</expression><property>{property}</property></calcItem>"
+            ));
+    }
+    format!(
+        "<stackLevel xmlns=\"{CALCULATIONS}\">{level}</stackLevel><srcCalcInfo xmlns=\"{CALCULATIONS}\"><expressionResultID>{evaluation}</expressionResultID>{items}<interfaces>context</interfaces></srcCalcInfo><presOptions xmlns=\"{CALCULATIONS}\"><maxTextSize>307200</maxTextSize><stopOnFirstEOL>false</stopOnFirstEOL></presOptions>"
+    )
 }
 
 fn escape(text: &str) -> String {
