@@ -8,7 +8,7 @@
 - `cargo test -p <крейт> --tests --no-fail-fast`: библиотеку, интеграционные
   цели и бинари, сначала у затронутых крейтов, затем у зависимых;
 - Clippy всего workspace, как ворота PR, когда затронут хоть один крейт;
-- `cargo fmt --all --check` и `scripts/ci/check-discovered-modules-format.py`;
+- `scripts/ci/check-discovered-modules-format.py` для всех Rust-файлов крейтов;
 - `scripts/ci/check-version-contract.py`;
 - `scripts/ci/open_marks.py pr`: пометки незакрытого называют открытые задачи
   (нужен `gh`); с `--description-file` — и не те, что закрывает этот PR;
@@ -102,7 +102,7 @@ class Check:
     """Одна проверка. `key` одинаков на ветке и на базе."""
 
     key: str
-    kind: str  # test | clippy | fmt | modules-fmt | version-contract | open-marks | removed-tests | python
+    kind: str  # test | clippy | fmt | version-contract | open-marks | removed-tests | python
     target: str = ""  # пакет, каталог крейта, набор Python или файл описания PR
     base: str = ""  # для `removed-tests`: от какой ревизии считать исчезнувшее
 
@@ -122,8 +122,6 @@ class Check:
         if self.kind == "removed-tests":
             return [python, "scripts/ci/removed_tests.py", "--base", self.base, "--description-file", self.target]
         if self.kind == "fmt":
-            return ["cargo", "fmt", "--all", "--check"]
-        if self.kind == "modules-fmt":
             return [python, "scripts/ci/check-discovered-modules-format.py"]
         if self.kind == "python":
             return [python, "-m", "unittest", "discover", "-s", self.target, "-v"]
@@ -319,7 +317,7 @@ def parse(check: Check, output: str, returncode: int, root: Path) -> Result:
         return parse_libtest(output, returncode)
     if check.kind == "clippy":
         return parse_clippy(output, returncode, root)
-    if check.kind in ("fmt", "modules-fmt"):
+    if check.kind == "fmt":
         return parse_fmt(output, returncode, root)
     if check.kind in ("version-contract", "open-marks"):
         return parse_script(output, returncode)
@@ -978,7 +976,6 @@ def plan(crates: Sequence[str], packages: Dict[str, Package], base: str = "",
     if touched:
         checks.append(Check("clippy", "clippy"))
     checks.append(Check("fmt", "fmt"))
-    checks.append(Check("modules-fmt", "modules-fmt"))
     checks.append(Check("version-contract", "version-contract"))
     checks.append(Check("open-marks", "open-marks", description or ""))
     if description is not None:
