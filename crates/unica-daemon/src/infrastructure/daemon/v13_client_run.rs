@@ -29,7 +29,7 @@ use unica_execution::invocation_store::ToolIdentity;
 use unica_execution_contract::invocation::{DomainResult, SafeIdentityHash};
 use unica_process::runner::{ProcessCommand, ProcessOutput, ProcessRunner, ProcessStreamFailure};
 use unica_process::PendingProcessHandoff;
-use unica_refusal::RefusalCode;
+use unica_refusal::{RefusalCode, RefusalDetail};
 use unica_source_contract::workspace::WorkspaceContext;
 use unica_work_control::cancellation::{CancellationToken, CANCELLED_PREFIX};
 
@@ -50,6 +50,17 @@ const RUNNER_COMMAND: &str = "launch";
 const WAIT_TIMEOUT_MAX_MS: u64 = 86_400_000;
 const PROCESSOR_EXTENSIONS: [&str; 2] = ["epf", "erf"];
 const CLIENT_OWNER_ENV: &str = "V8_RUNNER_CLIENT_OWNER";
+// resource-limit: run.launch-startup-observation-ms
+// class: deadline
+// unit: ms
+// scope: operation
+// value: 30000
+// resource: Окно, в котором раннер наблюдает исход входа интерактивного клиента предприятия.
+// status: unproven
+// origin: #3197
+// problem: неизвестно
+// on-reach: Исход входа `unconfirmed`, клиент передаётся как запущенный.
+const STARTUP_OBSERVATION_MS: u64 = 30_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ClientMode {
@@ -99,6 +110,106 @@ pub(super) struct PreparedClientRun {
     arguments: LaunchArguments,
     dry_run: bool,
     context: WorkspaceContext,
+}
+
+impl PreparedClientRun {
+    /// Исход входа наблюдает только интерактивный запуск клиента предприятия:
+    /// у конфигуратора и ожидаемого запуска свой результат.
+    fn observes_startup(&self) -> bool {
+        !self.dry_run
+            && self.arguments.wait_timeout_ms.is_none()
+            && self.arguments.mode != ClientMode::Designer
+    }
+}
+
+/// Исход входа попытки, подтверждённый раннером (#3197).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StartupOutcome {
+    Started,
+    AuthFailed,
+    StartFailed,
+    Closed,
+    Unconfirmed,
+}
+
+impl StartupOutcome {
+    fn parse(value: &str) -> Option<Self> {
+        Some(match value {
+            "started" => Self::Started,
+            "auth_failed" => Self::AuthFailed,
+            "start_failed" => Self::StartFailed,
+            "closed" => Self::Closed,
+            "unconfirmed" => Self::Unconfirmed,
+            _ => return None,
+        })
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Started => "started",
+            Self::AuthFailed => "auth_failed",
+            Self::StartFailed => "start_failed",
+            Self::Closed => "closed",
+            Self::Unconfirmed => "unconfirmed",
+        }
+    }
+
+    /// Сеанс, который мог остаться работать после ответа.
+    fn leaves_live_session(self) -> bool {
+        matches!(self, Self::Started | Self::Unconfirmed)
+    }
+}
+
+struct ObservedStartup {
+    outcome: StartupOutcome,
+    public: Value,
+}
+
+/// Проверяет `startup` раннера: исход, время события и код выхода должны
+/// согласовываться, иначе ответ не подтверждает исход входа.
+fn parse_startup(startup: &Value) -> Option<ObservedStartup> {
+    let object = startup.as_object()?;
+    if object
+        .keys()
+        .any(|key| !matches!(key.as_str(), "outcome" | "event_at" | "exit_code"))
+    {
+        return None;
+    }
+    let outcome = StartupOutcome::parse(startup["outcome"].as_str()?)?;
+    let event_at = match startup.get("event_at") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(text)) => Some(
+            chrono::DateTime::parse_from_rfc3339(text)
+                .ok()?
+                .with_timezone(&chrono::Utc)
+                .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        ),
+        Some(_) => return None,
+    };
+    let exit_code = match startup.get("exit_code") {
+        None | Some(Value::Null) => None,
+        Some(value) => Some(i32::try_from(value.as_i64()?).ok()?),
+    };
+    let consistent = match outcome {
+        StartupOutcome::Started => event_at.is_some() && exit_code.is_none(),
+        StartupOutcome::AuthFailed => event_at.is_some(),
+        StartupOutcome::StartFailed => {
+            event_at.is_none() && exit_code.is_some_and(|code| code != 0)
+        }
+        StartupOutcome::Closed => exit_code == Some(0),
+        StartupOutcome::Unconfirmed => true,
+    };
+    if !consistent {
+        return None;
+    }
+    Some(ObservedStartup {
+        outcome,
+        public: json!({
+            "outcome": outcome.as_str(),
+            "eventAt": event_at,
+            "exitCode": exit_code,
+        }),
+    })
 }
 
 pub(super) enum Preparation {
@@ -445,24 +556,43 @@ fn execute_with_resolved_runner(
         pid,
         platform,
         waited,
+        startup,
     } = match ValidatedLaunchReceipt::parse(prepared, data, outcome) {
         Ok(receipt) => receipt,
         Err(result) => return result,
     };
-    let summary = match &waited {
-        Some(waited) => format!(
-            "launch waited for a {} session; it exited with code {}",
-            prepared.arguments.mode.as_str(),
+    let mode = prepared.arguments.mode.as_str();
+    let startup_outcome = startup.as_ref().map(|startup| startup.outcome);
+    let summary = match (&waited, startup_outcome) {
+        (Some(waited), _) => format!(
+            "launch waited for a {mode} session; it exited with code {}",
             waited["exitCode"]
         ),
-        None => format!(
-            "launch launched a {} session (pid {pid})",
-            prepared.arguments.mode.as_str()
+        (None, Some(StartupOutcome::Started)) => {
+            format!("launch launched a {mode} session (pid {pid}); the sign-in succeeded")
+        }
+        (None, Some(StartupOutcome::Closed)) => {
+            format!("launch launched a {mode} session (pid {pid}); the client closed normally")
+        }
+        (None, Some(StartupOutcome::Unconfirmed)) => format!(
+            "launch launched a {mode} session (pid {pid}); its sign-in outcome is not confirmed"
         ),
+        _ => format!("launch launched a {mode} session (pid {pid})"),
     };
-    let mut result = match outcome {
-        RunnerOutcome::Completed => DomainResult::success(summary),
-        RunnerOutcome::StructuralWaitTimeout => reject(
+    let mut result = match (outcome, startup_outcome) {
+        (RunnerOutcome::Completed, Some(StartupOutcome::AuthFailed)) => DomainResult::canonical_rejection_detailed(
+            Some(OPERATION.to_string()),
+            RefusalDetail::CredentialsRejected,
+            format!(
+                "the {mode} client (pid {pid}) was refused sign-in to the infobase; check the infobase user and password"
+            ),
+        ),
+        (RunnerOutcome::Completed, Some(StartupOutcome::StartFailed)) => reject(
+            RefusalCode::ProviderFailed,
+            format!("the {mode} client (pid {pid}) exited before sign-in"),
+        ),
+        (RunnerOutcome::Completed, _) => DomainResult::success(summary),
+        (RunnerOutcome::StructuralWaitTimeout, _) => reject(
             RefusalCode::ProviderFailed,
             format!(
                 "launch exceeded the {} ms client wait; v8-runner terminated the client (pid {pid})",
@@ -480,16 +610,26 @@ fn execute_with_resolved_runner(
         "providerDispatched": true,
         "wait": waited,
     }));
+    if let (Some(startup), Some(data)) = (
+        &startup,
+        result.data.as_mut().and_then(Value::as_object_mut),
+    ) {
+        data.insert("startup".into(), startup.public.clone());
+    }
     if outcome == RunnerOutcome::StructuralWaitTimeout {
         return result;
     }
+    let live_session = startup_outcome.is_none_or(StartupOutcome::leaves_live_session);
     // Сеанс — внешний эффект, не файл рабочего пространства: путь сюда не
-    // кладётся, иначе запись читалась бы как правка исходников.
-    result.changed.push(json!({
-        "clientSession": true,
-        "mode": prepared.arguments.mode.as_str(),
-        "pid": pid,
-    }));
+    // кладётся, иначе запись читалась бы как правка исходников. Завершившийся
+    // до ответа клиент сеанса не оставил.
+    if live_session {
+        result.changed.push(json!({
+            "clientSession": true,
+            "mode": mode,
+            "pid": pid,
+        }));
+    }
     if let Some(handoff) = &mut handoff {
         if let Err(error) = cancellation.handoff_with_gate(|| handoff.release()) {
             return if error.starts_with(CANCELLED_PREFIX) {
@@ -513,6 +653,7 @@ struct ValidatedLaunchReceipt {
     pid: u32,
     platform: Value,
     waited: Option<Value>,
+    startup: Option<ObservedStartup>,
 }
 
 impl ValidatedLaunchReceipt {
@@ -628,10 +769,30 @@ impl ValidatedLaunchReceipt {
             }
             None
         };
+        let startup = if prepared.observes_startup() {
+            Some(parse_startup(&data["startup"]).ok_or_else(|| {
+                reject(
+                    RefusalCode::InvalidResult,
+                    "v8-runner did not confirm the sign-in outcome of the launched client",
+                )
+            })?)
+        } else {
+            if data
+                .get("startup")
+                .is_some_and(|startup| !startup.is_null())
+            {
+                return Err(reject(
+                    RefusalCode::InvalidResult,
+                    "v8-runner answered with an unrequested sign-in outcome",
+                ));
+            }
+            None
+        };
         Ok(Self {
             pid,
             platform,
             waited,
+            startup,
         })
     }
 }
@@ -702,6 +863,12 @@ fn invoke_runner(
     } else {
         None
     };
+    if prepared.observes_startup() {
+        args.extend([
+            "--observe-startup-ms".to_string(),
+            STARTUP_OBSERVATION_MS.to_string(),
+        ]);
+    }
     if prepared.dry_run {
         args.push("--dry-run".to_string());
     } else if let (Some(timeout), Some(directory)) =
@@ -1072,7 +1239,18 @@ mod medium_tests {
         envelope["data"].as_object_mut().unwrap().remove("plan");
         if let Some(wait) = wait {
             envelope["data"]["external_epf_wait"] = wait;
+        } else if mode != "designer" {
+            envelope["data"]["startup"] = started_startup();
         }
+        envelope
+    }
+
+    fn started_startup() -> Value {
+        json!({"outcome": "started", "event_at": "2026-11-19T10:12:24+03:00", "exit_code": null})
+    }
+
+    fn without_startup(mut envelope: Value) -> Value {
+        envelope["data"].as_object_mut().unwrap().remove("startup");
         envelope
     }
 
@@ -1604,7 +1782,7 @@ fn main() {
                     "applicationParameter":value,"waitForExit":true,"waitTimeoutMs":1500}),
                     false,
                 );
-                let mut envelope = launched_envelope("thin", 77, None);
+                let mut envelope = without_startup(launched_envelope("thin", 77, None));
                 envelope["data"]["client_wait"] = json!({"pid":77,
                     "exit_code":if timeout {Value::Null} else {json!(7)}, "timed_out":timeout});
                 if timeout {
@@ -1704,7 +1882,7 @@ fn main() {
             } else {
                 "external_epf_wait"
             };
-            let mut valid = launched_envelope("thin", 77, None);
+            let mut valid = without_startup(launched_envelope("thin", 77, None));
             valid["data"][key] = json!({"pid":77,"exit_code":0,"timed_out":false});
             if with_epf {
                 valid["data"][key]["execute_path"] = json!(runner_payload_path(
@@ -1928,6 +2106,183 @@ fn main() {
             runner.discarded.load(std::sync::atomic::Ordering::Acquire),
             0
         );
+    }
+
+    /// rule: INV.WIRE.LAUNCH-STARTUP-OUTCOME
+    #[test]
+    fn enterprise_launch_reports_the_sign_in_outcome_the_runner_attests() {
+        let at = "2026-11-19T10:12:24+03:00";
+        // (outcome, event_at, exit_code, ok, refusal, live session)
+        let cases = [
+            ("started", json!(at), Value::Null, true, None, true),
+            (
+                "auth_failed",
+                json!(at),
+                json!(1),
+                false,
+                Some(("provider_unavailable", Some("credentials_rejected"))),
+                false,
+            ),
+            (
+                "start_failed",
+                Value::Null,
+                json!(1),
+                false,
+                Some(("provider_failed", None)),
+                false,
+            ),
+            ("closed", Value::Null, json!(0), true, None, false),
+            ("unconfirmed", Value::Null, Value::Null, true, None, true),
+        ];
+        for mode in ["thin", "thick", "ordinary"] {
+            for (outcome, event_at, exit_code, ok, refusal, live) in cases.clone() {
+                let root = workspace();
+                let prepared = prepared(root.path(), json!({"clientMode": mode}), false);
+                let mut envelope = launched_envelope(mode, 4242, None);
+                envelope["data"]["startup"] =
+                    json!({"outcome": outcome, "event_at": event_at, "exit_code": exit_code});
+                // Текст клиента и командная строка в ответ не переносятся.
+                envelope["data"]["message"] =
+                    json!("/P secret-password Пользователь ИБ не идентифицирован");
+                let runner = SequenceRunner::new(vec![process(envelope, true)]);
+                let result = execute_with_resolved_runner(
+                    &prepared,
+                    &runner,
+                    CancellationToken::new(),
+                    &tool(root.path()),
+                );
+                assert_eq!(result.ok, ok, "{mode} {outcome}: {result:?}");
+                if let Some((code, detail)) = refusal {
+                    assert_eq!(result.diagnostics[0]["code"], code, "{mode} {outcome}");
+                    assert_eq!(
+                        result.diagnostics[0]
+                            .get("detailCode")
+                            .and_then(Value::as_str),
+                        detail,
+                        "{mode} {outcome}"
+                    );
+                }
+                let data = result.data.as_ref().unwrap();
+                assert_eq!(data["pid"], 4242);
+                assert_eq!(data["startup"]["outcome"], outcome);
+                assert_eq!(data["startup"]["exitCode"], exit_code);
+                if event_at.is_null() {
+                    assert!(data["startup"]["eventAt"].is_null());
+                } else {
+                    assert_eq!(data["startup"]["eventAt"], "2026-11-19T07:12:24Z");
+                }
+                assert_eq!(
+                    data["startup"].as_object().unwrap().len(),
+                    3,
+                    "startup carries only outcome, eventAt and exitCode"
+                );
+                assert_eq!(result.changed.len(), usize::from(live), "{mode} {outcome}");
+                let encoded = serde_json::to_string(&result).unwrap();
+                for leaked in [
+                    "secret-password",
+                    "не идентифицирован",
+                    "--observe-startup-ms",
+                ] {
+                    assert!(!encoded.contains(leaked), "{leaked} leaked: {encoded}");
+                }
+                let call = &runner.calls.lock().unwrap()[0];
+                let flag = call
+                    .args
+                    .iter()
+                    .position(|argument| argument == "--observe-startup-ms")
+                    .expect("enterprise launch asks the runner to observe the sign-in");
+                assert_eq!(call.args[flag + 1], STARTUP_OBSERVATION_MS.to_string());
+                assert_eq!(
+                    runner.released.load(std::sync::atomic::Ordering::Acquire),
+                    1,
+                    "{mode} {outcome}"
+                );
+                assert_eq!(
+                    runner.discarded.load(std::sync::atomic::Ordering::Acquire),
+                    0,
+                    "{mode} {outcome}"
+                );
+            }
+        }
+    }
+
+    /// rule: INV.WIRE.LAUNCH-STARTUP-OUTCOME
+    #[test]
+    fn an_unproven_sign_in_outcome_discards_the_client() {
+        let at = json!("2026-11-19T10:12:24+03:00");
+        let invalid = [
+            Value::Null,
+            json!("started"),
+            json!({"outcome": "logged_in", "event_at": at}),
+            json!({"outcome": "started"}),
+            json!({"outcome": "started", "event_at": at, "exit_code": 0}),
+            json!({"outcome": "started", "event_at": "yesterday"}),
+            json!({"outcome": "auth_failed", "exit_code": 1}),
+            json!({"outcome": "start_failed", "exit_code": 0}),
+            json!({"outcome": "start_failed", "event_at": at, "exit_code": 1}),
+            json!({"outcome": "closed", "exit_code": 1}),
+            json!({"outcome": "unconfirmed", "message": "Пользователь ИБ не идентифицирован"}),
+        ];
+        for startup in invalid {
+            let root = workspace();
+            let prepared = prepared(root.path(), json!({"clientMode": "thin"}), false);
+            let mut envelope = launched_envelope("thin", 4242, None);
+            envelope["data"]["startup"] = startup.clone();
+            let runner = SequenceRunner::new(vec![process(envelope, true)]);
+            let result = execute_with_resolved_runner(
+                &prepared,
+                &runner,
+                CancellationToken::new(),
+                &tool(root.path()),
+            );
+            assert!(!result.ok, "{startup}: {result:?}");
+            assert_eq!(result.diagnostics[0]["code"], "invalid_result", "{startup}");
+            assert!(result.changed.is_empty());
+            assert_eq!(
+                runner.discarded.load(std::sync::atomic::Ordering::Acquire),
+                1,
+                "{startup}"
+            );
+            assert_eq!(
+                runner.released.load(std::sync::atomic::Ordering::Acquire),
+                0,
+                "{startup}"
+            );
+        }
+    }
+
+    /// rule: INV.WIRE.LAUNCH-STARTUP-OUTCOME
+    #[test]
+    fn designer_and_waited_launches_do_not_observe_the_sign_in() {
+        let root = workspace();
+        let designer = prepared(root.path(), json!({"clientMode": "designer"}), false);
+        let mut envelope = launched_envelope("designer", 4242, None);
+        envelope["data"]["startup"] = started_startup();
+        let runner = SequenceRunner::new(vec![process(envelope, true)]);
+        let result = execute_with_resolved_runner(
+            &designer,
+            &runner,
+            CancellationToken::new(),
+            &tool(root.path()),
+        );
+        assert!(!result.ok, "an unrequested outcome is refused: {result:?}");
+        assert_eq!(result.diagnostics[0]["code"], "invalid_result");
+        assert!(!runner.calls.lock().unwrap()[0]
+            .args
+            .iter()
+            .any(|argument| argument == "--observe-startup-ms"));
+
+        for (args, dry_run) in [
+            (json!({"clientMode": "thin"}), true),
+            (
+                json!({"clientMode": "thin", "applicationParameter": "go",
+                    "waitForExit": true, "waitTimeoutMs": 1500}),
+                false,
+            ),
+        ] {
+            let prepared = prepared(root.path(), args, dry_run);
+            assert!(!prepared.observes_startup());
+        }
     }
 
     /// rule: INV.WIRE.TERMINAL-RUN-HAS-NO-FENCE
