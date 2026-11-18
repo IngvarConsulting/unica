@@ -33,7 +33,7 @@ const MAX_LSP_URI_BYTES: usize = 4 * 1024;
 // problem: неизвестно
 // on-reach: ответ демона отвергается как нестрогий, initialize получает RequestFailed
 // issue: #2173
-const MAX_LSP_SPACE_BYTES: usize = 64;
+pub const MAX_LSP_SPACE_BYTES: usize = 64;
 /// Рабочих папок у одного соединения.
 // resource-limit: lsp.wire-workspace-folders
 // class: corpus
