@@ -654,13 +654,16 @@ fn validate_navigation_owner(
         )
     })?;
     if owners.is_empty()
-        || owners
-            .iter()
-            .any(|owner| owner.version.as_deref() != Some("2.20"))
+        || owners.iter().any(|owner| {
+            !unica_source_designer::format_profile::is_writable_root_version(
+                owner.version.as_deref(),
+            )
+        })
     {
         return Err(format!(
-            "sourceSet `{}` does not prove the Platform XML 2.20 address profile",
-            selected.source_set.name
+            "sourceSet `{}` does not prove the Platform XML {} address profile",
+            selected.source_set.name,
+            unica_source_designer::format_profile::ACTIVE_FORMAT_PROFILE.export_format
         ));
     }
     Ok(())
@@ -757,7 +760,7 @@ fn read_navigation_descriptor(path: &Path) -> Result<Vec<u8>, ()> {
 
 fn descriptor_name_from_bytes(raw: &[u8], expected_kind: &str) -> Result<String, ()> {
     let (version, name) = descriptor_version_and_name_from_bytes(raw, expected_kind)?;
-    if version.as_deref() != Some("2.20") {
+    if !unica_source_designer::format_profile::is_writable_root_version(version.as_deref()) {
         return Err(());
     }
     Ok(name)

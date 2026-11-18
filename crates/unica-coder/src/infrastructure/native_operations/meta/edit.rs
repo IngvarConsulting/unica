@@ -134,7 +134,9 @@ pub(crate) fn resolve_typed_metadata_object(
                 .with_metadata_path(metadata_path.clone()),
             )
         })?;
-    if descriptor.root_element().attribute("version") != Some(ACTIVE_FORMAT_PROFILE.export_format) {
+    if !unica_source_designer::format_profile::is_writable_root_version(
+        descriptor.root_element().attribute("version"),
+    ) {
         return Err(unica_metadata_designer::edit::typed_diagnostic(
             MetaDiagnosticCode::CapabilityUnavailable,
             format!(
@@ -5127,7 +5129,7 @@ pub(crate) mod tests {
         std::fs::create_dir_all(form_content.parent().unwrap()).unwrap();
         std::fs::write(
             &form_content,
-            minimal_typed_form_content("Document", "Order").as_bytes(),
+            minimal_typed_form_content("Document", "Order", "2.20").as_bytes(),
         )
         .unwrap();
         let child_before = std::fs::read(&child_descriptor).unwrap();

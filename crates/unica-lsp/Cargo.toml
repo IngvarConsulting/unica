@@ -6,23 +6,15 @@ license.workspace = true
 repository.workspace = true
 
 [package.metadata.unica]
-component = "coordinator"
-file-io = "owned"
+component = "service"
+file-io = "none"
+
+[features]
+default = []
+# Внутренности двери для тестов `unica-daemon` с живым демоном.
+test-support = []
 
 [dependencies]
-percent-encoding.workspace = true
-sha2.workspace = true
-unica-address = { path = "../unica-address" }
-unica-bsl = { path = "../unica-bsl" }
-unica-code-model = { path = "../unica-code-model" }
-unica-execution-contract = { path = "../unica-execution-contract" }
+unica-daemon-protocol = { path = "../unica-daemon-protocol" }
 unica-lsp-contract = { path = "../unica-lsp-contract" }
-unica-source-contract = { path = "../unica-source-contract" }
-unica-source-designer = { path = "../unica-source-designer" }
-unica-work-control = { path = "../unica-work-control" }
-unica-workspace = { path = "../unica-workspace" }
-url.workspace = true
-
-[dev-dependencies]
-tempfile.workspace = true
-unica-lsp-contract = { path = "../unica-lsp-contract", features = ["test-support"] }
+serde_json.workspace = true

@@ -1,7 +1,7 @@
 //! Файловые фикстуры корня конфигурации для модульных тестов.
 //!
 //! Пустая конфигурация 8.3.27 / 2.20 — выгрузка платформы
-//! `tests/fixtures/platform_8_3_27/template-new-xml/seed/` без её отчёта.
+//! `tests/fixtures/formats/platform_xml/2.20/template-new-xml/seed/` без её отчёта.
 //! Тесты, которым нужен корень набора, берут его отсюда, а не строят
 //! писателем. Объекты для чтения описания лежат рядом, в `meta_info_surface/`.
 
@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 /// Каталог фикстуры: `v8project.yaml` и набор `src/`.
 pub(crate) fn empty_configuration_fixture() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tests/fixtures/platform_8_3_27/empty_configuration")
+        .join("../../tests/fixtures/formats/platform_xml/2.20/empty_configuration")
 }
 
 /// Копирует фикстуру в `workspace`: набор `main` в `src/` и его объявление.
@@ -23,7 +23,7 @@ pub(crate) fn copy_empty_configuration(workspace: &Path) {
 /// без роли). Набор в `v8project.yaml` не объявлен: это делает тест.
 pub(crate) fn empty_extension_fixture() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tests/fixtures/platform_8_3_27/empty_extension")
+        .join("../../tests/fixtures/formats/platform_xml/2.20/empty_extension")
 }
 
 /// Копирует корень пустого расширения в `workspace/ext`.
@@ -52,7 +52,7 @@ pub(crate) fn copy_tree(from: &Path, to: &Path) {
 /// чтения описания: справочник, константа, регистр сведений, перечисление.
 pub(crate) fn meta_info_surface_fixture(part: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tests/fixtures/platform_8_3_27/meta_info_surface")
+        .join("../../tests/fixtures/formats/platform_xml/2.20/meta_info_surface")
         .join(part)
 }
 

@@ -1,8 +1,7 @@
+use crate::deadlines::{CodeDiagnosticsDeadlines, CodeIntelligenceDeadlines};
 use serde::Serialize;
 use std::fmt;
 use std::time::Duration;
-use unica_code_intelligence::deadlines::CodeIntelligenceDeadlines;
-use unica_diagnostics::deadlines::CodeDiagnosticsDeadlines;
 
 // resource-limit: config.diagnostics-analyze-timeout-min
 // class: deadline

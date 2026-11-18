@@ -756,7 +756,12 @@ pub fn runtime_args(args: &Map<String, Value>, redact: bool) -> Result<Vec<Strin
         }
         "dump" => {
             result.push("dump".to_string());
-            append_arg(&mut result, "--mode", args, "mode", redact);
+            // The pinned runner has no `--mode full`; a full dump is `--force`.
+            if args.get("mode").and_then(Value::as_str) == Some("full") {
+                result.push(crate::full_dump::FULL_DUMP_FLAG.to_string());
+            } else {
+                append_arg(&mut result, "--mode", args, "mode", redact);
+            }
             append_arg(&mut result, "--object", args, "object", redact);
             append_array_args(&mut result, "--object", args, "objects", redact);
             append_arg(&mut result, "--source-set", args, "sourceSet", redact);

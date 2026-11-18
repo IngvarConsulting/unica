@@ -16,19 +16,28 @@
       "captures": {
         "attributes": {
           "pointer": "/data/branches/1/at"
+        },
+        "unchanged1": {
+          "file": "src/Catalogs/Items.xml",
+          "kind": "sha256"
+        },
+        "unchanged2": {
+          "file": "src/Configuration.xml",
+          "kind": "sha256"
+        },
+        "unchanged3": {
+          "file": "src/Catalogs/BrokenSynonym.xml",
+          "kind": "sha256"
+        },
+        "unchanged4": {
+          "file": "src/Catalogs/BrokenToolTip.xml",
+          "kind": "sha256"
         }
       },
       "assertions": [
         {
           "pointer": "/data/branches/1/at",
           "eq": "main:Catalog.Items.StandardAttribute"
-        }
-      ],
-      "fileAssertions": [
-        {
-          "path": "src/Catalogs/Items.xml",
-          "kind": "sha256",
-          "eq": "61d513d709997e7259d10ff9f91c4be8012f19604f2e3bb6542a5914d4249ecf"
         }
       ]
     },
@@ -106,7 +115,7 @@
         {
           "path": "src/Catalogs/Items.xml",
           "kind": "sha256",
-          "eq": "61d513d709997e7259d10ff9f91c4be8012f19604f2e3bb6542a5914d4249ecf"
+          "eq": "$capture.unchanged1"
         }
       ]
     },
@@ -154,7 +163,7 @@
         {
           "path": "src/Catalogs/Items.xml",
           "kind": "sha256",
-          "eq": "61d513d709997e7259d10ff9f91c4be8012f19604f2e3bb6542a5914d4249ecf"
+          "eq": "$capture.unchanged1"
         }
       ]
     },
@@ -198,7 +207,7 @@
         {
           "path": "src/Catalogs/Items.xml",
           "kind": "sha256",
-          "eq": "61d513d709997e7259d10ff9f91c4be8012f19604f2e3bb6542a5914d4249ecf"
+          "eq": "$capture.unchanged1"
         }
       ]
     },
@@ -321,17 +330,17 @@
         {
           "path": "src/Configuration.xml",
           "kind": "sha256",
-          "eq": "c84c11640a8ca82972b75b6d974c285780d557a61cfa3e3a7f0002ceebc73b80"
+          "eq": "$capture.unchanged2"
         },
         {
           "path": "src/Catalogs/BrokenSynonym.xml",
           "kind": "sha256",
-          "eq": "4ff58a335d9cd065862e2ab7fe63d6d5914fb503b61b96065ace0267f0cdbe75"
+          "eq": "$capture.unchanged3"
         },
         {
           "path": "src/Catalogs/BrokenToolTip.xml",
           "kind": "sha256",
-          "eq": "84b6ec1716bba95d1e0b20208c73f04e486a631a91a0109ed2f4277efd364665"
+          "eq": "$capture.unchanged4"
         }
       ],
       "assertions": [

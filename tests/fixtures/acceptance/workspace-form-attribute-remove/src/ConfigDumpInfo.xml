@@ -1,0 +1,13 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<ConfigDumpInfo xmlns="http://v8.1c.ru/8.3/xcf/dumpinfo" xmlns:xen="http://v8.1c.ru/8.3/xcf/enums" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" format="Hierarchical" version="2.20">
+	<ConfigVersions>
+		<Metadata name="Configuration.CorpusConfiguration" id="829019ad-9973-4df8-bd04-63ec82ad0830" configVersion="25b6e81c8c0dff4f865c243976aafd3d00000000"/>
+		<Metadata name="Configuration.CorpusConfiguration.ClientApplicationInterface" id="00000000-0000-0000-0000-000000000002.b" configVersion="c46b96e0edb22241b3146ad3c688ee9500000000"/>
+		<Metadata name="Language.Русский" id="00000000-0000-0000-0000-000000000001" configVersion="440cfd97db63674dbba1733e5bbc9ef100000000"/>
+		<Metadata name="Report.CorpusReport" id="6336047c-6b8b-4382-bb3a-29eb9c88daa1" configVersion="3dd146171e74f048ac423a7d3e78209c00000000"/>
+		<Metadata name="Report.CorpusReport.Form.Main" id="cc9559ee-1360-4f6b-a686-1d201c249372" configVersion="8a0144841cc1ca4582b056f1fd0c9ef100000000"/>
+		<Metadata name="Report.CorpusReport.Form.Main.Form" id="cc9559ee-1360-4f6b-a686-1d201c249372.0" configVersion="e7b158aa59677547907cd687bc5ed3ab00000000"/>
+		<Metadata name="Report.CorpusReport.ManagerModule" id="6336047c-6b8b-4382-bb3a-29eb9c88daa1.2" configVersion="3f99790416ea554d85e12bde070e2e6500000000"/>
+		<Metadata name="Report.CorpusReport.ObjectModule" id="6336047c-6b8b-4382-bb3a-29eb9c88daa1.0" configVersion="4d4f8091a691c742afb528e97b28535500000000"/>
+	</ConfigVersions>
+</ConfigDumpInfo>

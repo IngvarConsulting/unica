@@ -767,7 +767,11 @@ pub fn parse_typed_meta_local_info_inner(
     );
     let format = unica_source_designer::roots::root_version_literal(xml, doc.root_element());
     let member_read_profile = source_kind.and_then(|source| {
-        unica_metadata::MetaMemberReadProfile::for_source(source, kind, format.as_deref())
+        unica_metadata::MetaMemberReadProfile::for_source(
+            source,
+            kind,
+            crate::dialect::root_version::is_writable(format.as_deref()),
+        )
     });
     let collection_route = |tag, nested_attributes, field| {
         TypedRootCollectionRoute::new(kind, tag, nested_attributes, field)
