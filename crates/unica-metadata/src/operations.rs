@@ -511,7 +511,8 @@ impl Serialize for MetaFillValue {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct MetaElementInput {
     pub name: String,
-    pub synonym: Option<String>,
+    /// Every language of the synonym, from its NStr form (#2163).
+    pub synonym: Option<Vec<crate::LocalizedItem>>,
     pub comment: Option<String>,
     pub r#type: Option<MetadataType>,
     pub required: Option<bool>,
@@ -538,7 +539,7 @@ impl MetaElementInput {
 #[derive(Clone, PartialEq, Eq)]
 pub struct MetaElementDefinition {
     pub name: String,
-    pub synonym: Option<String>,
+    pub synonym: Option<Vec<crate::LocalizedItem>>,
     pub comment: Option<String>,
     pub r#type: Option<MetadataType>,
     pub required: Option<bool>,
@@ -584,8 +585,9 @@ impl std::fmt::Debug for MetaElementDefinition {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct MetaElementUpdateInput {
     pub name: String,
+    pub tool_tip: Option<Vec<crate::LocalizedItem>>,
     pub new_name: Option<String>,
-    pub synonym: Option<String>,
+    pub synonym: Option<Vec<crate::LocalizedItem>>,
     pub comment: Option<String>,
     pub r#type: Option<MetadataType>,
     pub required: Option<bool>,
@@ -597,13 +599,16 @@ pub struct MetaElementUpdateInput {
     pub master: Option<bool>,
     pub main_filter: Option<bool>,
     pub type_reduction_mode: Option<String>,
+    /// `Color` of an enumeration value, from 8.5.1.
+    pub color: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MetaElementUpdate {
     pub name: String,
+    pub tool_tip: Option<Vec<crate::LocalizedItem>>,
     pub new_name: Option<String>,
-    pub synonym: Option<String>,
+    pub synonym: Option<Vec<crate::LocalizedItem>>,
     pub comment: Option<String>,
     pub r#type: Option<MetadataType>,
     pub required: Option<bool>,
@@ -614,6 +619,8 @@ pub struct MetaElementUpdate {
     pub master: Option<bool>,
     pub main_filter: Option<bool>,
     pub type_reduction_mode: Option<String>,
+    /// `Color` of an enumeration value, from 8.5.1.
+    pub color: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -938,6 +945,14 @@ impl MetaElementDefinition {
     }
 }
 
+pub(crate) fn metadata_tool_tip_is_allowed(
+    owner: MetadataKind,
+    collection: MetaCollection,
+    in_section: bool,
+) -> bool {
+    owner == MetadataKind::Catalog && collection == MetaCollection::Attributes && in_section
+}
+
 impl MetaElementUpdate {
     fn convert_at(
         collection: MetaCollection,
@@ -954,6 +969,7 @@ impl MetaElementUpdate {
             .is_some_and(|new_name| new_name != &input.name);
         if !renames
             && input.synonym.is_none()
+            && input.tool_tip.is_none()
             && input.comment.is_none()
             && input.r#type.is_none()
             && input.required.is_none()
@@ -964,6 +980,7 @@ impl MetaElementUpdate {
             && input.main_filter.is_none()
             && input.deny_incomplete_values.is_none()
             && input.type_reduction_mode.is_none()
+            && input.color.is_none()
         {
             return Err(invalid_operation(
                 field,
@@ -987,6 +1004,22 @@ impl MetaElementUpdate {
                 ));
             }
         }
+        if input.color.is_some() && collection != MetaCollection::EnumValues {
+            return Err(invalid_operation(
+                format!("{field}.color"),
+                "color is a property of an enumeration value",
+            ));
+        }
+        if let Some(color) = &input.color {
+            if color != "auto"
+                && crate::style_color::StyleItemColor::parse_argument(color).is_none()
+            {
+                return Err(invalid_operation(
+                    format!("{field}.color"),
+                    "color must be auto, #RRGGBB, or a web or style color the platform knows",
+                ));
+            }
+        }
         let spec = metadata_collection_spec(collection);
         validate_element_fields(
             spec,
@@ -1002,6 +1035,7 @@ impl MetaElementUpdate {
         Ok(Self {
             name: input.name,
             new_name: input.new_name,
+            tool_tip: input.tool_tip,
             synonym: input.synonym,
             comment: input.comment,
             r#type: input.r#type,
@@ -1013,6 +1047,7 @@ impl MetaElementUpdate {
             main_filter: input.main_filter,
             deny_incomplete_values: input.deny_incomplete_values,
             type_reduction_mode: input.type_reduction_mode,
+            color: input.color,
         })
     }
 }
@@ -1364,6 +1399,9 @@ impl MetaEditOperationTag {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MetaEditOperation {
+    SetOwnerFillingValue {
+        enabled: bool,
+    },
     SetProperties {
         values: MetaPropertyChanges,
     },
@@ -1546,11 +1584,8 @@ impl MetadataFieldPath {
             ));
         }
         validate_name(parts[3], "fieldPath")?;
-        let owner = MetadataAddress::parse(
-            unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
-            &format!("{}.{}", parts[0], parts[1]),
-        )
-        .map_err(|_| invalid_operation("fieldPath", "field path owner is invalid"))?;
+        let owner = MetadataAddress::parse_logical(&format!("{}.{}", parts[0], parts[1]))
+            .map_err(|_| invalid_operation("fieldPath", "field path owner is invalid"))?;
         let kind = match parts[2] {
             "Attribute" => MetadataFieldKind::Attribute,
             "StandardAttribute" => MetadataFieldKind::StandardAttribute,
@@ -1750,6 +1785,53 @@ fn validate_relation_edit_shape(
 }
 
 /// Validate every owner-dependent part of one already parsed typed operation.
+/// The bilingual platform name belongs to every tabular section's standard
+/// row attribute. Header attributes have a different namespace (#2057).
+fn validate_tabular_attribute_name(
+    collection: MetaCollection,
+    tabular_section: bool,
+    name: &str,
+    field: &str,
+) -> Result<(), MetaDiagnostic> {
+    if collection == MetaCollection::Attributes
+        && tabular_section
+        && ["LineNumber", "НомерСтроки"]
+            .iter()
+            .any(|standard| metadata_name_eq(name, standard))
+    {
+        return Err(invalid_operation(field,
+            format!("`{name}` is the standard LineNumber attribute of a tabular section; choose another name")));
+    }
+    Ok(())
+}
+
+// A newly created tabular section owns its declared attributes immediately;
+// validate those names through the same namespace rule as attribute.add.
+fn validate_added_element_names(
+    collection: MetaCollection,
+    tabular_section: bool,
+    element: &MetaElementDefinition,
+    field: &str,
+) -> Result<(), MetaDiagnostic> {
+    validate_tabular_attribute_name(
+        collection,
+        tabular_section,
+        &element.name,
+        &format!("{field}.name"),
+    )?;
+    if collection == MetaCollection::TabularSections {
+        for (index, attribute) in element.attributes.iter().enumerate() {
+            validate_added_element_names(
+                MetaCollection::Attributes,
+                true,
+                attribute,
+                &format!("{field}.attributes[{index}]"),
+            )?;
+        }
+    }
+    Ok(())
+}
+
 /// This is the shared bridge for the public parser, schema and provider: it
 /// rejects the complete operation before the provider mutates its private
 /// working image.
@@ -1759,6 +1841,16 @@ pub fn validate_metadata_operation_capabilities(
     operation: &MetaEditOperation,
 ) -> Result<(), MetaDiagnostic> {
     match operation {
+        MetaEditOperation::SetOwnerFillingValue { .. } => {
+            if owner_kind == MetadataKind::Catalog {
+                Ok(())
+            } else {
+                Err(MetaDiagnostic::error(
+                    MetaDiagnosticCode::UnsupportedKind,
+                    "Owner filling is only supported for a catalog",
+                ))
+            }
+        }
         MetaEditOperation::SetProperties { .. } => Ok(()),
         // ADR-0072: every owner kind carries an object directory with an Ext
         // facet, so help has no per-kind capability gate; existence checks
@@ -1766,7 +1858,10 @@ pub fn validate_metadata_operation_capabilities(
         MetaEditOperation::AddHelp { .. } => Ok(()),
         // The first slice copies attributes of a catalog tabular section only.
         MetaEditOperation::Copy {
-            collection, scope, ..
+            collection,
+            scope,
+            new_name,
+            ..
         } => {
             if owner_kind != MetadataKind::Catalog
                 || *collection != MetaCollection::Attributes
@@ -1777,7 +1872,7 @@ pub fn validate_metadata_operation_capabilities(
                     "only an attribute of a catalog tabular section can be copied",
                 ));
             }
-            Ok(())
+            validate_tabular_attribute_name(*collection, scope.is_some(), new_name, "values.name")
         }
         MetaEditOperation::Add {
             collection,
@@ -1785,6 +1880,14 @@ pub fn validate_metadata_operation_capabilities(
             elements,
         } => {
             validate_metadata_kind_collection(owner_kind, *collection)?;
+            for (index, element) in elements.iter().enumerate() {
+                validate_added_element_names(
+                    *collection,
+                    scope.is_some(),
+                    element,
+                    &format!("elements[{index}]"),
+                )?;
+            }
             if *collection != MetaCollection::Templates {
                 for (index, element) in elements.iter().enumerate() {
                     if element.template_type.is_some() {
@@ -1827,6 +1930,14 @@ pub fn validate_metadata_operation_capabilities(
         } => {
             validate_metadata_kind_collection(owner_kind, *collection)?;
             for (index, element) in elements.iter().enumerate() {
+                if let Some(name) = &element.new_name {
+                    validate_tabular_attribute_name(
+                        *collection,
+                        scope.is_some(),
+                        name,
+                        &format!("elements[{index}].newName"),
+                    )?;
+                }
                 validate_dimension_flag_owner(
                     owner_kind,
                     *collection,
@@ -1850,6 +1961,14 @@ pub fn validate_metadata_operation_capabilities(
                 MetaElementScope::TopLevel
             };
             for (index, element) in elements.iter().enumerate() {
+                if element.tool_tip.is_some()
+                    && !metadata_tool_tip_is_allowed(owner_kind, *collection, scope.is_some())
+                {
+                    return Err(invalid_operation(
+                        format!("elements[{index}].toolTip"),
+                        "toolTip is available only for catalog tabular-section attributes",
+                    ));
+                }
                 if element.fill_value.is_some()
                     && !metadata_fill_value_is_allowed(owner_kind, *collection, context)
                 {
@@ -2267,7 +2386,9 @@ impl MetaEditOperation {
                     }
                 }
             }
-            Self::SetProperties { .. } | Self::EditRelations { .. } => {}
+            Self::SetOwnerFillingValue { .. }
+            | Self::SetProperties { .. }
+            | Self::EditRelations { .. } => {}
             Self::AddPredefinedItems { .. }
             | Self::UpdatePredefinedItems { .. }
             | Self::RemovePredefinedItems { .. } => {}
@@ -2851,11 +2972,7 @@ mod tests {
 
     #[test]
     fn event_source_set_rejects_duplicate_logical_identities() {
-        let address = MetadataAddress::parse(
-            unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
-            "Catalog.Items",
-        )
-        .unwrap();
+        let address = MetadataAddress::parse_logical("Catalog.Items").unwrap();
         let duplicate = MetaEditOperation::edit_relation_targets(
             MetaRelation::Source,
             RelationEditMode::Replace,
@@ -2874,19 +2991,10 @@ mod tests {
 
     #[test]
     fn event_source_profile_correlates_kind_and_metadata_path() {
-        let owner = MetadataAddress::parse(
-            unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
-            "EventSubscription.Notify",
-        )
-        .unwrap();
+        let owner = MetadataAddress::parse_logical("EventSubscription.Notify").unwrap();
         let source = |source| MetaRelationTarget::EventSource(source);
-        let address = |path: &str| -> MetadataAddress {
-            MetadataAddress::parse(
-                unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
-                path,
-            )
-            .unwrap()
-        };
+        let address =
+            |path: &str| -> MetadataAddress { MetadataAddress::parse_logical(path).unwrap() };
 
         for event_source in [
             MetaEventSource::Object {
@@ -2957,23 +3065,11 @@ mod tests {
 
     #[test]
     fn relation_capability_validation_rejects_cross_kind_and_cross_owner_targets() {
-        let catalog = MetadataAddress::parse(
-            unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
-            "Catalog.Items",
-        )
-        .unwrap();
-        let document = MetadataAddress::parse(
-            unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
-            "Document.Order",
-        )
-        .unwrap();
+        let catalog = MetadataAddress::parse_logical("Catalog.Items").unwrap();
+        let document = MetadataAddress::parse_logical("Document.Order").unwrap();
         let object_target = |path: &str| {
             MetaRelationTarget::Object(MetadataReference {
-                metadata_path: MetadataAddress::parse(
-                    unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
-                    path,
-                )
-                .unwrap(),
+                metadata_path: MetadataAddress::parse_logical(path).unwrap(),
             })
         };
 
@@ -3056,15 +3152,141 @@ mod tests {
         .is_err());
         assert!(validate_metadata_relation_target_profile(
             MetadataKind::Enum,
-            &MetadataAddress::parse(
-                unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
-                "Enum.State",
-            )
-            .unwrap(),
+            &MetadataAddress::parse_logical("Enum.State",).unwrap(),
             MetaRelation::BasedOn,
             &object_target("Enum.Other"),
         )
         .is_err());
+    }
+
+    #[test]
+    fn platform_tabular_name_cases_match_validation() {
+        let manifest: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/platform_8_3_27/tabular_standard_names/manifest.json"
+        ))
+        .unwrap();
+        for case in manifest["cases"].as_array().unwrap() {
+            let kind = MetadataKind::parse(case["owner"].as_str().unwrap()).unwrap();
+            let owner =
+                MetadataAddress::parse_logical(&format!("{}.Items", kind.as_str())).unwrap();
+            let scope = (case["scope"] == "tabularSection").then(|| MetaScope {
+                tabular_section: "Lines".into(),
+            });
+            let op = MetaEditOperation::add(
+                MetaCollection::Attributes,
+                scope,
+                vec![MetaElementInput::named(case["name"].as_str().unwrap())],
+            )
+            .unwrap();
+            assert_eq!(
+                validate_metadata_operation_capabilities(kind, &owner, &op).is_ok(),
+                case["returncode"] == 0,
+                "{}",
+                case["id"]
+            );
+        }
+    }
+
+    /// rule: INV.SOURCE.METADATA-MUTATION-VALIDITY
+    #[test]
+    fn tabular_standard_attribute_names_are_rejected_by_all_name_constructors() {
+        let owner = MetadataAddress::parse_logical("Catalog.Items").unwrap();
+        for name in ["НомерСтроки", "LineNumber", "нОмЕрСтРоКи", "linenumber"]
+        {
+            let scope = Some(MetaScope {
+                tabular_section: "Lines".into(),
+            });
+            for (operation, path) in [
+                (
+                    MetaEditOperation::add(
+                        MetaCollection::Attributes,
+                        scope.clone(),
+                        vec![MetaElementInput::named(name)],
+                    )
+                    .unwrap(),
+                    "elements[0].name",
+                ),
+                (
+                    MetaEditOperation::Copy {
+                        collection: MetaCollection::Attributes,
+                        scope: scope.clone(),
+                        name: "Source".into(),
+                        new_name: name.into(),
+                    },
+                    "values.name",
+                ),
+                (
+                    MetaEditOperation::update(
+                        MetaCollection::Attributes,
+                        scope,
+                        vec![MetaElementUpdateInput {
+                            name: "Source".into(),
+                            new_name: Some(name.into()),
+                            ..Default::default()
+                        }],
+                    )
+                    .unwrap(),
+                    "elements[0].newName",
+                ),
+            ] {
+                let error = validate_metadata_operation_capabilities(
+                    MetadataKind::Catalog,
+                    &owner,
+                    &operation,
+                )
+                .unwrap_err();
+                assert_eq!(error.code, MetaDiagnosticCode::InvalidArguments);
+                assert_eq!(error.field.as_deref(), Some(path));
+                assert!(error.message.contains("LineNumber"), "{error:?}");
+            }
+            let nested = MetaEditOperation::add(
+                MetaCollection::TabularSections,
+                None,
+                vec![MetaElementInput {
+                    name: "NewLines".into(),
+                    attributes: Some(vec![MetaElementInput::named(name)]),
+                    ..Default::default()
+                }],
+            )
+            .unwrap();
+            for (kind, path) in [
+                (MetadataKind::Catalog, "Catalog.Items"),
+                (MetadataKind::Document, "Document.Order"),
+            ] {
+                let owner = MetadataAddress::parse_logical(path).unwrap();
+                let error =
+                    validate_metadata_operation_capabilities(kind, &owner, &nested).unwrap_err();
+                assert_eq!(error.code, MetaDiagnosticCode::InvalidArguments);
+                assert_eq!(
+                    error.field.as_deref(),
+                    Some("elements[0].attributes[0].name")
+                );
+            }
+            let header = MetaEditOperation::add(
+                MetaCollection::Attributes,
+                None,
+                vec![MetaElementInput::named(name)],
+            )
+            .unwrap();
+            assert!(validate_metadata_operation_capabilities(
+                MetadataKind::Catalog,
+                &owner,
+                &header
+            )
+            .is_ok());
+        }
+        let ordinary = MetaEditOperation::add(
+            MetaCollection::Attributes,
+            Some(MetaScope {
+                tabular_section: "Lines".into(),
+            }),
+            vec![MetaElementInput::named("LineNumberText")],
+        )
+        .unwrap();
+        assert!(
+            validate_metadata_operation_capabilities(MetadataKind::Catalog, &owner, &ordinary)
+                .is_ok()
+        );
     }
 
     #[test]
@@ -3171,13 +3393,7 @@ mod tests {
         .unwrap_err();
         assert_eq!(error.field.as_deref(), Some("fillValue"));
 
-        let address = |value| {
-            MetadataAddress::parse(
-                unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
-                value,
-            )
-            .unwrap()
-        };
+        let address = |value| MetadataAddress::parse_logical(value).unwrap();
         for (variant, field) in [
             (
                 MetadataTypeVariant::Reference {
@@ -3551,11 +3767,7 @@ mod dimension_flag_tests {
 
     #[test]
     fn dimension_flags_conversion_false_and_owner_matrix() {
-        let owner_address = MetadataAddress::parse(
-            unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
-            "InformationRegister.Prices",
-        )
-        .unwrap();
+        let owner_address = MetadataAddress::parse_logical("InformationRegister.Prices").unwrap();
         for key in ["master", "mainFilter", "denyIncompleteValues"] {
             let mut value = json!({"name":"Item"});
             value[key] = json!(false);
@@ -3677,11 +3889,8 @@ mod reduction_tests {
                 MetadataKind::InformationRegister,
                 MetadataKind::AccumulationRegister,
             ] {
-                let owner = MetadataAddress::parse(
-                    unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
-                    &format!("{}.Facts", kind.as_str()),
-                )
-                .unwrap();
+                let owner =
+                    MetadataAddress::parse_logical(&format!("{}.Facts", kind.as_str())).unwrap();
                 let op = MetaEditOperation::Update {
                     collection: MetaCollection::Dimensions,
                     scope: None,

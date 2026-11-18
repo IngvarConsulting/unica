@@ -22,7 +22,7 @@ impl Fixture {
         let workspace =
             unica_workspace::test_support::canonical_path(root.path()).join("workspace");
         let image = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../tests/fixtures/platform_8_3_27/empty_configuration");
+            .join("../../tests/fixtures/formats/platform_xml/2.20/empty_configuration");
         for (relative, bytes) in unica_workspace::test_support::tree_snapshot(&image) {
             let path = workspace.join(relative);
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -90,7 +90,7 @@ fn props_set(at: &str, values: Value) -> Value {
 /// Every property `props.set` writes, none at its platform default.
 fn every_property() -> Value {
     json!({
-        "Title": "Товар", "Width": 61, "Height": 17,
+        "Title": "ru = 'Товар'", "Width": 61, "Height": 17,
         "WindowOpeningMode": "LockWholeInterface", "EnterKeyBehavior": "DefaultButton",
         "AutoSaveDataInSettings": "Use", "SaveDataInSettings": "UseList",
         "SaveWindowSettings": false, "AutoTitle": false, "AutoURL": false,
@@ -178,7 +178,7 @@ fn canonical_props_set_writes_a_multilingual_title_and_document_properties() {
     let fixture = catalog_form();
     fixture.publish(props_set(
         FORM,
-        json!({"Title": {"ru": "Товар", "en": "Product"}, "AutoTitle": false}),
+        json!({"Title": "ru = 'Товар'; en = 'Product'", "AutoTitle": false}),
     ));
     let text = String::from_utf8(std::fs::read(fixture.workspace.join(FORM_XML)).unwrap())
         .unwrap()
@@ -194,41 +194,30 @@ fn canonical_props_set_writes_a_multilingual_title_and_document_properties() {
         "{text}"
     );
 
-    // A plain string sets the default language and keeps other translations.
-    fixture.publish(props_set(FORM, json!({"Title": "Товары"})));
-    let text = String::from_utf8(std::fs::read(fixture.workspace.join(FORM_XML)).unwrap())
-        .unwrap()
-        .replace("\r\n", "\n");
-    assert!(
-        text.contains(concat!(
-            "\t\t\t<v8:content>Товары</v8:content>\n\t\t</v8:item>\n",
-            "\t\t<v8:item>\n\t\t\t<v8:lang>en</v8:lang>\n\t\t\t<v8:content>Product</v8:content>\n",
-        )),
-        "{text}"
-    );
+    let view = fixture.call(ToolIdentity::View, json!({"at": FORM}));
+    assert!(view.ok, "{view:?}");
+    let prior = &view.data.as_ref().unwrap()["props"]["title"];
+    assert_eq!(prior, "ru = 'Товар'; en = 'Product'");
+    fixture.publish(props_set(FORM, json!({"Title": prior})));
 
-    // A title without the default language gains it after its translations,
-    // with the line endings of the form and the text escaped.
-    fixture.publish(props_set(FORM, json!({"Title": {"en": "Product"}})));
-    fixture.publish(props_set(FORM, json!({"Title": "A & <B>"})));
+    // Reordering preserves the supplied order and omitting a language removes it.
+    fixture.publish(props_set(FORM, json!({"Title": "en = ''; de = 'A & <B>'"})));
+    let view = fixture.call(ToolIdentity::View, json!({"at": FORM}));
+    assert!(view.ok, "{view:?}");
+    assert_eq!(
+        view.data.as_ref().unwrap()["props"]["title"],
+        "en = ''; de = 'A & <B>'"
+    );
     let raw = String::from_utf8(std::fs::read(fixture.workspace.join(FORM_XML)).unwrap()).unwrap();
     assert!(
-        raw.contains("\t\t</v8:item>\r\n\t\t<v8:item>\r\n\t\t\t<v8:lang>ru</v8:lang>\r\n\t\t\t<v8:content>A &amp; &lt;B&gt;</v8:content>\r\n\t\t</v8:item>\r\n\t</Title>\r\n"),
+        raw.contains("<v8:content>A &amp; &lt;B&gt;</v8:content>"),
         "{raw}"
     );
-    fixture.publish(props_set(FORM, json!({"Title": "Товар"})));
-    let text = String::from_utf8(std::fs::read(fixture.workspace.join(FORM_XML)).unwrap())
-        .unwrap()
-        .replace("\r\n", "\n");
-    assert!(
-        text.contains(concat!(
-            "\t<Title>\n",
-            "\t\t<v8:item>\n\t\t\t<v8:lang>en</v8:lang>\n\t\t\t<v8:content>Product</v8:content>\n\t\t</v8:item>\n",
-            "\t\t<v8:item>\n\t\t\t<v8:lang>ru</v8:lang>\n\t\t\t<v8:content>Товар</v8:content>\n\t\t</v8:item>\n",
-            "\t</Title>\n",
-        )),
-        "{text}"
-    );
+
+    fixture.publish(props_set(FORM, json!({"Title": ""})));
+    let view = fixture.call(ToolIdentity::View, json!({"at": FORM}));
+    assert!(view.ok, "{view:?}");
+    assert!(view.data.as_ref().unwrap()["props"].get("title").is_none());
 
     // A document form takes the posting properties; 1C exports them always.
     let document = "main:Document.Заказ.Form.ФормаДокумента";
@@ -257,6 +246,58 @@ fn canonical_props_set_writes_a_multilingual_title_and_document_properties() {
     );
 }
 
+/// rule: INV.SOURCE.LOCALIZED-STRING-NSTR
+#[test]
+fn canonical_title_readback_preserves_prefixes_and_unrelated_form_bytes() {
+    let header = concat!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n",
+        "<lf:Form xmlns:lf=\"http://v8.1c.ru/8.3/xcf/logform\" version=\"2.20\">\r\n",
+    );
+    let footer = concat!(
+        "\t<lf:AutoCommandBar name=\"ФормаКоманднаяПанель\" id=\"-1\"/>\r\n",
+        "</lf:Form>",
+    );
+    for bom in ["\u{feff}", ""] {
+        let fixture = catalog_form();
+        let path = fixture.workspace.join(FORM_XML);
+        let old = format!(
+            "{bom}{header}{}{}{}{}{footer}",
+            "\t<lf:Title xmlns:text=\"http://v8.1c.ru/8.1/data/core\" formatted=\"false\">\r\n",
+            "\t\t<text:item><text:lang>en</text:lang><text:content>Old</text:content></text:item>\r\n",
+            "\t\t<text:item><text:lang>ru</text:lang><text:content/></text:item>\r\n",
+            "\t</lf:Title>\r\n"
+        );
+        std::fs::write(&path, &old).unwrap();
+
+        let read_title = || {
+            let view = fixture.call(ToolIdentity::View, json!({"at": FORM}));
+            assert!(view.ok, "{view:?}");
+            view.data.unwrap()["props"]["title"].clone()
+        };
+        let original_title = read_title();
+        assert_eq!(original_title, "en = 'Old'; ru = ''");
+        fixture.publish(props_set(FORM, json!({"Title": original_title})));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), old);
+
+        let new_title = "en = 'New'; ru = ''";
+        let preview = fixture.call(
+            ToolIdentity::Apply,
+            props_set(FORM, json!({"Title": new_title})),
+        );
+        assert!(preview.ok, "{preview:?}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), old);
+        let token = preview.data.unwrap()["executionToken"].clone();
+        let result = fixture.call(ToolIdentity::Apply, json!({"executionToken": token}));
+        assert!(result.ok, "{result:?}");
+        let actual = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            actual.trim_start_matches('\u{feff}').starts_with(header) && actual.ends_with(footer),
+            "{actual}"
+        );
+        assert_eq!(read_title(), new_title);
+    }
+}
+
 /// A property the form does not take refuses the preview with bad_value and
 /// writes nothing: an unknown name, a reference property, a property of
 /// another kind of form and a value outside its type.
@@ -277,14 +318,20 @@ fn canonical_props_set_refuses_what_the_form_does_not_take() {
         ),
         (
             json!({"Title": {"ru": "Товар", "en": ""}}),
+            "values.Title",
             "",
-            "takes a non-empty text",
+        ),
+        (json!({"Title": "Товар"}), "values.Title", "NStr"),
+        (
+            json!({"Title": "ru = 'Товар'; RU = 'Повтор'"}),
+            "values.Title",
+            "listed twice",
         ),
         (json!({"Width": -1}), "values.Width", ""),
         (json!({"Group": "Diagonal"}), "values.Group", ""),
         (json!({"UsePostingMode": "Regular"}), "", "a document form"),
         (
-            json!({"Title": "Товар", "ReportFormType": "Main"}),
+            json!({"Title": "ru = 'Товар'", "ReportFormType": "Main"}),
             "",
             "a report form",
         ),

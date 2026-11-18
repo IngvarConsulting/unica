@@ -1,0 +1,13 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:ns1="http://v8.1c.ru/8.1/data/core" xmlns:tns="http://v8.1c.ru/8.2/managed-application/InteractiveSecurityException" xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="http://v8.1c.ru/8.2/managed-application/InteractiveSecurityException" attributeFormDefault="unqualified" elementFormDefault="qualified">
+	<xs:import namespace="http://v8.1c.ru/8.1/data/core"/>
+	<xs:complexType name="InteractiveSecurityException">
+		<xs:complexContent>
+			<xs:extension base="ns1:GenericException">
+				<xs:attribute name="moduleSignature" type="xs:string"/>
+				<xs:attribute name="operationType" type="xs:decimal"/>
+				<xs:attribute name="commandCouldNotRestart" type="xs:boolean"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+</xs:schema>

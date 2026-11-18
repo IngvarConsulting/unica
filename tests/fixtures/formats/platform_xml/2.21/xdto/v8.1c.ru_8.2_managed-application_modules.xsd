@@ -1,0 +1,71 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:ns1="http://v8.1c.ru/8.1/data/core" xmlns:ns2="http://v8.1c.ru/8.2/managed-application/core" xmlns:ns3="http://v8.1c.ru/8.2/data/bsl" xmlns:tns="http://v8.1c.ru/8.2/managed-application/modules" xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="http://v8.1c.ru/8.2/managed-application/modules" attributeFormDefault="unqualified" elementFormDefault="qualified">
+	<xs:import namespace="http://v8.1c.ru/8.1/data/core"/>
+	<xs:import namespace="http://v8.1c.ru/8.2/managed-application/core"/>
+	<xs:import namespace="http://v8.1c.ru/8.2/data/bsl"/>
+	<xs:simpleType name="ParamDirection">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="InOut"/>
+			<xs:enumeration value="In"/>
+			<xs:enumeration value="Out"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:complexType name="MethodCall">
+		<xs:sequence>
+			<xs:element name="ret" nillable="true" minOccurs="0"/>
+			<xs:element name="param" nillable="true" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="pfc" type="tns:ProcessFormsCloseParam" nillable="true" minOccurs="0"/>
+		</xs:sequence>
+		<xs:attribute name="name" type="xs:Name"/>
+	</xs:complexType>
+	<xs:complexType name="MethodDef">
+		<xs:choice>
+			<xs:element name="param" type="tns:ParamDef" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:choice>
+		<xs:attribute name="name" type="xs:Name"/>
+		<xs:attribute name="exp" type="xs:boolean" default="false"/>
+		<xs:attribute name="params" type="xs:decimal"/>
+	</xs:complexType>
+	<xs:complexType name="MethodDefs">
+		<xs:choice>
+			<xs:element name="proc" type="tns:MethodDef" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="func" type="tns:MethodDef" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:choice>
+	</xs:complexType>
+	<xs:complexType name="ModuleContentDef">
+		<xs:sequence>
+			<xs:element name="moduleMethods" type="tns:MethodDefs" minOccurs="0"/>
+			<xs:element name="moduleImage" type="ns3:BSLModuleImage" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="ModuleDef">
+		<xs:sequence>
+			<xs:element name="image" type="ns3:BSLModuleImage" minOccurs="0"/>
+			<xs:element name="extension" type="tns:ModuleDef" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="securityInfo" type="xs:string"/>
+		</xs:sequence>
+		<xs:attribute name="id" type="xs:string"/>
+		<xs:attribute name="code" type="xs:Name"/>
+		<xs:attribute name="name" type="xs:Name"/>
+		<xs:attribute name="cached" type="xs:integer"/>
+	</xs:complexType>
+	<xs:complexType name="ModulesDef">
+		<xs:sequence>
+			<xs:element name="main" type="tns:ModuleDef"/>
+			<xs:element name="global" type="tns:ModuleDef" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="client" type="tns:ModuleDef" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="server" type="tns:ModuleDef" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+		<xs:attribute name="alias" type="ns2:Alias" default="en"/>
+	</xs:complexType>
+	<xs:complexType name="ParamDef">
+		<xs:attribute name="dir" type="tns:ParamDirection" default="InOut"/>
+		<xs:attribute name="pos" type="xs:decimal"/>
+		<xs:attribute name="def" type="xs:boolean" default="false"/>
+	</xs:complexType>
+	<xs:complexType name="ProcessFormsCloseParam">
+		<xs:sequence>
+			<xs:element name="id" type="ns1:UUID" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+</xs:schema>

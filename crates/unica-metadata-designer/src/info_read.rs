@@ -6,9 +6,7 @@ use roxmltree::Document;
 use std::collections::HashSet;
 use std::io;
 use std::path::{Path, PathBuf};
-use unica_address::source_target::{
-    MetadataAddress, ResolvedTarget, SourceTarget, TargetKind, PLATFORM_XML_8_3_27_FORMAT_2_20,
-};
+use unica_address::source_target::{MetadataAddress, ResolvedTarget, SourceTarget, TargetKind};
 use unica_metadata::subsystem::SUBSYSTEM_ADDRESS_MAX_DEPTH;
 use unica_metadata::subsystem_topology::MetadataObjectIdentity;
 use unica_metadata::support_state::{ObjectSupportState, SupportStateReader};
@@ -418,10 +416,10 @@ fn visit_registrar_candidate<G>(
         Ok(identity) if identity.object_type == "Document" => identity,
         _ => return Err("registrar evidence candidate is malformed"),
     };
-    let dependency_target = MetadataAddress::parse(
-        PLATFORM_XML_8_3_27_FORMAT_2_20,
-        &format!("{}.{}", identity.object_type, identity.object_name),
-    )
+    let dependency_target = MetadataAddress::parse_logical(&format!(
+        "{}.{}",
+        identity.object_type, identity.object_name
+    ))
     .map_err(|_| "registrar evidence candidate has no logical identity")?;
     checkpoint().map_err(|_| INTERRUPTED)?;
     let registers_target = crate::validation::document_registers(&bytes, register_reference);
@@ -583,11 +581,7 @@ fn typed_registered_language_images<G>(
         .filter_map(|name| (!name.trim().is_empty()).then_some(name))
         .filter(|name| unica_metadata::identifier::is_1c_identifier(name))
         .filter_map(|name| {
-            let metadata_path = MetadataAddress::parse(
-                PLATFORM_XML_8_3_27_FORMAT_2_20,
-                &format!("Language.{name}"),
-            )
-            .ok()?;
+            let metadata_path = MetadataAddress::parse_logical(&format!("Language.{name}")).ok()?;
             let bytes = unica_source_designer::read::read_bytes(
                 reader,
                 &resolved
@@ -854,10 +848,9 @@ pub fn registered_language_images(
                 "registered language `{name}` is not a valid 1C identifier"
             ));
         }
-        let target = unica_address::source_target::MetadataAddress::parse(
-            unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
-            &format!("Language.{name}"),
-        )
+        let target = unica_address::source_target::MetadataAddress::parse_logical(&format!(
+            "Language.{name}"
+        ))
         .map_err(|_| "registered language has an invalid logical identity".to_string())?;
         let path = source_root.join("Languages").join(format!("{name}.xml"));
         let bytes = unica_source_designer::read::read_bytes(reader, &path)

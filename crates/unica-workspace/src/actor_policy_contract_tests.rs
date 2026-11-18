@@ -2865,6 +2865,140 @@ pub fn prepared_apply_dry_run_is_byte_identical_and_real_apply_commits_the_same_
     fixture.cleanup();
 }
 
+pub fn apply_selection_presence_markers_bind_identity_but_not_unread_bytes(
+    policies: crate::policies::WorkspacePolicies,
+) {
+    use std::io::Write;
+    struct CleanupFixture(Option<ActorFixture>);
+    impl Drop for CleanupFixture {
+        fn drop(&mut self) {
+            if let Some(ActorFixture { root, actor, .. }) = self.0.take() {
+                drop(actor);
+                let _ = std::fs::remove_dir_all(root);
+            }
+        }
+    }
+    let _policy_scope = policies_scope(policies);
+    for mutation in ["bytes", "replacement", "absent", "directory", "exact-yaml"] {
+        let owned = CleanupFixture(Some(actor_fixture(
+            &format!("selection-presence-{mutation}"),
+            &["main", "other"],
+        )));
+        let fixture = owned.0.as_ref().unwrap();
+        let marker = fixture.roots[1].join("Configuration.xml");
+        std::fs::write(&marker, b"<MetaDataObject/>").unwrap();
+        let yaml = fixture.root.join("v8project.yaml");
+        let mut config = std::fs::read(&yaml).unwrap();
+        config.extend_from_slice(b"# first\n");
+        std::fs::write(&yaml, &config).unwrap();
+        let target = fixture.roots[0].join("Module.bsl");
+        std::fs::write(&target, b"before").unwrap();
+        let binding = fixture
+            .actor
+            .bind_provider_root("main", &fixture.roots[0])
+            .unwrap();
+        let admitted = fixture
+            .actor
+            .admit_apply(
+                &binding,
+                None,
+                false,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let mut state = admitted.staged_state().unwrap();
+        state
+            .replace("Module.bsl", b"before", b"after".to_vec())
+            .unwrap();
+        let prepared = admitted
+            .prepare_with_cache_effects(
+                state,
+                &[unica_source_contract::events::DomainEvent::new(
+                    unica_source_contract::events::DomainEventKind::MetadataChanged,
+                    "Catalog.Products",
+                )],
+            )
+            .unwrap();
+        let identity = file_identity_for_test(&marker).unwrap();
+        assert!(identity.is_some(), "this host must expose file identity");
+        match mutation {
+            "bytes" => {
+                let mut file = std::fs::OpenOptions::new()
+                    .write(true)
+                    .truncate(true)
+                    .open(&marker)
+                    .unwrap();
+                file.write_all(b"unread marker content changed in place")
+                    .unwrap();
+                file.sync_all().unwrap();
+                assert_eq!(file_identity_for_test(&marker).unwrap(), identity);
+            }
+            "replacement" => {
+                let replacement = fixture.root.join("replacement.xml");
+                std::fs::write(&replacement, std::fs::read(&marker).unwrap()).unwrap();
+                assert_ne!(file_identity_for_test(&replacement).unwrap(), identity);
+                std::fs::rename(&marker, fixture.root.join("retained-old.xml")).unwrap();
+                std::fs::rename(replacement, &marker).unwrap();
+            }
+            "absent" | "directory" => {
+                std::fs::rename(&marker, fixture.root.join("retained-old.xml")).unwrap();
+                if mutation == "directory" {
+                    std::fs::create_dir(&marker).unwrap();
+                }
+            }
+            "exact-yaml" => {
+                let identity = file_identity_for_test(&yaml).unwrap();
+                let changed = String::from_utf8(config.clone())
+                    .unwrap()
+                    .replace("# first", "# later");
+                assert_eq!(changed.len(), config.len());
+                let mut file = std::fs::OpenOptions::new().write(true).open(&yaml).unwrap();
+                file.write_all(changed.as_bytes()).unwrap();
+                file.sync_all().unwrap();
+                assert_eq!(file_identity_for_test(&yaml).unwrap(), identity);
+                assert_eq!(file.metadata().unwrap().len(), config.len() as u64);
+            }
+            _ => unreachable!(),
+        }
+        let main_before = snapshot_tree(&fixture.roots[0]);
+        let other_before = snapshot_tree(&fixture.roots[1]);
+        let cache_before = snapshot_tree(&fixture.root.join(".build/unica"));
+        let result = fixture.actor.publish_prepared_apply(prepared);
+        if mutation == "bytes" {
+            let receipt = result.expect(
+                "unread bytes of the unselected presence marker must not block publication",
+            );
+            assert_eq!(receipt.commit_count_for_test(), 1);
+            assert_eq!(std::fs::read(&target).unwrap(), b"after");
+            let mut expected = main_before;
+            let entry = expected
+                .iter_mut()
+                .find(|(path, _)| path == Path::new("Module.bsl"))
+                .unwrap();
+            entry.1 = Some(b"after".to_vec());
+            assert_eq!(snapshot_tree(&fixture.roots[0]), expected);
+        } else {
+            assert_eq!(
+                result.unwrap_err().kind(),
+                super::ApplyPublicationErrorKind::SourceSelectionChanged,
+                "{mutation}"
+            );
+            assert_eq!(snapshot_tree(&fixture.roots[0]), main_before, "{mutation}");
+            assert_eq!(
+                snapshot_tree(&fixture.root.join(".build/unica")),
+                cache_before,
+                "{mutation}"
+            );
+        }
+        assert_eq!(
+            snapshot_tree(&fixture.roots[1]),
+            other_before,
+            "the external marker change must not be rewritten"
+        );
+    }
+}
+
 pub fn apply_selection_rejects_v8project_kind_change_after_prepare(
     policies: crate::policies::WorkspacePolicies,
 ) {
@@ -4500,7 +4634,7 @@ pub fn saved_apply_plans_do_not_retain_per_change_descriptors(
 ) {
     let _policy_scope = policies_scope(policies);
 
-    use crate::platform::testing::open_handle_count_for_test;
+    use crate::platform::testing::open_handles_under_for_test;
 
     const PLAN_COUNT: usize = 8;
     const CHANGES_PER_PLAN: usize = 16;
@@ -4525,7 +4659,9 @@ pub fn saved_apply_plans_do_not_retain_per_change_descriptors(
     )
     .unwrap();
     let binding = fixture.actor.bind_provider_root("main", source).unwrap();
-    let before = open_handle_count_for_test().unwrap();
+    // Only descriptors on this fixture are counted: tests running alongside
+    // hold theirs elsewhere and do not enter the cost of a plan.
+    let before = open_handles_under_for_test(&fixture.root).unwrap();
 
     let mut tokens = Vec::new();
     let mut after_one_change_plan = before;
@@ -4572,11 +4708,11 @@ pub fn saved_apply_plans_do_not_retain_per_change_descriptors(
                 .unwrap(),
         );
         if plan == 0 {
-            after_one_change_plan = open_handle_count_for_test().unwrap();
+            after_one_change_plan = open_handles_under_for_test(&fixture.root).unwrap();
         }
     }
 
-    let after = open_handle_count_for_test().unwrap();
+    let after = open_handles_under_for_test(&fixture.root).unwrap();
     let fixed_plan_cost = after_one_change_plan.saturating_sub(before);
     let many_change_plan_cost = after.saturating_sub(after_one_change_plan);
     assert!(

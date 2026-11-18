@@ -353,7 +353,6 @@
           "contractPaths": [
             "crates/unica-application/src/application/mod.rs",
             "crates/unica-application/src/application/tool_contracts.rs",
-            "crates/unica-metadata-designer/src/external.rs",
             "tests/ci/test_unica_mcp_smoke.py",
             "tests/ci/test_unica_skills.py"
           ],
@@ -374,7 +373,6 @@
           "contractPaths": [
             "crates/unica-application/src/application/mod.rs",
             "crates/unica-application/src/application/tool_contracts.rs",
-            "crates/unica-metadata-designer/src/external.rs",
             "tests/ci/test_unica_mcp_smoke.py",
             "tests/ci/test_unica_skills.py"
           ],

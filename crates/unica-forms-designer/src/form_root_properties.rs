@@ -5,6 +5,7 @@
 //! поэтому оно снимает строку, а не записывается. Остальные байты формы
 //! остаются прежними.
 
+use crate::codec::FormTextMode;
 use roxmltree::{Document, Node};
 use serde_json::{Map, Value};
 use unica_forms::root_properties::{
@@ -13,13 +14,12 @@ use unica_forms::root_properties::{
 
 const TITLE: &str = "Title";
 
-/// Ставит `values` в корень формы `xml_text`. Строковый `Title` пишется на
-/// языке `lang`; без языка отказ — [`crate::codec::FORM_TEXT_LANGUAGE_REQUIRED`],
-/// и вызывающий повторяет правку с языком набора.
+/// Writes form root properties. Canonical Title replaces the complete NStr
+/// value. The independent legacy editor may update one literal translation.
 pub fn set_root_properties(
     xml_text: &mut String,
     values: &Map<String, Value>,
-    lang: Option<&str>,
+    lang: FormTextMode<'_>,
 ) -> Result<(), String> {
     let main_attribute = main_attribute_type(xml_text)?;
     let mut planned = Vec::with_capacity(values.len());
@@ -49,10 +49,17 @@ pub fn set_root_properties(
     for (name, edit) in planned {
         match edit {
             RootEdit::Lines(lines) => replace_root_lines(xml_text, name, &lines)?,
+            RootEdit::Localized(values) => replace_title(xml_text, &values)?,
             RootEdit::TitleText { lang, text } => {
                 if !set_title_text(xml_text, &lang, &text)? {
                     let mut lines = Vec::new();
-                    crate::codec::emit_form_mltext(&mut lines, "", TITLE, &text, Some(&lang))?;
+                    crate::codec::emit_form_mltext(
+                        &mut lines,
+                        "",
+                        TITLE,
+                        &text,
+                        FormTextMode::Legacy(Some(&lang)),
+                    )?;
                     replace_root_lines(xml_text, name, &lines)?;
                 }
             }
@@ -64,11 +71,22 @@ pub fn set_root_properties(
 enum RootEdit {
     /// Строки элемента целиком; пусто — элемент снимается.
     Lines(Vec<String>),
+    Localized(Vec<unica_metadata::LocalizedItem>),
     /// Текст заголовка на одном языке: переводы на другие языки остаются.
-    TitleText { lang: String, text: String },
+    TitleText {
+        lang: String,
+        text: String,
+    },
 }
 
-fn title_edit(value: &Value, lang: Option<&str>) -> Result<RootEdit, String> {
+fn title_edit(value: &Value, mode: FormTextMode<'_>) -> Result<RootEdit, String> {
+    let lang = match mode {
+        FormTextMode::NStr(_) => {
+            let text = value.as_str().ok_or(unica_metadata::LOCALIZED_VALUE_FORM)?;
+            return unica_metadata::parse_nstr(text).map(RootEdit::Localized);
+        }
+        FormTextMode::Legacy(lang) => lang,
+    };
     match value {
         Value::String(text) if text.is_empty() => Ok(RootEdit::Lines(Vec::new())),
         Value::String(text) => {
@@ -92,10 +110,45 @@ fn title_edit(value: &Value, lang: Option<&str>) -> Result<RootEdit, String> {
                 ));
             }
             let mut lines = Vec::new();
-            crate::codec::emit_form_mltext_value(&mut lines, "", TITLE, value, lang)?;
+            crate::codec::emit_form_mltext_value(
+                &mut lines,
+                "",
+                TITLE,
+                value,
+                FormTextMode::Legacy(lang),
+            )?;
             Ok(RootEdit::Lines(lines))
         }
     }
+}
+
+fn replace_title(
+    xml_text: &mut String,
+    values: &[unica_metadata::LocalizedItem],
+) -> Result<(), String> {
+    let expected = unica_metadata::format_nstr(values)
+        .ok_or_else(|| unica_metadata::LOCALIZED_VALUE_FORM.to_string())?;
+    {
+        let document = parse(xml_text)?;
+        let root = document.root_element();
+        let mut titles = children(root, TITLE);
+        match (titles.next(), titles.next()) {
+            (None, _) if values.is_empty() => return Ok(()),
+            (Some(title), None) if title.has_tag_name((crate::root::FORM_LOGFORM_NS, TITLE)) => {
+                if let Ok(observed) = crate::codec::form_localized_value(title) {
+                    if observed.as_deref().unwrap_or_default() == expected {
+                        return Ok(());
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut lines = Vec::new();
+    if !values.is_empty() {
+        crate::codec::emit_form_localized_items(&mut lines, "", TITLE, values);
+    }
+    replace_root_lines(xml_text, TITLE, &lines)
 }
 
 /// Меняет текст заголовка на языке `lang` внутри существующего `Title`, не
@@ -260,7 +313,7 @@ fn replace_root_lines(xml_text: &mut String, name: &str, lines: &[String]) -> Re
         return Ok(());
     }
     let own = rank(name).ok_or_else(|| format!("unknown form property `{name}`"))?;
-    let (at, indent) = {
+    let (at, indent, title_namespaces) = {
         let document = parse(xml_text)?;
         let root = document.root_element();
         let next = root
@@ -270,7 +323,18 @@ fn replace_root_lines(xml_text: &mut String, name: &str, lines: &[String]) -> Re
             .ok_or_else(|| "the form root has no AutoCommandBar".to_string())?;
         let span = line_span(xml_text, next.range())?;
         let indent = xml_text[span.start..next.range().start].to_string();
-        (span.start, indent)
+        let mut title_namespaces = String::new();
+        if name == TITLE {
+            let form = crate::root::FORM_LOGFORM_NS;
+            if root.lookup_namespace_uri(None) != Some(form) {
+                title_namespaces.push_str(&format!(" xmlns=\"{form}\""));
+            }
+            let core = crate::codec::FORM_V8_NS;
+            if root.lookup_namespace_uri(Some("v8")) != Some(core) {
+                title_namespaces.push_str(&format!(" xmlns:v8=\"{core}\""));
+            }
+        }
+        (span.start, indent, title_namespaces)
     };
     let newline = if xml_text.contains("\r\n") {
         "\r\n"
@@ -279,7 +343,15 @@ fn replace_root_lines(xml_text: &mut String, name: &str, lines: &[String]) -> Re
     };
     let block = lines
         .iter()
-        .map(|line| format!("{indent}{line}{newline}"))
+        .enumerate()
+        .map(|(index, line)| {
+            if index == 0 && !title_namespaces.is_empty() {
+                let opening = line.replacen("<Title>", &format!("<Title{title_namespaces}>"), 1);
+                format!("{indent}{opening}{newline}")
+            } else {
+                format!("{indent}{line}{newline}")
+            }
+        })
         .collect::<String>();
     xml_text.insert_str(at, &block);
     Ok(())

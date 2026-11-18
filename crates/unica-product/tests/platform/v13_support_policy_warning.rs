@@ -195,8 +195,12 @@ fn public_form_module_edit_reports_its_own_support_lock() {
         assert_eq!(std::fs::read_to_string(&module).unwrap(), BEFORE);
         if policy == "deny" {
             assert_eq!(plan["ok"], false, "{policy}: {plan:#}");
+            // The form's own `locked` record closes its module: the common
+            // gate refuses and names the form.
             assert!(
-                plan.to_string().contains("protected module owner"),
+                plan.to_string().contains(
+                    "`main:Document.First.Form.Main` is a vendor object with the support rule `locked`"
+                ),
                 "{plan:#}"
             );
         } else {

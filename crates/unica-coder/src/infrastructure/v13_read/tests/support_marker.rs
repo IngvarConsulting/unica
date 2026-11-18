@@ -27,7 +27,9 @@ pub(crate) fn typed_reads_parse_the_support_marker_once_per_actor_revision() {
     let fixture = RealReaderFixture::new();
     fs::create_dir_all(fixture.source.join("Ext")).unwrap();
     fs::copy(
-        fixture_path("platform_8_3_27/support-edit-bin-only/src/Ext/ParentConfigurations.bin"),
+        fixture_path(
+            "formats/platform_xml/2.20/support-edit-bin-only/src/Ext/ParentConfigurations.bin",
+        ),
         fixture.source.join("Ext/ParentConfigurations.bin"),
     )
     .unwrap();
@@ -64,7 +66,9 @@ fn replaced_support_marker_never_reaches_a_retained_root_with_the_old_state() {
     let marker = fixture.source.join("Ext/ParentConfigurations.bin");
     fs::create_dir_all(marker.parent().unwrap()).unwrap();
     fs::copy(
-        fixture_path("platform_8_3_27/support-edit-bin-only/src/Ext/ParentConfigurations.bin"),
+        fixture_path(
+            "formats/platform_xml/2.20/support-edit-bin-only/src/Ext/ParentConfigurations.bin",
+        ),
         &marker,
     )
     .unwrap();
@@ -84,7 +88,7 @@ fn replaced_support_marker_never_reaches_a_retained_root_with_the_old_state() {
         std::time::Duration::ZERO,
     ));
     let operation = reader(Arc::clone(&retained));
-    let target = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Catalog.Items").unwrap();
+    let target = MetadataAddress::parse_logical("Catalog.Items").unwrap();
     operation.object_support(&target, &mut || Ok(())).unwrap();
     fs::remove_file(&marker).unwrap();
 
@@ -132,7 +136,7 @@ fn large_support_marker_reads_late_rules_once_for_multiple_owners() {
         ),
         ("Catalog.Items", ObjectSupportState::Locked),
     ] {
-        let target = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, path).unwrap();
+        let target = MetadataAddress::parse_logical(path).unwrap();
         assert_eq!(
             authority
                 .read
@@ -159,7 +163,7 @@ fn support_marker_stream_preserves_terminal_errors_and_never_memoizes_interrupti
     let mut marker = b"{6,0,1,".to_vec();
     marker.resize(64 * 1024 + 1, b' ');
     fs::write(&marker_path, marker).unwrap();
-    let target = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Catalog.Items").unwrap();
+    let target = MetadataAddress::parse_logical("Catalog.Items").unwrap();
     for code in [RefusalCode::Cancelled, RefusalCode::DeadlineExceeded] {
         // Before opening, between chunks, after EOF, and immediately before memo publication.
         for stop_at in [1, 3, 5, 6] {

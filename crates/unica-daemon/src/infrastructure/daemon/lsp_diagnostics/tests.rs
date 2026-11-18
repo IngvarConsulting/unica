@@ -1,10 +1,10 @@
 use super::*;
 use unica_address::source_target::TargetKind;
 use unica_diagnostics::model::{
-    DiagnosticContext, DiagnosticError, DiagnosticFocusKind, DiagnosticProvider,
-    DiagnosticProviderDescriptor, DiagnosticProviderId, DiagnosticProviderOutcome,
-    DiagnosticProviderRequest, DiagnosticProviderSection, DiagnosticRange, DiagnosticResultState,
-    DiagnosticSelection, EditorFinding,
+    generic_editor_message, DiagnosticContext, DiagnosticError, DiagnosticFocusKind,
+    DiagnosticProvider, DiagnosticProviderDescriptor, DiagnosticProviderId,
+    DiagnosticProviderOutcome, DiagnosticProviderRequest, DiagnosticProviderSection,
+    DiagnosticRange, DiagnosticResultState, DiagnosticSelection,
 };
 use unica_source_contract::location::SourceLocation;
 
@@ -33,13 +33,10 @@ impl DiagnosticProvider for Provider {
         unreachable!("the translation does not run the provider")
     }
 
-    fn editor_finding(&self, code: &str, severity: DiagnosticSeverity) -> EditorFinding {
+    fn editor_message(&self, code: &str, severity: DiagnosticSeverity) -> &'static str {
         match code {
-            "ProviderRuleName" => EditorFinding {
-                code: "bsl.code.known",
-                message: "Текст Unica",
-            },
-            _ => EditorFinding::generic(severity),
+            "ProviderRuleName" => "Текст Unica",
+            _ => generic_editor_message(severity),
         }
     }
 }
@@ -113,23 +110,20 @@ fn registry() -> DiagnosticProviderRegistry {
 
 /// rule: INV.LSP.PROVIDER-HIDDEN
 #[test]
-fn provider_findings_reach_the_editor_in_unica_words_only() {
+fn provider_findings_keep_rule_codes_and_use_unica_messages() {
     let analysis = provider_analysis(
         &result(DiagnosticProviderStatus::Completed, None),
         &registry(),
     );
     assert!(analysis.gaps.is_empty());
-    assert_eq!(analysis.findings[0].code, "bsl.code.known");
+    assert_eq!(analysis.findings[0].code, "ProviderRuleName");
     assert_eq!(analysis.findings[0].message, "Текст Unica");
     assert_eq!(analysis.findings[0].severity, LspSeverity::Warning);
-    assert_eq!(analysis.findings[1].code, EditorFinding::GENERIC_CODE);
+    assert_eq!(analysis.findings[1].code, "UnlistedRule");
+    assert_eq!(analysis.findings[1].message, "Предупреждение анализа кода");
+    assert_eq!(analysis.findings[1].severity, LspSeverity::Warning);
     let told = format!("{analysis:?}");
-    for provider in [
-        PROVIDER,
-        "ProviderRuleName",
-        "UnlistedRule",
-        "provider wording",
-    ] {
+    for provider in [PROVIDER, "provider wording"] {
         assert!(!told.contains(provider), "{provider} reached the editor");
     }
 }
@@ -167,4 +161,104 @@ fn own_findings_follow_the_text_and_speak_unica() {
     assert_eq!(findings[0].severity, LspSeverity::Error);
     assert_eq!(findings[0].start_line, 2);
     assert!(own_findings("Перем Рано;\r\nПроцедура А()\r\nКонецПроцедуры\r\n").is_empty());
+}
+
+fn status(
+    readiness: Option<unica_diagnostics::model::DiagnosticReadiness>,
+    error: Option<&str>,
+) -> DiagnosticResult {
+    let mut result = result(
+        if error.is_some() {
+            DiagnosticProviderStatus::Unavailable
+        } else {
+            DiagnosticProviderStatus::Completed
+        },
+        error,
+    );
+    result.items.clear();
+    result.providers[0].readiness = readiness;
+    result
+}
+
+fn readiness(
+    state: DiagnosticReadinessState,
+    progress: unica_diagnostics::model::DiagnosticBuildProgress,
+) -> Option<unica_diagnostics::model::DiagnosticReadiness> {
+    Some(unica_diagnostics::model::DiagnosticReadiness {
+        state,
+        retryable: true,
+        progress: Some(progress),
+    })
+}
+
+/// The preparation reads the resident's own facts: the build's age and
+/// retries while it builds, the modules once ready; a build that failed is
+/// retried by the resident, anything else is no resident (#2790).
+#[test]
+fn a_status_answer_tells_how_the_resident_database_goes() {
+    use unica_diagnostics::model::DiagnosticBuildProgress;
+    assert_eq!(
+        resident_database(&status(
+            readiness(
+                DiagnosticReadinessState::Building,
+                DiagnosticBuildProgress {
+                    elapsed_ms: Some(25_000),
+                    attempts: Some(1),
+                    files: None,
+                },
+            ),
+            None,
+        )),
+        ResidentDatabase::Building {
+            elapsed_ms: Some(25_000),
+            attempts: Some(1),
+        }
+    );
+    assert_eq!(
+        resident_database(&status(
+            readiness(
+                DiagnosticReadinessState::Ready,
+                DiagnosticBuildProgress {
+                    files: Some(5902),
+                    ..DiagnosticBuildProgress::default()
+                },
+            ),
+            None,
+        )),
+        ResidentDatabase::Ready { files: Some(5902) }
+    );
+    assert_eq!(
+        resident_database(&status(None, Some("provider_not_ready"))),
+        ResidentDatabase::Building {
+            elapsed_ms: None,
+            attempts: None,
+        }
+    );
+    assert_eq!(
+        resident_database(&status(None, Some("provider_start_failed"))),
+        ResidentDatabase::Unavailable
+    );
+}
+
+#[test]
+fn the_stages_are_told_in_unica_words() {
+    assert_eq!(
+        building_message(Duration::from_millis(25_400), None),
+        "Строится база: 25 с"
+    );
+    assert_eq!(
+        building_message(Duration::from_secs(3), Some(1)),
+        "Повтор после сбоя, попытка 2"
+    );
+    for (files, told) in [
+        (5902, "База готова: 5902 модуля"),
+        (1, "База готова: 1 модуль"),
+        (11, "База готова: 11 модулей"),
+        (21, "База готова: 21 модуль"),
+        (25, "База готова: 25 модулей"),
+        (112, "База готова: 112 модулей"),
+    ] {
+        assert_eq!(ready_message(Some(files)), told);
+    }
+    assert_eq!(ready_message(None), "База готова");
 }

@@ -72,7 +72,7 @@ fn catalog_attribute_profile_reaches_public_collection_and_detail_without_writes
         }
         assert_eq!(attribute["at"], LANGUAGE);
         assert_eq!(attribute["props"]["required"], false);
-        assert_eq!(attribute["props"]["synonym"], "Код языка");
+        assert_eq!(attribute["props"]["synonym"], "ru = 'Код языка'");
         assert_string_type(&attribute, 10);
     }
     let section = read(&fixture, SECTION);
@@ -88,16 +88,14 @@ fn catalog_attribute_profile_reaches_public_collection_and_detail_without_writes
     );
     let sibling = read(&fixture, SPELLING);
     assert_eq!(sibling["props"]["required"], false);
-    assert_eq!(sibling["props"]["synonym"], "Параметры прописи");
+    assert_eq!(sibling["props"]["synonym"], "ru = 'Параметры прописи'");
     assert_string_type(&sibling, 200);
     assert_eq!(sibling["props"]["Indexing"], "DontIndex");
     assert_eq!(sibling["props"]["FullTextSearch"], "Use");
     assert_eq!(sibling["props"]["DataHistory"], "Use");
     assert_eq!(
         sibling["props"]["ToolTip"],
-        json!([{
-            "language": "ru", "content": "Настройки представления суммы прописью"
-        }])
+        "ru = 'Настройки представления суммы прописью'"
     );
     assert_eq!(tree_snapshot(&fixture.source), before);
 }
@@ -149,7 +147,7 @@ fn has_limit(node: &Value, field: &str) -> bool {
 fn assert_independent_facts(fixture: &RealReaderFixture, attribute: &Value) {
     assert_eq!(attribute["at"], LANGUAGE);
     assert_eq!(attribute["props"]["required"], false);
-    assert_eq!(attribute["props"]["synonym"], "Код языка");
+    assert_eq!(attribute["props"]["synonym"], "ru = 'Код языка'");
     assert_string_type(attribute, 10);
     let section = read(fixture, SECTION);
     assert_eq!(section["props"]["LineNumberLength"], 5);
@@ -357,7 +355,7 @@ fn catalog_attribute_profile_requires_a_catalog_in_an_ordinary_configuration() {
 fn catalog_attribute_profile_requires_the_literal_supported_xml_version() {
     for declaration in [
         " version=\"2.19\"",
-        " version=\"2.21\"",
+        " version=\"2.23\"",
         "",
         " version=\"2&#x2e;20\"",
         " version=\"2.2&#48;\"",
@@ -373,7 +371,7 @@ fn catalog_attribute_profile_requires_the_literal_supported_xml_version() {
                 );
             }
             assert_eq!(attribute["props"]["required"], false);
-            assert_eq!(attribute["props"]["synonym"], "Код языка");
+            assert_eq!(attribute["props"]["synonym"], "ru = 'Код языка'");
             assert_string_type(&attribute, 10);
         }
         let sibling = read(&fixture, SPELLING);

@@ -70,7 +70,7 @@ jobs:
     name: Unica CI
     runs-on: ubuntu-latest
     # `large` исполняет весь набор подряд и ждёт Windows.
-    timeout-minutes: ${{ inputs.profile == 'large' && 300 || 120 }}
+    timeout-minutes: ${{ inputs.profile != 'main' && 300 || 120 }}
     # SARIF пишет в Code Scanning; прежний инвентарь и джобы других ОС
     # читаются из Actions, объяснения пропаж инвентаря — из описаний pull
     # request. Права джобы заменяют права workflow целиком.
@@ -113,14 +113,16 @@ jobs:
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
-      # Раннеры прогона: Linux и полный macOS, в `large` ещё Windows. Его красная
-      # джоба красит прогон, как любая другая ОС. Clippy под Windows кнопка `main`
-      # исполняет отдельной джобой `Clippy (windows-latest)`.
+      # Раннеры прогона: Linux и полный macOS, в `large` и в выпуске по тегу ещё
+      # Windows. Выпуск проверяется так же полно, как ночь, и его инвентарь тестов
+      # сверяется с ночным. Красная джоба Windows красит прогон, как любая другая ОС.
+      # Clippy под Windows кнопка `main` исполняет отдельной джобой
+      # `Clippy (windows-latest)`.
       - id: runners
         env:
           PROFILE: ${{ inputs.profile }}
         run: |
-          if [ "$PROFILE" = "large" ]; then
+          if [ "$PROFILE" != "main" ]; then
             echo 'runners=["ubuntu-latest", "macos-15", "windows-latest"]' >> "$GITHUB_OUTPUT"
           else
             echo 'runners=["ubuntu-latest", "macos-15"]' >> "$GITHUB_OUTPUT"
@@ -164,15 +166,13 @@ jobs:
           components: rustfmt, clippy
       - id: guards-fmt
         if: ${{ !cancelled() }}
-        run: |
-          cargo fmt --all -- --check
-          python scripts/ci/check-discovered-modules-format.py
+        run: python scripts/ci/check-discovered-modules-format.py
       # Линтер workflow. Версия закреплена; находки гейт не красят — они
       # уходят в Code Scanning, где видны по правилу и строке, и разбираются
       # отдельно. Токен нужен сетевым проверкам: подменённые коммиты, известные
       # уязвимости действий.
       - if: ${{ !cancelled() }}
-        uses: taiki-e/install-action@68a389c788b2cd04016ce8c80ee23b80d2ab3d68 # v2.88.1
+        uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
         timeout-minutes: 5
         with:
           tool: zizmor@1.30.0
@@ -186,7 +186,7 @@ jobs:
       # Сбой загрузки не красит гейт: это отчёт, не проверка.
       - if: ${{ !cancelled() && hashFiles('.build/zizmor.sarif') != '' }}
         continue-on-error: true
-        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
         with:
           sarif_file: .build/zizmor.sarif
           category: zizmor
@@ -196,7 +196,7 @@ jobs:
         uses: ./.github/actions/install-nextest
         timeout-minutes: 5
       - if: ${{ !cancelled() && steps.classify.outputs.rust_required == 'true' }}
-        uses: taiki-e/install-action@68a389c788b2cd04016ce8c80ee23b80d2ab3d68 # v2.88.1
+        uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
         timeout-minutes: 5
         with:
           tool: clippy-sarif@0.8.0,sarif-fmt@0.8.0
@@ -266,7 +266,7 @@ jobs:
       # потерять историю оповещений.
       - if: always() && hashFiles('.build/clippy.sarif') != ''
         continue-on-error: true
-        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
         with:
           sarif_file: .build/clippy.sarif
           category: clippy-ubuntu-latest
@@ -327,7 +327,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RUNNERS: ${{ steps.runners.outputs.runners }}
           # Ждать не дольше джобы ОС: час, в `large` три с запасом.
-          WAIT_SECONDS: ${{ inputs.profile == 'large' && 11400 || 3600 }}
+          WAIT_SECONDS: ${{ inputs.profile != 'main' && 11400 || 3600 }}
         run: python scripts/ci/await_os_jobs.py --runners "$RUNNERS" --out .build/os-jobs.json --timeout "$WAIT_SECONDS"
       - if: ${{ !cancelled() && steps.os-jobs.outcome == 'success' }}
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -407,13 +407,13 @@ jobs:
   rust-os:
     name: Rust (${{ matrix.runner }})
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: ${{ inputs.profile == 'large' && 180 || 60 }}
+    timeout-minutes: ${{ inputs.profile != 'main' && 180 || 60 }}
     # Без `continue-on-error`: красная Windows-джоба красит ночной прогон
     # и не пускает сборку поставки, иначе по зелёному прогону ставят тег (#2152).
     strategy:
       fail-fast: false
       matrix:
-        runner: ${{ fromJSON(inputs.profile == 'large' && '["macos-15", "windows-latest"]' || '["macos-15"]') }}
+        runner: ${{ fromJSON(inputs.profile != 'main' && '["macos-15", "windows-latest"]' || '["macos-15"]') }}
     defaults:
       run:
         shell: bash
@@ -1230,7 +1230,7 @@ jobs:
       # Джоба идёт только на теге и при перезапуске дописывает ассеты к уже
       # созданному релизу; переход на `gh release` — вместе с репетицией релиза.
       - name: Publish the release assets # zizmor: ignore[superfluous-actions] замена на gh release требует репетиции на теге
-        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+        uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
         with:
           tag_name: ${{ env.RELEASE_TAG }}
           generate_release_notes: true

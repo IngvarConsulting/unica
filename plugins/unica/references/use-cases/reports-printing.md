@@ -75,6 +75,16 @@ address. A field with a composite `dataPath` escapes the dot in its address:
 `DataSet.<name>.Field.Owner\.Code`.
 Use names returned by the reader. A variant need not be named `Основной`.
 
+Read and write multilingual titles and presentations in NStr form, for
+example `ru = 'Выручка'; en = 'Revenue'`. The string replaces all translations.
+Pass an empty string to clear the translations, or `ru = ''` to keep an
+explicit empty Russian translation.
+For a parameter or setting value of type `v8:LocalStringType`, pass the NStr
+string as `value` and identify it with `valueType: "v8:LocalStringType"`.
+An explicitly scalar caption is read and written as
+`{"valueType":"xs:string","value":"Revenue"}`. Scalar parameter values keep
+their text as written.
+
 To create a schema, use the owner's `template.add` contract with
 `templateType:DataCompositionSchema`. Execute creation before addressing
 its new Template. The scaffold has a data source and a setting. Add its
@@ -195,7 +205,7 @@ Do not supply a whole-schema JSON definition or write XML manually to
 bypass a missing operation.
 
 This is a fragment to merge into an existing valid `v8project.yaml`; it does
-not replace required `workPath`, `builder`, or `infobase.connection`. Preserve
+not replace `workPath`, `providers` or the infobase description. Preserve
 the existing connection and local overrides, and never initialize an existing
 project database merely to create a scaffold:
 

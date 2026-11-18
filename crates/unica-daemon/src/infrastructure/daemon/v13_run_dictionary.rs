@@ -73,7 +73,7 @@ pub(super) fn reject_unavailable_run_before_admission(
         .get("infobase")
         .is_some_and(|v| v.as_str() != Some("origin"))
     {
-        return Some(reject_run_operation(op, "runner 0.15 adapter supports only the named infobase origin; no fallback to another target"));
+        return Some(reject_run_operation(op, "the pinned runner adapter supports only the named infobase origin; no fallback to another target"));
     }
     if is_test_seam_operation(op) {
         return None;
@@ -127,6 +127,7 @@ pub(super) fn run_dictionary_result() -> DomainResult {
                 RunIntent::InfobaseCreate
                     | RunIntent::SourceImport
                     | RunIntent::SourceExport
+                    | RunIntent::SourceReexport
                     | RunIntent::ArtifactBuild
                     | RunIntent::CfExport
                     | RunIntent::CfImport
@@ -143,7 +144,7 @@ pub(super) fn run_dictionary_result() -> DomainResult {
                 "argsSchema": operation.args_schema(),
                 "execution": operation.execution(),
                 "effects": operation.effects(),
-                "support": {"adapter":format!("v8-runner/{}", super::runner_015::VERSION), "state": if operation.support_reason().is_some() {"limited"} else {"supported"}, "reason":operation.support_reason(), "supportedInfobases":["origin"], "supportedArgs": operation.args_schema()},
+                "support": {"adapter":format!("v8-runner/{}", super::runner::VERSION), "state": if operation.support_reason().is_some() {"limited"} else {"supported"}, "reason":operation.support_reason(), "supportedInfobases":["origin"], "supportedArgs": operation.args_schema()},
                 "terminal": operation.terminal,
                 "rejectsSessions": operation.rejects_sessions,
                 "previewRequired": false,

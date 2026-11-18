@@ -23,5 +23,7 @@ uuid.workspace = true
 jsonschema.workspace = true
 
 [package.metadata.unica]
+inputs = ["tests/fixtures/platform_8_3_27/tabular_standard_names/manifest.json"]
+version-literal-baseline = 27
 component = "family"
 file-io = "domain"

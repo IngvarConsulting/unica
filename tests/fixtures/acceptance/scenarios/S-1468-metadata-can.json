@@ -2,7 +2,7 @@
   "id": "S-1468-metadata-can",
   "issue": 1468,
   "area": "Метаданные",
-  "task": "Прочитать подробный Can создания, удаления, справки и трёх отношений, проверить контекст Catalog/Document и явный неисполнимый шаблон Report; построить реальные preview и сохранить все исходные байты.",
+  "task": "Прочитать подробный Can создания, удаления, справки и трёх отношений, проверить контекст Catalog/Document и отказ неприменимого контракта Report без допустимых отношений; построить реальные preview и сохранить все исходные байты.",
   "workspace": "tests/fixtures/acceptance/workspace",
   "wire": [
     {
@@ -426,38 +426,23 @@
         "at": "main:Report.АнализВерсийОбъектов.Can.relation.add"
       },
       "expect": [
-        "ok"
+        "refused"
       ],
       "assertions": [
         {
-          "pointer": "/data/kind",
-          "eq": "Can"
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
         },
         {
-          "pointer": "/data/props/op",
-          "eq": "relation.add"
+          "pointer": "/next/0/tool",
+          "eq": "unica.view"
         },
         {
-          "pointer": "/data/props/implemented",
-          "absent": true
-        },
-        {
-          "pointer": "/data/props/contract/argsSchema/additionalProperties",
-          "eq": false
-        },
-        {
-          "pointer": "/data/props/contract/exampleArgs/at",
-          "absent": true
-        },
-        {
-          "pointer": "/data/props/contract/argsSchema/properties/values/properties/relation/not",
-          "eq": {}
-        },
-        {
-          "pointer": "/data/props/contract/exampleArgs",
-          "eq": {}
+          "pointer": "/next/0/args/at",
+          "eq": "main:Report.АнализВерсийОбъектов"
         }
-      ]
+      ],
+      "refusal": "bad_value: operation `relation.add` does not apply to Report"
     },
     {
       "tool": "unica.apply",
@@ -1880,15 +1865,23 @@
       "expect": [
         "refused"
       ],
-      "refusal": "bad_value: relation `owners` is not supported for Report",
+      "refusal": "bad_value: apply operation `relation.add` does not apply to Report `main:Report.АнализВерсийОбъектов`; it addresses `Kind.Name` of a kind with supported relations",
       "assertions": [
         {
           "pointer": "/at",
-          "eq": "ops[0].args.values.relation"
+          "eq": "ops[0].at"
         },
         {
           "pointer": "/diagnostics/0/code",
           "eq": "bad_value"
+        },
+        {
+          "pointer": "/next/0/tool",
+          "eq": "unica.view"
+        },
+        {
+          "pointer": "/next/0/args/at",
+          "eq": "main:Report.АнализВерсийОбъектов"
         }
       ],
       "fileAssertions": [

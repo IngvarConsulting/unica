@@ -1,0 +1,52 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:ns1="http://v8.1c.ru/8.1/data-composition-system/core" xmlns:ns2="http://v8.1c.ru/8.1/data/core" xmlns:ns3="http://v8.1c.ru/8.2/managed-application/dynamic-list-data" xmlns:tns="http://v8.1c.ru/8.2/managed-application/dynamic-list-composition-template" xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="http://v8.1c.ru/8.2/managed-application/dynamic-list-composition-template" attributeFormDefault="unqualified" elementFormDefault="qualified">
+	<xs:import namespace="http://v8.1c.ru/8.1/data-composition-system/core"/>
+	<xs:import namespace="http://v8.1c.ru/8.1/data/core"/>
+	<xs:import namespace="http://v8.1c.ru/8.2/managed-application/dynamic-list-data"/>
+	<xs:complexType name="DataPartCell">
+		<xs:sequence>
+			<xs:element name="value"/>
+			<xs:element name="appearance" type="ns3:CellAppearance" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="DataPartHeader">
+		<xs:sequence>
+			<xs:element name="parentColumn" type="xs:string" minOccurs="0"/>
+			<xs:element name="column" type="tns:DataPartHeaderColumn" maxOccurs="unbounded"/>
+			<xs:element name="orderColumn" type="tns:DataPartHeaderOrderColumn" maxOccurs="unbounded"/>
+			<xs:element name="tupleOrder" type="tns:DataPartHeaderTupleOrder" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="tempTablesDigest" type="tns:DataPartHeaderTempTablesDigest" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="DataPartHeaderColumn">
+		<xs:sequence>
+			<xs:element name="name" type="xs:string"/>
+			<xs:element name="isNestedResult" type="xs:boolean"/>
+			<xs:element name="type" type="ns2:TypeDescription" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="DataPartHeaderOrderColumn">
+		<xs:sequence>
+			<xs:element name="name" type="xs:string"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="DataPartHeaderTempTablesDigest">
+		<xs:sequence>
+			<xs:element name="dataSetName" type="xs:string"/>
+			<xs:element name="queryText" type="xs:string"/>
+			<xs:element name="usedParameters" type="xs:string" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="DataPartHeaderTupleOrder">
+		<xs:sequence>
+			<xs:element name="path" type="xs:string"/>
+			<xs:element name="directions" type="xs:string"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="DataPartRow">
+		<xs:sequence>
+			<xs:element name="parentColumn" type="xs:string" minOccurs="0"/>
+			<xs:element name="cell" type="tns:DataPartCell" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+</xs:schema>

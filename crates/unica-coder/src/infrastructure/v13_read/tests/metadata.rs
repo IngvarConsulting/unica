@@ -98,14 +98,18 @@ fn catalog_standard_attribute_properties_reach_collection_and_detail() {
                                 .text()
                                 .unwrap_or("")
                         };
-                        json!({"language":text("lang"),"content":text("content")})
+                        format!(
+                            "{} = '{}'",
+                            text("lang"),
+                            text("content").replace('\'', "''")
+                        )
                     })
                     .collect::<Vec<_>>();
                 assert!(
                     !expected.is_empty(),
                     "the fixture must carry {key} translations"
                 );
-                assert_eq!(value, json!(expected));
+                assert_eq!(value, json!(expected.join("; ")));
             }
         }
     }
@@ -343,7 +347,7 @@ fn metadata_long_type_read_preserves_other_facts_and_names_the_size_limit() {
         && limit.as_str().unwrap().contains("2048")));
     assert!(data["props"].get("type").is_none());
     assert_eq!(data["props"]["required"], false);
-    assert_eq!(data["props"]["synonym"], "Long");
+    assert_eq!(data["props"]["synonym"], "ru = 'Long'");
     let control = service
         .view(ViewRequest::new("main:AccumulationRegister.Movements.Dimension.Small").unwrap());
     assert!(control.ok, "the call failed");
@@ -539,8 +543,7 @@ fn predefined_long_type_read_preserves_other_facts_and_names_the_size_limit() {
             expected_small
                 .iter()
                 .map(|path| unica_metadata::MetadataTypeVariant::Reference {
-                    metadata_path: MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, path)
-                        .unwrap(),
+                    metadata_path: MetadataAddress::parse_logical(path).unwrap(),
                 })
                 .collect()
         )
@@ -853,8 +856,9 @@ fn metadata_node_props_lay_out_the_per_kind_facts_by_role() {
 /// Сервис в том виде, в каком его выгружает Конфигуратор 8.3.27: у шаблона
 /// и метода есть `Synonym` и `<Comment/>` (#634).
 fn install_configurator_http_service(fixture: &RealReaderFixture, edit: impl Fn(&str) -> String) {
-    let xml = fixture_text("platform_8_3_27/meta_info/edge/http-service-configurator.xml")
-        .replace("<Name>ПроверкаСвязи</Name>", "<Name>ExternalAPI</Name>");
+    let xml =
+        fixture_text("formats/platform_xml/2.20/meta_info/edge/http-service-configurator.xml")
+            .replace("<Name>ПроверкаСвязи</Name>", "<Name>ExternalAPI</Name>");
     write(
         &fixture.source.join("HTTPServices/ExternalAPI.xml"),
         &edit(&xml),
@@ -914,7 +918,7 @@ fn configurator_web_service_view_opens_its_operations_and_parameters() {
     let fixture = RealReaderFixture::new();
     write(
         &fixture.source.join("WebServices/Exchange.xml"),
-        &fixture_text("platform_8_3_27/meta_info/edge/web-service-configurator.xml")
+        &fixture_text("formats/platform_xml/2.20/meta_info/edge/web-service-configurator.xml")
             .replace("<Name>ОбменДанными</Name>", "<Name>Exchange</Name>"),
     );
     let service = fixture.view_service();
@@ -1140,7 +1144,19 @@ fn every_reference_of_an_object_answers_in_one_relation_branch() {
     );
     assert_eq!(
         sources("main:EventSubscription.ПриЗаписи.Relation"),
-        [("source".to_string(), "main:Catalog.Items".to_string())]
+        [
+            ("source".to_string(), "main:Catalog.Items".to_string()),
+            (
+                "handler".to_string(),
+                "main:CommonModule.РеактивныйСервер.Method.ПриЗаписи".to_string()
+            ),
+        ]
+    );
+    let subscription = service.view(ViewRequest::new("main:EventSubscription.ПриЗаписи").unwrap());
+    let subscription = serde_json::to_value(subscription).unwrap();
+    assert_eq!(
+        subscription["data"]["props"]["Handler"],
+        "main:CommonModule.РеактивныйСервер.Method.ПриЗаписи"
     );
     // Пакет XDTO бывает ссылкой и бывает пространством имён; в ветвь попадает
     // только адресуемый вариант, и это названная граница, а не потеря.
@@ -1348,7 +1364,7 @@ fn predefined_items_empty_inapplicable_and_unreadable_are_distinct() {
     let owner = service.view(ViewRequest::new("main:Catalog.Items").unwrap());
     assert!(owner.ok, "the call failed");
     let authority = fixture.read_authority();
-    let target = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Catalog.Items").unwrap();
+    let target = MetadataAddress::parse_logical("Catalog.Items").unwrap();
     let empty_data = authority
         .read
         .predefined_items(
@@ -1454,7 +1470,7 @@ fn predefined_items_checkpoint_preserves_cancellation_and_deadline() {
     use unica_metadata::MetadataKind;
     let fixture = predefined_page_fixture();
     let authority = fixture.read_authority();
-    let target = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Catalog.Items").unwrap();
+    let target = MetadataAddress::parse_logical("Catalog.Items").unwrap();
     let mut completed_checkpoints = 0;
     let data = authority
         .read
@@ -1576,8 +1592,7 @@ fn predefined_items_other_owner_fields_survive_addressed_reads() {
     assert_eq!(
         characteristic.data.as_ref().unwrap()["props"]["type"],
         json!(MetadataType::new(vec![MetadataTypeVariant::Reference {
-            metadata_path: MetadataAddress::parse(
-                PLATFORM_XML_8_3_27_FORMAT_2_20,
+            metadata_path: MetadataAddress::parse_logical(
                 "ChartOfCharacteristicTypes.РазделыДатЗапретаИзменения"
             )
             .unwrap(),

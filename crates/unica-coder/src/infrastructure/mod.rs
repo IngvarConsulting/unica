@@ -5,6 +5,7 @@ pub mod capacity_observation;
 #[cfg(test)]
 #[path = "../../tests/platform/code_intelligence_integration.rs"]
 pub(crate) mod code_intelligence;
+pub mod daemon_adapters;
 pub mod diagnostics;
 
 pub mod engine_delivery;
@@ -32,6 +33,7 @@ pub use platform::{current_target_id, TempFileSpill, VIEW_SNAPSHOT_MAX_RETAINED_
 pub use platform::{inject_unix_waitid_error_for_test, reap_runtime_authority_test_child};
 pub mod platform_xml_owner;
 // This foundational provider is consumed by the public migration in the next slice.
+pub mod debug_sources;
 #[allow(dead_code)]
 pub(crate) mod platform_xml_source_targets;
 pub mod plugin_runtime;
@@ -94,10 +96,6 @@ mod workspace_state_integration_tests;
 mod workspace_actor_contract_tests;
 #[cfg(test)]
 mod workspace_metadata_publication_tests;
-
-#[cfg(test)]
-#[path = "../../tests/platform/full_dump_integration.rs"]
-mod full_dump_integration;
 
 #[cfg(test)]
 #[path = "source_discovery_integration_tests.rs"]

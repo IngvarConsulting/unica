@@ -20,6 +20,8 @@ pub(crate) mod store;
 #[allow(dead_code)] // Existing runtime state helpers remain with their actual owner.
 pub mod runtime_jobs;
 
+pub mod runner;
+
 #[allow(dead_code)]
 pub mod lifecycle_link_store;
 pub mod receipt_runtime;

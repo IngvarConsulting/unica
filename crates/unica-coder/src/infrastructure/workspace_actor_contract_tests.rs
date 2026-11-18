@@ -30,6 +30,7 @@ fn plan_events(
         unica_source_contract::SourceSetKind::Configuration,
         PlatformProfile::v8_3_27(),
         &operations,
+        0,
     )?;
     Ok((state, effects))
 }
@@ -589,7 +590,6 @@ fn prepared_apply_effects_are_retained_from_planner_to_result() {
     unica_workspace::actor::event_contract_tests::prepared_apply_effects_are_retained_from_planner_to_result(policies(), plan_events);
 }
 
-/// rule: INV.CACHE.REPORTED-EFFECTS
 /// rule: INV.CACHE.RETAINED-APPLY-EFFECT-RESULT
 /// rule: INV.SOURCE.RETAINED-APPLY-WRITE-FREE
 #[test]
@@ -858,4 +858,16 @@ fn native_path_identities_do_not_share_actor_state() {
     if let Err(skip) = unica_workspace::actor::index_contract_tests::native_path_identities_do_not_share_actor_state() {
         unica_process::test_support::skip_named_host_capability(skip.capability, skip.reason);
     }
+}
+
+/// rule: INV.APP.RETAINED-SOURCE-SELECTION-FINALITY
+#[test]
+fn apply_selection_presence_markers_bind_identity_but_not_unread_bytes() {
+    unica_workspace::actor::policy_contract_tests::apply_selection_presence_markers_bind_identity_but_not_unread_bytes(policies());
+}
+
+/// rule: INV.CACHE.RETAINED-APPLY-REVISION-ROLLBACK
+#[test]
+fn retained_rollback_cleans_new_directories_without_deleting_foreign_children() {
+    unica_workspace::compile_transaction::nested_rollback_contract_tests::retained_rollback_cleans_new_directories_without_deleting_foreign_children(policies());
 }

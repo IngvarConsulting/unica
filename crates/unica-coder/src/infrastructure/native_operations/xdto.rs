@@ -15,7 +15,7 @@ use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use unica_address::source_target::{
     MetadataAddress, SourceTarget, SourceTargetError, SourceTargetErrorCode,
-    SourceTargetErrorReason, TargetKind, PLATFORM_XML_8_3_27_FORMAT_2_20,
+    SourceTargetErrorReason, TargetKind,
 };
 use unica_execution_contract::adapter_outcome::AdapterOutcome;
 use unica_navigation::source_navigation::{
@@ -106,6 +106,7 @@ fn plan_unindexed_xdto_batch(
         &authority,
         &validation_ledger,
         indexed.iter(),
+        crate::infrastructure::family_codecs::SUPPORT_MARKER_READER,
     )?;
     let effects =
         unica_source_contract::proposal::reconcile_effects(staged.planned_changes(), provisional);
@@ -586,8 +587,7 @@ impl XdtoResolutionError {
             (SourceTargetErrorCode::TargetKindMismatch, _) => XdtoPublicErrorCode::NotAnXdtoPackage,
             (SourceTargetErrorCode::ContainmentDenied, _) => XdtoPublicErrorCode::ContainmentDenied,
             (SourceTargetErrorCode::MetadataAddressInvalid, _)
-            | (SourceTargetErrorCode::MetadataAddressNotFound, _)
-            | (SourceTargetErrorCode::AddressProfileUnsupported, _) => {
+            | (SourceTargetErrorCode::MetadataAddressNotFound, _) => {
                 XdtoPublicErrorCode::TargetNotFound
             }
         };
@@ -631,7 +631,7 @@ fn resolve_package(
         .map_err(|error| XdtoResolutionError::new(XdtoPublicErrorCode::SourceSetUnknown, error))?;
     let raw_address = required(args, "metadataPath")
         .map_err(|error| XdtoResolutionError::new(XdtoPublicErrorCode::TargetNotFound, error))?;
-    let address = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, raw_address)
+    let address = MetadataAddress::parse_logical(raw_address)
         .map_err(XdtoResolutionError::from_source_target)?;
     let parts = address.as_str().split('.').collect::<Vec<_>>();
     if parts.len() != 2 || parts[0] != "XDTOPackage" {
@@ -831,6 +831,7 @@ pub(crate) fn plan_xdto_batch_owned_for_test(
         authority,
         operations,
         validation_ledger,
+        crate::infrastructure::family_codecs::SUPPORT_MARKER_READER,
     )?;
     Ok((staged, effects))
 }
@@ -854,7 +855,7 @@ pub(crate) mod medium_tests {
     use unica_xdto_designer::test_support::{args, PACKAGE};
 
     use crate::infrastructure::native_operations::common::support_guard_violation;
-    use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+    use unica_address::source_target::MetadataAddress;
     use unica_source_contract::proposal::{ApplyPlanError, ApplyPlanErrorKind};
     use unica_source_contract::workspace::WorkspaceContext;
     use unica_workspace::single_file_publisher::with_before_commit_hook;
@@ -883,8 +884,7 @@ pub(crate) mod medium_tests {
             ("typeName", json!("ЛюбаяСсылка")),
         ]);
         let wrapper = info_with_data(&request, &context).unwrap().data.unwrap();
-        let address =
-            MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "XDTOPackage.Sample").unwrap();
+        let address = MetadataAddress::parse_logical("XDTOPackage.Sample").unwrap();
         let core = parse_xdto_info_bytes(
             &fs::read(&package).unwrap(),
             &fs::read(&descriptor).unwrap(),
@@ -2831,6 +2831,47 @@ pub(crate) mod medium_tests {
         }
     }
 
+    /// The support rule of the package itself decides: rule 0 (not editable)
+    /// refuses the plan with the package named, rule 2 (editable) admits it.
+    /// The key is the uuid of the package descriptor.
+    #[test]
+    fn staged_xdto_follows_the_support_rule_of_its_package() {
+        for (name, rule, refused) in [
+            ("support-object-locked", 0, true),
+            ("support-object-editable", 2, false),
+        ] {
+            let fixture = staged_xdto_fixture(name, PACKAGE.as_bytes());
+            let marker = format!(
+                concat!(
+                    "\u{feff}{{6,0,1,dddddddd-dddd-dddd-dddd-dddddddddddd,0,",
+                    "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee,\"1.0\",\"Vendor\",",
+                    "\"VendorConf\",1,{rule},0,bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb,",
+                    "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb}}"
+                ),
+                rule = rule
+            );
+            fs::write(fixture.source.join("Ext/ParentConfigurations.bin"), marker).unwrap();
+            let admission = staged_xdto_admission(&fixture, None, true);
+            let planned = plan_admitted_xdto(
+                &admission,
+                &fixture.binding,
+                &[add_object("main:XDTOPackage.Sample", "Added")],
+            );
+            match planned {
+                Err(error) if refused => {
+                    assert_eq!(error.kind(), ApplyPlanErrorKind::InvalidState, "{name}");
+                    assert!(
+                        format!("{error:?}").contains("protected XDTO package"),
+                        "{name}: {error:?}"
+                    );
+                }
+                Ok(_) if !refused => {}
+                other => panic!("{name}: {:?}", other.map(|_| ())),
+            }
+            fixture.cleanup();
+        }
+    }
+
     /// rule: INV.SOURCE.XDTO-LOCAL-CHANGE
     #[test]
     pub(crate) fn staged_xdto_v12_parity_preserves_exact_bytes_errors_and_noop() {
@@ -3169,6 +3210,7 @@ pub(crate) mod medium_tests {
             &authority,
             &ledger,
             operations.iter(),
+            crate::infrastructure::family_codecs::SUPPORT_MARKER_READER,
         )
         .expect_err("a subsequent run must not adopt an introduced finding as its baseline");
         assert_eq!(error.kind(), ApplyPlanErrorKind::InvalidState);

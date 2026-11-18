@@ -26,8 +26,8 @@ fn read(fixture: &RealReaderFixture, at: &str) -> Value {
 fn fact(node: &Value, key: &str) -> Value {
     let value = node["props"][key].clone();
     assert!(
-        value.is_array() || value.is_object(),
-        "{key}: a fact is nested JSON"
+        value.is_array() || value.is_object() || value.is_string(),
+        "{key}: a fact has its structured or text value"
     );
     value
 }
@@ -68,7 +68,7 @@ fn form_conditional_appearance_reaches_public_view_with_all_typed_facts_without_
         fact(&rule, "appearance"),
         json!([
             {"type":"SettingsParameterValue","parameter":"ЦветТекста","value":{"type":"Color","value":"win:DisabledText"}},
-            {"type":"SettingsParameterValue","parameter":"Текст","value":{"kind":"localizedString","values":[{"language":"ru","content":"Все контрагенты"}]}}
+            {"type":"SettingsParameterValue","parameter":"Текст","value":"ru = 'Все контрагенты'"}
         ])
     );
     assert!(rule
@@ -286,11 +286,8 @@ fn form_conditional_appearance_keeps_localized_text_segments_and_empty_strings()
     );
     assert_eq!(appearance[0]["value"]["value"], "win:DisabledText");
     assert_eq!(
-        appearance[1]["value"]["values"],
-        json!([
-            {"language":"ru","content":"Все контрагенты & партнёры"},
-            {"language":"en","content":""}
-        ])
+        appearance[1]["value"],
+        "ru = 'Все контрагенты & партнёры'; en = ''"
     );
     let fixture = appearance_fixture(&XML.replace(
         "xsi:type=\"v8ui:Color\">win:DisabledText",
@@ -390,10 +387,7 @@ fn form_conditional_appearance_reads_platform_value_kinds_and_rule_presentation(
             .is_none_or(|v| v.as_array().unwrap().is_empty()),
         "the rule has no limits"
     );
-    assert_eq!(
-        fact(&rule, "presentation"),
-        json!({"kind":"localizedString","values":[{"language":"ru","content":"Закрытые серым"}]})
-    );
+    assert_eq!(fact(&rule, "presentation"), "ru = 'Закрытые серым'");
     assert_eq!(
         fact(&rule, "filter"),
         json!([

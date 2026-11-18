@@ -7,7 +7,7 @@ use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
-use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+use unica_address::source_target::MetadataAddress;
 use unica_metadata::{
     MetaCollection, MetaEditOperation, MetaElementInput, MetaElementUpdateInput, MetaTemplateKind,
     MetaValidationStatus,
@@ -27,7 +27,7 @@ macro_rules! native {
     ($name:literal) => {
         include_bytes!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../tests/fixtures/platform_8_3_27/template-new-xml/",
+            "/../../tests/fixtures/formats/platform_xml/2.20/template-new-xml/",
             $name
         ))
     };
@@ -443,7 +443,10 @@ fn add_template(name: &str, kind: MetaTemplateKind) -> MetaEditOperation {
         vec![MetaElementInput {
             name: name.into(),
             template_type: Some(kind),
-            synonym: Some("Initial caption".into()),
+            synonym: Some(vec![unica_metadata::LocalizedItem::new(
+                "ru",
+                "Initial caption",
+            )]),
             comment: Some("Initial comment".into()),
             ..MetaElementInput::default()
         }],
@@ -464,8 +467,7 @@ fn retained_publish(
         cache_root: root.join(".build/unica"),
         workspace_epoch: 0,
     };
-    let target =
-        MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Report.CorpusReport").unwrap();
+    let target = MetadataAddress::parse_logical("Report.CorpusReport").unwrap();
     let request =
         unica_metadata::request::MetadataRequest::Edit(unica_metadata::request::MetaEditRequest {
             source_set: "main".into(),
@@ -626,7 +628,7 @@ fn retained_batch_keeps_final_fields(kind: MetaTemplateKind, native_descriptor: 
         vec![MetaElementUpdateInput {
             name: "Draft".into(),
             new_name: Some("FinalTemplate".into()),
-            synonym: Some(FINAL_VALUE.into()),
+            synonym: Some(vec![unica_metadata::LocalizedItem::new("ru", FINAL_VALUE)]),
             comment: Some(FINAL_VALUE.into()),
             ..MetaElementUpdateInput::default()
         }],
@@ -842,7 +844,7 @@ fn canonical_set_preserves_new_template(kind: MetaTemplateKind) {
     let planned = invoke(
         ToolIdentity::Apply,
         json!({"at":TEMPLATE_AT,"ops":[{
-            "op":"template.set","args":{"values":{"comment":"Changed & <value>","synonym":"Changed caption"}}
+            "op":"template.set","args":{"values":{"comment":"Changed & <value>","synonym":"ru = 'Changed caption'"}}
         }]}),
     );
     assert!(planned.ok, "template.set preview failed: {planned:?}");

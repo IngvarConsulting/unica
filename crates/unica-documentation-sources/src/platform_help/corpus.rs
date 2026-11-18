@@ -14,6 +14,10 @@ pub struct CorpusPage {
     pub title: String,
     pub text: String,
     pub signature: Option<Signature>,
+    /// Заголовок статьи: вид, имя, владелец и одна строка описания.
+    /// Читается при чтении страницы, пока её разметка под рукой: в индексе
+    /// остаётся заголовок, а не кусок плоского текста.
+    pub header: unica_bsl_types::ArticleHeader,
 }
 
 #[derive(Debug)]
@@ -59,6 +63,10 @@ fn page_title(raw: &str) -> Option<String> {
     }
 }
 
+/// Плоский текст страницы: теги сняты, сущности раскрыты, BOM в начале
+/// файла убран. Нераскрытые `&lt;` и BOM доходили до потребителя как есть,
+/// и читать такой текст человеку и модели было нечем; раскрывает их тот же
+/// разбор, что и статью, чтобы два представления не расходились.
 fn strip_markup(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len());
     let mut inside = false;
@@ -73,7 +81,10 @@ fn strip_markup(raw: &str) -> String {
             _ => {}
         }
     }
-    out.split_whitespace().collect::<Vec<_>>().join(" ")
+    unica_bsl_types::article::decode_entities(&out)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Сигнатура из `.st`: запись локали имеет вид {"ru",0,0,"","Имя()"} —
@@ -117,11 +128,14 @@ fn parse_signature(raw: &str) -> Option<Signature> {
 /// все страницы корпуса: `unica.documentation.get` этим отличается от
 /// индексирования, и полный `read_corpus` стоил ему 4.4 секунды на вызов.
 /// Битая СОСЕДНЯЯ запись точечному чтению не мешает: её поток не читается.
-/// `Ok(None)` — «в этом контейнере такой страницы нет».
+/// `Ok(None)` — «в этом контейнере такой страницы нет». Вместе со страницей
+/// возвращается её разметка: по ней разбирается статья полями, а плоский
+/// текст остаётся рядом как запасной путь. Полный разбор корпуса разметку
+/// не держит — он читает двадцать пять тысяч страниц ради поиска.
 pub fn read_page_from_container(
     bytes: &[u8],
     path: &str,
-) -> Result<Option<CorpusPage>, CorpusError> {
+) -> Result<Option<(CorpusPage, String)>, CorpusError> {
     // `.st` — сигнатура, а не страница: полный разбор исключает её по
     // расширению (24% сигнатур несут `<`, признак разметки не отсеет), и
     // точечное чтение обязано исключать так же.
@@ -159,12 +173,16 @@ pub fn read_page_from_container(
             sibling.read_to_end(&mut raw).ok()?;
             parse_signature(&String::from_utf8_lossy(&raw))
         });
-    Ok(Some(CorpusPage {
-        path: path.to_string(),
-        title,
-        text,
-        signature,
-    }))
+    Ok(Some((
+        CorpusPage {
+            header: unica_bsl_types::article::header(path, &raw),
+            path: path.to_string(),
+            title,
+            text,
+            signature,
+        },
+        raw.into_owned(),
+    )))
 }
 
 /// Страницы контейнера разметкой, как они лежат: путь и HTML — те, чей путь
@@ -192,6 +210,20 @@ pub fn read_markup_pages(bytes: &[u8], prefix: &str) -> Result<Vec<(String, Stri
         }
     }
     Ok(pages)
+}
+
+/// The help pages of a platform container for the BSL type catalog.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PlatformHelpPages;
+
+impl unica_bsl_types::HelpPages for PlatformHelpPages {
+    fn markup_pages(
+        &self,
+        container: &[u8],
+        prefix: &str,
+    ) -> Result<Vec<(String, String)>, String> {
+        read_markup_pages(container, prefix).map_err(|error| format!("{error:?}"))
+    }
 }
 
 pub fn read_corpus(bytes: &[u8]) -> Result<Vec<CorpusPage>, CorpusError> {
@@ -234,6 +266,7 @@ pub fn read_corpus_from_archive(archive: &[u8]) -> Result<Vec<CorpusPage>, Corpu
             .map(|(head, _)| head)
             .unwrap_or(name.as_str());
         pages.push(CorpusPage {
+            header: unica_bsl_types::article::header(name, &raw),
             path: name.clone(),
             title,
             text,
@@ -280,6 +313,25 @@ mod tests {
 }"#;
 
     const PAGE: &str = "<html><body><h1 class=\"V8SH_pagetitle\">Глобальный контекст.ПолучитьНавигационнуюСсылку (Global context.GetURL)</h1><p>Доступен, начиная с версии 8.2. Синтаксис: ПолучитьНавигационнуюСсылку()</p></body></html>";
+
+    /// Плоский текст страницы читается человеком и моделью: BOM в начале
+    /// файла снят, сущности раскрыты. Иначе `&lt;Строки&gt;` и невидимый
+    /// символ в начале доходят до потребителя как есть.
+    #[test]
+    fn the_flat_text_of_a_page_drops_the_bom_and_decodes_entities() {
+        let page_html = "\u{feff}<html><body><h1>Пример</h1>\
+            <p>Скопировать(&lt;Строки&gt;)&nbsp;&amp;&nbsp;всё.</p></body></html>";
+        let archive = zip_with(&[("objects/Sample.html", page_html.as_bytes())]);
+        let bytes = crate::platform_help::container::tests_support::container_with(
+            &[("FileStorage", archive.as_slice())],
+            None,
+        );
+        let (page, _) = read_page_from_container(&bytes, "objects/Sample.html")
+            .expect("контейнер читается")
+            .expect("страница найдена");
+        assert_eq!(page.text, "Пример Скопировать(<Строки>) & всё.");
+        assert!(!page.text.contains('\u{feff}'), "BOM снят: {:?}", page.text);
+    }
 
     #[test]
     fn reads_html_page_with_bilingual_signature() {
@@ -424,11 +476,16 @@ mod tests {
             "полный разбор обязан споткнуться о битую запись — иначе порча не настоящая"
         );
 
-        let page = read_page_from_container(&bytes, "objects/Good.html")
+        let (page, markup) = read_page_from_container(&bytes, "objects/Good.html")
             .expect("точечное чтение не должно спотыкаться о соседа")
             .expect("страница найдена");
         assert_eq!(page.title, "Хорошая страница");
         assert!(page.text.contains("Текст хорошей страницы."));
+        // Разметка нужна разбору статьи полями: плоский текст её не заменяет.
+        assert!(
+            markup.contains("<h1"),
+            "разметка страницы возвращается: {markup}"
+        );
 
         assert!(
             read_page_from_container(&bytes, "objects/Missing.html")
@@ -484,7 +541,7 @@ mod tests {
             &[("FileStorage", archive.as_slice())],
             None,
         );
-        let page =
+        let (page, _) =
             read_page_from_container(&bytes, "objects/Global context/methods/GetURL3758.html")
                 .expect("контейнер читается")
                 .expect("страница найдена");

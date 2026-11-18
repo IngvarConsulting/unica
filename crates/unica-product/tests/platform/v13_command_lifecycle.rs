@@ -27,14 +27,15 @@ fn execute(mcp: &mut McpProcess, id: u64, plan: &Value) -> Value {
     ))
 }
 
-fn assert_bsl_index_invalidated(result: &Value) {
+fn assert_command_changed(result: &Value) {
     assert_eq!(result["ok"], true, "{result:#}");
+    assert!(result["data"].get("cache").is_none(), "{result:#}");
     assert!(
-        result["data"]["cache"]["invalidated"]
+        result["changed"]
             .as_array()
             .unwrap()
             .iter()
-            .any(|name| name == "bsl_index"),
+            .any(|change| change["event"] == "ModuleChanged"),
         "{result:#}"
     );
 }
@@ -78,6 +79,7 @@ fn source_snapshot(
     result
 }
 
+/// rule: INV.APP.APPLY-CHANGE-RESULT
 #[test]
 fn public_command_lifecycle_never_publishes_a_module_under_a_case_alias() {
     for case in [
@@ -101,7 +103,7 @@ fn public_command_lifecycle_never_publishes_a_module_under_a_case_alias() {
                     "at":"main:Catalog.Items.Command.Refresh", "values":{"newName":"Temp"}
                 }}]),
             );
-            assert_bsl_index_invalidated(&execute(&mut mcp, 3, &plan));
+            assert_command_changed(&execute(&mut mcp, 3, &plan));
             old_name = "Temp";
         }
         let new_name = match case {
@@ -141,7 +143,7 @@ fn public_command_lifecycle_never_publishes_a_module_under_a_case_alias() {
             assert_eq!(result["ok"], false, "{case}: {result:#}");
             assert_eq!(source_snapshot(&source), before, "{case}");
         } else {
-            assert_bsl_index_invalidated(&result);
+            assert_command_changed(&result);
             let relative = format!("Catalogs/Items/Commands/{new_name}/Ext/CommandModule.bsl");
             assert!(exact_module_route(&source, &relative), "{case}: {relative}");
             assert_eq!(std::fs::read(source.join(relative)).unwrap(), module_bytes);
@@ -190,6 +192,7 @@ fn public_command_lifecycle_saved_plan_refuses_changed_destination_spelling() {
 }
 
 #[cfg(unix)]
+/// rule: INV.APP.APPLY-CHANGE-RESULT
 #[test]
 fn public_command_lifecycle_saved_plan_ignores_unrelated_neighbor_links() {
     let root = fixture();
@@ -213,7 +216,7 @@ fn public_command_lifecycle_saved_plan_ignores_unrelated_neighbor_links() {
 
     let result = execute(&mut mcp, 3, &plan);
 
-    assert_bsl_index_invalidated(&result);
+    assert_command_changed(&result);
     assert_eq!(std::fs::read_link(&link).unwrap(), outside);
     assert_eq!(std::fs::read(&outside).unwrap(), b"foreign\0\xff");
     assert!(exact_module_route(
@@ -223,6 +226,7 @@ fn public_command_lifecycle_saved_plan_ignores_unrelated_neighbor_links() {
     mcp.finish();
 }
 
+/// rule: INV.APP.APPLY-CHANGE-RESULT
 #[test]
 fn public_command_lifecycle_preserves_bytes_and_allows_reusing_its_old_directory() {
     let root = fixture();
@@ -254,7 +258,7 @@ fn public_command_lifecycle_preserves_bytes_and_allows_reusing_its_old_directory
     assert_eq!(std::fs::read(&old).unwrap(), old_bytes);
     assert!(!new.exists());
     let result = execute(&mut mcp, 3, &plan);
-    assert_bsl_index_invalidated(&result);
+    assert_command_changed(&result);
     assert!(!old.exists());
     let moved = std::fs::read(&new).unwrap();
     assert_eq!(moved, old_bytes);
@@ -267,7 +271,7 @@ fn public_command_lifecycle_preserves_bytes_and_allows_reusing_its_old_directory
         }}]),
     );
     let result = execute(&mut mcp, 5, &back);
-    assert_bsl_index_invalidated(&result);
+    assert_command_changed(&result);
     assert_eq!(std::fs::read(&old).unwrap(), moved);
     assert!(!new.exists());
 
@@ -279,7 +283,7 @@ fn public_command_lifecycle_preserves_bytes_and_allows_reusing_its_old_directory
         }}]),
     );
     let result = execute(&mut mcp, 7, &remove);
-    assert_bsl_index_invalidated(&result);
+    assert_command_changed(&result);
     assert!(!old.exists());
     assert_eq!(std::fs::read(neighbor).unwrap(), neighbor_bytes);
     assert_eq!(std::fs::read(opaque).unwrap(), opaque_bytes);

@@ -23,7 +23,8 @@ whose `required-features` a lane enables, `src/lib.rs`, `tests/x.rs` →
 `#[path]`, `include!` and inline modules) and the function name. A declaration
 counts by the queue gate's own rule: the exact ID or a literal prefix ending
 in `*` of the same binary, or `Removes-test-target:` for a binary that is
-gone. Packages under `crates/` and `vendor/ureq` are checked. `cfg` is not
+gone. The historical `vendor/ureq` target is still read from the base to
+verify its declared removal. `cfg` is not
 evaluated; tests a macro generates and files reached only through a computed
 `include!` are not seen, except the modules a build script of `crates/`
 declares for each `*.rs` of a module's own directory. The queue still checks what this misses.
@@ -105,6 +106,7 @@ def package_root(path: str) -> str | None:
         return None
     if len(parts) >= 3 and parts[0] == "crates":
         return f"crates/{parts[1]}"
+    # A PR retiring the lane still has its tests on the old side of the diff.
     if path.startswith("vendor/ureq/"):
         return "vendor/ureq"
     return None

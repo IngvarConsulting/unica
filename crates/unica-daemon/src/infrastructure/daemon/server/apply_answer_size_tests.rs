@@ -7,12 +7,8 @@ use unica_execution::invocation_store::ToolIdentity;
 
 const LARGE_BATCH: usize = 800;
 
-/// The cache report names the random per-workspace epoch and does not depend
-/// on the request, so it is left out of the comparison.
 fn answer_bytes(result: &DomainResult) -> usize {
-    let mut result = result.clone();
-    result.data.as_mut().unwrap()["cache"] = Value::Null;
-    serde_json::to_vec(&result).unwrap().len()
+    serde_json::to_vec(result).unwrap().len()
 }
 
 /// Plans and publishes `count` edits of one subsystem; returns the request,
@@ -69,10 +65,6 @@ fn apply_answer_does_not_grow_with_the_number_of_operations() {
     ] {
         let data = large.data.as_ref().unwrap();
         assert_eq!(data["operationCount"], LARGE_BATCH, "{data}");
-        assert_eq!(
-            data["cache"]["events"],
-            single.data.as_ref().unwrap()["cache"]["events"]
-        );
         assert_eq!(single.data.as_ref().unwrap()["operationCount"], 1);
         assert!(data.get("operations").is_none(), "{data}");
         assert_eq!(large.changed, single.changed);

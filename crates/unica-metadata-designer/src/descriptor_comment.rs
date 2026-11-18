@@ -15,7 +15,7 @@ fn direct<'a, 'input>(parent: Node<'a, 'input>, tag: &str) -> Result<Node<'a, 'i
     }
 }
 
-fn descriptor_properties<'a, 'input>(
+pub(crate) fn descriptor_properties<'a, 'input>(
     document: &'a Document<'input>,
     kind: &str,
 ) -> Result<Node<'a, 'input>, String> {
@@ -232,7 +232,7 @@ mod tests {
         }
         let source = descriptor("<m:Comment/>");
         for damaged in [
-            source.replace("2.20", "2.21"),
+            source.replace("2.20", "2.23"),
             source.replace("2.20", "2.&#50;0"),
             source.replace("Probe", "Other"),
             source.replace("m:SessionParameter", "m:CommonAttribute"),

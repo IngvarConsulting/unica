@@ -245,7 +245,7 @@ impl Drop for InvalidationDispatchRegistration {
     fn drop(&mut self) {
         invalidation_dispatch_hooks()
             .lock()
-            .unwrap()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(&self.0);
     }
 }
@@ -254,7 +254,11 @@ struct InvalidationTestRelease(Arc<(Mutex<bool>, Condvar)>);
 
 impl Drop for InvalidationTestRelease {
     fn drop(&mut self) {
-        *self.0 .0.lock().unwrap() = true;
+        *self
+            .0
+             .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = true;
         self.0 .1.notify_all();
     }
 }

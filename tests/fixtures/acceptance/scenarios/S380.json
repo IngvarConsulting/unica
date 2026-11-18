@@ -108,7 +108,7 @@
               "items": [
                 {
                   "dataPath": "Amount",
-                  "title": "Amount before",
+                  "title": "ru = 'Amount before'",
                   "presentationExpression": "Amount"
                 }
               ]
@@ -121,7 +121,7 @@
                 {
                   "name": "Text",
                   "type": "string",
-                  "title": "Before",
+                  "title": "ru = 'Before'",
                   "value": "Filled",
                   "expression": "&Other"
                 }
@@ -218,7 +218,7 @@
             "args": {
               "at": "cf:Report.F05Report.Template.PrimitiveEmptyValues.Parameter.Text",
               "values": {
-                "title": "",
+                "title": "ru = ''",
                 "value": "",
                 "expression": ""
               }
@@ -229,7 +229,7 @@
             "args": {
               "at": "cf:Report.F05Report.Template.PrimitiveEmptyValues.DataSet.EmptyData.Field.Amount",
               "values": {
-                "title": "",
+                "title": "ru = ''",
                 "presentationExpression": ""
               }
             }
@@ -340,7 +340,7 @@
             "args": {
               "at": "cf:Report.F05Report.Template.PrimitiveEmptyValues.Parameter.Text",
               "values": {
-                "title": "",
+                "title": "ru = ''",
                 "value": "",
                 "expression": ""
               }
@@ -351,7 +351,7 @@
             "args": {
               "at": "cf:Report.F05Report.Template.PrimitiveEmptyValues.DataSet.EmptyData.Field.Amount",
               "values": {
-                "title": "",
+                "title": "ru = ''",
                 "presentationExpression": ""
               }
             }

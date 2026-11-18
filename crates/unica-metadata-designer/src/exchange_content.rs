@@ -1,8 +1,9 @@
 //! ExchangePlan Content.xml observations. Unknown or damaged items never become
 //! a known empty composition; independent valid entries remain available.
+use crate::dialect::root_version;
 use roxmltree::{Document, Node};
 use std::collections::HashSet;
-use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+use unica_address::source_target::MetadataAddress;
 use unica_metadata::{
     metadata_name_eq, MetaExchangeAutoRecord as AutoRecord, MetaExchangeContentItem as ContentItem,
 };
@@ -12,12 +13,22 @@ const NS: &str = "http://v8.1c.ru/8.3/xcf/extrnprops";
 /// The document the platform would write for a composition with no items.
 /// It never writes it — an empty composition has no Content.xml — but the
 /// first added item turns it into the platform's file, header included.
-pub const EMPTY_CONTENT: &str = "\u{feff}<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n<ExchangePlanContent xmlns=\"http://v8.1c.ru/8.3/xcf/extrnprops\" xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" version=\"2.20\">\r\n</ExchangePlanContent>";
+pub fn empty_content(version: &str) -> String {
+    format!(
+        "\u{feff}<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n<ExchangePlanContent xmlns=\"http://v8.1c.ru/8.3/xcf/extrnprops\" xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" version=\"{}\">\r\n</ExchangePlanContent>",
+        version
+    )
+}
 
 /// The same document in an extension: 8.3.27 writes the content of a borrowed
 /// exchange plan — only the items the extension adds — with an empty
 /// `ExtensionProperty` after them (#1924).
-pub const EMPTY_EXTENSION_CONTENT: &str = "\u{feff}<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n<ExchangePlanContent xmlns=\"http://v8.1c.ru/8.3/xcf/extrnprops\" xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" version=\"2.20\">\r\n\t<ExtensionProperty/>\r\n</ExchangePlanContent>";
+pub fn empty_extension_content(version: &str) -> String {
+    format!(
+        "\u{feff}<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n<ExchangePlanContent xmlns=\"http://v8.1c.ru/8.3/xcf/extrnprops\" xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" version=\"{}\">\r\n\t<ExtensionProperty/>\r\n</ExchangePlanContent>",
+        version
+    )
+}
 
 /// The empty `ExtensionProperty` an extension's content ends with.
 fn is_extension_property(node: Node<'_, '_>) -> bool {
@@ -67,7 +78,7 @@ fn read_item(node: Node<'_, '_>) -> Result<ContentItem, String> {
         }
     }
     let target = metadata.ok_or("ExchangePlanContent Item has no Metadata")?;
-    let target = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &target)
+    let target = MetadataAddress::parse_logical(&target)
         .map_err(|_| "ExchangePlanContent Metadata is not a metadata address")?;
     if target.segments().count() != 2 {
         return Err("ExchangePlanContent Metadata must name a top-level object".into());
@@ -95,8 +106,11 @@ pub fn read_content(xml: &str) -> Result<ContentObservation, String> {
     {
         return Err("unknown ExchangePlanContent root attribute".into());
     }
-    if root.attribute("version") != Some("2.20") {
-        return Err("ExchangePlanContent requires format version 2.20".into());
+    if !root_version::is_writable(root.attribute("version")) {
+        return Err(format!(
+            "ExchangePlanContent requires format version {}",
+            root_version::writable_formats()
+        ));
     }
     let mut result = ContentObservation {
         items: Vec::new(),
@@ -262,13 +276,13 @@ mod tests {
     /// `Content.xml` заимствованного плана обмена, который 8.3.27 выгрузил из
     /// расширения после изменения состава: только добавленный расширением
     /// элемент и пустой `ExtensionProperty` за ним (#1924).
-    const PLATFORM_EXTENSION: &str =
-        include_str!("../../../tests/fixtures/platform_8_3_27/exchange_plan/extension-Content.xml");
+    const PLATFORM_EXTENSION: &str = include_str!(
+        "../../../tests/fixtures/formats/platform_xml/2.20/exchange_plan/extension-Content.xml"
+    );
 
     fn sample() -> ContentItem {
         ContentItem {
-            target: MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Catalog.Пример")
-                .unwrap(),
+            target: MetadataAddress::parse_logical("Catalog.Пример").unwrap(),
             auto_record: AutoRecord::Allow,
         }
     }
@@ -280,7 +294,7 @@ mod tests {
         assert_eq!(observed.items, [sample()]);
         // Первая запись в расширении даёт форму платформы.
         assert_eq!(
-            update_content(EMPTY_EXTENSION_CONTENT, &[sample()], true).unwrap(),
+            update_content(&empty_extension_content("2.20"), &[sample()], true).unwrap(),
             PLATFORM_EXTENSION
         );
         // Повтор ничего не меняет, новый элемент встаёт перед `ExtensionProperty`.
@@ -289,8 +303,7 @@ mod tests {
             PLATFORM_EXTENSION
         );
         let other = ContentItem {
-            target: MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Catalog.Прежний")
-                .unwrap(),
+            target: MetadataAddress::parse_logical("Catalog.Прежний").unwrap(),
             auto_record: AutoRecord::Deny,
         };
         let updated =
@@ -306,10 +319,9 @@ mod tests {
     /// Unica) получает его при правке; собственный план его не получает.
     #[test]
     fn only_a_borrowed_plan_gets_the_extension_property() {
-        let without = EMPTY_EXTENSION_CONTENT.replace("\t<ExtensionProperty/>\r\n", "");
+        let without = empty_extension_content("2.20").replace("\t<ExtensionProperty/>\r\n", "");
         let other = ContentItem {
-            target: MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Catalog.Прежний")
-                .unwrap(),
+            target: MetadataAddress::parse_logical("Catalog.Прежний").unwrap(),
             auto_record: AutoRecord::Deny,
         };
         let first = update_content(&without, &[sample()], false).unwrap();
@@ -403,7 +415,7 @@ mod tests {
     }
     fn update(target: &str, mode: AutoRecord) -> ContentItem {
         ContentItem {
-            target: MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, target).unwrap(),
+            target: MetadataAddress::parse_logical(target).unwrap(),
             auto_record: mode,
         }
     }

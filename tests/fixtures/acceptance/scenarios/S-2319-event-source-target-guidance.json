@@ -230,6 +230,15 @@
         },
         {
           "pointer": "/data/items/1",
+          "eq": {
+            "relation": "handler",
+            "title": "Handler",
+            "at": "main:CommonModule.EventHandlers.Method.OnBeforeWrite",
+            "kind": "Method"
+          }
+        },
+        {
+          "pointer": "/data/items/2",
           "absent": true
         }
       ]

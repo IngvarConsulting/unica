@@ -67,7 +67,6 @@ use {
 
 use crate::domain::call_graph_identity::{CallGraphIdentity, CallGraphIdentityError};
 use crate::infrastructure::capacity_observation::CapacityObserver;
-use crate::infrastructure::native_operations::apply_families::plan_hidden_v13_apply;
 use crate::infrastructure::v13_find::{
     FindBuildError, LayoutFindSource, WorkspaceFindDirectoryBuilder,
 };
@@ -215,7 +214,11 @@ impl CanonicalInvocationService for CanonicalV13ReadService {
                 | ToolIdentity::Search
                 | ToolIdentity::Check
                 | ToolIdentity::Diff
-        ) {
+        ) && !(invocation.tool() == ToolIdentity::View
+            && result.ok
+            && result.source_text.is_some()
+            && result.data.as_ref().and_then(|data| data["kind"].as_str()) == Some("Body"))
+        {
             result.rev = None;
         }
         Ok(result)
@@ -274,6 +277,9 @@ fn observe_fresh_view_capability_for_test(at: &str, revision: impl FnOnce() -> S
 }
 
 mod apply_tool;
+mod support_choice;
+#[cfg(test)]
+pub(super) use apply_tool::with_argument_dictionary;
 #[cfg(test)]
 pub(super) use apply_tool::with_unknown_argument_contract;
 mod check_tool;
@@ -409,11 +415,7 @@ fn metadata_layout_path(address: &QualifiedAddress, source_kind: SourceSetKind) 
     }
     let target = address.to_string();
     let target = target.split_once(':')?.1;
-    let target = unica_address::source_target::MetadataAddress::parse(
-        unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
-        target,
-    )
-    .ok()?;
+    let target = unica_address::source_target::MetadataAddress::parse_logical(target).ok()?;
     let relative =
         unica_source_designer::layout::metadata_descriptor_relative(&target, source_kind).ok()?;
     let relative = relative.to_str()?.replace('\\', "/");
@@ -564,7 +566,7 @@ fn search_selected_role(
     request: &SearchRequest,
     context: &CodeIntelligenceContext,
     cancellation: &CancellationToken,
-    deadlines: unica_code_intelligence::deadlines::CodeIntelligenceDeadlines,
+    deadlines: unica_code_intelligence::coordinator::CodeIntelligenceDeadlines,
 ) -> Result<unica_code_intelligence::coordinator::CodeSearchExecution, String> {
     use unica_code_intelligence::coordinator::CodeSearchCoordinator;
 
@@ -1003,11 +1005,8 @@ fn owning_metadata_address(address: &QualifiedAddress) -> String {
     owner
 }
 
-/// Every family section of plan details that an apply answer may carry.
-const PLAN_DETAIL_KEYS: &[unica_source_contract::proposal::PlanDetailKey] = &[
-    unica_xdto::results::XDTO_OBJECTS,
-    unica_metadata::EXCHANGE_CONTENT,
-];
+// Every family section of plan details that an apply answer may carry.
+use crate::infrastructure::native_operations::apply_families::PLAN_DETAIL_KEYS;
 
 /// Fields the apply answer writes itself; a family section cannot take them.
 const APPLY_DATA_FIELDS: &[&str] = &[
@@ -1193,6 +1192,7 @@ pub(super) fn apply_plan_error_result(error: &ApplyPlanError) -> DomainResult {
     let at = error.path().map(str::to_string);
     let code = match error.kind() {
         ApplyPlanErrorKind::BadValue => RefusalCode::BadValue,
+        ApplyPlanErrorKind::Conflict => RefusalCode::Conflict,
         ApplyPlanErrorKind::NotFound => RefusalCode::NotFound,
         ApplyPlanErrorKind::ProviderUnavailable => RefusalCode::ProviderUnavailable,
         ApplyPlanErrorKind::InvalidState => RefusalCode::InvalidState,
@@ -1765,11 +1765,11 @@ fn bsl_structure_findings(
     cancellation: &CancellationToken,
 ) -> Result<Vec<unica_diagnostics::model::DiagnosticItem>, Box<DomainResult>> {
     use unica_address::source_target::TargetKind;
-    use unica_bsl_parser::MISPLACED_VARIABLE_MESSAGE;
     use unica_diagnostics::model::DiagnosticFocus;
     use unica_diagnostics::model::DiagnosticItem;
     use unica_diagnostics::model::DiagnosticSeverity;
     use unica_diagnostics::source_ranges::misplaced_variable_declarations;
+    use unica_diagnostics::source_ranges::MISPLACED_VARIABLE_MESSAGE;
     use unica_source_contract::location::SourceLocation;
 
     // Объект и корень не модуль: структуру модуля у них не проверить.
@@ -2275,17 +2275,14 @@ fn run_meta_validator(
             "the metadata validator needs one object descriptor; this address names none",
         )));
     };
-    let target = unica_address::source_target::MetadataAddress::parse(
-        unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
-        &path,
-    )
-    .map_err(|error| {
-        Box::new(error_result(
-            Some(at.to_string()),
-            RefusalCode::BadValue,
-            error.to_string(),
-        ))
-    })?;
+    let target =
+        unica_address::source_target::MetadataAddress::parse_logical(&path).map_err(|error| {
+            Box::new(error_result(
+                Some(at.to_string()),
+                RefusalCode::BadValue,
+                error.to_string(),
+            ))
+        })?;
     let request = unica_metadata::request::MetaInfoRequest {
         source_set: address.source_set().to_string(),
         metadata_path: target,

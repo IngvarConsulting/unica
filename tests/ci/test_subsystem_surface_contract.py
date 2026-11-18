@@ -96,7 +96,7 @@ Prose resembling JSON: `"SubsystemPath": "Subsystems/Ложная/Subsystems"`.
         self.assertIn("SUBSYSTEM_ADDRESS_MAX_DEPTH", subsystem)
         self.assertIn('"СтандартныеПодсистемы.Обсуждения"', subsystem)
         self.assertNotIn("SUBSYSTEM_ADDRESS_MAX_SEGMENTS", source_target)
-        self.assertIn('profile.parse("Subsystem.A.B").is_err()', source_target)
+        self.assertIn('MetadataAddress::parse_logical("Subsystem.A.B").is_err()', source_target)
 
     def test_subsystem_result_owns_structure_not_object_memberships(self) -> None:
         runtime = (

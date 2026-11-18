@@ -388,7 +388,13 @@
           "kind": "sha256",
           "eq": "1b4616915e7b11bdfc47c6f56d3ea5b568bc5e93c416884211fb6c34b56e9b9c"
         }
-      ]
+      ],
+      "captures": {
+        "unchanged1": {
+          "file": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form/Module.bsl",
+          "kind": "sha256"
+        }
+      }
     },
     {
       "tool": "unica.view",
@@ -476,7 +482,7 @@
         {
           "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form/Module.bsl",
           "kind": "sha256",
-          "eq": "1b4616915e7b11bdfc47c6f56d3ea5b568bc5e93c416884211fb6c34b56e9b9c"
+          "eq": "$capture.unchanged1"
         },
         {
           "path": "src/Catalogs/Валюты/Ext/ObjectModule.bsl",
@@ -531,7 +537,7 @@
         {
           "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form/Module.bsl",
           "kind": "sha256",
-          "eq": "1b4616915e7b11bdfc47c6f56d3ea5b568bc5e93c416884211fb6c34b56e9b9c"
+          "eq": "$capture.unchanged1"
         },
         {
           "path": "src/Catalogs/Валюты/Ext/ObjectModule.bsl",
@@ -575,14 +581,20 @@
         {
           "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form/Module.bsl",
           "kind": "sha256",
-          "eq": "1b4616915e7b11bdfc47c6f56d3ea5b568bc5e93c416884211fb6c34b56e9b9c"
+          "eq": "$capture.unchanged1"
         },
         {
           "path": "src/Catalogs/Валюты/Ext/ObjectModule.bsl",
           "kind": "sha256",
           "eq": "92499d4acd2d18b6030b884ea2928ff1ac64a1c91348a4ea94395c5dba1d756b"
         }
-      ]
+      ],
+      "captures": {
+        "unchanged2": {
+          "file": "src/Catalogs/Валюты/Ext/ObjectModule.bsl",
+          "kind": "sha256"
+        }
+      }
     },
     {
       "tool": "unica.view",
@@ -635,7 +647,7 @@
         {
           "path": "src/Catalogs/Валюты/Ext/ObjectModule.bsl",
           "kind": "sha256",
-          "eq": "92499d4acd2d18b6030b884ea2928ff1ac64a1c91348a4ea94395c5dba1d756b"
+          "eq": "$capture.unchanged2"
         },
         {
           "path": "src/Catalogs/Валюты/Forms/ФормаСписка.xml",
@@ -660,7 +672,7 @@
         {
           "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form/Module.bsl",
           "kind": "sha256",
-          "eq": "1b4616915e7b11bdfc47c6f56d3ea5b568bc5e93c416884211fb6c34b56e9b9c"
+          "eq": "$capture.unchanged1"
         },
         {
           "path": "src/CommonModules/GoogleПереводчик.xml",

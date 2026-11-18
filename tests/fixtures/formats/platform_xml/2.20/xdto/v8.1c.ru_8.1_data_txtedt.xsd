@@ -1,0 +1,23 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:ns1="http://v8.1c.ru/8.1/data/ui" xmlns:tns="http://v8.1c.ru/8.1/data/txtedt" xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="http://v8.1c.ru/8.1/data/txtedt" attributeFormDefault="unqualified" elementFormDefault="qualified">
+	<xs:import namespace="http://v8.1c.ru/8.1/data/ui"/>
+	<xs:complexType name="MaketParameter">
+		<xs:sequence>
+			<xs:element name="val"/>
+		</xs:sequence>
+		<xs:attribute name="name" type="xs:string"/>
+	</xs:complexType>
+	<xs:complexType name="TextDocument">
+		<xs:sequence>
+			<xs:element name="content" type="xs:string" minOccurs="0"/>
+			<xs:element name="param" type="tns:MaketParameter" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+		<xs:attribute name="ro" type="xs:boolean"/>
+		<xs:attribute name="url" type="xs:string"/>
+		<xs:attribute name="tpl" type="xs:string"/>
+		<xs:attribute name="sep" type="xs:string"/>
+		<xs:attribute name="out" type="ns1:UseOutput"/>
+		<xs:attribute name="cod" type="xs:string"/>
+		<xs:attribute name="codext" type="ns1:TextEncoding"/>
+	</xs:complexType>
+</xs:schema>

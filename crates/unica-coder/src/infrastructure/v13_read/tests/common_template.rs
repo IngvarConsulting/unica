@@ -2,11 +2,14 @@ use super::*;
 
 #[test]
 fn common_template_empty_synonyms_have_no_value_like_other_metadata() {
-    for synonym in [
-        "",
-        "<Synonym/>",
-        "<Synonym>   </Synonym>",
-        "<Synonym><v8:item><v8:lang>ru</v8:lang><v8:content/></v8:item></Synonym>",
+    for (synonym, expected) in [
+        ("", None),
+        ("<Synonym/>", None),
+        ("<Synonym>   </Synonym>", None),
+        (
+            "<Synonym><v8:item><v8:lang>ru</v8:lang><v8:content/></v8:item></Synonym>",
+            Some("ru = ''"),
+        ),
     ] {
         let fixture = RealReaderFixture::new();
         install_common_template_fixture(&fixture);
@@ -22,9 +25,11 @@ fn common_template_empty_synonyms_have_no_value_like_other_metadata() {
             .view(ViewRequest::new("main:CommonTemplate.Print").unwrap());
         assert!(result.ok, "{synonym:?}: the call failed");
         let data = result.data.unwrap();
-        assert!(
-            data["props"]["Synonym"].is_null(),
-            "an empty synonym publishes no Synonym value"
+        assert_eq!(
+            data["props"]
+                .get("Synonym")
+                .and_then(serde_json::Value::as_str),
+            expected
         );
         assert_eq!(data["props"]["format"], "SpreadsheetDocument");
     }
@@ -80,7 +85,7 @@ fn common_template_exposes_mxl_areas_body_and_parameters_through_public_view() {
     assert!(template.ok, "the call failed");
     let data = template.data.unwrap();
     assert_eq!(data["props"]["format"], "SpreadsheetDocument");
-    assert_eq!(data["props"]["Synonym"], "Общий Print");
+    assert_eq!(data["props"]["Synonym"], "ru = 'Общий Print'");
     assert!(data["branches"]
         .as_array()
         .unwrap()
@@ -255,7 +260,7 @@ fn common_opaque_and_inherited_templates_do_not_open_a_body() {
     assert!(html.ok, "the call failed");
     let data = html.data.unwrap();
     assert_eq!(data["props"]["format"], "HTMLDocument");
-    assert_eq!(data["props"]["Synonym"], "Общий Html");
+    assert_eq!(data["props"]["Synonym"], "ru = 'Общий Html'");
     assert!(data.get("branches").is_none());
     for suffix in [".Area", ".DataSet", ".Parameter", ".Item", ".Area.A.Body"] {
         let view = fixture

@@ -11,12 +11,9 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 use unica_address::address::QualifiedAddress;
-use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+use unica_address::source_target::MetadataAddress;
 use unica_code_intelligence::completion::{
     CompletionSources, ModuleOwner, ObjectMembers, PlatformMember,
-};
-use unica_documentation_sources::platform_help::provider::{
-    global_context_members, GlobalContextMemberKind,
 };
 use unica_execution_contract::view_error::ViewError;
 use unica_work_control::cancellation::CancellationToken;
@@ -76,17 +73,10 @@ impl PlatformContexts {
             .spawn(move || {
                 // A panic in the help index must not leave the root loading
                 // for the life of the daemon.
-                let context = match std::panic::catch_unwind(|| global_context_members(&owned)) {
-                    Ok(Ok(members)) => PlatformContext::Ready(
-                        members
-                            .into_iter()
-                            .map(|member| PlatformMember {
-                                method: member.kind == GlobalContextMemberKind::Method,
-                                name: member.name_ru,
-                                parameters: member.parameters,
-                            })
-                            .collect(),
-                    ),
+                let context = match std::panic::catch_unwind(|| {
+                    crate::infrastructure::analysis_composition::platform_members(&owned)
+                }) {
+                    Ok(Ok(members)) => PlatformContext::Ready(Arc::from(members)),
                     Ok(Err(_)) | Err(_) => PlatformContext::Unavailable(Instant::now()),
                 };
                 lock(&contexts.loaded).insert(owned, context);
@@ -178,9 +168,7 @@ impl CompletionSources for SessionSources<'_> {
     }
 
     fn object_members(&self, kind: &str, name: &str) -> Option<ObjectMembers> {
-        let target =
-            MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &format!("{kind}.{name}"))
-                .ok()?;
+        let target = MetadataAddress::parse_logical(&format!("{kind}.{name}")).ok()?;
         let members = self
             .descriptors
             .metadata_descriptor(&target)

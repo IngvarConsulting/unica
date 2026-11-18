@@ -1,0 +1,1161 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:ns1="http://v8.1c.ru/8.1/data/core" xmlns:ns2="http://v8.1c.ru/8.1/data/ui" xmlns:ns3="http://v8.1c.ru/8.1/data/enterprise" xmlns:ns4="http://v8.1c.ru/8.2/data/bsl" xmlns:tns="http://v8.1c.ru/8.2/managed-application/core" xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="http://v8.1c.ru/8.2/managed-application/core" attributeFormDefault="unqualified" elementFormDefault="qualified">
+	<xs:import namespace="http://v8.1c.ru/8.1/data/core"/>
+	<xs:import namespace="http://v8.1c.ru/8.1/data/ui"/>
+	<xs:import namespace="http://v8.1c.ru/8.1/data/enterprise"/>
+	<xs:import namespace="http://v8.1c.ru/8.2/data/bsl"/>
+	<xs:element name="ClientApplicationInterface" type="tns:InterfaceLayouter"/>
+	<xs:simpleType name="Alias">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="en"/>
+			<xs:enumeration value="ru"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ApplicationUsePurpose">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="PlatformApplication"/>
+			<xs:enumeration value="MobilePlatformApplication"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ClientRunMode">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="ManagedApplication"/>
+			<xs:enumeration value="OrdinaryApplication"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="CommandGroupCategory">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="NavigationPanel"/>
+			<xs:enumeration value="ActionsPanel"/>
+			<xs:enumeration value="FormNavigationPanel"/>
+			<xs:enumeration value="FormCommandBar"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ErrorMessageDisplayVariant">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="ErrorMessageForUser"/>
+			<xs:enumeration value="BriefErrorDescription"/>
+			<xs:enumeration value="DetailErrorDescription"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ErrorReportingMode">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Auto"/>
+			<xs:enumeration value="DontSend"/>
+			<xs:enumeration value="AskUser"/>
+			<xs:enumeration value="Send"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="MainWindowMode">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Normal"/>
+			<xs:enumeration value="Workplace"/>
+			<xs:enumeration value="FullscreenWorkplace"/>
+			<xs:enumeration value="Kiosk"/>
+			<xs:enumeration value="EmbeddedWorkplace"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="MobileApplicationFunctionalities">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Biometrics"/>
+			<xs:enumeration value="Location"/>
+			<xs:enumeration value="BackgroundLocation"/>
+			<xs:enumeration value="BluetoothPrinters"/>
+			<xs:enumeration value="WiFiPrinters"/>
+			<xs:enumeration value="Contacts"/>
+			<xs:enumeration value="Calendars"/>
+			<xs:enumeration value="PushNotifications"/>
+			<xs:enumeration value="LocalNotifications"/>
+			<xs:enumeration value="InAppPurchases"/>
+			<xs:enumeration value="PersonalComputerFileExchange"/>
+			<xs:enumeration value="Ads"/>
+			<xs:enumeration value="NumberDialing"/>
+			<xs:enumeration value="CallProcessing"/>
+			<xs:enumeration value="CallLog"/>
+			<xs:enumeration value="AutoSendSMS"/>
+			<xs:enumeration value="ReceiveSMS"/>
+			<xs:enumeration value="SMSLog"/>
+			<xs:enumeration value="Camera"/>
+			<xs:enumeration value="Microphone"/>
+			<xs:enumeration value="MusicLibrary"/>
+			<xs:enumeration value="PictureAndVideoLibraries"/>
+			<xs:enumeration value="AudioPlaybackAndVibration"/>
+			<xs:enumeration value="BackgroundAudioPlaybackAndVibration"/>
+			<xs:enumeration value="InstallPackages"/>
+			<xs:enumeration value="OSBackup"/>
+			<xs:enumeration value="ApplicationUsageStatistics"/>
+			<xs:enumeration value="BarcodeScanning"/>
+			<xs:enumeration value="BackgroundAudioRecording"/>
+			<xs:enumeration value="AllFilesAccess"/>
+			<xs:enumeration value="Videoconferences"/>
+			<xs:enumeration value="NFC"/>
+			<xs:enumeration value="DocumentScanning"/>
+			<xs:enumeration value="Geofences"/>
+			<xs:enumeration value="IncomingShareRequests"/>
+			<xs:enumeration value="AllIncomingShareRequestsTypesProcessing"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="RequiredMobileApplicationPermissionMessages">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Biometrics"/>
+			<xs:enumeration value="Location"/>
+			<xs:enumeration value="BackgroundLocation"/>
+			<xs:enumeration value="BluetoothPrinters"/>
+			<xs:enumeration value="Contacts"/>
+			<xs:enumeration value="Calendars"/>
+			<xs:enumeration value="NumberDialing"/>
+			<xs:enumeration value="CallProcessing"/>
+			<xs:enumeration value="CallLog"/>
+			<xs:enumeration value="AutoSendSMS"/>
+			<xs:enumeration value="ReceiveSMS"/>
+			<xs:enumeration value="SMSLog"/>
+			<xs:enumeration value="Camera"/>
+			<xs:enumeration value="Microphone"/>
+			<xs:enumeration value="MusicLibrary"/>
+			<xs:enumeration value="PictureAndVideoLibraries"/>
+			<xs:enumeration value="AudioPlaybackAndVibration"/>
+			<xs:enumeration value="PermissionGroupPhone"/>
+			<xs:enumeration value="PermissionGroupCallLog"/>
+			<xs:enumeration value="PermissionGroupSMS"/>
+			<xs:enumeration value="PostNotifications"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="RequiredMobileApplicationPermissions">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Multimedia"/>
+			<xs:enumeration value="Location"/>
+			<xs:enumeration value="Contacts"/>
+			<xs:enumeration value="Calendars"/>
+			<xs:enumeration value="Telephony"/>
+			<xs:enumeration value="PushNotification"/>
+			<xs:enumeration value="LocalNotification"/>
+			<xs:enumeration value="Print"/>
+			<xs:enumeration value="InAppPurchases"/>
+			<xs:enumeration value="Ads"/>
+			<xs:enumeration value="BackgroundLocation"/>
+			<xs:enumeration value="BackgroundAudioPlayback"/>
+			<xs:enumeration value="FileExchangeWithPersonalComputer"/>
+			<xs:enumeration value="CallPhone"/>
+			<xs:enumeration value="HandlePhoneCalls"/>
+			<xs:enumeration value="CallLog"/>
+			<xs:enumeration value="SendSMS"/>
+			<xs:enumeration value="ReceiveSMS"/>
+			<xs:enumeration value="SMSLog"/>
+			<xs:enumeration value="Camera"/>
+			<xs:enumeration value="Microphone"/>
+			<xs:enumeration value="MusicLibrary"/>
+			<xs:enumeration value="PicturesAndVideoLibraries"/>
+			<xs:enumeration value="AudioAndVibrationPlayback"/>
+			<xs:enumeration value="PermissionGroupPhone"/>
+			<xs:enumeration value="PermissionGroupCallLog"/>
+			<xs:enumeration value="PermissionGroupSMS"/>
+			<xs:enumeration value="InstallPackages"/>
+			<xs:enumeration value="AllowOSBackup"/>
+			<xs:enumeration value="Biometrics"/>
+			<xs:enumeration value="BluetoothPrinters"/>
+			<xs:enumeration value="WiFiPrinters"/>
+			<xs:enumeration value="AllFilesAccess"/>
+			<xs:enumeration value="Videoconferences"/>
+			<xs:enumeration value="NFC"/>
+			<xs:enumeration value="PostNotifications"/>
+			<xs:enumeration value="Geofences"/>
+			<xs:enumeration value="IncomingShareRequests"/>
+			<xs:enumeration value="AllIncomingShareRequestsTypesProcessing"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="SectionPanelRepresentation">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Picture"/>
+			<xs:enumeration value="PictureAndText"/>
+			<xs:enumeration value="Text"/>
+			<xs:enumeration value="PictureOnTopAndText"/>
+			<xs:enumeration value="PictureOnLeftAndText"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="StandardGlobalSearchType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="UserWorkFavorites"/>
+			<xs:enumeration value="UserWorkHistory"/>
+			<xs:enumeration value="FunctionsMenu"/>
+			<xs:enumeration value="CollaborationSystemConversations"/>
+			<xs:enumeration value="CollaborationSystemMessages"/>
+			<xs:enumeration value="Data"/>
+			<xs:enumeration value="Help"/>
+			<xs:enumeration value="Expression"/>
+			<xs:enumeration value="URL"/>
+			<xs:enumeration value="FunctionsForTechnicalSpecialist"/>
+			<xs:enumeration value="GlobalStandardCommands"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="StyleEntryKind">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="color"/>
+			<xs:enumeration value="font"/>
+			<xs:enumeration value="border"/>
+			<xs:enumeration value="line"/>
+			<xs:enumeration value="palcolor"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:complexType name="AboutInfo">
+		<xs:sequence>
+			<xs:element name="title" type="xs:string"/>
+			<xs:element name="user" type="xs:string"/>
+			<xs:element name="config" type="xs:string"/>
+			<xs:element name="logo" type="ns2:Picture" minOccurs="0"/>
+			<xs:element name="presentation" type="xs:string"/>
+			<xs:element name="extensions" type="xs:string" minOccurs="0"/>
+			<xs:element name="runMode" type="xs:string" minOccurs="0"/>
+			<xs:element name="compress" type="xs:string" minOccurs="0"/>
+			<xs:element name="configLicenseInfo" type="xs:string"/>
+			<xs:element name="version" type="xs:string" minOccurs="0"/>
+			<xs:element name="developerInfo" type="xs:string" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="AllowedIncomingShareRequestType">
+		<xs:sequence>
+			<xs:element name="mime" type="xs:string"/>
+			<xs:element name="uti" type="xs:string"/>
+			<xs:element name="ext" type="xs:string"/>
+			<xs:element name="processingVariant" type="xs:integer"/>
+			<xs:element name="isCustom" type="xs:boolean"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="AllowedIncomingShareRequestTypes">
+		<xs:sequence>
+			<xs:element name="allowedIncomingShareRequestType" type="tns:AllowedIncomingShareRequestType" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="ApplicationInfo">
+		<xs:sequence>
+			<xs:element name="infoBaseInstanceID" type="ns1:UUID"/>
+			<xs:element name="infoBaseAlias" type="xs:string"/>
+			<xs:element name="locale" type="tns:LocaleInfo" minOccurs="0"/>
+			<xs:element name="langs" type="tns:LangSettings"/>
+			<xs:element name="config" type="ns1:ObjectVersion"/>
+			<xs:element name="types" type="xs:string"/>
+			<xs:element name="user" type="ns1:UUID"/>
+			<xs:element name="rolesID" type="xs:decimal"/>
+			<xs:element name="seance" type="ns1:UUID"/>
+			<xs:element name="seanceNo" type="xs:decimal"/>
+			<xs:element name="userRunMode" type="xs:decimal"/>
+			<xs:element name="configRunMode" type="xs:decimal"/>
+			<xs:element name="splash" type="tns:SplashInfo" minOccurs="0"/>
+			<xs:element name="fullLocale" type="tns:MngLocale" minOccurs="0"/>
+			<xs:element name="compatibilityMode" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="compatibilityModeLive" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="interfaceCompatibilityMode" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="userSeparatorsEmpty" type="xs:boolean"/>
+			<xs:element name="training" type="xs:boolean"/>
+			<xs:element name="modalityUseMode" type="xs:decimal"/>
+			<xs:element name="rigthClientsStart" type="xs:decimal"/>
+			<xs:element name="syncCallsUseMode" type="xs:decimal"/>
+			<xs:element name="assemblyVersion" type="ns1:ObjectVersion"/>
+			<xs:element name="interactiveSecurity" type="xs:boolean"/>
+			<xs:element name="defaultPaperWidth" type="xs:decimal"/>
+			<xs:element name="defaultPaperHeight" type="xs:decimal"/>
+			<xs:element name="serverVersion" type="xs:string" minOccurs="0"/>
+			<xs:element name="beginningOfCentury" type="xs:decimal"/>
+			<xs:element name="authMessage" type="xs:string" minOccurs="0"/>
+			<xs:element name="infoBaseInFileMode" type="xs:boolean"/>
+			<xs:element name="countryUA" type="xs:boolean" minOccurs="0"/>
+			<xs:element name="objectFileExtensionChrome" type="xs:string"/>
+			<xs:element name="objectFileExtensionFirefox" type="xs:string"/>
+			<xs:element name="objectFileExtensionIE" type="xs:string"/>
+			<xs:element name="objectFileExtensionSafari" type="xs:string"/>
+			<xs:element name="objectFileExtensionAnyChromiumBased" type="xs:string"/>
+			<xs:element name="objectFileExtensionChromiumGost" type="xs:string"/>
+			<xs:element name="objectFileExtensionYandex" type="xs:string"/>
+			<xs:element name="objectFileExtensionEdge" type="xs:string"/>
+			<xs:element name="objectCryptoExtensionChrome" type="xs:string"/>
+			<xs:element name="objectCryptoExtensionFirefox" type="xs:string"/>
+			<xs:element name="objectCryptoExtensionIE" type="xs:string"/>
+			<xs:element name="objectCryptoExtensionSafari" type="xs:string"/>
+			<xs:element name="objectCryptoExtensionAnyChromiumBased" type="xs:string"/>
+			<xs:element name="objectCryptoExtensionChromiumGost" type="xs:string"/>
+			<xs:element name="objectCryptoExtensionYandex" type="xs:string"/>
+			<xs:element name="objectCryptoExtensionEdge" type="xs:string"/>
+			<xs:element name="objectAgentExtensionChrome" type="xs:string"/>
+			<xs:element name="objectAgentExtensionFirefox" type="xs:string"/>
+			<xs:element name="objectAgentExtensionIE" type="xs:string"/>
+			<xs:element name="objectAgentExtensionSafari" type="xs:string"/>
+			<xs:element name="objectAgentExtensionAnyChromiumBased" type="xs:string"/>
+			<xs:element name="objectAgentExtensionChromiumGost" type="xs:string"/>
+			<xs:element name="objectAgentExtensionYandex" type="xs:string"/>
+			<xs:element name="objectAgentExtensionEdge" type="xs:string"/>
+			<xs:element name="objectCompInfoExtensionChrome" type="xs:string"/>
+			<xs:element name="objectCompInfoExtensionFirefox" type="xs:string"/>
+			<xs:element name="objectCompInfoExtensionIE" type="xs:string"/>
+			<xs:element name="objectCompInfoExtensionSafari" type="xs:string"/>
+			<xs:element name="objectCompInfoExtensionAnyChromiumBased" type="xs:string"/>
+			<xs:element name="objectCompInfoExtensionChromiumGost" type="xs:string"/>
+			<xs:element name="objectCompInfoExtensionYandex" type="xs:string"/>
+			<xs:element name="objectCompInfoExtensionEdge" type="xs:string"/>
+			<xs:element name="credAns4" type="xs:string" minOccurs="0"/>
+			<xs:element name="credAns6" type="xs:string" minOccurs="0"/>
+			<xs:element name="passwordRequirementsComplianceStatus" type="xs:decimal"/>
+			<xs:element name="passwordExpirationTicksLeft" type="xs:decimal"/>
+			<xs:element name="passwordMinLength" type="xs:decimal"/>
+			<xs:element name="cannotChangePassword" type="xs:boolean"/>
+			<xs:element name="seanceLicenseInfoPrs" type="xs:string" minOccurs="0"/>
+			<xs:element name="passwordExpirationStatus" type="xs:decimal"/>
+			<xs:element name="pushNotificationsApplicationID" type="xs:string" minOccurs="0"/>
+		</xs:sequence>
+		<xs:attribute name="confNotSaved" type="xs:boolean"/>
+		<xs:attribute name="noFontsOnServer" type="xs:boolean"/>
+		<xs:attribute name="noFontConfigOnServer" type="xs:boolean"/>
+		<xs:attribute name="needUpdateMCSignature" type="xs:boolean"/>
+	</xs:complexType>
+	<xs:complexType name="BinaryDataQualifiers">
+		<xs:attribute name="length" type="xs:decimal" default="0"/>
+		<xs:attribute name="varying" type="xs:boolean" default="true"/>
+	</xs:complexType>
+	<xs:complexType name="BoolFormat">
+		<xs:attribute name="true" type="xs:string"/>
+		<xs:attribute name="false" type="xs:string"/>
+	</xs:complexType>
+	<xs:complexType name="ChoiceParameter">
+		<xs:sequence>
+			<xs:element name="name" type="xs:string"/>
+			<xs:element name="mode" type="ns3:LinkedValueChangeMode"/>
+			<xs:element name="pathItem" type="ns1:CompositeID" maxOccurs="unbounded"/>
+			<xs:element name="webDataPath" type="xs:string" minOccurs="0"/>
+			<xs:element name="strPath" type="xs:string" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="ChoiceParameterItem">
+		<xs:sequence>
+			<xs:element name="value"/>
+		</xs:sequence>
+		<xs:attribute name="name" type="xs:string"/>
+	</xs:complexType>
+	<xs:complexType name="ChoiceParameterLink">
+		<xs:sequence>
+			<xs:element name="dataPath" type="xs:string"/>
+		</xs:sequence>
+		<xs:attribute name="name" type="xs:string"/>
+		<xs:attribute name="mode" type="ns3:LinkedValueChangeMode"/>
+	</xs:complexType>
+	<xs:complexType name="ChoiceParameterLinks">
+		<xs:sequence>
+			<xs:element name="item" type="tns:ChoiceParameter" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="ChoiceParameters">
+		<xs:sequence>
+			<xs:element name="item" type="tns:ChoiceParameterItem" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="ClientDisplayInformation">
+		<xs:attribute name="x" type="xs:decimal"/>
+		<xs:attribute name="y" type="xs:decimal"/>
+		<xs:attribute name="dpi" type="xs:decimal"/>
+	</xs:complexType>
+	<xs:complexType name="ColorConvertationHelper">
+		<xs:sequence>
+			<xs:element name="id" type="xs:string" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="ConstValueKey">
+		<xs:complexContent>
+			<xs:extension base="tns:Type">
+				<xs:sequence>
+					<xs:element name="sep" type="tns:ConstValueKeySep"/>
+				</xs:sequence>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="ConstValueKeySep">
+		<xs:attribute name="name" type="xs:NCName"/>
+		<xs:attribute name="type" type="xs:QName"/>
+	</xs:complexType>
+	<xs:complexType name="ConstValueKeyTypeSet">
+		<xs:complexContent>
+			<xs:extension base="tns:TypeSetDef">
+				<xs:sequence>
+					<xs:element name="type" type="tns:ConstValueKey" minOccurs="0" maxOccurs="unbounded"/>
+				</xs:sequence>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="DateFormat">
+		<xs:attribute name="shortDate" type="xs:string"/>
+		<xs:attribute name="time" type="xs:string"/>
+	</xs:complexType>
+	<xs:complexType name="DateQualifiers">
+		<xs:attribute name="fractions" type="ns1:DateFractions" default="DateTime"/>
+	</xs:complexType>
+	<xs:complexType name="DesktopFormInfo">
+		<xs:attribute name="id" type="xs:string"/>
+		<xs:attribute name="height" type="xs:decimal"/>
+		<xs:attribute name="visible" type="xs:boolean" default="true"/>
+		<xs:attribute name="title" type="xs:string"/>
+	</xs:complexType>
+	<xs:complexType name="DesktopInfo">
+		<xs:sequence>
+			<xs:element name="left" type="tns:DesktopFormInfo" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="right" type="tns:DesktopFormInfo" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+		<xs:attribute name="state" type="xs:decimal"/>
+		<xs:attribute name="commandInterfaceDisplays" type="xs:decimal"/>
+		<xs:attribute name="availFormCount" type="xs:decimal"/>
+	</xs:complexType>
+	<xs:complexType name="Enum">
+		<xs:complexContent>
+			<xs:extension base="tns:Type">
+				<xs:sequence>
+					<xs:element name="val" type="tns:EnumValue" maxOccurs="unbounded"/>
+				</xs:sequence>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="EnumPresentations">
+		<xs:sequence>
+			<xs:element name="val" type="xs:string" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="EnumTypeSet">
+		<xs:complexContent>
+			<xs:extension base="tns:TypeSetDef">
+				<xs:sequence>
+					<xs:element name="type" type="tns:Enum" minOccurs="0" maxOccurs="unbounded"/>
+				</xs:sequence>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="EnumVal">
+		<xs:attribute name="uuid" type="ns1:UUID"/>
+		<xs:attribute name="code" type="xs:string"/>
+		<xs:attribute name="presentation" type="xs:string"/>
+	</xs:complexType>
+	<xs:complexType name="EnumVals">
+		<xs:sequence>
+			<xs:element name="enumVals" type="tns:EnumVal" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="EnumValue">
+		<xs:attribute name="uuid" type="ns1:UUID" use="required"/>
+		<xs:attribute name="code" type="xs:string"/>
+		<xs:attribute name="color" type="ns2:Color"/>
+	</xs:complexType>
+	<xs:complexType name="ErrorMessageTemplatesCollectionItem">
+		<xs:sequence>
+			<xs:element name="category" type="ns1:ErrorCategory"/>
+			<xs:element name="messageTemplate" type="tns:ErrorMessageTexts"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="ErrorMessageTexts">
+		<xs:sequence>
+			<xs:element name="templateNotRequiresRestartFormatted" type="xs:boolean"/>
+			<xs:element name="templateNotRequiresRestart" type="xs:string"/>
+			<xs:element name="templateRequiresRestartFormatted" type="xs:boolean"/>
+			<xs:element name="templateRequiresRestart" type="xs:string"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="ErrorMessagesTexts">
+		<xs:sequence>
+			<xs:element name="item" type="tns:ErrorMessageTemplatesCollectionItem" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="ErrorOnStartupProcessingSettings">
+		<xs:sequence>
+			<xs:element name="helpTextFormatted" type="xs:boolean"/>
+			<xs:element name="helpText" type="xs:string"/>
+			<xs:element name="helpUrl" type="xs:string" minOccurs="0"/>
+			<xs:element name="serviceUrl" type="xs:string" minOccurs="0"/>
+			<xs:element name="additionalInfo" type="xs:string" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="ErrorProcessingSettings">
+		<xs:sequence>
+			<xs:element name="descriptionLevel" type="tns:ErrorMessageDisplayVariant" minOccurs="0"/>
+			<xs:element name="serverUrl" type="xs:string" minOccurs="0"/>
+			<xs:element name="createReportMode" type="tns:ErrorReportingMode" minOccurs="0"/>
+			<xs:element name="createCrashReport" type="tns:ErrorReportingMode" minOccurs="0"/>
+			<xs:element name="addUserName" type="tns:ErrorReportingMode" minOccurs="0"/>
+			<xs:element name="addSystemInfo" type="tns:ErrorReportingMode" minOccurs="0"/>
+			<xs:element name="addScreenshot" type="tns:ErrorReportingMode" minOccurs="0"/>
+			<xs:element name="addErrorFullDescription" type="tns:ErrorReportingMode" minOccurs="0"/>
+			<xs:element name="addConfigInfo" type="tns:ErrorReportingMode" minOccurs="0"/>
+			<xs:element name="sendCrashReportTo1C" type="tns:ErrorReportingMode" minOccurs="0"/>
+			<xs:element name="additionalInfo" type="xs:string" minOccurs="0"/>
+			<xs:element name="messageTemplates" type="tns:ErrorMessagesTexts" minOccurs="0"/>
+			<xs:element name="createReportModeOnServer" type="tns:ErrorReportingMode" minOccurs="0"/>
+			<xs:element name="createCrashReportOnServer" type="tns:ErrorReportingMode" minOccurs="0"/>
+			<xs:element name="sendCrashReportOnServerTo1C" type="tns:ErrorReportingMode" minOccurs="0"/>
+			<xs:element name="addUserNameOnServer" type="tns:ErrorReportingMode" minOccurs="0"/>
+			<xs:element name="addErrorFullDescriptionOnServer" type="tns:ErrorReportingMode" minOccurs="0"/>
+			<xs:element name="addConfigInfoOnServer" type="tns:ErrorReportingMode" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="ExtKey">
+		<xs:complexContent>
+			<xs:extension base="tns:Type">
+				<xs:sequence>
+					<xs:element name="key" type="tns:ExtKeyKey"/>
+				</xs:sequence>
+				<xs:attribute name="present" type="xs:string"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="ExtKeyKey">
+		<xs:attribute name="name" type="xs:NCName"/>
+		<xs:attribute name="type" type="xs:QName"/>
+	</xs:complexType>
+	<xs:complexType name="ExtKeyTypeSet">
+		<xs:sequence>
+			<xs:element name="type" type="tns:ExtKey" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+		<xs:attribute name="en" type="xs:NCName"/>
+		<xs:attribute name="ru" type="xs:NCName"/>
+	</xs:complexType>
+	<xs:complexType name="ExtRefTypeSet">
+		<xs:sequence>
+			<xs:element name="type" type="tns:ExtReference" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+		<xs:attribute name="en" type="xs:NCName"/>
+		<xs:attribute name="ru" type="xs:NCName"/>
+	</xs:complexType>
+	<xs:complexType name="ExtReference">
+		<xs:complexContent>
+			<xs:extension base="tns:Type">
+				<xs:sequence>
+					<xs:element name="tdp" type="ns1:TypeDescription" minOccurs="0"/>
+				</xs:sequence>
+				<xs:attribute name="valueType" type="xs:QName"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="GlobalSearchFetch">
+		<xs:sequence>
+			<xs:element name="id" type="ns1:UUID"/>
+		</xs:sequence>
+		<xs:attribute name="cancel" type="xs:boolean"/>
+	</xs:complexType>
+	<xs:complexType name="GlobalSearchHistory">
+		<xs:sequence>
+			<xs:element name="item" type="tns:GlobalSearchHistoryItem" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="GlobalSearchHistoryItem">
+		<xs:sequence>
+			<xs:element name="searchString" type="xs:string"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="GlobalSearchQuery">
+		<xs:sequence>
+			<xs:element name="id" type="ns1:UUID"/>
+			<xs:element name="item" type="tns:GlobalSearchQueryItem" maxOccurs="unbounded"/>
+		</xs:sequence>
+		<xs:attribute name="pattern" type="xs:string" use="required"/>
+	</xs:complexType>
+	<xs:complexType name="GlobalSearchQueryItem">
+		<xs:sequence>
+			<xs:element name="params"/>
+		</xs:sequence>
+		<xs:attribute name="type" type="tns:StandardGlobalSearchType"/>
+		<xs:attribute name="module" type="xs:string"/>
+		<xs:attribute name="method" type="xs:string"/>
+		<xs:attribute name="requestId" type="xs:decimal"/>
+		<xs:attribute name="async" type="xs:boolean"/>
+	</xs:complexType>
+	<xs:complexType name="GlobalSearchResult">
+		<xs:sequence>
+			<xs:element name="item" type="tns:GlobalSearchResultItem" maxOccurs="unbounded"/>
+		</xs:sequence>
+		<xs:attribute name="more" type="xs:boolean"/>
+	</xs:complexType>
+	<xs:complexType name="GlobalSearchResultItem">
+		<xs:sequence>
+			<xs:element name="presentation" type="xs:string" minOccurs="0"/>
+			<xs:element name="presentationFmt" type="xs:string" minOccurs="0"/>
+			<xs:element name="description" type="xs:string" minOccurs="0"/>
+			<xs:element name="descriptionFmt" type="xs:string" minOccurs="0"/>
+			<xs:element name="value"/>
+			<xs:element name="picture" type="ns2:Picture"/>
+			<xs:element name="actions" type="tns:GlobalSearchResultItemActionCollection"/>
+		</xs:sequence>
+		<xs:attribute name="type" type="tns:StandardGlobalSearchType"/>
+		<xs:attribute name="typeStr" type="xs:string"/>
+		<xs:attribute name="requestId" type="xs:decimal"/>
+	</xs:complexType>
+	<xs:complexType name="GlobalSearchResultItemAction">
+		<xs:sequence>
+			<xs:element name="value"/>
+			<xs:element name="text" type="xs:string" minOccurs="0"/>
+			<xs:element name="formatted" type="xs:boolean" minOccurs="0"/>
+			<xs:element name="picture" type="ns2:Picture"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="GlobalSearchResultItemActionCollection">
+		<xs:sequence>
+			<xs:element name="item" type="tns:GlobalSearchResultItemAction" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="InfoRegKey">
+		<xs:complexContent>
+			<xs:extension base="tns:Type">
+				<xs:sequence>
+					<xs:element name="dim" type="tns:InfoRegKeyDim"/>
+					<xs:element name="sep" type="tns:InfoRegKeyDim"/>
+				</xs:sequence>
+				<xs:attribute name="recorder" type="xs:QName"/>
+				<xs:attribute name="period" type="xs:boolean"/>
+				<xs:attribute name="present" type="xs:string"/>
+				<xs:attribute name="timePeriodicity" type="xs:boolean"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="InfoRegKeyDim">
+		<xs:attribute name="name" type="xs:NCName"/>
+		<xs:attribute name="type" type="xs:QName"/>
+	</xs:complexType>
+	<xs:complexType name="InfoRegKeyTypeSet">
+		<xs:complexContent>
+			<xs:extension base="tns:TypeSetDef">
+				<xs:sequence>
+					<xs:element name="type" type="tns:InfoRegKey" minOccurs="0" maxOccurs="unbounded"/>
+				</xs:sequence>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="InterfaceLayouter">
+		<xs:sequence>
+			<xs:element name="top" type="tns:PanelLayouter" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="left" type="tns:PanelLayouter" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="right" type="tns:PanelLayouter" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="bottom" type="tns:PanelLayouter" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="panelDef" type="tns:PanelDef" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="LFEFChoiceHistory">
+		<xs:sequence>
+			<xs:element name="group" type="tns:LFEFChoiceHistoryGroup"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="LFEFChoiceHistoryGroup">
+		<xs:sequence>
+			<xs:element name="choiceParams" type="tns:ChoiceParameters" minOccurs="0"/>
+			<xs:element name="usage" type="ns3:FoldersAndItemsUse" minOccurs="0"/>
+			<xs:element name="items" type="tns:LFEFChoiceHistoryItems" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="LFEFChoiceHistoryItem">
+		<xs:sequence>
+			<xs:element name="value" nillable="true"/>
+			<xs:element name="presentation" type="xs:string" minOccurs="0"/>
+			<xs:element name="score" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="lastHitDate" type="xs:dateTime" minOccurs="0"/>
+			<xs:element name="sample" type="tns:LFEFChoiceHistorySample"/>
+			<xs:element name="deleted" type="xs:boolean" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="LFEFChoiceHistoryItems">
+		<xs:sequence>
+			<xs:element name="item" type="tns:LFEFChoiceHistoryItem" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="LFEFChoiceHistorySample">
+		<xs:attribute name="date" type="xs:dateTime"/>
+		<xs:attribute name="hits" type="xs:decimal"/>
+	</xs:complexType>
+	<xs:complexType name="LangSettings">
+		<xs:sequence>
+			<xs:element name="lang" type="tns:LanguageInfo"/>
+		</xs:sequence>
+		<xs:attribute name="current" type="xs:string"/>
+		<xs:attribute name="default" type="xs:string"/>
+		<xs:attribute name="alias" type="tns:Alias"/>
+	</xs:complexType>
+	<xs:complexType name="LanguageInfo">
+		<xs:simpleContent>
+			<xs:extension base="xs:string">
+				<xs:attribute name="code" type="xs:string"/>
+				<xs:attribute name="id" type="xs:string"/>
+			</xs:extension>
+		</xs:simpleContent>
+	</xs:complexType>
+	<xs:complexType name="LocaleBoolFormat">
+		<xs:attribute name="falseName" type="xs:string"/>
+		<xs:attribute name="trueName" type="xs:string"/>
+	</xs:complexType>
+	<xs:complexType name="LocaleDateFormat">
+		<xs:choice>
+			<xs:element name="longDayNames" type="xs:string" minOccurs="7" maxOccurs="7"/>
+			<xs:element name="shortDayNames" type="xs:string" minOccurs="7" maxOccurs="7"/>
+			<xs:element name="longMonthNames" type="xs:string" minOccurs="12" maxOccurs="12"/>
+			<xs:element name="shortMonthNames" type="xs:string" minOccurs="12" maxOccurs="12"/>
+			<xs:element name="longAloneMonthNames" type="xs:string" minOccurs="12" maxOccurs="12"/>
+			<xs:element name="shortAloneMonthNames" type="xs:string" minOccurs="12" maxOccurs="12"/>
+		</xs:choice>
+		<xs:attribute name="fullDatePattern" type="xs:string"/>
+		<xs:attribute name="longDatePattern" type="xs:string"/>
+		<xs:attribute name="shortDatePattern" type="xs:string"/>
+		<xs:attribute name="timePattern" type="xs:string"/>
+		<xs:attribute name="shortTimePattern" type="xs:string"/>
+		<xs:attribute name="longDateTimePattern" type="xs:string"/>
+		<xs:attribute name="shortDateTimePattern" type="xs:string"/>
+		<xs:attribute name="amPmMarkers" type="xs:string"/>
+	</xs:complexType>
+	<xs:complexType name="LocaleInfo">
+		<xs:sequence>
+			<xs:element name="bool" type="tns:BoolFormat" minOccurs="0"/>
+			<xs:element name="date" type="tns:DateFormat" minOccurs="0"/>
+			<xs:element name="numeric" type="tns:NumericFormat" minOccurs="0"/>
+		</xs:sequence>
+		<xs:attribute name="name" type="xs:string"/>
+		<xs:attribute name="useSeanceFormats" type="xs:boolean"/>
+		<xs:attribute name="firstDayOfWeek" type="xs:int" default="0"/>
+	</xs:complexType>
+	<xs:complexType name="LocaleNumericFormat">
+		<xs:attribute name="decimalSeparator" type="xs:string"/>
+		<xs:attribute name="groupingSeparator" type="xs:string"/>
+		<xs:attribute name="groupingSize" type="xs:decimal"/>
+		<xs:attribute name="secondaryGroupingSize" type="xs:decimal"/>
+		<xs:attribute name="negativePrefix" type="xs:string"/>
+		<xs:attribute name="negativeSuffix" type="xs:string"/>
+		<xs:attribute name="positivePrefix" type="xs:string"/>
+		<xs:attribute name="positiveSuffix" type="xs:string"/>
+		<xs:attribute name="digitSymbols" type="xs:string"/>
+	</xs:complexType>
+	<xs:complexType name="LocaleWeekInfo">
+		<xs:attribute name="firstDayOfWeek" type="xs:int"/>
+		<xs:attribute name="weekendOnSet" type="xs:int"/>
+		<xs:attribute name="weekendCease" type="xs:int"/>
+	</xs:complexType>
+	<xs:complexType name="MCDigestDeltaItem">
+		<xs:sequence>
+			<xs:element name="add" type="tns:MCDigestItem" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="ch" type="tns:MCDigestItem" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="del" type="ns1:UUID" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="MCDigestItem">
+		<xs:attribute name="uuid" type="ns1:UUID"/>
+		<xs:attribute name="name" type="xs:NCName"/>
+	</xs:complexType>
+	<xs:complexType name="MngLocale">
+		<xs:sequence>
+			<xs:element name="boolFormat" type="tns:LocaleBoolFormat"/>
+			<xs:element name="numericFormat" type="tns:LocaleNumericFormat"/>
+			<xs:element name="dateFormat" type="tns:LocaleDateFormat"/>
+			<xs:element name="weekInfo" type="tns:LocaleWeekInfo"/>
+		</xs:sequence>
+		<xs:attribute name="localeCode" type="xs:string"/>
+		<xs:attribute name="displayName" type="xs:string"/>
+		<xs:attribute name="cdisplayName" type="xs:string"/>
+		<xs:attribute name="localeName" type="xs:string"/>
+		<xs:attribute name="sessionLocaleCode" type="xs:string"/>
+		<xs:attribute name="resourceLocaleCode" type="xs:string"/>
+	</xs:complexType>
+	<xs:complexType name="MobileApplicationURL">
+		<xs:sequence>
+			<xs:element name="baseUrl" type="xs:string"/>
+			<xs:element name="useAndroid" type="xs:boolean"/>
+			<xs:element name="useIOS" type="xs:boolean"/>
+			<xs:element name="useWindows" type="xs:boolean"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="MobileApplicationURLs">
+		<xs:sequence>
+			<xs:element name="url" type="tns:MobileApplicationURL" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="NavigationPoint">
+		<xs:attribute name="fragment" type="ns1:UUID"/>
+		<xs:attribute name="subTheme" type="ns1:CompositeID"/>
+	</xs:complexType>
+	<xs:complexType name="NumberQualifiers">
+		<xs:attribute name="length" type="xs:decimal" default="0"/>
+		<xs:attribute name="precision" type="xs:decimal" default="0"/>
+		<xs:attribute name="positive" type="xs:boolean" default="false"/>
+	</xs:complexType>
+	<xs:complexType name="NumericFormat">
+		<xs:attribute name="decimal" type="xs:string"/>
+		<xs:attribute name="group" type="xs:string"/>
+		<xs:attribute name="grouping" type="xs:string"/>
+		<xs:attribute name="negative" type="xs:decimal"/>
+	</xs:complexType>
+	<xs:complexType name="PaletteColorInfo">
+		<xs:sequence>
+			<xs:element name="dark" type="xs:string" maxOccurs="unbounded"/>
+			<xs:element name="light" type="xs:string" maxOccurs="unbounded"/>
+			<xs:element name="darkForeColor" type="xs:string"/>
+			<xs:element name="lightForeColor" type="xs:string"/>
+			<xs:element name="darkBackColor" type="xs:string"/>
+			<xs:element name="lightBackColor" type="xs:string"/>
+			<xs:element name="darkBackColor80" type="xs:string"/>
+			<xs:element name="lightBackColor80" type="xs:string"/>
+		</xs:sequence>
+		<xs:attribute name="id" type="xs:string"/>
+		<xs:attribute name="name" type="xs:string"/>
+		<xs:attribute name="uuid" type="ns1:CompositeID"/>
+		<xs:attribute name="presentation" type="xs:string"/>
+	</xs:complexType>
+	<xs:complexType name="Panel">
+		<xs:choice>
+			<xs:element name="uuid" type="ns1:UUID" minOccurs="0"/>
+			<xs:element name="name" type="xs:string" minOccurs="0"/>
+			<xs:element name="height" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="kind" type="tns:SectionPanelRepresentation" minOccurs="0"/>
+		</xs:choice>
+		<xs:attribute name="id" type="ns1:UUID"/>
+	</xs:complexType>
+	<xs:complexType name="PanelDef">
+		<xs:sequence>
+			<xs:element name="name" type="xs:string" minOccurs="0"/>
+			<xs:element name="spr" type="tns:SectionPanelRepresentation" minOccurs="0"/>
+		</xs:sequence>
+		<xs:attribute name="id" type="ns1:UUID"/>
+	</xs:complexType>
+	<xs:complexType name="PanelGroup">
+		<xs:sequence>
+			<xs:element name="group" type="tns:PanelLayouter" maxOccurs="unbounded"/>
+		</xs:sequence>
+		<xs:attribute name="id" type="ns1:UUID"/>
+	</xs:complexType>
+	<xs:complexType name="PanelLayouter">
+		<xs:choice>
+			<xs:element name="panel" type="tns:Panel" minOccurs="0"/>
+			<xs:element name="group" type="tns:PanelGroup" minOccurs="0"/>
+		</xs:choice>
+	</xs:complexType>
+	<xs:complexType name="PersistingView">
+		<xs:sequence>
+			<xs:element name="url" type="xs:string"/>
+			<xs:element name="title" type="xs:string" minOccurs="0"/>
+			<xs:element name="docNumber" type="xs:string" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="PersistingViews">
+		<xs:sequence>
+			<xs:element name="item" type="tns:PersistingView" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="RefTypeSet">
+		<xs:complexContent>
+			<xs:extension base="tns:TypeSetDef">
+				<xs:sequence>
+					<xs:element name="type" type="tns:Reference" minOccurs="0" maxOccurs="unbounded"/>
+				</xs:sequence>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="Reference">
+		<xs:complexContent>
+			<xs:extension base="tns:Type">
+				<xs:attribute name="bppoint" type="xs:boolean"/>
+				<xs:attribute name="hasAccess" type="xs:boolean"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="RegKey">
+		<xs:complexContent>
+			<xs:extension base="tns:Type">
+				<xs:attribute name="recorder" type="xs:QName"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="RegKeyTypeSet">
+		<xs:complexContent>
+			<xs:extension base="tns:TypeSetDef">
+				<xs:sequence>
+					<xs:element name="type" type="tns:RegKey" minOccurs="0" maxOccurs="unbounded"/>
+				</xs:sequence>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="RequiredPermission">
+		<xs:sequence>
+			<xs:element name="permission" type="tns:RequiredMobileApplicationPermissions"/>
+			<xs:element name="use" type="xs:boolean"/>
+			<xs:element name="description" type="ns1:LocalStringType"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="RequiredPermissionMessage">
+		<xs:sequence>
+			<xs:element name="permission" type="tns:RequiredMobileApplicationPermissionMessages"/>
+			<xs:element name="description" type="ns1:LocalStringType"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="RequiredPermissions">
+		<xs:sequence>
+			<xs:element name="permission" type="tns:RequiredPermission" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="ResourceString">
+		<xs:sequence>
+			<xs:element name="resName" type="xs:string"/>
+			<xs:element name="resString" type="xs:string"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="ResourceStrings">
+		<xs:sequence>
+			<xs:element name="content" type="tns:ResourceString" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="SearchBlock">
+		<xs:sequence>
+			<xs:element name="value"/>
+		</xs:sequence>
+		<xs:attribute name="fieldName" type="xs:string"/>
+		<xs:attribute name="compareType" type="xs:decimal"/>
+	</xs:complexType>
+	<xs:complexType name="SettingsChoice">
+		<xs:sequence>
+			<xs:element name="settingsKey"/>
+			<xs:element name="additionalProperties" type="ns1:Structure" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="SplashInfo">
+		<xs:sequence>
+			<xs:element name="copyright" type="xs:string" minOccurs="0"/>
+		</xs:sequence>
+		<xs:attribute name="exist" type="xs:boolean"/>
+	</xs:complexType>
+	<xs:complexType name="StartInfo">
+		<xs:sequence>
+			<xs:element name="navStartPoint" type="tns:NavigationPoint"/>
+			<xs:element name="subsystemVer" type="tns:SubsystemVerInfo" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="desktop" type="tns:DesktopInfo"/>
+			<xs:element name="styleEntries" type="tns:StyleEntriesInfo"/>
+			<xs:element name="paletteColor" type="tns:PaletteColorInfo" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="fullConfName" type="xs:string"/>
+			<xs:element name="extName" type="xs:string" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="disabledExtName" type="xs:string" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="extIssue" type="xs:string" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="compress" type="xs:string"/>
+			<xs:element name="panels" type="tns:InterfaceLayouter" minOccurs="0"/>
+			<xs:element name="choiceHistory" type="tns:LFEFChoiceHistory" minOccurs="0"/>
+			<xs:element name="favs" type="tns:UserFavorites" minOccurs="0"/>
+			<xs:element name="userName" type="xs:string"/>
+			<xs:element name="fullUserName" type="xs:string"/>
+			<xs:element name="externalResourceMode" type="xs:string"/>
+			<xs:element name="deploymentType" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="errorProcessingSettings" type="tns:ErrorProcessingSettings" minOccurs="0"/>
+			<xs:element name="configHash" type="xs:string" minOccurs="0"/>
+			<xs:element name="configCode" type="xs:string" minOccurs="0"/>
+			<xs:element name="configVersion" type="xs:string" minOccurs="0"/>
+			<xs:element name="dataZoneString" type="xs:string" minOccurs="0"/>
+			<xs:element name="configChangeEnabled" type="xs:boolean" minOccurs="0"/>
+			<xs:element name="extensionVersion" type="xs:string" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="serverVersion" type="xs:string" minOccurs="0"/>
+			<xs:element name="serverType" type="xs:string" minOccurs="0"/>
+			<xs:element name="serverDBMS" type="xs:string" minOccurs="0"/>
+			<xs:element name="serverNeedFunctionalities" type="xs:string" minOccurs="0"/>
+			<xs:element name="urlExtDataSupport" type="xs:boolean" minOccurs="0"/>
+			<xs:element name="startupErrorProcessingSettings" type="tns:ErrorOnStartupProcessingSettings" minOccurs="0"/>
+			<xs:element name="appVariant" type="xs:string" minOccurs="0"/>
+			<xs:element name="dataZoneStringExclCondOff" type="xs:string" minOccurs="0"/>
+			<xs:element name="confCaption" type="xs:string"/>
+			<xs:element name="confShortCaption" type="xs:string"/>
+			<xs:element name="persistingViews" type="tns:PersistingViews"/>
+			<xs:element name="extensionLicensingText" type="xs:string" minOccurs="0"/>
+			<xs:element name="configLicenseInfo" type="xs:string" minOccurs="0"/>
+		</xs:sequence>
+		<xs:attribute name="agentVersion" type="xs:string"/>
+		<xs:attribute name="hasConfigExt" type="xs:boolean"/>
+		<xs:attribute name="mainWindowMode" type="tns:MainWindowMode"/>
+		<xs:attribute name="infoBaseInstanceID" type="ns1:UUID"/>
+		<xs:attribute name="confName" type="xs:string"/>
+		<xs:attribute name="subsystemsPanelVer" type="ns1:UUID"/>
+		<xs:attribute name="foVer" type="ns1:UUID"/>
+		<xs:attribute name="mainWindowOptionsVer" type="ns1:UUID"/>
+		<xs:attribute name="desktopSpliterPosVer" type="ns1:UUID"/>
+		<xs:attribute name="notifyWindowOptionsVer" type="ns1:UUID"/>
+		<xs:attribute name="stateWindowOptionsVer" type="ns1:UUID"/>
+		<xs:attribute name="commConfName" type="xs:string"/>
+		<xs:attribute name="commConfURL" type="xs:string"/>
+		<xs:attribute name="commProvName" type="xs:string"/>
+		<xs:attribute name="commProvURL" type="xs:string"/>
+		<xs:attribute name="desktopFormsWindowSettingsVerHash" type="xs:string"/>
+		<xs:attribute name="enableOutput" type="xs:boolean"/>
+		<xs:attribute name="allowAllFunctionsMode" type="xs:boolean"/>
+		<xs:attribute name="allowSaveUserData" type="xs:boolean"/>
+		<xs:attribute name="clientSettings" type="xs:decimal"/>
+		<xs:attribute name="debugServerHTTP" type="xs:string"/>
+		<xs:attribute name="allowFullTextSearch" type="xs:boolean"/>
+		<xs:attribute name="taxi" type="xs:boolean"/>
+		<xs:attribute name="clientInterfaceVariant" type="ns3:ClientInterfaceVariant"/>
+		<xs:attribute name="clientInterfaceTheme" type="ns3:ClientInterfaceTheme"/>
+		<xs:attribute name="clientInterfaceThemeFromSettings" type="ns3:ClientInterfaceTheme"/>
+		<xs:attribute name="clientInterfaceThemeFromAuto" type="ns3:ClientInterfaceTheme"/>
+		<xs:attribute name="clientInterfaceScale" type="ns3:ClientInterfaceScale"/>
+		<xs:attribute name="clientInterfaceScaleFromSettings" type="ns3:ClientInterfaceScale"/>
+		<xs:attribute name="defWindowOpeningVariant" type="ns3:ClientApplicationWindowsOpenVariant"/>
+		<xs:attribute name="sdi" type="xs:boolean"/>
+		<xs:attribute name="enableChoiceInterface" type="xs:boolean"/>
+		<xs:attribute name="newInterfaceByDefault" type="xs:boolean"/>
+		<xs:attribute name="largeFont" type="xs:boolean"/>
+		<xs:attribute name="rtl" type="xs:boolean"/>
+		<xs:attribute name="ecsServer" type="xs:string"/>
+		<xs:attribute name="ecsClientId" type="xs:string"/>
+		<xs:attribute name="ecsAdmin" type="xs:boolean"/>
+		<xs:attribute name="ecsUserChoiceForm" type="xs:string"/>
+		<xs:attribute name="searchFormPresent" type="xs:boolean"/>
+		<xs:attribute name="allowMWMNormal" type="xs:boolean"/>
+		<xs:attribute name="allowMWMWorkplace" type="xs:boolean"/>
+		<xs:attribute name="allowMWMEmbeddedWorkplace" type="xs:boolean"/>
+		<xs:attribute name="allowMWMFullscreenWorkplace" type="xs:boolean"/>
+		<xs:attribute name="allowMWMKiosk" type="xs:boolean"/>
+		<xs:attribute name="allowOpenAnalytics" type="xs:boolean"/>
+	</xs:complexType>
+	<xs:complexType name="StringQualifiers">
+		<xs:attribute name="length" type="xs:decimal" default="0"/>
+		<xs:attribute name="varying" type="xs:boolean" default="true"/>
+	</xs:complexType>
+	<xs:complexType name="StyleEntriesInfo">
+		<xs:sequence>
+			<xs:element name="styleEntries" type="tns:StyleEntryInfo" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="StyleEntryInfo">
+		<xs:sequence>
+			<xs:element name="value"/>
+		</xs:sequence>
+		<xs:attribute name="uuid" type="ns1:CompositeID"/>
+		<xs:attribute name="code" type="xs:string"/>
+		<xs:attribute name="description" type="xs:string"/>
+		<xs:attribute name="kind" type="tns:StyleEntryKind"/>
+	</xs:complexType>
+	<xs:complexType name="SubsystemVerInfo">
+		<xs:attribute name="id" type="ns1:UUID"/>
+		<xs:attribute name="actionPanelVer" type="ns1:UUID"/>
+		<xs:attribute name="navPanelVer" type="ns1:UUID"/>
+	</xs:complexType>
+	<xs:complexType name="SysEnum">
+		<xs:sequence>
+			<xs:element name="values" type="tns:SysEnumValue" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+		<xs:attribute name="factoryClsid" type="ns1:UUID"/>
+		<xs:attribute name="clsid" type="ns1:UUID"/>
+		<xs:attribute name="enumName" type="xs:string"/>
+		<xs:attribute name="enumName2" type="xs:string"/>
+		<xs:attribute name="enumName3" type="xs:string"/>
+		<xs:attribute name="enumName4" type="xs:string"/>
+		<xs:attribute name="xmlName" type="xs:string"/>
+		<xs:attribute name="namespace" type="xs:anyURI"/>
+		<xs:attribute name="defValue" type="xs:string"/>
+	</xs:complexType>
+	<xs:complexType name="SysEnumValue">
+		<xs:attribute name="name" type="xs:string"/>
+		<xs:attribute name="name2" type="xs:string"/>
+		<xs:attribute name="name3" type="xs:string"/>
+		<xs:attribute name="name4" type="xs:string"/>
+		<xs:attribute name="presentation" type="xs:string"/>
+	</xs:complexType>
+	<xs:complexType name="SysEnums">
+		<xs:sequence>
+			<xs:element name="sysEnums" type="tns:SysEnum" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="Type" abstract="true">
+		<xs:attribute name="clsid" type="ns1:UUID" use="required"/>
+		<xs:attribute name="table" type="xs:decimal" use="required"/>
+		<xs:attribute name="code" type="xs:NCName"/>
+		<xs:attribute name="extension" type="xs:boolean" default="false"/>
+	</xs:complexType>
+	<xs:complexType name="TypeIDList">
+		<xs:sequence>
+			<xs:element name="type" type="ns1:UUID" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="TypeLink">
+		<xs:sequence>
+			<xs:element name="pathItem" type="ns1:CompositeID" maxOccurs="unbounded"/>
+			<xs:element name="linkItem" type="xs:decimal" minOccurs="0"/>
+			<xs:element name="webDataPath" type="xs:string" minOccurs="0"/>
+			<xs:element name="strPath" type="xs:string" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="TypePresentation">
+		<xs:attribute name="clsid" type="ns1:UUID" use="required"/>
+		<xs:attribute name="view" type="xs:string" use="required"/>
+	</xs:complexType>
+	<xs:complexType name="TypePresentations">
+		<xs:sequence>
+			<xs:element name="type" type="tns:TypePresentation"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="TypeSet">
+		<xs:sequence>
+			<xs:element name="type" type="ns1:UUID" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="string" type="tns:StringQualifiers" minOccurs="0"/>
+			<xs:element name="number" type="tns:NumberQualifiers" minOccurs="0"/>
+			<xs:element name="date" type="tns:DateQualifiers" minOccurs="0"/>
+			<xs:element name="binary" type="tns:BinaryDataQualifiers" minOccurs="0"/>
+		</xs:sequence>
+		<xs:attribute name="clsid" type="ns1:UUID"/>
+		<xs:attribute name="name" type="xs:QName"/>
+	</xs:complexType>
+	<xs:complexType name="TypeSetDef">
+		<xs:attribute name="clsid" type="ns1:UUID"/>
+		<xs:attribute name="en" type="xs:NCName"/>
+		<xs:attribute name="ru" type="xs:NCName"/>
+		<xs:attribute name="name" type="xs:QName"/>
+	</xs:complexType>
+	<xs:complexType name="TypeSystem">
+		<xs:choice>
+			<xs:element name="enums" type="tns:EnumTypeSet" minOccurs="0"/>
+			<xs:element name="refs" type="tns:RefTypeSet" minOccurs="0"/>
+			<xs:element name="regs" type="tns:RegKeyTypeSet" minOccurs="0"/>
+			<xs:element name="infoRegs" type="tns:InfoRegKeyTypeSet" minOccurs="0"/>
+			<xs:element name="typeSet" type="tns:TypeSet" minOccurs="0"/>
+			<xs:element name="extRef" type="tns:ExtRefTypeSet" minOccurs="0"/>
+			<xs:element name="extKey" type="tns:ExtKeyTypeSet" minOccurs="0"/>
+			<xs:element name="constValueKeys" type="tns:ConstValueKeyTypeSet" minOccurs="0"/>
+			<xs:element name="mcDigitalSignature" type="xs:string" minOccurs="0"/>
+			<xs:element name="mcTaskName" type="xs:Name" minOccurs="0"/>
+			<xs:element name="mcTaskSynonym" type="ns1:LocalStringType" minOccurs="0"/>
+			<xs:element name="mcTaskSynonym2" type="xs:Name" minOccurs="0"/>
+			<xs:element name="mcDSAKey" type="xs:Name" minOccurs="0"/>
+			<xs:element name="mcAppName" type="xs:Name" minOccurs="0"/>
+			<xs:element name="mcAppURL" type="xs:Name" minOccurs="0"/>
+			<xs:element name="mcdEnums" type="tns:MCDigestDeltaItem" minOccurs="0"/>
+			<xs:element name="mcdRefs" type="tns:MCDigestDeltaItem" minOccurs="0"/>
+			<xs:element name="mcdRegKeys" type="tns:MCDigestDeltaItem" minOccurs="0"/>
+			<xs:element name="mcdInfoRegKeys" type="tns:MCDigestDeltaItem" minOccurs="0"/>
+		</xs:choice>
+		<xs:attribute name="namespace" type="xs:anyURI"/>
+	</xs:complexType>
+	<xs:complexType name="UUIDAndStringsVectorType">
+		<xs:sequence>
+			<xs:element name="UUID" type="ns1:UUID"/>
+			<xs:element name="item" type="tns:UserFavoriteItem" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="UpdateInfo">
+		<xs:attribute name="date" type="xs:dateTime"/>
+		<xs:attribute name="version" type="xs:string"/>
+		<xs:attribute name="win32" type="xs:string"/>
+		<xs:attribute name="win64" type="xs:string"/>
+		<xs:attribute name="lin32" type="xs:string"/>
+		<xs:attribute name="lin64" type="xs:string"/>
+		<xs:attribute name="mac64" type="xs:string"/>
+	</xs:complexType>
+	<xs:complexType name="UsedFunctionality">
+		<xs:sequence>
+			<xs:element name="functionality" type="tns:UsedFunctionalityFlag" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="permissionMessage" type="tns:RequiredPermissionMessage" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="UsedFunctionalityFlag">
+		<xs:sequence>
+			<xs:element name="functionality" type="tns:MobileApplicationFunctionalities"/>
+			<xs:element name="use" type="xs:boolean"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="UserFavoriteItem">
+		<xs:sequence>
+			<xs:element name="url" type="xs:string"/>
+			<xs:element name="pres" type="xs:string" minOccurs="0"/>
+			<xs:element name="darling" type="xs:boolean" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="UserFavorites">
+		<xs:sequence>
+			<xs:element name="item" type="tns:UserFavoriteItem" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+</xs:schema>

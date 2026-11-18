@@ -11,11 +11,16 @@ import os
 import queue  # шов подмены: tests/ci/test_smoke_unica_mcp.py
 import socket
 import subprocess  # шов подмены: tests/ci/test_smoke_unica_mcp.py
+import sys
 import tempfile
 import threading
 import time
 from pathlib import Path
 from typing import Callable
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from provider_fixture import provider_fixture_environment  # noqa: E402
+from temp_tree import remove_tree  # noqa: E402
 
 
 def _load_wire_probe_module():
@@ -2176,8 +2181,14 @@ def smoke(
     environment = os.environ.copy()
     environment["UNICA_PLUGIN_ROOT"] = str(plugin_root.resolve())
     expected_names = expected_tool_names(plugin_root)
-    with tempfile.TemporaryDirectory(prefix="unica-packaged-source-smoke-") as temporary:
+    with (
+        tempfile.TemporaryDirectory(prefix="unica-packaged-source-smoke-") as temporary,
+        contextlib.ExitStack() as provider_resources,
+    ):
         root = Path(temporary)
+        state_dir = root / "provider-state"
+        provider_resources.callback(remove_tree, state_dir)
+        environment = provider_fixture_environment(environment, state_dir)
         workspace = root / "workspace"
         workspace.mkdir()
         cache_root = root / "cache"
