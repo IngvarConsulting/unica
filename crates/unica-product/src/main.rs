@@ -12,9 +12,10 @@ fn run() {
         Some("lsp") => std::process::exit(unica_lsp::run_stdio(
             unica_daemon::interfaces::daemon::connect_user_daemon,
         )),
+        Some("dap") => std::process::exit(unica_dap::run_stdio()),
         Some("mcp") => {}
         Some(command) if !command.starts_with('-') => {
-            eprintln!("unica: unknown command `{command}`; supported commands: mcp, lsp");
+            eprintln!("unica: unknown command `{command}`; supported commands: mcp, lsp, dap");
             std::process::exit(2);
         }
         _ => {}
@@ -62,6 +63,7 @@ fn run() {
         println!("Supported MCP methods: initialize, tools/list, tools/call");
         println!("Agent MCP over stdio: unica [mcp]");
         println!("Editor LSP over stdio: unica lsp");
+        println!("Debugger DAP over stdio: unica dap");
         println!("Local capacity observations: --capacity-report");
         return;
     }
