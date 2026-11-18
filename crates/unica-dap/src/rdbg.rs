@@ -11,13 +11,42 @@ const BASE: &str = "http://v8.1c.ru/8.3/debugger/debugBaseData";
 const BREAKPOINTS: &str = "http://v8.1c.ru/8.3/debugger/debugBreakpoints";
 const CALCULATIONS: &str = "http://v8.1c.ru/8.3/debugger/debugCalculations";
 const AUTO_ATTACH: &str = "http://v8.1c.ru/8.3/debugger/debugAutoAttach";
-pub(crate) const ATTACH_TARGET_TYPES: [&str; 3] = ["Client", "ManagedClient", "ServerEmulation"];
+// resource-limit: dap.rdbg-request-timeout
+// class: deadline
+// unit: ms
+// scope: request
+// value: 3000
+// resource: Срок HTTP-запроса к dbgs вне опроса событий.
+// status: unproven
+// origin: #3194
+// problem: неизвестно
+// on-reach: запрос DAP завершается ошибкой транспорта
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
+// dbgs holds an idle event poll for about five seconds. Allow extra time
+// under load so that we do not abandon the response carrying a stop.
+// resource-limit: dap.rdbg-event-poll-timeout
+// class: deadline
+// unit: ms
+// scope: request
+// value: 30000
+// resource: Срок одного фонового опроса событий dbgs.
+// status: unproven
+// origin: #3203
+// problem: штатный пустой ответ dbgs приходит примерно через 5 секунд, а прежний срок 3 секунды мог прервать получение остановки
+// on-reach: опрос возвращает пустой результат и повторяется на следующем проходе
+const EVENT_POLL_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub(crate) struct Rdbg {
     http: reqwest::blocking::Client,
     url: String,
     alias: String,
     id: uuid::Uuid,
+}
+
+pub(crate) enum TargetAttachment {
+    Confirmed,
+    Refused,
+    NoResult,
 }
 
 impl Rdbg {
@@ -33,7 +62,6 @@ impl Rdbg {
                 .tls_backend_preconfigured(tls)
                 .no_proxy()
                 .redirect(reqwest::redirect::Policy::none())
-                .timeout(Duration::from_secs(3))
                 .build()?,
             url: format!("http://127.0.0.1:{port}/e1crdbg/rdbg"),
             alias: escape(alias),
@@ -49,34 +77,50 @@ impl Rdbg {
         if status != "registered" {
             return Err(format!("rdbg attach rejected: {status}").into());
         }
-        let target_types = ATTACH_TARGET_TYPES
+        Ok(client)
+    }
+
+    pub fn set_auto_attach_types(&self, types: &[&str]) -> Result<()> {
+        let target_types = types
             .iter()
             .map(|kind| format!("<targetType xmlns=\"{AUTO_ATTACH}\">{kind}</targetType>"))
             .collect::<String>();
-        client.call(
+        self.call(
             "setAutoAttachSettings",
             &format!("<autoAttachSettings>{target_types}</autoAttachSettings>"),
         )?;
-        Ok(client)
+        Ok(())
     }
 
     pub fn targets(&self) -> Result<String> {
         self.call("getDbgTargets", "")
     }
 
-    pub fn attach_target(&self, target: uuid::Uuid) -> Result<()> {
-        self.call(
+    pub fn attach_target(&self, target: uuid::Uuid) -> Result<TargetAttachment> {
+        let xml = self.call(
             "attachDetachDbgTargets",
             &format!("<attach>true</attach><id><id xmlns=\"{BASE}\">{target}</id></id>"),
         )?;
-        Ok(())
+        if xml.trim().is_empty() {
+            return Ok(TargetAttachment::NoResult);
+        }
+        match field(Document::parse(&xml)?.root_element(), "result") {
+            Some("true" | "1") => Ok(TargetAttachment::Confirmed),
+            Some("false" | "0") => Ok(TargetAttachment::Refused),
+            _ => Err("invalid rdbg target attachment response".into()),
+        }
     }
 
     pub fn poll(&self) -> Result<String> {
+        self.poll_with_timeout(EVENT_POLL_TIMEOUT)
+    }
+
+    pub fn poll_with_timeout(&self, timeout: Duration) -> Result<String> {
         self.send(
             "pingDebugUIParams",
             &[("dbgui", &self.id.to_string())],
             None,
+            timeout,
         )
     }
 
@@ -147,15 +191,25 @@ impl Rdbg {
             "<request><infoBaseAlias xmlns=\"{REQUEST}\">{}</infoBaseAlias><idOfDebuggerUI xmlns=\"{REQUEST}\">{}</idOfDebuggerUI>{}</request>",
             self.alias, self.id, namespace_request_children(body)
         );
-        self.send(command, &[], Some(request))
+        self.send(command, &[], Some(request), REQUEST_TIMEOUT)
     }
 
-    fn send(&self, command: &str, query: &[(&str, &str)], body: Option<String>) -> Result<String> {
+    fn send(
+        &self,
+        command: &str,
+        query: &[(&str, &str)],
+        body: Option<String>,
+        timeout: Duration,
+    ) -> Result<String> {
         let mut url = reqwest::Url::parse(&self.url)?;
         url.query_pairs_mut()
             .append_pair("cmd", command)
             .extend_pairs(query);
-        let mut request = self.http.post(url).header("User-Agent", "1CV8");
+        let mut request = self
+            .http
+            .post(url)
+            .header("User-Agent", "1CV8")
+            .timeout(timeout);
         if let Some(body) = body {
             request = request
                 .header("Content-Type", "application/xml; charset=utf-8")
