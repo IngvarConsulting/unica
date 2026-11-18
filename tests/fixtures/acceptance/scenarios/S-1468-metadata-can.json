@@ -442,7 +442,7 @@
           "eq": "main:Report.АнализВерсийОбъектов"
         }
       ],
-      "refusal": "bad_value: relation.add has no executable argument for Report"
+      "refusal": "bad_value: operation `relation.add` does not apply to Report"
     },
     {
       "tool": "unica.apply",
@@ -1865,7 +1865,7 @@
       "expect": [
         "refused"
       ],
-      "refusal": "bad_value: relation `owners` is not supported for Report",
+      "refusal": "bad_value: apply operation `relation.add` does not apply to Report `main:Report.АнализВерсийОбъектов`; it addresses `Kind.Name` of a kind with supported relations",
       "assertions": [
         {
           "pointer": "/at",
