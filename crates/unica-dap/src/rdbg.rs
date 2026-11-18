@@ -4,7 +4,7 @@ use roxmltree::{Document, Node};
 
 use unica_source_contract::debug_source::DebugModuleId;
 
-use crate::Result;
+use crate::{Breakpoint, Result};
 
 const REQUEST: &str = "http://v8.1c.ru/8.3/debugger/debugRDBGRequestResponse";
 const BASE: &str = "http://v8.1c.ru/8.3/debugger/debugBaseData";
@@ -67,7 +67,15 @@ impl Rdbg {
             alias: escape(alias),
             id: uuid::Uuid::new_v4(),
         };
-        let xml = client.call(
+        if let Err(error) = client.register() {
+            client.detach();
+            return Err(error);
+        }
+        Ok(client)
+    }
+
+    fn register(&self) -> Result<()> {
+        let xml = self.call(
             "attachDebugUI",
             "<options><foregroundAbility>false</foregroundAbility></options>",
         )?;
@@ -77,7 +85,7 @@ impl Rdbg {
         if status != "registered" {
             return Err(format!("rdbg attach rejected: {status}").into());
         }
-        Ok(client)
+        Ok(())
     }
 
     pub fn set_auto_attach_types(&self, types: &[&str]) -> Result<()> {
@@ -112,21 +120,17 @@ impl Rdbg {
     }
 
     pub fn poll(&self) -> Result<String> {
-        self.poll_with_timeout(EVENT_POLL_TIMEOUT)
-    }
-
-    pub fn poll_with_timeout(&self, timeout: Duration) -> Result<String> {
         self.send(
             "pingDebugUIParams",
             &[("dbgui", &self.id.to_string())],
             None,
-            timeout,
+            EVENT_POLL_TIMEOUT,
         )
     }
 
     pub fn breakpoints<'a>(
         &self,
-        modules: impl Iterator<Item = (&'a DebugModuleId, &'a Vec<u32>)>,
+        modules: impl Iterator<Item = (&'a DebugModuleId, &'a Vec<Breakpoint>)>,
     ) -> Result<()> {
         let mut workspace = String::from("<bpWorkspace>");
         for (id, lines) in modules {
@@ -138,15 +142,41 @@ impl Rdbg {
                 "<moduleBPInfo xmlns=\"{BREAKPOINTS}\"><id><type xmlns=\"{BASE}\">{module_type}</type><URL xmlns=\"{BASE}\"/><extensionName xmlns=\"{BASE}\">{extension}</extensionName><objectID xmlns=\"{BASE}\">{}</objectID><propertyID xmlns=\"{BASE}\">{}</propertyID><extId xmlns=\"{BASE}\">0</extId></id>",
                 id.object, id.property
             ));
-            for line in lines {
+            for breakpoint in lines {
+                let condition = breakpoint.condition.as_deref().map(escape);
+                let conditional = condition.is_some();
+                let condition = condition.map_or_else(String::new, |value| {
+                    format!("<condition>{value}</condition>")
+                });
+                let line = breakpoint.line;
                 workspace.push_str(&format!(
-                    "<bpInfo><line>{line}</line><isActive>true</isActive><breakOnCondition>false</breakOnCondition><breakOnParentMethod>false</breakOnParentMethod><breakOnHitCount>false</breakOnHitCount><hitCountVariant>0</hitCountVariant><hitCount>1</hitCount><showOutputMessage>false</showOutputMessage><putStackTrace>false</putStackTrace><putHitCount>false</putHitCount><continueExecution>false</continueExecution><temp>false</temp><user>true</user></bpInfo>"
+                    "<bpInfo><line>{line}</line><isActive>true</isActive><breakOnCondition>{conditional}</breakOnCondition>{condition}<breakOnParentMethod>false</breakOnParentMethod><breakOnHitCount>false</breakOnHitCount><hitCountVariant>0</hitCountVariant><hitCount>1</hitCount><showOutputMessage>false</showOutputMessage><putStackTrace>false</putStackTrace><putHitCount>false</putHitCount><continueExecution>false</continueExecution><temp>false</temp><user>true</user></bpInfo>"
                 ));
             }
             workspace.push_str("</moduleBPInfo>");
         }
         workspace.push_str("</bpWorkspace>");
         self.call("setBreakpoints", &workspace)?;
+        Ok(())
+    }
+
+    pub fn set_exception_filters(&self, all: bool, text: &[&str]) -> Result<()> {
+        const FILTER: &str = "http://v8.1c.ru/8.3/debugger/debugRTEFilter";
+        let enabled = all || !text.is_empty();
+        let analyze = !all && !text.is_empty();
+        let mut state = format!(
+            "<state><stopOnErrors xmlns=\"{FILTER}\">{enabled}</stopOnErrors><analyzeErrorStr xmlns=\"{FILTER}\">{analyze}</analyzeErrorStr>"
+        );
+        if analyze {
+            for condition in text {
+                state.push_str(&format!(
+                    "<strTemplate xmlns=\"{FILTER}\"><include>true</include><str>{}</str></strTemplate>",
+                    escape(condition)
+                ));
+            }
+        }
+        state.push_str("</state>");
+        self.call("setBreakOnRTE", &state)?;
         Ok(())
     }
 
@@ -164,32 +194,66 @@ impl Rdbg {
         evaluation: uuid::Uuid,
         path: &[String],
     ) -> Result<String> {
-        let mut items = String::new();
-        for (index, name) in path.iter().enumerate() {
-            let name = escape(name);
-            let (kind, expression, property) = if index == 0 {
-                ("expression", name.as_str(), "")
-            } else {
-                ("property", "", name.as_str())
-            };
-            items.push_str(&format!(
-                "<calcItem><itemType>{kind}</itemType><expression>{expression}</expression><property>{property}</property></calcItem>"
-            ));
-        }
         let command = if path.is_empty() {
             "evalLocalVariables"
         } else {
             "evalExpr"
         };
+        let source = calculation_source(level, evaluation, path, "context");
         self.call(command, &format!(
-            "<calcWaitingTime>100</calcWaitingTime><targetID><id xmlns=\"{BASE}\">{target}</id></targetID><expr><stackLevel xmlns=\"{CALCULATIONS}\">{level}</stackLevel><srcCalcInfo xmlns=\"{CALCULATIONS}\"><expressionResultID>{evaluation}</expressionResultID>{items}<interfaces>context</interfaces></srcCalcInfo><presOptions xmlns=\"{CALCULATIONS}\"><maxTextSize>307200</maxTextSize><stopOnFirstEOL>false</stopOnFirstEOL></presOptions></expr>"
+            "<calcWaitingTime>100</calcWaitingTime><targetID><id xmlns=\"{BASE}\">{target}</id></targetID><expr>{source}</expr>"
+        ))
+    }
+
+    pub fn collection_sizes(
+        &self,
+        target: uuid::Uuid,
+        level: usize,
+        names: &[(usize, String, uuid::Uuid)],
+    ) -> Result<String> {
+        let mut body = format!(
+            "<calcWaitingTime>100</calcWaitingTime><targetID><id xmlns=\"{BASE}\">{target}</id></targetID>"
+        );
+        for (_, name, evaluation) in names {
+            let source =
+                calculation_source(level, *evaluation, std::slice::from_ref(name), "context");
+            body.push_str(&format!("<expr>{source}</expr>"));
+        }
+        self.call("evalExpr", &body)
+    }
+
+    pub fn collection(
+        &self,
+        target: uuid::Uuid,
+        level: usize,
+        evaluation: uuid::Uuid,
+        path: &[String],
+    ) -> Result<String> {
+        let source = calculation_source(level, evaluation, path, "collection");
+        self.call("evalExpr", &format!(
+            "<calcWaitingTime>100</calcWaitingTime><targetID><id xmlns=\"{BASE}\">{target}</id></targetID><expr>{source}</expr>"
+        ))
+    }
+
+    pub fn modify_value(
+        &self,
+        target: uuid::Uuid,
+        level: usize,
+        evaluation: uuid::Uuid,
+        path: &[String],
+        value: &str,
+    ) -> Result<String> {
+        let source = calculation_source(level, evaluation, path, "context");
+        let value = escape(value);
+        self.call("modifyValue", &format!(
+            "<targetID><id xmlns=\"{BASE}\">{target}</id></targetID><modifyDataPath>{source}</modifyDataPath><newValueInfo><variant xmlns=\"{CALCULATIONS}\">expr</variant><valueExpression xmlns=\"{CALCULATIONS}\">{value}</valueExpression></newValueInfo><timeout>3000</timeout>"
         ))
     }
 
     fn call(&self, command: &str, body: &str) -> Result<String> {
         let request = format!(
             "<request><infoBaseAlias xmlns=\"{REQUEST}\">{}</infoBaseAlias><idOfDebuggerUI xmlns=\"{REQUEST}\">{}</idOfDebuggerUI>{}</request>",
-            self.alias, self.id, namespace_request_children(body)
+            self.alias, self.id, namespace_request_children(body)?
         );
         self.send(command, &[], Some(request), REQUEST_TIMEOUT)
     }
@@ -237,19 +301,17 @@ impl Rdbg {
         }
         Ok(xml)
     }
-}
 
-impl Drop for Rdbg {
-    fn drop(&mut self) {
+    pub fn detach(&self) {
         let _ = self.call("detachDebugUI", "");
     }
 }
 
 // The request wrapper has no namespace. Each top-level argument is in the
 // request namespace, with nested protocol types declaring their own namespace.
-fn namespace_request_children(body: &str) -> String {
+fn namespace_request_children(body: &str) -> Result<String> {
     let wrapped = format!("<args>{body}</args>");
-    let parsed = Document::parse(&wrapped).expect("internally generated rdbg arguments");
+    let parsed = Document::parse(&wrapped).map_err(|_| "invalid text in RDBG request")?;
     let mut result = String::new();
     for child in parsed.root_element().children().filter(Node::is_element) {
         let text = &wrapped[child.range()];
@@ -258,7 +320,30 @@ fn namespace_request_children(body: &str) -> String {
         result.push_str(&format!(" xmlns=\"{REQUEST}\""));
         result.push_str(&text[split..]);
     }
-    result
+    Ok(result)
+}
+
+fn calculation_source(
+    level: usize,
+    evaluation: uuid::Uuid,
+    path: &[String],
+    interface: &str,
+) -> String {
+    let mut items = String::new();
+    for (index, name) in path.iter().enumerate() {
+        let name = escape(name);
+        let (kind, expression, property) = if index == 0 {
+            ("expression", name.as_str(), "")
+        } else {
+            ("property", "", name.as_str())
+        };
+        items.push_str(&format!(
+                "<calcItem><itemType>{kind}</itemType><expression>{expression}</expression><property>{property}</property></calcItem>"
+            ));
+    }
+    format!(
+        "<stackLevel xmlns=\"{CALCULATIONS}\">{level}</stackLevel><srcCalcInfo xmlns=\"{CALCULATIONS}\"><expressionResultID>{evaluation}</expressionResultID>{items}<interfaces>{interface}</interfaces></srcCalcInfo><presOptions xmlns=\"{CALCULATIONS}\"><maxTextSize>307200</maxTextSize><stopOnFirstEOL>false</stopOnFirstEOL></presOptions>"
+    )
 }
 
 fn escape(text: &str) -> String {

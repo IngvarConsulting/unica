@@ -3051,6 +3051,7 @@ name = "unica-dap"
 version = "0.16.0"
 dependencies = [
  "base64 0.22.1",
+ "crossbeam-channel",
  "reqwest",
  "roxmltree",
  "rustls",
