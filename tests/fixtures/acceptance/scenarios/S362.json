@@ -96,10 +96,7 @@
                   "name": "First",
                   "type": "string",
                   "value": "literal @on [шт] => text",
-                  "title": {
-                    "ru": "Первый",
-                    "en": "First"
-                  }
+                  "title": "ru = 'Первый'; en = 'First'"
                 },
                 {
                   "name": "Second",
@@ -117,7 +114,7 @@
                 {
                   "name": "Double",
                   "expression": "2 * 3",
-                  "title": "Вычисление @on",
+                  "title": "ru = 'Вычисление @on'",
                   "useRestriction": {
                     "condition": true,
                     "order": true
@@ -253,10 +250,7 @@
             "args": {
               "at": "cf:Report.F05Report.Template.PrimitiveParameters.Parameter.First",
               "values": {
-                "title": {
-                  "ru": "Изменённый",
-                  "en": "Updated"
-                },
+                "title": "ru = 'Изменённый'; en = 'Updated'",
                 "value": "unchanged language semantics",
                 "useRestriction": true,
                 "availableAsField": false,

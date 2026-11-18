@@ -94,6 +94,12 @@ pub struct AdmittedWorkspace {
 pub trait LspWorkspaces: Send + Sync + 'static {
     /// `None` — папка не открывается как рабочая область Unica.
     fn admit(&self, folder: &Path, deadline: Instant) -> Option<AdmittedWorkspace>;
+
+    /// Сессия открылась с этой допущенной папкой.
+    fn session_opened(&self, _folder: &Path) {}
+
+    /// Сессия, в которой была эта допущенная папка, закрылась.
+    fn session_closed(&self, _folder: &Path) {}
 }
 
 pub struct UnicaLspHost {
@@ -187,7 +193,12 @@ impl LspHost for UnicaLspHost {
                 Some((name, space)) => {
                     prepare_analysis(&name, &space, &client, &warming, &preparation);
                     workspaces.push(V5LspWorkspaceSpace::opened(&folder.uri, &name));
-                    spaces.insert(name, space);
+                    // A space the session already has is counted once: its
+                    // close counts each space of the session once.
+                    let folder = space.folder.clone();
+                    if spaces.insert(name, space).is_none() {
+                        self.workspaces.session_opened(&folder);
+                    }
                 }
                 None => workspaces.push(V5LspWorkspaceSpace::refused(
                     &folder.uri,
@@ -357,6 +368,9 @@ impl LspHost for UnicaLspHost {
         };
         let session = read(&session);
         session.preparation.cancel();
+        for space in session.spaces.values() {
+            self.workspaces.session_closed(&space.folder);
+        }
         self.analysis
             .forget(&session_waiter(session.documents.session()), None);
         // An open buffer keeps its actor from eviction: every actor of the

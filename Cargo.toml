@@ -13,8 +13,8 @@ repository = "https://github.com/IngvarConsulting/unica"
 [workspace.dependencies]
 base64 = "0.22.1"
 # Keep these revisions aligned with the bundled analyzer in tools.lock.json.
-bsl-parser = { package = "parser", git = "https://github.com/itrous/bsl-analyzer", rev = "ffae37b25c910991ecb8f05abe7a8148cd32b45c" }
-bsl-syntax = { package = "syntax", git = "https://github.com/itrous/bsl-analyzer", rev = "ffae37b25c910991ecb8f05abe7a8148cd32b45c" }
+bsl-parser = { package = "parser", git = "https://github.com/itrous/bsl-analyzer", rev = "0a82ed78e597dc3ffb1bbaebc66a98974a988435" }
+bsl-syntax = { package = "syntax", git = "https://github.com/itrous/bsl-analyzer", rev = "0a82ed78e597dc3ffb1bbaebc66a98974a988435" }
 diffy = "0.5.0"
 fs2 = "0.4"
 jsonschema = { version = "0.30", default-features = false }
@@ -61,11 +61,11 @@ regex = "1"
 # строит искатель заново на каждый вызов. Уже в графе через regex/aho-corasick.
 memchr = "2.8"
 regex-syntax = "0.8"
-ureq = { version = "2.12", features = ["json"] }
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls-no-provider", "gzip"] }
+bytes = "1"
 rustls = { version = "0.23.27", default-features = false, features = ["std", "ring", "tls12", "logging"] }
 rustls-platform-verifier = "0.7"
-# Запас, когда в хранилище ОС нет ни одного корня; тот же набор, что был
-# у ureq по умолчанию.
+# Запас, когда в хранилище ОС нет ни одного корня.
 webpki-roots = "1"
 # Только для стендов TLS в тестах: корень и сертификат сервера на лету.
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring"] }
@@ -73,6 +73,7 @@ url = "2.5.4"
 percent-encoding = "2.3"
 uuid = { version = "1", features = ["v4"] }
 windows-sys = { version = "0.59", features = [
+  "Wdk_System_SystemInformation",
   "Win32_Foundation",
   "Win32_Globalization",
   "Win32_Security",
@@ -115,7 +116,3 @@ opt-level = 1
 
 [profile.dev.package.sha2]
 opt-level = 3
-
-[patch.crates-io]
-# Preserve completed HTTP responses when connection reuse preparation fails.
-ureq = { path = "vendor/ureq" }

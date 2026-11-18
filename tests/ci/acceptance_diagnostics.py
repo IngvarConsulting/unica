@@ -288,7 +288,53 @@ class LegacyBrokerProxy(ResidentSession):
             self._closed = True
 
 
-def assert_owned_legacy_endpoint(backend, runtime: Path):
+def legacy_backend_evidence(backend, stderr_path: Path | None, started: float | None) -> str:
+    """Почему ушёл прежний бэкенд: всё, что видно в момент обнаружения.
+
+    Этот отказ приходит только на занятом хосте, а причина его не установлена
+    (#3024). Собрать улику можно лишь здесь: каталог времени выполнения вместе
+    с логом демона исчезает, как только фикстура свернётся, и к разбору от
+    падения не остаётся ничего. Пустой `stderr` — такой же факт, как непустой:
+    процесс, не написавший ни строки, не начинал работу.
+    """
+    facts = [f"exit code {backend.returncode}"]
+    if started is not None:
+        facts.append(f"{time.monotonic() - started:.2f}s after it started")
+    if stderr_path is not None:
+        path = Path(stderr_path)
+        if not path.exists():
+            facts.append("its stderr log is already gone")
+        else:
+            tail = path.read_bytes()[-2000:].decode("utf-8", "replace").strip()
+            facts.append("stderr tail: " + tail.replace("\n", " | ") if tail
+                         else "stderr empty: it wrote nothing at all")
+    facts.append("live analyzers: " + (_live_analyzers() or "none"))
+    return "; ".join(facts)
+
+
+def _live_analyzers() -> str:
+    """Процессы анализатора с их режимом и хвостом каталога кеша."""
+    if os.name == "nt":
+        command = ["powershell", "-NoProfile", "-Command", _LIVE_ANALYZERS_PS]
+    else:
+        command = ["pgrep", "-af", "bsl-analyzer"]
+    try:
+        done = subprocess.run(command, capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError) as error:
+        return f"<listing failed: {error}>"
+    return " | ".join(line.strip() for line in done.stdout.splitlines() if line.strip())
+
+
+_LIVE_ANALYZERS_PS = (
+    "Get-CimInstance Win32_Process -Filter \"Name='bsl-analyzer.exe'\" | ForEach-Object { "
+    "$mode = if ($_.CommandLine -match '--mode\\s+(\\S+)') { $matches[1] } else { 'none' }; "
+    "$cache = if ($_.CommandLine -match '--cache-dir\\s+(\\S+)') "
+    "{ $matches[1].Substring([Math]::Max(0, $matches[1].Length - 24)) } else { 'none' }; "
+    "\"$($_.ProcessId) $mode $cache\" }"
+)
+
+
+def assert_owned_legacy_endpoint(backend, runtime: Path, evidence=None):
     """The daemon is alive and serves exactly one endpoint.
 
     The analyzer binds its endpoint at start but builds its state, and takes the
@@ -296,7 +342,8 @@ def assert_owned_legacy_endpoint(backend, runtime: Path):
     does not exist yet.
     """
     if backend.poll() is not None:
-        raise AssertionError("owned legacy backend exited during the upgrade scenario")
+        raise AssertionError("owned legacy backend exited during the upgrade scenario"
+                             + (f"; {evidence()}" if evidence is not None else ""))
     if os.name != "nt":
         sockets = [path for path in (runtime / "bsl-mcp").glob("*.sock") if path.is_socket()]
         if not sockets:
@@ -305,9 +352,10 @@ def assert_owned_legacy_endpoint(backend, runtime: Path):
             raise AssertionError("the owned legacy endpoint is ambiguous")
 
 
-def assert_owned_legacy_broker(backend, cache: Path, runtime: Path):
+def assert_owned_legacy_broker(backend, cache: Path, runtime: Path, evidence=None):
     if backend.poll() is not None:
-        raise AssertionError("owned legacy backend exited during the upgrade scenario")
+        raise AssertionError("owned legacy backend exited during the upgrade scenario"
+                             + (f"; {evidence()}" if evidence is not None else ""))
     lease = analyzer_lease(cache)
     if lease is None:
         raise FileNotFoundError("the owned legacy lease is not published yet")
@@ -351,10 +399,14 @@ def legacy_broker_for_invalidation(plugin: Path, workspace: Path):
         ], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=stderr,
             cwd=runtime, env=environment)
         resources.callback(stop_owned_process, backend)
+        started = time.monotonic()
+        stderr_path = runtime / "legacy-backend.stderr.log"
+        # Улика переживает только то, что собрано до свёртки фикстуры (#3024).
+        evidence = lambda: legacy_backend_evidence(backend, stderr_path, started)  # noqa: E731
         deadline = time.monotonic() + 30
         while True:
             try:
-                assert_owned_legacy_endpoint(backend, runtime)
+                assert_owned_legacy_endpoint(backend, runtime, evidence)
                 break
             except FileNotFoundError:
                 pass
@@ -369,7 +421,7 @@ def legacy_broker_for_invalidation(plugin: Path, workspace: Path):
                                     "clientInfo": {"name": "unica-upgrade-acceptance", "version": "0"}})
         proxy.send({"jsonrpc": "2.0", "method": "notifications/initialized"})
         # The first attached session made the daemon take the lease.
-        assert_owned_legacy_broker(backend, cache, runtime)
+        assert_owned_legacy_broker(backend, cache, runtime, evidence)
         deadline = time.monotonic() + 30
         while True:
             result = proxy.request("tools/call", {"name": "search", "arguments": {
@@ -382,10 +434,10 @@ def legacy_broker_for_invalidation(plugin: Path, workspace: Path):
             if time.monotonic() >= deadline:
                 raise TimeoutError("legacy broker search did not become ready")
             time.sleep(.1)
-        assert_owned_legacy_broker(backend, cache, runtime)
+        assert_owned_legacy_broker(backend, cache, runtime, evidence)
         proxy.close()
-        assert_owned_legacy_broker(backend, cache, runtime)
-        yield lambda: assert_owned_legacy_broker(backend, cache, runtime)
+        assert_owned_legacy_broker(backend, cache, runtime, evidence)
+        yield lambda: assert_owned_legacy_broker(backend, cache, runtime, evidence)
 
 
 def resident_filter_evidence(binary: Path, workspace: Path, root: Path):

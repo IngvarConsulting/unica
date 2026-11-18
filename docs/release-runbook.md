@@ -93,7 +93,9 @@ and the checks below stand in for the signature.
   in `main` and equals the `main@<sha>` of its release description;
 - the night that set this alpha is green and checked that very commit, so the
   slice's tree is the tree it tested;
-- `vX.Y.Z` is not released yet.
+- `vX.Y.Z` is not released yet;
+- the slice has no open marks `TODO(#N)` (`scripts/ci/open_marks.py`):
+  unfinished work is settled before a candidate, not carried into it.
 
 It commits `bump-version.py X.Y.Z-rc.N` on the slice, with `N` the next free
 number, tags the commit and pushes the tag.
@@ -117,7 +119,8 @@ atomic push sets the tag and creates `release-vX.Y` on that commit.
 - its head is not released yet: it is neither the commit of a `vX.Y.*` tag nor
   the slice under one's version commit;
 - the head has a green CI run: the line's merge queue (`ci.yml`) or a check of
-  the line by the `release.yml` button.
+  the line by the `release.yml` button;
+- the head has no open marks either.
 
 It commits `bump-version.py X.Y.Z` on the head, with `Z` the next free patch,
 and pushes only the tag: the version commit lives under the tag, and the line's
@@ -165,6 +168,44 @@ Patches for a minor that already shipped are cut from its line. A fix reaches
 `release-vX.Y` through a pull request and the merge queue, as it reaches `main`;
 the line's queue run is the green CI the patch button asks for. `main` keeps its
 own version and never takes the patch numbers.
+
+## Raise pinned dependencies to their latest patch first
+
+Before a candidate is cut, every pinned dependency is raised to the latest
+patch of the minor it is on: the tools in `plugins/unica/third-party/tools.lock.json`
+(the runner, the BSL analyzer), the `bsl-analyzer` crates in `Cargo.toml`, the
+crates of `Cargo.lock` and the pins of `tests/ci/requirements.txt`. A patch
+carries fixes, so a release without it ships defects that are already fixed.
+A new minor or major brings new behavior and is not taken before a release;
+it waits for the next minor of Unica.
+
+The raise is merged into `main` before the night that makes the alpha the RC
+button will take: a candidate carries exactly the dependencies of its alpha.
+
+Each raise goes through a pull request:
+
+- the lock pins the new version, tag, commit and the SHA-256 of every asset;
+  a tool built in `unica-toolchain` gets its release there first, and the pull
+  request names that release;
+- fixtures captured from a tool's binary are captured again from the
+  published binary of the new version;
+- for each change in the tool's release notes that may reach Unica, the pull
+  request says what was checked and how — a test or a run, not the notes alone.
+  A dependency without a newer patch is named too;
+- for a tool or library Unica calls, the call contract is compared between
+  the old and the new version, not taken from the release notes: the tool's
+  `--help` for the commands and flags Unica passes, the set of keys in its
+  output, and the list of tools it serves.
+  `scripts/ci/check-tool-contracts.py` checks the help Unica relies on.
+  Changed findings or diagnostics are the tool's own behavior and do not
+  block the raise; a changed call contract does.
+
+Crates are raised one at a time within their minor, never by a plain
+`cargo update`, which also takes new minors:
+
+```bash
+cargo update -p <name>@<current> --precise <latest patch of that minor>
+```
 
 ## Raising the version of `main`
 

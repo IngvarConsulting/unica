@@ -17,4 +17,5 @@ test-support = []
 [dependencies]
 unica-daemon-protocol = { path = "../unica-daemon-protocol" }
 unica-lsp-contract = { path = "../unica-lsp-contract" }
+unica-source-contract = { path = "../unica-source-contract" }
 serde_json.workspace = true

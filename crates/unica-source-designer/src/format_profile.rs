@@ -57,6 +57,29 @@ pub fn platform_line_for_export_format(export_format: &str) -> Option<&'static s
         .map(|(_, line)| *line)
 }
 
+/// The first export format whose roots declare the palette namespace: the
+/// all_kinds corpus of 2.21 (8.5.1) declares it on every MDClasses, form,
+/// spreadsheet and graphical schema root and on DCS settings; 2.22 keeps it.
+const PALETTE_NAMESPACE_SINCE: &str = "2.21";
+
+/// Whether roots of `export_format` declare the palette namespace `pal`.
+/// `false` for a version that does not parse.
+pub fn declares_palette_namespace(export_format: &str) -> bool {
+    export_format_at_least(export_format, PALETTE_NAMESPACE_SINCE)
+}
+
+/// Whether `export_format` is `since` or a later version; `false` when
+/// either does not parse. A dialect asks it for what a version introduced.
+pub fn export_format_at_least(export_format: &str, since: &str) -> bool {
+    match (
+        ExportFormatVersion::parse(export_format),
+        ExportFormatVersion::parse(since),
+    ) {
+        (Ok(version), Ok(since)) => version >= since,
+        _ => false,
+    }
+}
+
 /// The Designer export format family; its wire name is `sourceFormat`'s.
 pub const PLATFORM_XML: FormatFamilyId = FormatFamilyId::new("platform_xml");
 

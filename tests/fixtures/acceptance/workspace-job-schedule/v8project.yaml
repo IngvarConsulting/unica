@@ -3,3 +3,6 @@ source-set:
   - name: main
     type: CONFIGURATION
     path: src
+  - name: other
+    type: CONFIGURATION
+    path: other

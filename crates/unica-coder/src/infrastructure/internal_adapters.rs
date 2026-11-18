@@ -946,7 +946,7 @@ mod tests {
             .outcome
             .warnings
             .iter()
-            .any(|warning| warning.contains("retry once")));
+            .any(|warning| warning.contains("streams no progress")));
         cleanup_context(&context);
     }
 
@@ -975,7 +975,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_job_request_carries_one_full_fallback() {
+    fn runtime_job_request_keeps_the_default_build() {
         let mut context = temp_context("runtime-job-request-supported-configuration");
         configure_supported_designer_source(&mut context);
         let mut args = Map::new();
@@ -998,10 +998,6 @@ mod tests {
         .unwrap();
 
         assert_runtime_args_with_primary(&context, request.raw_argv(), &["build"]);
-        let fallback = request
-            .full_rebuild_fallback_argv()
-            .expect("durable full fallback");
-        assert_runtime_args_with_primary(&context, fallback, &["build", "--full-rebuild"]);
         cleanup_context(&context);
     }
 
@@ -1039,7 +1035,7 @@ mod tests {
         assert!(outcome
             .warnings
             .iter()
-            .any(|warning| warning.contains("retry once")));
+            .any(|warning| warning.contains("streams no progress")));
         cleanup_context(&context);
     }
 
@@ -1109,7 +1105,7 @@ mod tests {
         assert!(invocation
             .warnings
             .iter()
-            .any(|warning| warning.contains("retry once")));
+            .any(|warning| warning.contains("streams no progress")));
         cleanup_context(&context);
     }
 
@@ -1212,7 +1208,7 @@ mod tests {
         assert!(outcome
             .warnings
             .iter()
-            .any(|warning| warning.contains("retry once")));
+            .any(|warning| warning.contains("streams no progress")));
         cleanup_context(&context);
     }
 

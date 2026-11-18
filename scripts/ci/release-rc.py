@@ -8,7 +8,9 @@ Alpha — срез `main`, который ночь проверила полны
 - alpha опубликована, её срез лежит в `main` и совпадает с `main@…` описания;
 - ночь, поставившая эту alpha, зелёная, и проверила она коммит среза;
 - дерево среза равно дереву, которое проверила ночь;
-- выпуска `vX.Y.Z` ещё нет: кандидат не может быть младше стабильной версии.
+- выпуска `vX.Y.Z` ещё нет: кандидат не может быть младше стабильной версии;
+- в срезе нет пометок незакрытого (`open_marks.py`): незакрытое
+  решается до кандидата, а не переносится.
 
 Номер `N` — следующий после существующих тегов `vX.Y.Z-rc.*`. Тег ставит ключ
 развёртывания из окружения `alpha` (`tag_push`), и его push запускает
@@ -32,6 +34,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import open_marks  # noqa: E402
 import tag_push  # noqa: E402
 
 _SPEC = importlib.util.spec_from_file_location("release_alpha", Path(__file__).with_name("release-alpha.py"))
@@ -115,11 +118,15 @@ def admit(repo: str, actor: str, ref: str, gh=alpha.gh_api) -> None:
     print(f"{actor}: администратор, кнопка выпуска пропускает")
 
 
-def publish(root: Path, repo: str, alpha_tag: str, *, dry_run: bool, gh=alpha.gh_api, runner=alpha.run) -> str:
+def publish(root: Path, repo: str, alpha_tag: str, *, dry_run: bool, gh=alpha.gh_api, runner=alpha.run,
+            marks=open_marks.marks) -> str:
     def git(arguments: list[str]) -> str:
         return runner(["git", *arguments], cwd=root)
 
     proof = prove(repo, alpha_tag, gh, git)
+    refusal = open_marks.release_refusal(marks(root, proof.slice), proof.slice, open_marks.CANDIDATE)
+    if refusal:
+        raise RcError(refusal)
     core = alpha.ALPHA.match(alpha_tag)["core"]
     tag = next_rc(core, alpha.version_tags(repo, gh))
     print(f"{tag}: из {alpha_tag}, срез {proof.slice[:7]}, ночь {proof.run_url}")

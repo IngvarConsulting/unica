@@ -72,9 +72,25 @@ fn runtime_writers_share_the_source_write_lane_of_the_admitted_workspace_actor()
             bound_source_writes(bound).1,
             "{op} preview would take the lane"
         );
-        let bound = runtime
-            .bind(run_request(workspace.path(), op, args, false))
-            .unwrap_or_else(|error| panic!("{op} did not bind: {error:?}"));
+        // An executing pull with force:true over a set outside git runs only
+        // with the person's confirmation: the door passes the chosen option.
+        let bound = match runtime.bind(run_request(workspace.path(), op, args, false)) {
+            Err(V5CanonicalPrepareError::Rejected(refused)) if refused.human_choice.is_some() => {
+                let confirmed = refused.human_choice.unwrap().options[0].arguments.clone();
+                runtime
+                    .bind(
+                        InvocationRequest::new(
+                            ToolIdentity::Run,
+                            serde_json::Value::Object(confirmed),
+                            workspace.path().display().to_string(),
+                            7_000,
+                        )
+                        .unwrap(),
+                    )
+                    .unwrap_or_else(|error| panic!("confirmed {op} did not bind: {error:?}"))
+            }
+            other => other.unwrap_or_else(|error| panic!("{op} did not bind: {error:?}")),
+        };
         let (lane, preview) = bound_source_writes(bound);
         assert!(!preview, "{op} execution would skip the lane");
         (op, lane)

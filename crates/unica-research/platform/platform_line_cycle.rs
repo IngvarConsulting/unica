@@ -1,21 +1,28 @@
 //! Full cycle on an installed platform line, through the product adapters.
 //!
 //! The reference `all_kinds` export of the line's format is loaded into a new
-//! file infobase, exported back by the runner's full dump, packaged into a `.cf`, loaded into a
-//! second infobase and exported again. Both exports must equal the reference
-//! byte for byte, apart from `ConfigDumpInfo.xml`, which the reference does not
-//! keep.
+//! file infobase and exported back by the runner's full dump: the export must
+//! equal the reference. Then the product edits those sources over MCP, as an
+//! agent would (a new catalog, an enum value, a list form and, on a line after
+//! 8.3.27, a root property of that line), the edit is built into the infobase
+//! and exported again: the platform must write exactly the bytes the product
+//! wrote. That export is packaged into a `.cf`, loaded into a second infobase
+//! and exported once more, with the same bytes. `ConfigDumpInfo.xml` is never
+//! compared: the reference does not keep it.
 //!
 //! A research test on a real platform: it is ignored in ordinary runs and runs
 //! by hand through `scripts/dev/run-research.py --profile platform`, which runs
 //! ignored tests. `UNICA_PLATFORM_LINE` names a line the format profile measured
 //! (`EXPORT_FORMAT_PLATFORM_LINES`) and that has an `all_kinds` reference. Then
 //! `V8_RUNNER` must name the v8-runner executable of the pinned version
-//! (`plugins/unica/third-party/tools.lock.json`); `UNICA_PLATFORM_BUILD` picks
-//! an exact build instead of the newest installed one of the line.
-use serde_json::{Map, Value};
+//! (`plugins/unica/third-party/tools.lock.json`) and `UNICA_BINARY` the built
+//! product binary that edits the sources; `UNICA_PLATFORM_BUILD` picks an exact
+//! build instead of the newest installed one of the line.
+use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
+use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use unica_adapter_v8_runner::adapter::{RuntimeAdapter, RuntimeEnvironment};
 use unica_adapter_v8_runner::full_dump::default_platform_roots;
 use unica_artifact_delivery::engine::BundledTool;
@@ -24,11 +31,11 @@ use unica_execution_contract::adapter_outcome::AdapterOutcome;
 use unica_process::runner::system_process_runner;
 use unica_source_contract::workspace::WorkspaceContext;
 use unica_source_designer::format_profile::EXPORT_FORMAT_PLATFORM_LINES;
-use unica_work_control::cancellation::CancellationToken;
 
 const LINE_ENV: &str = "UNICA_PLATFORM_LINE";
 const BUILD_ENV: &str = "UNICA_PLATFORM_BUILD";
 const RUNNER_ENV: &str = "V8_RUNNER";
+const BINARY_ENV: &str = "UNICA_BINARY";
 /// Files the reference export does not keep.
 const NOT_IN_REFERENCE: &[&str] = &["ConfigDumpInfo.xml"];
 
@@ -218,6 +225,138 @@ impl Cycle {
     }
 }
 
+/// One MCP session of the product binary over stdio, in one workspace.
+struct Product {
+    child: Child,
+    stdin: Option<ChildStdin>,
+    stdout: BufReader<ChildStdout>,
+    stderr: PathBuf,
+    next_id: u64,
+}
+
+impl Product {
+    fn start(binary: &Path, workspace: &Path, state: &Path) -> Self {
+        std::fs::create_dir_all(state).unwrap();
+        let stderr = state.join("unica-stderr.log");
+        let mut child = Command::new(binary)
+            .current_dir(workspace)
+            .env("UNICA_PROVIDER_STATE_DIR", state)
+            .env("UNICA_DAEMON_IDLE_GRACE_MS", "5000")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(std::fs::File::create(&stderr).unwrap())
+            .spawn()
+            .unwrap_or_else(|error| panic!("start {}: {error}", binary.display()));
+        let stdin = child.stdin.take();
+        let stdout = BufReader::new(child.stdout.take().unwrap());
+        let mut product = Self {
+            child,
+            stdin,
+            stdout,
+            stderr,
+            next_id: 0,
+        };
+        product.request(
+            "initialize",
+            json!({"protocolVersion": "2025-06-18", "capabilities": {},
+                   "clientInfo": {"name": "platform-line-cycle", "version": "0"}}),
+        );
+        product.send(&json!({"jsonrpc": "2.0", "method": "notifications/initialized"}));
+        product
+    }
+
+    fn send(&mut self, message: &Value) {
+        let stdin = self.stdin.as_mut().expect("session is open");
+        writeln!(stdin, "{message}").unwrap();
+        stdin.flush().unwrap();
+    }
+
+    fn request(&mut self, method: &str, params: Value) -> Value {
+        self.next_id += 1;
+        let id = self.next_id;
+        self.send(&json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}));
+        loop {
+            let mut line = String::new();
+            let read = self.stdout.read_line(&mut line).unwrap();
+            assert!(
+                read > 0,
+                "unica closed the session during {method}: {}",
+                std::fs::read_to_string(&self.stderr).unwrap_or_default()
+            );
+            let message: Value = serde_json::from_str(&line)
+                .unwrap_or_else(|error| panic!("unica wrote no JSON ({error}): {line}"));
+            if message.get("id") == Some(&json!(id)) {
+                return message;
+            }
+        }
+    }
+
+    fn call(&mut self, tool: &str, arguments: Value) -> Value {
+        let response = self.request("tools/call", json!({"name": tool, "arguments": arguments}));
+        let result = response["result"]["structuredContent"].clone();
+        assert!(
+            result["ok"] == json!(true),
+            "{tool} {arguments}: {response:#}"
+        );
+        result
+    }
+
+    /// Plan `ops` at `at` and execute the plan, as an agent does.
+    fn apply(&mut self, at: &str, ops: Value) {
+        let planned = self.call("unica.apply", json!({"at": at, "ops": ops}));
+        let token = planned["data"]["executionToken"]
+            .as_str()
+            .unwrap_or_else(|| panic!("plan at {at} has no execution token: {planned:#}"))
+            .to_string();
+        self.call("unica.apply", json!({"executionToken": token}));
+    }
+}
+
+impl Drop for Product {
+    fn drop(&mut self) {
+        // Closing stdin ends the session.
+        self.stdin.take();
+        let _ = self.child.wait();
+    }
+}
+
+/// The edits an agent makes in the sources exported as `reference`: each
+/// creates what the formats write differently, so the platform's export
+/// proves the product's bytes.
+fn edits(reference: &Path) -> Vec<(&'static str, Value)> {
+    // A root property that only some lines have: it is set where the line's
+    // own export of the configuration root carries it.
+    let configuration = std::fs::read(reference.join("Configuration.xml")).unwrap();
+    let root = if configuration
+        .windows(b"<ClientApplicationTheme>".len())
+        .any(|window| window == b"<ClientApplicationTheme>")
+    {
+        json!({"ClientApplicationTheme": "Dark"})
+    } else {
+        json!({"Comment": "Правка цикла"})
+    };
+    vec![
+        (
+            "main:Configuration",
+            json!([{"op": "object.create",
+                    "args": {"values": {"kind": "Catalog", "name": "ПравкаЦикла"}}}]),
+        ),
+        (
+            "main:Enum.СпособыУстановкиКурсаВалюты",
+            json!([{"op": "enumValue.add", "args": {"items": [{"name": "ПравкаЦикла"}]}}]),
+        ),
+        (
+            "main:Catalog.Валюты",
+            json!([{"op": "form.add",
+                    "args": {"items": [{"name": "ФормаПравкиЦикла", "type": "ListForm"}]}}]),
+        ),
+        (
+            "main:Configuration",
+            json!([{"op": "props.set", "args": {"values": root}}]),
+        ),
+    ]
+}
+
 fn assert_ok(step: &str, outcome: &AdapterOutcome) {
     assert!(
         outcome.ok,
@@ -283,7 +422,7 @@ fn tree_differences(expected: &Path, actual: &Path) -> Vec<String> {
 }
 
 #[test]
-#[ignore = "needs an installed 1C platform: set UNICA_PLATFORM_LINE and V8_RUNNER and run scripts/dev/run-research.py --profile platform"]
+#[ignore = "needs an installed 1C platform: set UNICA_PLATFORM_LINE, V8_RUNNER and UNICA_BINARY and run scripts/dev/run-research.py --profile platform"]
 fn platform_line_full_cycle_keeps_the_reference_export() {
     let line = std::env::var(LINE_ENV)
         .unwrap_or_else(|_| panic!("{LINE_ENV} must name the platform line of the cycle"));
@@ -292,6 +431,10 @@ fn platform_line_full_cycle_keeps_the_reference_export() {
     let program = PathBuf::from(
         std::env::var_os(RUNNER_ENV)
             .unwrap_or_else(|| panic!("{RUNNER_ENV} must name v8-runner when {LINE_ENV} is set")),
+    );
+    let binary = PathBuf::from(
+        std::env::var_os(BINARY_ENV)
+            .unwrap_or_else(|| panic!("{BINARY_ENV} must name the built unica binary")),
     );
     let build = std::env::var(BUILD_ENV).unwrap_or_else(|_| newest_build(&line));
     assert!(
@@ -321,6 +464,47 @@ fn platform_line_full_cycle_keeps_the_reference_export() {
     assert!(
         differences.is_empty(),
         "{line}: export of the reference differs from it: {differences:#?}"
+    );
+
+    // The product edits the sources; the platform builds the edit and
+    // exports exactly the bytes the product wrote.
+    {
+        let mut product = Product::start(&binary, &first.cwd, &root.join("product-state"));
+        for (at, ops) in edits(&reference) {
+            product.apply(at, ops);
+        }
+    }
+    // A write through the product moves the workspace epoch; the build is
+    // admitted for the workspace as it is now.
+    let first = {
+        let current = cycle
+            .environment
+            .workspace()
+            .discover(&first.cwd)
+            .expect("rediscover");
+        WorkspaceContext {
+            workspace_epoch: current.workspace_epoch,
+            ..first
+        }
+    };
+    let edited = root.join("edited");
+    copy_tree(&first_export, &edited);
+    assert!(
+        !tree_differences(&reference, &edited).is_empty(),
+        "{line}: the product edit changed nothing"
+    );
+    assert_ok(
+        "build of the edit",
+        &cycle.runtime(
+            &first,
+            &[("operation", "build".into()), ("sourceSet", "main".into())],
+        ),
+    );
+    assert_ok("full dump of the edit", &cycle.full_dump(&first));
+    let differences = tree_differences(&edited, &first_export);
+    assert!(
+        differences.is_empty(),
+        "{line}: the platform exports the product's edit differently: {differences:#?}"
     );
 
     // Export → .cf package.

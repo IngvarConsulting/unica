@@ -19,7 +19,7 @@
           "eq": "main:Catalog.Locked"
         },
         {
-          "pointer": "/data/items/0/props/support",
+          "pointer": "/data/items/0/support",
           "eq": "locked"
         },
         {
@@ -31,11 +31,11 @@
           "absent": true
         },
         {
-          "pointer": "/data/items/2/props/support",
+          "pointer": "/data/items/2/support",
           "eq": "editableWithSupport"
         },
         {
-          "pointer": "/data/items/3/props/support",
+          "pointer": "/data/items/3/support",
           "eq": "removedFromSupport"
         },
         {
@@ -66,7 +66,19 @@
       ],
       "assertions": [
         {
-          "pointer": "/data/props/support",
+          "pointer": "/data/props/support/reason",
+          "eq": "locked"
+        },
+        {
+          "pointer": "/data/props/support/editable",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/support/policy",
+          "eq": "deny"
+        },
+        {
+          "pointer": "/data/props/support/rule",
           "eq": "locked"
         }
       ]
@@ -81,7 +93,19 @@
       ],
       "assertions": [
         {
-          "pointer": "/data/props/support",
+          "pointer": "/data/props/support/reason",
+          "eq": "editableWithSupport"
+        },
+        {
+          "pointer": "/data/props/support/editable",
+          "eq": true
+        },
+        {
+          "pointer": "/data/props/support/policy",
+          "eq": "deny"
+        },
+        {
+          "pointer": "/data/props/support/rule",
           "eq": "editableWithSupport"
         }
       ]
@@ -96,7 +120,19 @@
       ],
       "assertions": [
         {
-          "pointer": "/data/props/support",
+          "pointer": "/data/props/support/reason",
+          "eq": "removedFromSupport"
+        },
+        {
+          "pointer": "/data/props/support/editable",
+          "eq": true
+        },
+        {
+          "pointer": "/data/props/support/policy",
+          "eq": "deny"
+        },
+        {
+          "pointer": "/data/props/support/rule",
           "eq": "removedFromSupport"
         }
       ]
@@ -111,8 +147,20 @@
       ],
       "assertions": [
         {
-          "pointer": "/data/props/support",
+          "pointer": "/data/props/support/reason",
           "eq": "notSupported"
+        },
+        {
+          "pointer": "/data/props/support/editable",
+          "eq": true
+        },
+        {
+          "pointer": "/data/props/support/policy",
+          "eq": "deny"
+        },
+        {
+          "pointer": "/data/props/support/rule",
+          "absent": true
         }
       ]
     }

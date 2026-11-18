@@ -544,7 +544,7 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
             ("object.create", "Metadata", "Configuration", "Values"),
             ("probe.add", "Probe", "Subsystem", "Items"),
             ("form.add", "Form", "MetadataForms", "Items"),
-            ("form.set", "Form", "MetadataForms", "Values"),
+            ("form.set", "Form", "FormSlots", "Values"),
             ("form.remove", "Form", "Form", "Target"),
             ("attribute.add", "Form", "Form", "Items"),
             ("attribute.remove", "Form", "FormAttribute", "Target"),

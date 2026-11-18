@@ -90,8 +90,8 @@ class MergeResultsTests(unittest.TestCase):
             for item in legacy.iterdir():
                 bundle.add(item, arcname=item.name)
 
-        def fetch(url: str, target: Path) -> bool:
-            if url.endswith("/data/main/results.tar.gz"):
+        def fetch(_site: str, path: str, target: Path) -> bool:
+            if path == "data/main/results.tar.gz":
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_bytes(archive.read_bytes())
                 return True
@@ -119,8 +119,8 @@ class MergeResultsTests(unittest.TestCase):
             published = root / "before" / "site"
             renders = []
 
-            def fetch(url: str, target: Path) -> bool:
-                source = published / url.removeprefix("https://site/")
+            def fetch(_site: str, path: str, target: Path) -> bool:
+                source = published / path
                 if not source.is_file():
                     return False
                 target.parent.mkdir(parents=True, exist_ok=True)

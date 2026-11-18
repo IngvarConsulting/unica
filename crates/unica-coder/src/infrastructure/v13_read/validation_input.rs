@@ -72,9 +72,11 @@ impl<'a> LogicalViewReadAuthority<'a> {
             .ok_or_else(|| ViewError::new(RefusalCode::BadValue, "Проверка требует адрес формы"))?;
         self.verify_registered_owner(&target, &admitted)?;
         self.read_checkpoint()?;
-        let input = self
-            .read
-            .form_validation_input(&target, &mut || self.read_checkpoint())?;
+        let input = self.read.form_validation_input(
+            &target,
+            Some(self.platform_profile().line()),
+            &mut || self.read_checkpoint(),
+        )?;
         self.read_checkpoint()?;
         Ok(input)
     }

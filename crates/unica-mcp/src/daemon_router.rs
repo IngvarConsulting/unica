@@ -750,11 +750,17 @@ fn lost_submit_task(receipt_key: &ReceiptKey) -> CanonicalCallOutcome {
     })
 }
 
-/// A connection that could not stand before the cutoff is transient: the
-/// call never left the frontend and may be repeated as is. One refused
-/// earlier — the daemon could not be started, rejected the handshake or
-/// belongs to another core — stays refused on a repeat: a person has to look.
+/// A connection that could not stand in the time of the call is transient:
+/// the daemon may be alive and busy, the call never left the frontend and may
+/// be repeated as is. One refused — the daemon could not be started,
+/// rejected the handshake or belongs to another core — stays refused on a
+/// repeat: a person has to look.
 fn unconnected_refusal(error: &V5TransportError, cutoff: Instant) -> ErrorData {
+    if let V5TransportError::NotConnectedInTime(message) = error {
+        return not_delivered_refusal(format!(
+            "{message}; the call did not reach the daemon and may be repeated as is"
+        ));
+    }
     if Instant::now() >= cutoff {
         return not_sent_refusal(error);
     }

@@ -1,6 +1,6 @@
 use super::{metadata_details, unreadable_entries};
 use serde_json::{json, Value};
-use unica_address::address::{AddressSegment, QualifiedAddress};
+use unica_address::address::{AddressSegment, NodeKind, QualifiedAddress};
 
 const METADATA_DETAIL_RELATIONS: &[(&str, &str, &str)] = &[
     (
@@ -228,6 +228,25 @@ pub(super) fn metadata_relations(address: &QualifiedAddress, payload: &Value) ->
             "source": "standardLibraryModule",
             "module": format!("{}:{module}", address.source_set()),
         }));
+    }
+    if address
+        .segments()
+        .first()
+        .is_some_and(|owner| owner.kind() == NodeKind::EventSubscription)
+    {
+        let handler = payload
+            .get("properties")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .find(|property| property.get("key").and_then(Value::as_str) == Some("Handler"))
+            .and_then(|property| property.get("value").and_then(Value::as_str))
+            .and_then(|value| {
+                unica_metadata::subscription_handler_address(address.source_set(), value)
+            });
+        if let Some(at) = handler {
+            items.push(json!({"relation": "handler", "title": "Handler", "at": at.to_string(), "kind": "Method"}));
+        }
     }
     items
 }

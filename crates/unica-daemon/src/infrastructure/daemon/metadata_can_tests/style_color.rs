@@ -413,7 +413,15 @@ fn canonical_style_color_read_failure_after_node_projection_is_not_an_absent_cap
         fn drop(&mut self) {
             review_clear_revision_identity_hooks();
             if self.saved.exists() {
-                std::fs::rename(&self.saved, &self.source).unwrap();
+                let restored = std::fs::rename(&self.saved, &self.source);
+                // A second panic while a test already panics aborts the binary (#3065).
+                if std::thread::panicking() {
+                    if let Err(error) = restored {
+                        eprintln!("fixture source was not restored: {error}");
+                    }
+                } else {
+                    restored.unwrap();
+                }
             }
         }
     }

@@ -143,7 +143,10 @@ mod tests {
 
     fn form_context(xml: &str, owner_kind: NodeKind) -> unica_forms::events::FormEventContext {
         let document = roxmltree::Document::parse(xml).unwrap();
-        let mut context = context_from_root(document.root_element());
+        let mut context = context_from_root(
+            document.root_element(),
+            Some(PlatformProfile::v8_3_27().line()),
+        );
         context.metadata_owner = Some(owner_kind);
         context
     }
@@ -186,6 +189,7 @@ mod tests {
                 return_values_reuse: Some("DuringRequest".to_string()),
             });
         project_module(ModuleProjectionRequest {
+            platform: profile,
             at: &at,
             capability,
             title: format!("{} module", capability.role().as_str()),
@@ -373,7 +377,7 @@ mod tests {
             "Процедура Пустая(\n)\nКонецПроцедуры\n"
         );
         let serialized = serde_json::to_value(empty).unwrap();
-        assert_eq!(serialized["branches"][1]["count"], 3);
+        assert_eq!(serialized["branches"][0]["count"], 3);
     }
 
     /// rule: INV.SOURCE.MODULE-COMPILATION
@@ -386,7 +390,8 @@ mod tests {
             .find(|method| method.name == "Контекстная")
             .unwrap();
         let serialized = serde_json::to_value(method).unwrap();
-        assert_eq!(serialized["branches"][0]["count"], 3);
+        assert_eq!(method.compilation_count, 3);
+        assert!(serialized["props"].get("compile").is_none());
         assert_eq!(method.compile.guard.as_deref(), Some("Client"));
         assert!(method.compile.conditional_body);
         let ranges = projection
@@ -1546,7 +1551,8 @@ mod tests {
             external_connection: Some(false),
         };
         let at = QualifiedAddress::parse("ext:CommonModule.Probe").unwrap();
-        let capability = PlatformProfile::v8_3_27().module_capability(&at).unwrap();
+        let profile = PlatformProfile::v8_3_27();
+        let capability = profile.module_capability(&at).unwrap();
         for missing in 0..5 {
             let mut props = known.clone();
             match missing {
@@ -1557,6 +1563,7 @@ mod tests {
                 _ => {}
             }
             let projection = project_module(ModuleProjectionRequest {
+                platform: profile,
                 at: &at, capability, title: "Probe".into(), rev: "fixture", source: Some("#Если Сервер Тогда\nПроцедура Test() Экспорт\nСообщить(1);\nКонецПроцедуры\n#КонецЕсли"),
                 common_module: Some(props), handles: &[], declarative_bindings: &[], extension_targets: &[], platform_event_write: PlatformEventWriteCapability::Unproved,
             }).unwrap();
@@ -1579,6 +1586,7 @@ mod tests {
         let at = QualifiedAddress::parse("main:CommonModule.ЗаказыСервер").unwrap();
         let profile = PlatformProfile::v8_3_27();
         let error = project_module(ModuleProjectionRequest {
+            platform: profile,
             at: &at,
             capability: profile.module_capability(&at).unwrap(),
             title: "Общий модуль".to_string(),
@@ -1617,6 +1625,7 @@ mod tests {
             QualifiedAddress::parse("main:Document.Заказ.Form.ФормаДокумента.Module.Form").unwrap();
         let profile = PlatformProfile::v8_3_27();
         let projection = project_module(ModuleProjectionRequest {
+            platform: profile,
             at: &at,
             capability: profile.module_capability(&at).unwrap(),
             title: "Модуль формы".to_string(),
@@ -1687,6 +1696,10 @@ mod tests {
             "КонецПроцедуры",
         );
         let projection = project("main:CommonModule.ЗаказыСервер", Some(source));
+        let documented = &projection.methods()[0];
+        assert_eq!(documented.text_from_line, 3);
+        assert_eq!(documented.declaration_line, 6);
+        assert_eq!(documented.name_column, Some(11));
         let text = |name: &str| {
             let method = projection
                 .methods()
@@ -1849,6 +1862,7 @@ mod tests {
         let at = QualifiedAddress::parse("sales:Document.Заказ.Module.Object").unwrap();
         let profile = PlatformProfile::v8_3_27();
         let projection = project_module(ModuleProjectionRequest {
+            platform: profile,
             at: &at,
             capability: profile.module_capability(&at).unwrap(),
             title: "Расширение".to_string(),

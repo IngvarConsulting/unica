@@ -30,7 +30,6 @@ use unica_workspace::paths::normalize_path_identity;
 // problem: неизвестно
 // on-reach: строка отклоняется с ошибкой потока LineTooLong, результат анализа не выдаётся как полный
 // decision: закреплено правилом
-// decision-date: 2026-09-22
 // decision-source: arch/rules/analysis/analyzer-jsonl-stream.md
 pub const MAX_DIAGNOSTICS_JSONL_LINE_BYTES: usize = 8 * 1024 * 1024;
 

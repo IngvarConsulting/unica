@@ -108,22 +108,11 @@ pub fn validate_help_form_owner_8_3_27(path: &Path, text: &str) -> Result<(), St
     Ok(())
 }
 
+/// The form descriptor `text` with `IncludeHelpInContents` the platform
+/// writes when it is absent; `None` when it is present. `props.set` inserts
+/// it with the same writer, so both produce the same bytes.
 pub fn form_with_include_help(text: &str) -> Option<String> {
-    if text.contains("<IncludeHelpInContents>") {
-        return None;
-    }
-    let insert_at = text
-        .find("</FormType>")
-        .map(|index| index + "</FormType>".len())?;
-    let mut updated = text.to_string();
-    updated.insert_str(
-        insert_at,
-        "\n\t\t\t<IncludeHelpInContents>false</IncludeHelpInContents>",
-    );
-    if !updated.ends_with('\n') {
-        updated.push('\n');
-    }
-    Some(updated)
+    crate::form_descriptor::with_include_help(text)
 }
 
 use crate::resource_plan::{TypedChildFileMutation, TypedChildResourcePlan};

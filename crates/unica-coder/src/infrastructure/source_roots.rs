@@ -235,12 +235,14 @@ mod medium_tests {
     fn rejects_nonexistent_source_dir_through_symlink_outside_workspace() {
         let context = fixture(&[("main", "CONFIGURATION", "src/cf")]);
         let outside = temp_workspace("unica-source-roots-outside");
-        let symlink_result = unica_workspace::test_support::create_dir_symlink_for_test(
+        if !crate::infrastructure::test_fixtures::dir_link_or_skip(
             &outside,
             context.workspace_root.join("external"),
-        )
-        .expect("symlink fixtures exist on Unix and Windows");
-        symlink_result.unwrap();
+        ) {
+            cleanup(&context);
+            let _ = fs::remove_dir_all(outside);
+            return;
+        }
 
         let escaped = fs::canonicalize(&context.workspace_root)
             .unwrap()
@@ -262,12 +264,14 @@ mod medium_tests {
         )
         .unwrap();
         let outside = temp_workspace("unica-declared-source-root-outside");
-        let symlink_result = unica_workspace::test_support::create_dir_symlink_for_test(
+        if !crate::infrastructure::test_fixtures::dir_link_or_skip(
             &outside,
             context.workspace_root.join("external"),
-        )
-        .expect("symlink fixtures exist on Unix and Windows");
-        symlink_result.unwrap();
+        ) {
+            cleanup(&context);
+            let _ = fs::remove_dir_all(outside);
+            return;
+        }
 
         let error = resolve_named_source_set(&context, "main").unwrap_err();
 

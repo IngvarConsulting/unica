@@ -43,6 +43,10 @@ fn network_trust_child_process() {
         "refuse" => {
             let error = result.expect_err("корень не доверен");
             assert_eq!(error.failure(), Failure::Network);
+            assert_eq!(
+                error.network_failure(),
+                Some(unica_network::NetworkFailure::UntrustedCertificate)
+            );
             println!("{}", error.diagnosis());
             println!(
                 "trust={:?}",
@@ -197,7 +201,7 @@ fn a_download_through_https_proxy_reaches_a_trusted_server() {
     assert_eq!(proxy.targets(), vec![stand.authority()]);
     assert_eq!(
         stand.requests(),
-        vec![format!("GET {} HTTP/1.1", stand.url("artifact.tar.gz"))],
+        vec!["GET /artifact.tar.gz HTTP/1.1"],
         "запрос прошёл туннелем прокси до сервера"
     );
 }
@@ -223,7 +227,12 @@ fn a_root_missing_from_the_os_store_is_refused_with_the_interception_cure() {
     );
 
     let diagnosis = String::from_utf8_lossy(&output.stdout);
-    for expected in ["UnknownIssuer", "intercepted", "trust store", "HTTPS_PROXY"] {
+    for expected in [
+        "does not trust the certificate chain",
+        "intercepted",
+        "trust store",
+        "HTTPS_PROXY",
+    ] {
         assert!(diagnosis.contains(expected), "{expected}: {diagnosis}");
     }
     assert!(stand.requests().is_empty());
@@ -277,5 +286,9 @@ fn an_empty_os_store_falls_back_to_the_bundled_mozilla_roots() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("trust=BundledMozillaRoots"), "{stdout}");
     assert!(stdout.contains("bundled Mozilla roots"), "{stdout}");
-    assert!(stdout.contains("UnknownIssuer"), "{stdout}");
+    assert!(
+        stdout.contains("the certificate chain is not issued"),
+        "{stdout}"
+    );
+    assert!(stand.requests().is_empty());
 }

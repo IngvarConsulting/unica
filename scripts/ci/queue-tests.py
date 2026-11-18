@@ -110,7 +110,7 @@ def needle(path: str) -> str:
 
 
 def mentions(text: str, root: Path = ROOT) -> list[str]:
-    completed = subprocess.run(["git", "grep", "-lF", text, "--", "crates", "vendor"], cwd=root, capture_output=True, text=True, encoding="utf-8")
+    completed = subprocess.run(["git", "grep", "-lF", text, "--", "crates"], cwd=root, capture_output=True, text=True, encoding="utf-8")
     if completed.returncode not in (0, 1):
         raise OSError(completed.stderr)
     return completed.stdout.split()
@@ -128,6 +128,15 @@ def lock_keeps_external(base: str, head: str, members: set[str], root: Path = RO
     return external_packages(locks[0], members) == external_packages(locks[1], members)
 
 
+def whole_build(paths: list[str], *, lock_is_internal: bool = False) -> str | None:
+    """Путь, правка которого задевает всю сборку: внешние зависимости в `Cargo.lock`,
+    корневой `Cargo.toml`, тулчейн, `.cargo/`. Единственное описание этого признака:
+    по нему очередь берёт полный набор, а гейт готовности — весь workspace.
+    """
+    return next((path for path in paths if WHOLE_BUILD.match(path)
+                 and not (path == "Cargo.lock" and lock_is_internal)), None)
+
+
 def choose(paths: list[str], directories: dict[str, str], dependents: dict[str, set[str]] | None = None, *,
            force_full: bool = False, find: Callable[[str], list[str]] = mentions, lock_is_internal: bool = False) -> Choice:
     if force_full:
@@ -136,12 +145,11 @@ def choose(paths: list[str], directories: dict[str, str], dependents: dict[str, 
         return Choice(True, (), "пустой diff")
     if all(NO_RUST.match(path) for path in paths):
         return Choice(False, (), "Rust не нужен: сайт, правила, навыки, проза", no_rust=True)
+    whole = whole_build(paths, lock_is_internal=lock_is_internal)
+    if whole:
+        return Choice(True, (), f"общая сборка: {whole}")
     selected, edited = set(), set()
     for path in paths:
-        if path == "Cargo.lock" and lock_is_internal:
-            continue
-        if WHOLE_BUILD.match(path):
-            return Choice(True, (), f"общая сборка: {path}")
         crate = crate_of(path, directories)
         if crate:
             edited.add(crate)
@@ -151,7 +159,7 @@ def choose(paths: list[str], directories: dict[str, str], dependents: dict[str, 
             selected.update(crate for text in texts for crate in (crate_of(item, directories) for item in find(text)) if crate)
     # Cargo отказывает в `--workspace`, из которого исключены все члены, а `small`
     # остальных крейтов тогда запускать не для кого: это и есть полный набор.
-    if set(directories.values()) - {"ureq"} <= selected:
+    if set(directories.values()) <= selected:
         return Choice(True, (), "выбраны все крейты")
     reached = sorted({name for crate in edited for name in (dependents or {}).get(crate, set())} - selected)
     return Choice(False, tuple(sorted(selected)), f"medium: {sorted(selected) or 'нет'}, цели зависимых: {reached or 'нет'}", tuple(reached))
@@ -224,12 +232,10 @@ def commands(packages: tuple[str, ...], runner, dependents: tuple[str, ...] = ()
     и `--exclude` Cargo объединял бы признаки по другому набору пакетов, и следующий
     вызов пересобирал бы общие зависимости заново; с одним набором сборка одна.
     """
-    # `ureq` не член рабочей области: его набор идёт из своего манифеста ниже.
-    members = tuple(package for package in packages if package != "ureq")
-    chosen = " | ".join(f"package({package})" for package in members)
-    others = ("--workspace", "-E", f"not ({chosen})") if members else ("--workspace",)
+    chosen = " | ".join(f"package({package})" for package in packages)
+    others = ("--workspace", "-E", f"not ({chosen})") if packages else ("--workspace",)
     planned = [[*runner.rust_command("pr", others), "--no-tests=pass"]]
-    if members:
+    if packages:
         selection = ("--workspace", "-E", chosen)
         planned.append([*runner.rust_command("queue", selection), "--no-tests=pass"])
     if dependents:
@@ -238,8 +244,6 @@ def commands(packages: tuple[str, ...], runner, dependents: tuple[str, ...] = ()
         planned.append([*runner.rust_command("queue", selection), "--no-tests=pass"])
     if {"unica-daemon", "unica-product"} & set(packages):
         planned.append(runner.rust_command("queue", runner.LEDGER_FEATURE_SELECTION))
-    if "ureq" in packages:
-        planned.append(runner.rust_command("queue", runner.UREQ_RECYCLING_SELECTION))
     return planned
 
 

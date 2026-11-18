@@ -142,6 +142,14 @@
         {
           "pointer": "/data/branches/0/count",
           "eq": 1
+        },
+        {
+          "pointer": "/data/props/Synonym",
+          "eq": "ru = 'Виды субконто'; en = 'Dimension types'"
+        },
+        {
+          "pointer": "/data/props/ToolTip",
+          "eq": "ru = 'Выберите вид'; en = 'Pick an item''s type'"
         }
       ],
       "fileAssertions": [
@@ -179,6 +187,40 @@
           "kind": "sha256",
           "path": "v8project.yaml",
           "eq": "$capture.unchanged7"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfAccounts.Accounts.StandardTabularSection"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/props/Synonym",
+          "eq": "ru = 'Виды субконто'; en = 'Dimension types'"
+        },
+        {
+          "pointer": "/data/items/0/props/ToolTip",
+          "eq": "ru = 'Выберите вид'; en = 'Pick an item''s type'"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfAccounts.Accounts.StandardTabularSection.ExtDimensionTypes.Props.Synonym"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Synonym",
+          "eq": "ru = 'Виды субконто'; en = 'Dimension types'"
         }
       ]
     },

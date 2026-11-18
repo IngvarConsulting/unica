@@ -1,0 +1,27 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:app="http://v8.1c.ru/8.2/managed-application/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:cmi="http://v8.1c.ru/8.2/managed-application/cmi" xmlns:ent="http://v8.1c.ru/8.1/data/enterprise" xmlns:lf="http://v8.1c.ru/8.2/managed-application/logform" xmlns:pal="http://v8.1c.ru/8.1/data/ui/colors/palette" xmlns:style="http://v8.1c.ru/8.1/data/ui/style" xmlns:sys="http://v8.1c.ru/8.1/data/ui/fonts/system" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:v8ui="http://v8.1c.ru/8.1/data/ui" xmlns:web="http://v8.1c.ru/8.1/data/ui/colors/web" xmlns:win="http://v8.1c.ru/8.1/data/ui/colors/windows" xmlns:xen="http://v8.1c.ru/8.3/xcf/enums" xmlns:xpr="http://v8.1c.ru/8.3/xcf/predef" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.22">
+	<DocumentJournal uuid="feb9c7dc-bb58-8c91-899a-193cffc139b9">
+		<InternalInfo>
+			<xr:GeneratedType name="DocumentJournalSelection.Entries" category="Selection">
+				<xr:TypeId>1ca2cc23-a0d1-8945-8d37-0bc5495db2fd</xr:TypeId>
+				<xr:ValueId>02a39d69-d627-8f46-bad1-1cd7f5ba5fb7</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="DocumentJournalList.Entries" category="List">
+				<xr:TypeId>4cc830d0-28e8-8a78-b1ae-d24fd2f892fb</xr:TypeId>
+				<xr:ValueId>1feb1937-5060-83d3-a6af-c12dbbf48f7c</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="DocumentJournalManager.Entries" category="Manager">
+				<xr:TypeId>03beff3e-5ca7-8e70-af32-56e28fc6d1f0</xr:TypeId>
+				<xr:ValueId>0470dd4e-e8a1-8218-a11e-a3ca7008cff0</xr:ValueId>
+			</xr:GeneratedType>
+		</InternalInfo>
+		<Properties>
+			<ObjectBelonging>Adopted</ObjectBelonging>
+			<Name>Entries</Name>
+			<Comment/>
+			<ExtendedConfigurationObject>1c26280f-efcf-5e34-9cb2-cde5103e7c7a</ExtendedConfigurationObject>
+			<ActionOnConfigurationObjectMissing>Auto</ActionOnConfigurationObjectMissing>
+		</Properties>
+		<ChildObjects/>
+	</DocumentJournal>
+</MetaDataObject>

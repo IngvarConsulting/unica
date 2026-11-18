@@ -51,7 +51,7 @@ jobs:
     steps:
       - name: Веха от владельца
         id: admission
-        if: ${{ github.event_name == 'pull_request' && !github.event.pull_request.draft }}
+        if: ${{ github.event_name == 'pull_request' }}
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -68,24 +68,63 @@ jobs:
           json="$(gh api graphql -F owner="${GITHUB_REPOSITORY%/*}" -F name="${GITHUB_REPOSITORY#*/}" -F number="$number" -f query='
             query($owner: String!, $name: String!, $number: Int!) {
               repository(owner: $owner, name: $name) {
+                id
                 pullRequest(number: $number) {
-                  milestone { number }
+                  isDraft
+                  milestone { id title }
                   assignees { totalCount }
                   timelineItems(itemTypes: [MILESTONED_EVENT], last: 1) { nodes { ... on MilestonedEvent { actor { login } } } }
-                  closingIssuesReferences(first: 100) { nodes { number milestone { number } } }
+                  closingIssuesReferences(first: 100) {
+                    pageInfo { hasNextPage }
+                    nodes {
+                      number
+                      repository { id }
+                      milestone { id title }
+                      timelineItems(itemTypes: [MILESTONED_EVENT], last: 1) { nodes { ... on MilestonedEvent { actor { login } } } }
+                    }
+                  }
                 }
               }
             }')"
-          problems="$(jq -r --arg owner "$MILESTONE_OWNER" '
-            .data.repository.pullRequest as $pr | $pr.closingIssuesReferences.nodes as $issues
-            | ($pr.timelineItems.nodes[-1].actor.login // "неизвестно") as $actor
-            | (if $pr.milestone == null then
-                 (if ($issues | length) > 0 then "Поставьте веху: скопируйте её с issue" else "Поставьте веху: на PR без issue её ставит \($owner)" end)
-               elif ($issues | length) == 0 and $actor != $owner then "Веху на PR поставил \($actor), нужна от \($owner)"
+          problems="$(jq -r --arg owner "$MILESTONE_OWNER" --arg working "${WORKING_MILESTONE:-}" --arg strict "$STRICT" '
+            def milestone_actor: .timelineItems.nodes[-1].actor.login // "неизвестно";
+            def version:
+              if test("^v[0-9]+[.][0-9]+$") then ltrimstr("v") | split(".") | map(tonumber)
+              else null end;
+            def check_limit($label; $title; $limit):
+              ($title | version) as $number
+              | if $number == null then "У вехи \($label) \($title) нужен формат vN.N"
+                elif $number > $limit then "Веха \($label) \($title) выше рабочей \($working)"
+                else empty end;
+            .data.repository as $repo | $repo.pullRequest as $pr
+            | $pr.closingIssuesReferences.nodes as $issues
+            | [$issues[] | select(.repository.id == $repo.id)] as $local
+            | ($pr | milestone_actor) as $actor
+            | (if $pr.closingIssuesReferences.pageInfo.hasNextPage then
+                 "Не удалось проверить все закрываемые issue"
                else empty end),
-              ($issues[] | select(.milestone == null) | "Issue #\(.number) без вехи, PR не рассматривается")' <<<"$json")"
+              (if $pr.milestone == null then
+                 (if ($local | length) > 0 then "Поставьте веху: скопируйте её с issue" else "Поставьте веху: на PR без issue её ставит \($owner)" end)
+               elif ($local | length) == 0 and $actor != $owner then "Веху на PR поставил \($actor), нужна от \($owner)"
+               elif ($local | length) > 0 and (any($local[]; .milestone.id == $pr.milestone.id) | not) then
+                 "Веха PR должна совпадать с вехой одной из закрываемых задач этого репозитория"
+               else empty end),
+              ($issues[] | select(.milestone == null) | "Issue #\(.number) без вехи, PR не рассматривается"),
+              ($local[] | select(.milestone != null and milestone_actor != $owner) | "Веху issue #\(.number) должен подтвердить \($owner)"),
+              (if $strict == "true" then
+                 ($working | version) as $limit
+                 | if $limit == null then "Рабочая веха должна быть задана в формате vN.N"
+                   else ($pr.milestone | select(. != null) | check_limit("PR"; .title; $limit)),
+                        ($local[] | select(.milestone != null) | check_limit("issue #\(.number)"; .milestone.title; $limit))
+                   end
+               else empty end)' <<<"$json")"
           assignees="$(jq -r '.data.repository.pullRequest.assignees.totalCount' <<<"$json")"
-          if [ -n "$problems" ]; then echo "admitted=false"; else echo "admitted=true"; fi >> "$GITHUB_OUTPUT"
+          # Черновик не занимает раннер. Признак берётся у GitHub, а не из события
+          # прогона: при push и снятии с черновика вплотную выжить может прогон
+          # события черновика, и его перезапуск проиграл бы то же событие.
+          draft="$(jq -r '.data.repository.pullRequest.isDraft' <<<"$json")"
+          if [ -n "$problems" ] || [ "$draft" = true ]; then echo "admitted=false"; else echo "admitted=true"; fi >> "$GITHUB_OUTPUT"
+          if [ "$draft" = true ]; then echo "::notice::PR #$number — черновик, тесты не запускаются"; fi
           level="$( [ "$STRICT" = true ] && echo error || echo notice )"
           if [ -n "$problems" ]; then
             while read -r problem; do echo "::$level::$problem"; done <<<"$problems"
@@ -125,6 +164,7 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
+      issues: read
       actions: read
     defaults:
       run:
@@ -168,25 +208,37 @@ jobs:
           python-version: "3.12"
       - run: python -m pip install -r tests/ci/requirements.txt
         if: env.KEPT != 'true'
-      # На pull request проверки Python идут в фоне, пока раннер восстанавливает
-      # кэш Rust и гоняет fmt и Clippy: подряд они занимали бо́льшую часть
-      # стадии. Шаги ожидания ниже отдают их лог и исход как свои.
-      - name: Статические проверки Python (запуск)
-        if: ${{ github.event_name == 'pull_request' && env.KEPT != 'true' }}
-        run: python scripts/ci/background_step.py start static-python -- python scripts/ci/run-static-tests.py
       - name: Удалённые тесты (запуск)
         if: ${{ github.event_name == 'pull_request' && env.KEPT != 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_REF: ${{ github.base_ref }}
+        # База — ветка назначения на выкаченном дереве, как при локальном
+        # запуске: скрипт сам берёт её merge-base с HEAD. `base.sha` события
+        # застывает при создании PR, а дерево — merge-ref со свежей веткой,
+        # и тесты, снятые в ней позже, сверка приписала бы этому PR.
         # Сверка ещё и от инвентаря ночи: между ним и базой PR тест мог
         # переехать или уйти из второй цели, и ночь знает его прежний ID.
-        run: python scripts/ci/background_step.py start removed-tests -- python scripts/ci/removed_tests.py --base "$BASE_SHA" --nightly-profile large
+        run: python scripts/ci/background_step.py start removed-tests -- python scripts/ci/removed_tests.py --base "origin/$BASE_REF" --nightly-profile large
+      # Пометка незакрытого называет открытую задачу, которую этот PR не
+      # закрывает: иначе при влитии номер в ней поведёт в закрытое.
+      - name: Пометки незакрытого
+        if: ${{ github.event_name == 'pull_request' && env.KEPT != 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/ci/open_marks.py pr
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         if: env.KEPT != 'true'
         with:
           toolchain: stable
           components: rustfmt, clippy
+      # Статические тесты вызывают rustfmt. Запускаем их после установки
+      # toolchain, пока раннер восстанавливает
+      # кэш Rust и гоняет fmt и Clippy: подряд они занимали бо́льшую часть
+      # стадии. Шаги ожидания ниже отдают их лог и исход как свои.
+      - name: Статические проверки Python (запуск)
+        if: ${{ github.event_name == 'pull_request' && env.KEPT != 'true' }}
+        run: python scripts/ci/background_step.py start static-python -- python scripts/ci/run-static-tests.py
       # Версия — из `.config/nextest.toml`; готовый nextest не ставится заново.
       - if: ${{ github.event_name == 'merge_group' && env.KEPT != 'true' }}
         uses: ./.github/actions/install-nextest
@@ -201,9 +253,7 @@ jobs:
           save-if: false
       - name: Формат
         if: env.KEPT != 'true'
-        run: |
-          cargo fmt --all -- --check
-          python scripts/ci/check-discovered-modules-format.py
+        run: python scripts/ci/check-discovered-modules-format.py
       - name: Контракт версий
         if: env.KEPT != 'true'
         run: python scripts/ci/check-version-contract.py

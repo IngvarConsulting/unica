@@ -165,38 +165,92 @@ impl CanonicalV13ReadService {
                 )
             }),
         );
-        let planned = match plan_hidden_v13_apply(&request, &binding, &admission) {
-            Err(error) if answered && error.support_lock().is_some() => {
-                let lock = error.support_lock().expect("checked above").clone();
-                match support_choice::chosen_answer(&lock, invocation.arguments()) {
-                    Some(answer) => {
-                        let mut operations = Vec::new();
-                        for support in support_choice::support_requests(&lock, &answer) {
-                            match parse_apply_request(&support, &source_sets) {
-                                Ok(support) => operations.extend(support.ops().iter().cloned()),
-                                Err(error) => {
-                                    return error_result(
-                                        Some(error.location().to_string()),
-                                        error.code(),
-                                        error.to_string(),
-                                    )
-                                }
-                            }
+        // Each refusal the person answered is lifted in the same plan; the
+        // next one asks its own question, and the call keeps every answer.
+        use crate::infrastructure::native_operations::apply_families as families;
+        let source_set = request.at().source_set().to_string();
+        let mut mode_raise: Option<(
+            unica_source_contract::proposal::ReadOnlyMode,
+            crate::domain::apply::ApplyRequest,
+        )> = None;
+        let mut support: Vec<(
+            unica_source_contract::proposal::SupportLock,
+            Vec<crate::domain::apply::ApplyOp>,
+        )> = Vec::new();
+        let mut remove_support = false;
+        let planned = loop {
+            let planned = families::plan_hidden_v13_apply_with_person_choices(
+                &request,
+                &binding,
+                &admission,
+                families::PersonChosenChanges {
+                    mode_raise: mode_raise.as_ref().map(|(read_only, request)| {
+                        families::PersonChosenModeRaise { read_only, request }
+                    }),
+                    support: support
+                        .iter()
+                        .map(|(lock, operations)| families::PersonChosenSupportChange {
+                            lock,
+                            operations,
+                        })
+                        .collect(),
+                    remove_support,
+                },
+            );
+            let Err(error) = &planned else {
+                break planned;
+            };
+            if !answered {
+                break planned;
+            }
+            if let Some(read_only) = error.read_only_mode().filter(|_| mode_raise.is_none()) {
+                if support_choice::mode_raise_chosen(read_only, &source_set, invocation.arguments())
+                {
+                    let raise = support_choice::mode_raise_request(read_only, &source_set);
+                    match parse_apply_request(&raise, &source_sets) {
+                        Ok(raise) => mode_raise = Some((read_only.clone(), raise)),
+                        Err(error) => {
+                            return error_result(
+                                Some(error.location().to_string()),
+                                error.code(),
+                                error.to_string(),
+                            )
                         }
-                        crate::infrastructure::native_operations::apply_families::plan_hidden_v13_apply_with_person_chosen_support(
-                            &request,
-                            &binding,
-                            &admission,
-                            crate::infrastructure::native_operations::apply_families::PersonChosenSupportChange {
-                                lock: &lock,
-                                operations: &operations,
-                            },
-                        )
                     }
-                    None => Err(error),
+                    continue;
                 }
             }
-            planned => planned,
+            if error.support_state_unreadable()
+                && !remove_support
+                && support_choice::remove_support_chosen(&source_set, invocation.arguments())
+            {
+                remove_support = true;
+                continue;
+            }
+            // Each lock is lifted once; a lock the answers leave asks anew.
+            if let Some(lock) = error
+                .support_lock()
+                .filter(|lock| support.iter().all(|(lifted, _)| lifted != *lock))
+            {
+                if let Some(answer) = support_choice::chosen_answer(lock, invocation.arguments()) {
+                    let mut operations = Vec::new();
+                    for change in support_choice::support_requests(lock, &answer) {
+                        match parse_apply_request(&change, &source_sets) {
+                            Ok(change) => operations.extend(change.ops().iter().cloned()),
+                            Err(error) => {
+                                return error_result(
+                                    Some(error.location().to_string()),
+                                    error.code(),
+                                    error.to_string(),
+                                )
+                            }
+                        }
+                    }
+                    support.push((lock.clone(), operations));
+                    continue;
+                }
+            }
+            break planned;
         };
         let (staged, mut effects) = match planned {
             Err(error)
@@ -220,10 +274,25 @@ impl CanonicalV13ReadService {
                 let refusal = with_unknown_argument_contract(refusal, &request, traits);
                 let mut refusal =
                     with_argument_dictionary(refusal, &request, &error, traits, &node_exists);
-                if let Some(choice) = error
-                    .support_lock()
-                    .and_then(|lock| support_choice::support_choice(lock, &call))
-                {
+                // The question carries the answers the person already gave
+                // about this call, so the plan comes out once, with all of them.
+                let choice = match (error.read_only_mode(), error.support_lock()) {
+                    (Some(read_only), _) => Some(support_choice::mode_choice(
+                        read_only,
+                        &source_set,
+                        invocation.arguments(),
+                    )),
+                    (None, Some(lock)) => {
+                        support_choice::support_choice(lock, invocation.arguments())
+                    }
+                    (None, None) if error.support_state_unreadable() => Some(
+                        support_choice::remove_support_choice(&source_set, invocation.arguments()),
+                    ),
+                    (None, None) => error.format_reexport().map(|reexport| {
+                        support_choice::format_choice(reexport, invocation.arguments())
+                    }),
+                };
+                if let Some(choice) = choice {
                     refusal.human_choice = Some(Box::new(choice));
                 }
                 return refusal;
@@ -311,7 +380,6 @@ impl CanonicalV13ReadService {
             "operationCount": request.ops().len(),
             "planHash": plan_hash,
             "effects": publication.effects().events().len(),
-            "cache": publication.effects().cache(),
         }));
         if !operations.is_empty() {
             result.data.as_mut().expect("apply data exists")["operations"] =

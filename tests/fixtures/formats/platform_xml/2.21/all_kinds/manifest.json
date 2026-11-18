@@ -2,7 +2,7 @@
   "format": "2.21",
   "build": "8.5.1.1529",
   "seed": "2.20/all_kinds",
-  "runner": "v8-runner 0.16.0",
+  "runner": "v8-runner 0.17.1",
   "steps": [
     {
       "step": "package",
@@ -26,7 +26,8 @@
     }
   ],
   "compatibilityLowered": null,
-  "excludedFiles": [
-    "all_kinds/src/ConfigDumpInfo.xml"
+  "excludedFiles": [],
+  "lineKinds": [
+    "PaletteColor"
   ]
 }

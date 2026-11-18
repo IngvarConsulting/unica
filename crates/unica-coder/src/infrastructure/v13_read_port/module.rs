@@ -87,7 +87,7 @@ impl ProviderReadAuthority {
             Ok(())
         })?;
         if len.is_none() {
-            return Ok(ModuleText::Text(String::new()));
+            return Ok(ModuleText::whole(String::new()));
         }
         text.finish().map_err(|_| {
             ViewError::detailed(RefusalDetail::SourceUnreadable, "BSL module is not UTF-8")

@@ -3,14 +3,18 @@
 Версии формата выгрузки, которые профиль формата считает измеренными
 (`MEASURED_EXPORT_FORMATS`), должны иметь в корпусе выгрузку пустой
 конфигурации и пустого расширения. Корень каждого объекта метаданных в этих
-выгрузках называет ту же версию. Скрипт сравнения корпусов отличает файлы
-с разными байтами от файлов только на одной стороне.
+выгрузках называет ту же версию. Записываемые форматы несут экспорт XDTO-схем
+платформы своей линии: паспорт называет сборку этой линии и каждый файл.
+Скрипт сравнения корпусов отличает файлы с разными байтами от файлов только
+на одной стороне.
 """
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import io
+import json
 import re
 import tempfile
 import unittest
@@ -67,6 +71,29 @@ class PlatformCorpusTests(unittest.TestCase):
                         self.assertEqual(match.group(1).decode(), fmt, path)
 
 
+# Пустые внешняя обработка и внешний отчёт форматов после 2.20: эталон того,
+# что пишет создание внешнего набора в формате своей линии (#2730).
+EMPTY_EXTERNAL = {
+    "empty_external_processor": Path("epf") / "EmptyProcessor.xml",
+    "empty_external_report": Path("erf") / "EmptyReport.xml",
+}
+
+
+class EmptyExternalCorpusTests(unittest.TestCase):
+    def test_every_format_after_2_20_has_empty_external_exports_of_its_line(self) -> None:
+        for fmt in (fmt for fmt in ALL_KINDS_FORMATS if fmt != "2.20"):
+            for folder, relative in EMPTY_EXTERNAL.items():
+                root = CORPUS_ROOT / fmt / folder
+                with self.subTest(format=fmt, export=folder):
+                    data = (root / relative).read_bytes()
+                    manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
+                    self.assertEqual(manifest["format"], fmt)
+                    self.assertEqual(manifest["files"], {relative.as_posix(): {
+                        "sha256": hashlib.sha256(data).hexdigest(), "size": len(data)}})
+                    self.assertEqual(ROOT_VERSION.search(data).group(1).decode(), fmt)
+                    self.assertTrue(data.startswith(b"\xef\xbb\xbf") and b"\r\n" in data,
+                                    "байты выгрузки платформы: BOM и CRLF")
+
 class AllKindsCorpusTests(unittest.TestCase):
     def test_all_kinds_export_names_its_format_everywhere(self) -> None:
         # Корень объекта и подчинённый файл, который несёт версию (форма,
@@ -84,6 +111,31 @@ class AllKindsCorpusTests(unittest.TestCase):
                     checked += 1
                     self.assertEqual(match.group(1).decode(), fmt, path)
                 self.assertGreater(checked, 40, root)
+
+
+# Записываемые форматы и линии, которые их пишут: экспорт XDTO снят на сборке
+# этой линии (scripts/dev/export-platform-xdto.py).
+XDTO_FORMAT_LINES = {"2.20": "8.3.27", "2.21": "8.5.1", "2.22": "8.5.4"}
+
+
+class XdtoCorpusTests(unittest.TestCase):
+    def test_every_writable_format_has_the_xdto_export_of_its_line(self) -> None:
+        for fmt, line in XDTO_FORMAT_LINES.items():
+            root = CORPUS_ROOT / fmt / "xdto"
+            with self.subTest(format=fmt):
+                manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
+                self.assertEqual(manifest["format"], fmt)
+                self.assertTrue(manifest["build"].startswith(line + "."), manifest["build"])
+                listed = sorted(name for names in manifest["files"].values() for name in names)
+                on_disk = sorted(path.name for path in root.glob("*.xsd"))
+                self.assertEqual(listed, on_disk)
+                self.assertEqual(manifest["packages"], len(manifest["files"]))
+                self.assertEqual(manifest["schemas"], len(on_disk))
+                digest = hashlib.sha256()
+                for name in on_disk:
+                    digest.update(name.encode("utf-8") + b"\0" + (root / name).read_bytes())
+                self.assertEqual(manifest["sha256"], digest.hexdigest())
+                self.assertIn("http://v8.1c.ru/8.3/xcf/enums", manifest["files"])
 
 
 class PlatformCorpusDiffTests(unittest.TestCase):

@@ -12,7 +12,9 @@ use std::path::Path;
 use unica_source_contract::compatibility::{
     Admission, CompatibilityMode, CompatibilityRules, ExtensionOperation,
 };
-use unica_source_contract::proposal::{ApplyPlanError, ApplyPlanErrorKind, ApplyProposal};
+use unica_source_contract::proposal::{
+    ApplyPlanError, ApplyPlanErrorKind, ApplyProposal, ReadOnlyMode,
+};
 use unica_source_contract::SourceSetKind;
 
 const PROPERTY: &str = "ConfigurationExtensionCompatibilityMode";
@@ -91,18 +93,27 @@ pub fn refuse_edit_below_minimum_mode(
             "the source set is read-only: its compatibility mode {mode} is older than {minimum}, the oldest mode Unica edits; reading, search, analysis and check still work, and the one edit allowed is to set {property} to {minimum} or newer"
         ),
     };
-    Err(
-        ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message.clone())
-            .at_path(at_path)
-            .with_diagnostics(vec![serde_json::json!({
-                "code": "compatibilityModeUnsupported",
-                "severity": "error",
-                "message": message,
-                "mode": mode.to_string(),
-                "minimumMode": minimum,
-                "property": property,
-            })]),
-    )
+    // A request that raises the mode to one still read-only asked for its
+    // own mode; only an edit refused by the set's mode is the person's call.
+    let read_only = raised_to.is_none().then(|| ReadOnlyMode {
+        mode,
+        property: property.to_string(),
+    });
+    let error = ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message.clone());
+    let error = match read_only {
+        Some(read_only) => error.with_read_only_mode(read_only),
+        None => error,
+    };
+    Err(error
+        .at_path(at_path)
+        .with_diagnostics(vec![serde_json::json!({
+            "code": "compatibilityModeUnsupported",
+            "severity": "error",
+            "message": message,
+            "mode": mode.to_string(),
+            "minimumMode": minimum,
+            "property": property,
+        })]))
 }
 
 /// Whether a metadata descriptor is a borrowed object: its properties name

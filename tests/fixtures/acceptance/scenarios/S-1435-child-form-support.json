@@ -23,7 +23,7 @@
    "expect": [
     "refused"
    ],
-   "refusal": "invalid_state: actor support policy denies editing this protected module owner"
+   "refusal": "invalid_state: `main:Catalog.Items.Form.Main` is a vendor object with the support rule `locked`; allow editing with `supportRule.set` in a separate apply before ordinary edits"
   },
   {
    "tool": "unica.apply",
@@ -97,7 +97,7 @@
      "eq": "$capture.unchanged9"
     }
    ],
-   "refusal": "invalid_state: support changes require a separate apply before ordinary edits"
+   "refusal": "invalid_state: `main:Catalog.Items.Form.Main` is a vendor object with the support rule `locked`; allow editing with `supportRule.set` in a separate apply before ordinary edits"
   },
   {
    "tool": "unica.apply",
@@ -406,7 +406,7 @@
      "eq": "$capture.unchanged10"
     }
    ],
-   "refusal": "invalid_state: actor support policy denies editing this protected module owner"
+   "refusal": "invalid_state: `main:Catalog.Items.Form.Other` is a vendor object with the support rule `locked`; allow editing with `supportRule.set` in a separate apply before ordinary edit"
   },
   {
    "tool": "unica.apply",

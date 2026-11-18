@@ -1,0 +1,1 @@
+Synthetic source fixture for #2034. The common module contains a guarded method and an ordinary method named Compilation. Public reads retain source text and names while omitting computed compilation facts; retired branch addresses are refused without writes. No platform execution is involved.

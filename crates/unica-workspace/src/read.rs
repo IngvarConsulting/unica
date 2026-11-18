@@ -10,8 +10,8 @@ pub use crate::platform::secure_read::with_secure_tree_test_hook;
 pub use crate::platform::secure_read::{
     capture_root_relative_regular_files, read_root_relative_regular_file,
     read_root_relative_regular_file_checked, read_root_relative_regular_file_whole,
-    visit_root_relative_regular_files, RetainedRootSecureRead, SecureRead, SecureReadPhase,
-    SecureTreePhase, SecureTreeVisit,
+    visit_root_relative_regular_files, visit_root_relative_regular_files_bounded,
+    RetainedRootSecureRead, SecureRead, SecureReadPhase, SecureTreePhase, SecureTreeVisit,
 };
 pub use unica_source_contract::read::{
     FileIdentity, FileStamp, SourceDirectory, SourceEntry, SourceFile, SourceNameComparator,
@@ -194,6 +194,20 @@ impl SourceDirectoryReadPort for DirectoryRead {
     }
     fn relative_file_stamp(&self, relative: &Path) -> io::Result<Option<FileStamp>> {
         self.retained.relative_file_stamp(relative)
+    }
+    fn relative_directory_file_stamps(
+        &self,
+        relative: &Path,
+    ) -> io::Result<Option<Vec<(std::ffi::OsString, FileStamp)>>> {
+        self.retained.relative_directory_file_stamps(relative)
+    }
+    fn relative_directory_file_stamps_with_extension(
+        &self,
+        relative: &Path,
+        extension: &OsStr,
+    ) -> io::Result<Option<Vec<(OsString, FileStamp)>>> {
+        self.retained
+            .relative_directory_file_stamps_with_extension(relative, extension)
     }
     fn open_relative_regular_nofollow(&self, relative: &Path) -> io::Result<ReadHandle> {
         self.retained

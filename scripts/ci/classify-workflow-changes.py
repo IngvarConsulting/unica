@@ -231,7 +231,7 @@ def _is_rust_path(path: str) -> bool:
     candidate = PurePosixPath(path)
     return (
         len(candidate.parts) >= 2
-        and (candidate.parts[0] == "crates" or path.startswith("vendor/ureq/"))
+        and candidate.parts[0] == "crates"
         and candidate.suffix == ".rs"
     )
 
@@ -240,7 +240,6 @@ def _is_toolchain_path(path: str) -> bool:
     candidate = PurePosixPath(path)
     return (
         path in TOOLCHAIN_PATHS
-        or path in {"vendor/ureq/Cargo.toml", "vendor/ureq/Cargo.lock", "vendor/ureq/.config/nextest.toml"}
         or path.startswith(".cargo/")
         or (len(candidate.parts) >= 3 and candidate.parts[0] == "crates" and candidate.name == "Cargo.toml")
     )

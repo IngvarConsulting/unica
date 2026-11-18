@@ -953,6 +953,138 @@ fn a_person_chosen_support_change_and_the_edit_form_one_plan() {
     }
 }
 
+/// An unreadable or damaged support state is not the absence of support:
+/// under `deny` and `off` the edit is refused before any byte is written,
+/// under `warn` it proceeds with `support_locked`.
+/// rule: INV.SAFETY.APPLY-SUPPORT-GATE
+/// rule: INV.APP.SUPPORT-STATE
+#[test]
+fn a_damaged_support_state_refuses_the_edit_under_deny() {
+    for damaged in [
+        // A header the strict reader does not accept (INV.APP.SUPPORT-STATE).
+        "\u{feff}{6,0,1}",
+        // Not the platform's marker of removed support: that is
+        // `{6,0,0,0,1,0}` (fixture `support-markers/removed.bin`).
+        "\u{feff}{6,0,0}",
+        // Not the support state at all.
+        "not a support state, but long enough to be read as one",
+    ] {
+        let (outcome, unchanged, _) = plan_vendor_removal("deny", damaged, |_| {});
+        let error = outcome.expect_err("deny refuses an edit over an unreadable support state");
+        assert_eq!(error.kind(), ApplyPlanErrorKind::InvalidSource, "{error}");
+        assert!(
+            error.to_string().contains("Ext/ParentConfigurations.bin"),
+            "{error}"
+        );
+        assert!(unchanged, "{damaged}");
+
+        let (outcome, unchanged, _) = plan_vendor_removal("warn", damaged, |_| {});
+        let warnings = outcome.expect("warn permits the edit");
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert_eq!(warnings[0]["code"], "support_locked");
+        assert!(unchanged);
+
+        // `off` silences locks, not a support state that cannot be read.
+        let (outcome, unchanged, _) = plan_vendor_removal("off", damaged, |_| {});
+        let error = outcome.expect_err("off refuses an unreadable support state too");
+        assert_eq!(error.kind(), ApplyPlanErrorKind::InvalidSource, "{error}");
+        assert!(unchanged);
+    }
+}
+
+/// An owner on support whose descriptor names no uuid has a rule nobody can
+/// look up: its support cannot be read. `deny` and `off` refuse before any
+/// byte is written, `warn` permits the edit with `support_locked`.
+/// rule: INV.SAFETY.APPLY-SUPPORT-GATE
+/// rule: INV.APP.SUPPORT-STATE
+#[test]
+fn an_owner_without_a_uuid_follows_the_unreadable_support_policy() {
+    let strip_uuid = |source: &std::path::Path| {
+        let path = source.join("Documents/First.xml");
+        let xml = std::fs::read_to_string(&path).unwrap();
+        let start = xml.find(" uuid=\"").expect("the fixture owner has a uuid");
+        let end = start + 7 + xml[start + 7..].find('"').unwrap() + 1;
+        std::fs::write(&path, format!("{}{}", &xml[..start], &xml[end..])).unwrap();
+    };
+    let marker = vendor_removal_support_marker(1, true);
+    for policy in ["deny", "off"] {
+        let (outcome, unchanged, _) = plan_vendor_removal(policy, &marker, strip_uuid);
+        let error = outcome.expect_err("an owner whose rule cannot be read is refused");
+        assert_eq!(
+            error.kind(),
+            ApplyPlanErrorKind::InvalidSource,
+            "{policy}: {error}"
+        );
+        assert!(error.to_string().contains("names no uuid"), "{error}");
+        // Not the marker: the person is not offered to take support off.
+        assert!(!error.support_state_unreadable(), "{policy}");
+        assert!(unchanged);
+    }
+    let (outcome, _, _) = plan_vendor_removal("warn", &marker, strip_uuid);
+    let warnings = outcome.expect("warn permits the edit");
+    assert_eq!(warnings[0]["code"], "support_locked", "{warnings:?}");
+}
+
+/// A person who takes the configuration off support entirely gets one plan:
+/// the unreadable marker is replaced by the platform's marker of removed
+/// support and the edit is made, and the sources stay as they are until the
+/// plan is published.
+/// rule: INV.SAFETY.APPLY-SUPPORT-GATE
+#[test]
+fn taking_support_off_replaces_an_unreadable_marker_in_the_same_plan() {
+    use super::{plan_hidden_v13_apply_with_person_choices, PersonChosenChanges};
+    use unica_workspace::test_support::tree_snapshot;
+
+    for policy in ["deny", "off"] {
+        let fixture = ApplySeamFixture::new();
+        let source = fixture.source_dir();
+        std::fs::write(
+            source.parent().unwrap().join(".v8-project.json"),
+            serde_json::json!({"editingAllowedCheck": policy}).to_string(),
+        )
+        .unwrap();
+        std::fs::create_dir_all(source.join("Ext")).unwrap();
+        std::fs::write(
+            source.join("Ext/ParentConfigurations.bin"),
+            "\u{feff}{6,0,1}",
+        )
+        .unwrap();
+        let before = tree_snapshot(&source);
+        let request = seam_request(
+            "main:Document.First",
+            "object.remove",
+            serde_json::json!({}),
+        );
+        let refused = plan_hidden_v13_apply(&request, &fixture.binding, &fixture.admission())
+            .expect_err("an unreadable marker refuses");
+        assert!(refused.support_state_unreadable(), "{policy}");
+
+        let (mut staged, _) = plan_hidden_v13_apply_with_person_choices(
+            &request,
+            &fixture.binding,
+            &fixture.admission(),
+            PersonChosenChanges {
+                mode_raise: None,
+                support: Vec::new(),
+                remove_support: true,
+            },
+        )
+        .unwrap_or_else(|error| panic!("{policy}: {error}"));
+        assert_eq!(
+            staged
+                .read(std::path::Path::new("Ext/ParentConfigurations.bin"))
+                .unwrap()
+                .as_deref(),
+            Some(unica_metadata_designer::support::REMOVED_SUPPORT_MARKER)
+        );
+        assert!(staged
+            .read(std::path::Path::new("Documents/First.xml"))
+            .unwrap()
+            .is_none());
+        assert_eq!(tree_snapshot(&source), before, "{policy}");
+    }
+}
+
 fn vendor_removal_support_marker(rule: u8, editing_enabled: bool) -> String {
     let global_flag = u8::from(!editing_enabled);
     format!(
@@ -968,7 +1100,19 @@ fn vendor_object_removal_preserves_allowed_support_states() {
     for (policy, marker) in [
         ("deny", None),
         ("deny", Some(vendor_removal_support_marker(2, true))),
-        ("deny", Some("\u{feff}{6,0,0}".to_string())),
+        // The platform's marker of a configuration taken off support.
+        (
+            "deny",
+            Some(
+                String::from_utf8(
+                    include_bytes!(
+                        "../../../../../unica-metadata-designer/tests/fixtures/support-markers/removed.bin"
+                    )
+                    .to_vec(),
+                )
+                .unwrap(),
+            ),
+        ),
         // A locked object the removed one does not contain does not keep it.
         (
             "deny",

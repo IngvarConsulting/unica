@@ -1,0 +1,56 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:tns="http://v8.1c.ru/8.2/data/bsl" xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="http://v8.1c.ru/8.2/data/bsl" attributeFormDefault="unqualified" elementFormDefault="qualified">
+	<xs:complexType name="BSLAnnotation">
+		<xs:sequence>
+			<xs:element name="attribute" type="tns:BSLAnnotationAttribute" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+		<xs:attribute name="name" type="xs:string"/>
+	</xs:complexType>
+	<xs:complexType name="BSLAnnotationAttribute">
+		<xs:attribute name="name" type="xs:string"/>
+		<xs:attribute name="value" type="xs:string"/>
+	</xs:complexType>
+	<xs:complexType name="BSLLabel">
+		<xs:attribute name="name" type="xs:string"/>
+		<xs:attribute name="addr" type="xs:unsignedInt"/>
+	</xs:complexType>
+	<xs:complexType name="BSLModuleImage">
+		<xs:sequence>
+			<xs:element name="cmdOpCode" type="xs:string"/>
+			<xs:element name="cmdOperand" type="xs:string"/>
+			<xs:element name="constant" type="xs:string" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="variable" type="tns:BSLVariableImage" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="label" type="tns:BSLLabel" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="procedure" type="tns:BSLProcedureImage" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+		<xs:attribute name="version" type="xs:unsignedInt"/>
+		<xs:attribute name="startAddr" type="xs:unsignedInt" default="4294967295"/>
+	</xs:complexType>
+	<xs:complexType name="BSLProcedureImage">
+		<xs:sequence>
+			<xs:element name="label" type="tns:BSLLabel" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="variable" type="tns:BSLVariableImage" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="paramsDefValue" type="xs:string" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="annotation" type="tns:BSLAnnotation" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+		<xs:attribute name="isAsync" type="xs:boolean" default="false"/>
+		<xs:attribute name="name" type="xs:string"/>
+		<xs:attribute name="isFunction" type="xs:boolean" default="false"/>
+		<xs:attribute name="isExported" type="xs:boolean" default="false"/>
+		<xs:attribute name="isExternal" type="xs:boolean" default="false"/>
+		<xs:attribute name="parametersCount" type="xs:unsignedInt" default="0"/>
+		<xs:attribute name="startAddr" type="xs:unsignedInt"/>
+	</xs:complexType>
+	<xs:complexType name="BSLVariableImage">
+		<xs:sequence>
+			<xs:element name="annotation" type="tns:BSLAnnotation" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+		<xs:attribute name="name" type="xs:string"/>
+		<xs:attribute name="isLocal" type="xs:boolean" default="false"/>
+		<xs:attribute name="isExternal" type="xs:boolean" default="false"/>
+		<xs:attribute name="isParam" type="xs:boolean" default="false"/>
+		<xs:attribute name="isByValue" type="xs:boolean" default="false"/>
+		<xs:attribute name="isExported" type="xs:boolean" default="false"/>
+		<xs:attribute name="initConstPos" type="xs:int" default="-1"/>
+	</xs:complexType>
+</xs:schema>

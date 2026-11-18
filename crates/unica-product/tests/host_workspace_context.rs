@@ -544,40 +544,12 @@ fn each_build_gets_its_own_daemon_and_a_replaced_build_is_refused() {
 
     // Build A's daemon is owned here so the test can stop it the way an
     // idle exit or a crash would.
-    let identity_a = {
-        let output = Command::new(env!("CARGO_BIN_EXE_unica"))
-            .arg("--print-core-identity")
-            .env("UNICA_RUNTIME_MANIFEST", &manifest_a)
-            .output()
-            .unwrap();
-        assert!(output.status.success());
-        String::from_utf8(output.stdout).unwrap().trim().to_owned()
-    };
+    let (identity_a, mut daemon_a) = owned_build_daemon(&state, &manifest_a);
     assert_ne!(
         identity_a,
         production_identity(),
         "the manifest names the build"
     );
-    let mut daemon_a = OwnedProcess(
-        Command::new(env!("CARGO_BIN_EXE_unica"))
-            .args(["--daemon", "--state-root"])
-            .arg(&state)
-            .args(["--core-identity", &identity_a, "--idle-grace-ms", "20000"])
-            .env("UNICA_RUNTIME_MANIFEST", &manifest_a)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .unwrap(),
-    );
-    let endpoint_a = state
-        .join(format!("daemon-p5-{identity_a}"))
-        .join("endpoint.json");
-    let ready_until = Instant::now() + Duration::from_secs(10);
-    while !endpoint_a.exists() {
-        assert!(Instant::now() < ready_until, "build A daemon did not start");
-        std::thread::sleep(Duration::from_millis(20));
-    }
 
     let mut build_a = start(&manifest_a);
     assert_workspace(&build_a.view(2, None), &project);
@@ -597,6 +569,96 @@ fn each_build_gets_its_own_daemon_and_a_replaced_build_is_refused() {
         refused.to_string().contains("restart the host"),
         "{refused:#}"
     );
+    assert_eq!(daemon_directories(&state).len(), 2);
+}
+
+/// The daemon of the build `manifest` names, owned by the test so it can be
+/// stopped the way an idle exit or a crash would; returns its identity.
+fn owned_build_daemon(state: &Path, manifest: &Path) -> (String, OwnedProcess) {
+    let identity = {
+        let output = Command::new(env!("CARGO_BIN_EXE_unica"))
+            .arg("--print-core-identity")
+            .env("UNICA_RUNTIME_MANIFEST", manifest)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        String::from_utf8(output.stdout).unwrap().trim().to_owned()
+    };
+    let daemon = OwnedProcess(
+        Command::new(env!("CARGO_BIN_EXE_unica"))
+            .args(["--daemon", "--state-root"])
+            .arg(state)
+            .args(["--core-identity", &identity, "--idle-grace-ms", "20000"])
+            .env("UNICA_RUNTIME_MANIFEST", manifest)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .unwrap(),
+    );
+    let endpoint = state
+        .join(format!("daemon-p5-{identity}"))
+        .join("endpoint.json");
+    let ready_until = Instant::now() + Duration::from_secs(10);
+    while !endpoint.exists() {
+        assert!(
+            Instant::now() < ready_until,
+            "owned build daemon did not start"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    (identity, daemon)
+}
+
+/// A build starts beside a live daemon of another build on the same state
+/// root and over the spawn lock its own killed daemon left behind. The lock
+/// is the operating system's: it ends with its holder, and the file left on
+/// disk holds nothing (#3083).
+#[test]
+fn a_build_starts_beside_another_builds_daemon_and_a_left_spawn_lock() {
+    let root = tempfile::tempdir().unwrap();
+    let plugin = workspace(root.path(), "plugin");
+    let project = workspace(root.path(), "project");
+    let state = workspace(root.path(), "state");
+    let fixture = contract();
+    let project_environment = fixture["projectEnvironment"][0].as_str().unwrap();
+    let manifest_a = root.path().join("build-a.json");
+    let manifest_b = root.path().join("build-b.json");
+    write_core_manifest(&manifest_a, &"a".repeat(64));
+    write_core_manifest(&manifest_b, &"b".repeat(64));
+    let start = || {
+        Frontend::start(
+            &plugin,
+            &state,
+            &[
+                (project_environment, project.to_str().unwrap()),
+                ("UNICA_RUNTIME_MANIFEST", manifest_b.to_str().unwrap()),
+                ("UNICA_DAEMON_IDLE_GRACE_MS", "300"),
+            ],
+        )
+    };
+    let (_identity_a, _daemon_a) = owned_build_daemon(&state, &manifest_a);
+    let (identity_b, mut daemon_b) = owned_build_daemon(&state, &manifest_b);
+    // A frontend of build B takes the spawn lock of its state; then B's
+    // daemon dies as a crash would, leaving the lock file and no endpoint.
+    let mut first = start();
+    assert_workspace(&first.view(2, None), &project);
+    drop(first);
+    daemon_b.stop();
+    let state_b = state.join(format!("daemon-p5-{identity_b}"));
+    // Windows locks this file and leaves it behind; elsewhere the lock is on
+    // the directory, so a left file is placed here to the same effect.
+    let left = state_b.join(".daemon-spawn.lock");
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&left)
+        .unwrap();
+    assert!(left.is_file());
+    let _ = std::fs::remove_file(state_b.join("endpoint.json"));
+
+    let mut next = start();
+    assert_workspace(&next.view(3, None), &project);
     assert_eq!(daemon_directories(&state).len(), 2);
 }
 

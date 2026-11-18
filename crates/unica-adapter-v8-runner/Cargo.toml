@@ -30,6 +30,5 @@ unica-workspace = { path = "../unica-workspace", features = ["test-support"] }
 tempfile.workspace = true
 
 [package.metadata.unica]
-version-literal-baseline = 2
 component = "adapter"
 file-io = "owned"

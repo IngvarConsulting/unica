@@ -48,10 +48,9 @@ source-set:
     path: src/external-reports
 ```
 
-Для нового изолированного workspace полный минимальный пример имеет также обязательный runtime-контекст. `v8project.yaml`:
+Для нового изолированного workspace полный минимальный пример. `workPath` не обязателен: без него раннер работает в `.build/v8-runner`. `v8project.yaml`:
 
 ```yaml
-workPath: build/runtime
 format: DESIGNER
 source-set:
   - name: external-reports
@@ -67,7 +66,7 @@ infobases:
     connection: 'File=build/ib'
 ```
 
-Ключ `execution_timeout` не пиши: раннер его не поддерживает, и Unica отказывает в запуске с ним.
+Ключ `execution_timeout` не пиши: раннер его не поддерживает и отказывает в запуске с ним.
 
 Не вызывай `infobase.create` ради заготовки или существующей проектной базы: он заводит базу, а для заготовки это не нужно. Для существующей connection сохранить настройки без переинициализации; `db-auth-check` может классифицировать только уже предоставленное runtime evidence и не запускает auth probe.
 

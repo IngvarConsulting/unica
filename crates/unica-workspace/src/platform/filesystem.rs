@@ -1552,6 +1552,79 @@ impl RetainedDirectoryCapability {
         }
     }
 
+    /// The stamps of the regular files directly in a relative directory,
+    /// taken in one pass over its retained descriptor; `None` when the
+    /// directory is absent. On Unix `fstatat` reads each inode, so every
+    /// stamp equals [`Self::relative_file_stamp`] of that file.
+    #[cfg(unix)]
+    pub(crate) fn relative_directory_file_stamps(
+        &self,
+        relative: &Path,
+    ) -> io::Result<Option<Vec<(std::ffi::OsString, FileStamp)>>> {
+        self.relative_directory_file_stamps_matching(relative, |_| true)
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn relative_directory_file_stamps_with_extension(
+        &self,
+        relative: &Path,
+        extension: &std::ffi::OsStr,
+    ) -> io::Result<Option<Vec<(std::ffi::OsString, FileStamp)>>> {
+        self.relative_directory_file_stamps_matching(relative, |name| {
+            Path::new(name).extension() == Some(extension)
+        })
+    }
+
+    #[cfg(unix)]
+    fn relative_directory_file_stamps_matching(
+        &self,
+        relative: &Path,
+        selected: impl Fn(&std::ffi::OsStr) -> bool,
+    ) -> io::Result<Option<Vec<(std::ffi::OsString, FileStamp)>>> {
+        use std::path::Component;
+
+        let mut directory = self.retained.directory.try_clone()?;
+        for component in relative.components() {
+            let Component::Normal(name) = component else {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "relative directory path contains a non-normal component",
+                ));
+            };
+            directory = match open_directory_child_nofollow(&directory, name) {
+                Ok(child) => child,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+                Err(error) => return Err(error),
+            };
+        }
+        #[cfg(any(test, feature = "test-support"))]
+        retained_read_probe::record(|| {
+            retained_read_probe::RetainedRead::Listed(self.path.join(relative))
+        });
+        directory_regular_file_stamps(&directory, selected).map(Some)
+    }
+
+    /// Elsewhere stamps are taken from each opened file. On Windows a
+    /// directory enumeration reports the length and times of the directory
+    /// entry, which NTFS updates lazily (on close, for the name written
+    /// through) and SMB caches: they need not match the file.
+    #[cfg(not(unix))]
+    pub(crate) fn relative_directory_file_stamps(
+        &self,
+        _relative: &Path,
+    ) -> io::Result<Option<Vec<(std::ffi::OsString, FileStamp)>>> {
+        Ok(None)
+    }
+
+    #[cfg(not(unix))]
+    pub(crate) fn relative_directory_file_stamps_with_extension(
+        &self,
+        _relative: &Path,
+        _extension: &std::ffi::OsStr,
+    ) -> io::Result<Option<Vec<(std::ffi::OsString, FileStamp)>>> {
+        Ok(None)
+    }
+
     pub(crate) fn open_relative_regular_nofollow(&self, relative: &Path) -> io::Result<fs::File> {
         use std::path::Component;
 
@@ -2375,11 +2448,11 @@ pub(crate) fn open_absolute_directory_path_nofollow(path: &Path) -> io::Result<f
     let mut current = open_directory_nofollow(Path::new("/"))?;
     for component in path.components() {
         match component {
-            Component::RootDir | Component::CurDir => {}
+            Component::RootDir => {}
             Component::Normal(name) => {
                 current = open_directory_child_nofollow(&current, name)?;
             }
-            Component::ParentDir | Component::Prefix(_) => {
+            Component::CurDir | Component::ParentDir | Component::Prefix(_) => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
                     "secure directory path contains a non-normal component",
@@ -2441,7 +2514,7 @@ pub(crate) fn open_or_create_absolute_directory_path_nofollow(path: &Path) -> io
     let mut current = open_directory_nofollow(Path::new("/"))?;
     for component in path.components() {
         match component {
-            Component::RootDir | Component::CurDir => {}
+            Component::RootDir => {}
             Component::Normal(name) => {
                 current = match open_directory_child_nofollow(&current, name) {
                     Ok(directory) => directory,
@@ -2460,7 +2533,7 @@ pub(crate) fn open_or_create_absolute_directory_path_nofollow(path: &Path) -> io
                     Err(error) => return Err(error),
                 };
             }
-            Component::ParentDir | Component::Prefix(_) => {
+            Component::CurDir | Component::ParentDir | Component::Prefix(_) => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
                     "secure directory path contains a non-normal component",
@@ -2616,6 +2689,60 @@ pub(crate) fn read_directory_names_with_limit(
     }
     names.sort();
     Ok(names)
+}
+
+/// The stamps of the regular files in `directory`: `fstatat` without
+/// following links for each name of one `readdir` pass.
+#[cfg(unix)]
+fn directory_regular_file_stamps(
+    directory: &fs::File,
+    selected: impl Fn(&std::ffi::OsStr) -> bool,
+) -> io::Result<Vec<(std::ffi::OsString, FileStamp)>> {
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::io::AsRawFd;
+
+    let mut stamps = Vec::new();
+    for entry in cap_primitives::fs::read_base_dir(directory)? {
+        let name = entry?.file_name();
+        if !selected(&name) {
+            continue;
+        }
+        let Ok(c_name) = std::ffi::CString::new(name.as_bytes()) else {
+            continue;
+        };
+        let mut status = std::mem::MaybeUninit::<libc::stat>::uninit();
+        // SAFETY: the directory descriptor stays open, the name is NUL-terminated and
+        // `status` is writable storage that fstatat fully initializes on success.
+        let result = unsafe {
+            libc::fstatat(
+                directory.as_raw_fd(),
+                c_name.as_ptr(),
+                status.as_mut_ptr(),
+                libc::AT_SYMLINK_NOFOLLOW,
+            )
+        };
+        if result != 0 {
+            let error = io::Error::last_os_error();
+            if error.kind() == io::ErrorKind::NotFound {
+                continue;
+            }
+            return Err(error);
+        }
+        // SAFETY: fstatat returned success, so it initialized `status`.
+        let status = unsafe { status.assume_init() };
+        if status.st_mode & libc::S_IFMT != libc::S_IFREG {
+            continue;
+        }
+        #[allow(clippy::unnecessary_cast)]
+        let stamp = FileStamp::from_observation(
+            FileIdentity::from_observation(status.st_dev as u64, status.st_ino as u64),
+            status.st_size as u64,
+            change_time_as_system_time((status.st_mtime as i64, status.st_mtime_nsec as i64)),
+            change_time_as_system_time((status.st_ctime as i64, status.st_ctime_nsec as i64)),
+        );
+        stamps.push((name, stamp));
+    }
+    Ok(stamps)
 }
 
 #[cfg(unix)]
@@ -2982,6 +3109,28 @@ pub(crate) fn open_directory_nofollow(path: &Path) -> io::Result<fs::File> {
     Ok(file)
 }
 
+/// Отклонить `.` и `..` до нормализации пути.
+///
+/// `std::path::absolute` на Windows разрешает их лексически, по правилам
+/// `GetFullPathName`, и после неё путь выглядит нормальным. На Unix она их
+/// сохраняет, и такой путь отклоняется. Проверка до нормализации даёт обеим
+/// ОС одно правило и один текст отказа.
+#[cfg(windows)]
+fn reject_non_normal_path_components(path: &Path) -> io::Result<()> {
+    use std::path::Component;
+
+    if path
+        .components()
+        .any(|component| matches!(component, Component::ParentDir | Component::CurDir))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "secure directory path contains a non-normal component",
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(windows)]
 pub(crate) fn open_absolute_directory_path_nofollow(path: &Path) -> io::Result<fs::File> {
     use std::path::Component;
@@ -2992,6 +3141,7 @@ pub(crate) fn open_absolute_directory_path_nofollow(path: &Path) -> io::Result<f
             "secure directory path must be absolute",
         ));
     }
+    reject_non_normal_path_components(path)?;
     let absolute = std::path::absolute(path)?;
     let mut components = absolute.components();
     let Some(Component::Prefix(prefix)) = components.next() else {
@@ -3014,8 +3164,10 @@ pub(crate) fn open_absolute_directory_path_nofollow(path: &Path) -> io::Result<f
             Component::Normal(name) => {
                 current = open_directory_child_nofollow(&current, name)?;
             }
-            Component::CurDir => {}
-            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+            Component::CurDir
+            | Component::ParentDir
+            | Component::RootDir
+            | Component::Prefix(_) => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
                     "secure directory path contains a non-normal component",
@@ -3036,6 +3188,7 @@ pub(crate) fn open_or_create_absolute_directory_path_nofollow(path: &Path) -> io
             "secure directory path must be absolute",
         ));
     }
+    reject_non_normal_path_components(path)?;
     let absolute = std::path::absolute(path)?;
     let mut components = absolute.components();
     let Some(Component::Prefix(prefix)) = components.next() else {
@@ -3070,8 +3223,10 @@ pub(crate) fn open_or_create_absolute_directory_path_nofollow(path: &Path) -> io
                     Err(error) => return Err(error),
                 };
             }
-            Component::CurDir => {}
-            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+            Component::CurDir
+            | Component::ParentDir
+            | Component::RootDir
+            | Component::Prefix(_) => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
                     "secure directory path contains a non-normal component",
@@ -6636,6 +6791,51 @@ mod medium_tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    /// На Windows `std::path::absolute` убирала `.` и `..` до проверки, и путь
+    /// проходил; на Unix тот же путь отклонялся. Тест держит одно правило
+    /// и один текст отказа на обеих ОС.
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn secure_absolute_directory_open_rejects_parent_component_on_every_os() {
+        use super::{
+            open_absolute_directory_path_nofollow, open_or_create_absolute_directory_path_nofollow,
+        };
+        use std::path::PathBuf;
+
+        let created = unique_temp_root("secure-open-non-normal");
+        fs::create_dir_all(created.join("inner")).unwrap();
+        // Корень берётся физическим: временный каталог macOS лежит под
+        // симлинком `/var`, и защищённое открытие отвергло бы его раньше,
+        // чем дошло бы до проверяемого элемента.
+        let root = fs::canonicalize(&created).unwrap();
+        // Цель существует: отказ даёт сам элемент `..`, а не её отсутствие.
+        assert!(root.join("inner").is_dir());
+        // Путь собирается строкой: на пути с префиксом `\\?\` (его даёт
+        // `canonicalize` на Windows) `PathBuf::push` убрал бы `..` сам,
+        // и проверялся бы уже нормализованный путь.
+        let mut text = root.into_os_string();
+        for name in ["inner", "..", "inner"] {
+            text.push(std::path::MAIN_SEPARATOR_STR);
+            text.push(name);
+        }
+        let detoured = PathBuf::from(text);
+
+        for error in [
+            open_absolute_directory_path_nofollow(&detoured)
+                .expect_err("путь с `..` не открывается"),
+            open_or_create_absolute_directory_path_nofollow(&detoured)
+                .expect_err("путь с `..` не создаётся"),
+        ] {
+            assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+            assert_eq!(
+                error.to_string(),
+                "secure directory path contains a non-normal component"
+            );
+        }
+
+        fs::remove_dir_all(created).unwrap();
+    }
+
     #[cfg(any(unix, windows))]
     #[test]
     fn secure_absolute_directory_creation_rejects_link_ancestor_without_writing_through_it() {
@@ -6718,7 +6918,11 @@ mod medium_tests {
             let real = root.join("real");
             let link = root.join("link");
             fs::create_dir_all(&real).unwrap();
-            std::os::windows::fs::symlink_dir(&real, &link).unwrap();
+            // Предмет проверки — точка повторного разбора, а отказ стоит
+            // на её атрибуте, не на метке ссылки. Соединение каталогов несёт
+            // тот же атрибут и создаётся без привилегии, поэтому проверка
+            // исполняется здесь и покрывает второй вид точки.
+            crate::platform::testing::create_directory_junction_for_test(&real, &link).unwrap();
 
             let error = open_directory_nofollow(&link).unwrap_err();
 
@@ -7185,7 +7389,21 @@ mod medium_tests {
             fs::create_dir_all(&root).unwrap();
             let target = root.join("target.txt");
             fs::write(&target, b"target").unwrap();
-            std::os::windows::fs::symlink_file(&target, root.join("link.txt")).unwrap();
+            // Подменяется файл, а соединение бывает только на каталог:
+            // без привилегии ссылок эту точку повторного разбора не создать.
+            let link = crate::platform::testing::create_file_link_fixture_for_test(
+                &target,
+                root.join("link.txt"),
+            )
+            .unwrap();
+            if link != crate::platform::testing::FileLinkFixtureOutcome::Created {
+                fs::remove_dir_all(&root).unwrap();
+                unica_process::test_support::skip_without_host_capability(
+                    unica_process::test_support::HostCapability::Symlink,
+                    "the reparse point of the test is a file symbolic link",
+                );
+                return;
+            }
             let parent = open_directory_nofollow(&root).unwrap();
 
             let (opened, kind) = open_any_child_nofollow(&parent, std::ffi::OsStr::new("link.txt"))
@@ -8788,5 +9006,123 @@ mod host_path_comparison_tests {
             Path::new("/work/Foo"),
             Path::new("/work/foo")
         ));
+    }
+}
+
+#[cfg(test)]
+mod directory_stamp_tests {
+    use crate::read::open_source_directory;
+    use std::path::Path;
+
+    /// Selecting descriptor names preserves each file's physical stamp and
+    /// still excludes links and directories even when they have that suffix.
+    /// rule: INV.SOURCE.CONFIGURATION-ROOT-CACHE-REUSE
+    #[cfg(unix)]
+    #[test]
+    fn selected_directory_stamps_keep_regular_file_identity_and_extension() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(directory.path()).unwrap();
+        std::fs::create_dir_all(root.join("CommonModules/Directory.xml")).unwrap();
+        std::fs::write(root.join("CommonModules/First.xml"), b"descriptor").unwrap();
+        std::fs::write(root.join("CommonModules/Other.bsl"), b"unselected").unwrap();
+        std::os::unix::fs::symlink(
+            root.join("CommonModules/First.xml"),
+            root.join("CommonModules/Linked.xml"),
+        )
+        .unwrap();
+        let source = open_source_directory(&root).unwrap();
+        let stamps = source
+            .relative_directory_file_stamps_with_extension(
+                Path::new("CommonModules"),
+                std::ffi::OsStr::new("xml"),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(stamps.len(), 1);
+        assert_eq!(stamps[0].0, "First.xml");
+        assert_eq!(
+            Some(stamps[0].1),
+            source
+                .relative_file_stamp(Path::new("CommonModules/First.xml"))
+                .unwrap()
+        );
+        assert!(source
+            .relative_directory_file_stamps_with_extension(
+                Path::new("Absent"),
+                std::ffi::OsStr::new("xml")
+            )
+            .unwrap()
+            .is_none());
+        std::fs::create_dir(root.join("Empty")).unwrap();
+        std::fs::write(root.join("Empty/Other.bsl"), b"unselected").unwrap();
+        assert!(source
+            .relative_directory_file_stamps_with_extension(
+                Path::new("Empty"),
+                std::ffi::OsStr::new("xml")
+            )
+            .unwrap()
+            .unwrap()
+            .is_empty());
+    }
+
+    /// On Unix one pass over a directory gives each regular file the stamp
+    /// its own open gives, so retained proofs compare equal whichever way the
+    /// stamp was taken; links, directories and an absent directory are left
+    /// out.
+    /// rule: INV.SOURCE.CONFIGURATION-ROOT-CACHE-REUSE
+    #[cfg(unix)]
+    #[test]
+    fn directory_stamps_equal_the_stamps_of_opened_files() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(directory.path()).unwrap();
+        std::fs::create_dir_all(root.join("CommonModules/Nested")).unwrap();
+        std::fs::write(root.join("CommonModules/First.xml"), b"first").unwrap();
+        std::fs::write(root.join("CommonModules/Second.xml"), b"second, longer").unwrap();
+        std::os::unix::fs::symlink(
+            root.join("CommonModules/First.xml"),
+            root.join("CommonModules/Linked.xml"),
+        )
+        .unwrap();
+        let source = open_source_directory(&root).unwrap();
+
+        let mut stamps = source
+            .relative_directory_file_stamps(Path::new("CommonModules"))
+            .unwrap()
+            .expect("an existing directory is listed");
+        stamps.sort_by(|left, right| left.0.cmp(&right.0));
+        let names = stamps
+            .iter()
+            .map(|(name, _)| name.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(names, ["First.xml", "Second.xml"]);
+        for (name, stamp) in &stamps {
+            let opened = source
+                .relative_file_stamp(&Path::new("CommonModules").join(name))
+                .unwrap()
+                .unwrap();
+            assert_eq!(*stamp, opened, "{name:?}");
+        }
+        assert!(source
+            .relative_directory_file_stamps(Path::new("Absent"))
+            .unwrap()
+            .is_none());
+    }
+
+    /// A Windows directory entry need not carry the file's own length and
+    /// times, so the port takes no stamps from it: every stamp comes from the
+    /// opened file.
+    /// rule: INV.SOURCE.CONFIGURATION-ROOT-CACHE-REUSE
+    #[cfg(not(unix))]
+    #[test]
+    fn directory_stamps_are_not_taken_from_directory_entries() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(directory.path()).unwrap();
+        std::fs::create_dir_all(root.join("CommonModules")).unwrap();
+        std::fs::write(root.join("CommonModules/First.xml"), b"first").unwrap();
+        let source = open_source_directory(&root).unwrap();
+        assert!(source
+            .relative_directory_file_stamps(Path::new("CommonModules"))
+            .unwrap()
+            .is_none());
     }
 }

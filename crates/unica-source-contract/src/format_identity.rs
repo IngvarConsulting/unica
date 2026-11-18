@@ -263,6 +263,222 @@ pub(crate) fn platform_xml_profile_of_line(line: PlatformLine) -> Option<crate::
     .map(crate::SourceProfile::PlatformXmlRelease)
 }
 
+/// What a platform line adds to the root of a configuration: the property,
+/// or one value of it, and the line it exists from. The values are those of
+/// the platform XDTO export of each line
+/// (`tests/fixtures/formats/platform_xml/<format>/xdto/`); a property or value
+/// absent here exists in every described line (INV.SOURCE.PROFILE-CAPABILITIES).
+const CONFIGURATION_ROOT_LINE_ADDITIONS: &[(&str, Option<&str>, PlatformLine)] = &[
+    ("Caption", None, PlatformLine::new(8, 5, 1)),
+    ("ShortCaption", None, PlatformLine::new(8, 5, 1)),
+    (
+        "MainClientApplicationWindowInterfaceVariant",
+        None,
+        PlatformLine::new(8, 5, 1),
+    ),
+    ("ClientApplicationTheme", None, PlatformLine::new(8, 5, 1)),
+    (
+        "ClientApplicationWindowsOpenVariant",
+        None,
+        PlatformLine::new(8, 5, 1),
+    ),
+    (
+        "Version85InterfaceMigrationMode",
+        None,
+        PlatformLine::new(8, 5, 1),
+    ),
+    (
+        "InterfaceCompatibilityMode",
+        Some("Version8_5"),
+        PlatformLine::new(8, 5, 1),
+    ),
+    // The extension root of 8.5.4 (`2.22/empty_extension`): what the extension
+    // does when the configuration lacks one of its objects, how it checks the
+    // extended properties and reduces types.
+    (
+        "ActionOnConfigurationObjectMissing",
+        None,
+        PlatformLine::new(8, 5, 4),
+    ),
+    (
+        "DefaultExtensionPropertyCheckAction",
+        None,
+        PlatformLine::new(8, 5, 4),
+    ),
+    (
+        "TypeReductionByConfigurationExtensionMode",
+        None,
+        PlatformLine::new(8, 5, 4),
+    ),
+    (
+        "ActionOnExtendedConfigurationObjectsMissing",
+        None,
+        PlatformLine::new(8, 5, 4),
+    ),
+    // The modes of the line itself: 8.5.1 refuses to load `Version8_5_4`
+    // ("необходима версия платформы не меньше, чем 8.5.4"). The Designer of
+    // 8.5.1 lists the modes up to 8.3.27, but the platform loads and exports
+    // `Version8_5_1` from a file.
+    (
+        "CompatibilityMode",
+        Some("Version8_5_1"),
+        PlatformLine::new(8, 5, 1),
+    ),
+    (
+        "CompatibilityMode",
+        Some("Version8_5_4"),
+        PlatformLine::new(8, 5, 4),
+    ),
+    (
+        "ConfigurationExtensionCompatibilityMode",
+        Some("Version8_5_1"),
+        PlatformLine::new(8, 5, 1),
+    ),
+    (
+        "ConfigurationExtensionCompatibilityMode",
+        Some("Version8_5_4"),
+        PlatformLine::new(8, 5, 4),
+    ),
+];
+
+/// A configuration root property, or a value of one, that a later line than
+/// some set's adds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LineAddition {
+    pub property: &'static str,
+    pub value: Option<&'static str>,
+    pub since: PlatformLine,
+}
+
+/// What lines later than `line` add to a configuration root; a set without a
+/// known line has none of the additions.
+pub fn configuration_root_additions_after(line: Option<PlatformLine>) -> Vec<LineAddition> {
+    CONFIGURATION_ROOT_LINE_ADDITIONS
+        .iter()
+        .filter(|(_, _, since)| line.is_none_or(|line| line < *since))
+        .map(|(property, value, since)| LineAddition {
+            property,
+            value: *value,
+            since: *since,
+        })
+        .collect()
+}
+
+/// What a platform line adds to metadata objects and their members: the
+/// object or member kind, its property and the line it exists from, by the
+/// all_kinds export, the empty external report and the platform XDTO of each
+/// line (INV.SOURCE.PROFILE-CAPABILITIES).
+const MEMBER_LINE_ADDITIONS: &[(&str, &str, PlatformLine)] = &[
+    ("EnumValue", "Color", PlatformLine::new(8, 5, 1)),
+    ("Report", "AuxiliaryVariantForm", PlatformLine::new(8, 5, 1)),
+    (
+        "ExternalReport",
+        "AuxiliaryVariantForm",
+        PlatformLine::new(8, 5, 1),
+    ),
+    (
+        "Form",
+        "UseInInterfaceCompatibilityMode",
+        PlatformLine::new(8, 5, 1),
+    ),
+    (
+        "CommonForm",
+        "UseInInterfaceCompatibilityMode",
+        PlatformLine::new(8, 5, 1),
+    ),
+    // The auxiliary forms of a configuration root (the all_kinds export of
+    // 2.21).
+    (
+        "Configuration",
+        "AuxiliaryReportForm",
+        PlatformLine::new(8, 5, 1),
+    ),
+    (
+        "Configuration",
+        "AuxiliaryReportVariantForm",
+        PlatformLine::new(8, 5, 1),
+    ),
+    (
+        "Configuration",
+        "AuxiliaryReportSettingsForm",
+        PlatformLine::new(8, 5, 1),
+    ),
+    (
+        "Configuration",
+        "AuxiliaryDynamicListSettingsForm",
+        PlatformLine::new(8, 5, 1),
+    ),
+    (
+        "Configuration",
+        "AuxiliaryDataHistoryChangeHistoryForm",
+        PlatformLine::new(8, 5, 1),
+    ),
+    (
+        "Configuration",
+        "AuxiliaryDataHistoryVersionDataForm",
+        PlatformLine::new(8, 5, 1),
+    ),
+    (
+        "Configuration",
+        "AuxiliaryDataHistoryVersionDifferencesForm",
+        PlatformLine::new(8, 5, 1),
+    ),
+    (
+        "Configuration",
+        "AuxiliaryCollaborationSystemUsersChoiceForm",
+        PlatformLine::new(8, 5, 1),
+    ),
+];
+
+/// The line a `member` kind's `property` exists from, when a later line than
+/// the first described one adds it.
+pub fn member_property_since(member: &str, property: &str) -> Option<PlatformLine> {
+    MEMBER_LINE_ADDITIONS
+        .iter()
+        .find(|(kind, name, _)| *kind == member && *name == property)
+        .map(|(_, _, since)| *since)
+}
+
+/// Whether a set of platform `line` has the `property` of a `member` kind; a
+/// set without a known line has only what every described line has.
+pub fn member_property_exists(line: Option<PlatformLine>, member: &str, property: &str) -> bool {
+    member_property_since(member, property)
+        .is_none_or(|since| line.is_some_and(|line| line >= since))
+}
+
+/// Root metadata kinds a later line than the first described one adds, with
+/// the line they exist from, by the all_kinds export of each line
+/// (INV.SOURCE.PROFILE-CAPABILITIES). A kind absent here exists in every
+/// described line.
+const METADATA_KIND_LINE_ADDITIONS: &[(&str, PlatformLine)] = &[
+    ("PaletteColor", PlatformLine::new(8, 5, 1)),
+    ("Queue", PlatformLine::new(8, 5, 4)),
+];
+
+/// The line a root metadata `kind` exists from, when a later line than the
+/// first described one adds it.
+pub fn metadata_kind_since(kind: &str) -> Option<PlatformLine> {
+    METADATA_KIND_LINE_ADDITIONS
+        .iter()
+        .find(|(name, _)| *name == kind)
+        .map(|(_, since)| *since)
+}
+
+/// Whether a set of platform `line` has the root metadata `kind`; a set
+/// without a known line has only what every described line has.
+pub fn metadata_kind_exists(line: Option<PlatformLine>, kind: &str) -> bool {
+    metadata_kind_since(kind).is_none_or(|since| line.is_some_and(|line| line >= since))
+}
+
+/// The platform line of the Designer export format a root records: 8.3.27
+/// for 2.20, the release's line for a later format, `None` for any other.
+pub fn export_format_line(raw: &str) -> Option<PlatformLine> {
+    if raw == crate::ACTIVE_SERIALIZATION_FORMAT {
+        return Some(PlatformLine::new(8, 3, 27));
+    }
+    PlatformXmlRelease::for_export_format(raw).map(PlatformXmlRelease::platform_line)
+}
+
 /// The platform lines whose capabilities are described, with their text.
 pub const DESCRIBED_PLATFORM_LINES: &[(PlatformLine, &str)] = &[
     (PlatformLine::new(8, 3, 27), "8.3.27"),
