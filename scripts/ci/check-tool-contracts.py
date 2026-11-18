@@ -153,7 +153,7 @@ def validate_v8_runner_failed_partial_receipt(
     # провайдера, поэтому здесь признак обязан быть `true`: `false` означал бы,
     # что раннер отказал до платформы, а ошибку подписал платформенной.
     # Ключи сверены со схемой `docs/schemas/command-data/push.schema.json`
-    # раннера 0.17 (push-data v6): `detection` и `sessions` необязательны,
+    # раннера 0.18 (push-data v7): `detection` и `sessions` необязательны,
     # `provider` схема тоже не требует, но квитанция `platform_failure` его несёт.
     data = closed_mapping(
         root["data"],

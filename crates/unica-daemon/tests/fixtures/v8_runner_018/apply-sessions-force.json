@@ -1,0 +1,57 @@
+{
+  "ok": true,
+  "command": "apply",
+  "duration_ms": 1152,
+  "data": {
+    "provider": {
+      "selected": "agent",
+      "origin": {
+        "kind": "default"
+      },
+      "endpoint": {
+        "mode": "managed",
+        "address": "127.0.0.1:63282",
+        "live": {
+          "reused": true,
+          "holders": [],
+          "kept": true
+        }
+      }
+    },
+    "ok": true,
+    "provider_dispatched": true,
+    "steps": [
+      {
+        "source_set": "main",
+        "purpose": "CONFIGURATION",
+        "outcome": "applied",
+        "message": "applied the main configuration to the database configuration",
+        "duration_ms": 1149,
+        "generation": "recorded"
+      }
+    ],
+    "duration_ms": 1152,
+    "sessions": {
+      "terminated": [
+        {
+          "computer": "workstation",
+          "application": "1CV8C",
+          "application_title": "Тонкий клиент",
+          "started": "2026-11-19T03:39:35",
+          "user": null,
+          "id": null,
+          "number": 1,
+          "from_this_machine": true,
+          "excluded": false
+        }
+      ],
+      "lock": {
+        "state": "unknown",
+        "message": null
+      },
+      "message_delivered": false
+    }
+  },
+  "warnings": [],
+  "steps": []
+}

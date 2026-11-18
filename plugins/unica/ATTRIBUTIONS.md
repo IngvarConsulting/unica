@@ -47,8 +47,8 @@ Unica поставляет LSP-бинарник `bsl-analyzer` и локальн
 - Репозиторий: [IngvarConsulting/v8-runner-rust](https://github.com/IngvarConsulting/v8-runner-rust)
 - Автор: [v8-runner contributors](https://github.com/alkoleft/v8-runner-rust/graphs/contributors)
 - Исходный проект: [alkoleft/v8-runner-rust](https://github.com/alkoleft/v8-runner-rust)
-- Закреплённая версия: `0.17.4`, source tag и asset tag `v0.17.4`,
-  commit `0781c9b125a72231e4b17ce24253c29901750f63`
+- Закреплённая версия: `0.18.0`, source tag и asset tag `v0.18.0`,
+  commit `98bd362e51a587d67f4d40111d47be93273e885f`
 - Лицензия: [AGPL-3.0-only](third-party/licenses/v8-runner/LICENSE)
 
 `v8-runner` запускается Unica как отдельный внутренний процесс. На его

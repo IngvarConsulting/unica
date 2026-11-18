@@ -1,0 +1,72 @@
+{
+  "ok": false,
+  "command": "apply",
+  "duration_ms": 181,
+  "data": {
+    "provider": {
+      "selected": "agent",
+      "origin": {
+        "kind": "default"
+      },
+      "endpoint": {
+        "mode": "managed",
+        "address": "127.0.0.1:63282",
+        "live": {
+          "reused": true,
+          "holders": [],
+          "kept": true
+        }
+      }
+    },
+    "ok": false,
+    "provider_dispatched": true,
+    "steps": [
+      {
+        "source_set": "main",
+        "purpose": "CONFIGURATION",
+        "outcome": "failed",
+        "message": "the database configuration was not updated: other sessions hold the infobase (Тонкий клиент on workstation since 2026-11-19T03:39:35); end them with --sessions force, or close them and repeat the command; the live Designer agent (pid 14748, workPath 'C:\\workspace\\build') stays connected to it; `v8-runner agent release` in its working copy disconnects it; platform error: agent update_db_cfg; agent command failed [InfoBaseExclusiveLockRequired]: Ошибка исключительной блокировки информационной базы.\nБаза данных заблокирована:\nкомпьютер: workstation, сеанс : 1, начат: 19.11.2026 в 3:39:35, приложение: Тонкий клиент\nпо причине:\nБаза данных заблокирована:\nкомпьютер: workstation, сеанс : 1, начат: 19.11.2026 в 3:39:35, приложение: Тонкий клиент\nОбработка структуры базы данных...",
+        "duration_ms": 178
+      }
+    ],
+    "duration_ms": 181
+  },
+  "warnings": [],
+  "steps": [],
+  "error": {
+    "code": "infobase_sessions",
+    "kind": "workspace",
+    "message": "the database configuration was not updated: other sessions hold the infobase (Тонкий клиент on workstation since 2026-11-19T03:39:35); end them with --sessions force, or close them and repeat the command; the live Designer agent (pid 14748, workPath 'C:\\workspace\\build') stays connected to it; `v8-runner agent release` in its working copy disconnects it; platform error: agent update_db_cfg; agent command failed [InfoBaseExclusiveLockRequired]: Ошибка исключительной блокировки информационной базы.\nБаза данных заблокирована:\nкомпьютер: workstation, сеанс : 1, начат: 19.11.2026 в 3:39:35, приложение: Тонкий клиент\nпо причине:\nБаза данных заблокирована:\nкомпьютер: workstation, сеанс : 1, начат: 19.11.2026 в 3:39:35, приложение: Тонкий клиент\nОбработка структуры базы данных...",
+    "next": {
+      "command": "apply",
+      "source_set": "main",
+      "keys": {
+        "--sessions": "force"
+      }
+    },
+    "sessions": {
+      "base": "Srvr=127.0.0.1:25392;Ref=u018",
+      "list": [
+        {
+          "computer": "workstation",
+          "application": "1CV8C",
+          "application_title": "Тонкий клиент",
+          "started": "2026-11-19T03:39:35",
+          "user": null,
+          "id": null,
+          "number": 1,
+          "from_this_machine": true,
+          "excluded": false
+        }
+      ],
+      "from_this_machine": true,
+      "terminable": true,
+      "lock": {
+        "state": "unknown",
+        "message": null
+      },
+      "evidence": "executor",
+      "executor_error": null
+    }
+  }
+}
