@@ -528,12 +528,12 @@ impl Session {
                 })
             })
             .ok_or("unknown or expired variable reference")?;
-        let mut values = if let Some(children) = evaluated_children {
-            children
-        } else if collection {
+        let mut values = if collection {
             let evaluation = Uuid::new_v4();
             let reply = self.rdbg.collection(target, level, evaluation, &path)?;
             self.wait_for_calculation(reply, evaluation, events, read_collection)?
+        } else if let Some(children) = evaluated_children {
+            children
         } else {
             let evaluation = Uuid::new_v4();
             let reply = self.rdbg.variables(target, level, evaluation, &path)?;
@@ -587,20 +587,27 @@ impl Session {
         let mut result = Vec::with_capacity(values.len());
         for value in values {
             let mut reference = 0;
-            if !collection
-                && (value.expandable || value.indexed)
-                && path.first().map_or_else(
-                    || is_identifier(&value.name),
-                    |root| root.split('.').all(is_identifier),
-                )
+            if (value.expandable || value.indexed)
+                && path.first().is_none_or(|root| is_variable_address(root))
             {
-                let mut child_path = path.clone();
-                child_path.push(value.name.clone());
-                reference = frame.reference_for(child_path, &mut self.next_id);
-                if value.indexed {
-                    frame.collection_paths.insert(reference);
+                // RDBG property steps only accept named properties. An indexed
+                // child needs a BSL expression and is read on its own expansion.
+                let child_path = if collection {
+                    vec![format!("{}{}", path.join("."), value.name)]
+                } else if is_identifier(&value.name) {
+                    let mut child_path = path.clone();
+                    child_path.push(value.name.clone());
+                    child_path
                 } else {
-                    frame.collection_paths.remove(&reference);
+                    Vec::new()
+                };
+                if !child_path.is_empty() {
+                    reference = frame.reference_for(child_path, &mut self.next_id);
+                    if value.indexed {
+                        frame.collection_paths.insert(reference);
+                    } else {
+                        frame.collection_paths.remove(&reference);
+                    }
                 }
             }
             let mut variable = json!({"name":value.name,"value":value.summary,
@@ -826,6 +833,9 @@ impl Session {
                 frame
                     .variable_paths
                     .retain(|id, _| !frame.evaluated_children.contains_key(id));
+                frame
+                    .collection_paths
+                    .retain(|id| frame.variable_paths.contains_key(id));
                 frame.evaluated_children.clear();
                 frame.snapshots.clear();
             }
@@ -861,16 +871,22 @@ impl Session {
             .flat_map(|target| &mut target.frames)
             .find(|frame| frame.id == frame_id)
             .ok_or("unknown or expired frame")?;
-        let reference = if value.expandable {
+        let reference = if value.expandable || value.indexed {
             self.next_id += 1;
             let reference = self.next_id;
             frame.variable_paths.insert(reference, path);
+            if value.indexed {
+                frame.collection_paths.insert(reference);
+            }
             frame.evaluated_children.insert(reference, children);
             reference
         } else {
             0
         };
         let mut response = json!({(key): value.summary, "variablesReference": reference});
+        if let Some(count) = value.indexed_count.filter(|_| value.indexed) {
+            response["indexedVariables"] = json!(count);
+        }
         if !value.type_name.is_empty() {
             response["type"] = json!(value.type_name);
         }
@@ -1214,6 +1230,18 @@ struct ContextVariable {
     expandable: bool,
     indexed: bool,
     indexed_count: Option<u64>,
+}
+
+fn is_variable_address(address: &str) -> bool {
+    address.split('.').all(|segment| {
+        let mut parts = segment.split('[');
+        parts.next().is_some_and(is_identifier)
+            && parts.all(|index| {
+                index.strip_suffix(']').is_some_and(|index| {
+                    !index.is_empty() && index.bytes().all(|byte| byte.is_ascii_digit())
+                })
+            })
+    })
 }
 
 fn is_identifier(name: &str) -> bool {
