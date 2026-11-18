@@ -2176,8 +2176,8 @@ fn plan_apply(
                             "an issued metadata authority has the exact writable source profile",
                         ),
                         &operations,
-                    )
-                    ?;
+                        cursor,
+                    )?;
                 provisional.extend(batch_effects_as_provisional(
                     &before, &staged, planned, cursor,
                 ));
