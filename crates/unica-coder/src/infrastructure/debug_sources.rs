@@ -3,15 +3,20 @@
 use std::path::Path;
 
 use roxmltree::{Document, Node};
-use unica_address::address::QualifiedAddress;
+use unica_address::{
+    address::{NodeKind, QualifiedAddress},
+    module_routes::{has_direct_module_route, has_nested_module_role, ModuleRole},
+    source_target::MetadataAddress,
+};
 use unica_source_contract::{
     debug_source::{DebugModuleId, DebugModuleSource},
     read::SourceDirectory,
     SourceFormat, SourceSetKind, SourceSetState,
 };
 use unica_source_designer::{
+    layout::metadata_descriptor_relative,
     module_layout::{
-        logical_module_from_metadata, platform_xml_module_identity, PlatformXmlModuleRole,
+        logical_module_from_metadata, platform_xml_module_relative, PlatformXmlModuleRole,
     },
     registration::cf_edit_child_object_entries,
 };
@@ -76,85 +81,170 @@ fn read_modules(
         None
     };
 
-    add_module(
+    let mut index = SourceSetModules {
         root,
         set,
-        extension.as_deref(),
-        Path::new("Ext/ManagedApplicationModule.bsl"),
-        owner,
+        extension: extension.as_deref(),
         modules,
-    )?;
-    for entry in cf_edit_child_object_entries(&configuration)? {
-        if entry.type_name != "CommonModule" {
-            continue;
-        }
-        let target = unica_address::source_target::MetadataAddress::parse_logical(&format!(
-            "CommonModule.{}.Module",
-            entry.object_name
-        ))?;
-        let module_path =
-            unica_source_designer::module_layout::platform_xml_module_relative(&target)?;
-        if root.relative_file_stamp(&module_path)?.is_none() {
-            continue;
-        }
-        let identity = platform_xml_module_identity(&module_path)?;
-        let path = identity
-            .descriptors
-            .last()
-            .ok_or("missing common module descriptor")?;
-        let xml = descriptor(root, path)?;
-        let document = Document::parse(&xml)?;
-        let owner = metadata_owner(&document, "CommonModule")?;
-        if property(owner, "Name") != Some(entry.object_name.as_str()) {
-            return Err(format!(
-                "wrong metadata descriptor for {} in {set}",
-                entry.object_name
-            )
-            .into());
-        }
-        add_module(
-            root,
-            set,
-            extension.as_deref(),
-            &module_path,
+    };
+    if root
+        .relative_file_stamp(Path::new("Ext/ManagedApplicationModule.bsl"))?
+        .is_some()
+    {
+        index.add(
+            "ManagedApplicationModule",
+            PlatformXmlModuleRole::ManagedApplicationModule,
             owner,
-            modules,
         )?;
+    }
+    for entry in cf_edit_child_object_entries(&configuration)? {
+        let Ok(kind) = NodeKind::parse(&entry.type_name) else {
+            continue;
+        };
+        let name = &entry.object_name;
+        let metadata = format!("{}.{name}", kind.as_str());
+        match kind {
+            NodeKind::CommonModule => {
+                index.read(
+                    &format!("{metadata}.Module"),
+                    PlatformXmlModuleRole::Module,
+                    kind,
+                    name,
+                )?;
+            }
+            NodeKind::CommonForm => {
+                index.read(
+                    &format!("{metadata}.FormModule"),
+                    PlatformXmlModuleRole::FormModule,
+                    kind,
+                    name,
+                )?;
+            }
+            _ if has_direct_module_route(kind, ModuleRole::Object)
+                || has_nested_module_role(kind, ModuleRole::Form) =>
+            {
+                index.read_owner(&metadata, kind, name)?;
+            }
+            _ => {}
+        }
     }
     Ok(())
 }
 
-fn add_module(
-    root: &SourceDirectory,
-    set: &str,
-    extension: Option<&str>,
-    path: &Path,
-    owner: Node<'_, '_>,
-    modules: &mut Vec<DebugModuleSource>,
-) -> Result<()> {
-    if root.relative_file_stamp(path)?.is_none() {
-        return Ok(());
+struct SourceSetModules<'a> {
+    root: &'a SourceDirectory,
+    set: &'a str,
+    extension: Option<&'a str>,
+    modules: &'a mut Vec<DebugModuleSource>,
+}
+
+impl SourceSetModules<'_> {
+    fn read_owner(&mut self, metadata: &str, kind: NodeKind, name: &str) -> Result<()> {
+        let descriptor_path = descriptor_path(metadata)?;
+        if self.root.relative_file_stamp(&descriptor_path)?.is_none() {
+            return Ok(());
+        }
+        let xml = descriptor(self.root, &descriptor_path)?;
+        let document = Document::parse(&xml)?;
+        let owner = metadata_owner(&document, kind.as_str())?;
+        self.check_name(owner, name)?;
+
+        if has_direct_module_route(kind, ModuleRole::Object) {
+            let target = format!("{metadata}.ObjectModule");
+            if self.module_exists(&target)? {
+                self.add(&target, PlatformXmlModuleRole::ObjectModule, owner)?;
+            }
+        }
+
+        if has_nested_module_role(kind, ModuleRole::Form) {
+            for form in owner
+                .children()
+                .filter(|node| node.has_tag_name("ChildObjects"))
+                .flat_map(|children| children.children())
+                .filter(|node| node.has_tag_name("Form"))
+            {
+                let form_name = form.text().ok_or("missing registered form name")?.trim();
+                self.read(
+                    &format!("{metadata}.Form.{form_name}.FormModule"),
+                    PlatformXmlModuleRole::FormModule,
+                    NodeKind::Form,
+                    form_name,
+                )?;
+            }
+        }
+        Ok(())
     }
-    let identity = platform_xml_module_identity(path)?;
-    let property = match identity.role {
-        PlatformXmlModuleRole::Module => "d5963243-262e-4398-b4d7-fb16d06484f6",
-        PlatformXmlModuleRole::ManagedApplicationModule => "d22e852a-cf8a-4f77-8ccb-3548e7792bea",
-        _ => return Err("unsupported debug module role".into()),
-    };
-    let logical = logical_module_from_metadata(identity.address.as_str())
-        .ok_or("module metadata has no logical address")?;
-    modules.push(DebugModuleSource {
-        address: QualifiedAddress::parse(&format!("{set}:{logical}"))?,
-        runtime_id: DebugModuleId {
-            extension: extension.map(str::to_owned),
-            object: owner
-                .attribute("uuid")
-                .ok_or("missing metadata UUID")?
-                .parse()?,
-            property: property.parse()?,
-        },
-    });
-    Ok(())
+
+    fn read(
+        &mut self,
+        metadata: &str,
+        role: PlatformXmlModuleRole,
+        kind: NodeKind,
+        name: &str,
+    ) -> Result<()> {
+        if !self.module_exists(metadata)? {
+            return Ok(());
+        }
+        let owner_metadata = metadata
+            .rsplit_once('.')
+            .ok_or("debug module has no metadata owner")?
+            .0;
+        let xml = descriptor(self.root, &descriptor_path(owner_metadata)?)?;
+        let document = Document::parse(&xml)?;
+        let owner = metadata_owner(&document, kind.as_str())?;
+        self.check_name(owner, name)?;
+        self.add(metadata, role, owner)
+    }
+
+    fn module_exists(&self, metadata: &str) -> Result<bool> {
+        let relative = platform_xml_module_relative(&MetadataAddress::parse_logical(metadata)?)?;
+        Ok(self.root.relative_file_stamp(&relative)?.is_some())
+    }
+
+    fn check_name(&self, owner: Node<'_, '_>, name: &str) -> Result<()> {
+        if property(owner, "Name") != Some(name) {
+            return Err(format!("wrong metadata descriptor for {name} in {}", self.set).into());
+        }
+        Ok(())
+    }
+
+    fn add(
+        &mut self,
+        metadata: &str,
+        role: PlatformXmlModuleRole,
+        owner: Node<'_, '_>,
+    ) -> Result<()> {
+        let property = match role {
+            PlatformXmlModuleRole::Module => "d5963243-262e-4398-b4d7-fb16d06484f6",
+            PlatformXmlModuleRole::ManagedApplicationModule => {
+                "d22e852a-cf8a-4f77-8ccb-3548e7792bea"
+            }
+            PlatformXmlModuleRole::ObjectModule => "a637f77f-3840-441d-a1c3-699c8c5cb7e0",
+            PlatformXmlModuleRole::FormModule => "32e087ab-1491-49b6-aba7-43571b41ac2b",
+            _ => return Err("unsupported debug module role".into()),
+        };
+        let logical = logical_module_from_metadata(metadata)
+            .ok_or("module metadata has no logical address")?;
+        self.modules.push(DebugModuleSource {
+            address: QualifiedAddress::parse(&format!("{}:{logical}", self.set))?,
+            runtime_id: DebugModuleId {
+                extension: self.extension.map(str::to_owned),
+                object: owner
+                    .attribute("uuid")
+                    .ok_or("missing metadata UUID")?
+                    .parse()?,
+                property: property.parse()?,
+            },
+        });
+        Ok(())
+    }
+}
+
+fn descriptor_path(metadata: &str) -> Result<std::path::PathBuf> {
+    Ok(metadata_descriptor_relative(
+        &MetadataAddress::parse_logical(metadata)?,
+        SourceSetKind::Configuration,
+    )?)
 }
 
 fn descriptor(root: &SourceDirectory, path: &Path) -> Result<String> {
@@ -188,6 +278,41 @@ fn property<'a>(owner: Node<'a, '_>, name: &str) -> Option<&'a str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn debug_modules_use_registered_object_and_form_descriptors() {
+        let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/acceptance/workspace-resolve-resources");
+        let modules = workspace_debug_modules(&workspace).unwrap();
+        for (address, object, property) in [
+            (
+                "main:DataProcessor.Processor.Module.Object",
+                "f3317000-0000-4000-8000-000000000003",
+                "a637f77f-3840-441d-a1c3-699c8c5cb7e0",
+            ),
+            (
+                "main:DataProcessor.Processor.Form.Main.Module.Form",
+                "f3317000-0000-4000-8000-000000000004",
+                "32e087ab-1491-49b6-aba7-43571b41ac2b",
+            ),
+            (
+                "main:CommonForm.Main.Module.Form",
+                "f3317000-0000-4000-8000-000000000005",
+                "32e087ab-1491-49b6-aba7-43571b41ac2b",
+            ),
+        ] {
+            let module = modules
+                .iter()
+                .find(|module| module.address.to_string() == address)
+                .unwrap_or_else(|| panic!("missing debug module {address}"));
+            assert_eq!(module.runtime_id.object.to_string(), object);
+            assert_eq!(module.runtime_id.property.to_string(), property);
+        }
+        assert!(modules.iter().all(|module| {
+            let address = module.address.to_string();
+            !address.contains(".Ghost.") && !address.contains(".Orphan.")
+        }));
+    }
 
     #[test]
     fn workspace_distinguishes_borrowed_module_from_its_base() {
