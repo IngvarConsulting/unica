@@ -860,6 +860,12 @@ fn native_path_identities_do_not_share_actor_state() {
     }
 }
 
+/// rule: INV.APP.RETAINED-SOURCE-SELECTION-FINALITY
+#[test]
+fn apply_selection_presence_markers_bind_identity_but_not_unread_bytes() {
+    unica_workspace::actor::policy_contract_tests::apply_selection_presence_markers_bind_identity_but_not_unread_bytes(policies());
+}
+
 /// rule: INV.CACHE.RETAINED-APPLY-REVISION-ROLLBACK
 #[test]
 fn retained_rollback_cleans_new_directories_without_deleting_foreign_children() {
