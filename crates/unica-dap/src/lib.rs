@@ -528,55 +528,37 @@ impl Session {
                 })
             })
             .ok_or("unknown or expired variable reference")?;
-        let mut values = if let Some(children) = evaluated_children {
-            children
-        } else if collection {
+        let mut values = if collection {
             let evaluation = Uuid::new_v4();
             let reply = self.rdbg.collection(target, level, evaluation, &path)?;
             self.wait_for_calculation(reply, evaluation, events, read_collection)?
+        } else if let Some(children) = evaluated_children {
+            children
         } else {
             let evaluation = Uuid::new_v4();
             let reply = self.rdbg.variables(target, level, evaluation, &path)?;
             self.wait_for_calculation(reply, evaluation, events, read_context)?
         };
-        if path.is_empty() {
-            let pending: Vec<_> = values
-                .iter()
-                .enumerate()
-                .filter(|(_, value)| {
-                    value.indexed && value.indexed_count.is_none() && is_identifier(&value.name)
-                })
-                .map(|(index, value)| (index, value.name.clone(), Uuid::new_v4()))
-                .collect();
-            if let Some(reply) = (!pending.is_empty())
-                .then(|| self.rdbg.collection_sizes(target, level, &pending).ok())
-                .flatten()
-            {
-                let mut awaiting: HashMap<_, _> = pending
-                    .into_iter()
-                    .map(|(index, _, evaluation)| (evaluation, index))
-                    .collect();
-                // Count metadata is optional; keep locals and any sizes received if this wait fails.
-                let _ = self.wait_for_reply(reply, events, |xml| {
-                    if xml.trim().is_empty() {
-                        return Ok(None);
+        let addressable = path.first().is_none_or(|root| is_variable_address(root));
+        if addressable {
+            let parent = path.join(".");
+            self.fill_collection_sizes(
+                target,
+                level,
+                &mut values,
+                |value| {
+                    if collection {
+                        Some(format!("{parent}{}", value.name))
+                    } else if !is_identifier(&value.name) {
+                        None
+                    } else if parent.is_empty() {
+                        Some(value.name.clone())
+                    } else {
+                        Some(format!("{parent}.{}", value.name))
                     }
-                    let doc = Document::parse(xml)?;
-                    for node in doc.descendants() {
-                        let Some(evaluation) = field(node, "expressionResultID")
-                            .and_then(|id| id.parse::<Uuid>().ok())
-                        else {
-                            continue;
-                        };
-                        if let Some(index) = awaiting.remove(&evaluation) {
-                            values[index].indexed_count = child(node, "resultValueInfo")
-                                .and_then(|value| field(value, "collectionSize"))
-                                .and_then(|count| count.parse().ok());
-                        }
-                    }
-                    Ok(awaiting.is_empty().then_some(()))
-                });
-            }
+                },
+                events,
+            );
         }
         let frame = self
             .targets
@@ -587,33 +569,80 @@ impl Session {
         let mut result = Vec::with_capacity(values.len());
         for value in values {
             let mut reference = 0;
-            if !collection
-                && (value.expandable || value.indexed)
-                && path.first().map_or_else(
-                    || is_identifier(&value.name),
-                    |root| root.split('.').all(is_identifier),
-                )
-            {
-                let mut child_path = path.clone();
-                child_path.push(value.name.clone());
-                reference = frame.reference_for(child_path, &mut self.next_id);
-                if value.indexed {
-                    frame.collection_paths.insert(reference);
+            if value.has_children() && addressable {
+                // RDBG property steps only accept named properties. An indexed
+                // child needs a BSL expression and is read on its own expansion.
+                let child_path = if collection {
+                    vec![format!("{}{}", path.join("."), value.name)]
+                } else if is_identifier(&value.name) {
+                    let mut child_path = path.clone();
+                    child_path.push(value.name.clone());
+                    child_path
                 } else {
-                    frame.collection_paths.remove(&reference);
+                    Vec::new()
+                };
+                if !child_path.is_empty() {
+                    reference = frame.reference_for(child_path, &mut self.next_id);
+                    if value.indexed {
+                        frame.collection_paths.insert(reference);
+                    } else {
+                        frame.collection_paths.remove(&reference);
+                    }
                 }
             }
             let mut variable = json!({"name":value.name,"value":value.summary,
                 "type":value.type_name,"variablesReference":reference});
-            if let Some(count) = value
-                .indexed_count
-                .filter(|_| reference != 0 && value.indexed)
-            {
+            if let Some(count) = value.indexed_count() {
                 variable["indexedVariables"] = json!(count);
             }
             result.push(variable);
         }
         Ok(result)
+    }
+
+    fn fill_collection_sizes(
+        &mut self,
+        target: Uuid,
+        level: usize,
+        values: &mut [ContextVariable],
+        address: impl Fn(&ContextVariable) -> Option<String>,
+        events: &mut Vec<Value>,
+    ) {
+        let pending: Vec<_> = values
+            .iter()
+            .enumerate()
+            .filter(|(_, value)| value.indexed && value.indexed_count.is_none())
+            .filter_map(|(index, value)| Some((index, address(value)?, Uuid::new_v4())))
+            .collect();
+        if let Some(reply) = (!pending.is_empty())
+            .then(|| self.rdbg.collection_sizes(target, level, &pending).ok())
+            .flatten()
+        {
+            let mut awaiting: HashMap<_, _> = pending
+                .into_iter()
+                .map(|(index, _, evaluation)| (evaluation, index))
+                .collect();
+            // Count metadata is optional; keep locals and any sizes received if this wait fails.
+            let _ = self.wait_for_reply(reply, events, |xml| {
+                if xml.trim().is_empty() {
+                    return Ok(None);
+                }
+                let doc = Document::parse(xml)?;
+                for node in doc.descendants() {
+                    let Some(evaluation) =
+                        field(node, "expressionResultID").and_then(|id| id.parse::<Uuid>().ok())
+                    else {
+                        continue;
+                    };
+                    if let Some(index) = awaiting.remove(&evaluation) {
+                        values[index].indexed_count = child(node, "resultValueInfo")
+                            .and_then(|value| field(value, "collectionSize"))
+                            .and_then(|count| count.parse().ok());
+                    }
+                }
+                Ok(awaiting.is_empty().then_some(()))
+            });
+        }
     }
 
     fn evaluate(&mut self, args: &Value, events: &mut Vec<Value>) -> Result<Value> {
@@ -664,7 +693,7 @@ impl Session {
         self.frame(frame_id)?;
         let mut body =
             json!({"result":value.summary,"type":value.type_name,"variablesReference":0});
-        if value.expandable || value.indexed {
+        if value.has_children() {
             self.next_id += 1;
             let id = self.next_id;
             let frame = self
@@ -684,9 +713,9 @@ impl Session {
                 },
             );
             body["variablesReference"] = json!(id);
-            if let Some(count) = value.indexed_count.filter(|_| value.indexed) {
-                body["indexedVariables"] = json!(count);
-            }
+        }
+        if let Some(count) = value.indexed_count() {
+            body["indexedVariables"] = json!(count);
         }
         Ok(body)
     }
@@ -738,6 +767,28 @@ impl Session {
             };
             rows.into()
         };
+        let mut page: Vec<_> = values.iter().skip(start).take(count).cloned().collect();
+        self.fill_collection_sizes(
+            target,
+            level,
+            &mut page,
+            |value| {
+                if indexed {
+                    Some(snapshot_expression(
+                        &source,
+                        &format!("{suffix}{}", value.name),
+                    ))
+                } else if is_identifier(&value.name) {
+                    Some(snapshot_expression(
+                        &source,
+                        &format!("{suffix}.{}", value.name),
+                    ))
+                } else {
+                    None
+                }
+            },
+            events,
+        );
         let frame = self
             .targets
             .values_mut()
@@ -750,9 +801,9 @@ impl Session {
             .ok_or("unknown or expired variable reference")?
             .children = Some(Arc::clone(&values));
         let mut rows = Vec::new();
-        for value in values.iter().skip(start).take(count) {
+        for value in page {
             let mut row = json!({"name":value.name,"value":value.summary,"type":value.type_name,"variablesReference":0});
-            if (value.expandable || value.indexed) && (indexed || is_identifier(&value.name)) {
+            if value.has_children() && (indexed || is_identifier(&value.name)) {
                 let existing = frame.snapshots[&reference]
                     .child_references
                     .get(&value.name)
@@ -783,9 +834,9 @@ impl Session {
                     self.next_id
                 });
                 row["variablesReference"] = json!(id);
-                if let Some(count) = value.indexed_count.filter(|_| value.indexed) {
-                    row["indexedVariables"] = json!(count);
-                }
+            }
+            if let Some(count) = value.indexed_count() {
+                row["indexedVariables"] = json!(count);
             }
             rows.push(row);
         }
@@ -826,6 +877,9 @@ impl Session {
                 frame
                     .variable_paths
                     .retain(|id, _| !frame.evaluated_children.contains_key(id));
+                frame
+                    .collection_paths
+                    .retain(|id| frame.variable_paths.contains_key(id));
                 frame.evaluated_children.clear();
                 frame.snapshots.clear();
             }
@@ -861,9 +915,14 @@ impl Session {
             .flat_map(|target| &mut target.frames)
             .find(|frame| frame.id == frame_id)
             .ok_or("unknown or expired frame")?;
-        let reference = if value.expandable {
+        let reference = if value.has_children() {
             self.next_id += 1;
             let reference = self.next_id;
+            // A variables request may read a live address again. Keep the
+            // cached context for arbitrary expressions, which can have effects.
+            if value.indexed && path.first().is_some_and(|root| is_variable_address(root)) {
+                frame.collection_paths.insert(reference);
+            }
             frame.variable_paths.insert(reference, path);
             frame.evaluated_children.insert(reference, children);
             reference
@@ -871,6 +930,9 @@ impl Session {
             0
         };
         let mut response = json!({(key): value.summary, "variablesReference": reference});
+        if let Some(count) = value.indexed_count() {
+            response["indexedVariables"] = json!(count);
+        }
         if !value.type_name.is_empty() {
             response["type"] = json!(value.type_name);
         }
@@ -1216,12 +1278,34 @@ struct ContextVariable {
     indexed_count: Option<u64>,
 }
 
+fn is_variable_address(address: &str) -> bool {
+    address.split('.').all(|segment| {
+        let mut parts = segment.split('[');
+        parts.next().is_some_and(is_identifier)
+            && parts.all(|index| {
+                index.strip_suffix(']').is_some_and(|index| {
+                    !index.is_empty() && index.bytes().all(|byte| byte.is_ascii_digit())
+                })
+            })
+    })
+}
+
 fn is_identifier(name: &str) -> bool {
     let mut chars = name.chars();
     chars
         .next()
         .is_some_and(|ch| ch == '_' || ch.is_alphabetic())
         && chars.all(|ch| ch == '_' || ch.is_alphanumeric())
+}
+
+impl ContextVariable {
+    fn indexed_count(&self) -> Option<u64> {
+        self.indexed_count.filter(|_| self.indexed)
+    }
+
+    fn has_children(&self) -> bool {
+        (self.expandable || self.indexed) && self.indexed_count() != Some(0)
+    }
 }
 
 fn read_calculation<T>(
