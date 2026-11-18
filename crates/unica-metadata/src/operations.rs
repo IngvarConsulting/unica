@@ -1784,7 +1784,6 @@ fn validate_relation_edit_shape(
     Ok(())
 }
 
-/// Validate every owner-dependent part of one already parsed typed operation.
 /// The bilingual platform name belongs to every tabular section's standard
 /// row attribute. Header attributes have a different namespace (#2057).
 fn validate_tabular_attribute_name(
@@ -1832,6 +1831,7 @@ fn validate_added_element_names(
     Ok(())
 }
 
+/// Validate every owner-dependent part of one already parsed typed operation.
 /// This is the shared bridge for the public parser, schema and provider: it
 /// rejects the complete operation before the provider mutates its private
 /// working image.
