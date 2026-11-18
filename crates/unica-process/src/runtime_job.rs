@@ -715,14 +715,22 @@ mod medium_tests {
             }
             // A disconnected completion channel proves the held reader exited;
             // a timeout would leave a test-owned reader running after the test.
-            for finished in &self.finished {
-                assert!(matches!(
-                    finished.recv_timeout(Duration::from_secs(5)),
-                    Err(mpsc::RecvTimeoutError::Disconnected)
-                ));
-            }
+            let running_readers = self
+                .finished
+                .iter()
+                .filter(|finished| {
+                    !matches!(
+                        finished.recv_timeout(Duration::from_secs(5)),
+                        Err(mpsc::RecvTimeoutError::Disconnected)
+                    )
+                })
+                .count();
             drop(self.process.take());
             STREAM_FINISH_DEADLINES.with(|slot| slot.borrow_mut().clear());
+            // A second panic during unwinding would abort the whole test binary.
+            if !std::thread::panicking() {
+                assert_eq!(running_readers, 0, "held readers did not exit");
+            }
         }
     }
 
