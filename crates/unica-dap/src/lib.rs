@@ -918,10 +918,12 @@ impl Session {
         let reference = if value.has_children() {
             self.next_id += 1;
             let reference = self.next_id;
-            frame.variable_paths.insert(reference, path);
-            if value.indexed {
+            // A variables request may read a live address again. Keep the
+            // cached context for arbitrary expressions, which can have effects.
+            if value.indexed && path.first().is_some_and(|root| is_variable_address(root)) {
                 frame.collection_paths.insert(reference);
             }
+            frame.variable_paths.insert(reference, path);
             frame.evaluated_children.insert(reference, children);
             reference
         } else {
