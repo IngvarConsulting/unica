@@ -1,6 +1,6 @@
 //! Byte parity with the 8.3.27 export for the first form of an owner (#1404).
 use super::form_add_owner_image;
-use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+use unica_address::source_target::MetadataAddress;
 
 fn fixture(name: &str) -> String {
     let path = format!(
@@ -13,7 +13,7 @@ fn fixture(name: &str) -> String {
 #[test]
 fn the_first_form_of_an_empty_child_objects_takes_its_own_line() {
     let before = fixture("Catalog.before.xml");
-    let owner = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Catalog.Товары").unwrap();
+    let owner = MetadataAddress::parse_logical("Catalog.Товары").unwrap();
     let after = form_add_owner_image(
         before.trim_start_matches('\u{feff}'),
         &owner,

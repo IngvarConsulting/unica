@@ -2,10 +2,12 @@ name: Unica RC from Alpha
 
 # Кандидат `vX.Y.Z-rc.N` из проверенной alpha. Берётся срез `main`, на котором ночь
 # выпустила alpha, поверх него — служебный коммит, где меняется только версия, и
-# тег. Тег ставит ключ развёртывания из окружения `marketplace`: оно пускает только
-# `main` и `v*` и ждёт одобрения владельца. Push тега ключом запускает обычный
-# выпуск по тегу (`release.yml`): полные тесты, сборку, проверки установки и канал
-# `next`. Подробности — `scripts/ci/release-rc.py` и раздел rc в runbook.
+# тег. Это единственная кнопка выпуска кандидата, и нажимает её администратор
+# репозитория: задание `admit` сверяет роль запустившего, а не имя, до задания
+# с ключом. Тег ставит ключ развёртывания из окружения `alpha`: оно пускает
+# только `main`, поэтому копия этого файла в старом теге ключа не получит.
+# Push тега ключом запускает обычный выпуск по тегу (`release.yml`) — полные
+# тесты, сборку, проверки установки и канал `next` — без остановок на одобрение. Подробности — `scripts/ci/release-rc.py` и раздел rc в runbook.
 on:
   workflow_dispatch:
     inputs:
@@ -18,14 +20,38 @@ permissions:
   contents: read
   actions: read
 
+# Кнопки кандидата и финальной версии ставят теги одного ядра и идут по одной.
 concurrency:
-  group: unica-rc-from-alpha
+  group: unica-release-buttons
   cancel-in-progress: false
 
 jobs:
+  # Писатель может нажать кнопку, но прогон остановится здесь: задание
+  # с секретом окружения не начнётся. `triggering_actor` — тот, кто запустил
+  # или перезапустил прогон: перезапуск чужого прогона роль не наследует.
+  # Запуск не с `main` отказывается здесь же.
+  admit:
+    name: Кнопку нажал администратор
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: main
+          sparse-checkout: scripts/ci
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          ACTOR: ${{ github.triggering_actor }}
+        run: python scripts/ci/release-rc.py admit --actor "$ACTOR" --ref "$GITHUB_REF"
+
   rc:
     name: Кандидат из alpha
-    environment: marketplace
+    needs: admit
+    environment: alpha
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -39,6 +65,13 @@ jobs:
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
+      # «Перезапустить упавшие задания» берёт прошедший `admit` из прежней
+      # попытки, поэтому роль перезапустившего сверяется ещё раз до шага с ключом.
+      - id: admit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ACTOR: ${{ github.triggering_actor }}
+        run: python scripts/ci/release-rc.py admit --actor "$ACTOR" --ref "$GITHUB_REF"
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: stable

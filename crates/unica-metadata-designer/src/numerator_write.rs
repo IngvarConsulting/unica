@@ -1,5 +1,6 @@
 // module: private
 //! Validate the numerator's own scalar image before publication.
+use crate::dialect::root_version;
 use roxmltree::{Document, Node};
 use unica_metadata::document_numerator::{
     NUMBER_ALLOWED_LENGTHS, NUMBER_PERIODICITIES, NUMBER_TYPES,
@@ -12,8 +13,13 @@ fn properties<'a, 'input>(
     name: &str,
 ) -> Result<Node<'a, 'input>, String> {
     let root = document.root_element();
-    if !root.has_tag_name((MD, "MetaDataObject")) || root.attribute("version") != Some("2.20") {
-        return Err("DocumentNumerator requires a Platform XML 2.20 descriptor".into());
+    if !root.has_tag_name((MD, "MetaDataObject"))
+        || !root_version::is_writable(root.attribute("version"))
+    {
+        return Err(format!(
+            "DocumentNumerator requires a Platform XML {} descriptor",
+            root_version::writable_formats()
+        ));
     }
     let owners = root.children().filter(Node::is_element).collect::<Vec<_>>();
     let [owner] = owners.as_slice() else {

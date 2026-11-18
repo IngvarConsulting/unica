@@ -60,8 +60,12 @@ impl PlatformProfile {
     /// roles exist (axis 2 of the source profile). `None` for a line whose
     /// capabilities are not described yet.
     pub fn for_line(line: PlatformLine) -> Option<Self> {
-        let known = Self::v8_3_27();
-        (line == known.line).then_some(known)
+        // 8.5.1 and 8.5.4 keep the module, event and role tables of 8.3.27:
+        // their all_kinds corpora add properties, not modules or roles.
+        unica_source_contract::format_identity::DESCRIBED_PLATFORM_LINES
+            .iter()
+            .find(|(described, _)| *described == line)
+            .map(|(line, id)| Self { id, line: *line })
     }
 
     pub const fn line(self) -> PlatformLine {
@@ -116,7 +120,7 @@ impl PlatformProfile {
 
 #[cfg(test)]
 mod tests {
-    use super::{ModuleRole, PlatformProfile};
+    use super::{ModuleRole, PlatformLine, PlatformProfile};
     use serde::Deserialize;
     use std::collections::HashSet;
     use unica_address::address::{NodeKind, QualifiedAddress};
@@ -142,6 +146,25 @@ mod tests {
             "../../../tests/fixtures/v013/address-profile-8.3.27.json"
         ))
         .expect("the checked platform profile fixture must be valid JSON")
+    }
+
+    #[test]
+    fn every_described_platform_line_has_a_semantic_profile() {
+        for (line, id) in [
+            (PlatformLine::new(8, 3, 27), "8.3.27"),
+            (PlatformLine::new(8, 5, 1), "8.5.1"),
+            (PlatformLine::new(8, 5, 4), "8.5.4"),
+        ] {
+            let profile = PlatformProfile::for_line(line).expect("a described line");
+            assert_eq!((profile.line(), profile.id()), (line, id));
+        }
+        assert_eq!(
+            PlatformProfile::for_line(PlatformLine::new(8, 3, 27)),
+            Some(PlatformProfile::v8_3_27())
+        );
+        for line in [PlatformLine::new(8, 3, 26), PlatformLine::new(8, 5, 2)] {
+            assert_eq!(PlatformProfile::for_line(line), None, "{line}");
+        }
     }
 
     #[test]

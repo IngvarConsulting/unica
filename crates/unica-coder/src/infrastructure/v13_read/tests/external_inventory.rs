@@ -509,11 +509,7 @@ fn named_external_descriptor_and_owner_evidence_preserve_chunk_cancellation() {
             configuration_payload(&reader).unwrap()["registeredObjects"],
             json!([{"kind":"ExternalDataProcessor","name":"Large"}])
         );
-        let target = MetadataAddress::parse(
-            PLATFORM_XML_8_3_27_FORMAT_2_20,
-            "ExternalDataProcessor.Large",
-        )
-        .unwrap();
+        let target = MetadataAddress::parse_logical("ExternalDataProcessor.Large").unwrap();
         let cancellation = CancellationToken::new();
         let mut checks = 0;
         let mut checkpoint = || {
@@ -559,11 +555,7 @@ fn named_external_descriptor_distinguishes_missing_from_unreadable_source() {
             .unwrap();
         }
         let reader = external_leaf_read(&source, SourceSetKind::ExternalProcessor);
-        let target = MetadataAddress::parse(
-            PLATFORM_XML_8_3_27_FORMAT_2_20,
-            "ExternalDataProcessor.Missing",
-        )
-        .unwrap();
+        let target = MetadataAddress::parse_logical("ExternalDataProcessor.Missing").unwrap();
         let missing = if evidence_read {
             reader
                 .metadata_owner_evidence(&target, &mut || Ok(()))
@@ -584,11 +576,8 @@ fn named_external_descriptor_distinguishes_missing_from_unreadable_source() {
         // A successful positive lookup must not turn a later missing-name
         // lookup into a cached proof of absence.
         if has_neighbour {
-            let existing = MetadataAddress::parse(
-                PLATFORM_XML_8_3_27_FORMAT_2_20,
-                "ExternalDataProcessor.Existing",
-            )
-            .unwrap();
+            let existing =
+                MetadataAddress::parse_logical("ExternalDataProcessor.Existing").unwrap();
             reader
                 .external_metadata_payload(&existing, &mut || Ok(()))
                 .unwrap();
@@ -619,11 +608,7 @@ fn named_external_missing_descriptor_preserves_explicit_cancellation() {
     for evidence_read in [false, true] {
         let (_workspace, source) = external_leaf_fixture(SourceSetKind::ExternalProcessor);
         let reader = external_leaf_read(&source, SourceSetKind::ExternalProcessor);
-        let target = MetadataAddress::parse(
-            PLATFORM_XML_8_3_27_FORMAT_2_20,
-            "ExternalDataProcessor.Missing",
-        )
-        .unwrap();
+        let target = MetadataAddress::parse_logical("ExternalDataProcessor.Missing").unwrap();
         let expected = ViewError::new(RefusalCode::Cancelled, "manual missing owner cancellation");
         let mut checks = 0;
         let mut checkpoint = || {

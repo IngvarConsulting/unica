@@ -12,7 +12,7 @@ use crate::interface::{
 use serde_json::{json, Map, Value};
 use std::path::PathBuf;
 use unica_address::address::{NodeKind, QualifiedAddress};
-use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+use unica_address::source_target::MetadataAddress;
 use unica_metadata::interface::InterfaceEditCounters;
 use unica_metadata::support::SupportOperation;
 use unica_metadata::support_edit::{SupportCapability, SupportObjectRule};
@@ -443,7 +443,7 @@ fn home_page_reference(reference: &str, role: bool) -> Option<PathBuf> {
     if !fits {
         return None;
     }
-    let address = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, reference).ok()?;
+    let address = MetadataAddress::parse_logical(reference).ok()?;
     unica_source_designer::layout::metadata_descriptor_relative(
         &address,
         unica_source_contract::SourceSetKind::Configuration,
@@ -855,7 +855,7 @@ pub fn parse_support_operation(
                     ))
                 }
             };
-            let target = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &raw)
+            let target = MetadataAddress::parse_logical(&raw)
                 .map_err(|error| bad(op_index, "at", error.to_string()))?;
             Ok(MetadataResourcePlan::SupportRule { target, rule })
         }
@@ -913,8 +913,7 @@ fn prove_support_form_owner(
     if !root.registers(kind, name) {
         return Err(invalid());
     }
-    let owner = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &format!("{kind}.{name}"))
-        .map_err(|_| invalid())?;
+    let owner = MetadataAddress::parse_logical(&format!("{kind}.{name}")).map_err(|_| invalid())?;
     let owner_path = unica_source_designer::layout::metadata_descriptor_relative(
         &owner,
         authority.source_kind(),

@@ -14,7 +14,7 @@ pub use applied::{
     NoAppliedTypes,
 };
 
-pub use cache::{catalog_path, load_or_build, CatalogError, Containers};
+pub use cache::{catalog_path, load_or_build, CatalogError, Containers, HelpPages};
 pub use model::{
     Context, Method, Param, PlatformCatalog, PlatformType, Property, Signature, TypeId, TypeName,
     TypeRef,

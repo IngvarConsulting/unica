@@ -3,8 +3,6 @@ use super::template_source::MetadataDependencyReadAdapter;
 use crate::infrastructure::platform_xml_source_targets::ClosedPlatformXmlTarget;
 use std::path::Path;
 use unica_address::source_target::MetadataAddress;
-#[cfg(any(test, feature = "test-support"))]
-use unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20;
 use unica_metadata::support_state::SupportStateReader;
 #[cfg(any(test, feature = "test-support"))]
 use unica_metadata::MetaElementData;
@@ -132,7 +130,7 @@ pub(super) fn typed_elements(
     tag: &str,
     nested_attributes: bool,
 ) -> Vec<MetaElementData> {
-    let target = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Catalog.Test").unwrap();
+    let target = MetadataAddress::parse_logical("Catalog.Test").unwrap();
     unica_metadata_designer::info::typed_elements_with_diagnostics(
         xml,
         parent,

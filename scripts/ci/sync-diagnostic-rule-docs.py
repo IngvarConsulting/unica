@@ -32,7 +32,7 @@ def from_upstream(root, upstream):
                               sha256=hashlib.sha256(raw).hexdigest(), text=raw.decode('utf-8')))
     if not documents:
         raise ValueError('the locked commit contains no rule documentation')
-    return dict(toolLockRef=str(LOCK) + '#bsl-analyzer', repository=entry['repository'],
+    return dict(toolLockRef=LOCK.as_posix() + '#bsl-analyzer', repository=entry['repository'],
                 sourceCommit=commit, version=entry['version'], license=entry['license'],
                 documents=documents)
 
@@ -41,7 +41,7 @@ def validate(root, snapshot):
     for field in ('repository', 'sourceCommit', 'version', 'license'):
         if snapshot[field] != entry[field]:
             raise ValueError(f'{field} differs from tools.lock; refresh the snapshot')
-    if snapshot['toolLockRef'] != str(LOCK) + '#bsl-analyzer':
+    if snapshot['toolLockRef'] != LOCK.as_posix() + '#bsl-analyzer':
         raise ValueError('snapshot must name its tool-lock owner')
     seen = set()
     for document in snapshot['documents']:

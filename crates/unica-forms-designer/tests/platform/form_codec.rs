@@ -2942,7 +2942,7 @@ fn html_document_field_matches_platform_fixture_and_preserves_requested_properti
         .find(|n| n.has_tag_name("HTMLDocumentField"))
         .unwrap();
     let fixture = include_str!(concat!(env!("CARGO_MANIFEST_DIR"),
-            "/../../tests/fixtures/platform_8_3_27/support-edit-bin-only/src/DataProcessors/ТестHTML/Forms/Форма/Ext/Form.xml"));
+            "/../../tests/fixtures/formats/platform_xml/2.20/support-edit-bin-only/src/DataProcessors/ТестHTML/Forms/Форма/Ext/Form.xml"));
     let oracle = Document::parse(fixture.trim_start_matches('\u{feff}')).unwrap();
     let oracle_field = oracle
         .descendants()
@@ -3441,7 +3441,7 @@ fn english_companions_preserve_existing_names_and_repeat_without_changes() {
 
 #[test]
 fn english_table_companions_match_the_platform_dump_in_both_command_bar_modes() {
-    // Names are independently present in platform_8_3_27/external_artifacts/
+    // Names are independently present in formats/platform_xml/2.20/external_artifacts/
     // epf/SyntheticProcessor/Forms/Main/Ext/Form.xml (LinesSearchString etc.).
     for autofill in [None, Some(true), Some(false)] {
         let mut table = json!({"table": "Lines", "path": "Object.Lines"});

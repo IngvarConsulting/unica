@@ -1145,7 +1145,7 @@ pub(crate) mod medium_typed_add_publication_tests {
     use super::*;
 
     use std::collections::BTreeMap;
-    use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+    use unica_address::source_target::MetadataAddress;
     use unica_metadata::{
         EventSourceClass, MetaCollection, MetaEditOperation, MetaElementInput, MetaEventSource,
         MetaPredefinedFields, MetaPredefinedItemAdd, MetaPropertyChanges, MetaPropertyInput,
@@ -1156,8 +1156,7 @@ pub(crate) mod medium_typed_add_publication_tests {
 
     #[test]
     fn publication_failure_code_is_selected_by_typed_commit_kind() {
-        let target =
-            MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Catalog.Items").unwrap();
+        let target = MetadataAddress::parse_logical("Catalog.Items").unwrap();
         for (kind, expected) in [
             (
                 CommitFailureKind::ConcurrentModification,
@@ -1506,8 +1505,7 @@ pub(crate) mod medium_typed_add_publication_tests {
             .unwrap()
             .publish(&cancellation)
             .unwrap();
-        let parent_address =
-            MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Catalog.Parent").unwrap();
+        let parent_address = MetadataAddress::parse_logical("Catalog.Parent").unwrap();
         let request = unica_metadata::request::MetaAddRequest {
             operations: vec![MetaEditOperation::edit_relations(
                 MetaRelation::Owners,
@@ -1960,11 +1958,7 @@ mod host_path_tests {
         let extended = extended_length_spelling_for_test(&plain);
         std::fs::create_dir_all(plain.join("src/Catalogs")).unwrap();
         let relative = Path::new("src/Catalogs/Absent.xml");
-        let target = MetadataAddress::parse(
-            unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
-            "Catalog.Absent",
-        )
-        .unwrap();
+        let target = MetadataAddress::parse_logical("Catalog.Absent").unwrap();
 
         let mut transaction = CompileTransaction::new();
         bind_prerequisite_ancestor_topology(

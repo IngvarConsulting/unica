@@ -71,8 +71,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
         {
             return Ok(None);
         }
-        let target = MetadataAddress::parse(
-            PLATFORM_XML_8_3_27_FORMAT_2_20,
+        let target = MetadataAddress::parse_logical(
             at.to_string().split_once(':').expect("qualified address").1,
         )
         .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string()))?;
@@ -119,10 +118,9 @@ impl<'a> LogicalViewReadAuthority<'a> {
                 )
             })?;
             let target =
-                MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &format!("{kind}.{name}"))
-                    .map_err(|error| {
-                        ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
-                    })?;
+                MetadataAddress::parse_logical(&format!("{kind}.{name}")).map_err(|error| {
+                    ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+                })?;
             self.verify_registered_owner(&target, &admitted)?;
             let bytes = self.read.metadata_descriptor(&target)?;
             let text = std::str::from_utf8(&bytes).map_err(|_| {
@@ -530,10 +528,12 @@ impl<'a> LogicalViewReadAuthority<'a> {
             (NodeKind::Command, &local.collections.commands),
         ] {
             for child in children {
-                let child = MetadataAddress::parse(
-                    PLATFORM_XML_8_3_27_FORMAT_2_20,
-                    &format!("{}.{}.{}", target.as_str(), kind.as_str(), child.name),
-                )
+                let child = MetadataAddress::parse_logical(&format!(
+                    "{}.{}.{}",
+                    target.as_str(),
+                    kind.as_str(),
+                    child.name
+                ))
                 .map_err(|error| {
                     ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
                 })?;
@@ -709,10 +709,11 @@ impl<'a> LogicalViewReadAuthority<'a> {
                         format!("registered {field} entry has no name"),
                     ));
                 };
-                let child = MetadataAddress::parse(
-                    PLATFORM_XML_8_3_27_FORMAT_2_20,
-                    &format!("{}.{}.{name}", target.as_str(), kind.as_str()),
-                )
+                let child = MetadataAddress::parse_logical(&format!(
+                    "{}.{}.{name}",
+                    target.as_str(),
+                    kind.as_str()
+                ))
                 .map_err(|error| {
                     ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
                 })?;
@@ -831,10 +832,9 @@ impl<'a> LogicalViewReadAuthority<'a> {
         for pair_count in 1..=parts.len() / 2 {
             let end = pair_count * 2;
             let current_text = parts[..end].join(".");
-            let current = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &current_text)
-                .map_err(|error| {
-                    ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
-                })?;
+            let current = MetadataAddress::parse_logical(&current_text).map_err(|error| {
+                ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+            })?;
             if let Some((parent_address, parent_evidence)) = &parent {
                 let child_kind = parts[end - 2];
                 let child_name = parts[end - 1];
@@ -950,13 +950,10 @@ impl<'a> LogicalViewReadAuthority<'a> {
             Err(error) => return Err(error),
         };
         for name in names {
-            let owner = MetadataAddress::parse(
-                PLATFORM_XML_8_3_27_FORMAT_2_20,
-                &format!("{}.{name}", kind.as_str()),
-            )
-            .map_err(|error| {
-                ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
-            })?;
+            let owner = MetadataAddress::parse_logical(&format!("{}.{name}", kind.as_str()))
+                .map_err(|error| {
+                    ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+                })?;
             let evidence = self.owner_evidence(&owner, admitted)?;
             match crate::infrastructure::v13_read_port::object_support_by_uuid(
                 &marker,

@@ -143,12 +143,15 @@ const JOURNAL_COLUMN_PROPERTIES: &[MetaMemberPropertySpec] = &[MetaMemberPropert
 }];
 
 impl MetaMemberReadProfile {
+    /// The member profile of an `owner` read from a source set of
+    /// `source_kind`; `writable_format` is whether the codec found the
+    /// descriptor in the export format it writes (its dialect decides).
     pub fn for_source(
         source_kind: SourceSetKind,
         owner: MetadataKind,
-        format: Option<&str>,
+        writable_format: bool,
     ) -> Option<Self> {
-        if source_kind != SourceSetKind::Configuration || format != Some("2.20") {
+        if source_kind != SourceSetKind::Configuration || !writable_format {
             return None;
         }
         match owner {
@@ -379,10 +382,7 @@ fn command_group(value: &str) -> bool {
     {
         return true;
     }
-    let Ok(address) = unica_address::source_target::MetadataAddress::parse(
-        unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
-        value,
-    ) else {
+    let Ok(address) = unica_address::source_target::MetadataAddress::parse_logical(value) else {
         return false;
     };
     let parts = address.segments().collect::<Vec<_>>();

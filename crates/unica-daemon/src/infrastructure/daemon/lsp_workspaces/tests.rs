@@ -1,13 +1,13 @@
 //! Служба LSP демона над рабочей областью на диске: те же актор и наборы,
 //! что у MCP, буфер виден только своей сессии и не пишется на диск.
 //! Что служба делает с сессиями, буферами и акторами сама, проверяет
-//! `crates/unica-lsp/src/service_tests.rs`; здесь — допуск и чтение продукта.
+//! `crates/unica-editor-analysis/src/service_tests.rs`; здесь — допуск и чтение продукта.
 use super::*;
 use std::fs;
 use std::path::PathBuf;
 use std::time::Duration;
 use unica_address::source_target::MetadataAddress;
-use unica_lsp::UnicaLspHost;
+use unica_editor_analysis::UnicaLspHost;
 use unica_lsp_contract::host::{LspCallContext, LspClientChannel, LspHost};
 use unica_lsp_contract::protocol::{
     V5LspCall, V5LspContentChange, V5LspNotification, V5LspOutcome, V5LspSessionId,
@@ -154,11 +154,7 @@ fn an_editor_folder_reaches_the_mcp_actor_and_its_buffer_stays_in_its_session() 
     let admitted = workspaces.admit(workspace.path(), soon()).unwrap();
     // The analysis read of the editor's session sees the buffer as well, and
     // the read of another session sees the file.
-    let module_target = MetadataAddress::parse(
-        unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
-        "CommonModule.Main.Module",
-    )
-    .unwrap();
+    let module_target = MetadataAddress::parse_logical("CommonModule.Main.Module").unwrap();
     let module_of = |session: &V5LspSessionId| {
         admitted
             .reads
@@ -519,13 +515,14 @@ impl Drop for ResetDiagnosticOverride {
 }
 
 /// The editor's document gets `check`'s own finding and the analysis of its
-/// saved module by `check`'s coordinator, with no deadline put on it; an
-/// analysis that fails is named, never an empty complete report.
+/// saved module by `check`'s coordinator. A resident that fails leaves the
+/// module to the one-shot analysis `check` runs, with no deadline put on
+/// it; an analysis that fails is named, never an empty complete report.
 #[test]
 fn diagnostics_run_checks_own_findings_and_its_analysis_of_the_saved_module() {
     let _reset = ResetDiagnosticOverride;
     let (provider, analyzer) =
-        unica_adapter_bsl_analyzer::diagnostics::analyze_timeout_probe::recording_provider();
+        unica_coder::infrastructure::analysis_composition::diagnostics_probe::recording_provider();
     crate::infrastructure::application_ports::DIAGNOSTIC_PROVIDER_OVERRIDE
         .with(|slot| *slot.borrow_mut() = Some(provider));
     let workspace = diagnosed_workspace();
@@ -545,12 +542,14 @@ fn diagnostics_run_checks_own_findings_and_its_analysis_of_the_saved_module() {
         found[0].starts_with("VariableDeclarationPlacement: "),
         "{found:?}"
     );
+    // This probe proves no module for the resident, so the resident refuses
+    // before it is asked and only the one-shot analysis runs.
     assert_eq!(analyzer.timeouts(), [None], "no deadline, as `check`");
 
     crate::infrastructure::application_ports::DIAGNOSTIC_PROVIDER_OVERRIDE.with(|slot| {
         *slot.borrow_mut() = Some(
-            unica_adapter_bsl_analyzer::diagnostics::analyze_timeout_probe::failing_provider(
-                unica_adapter_bsl_analyzer::adapter::AnalyzerRunFailureKind::Exited,
+            unica_coder::infrastructure::analysis_composition::diagnostics_probe::failing_provider(
+                unica_coder::infrastructure::analysis_composition::diagnostics_probe::AnalyzerRunFailureKind::Exited,
             ),
         )
     });
@@ -565,6 +564,79 @@ fn diagnostics_run_checks_own_findings_and_its_analysis_of_the_saved_module() {
                 && marker.contains("analysis_unavailable")
         ),
         "{found:?}"
+    );
+}
+
+/// The editor's analysis comes from the resident analyzer, asked for every
+/// level of finding: opening the folder brings the resident up, and a
+/// document asked about while its database builds is answered once it is
+/// ready, without a one-shot pass over the whole configuration (#2790).
+///
+/// rule: INV.LSP.MCP-PRIORITY
+#[test]
+fn diagnostics_come_from_the_resident_once_its_database_is_ready() {
+    let _reset = ResetDiagnosticOverride;
+    let ready = serde_json::json!({
+        "stale": false,
+        "reload": "none",
+        "result": {"findings": [{
+            "code": "MagicNumber",
+            "severity": "Hint",
+            "message": "provider wording",
+            "range": {"start_line": 0, "start_column": 10, "end_line": 0, "end_column": 14},
+        }]},
+    });
+    let (provider, analyzer) =
+        unica_coder::infrastructure::analysis_composition::diagnostics_probe::resident_provider(
+            vec![
+                serde_json::json!({"state": "loading", "status": "loading"}).to_string(),
+                ready.to_string(),
+            ],
+        );
+    crate::infrastructure::application_ports::DIAGNOSTIC_PROVIDER_OVERRIDE
+        .with(|slot| *slot.borrow_mut() = Some(provider));
+    let workspace = diagnosed_workspace();
+    let (host, _workspaces) = service();
+    let editor = V5LspSessionId::new();
+    host.open(
+        &editor,
+        &[folder(workspace.path(), "Work")],
+        client(),
+        soon(),
+    )
+    .unwrap();
+    let opened = Instant::now();
+    while !analyzer
+        .resident_calls()
+        .iter()
+        .any(|call| call["action"] == "status")
+    {
+        assert!(
+            opened.elapsed() < Duration::from_secs(10),
+            "opening the folder did not bring the resident up"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    let found = report(&host, &editor);
+    assert_eq!(found.len(), 2, "{found:?}");
+    assert!(
+        found
+            .iter()
+            .all(|finding| !finding.starts_with("unica.diagnostics_incomplete")),
+        "{found:?}"
+    );
+    let files = analyzer
+        .resident_calls()
+        .into_iter()
+        .filter(|call| call["action"] == "file")
+        .collect::<Vec<_>>();
+    assert_eq!(files.len(), 2, "asked again once the database was ready");
+    assert!(files.iter().all(|call| call["min_severity"] == "hint"));
+    assert!(
+        analyzer.timeouts().iter().all(Option::is_some),
+        "no one-shot analysis: {:?}",
+        analyzer.timeouts()
     );
 }
 

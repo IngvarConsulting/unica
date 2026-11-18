@@ -203,7 +203,7 @@ fn job_schedule_refuses_linked_artifacts() {
 
 #[test]
 fn job_schedule_checkpoints_preserve_cancellation_and_deadline() {
-    use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+    use unica_address::source_target::MetadataAddress;
     use unica_execution_contract::view_error::ViewError;
     use unica_refusal::RefusalCode;
     let fixture = RealReaderFixture::new();
@@ -214,8 +214,7 @@ fn job_schedule_checkpoints_preserve_cancellation_and_deadline() {
         SCHEDULE,
     );
     let authority = fixture.read_authority();
-    let target =
-        MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "ScheduledJob.MonthClose").unwrap();
+    let target = MetadataAddress::parse_logical("ScheduledJob.MonthClose").unwrap();
     let mut total = 0;
     authority
         .read

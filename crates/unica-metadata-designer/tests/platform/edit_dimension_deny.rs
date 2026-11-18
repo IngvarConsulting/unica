@@ -336,8 +336,7 @@ fn medium_information_boolean_edits_preserve_split_text_markup_and_reader_values
                 1,
             );
             let read = |xml: &str| {
-                let target = unica_address::source_target::MetadataAddress::parse(
-                    unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+                let target = unica_address::source_target::MetadataAddress::parse_logical(
                     "InformationRegister.Facts",
                 )
                 .unwrap();
