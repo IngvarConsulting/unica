@@ -336,7 +336,9 @@ fn started_at(started: &str) -> String {
     }
 }
 
-/// Сеанс в данных вопроса: без учётных данных и служебного номера.
+/// Сеанс в данных вопроса: без учётных данных и служебных отметок раннера —
+/// UUID (`id`), номера у платформы (`number`), `from_this_machine` и
+/// `excluded`.
 fn public_session(session: &Value) -> Value {
     json!({
         "computer": session["computer"],
@@ -360,7 +362,10 @@ mod tests {
                     "application_title": "Тонкий клиент",
                     "started": "2026-11-12T09:05:41",
                     "user": null,
-                    "id": format!("{index}"),
+                    "id": format!("0b2f6c1e-7a54-4f0e-9d3c-5e8a1b2c3d{index:02}"),
+                    "number": index,
+                    "from_this_machine": false,
+                    "excluded": false,
                 })
             })
             .collect();
@@ -419,7 +424,13 @@ mod tests {
                 .len(),
             7
         );
-        assert!(!choice.data.as_ref().unwrap().to_string().contains("Srvr"));
+        let data = choice.data.as_ref().unwrap().to_string();
+        assert!(!data.contains("Srvr"));
+        // UUID и номер сеанса раннера наружу не идут.
+        assert!(
+            !data.contains("0b2f6c1e") && !data.contains("number"),
+            "{data}"
+        );
 
         let mut result = DomainResult::success("refused");
         result.ok = false;
@@ -444,6 +455,55 @@ mod tests {
             choice.options[0].description,
             "несохранённые данные в этих сеансах пропадут; если причина в другом, обновление снова не пройдёт"
         );
+    }
+
+    fn captured_018(name: &str) -> Value {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/v8_runner_018")
+            .join(name);
+        serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
+    }
+
+    /// Живые конверты раннера 0.18 над кластером: отказ `push` и `apply` из-за
+    /// сеанса — вопрос со списком, а ответ после `--sessions force` называет
+    /// завершённый сеанс. UUID, номер и отметки раннера наружу не идут.
+    /// rule: INV.RUNTIME.INFOBASE-SESSIONS-QUESTION
+    #[test]
+    fn live_018_sessions_are_asked_and_named_without_runner_marks() {
+        let public = json!([{
+            "computer": "workstation",
+            "application": "1CV8C",
+            "applicationTitle": "Тонкий клиент",
+            "started": "2026-11-19T03:39:35",
+            "user": null,
+        }]);
+        for name in ["push-sessions-refused.json", "apply-sessions-refused.json"] {
+            let choice = choice_for(&captured_018(name)).expect(name);
+            assert_eq!(choice.code, "infobase.sessions_active", "{name}");
+            assert_eq!(
+                choice.question,
+                "Базу «origin» держат открытые сеансы: 1.\n\
+                 workstation — Тонкий клиент, с 2026-11-19 03:39",
+                "{name}"
+            );
+            assert_eq!(choice.options.len(), 2, "{name}");
+            assert_eq!(choice.data.as_ref().unwrap()["sessions"], public, "{name}");
+        }
+        for (name, started) in [
+            ("apply-sessions-force.json", "2026-11-19T03:39:35"),
+            ("push-sessions-force.json", "2026-11-19T03:40:20"),
+        ] {
+            let mut result = DomainResult::success("done");
+            result.data = Some(json!({}));
+            note_terminated(&mut result, &captured_018(name));
+            let mut expected = public.clone();
+            expected[0]["started"] = json!(started);
+            assert_eq!(
+                result.data.as_ref().unwrap()["sessionsTerminated"],
+                expected,
+                "{name}"
+            );
+        }
     }
 
     /// Файловая база: завершить сеансы отсюда нельзя, остаётся «повторить».
