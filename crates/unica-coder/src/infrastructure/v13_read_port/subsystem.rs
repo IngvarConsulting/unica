@@ -146,9 +146,11 @@ impl ProviderReadAuthority {
     ) -> Result<crate::application::v13::check::NativeCheckOutcome, ViewError> {
         use crate::infrastructure::subsystem_composition::subsystem_validation_outcome;
         use unica_metadata::subsystem::SubsystemInfoFormatDocument;
+        // Маршрут адреса подсистемы строится по маршрутам модулей и от линии
+        // не зависит; каталог событий здесь не спрашивают.
         let route = crate::infrastructure::logical_tree::route_logical_address(
             address,
-            unica_bsl::profile::PlatformProfile::v8_3_27(),
+            unica_bsl::profile::PlatformProfile::for_line_or_base(None),
         )
         .map_err(|error| ViewError::new(RefusalCode::BadValue, error.to_string()))?;
         let target = route.reader_metadata_path().ok_or_else(|| {

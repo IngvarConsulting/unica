@@ -3,7 +3,7 @@
   "name": "module-interface-slices-publish-only-routable-addresses",
   "issue": 1467,
   "area": "Навигация и чтение",
-  "task": "Прочитать и проверить ветвь Interface модуля: срезы Public/Library/Override приходят без адреса, который view отверг бы, check читает ветвь без валидатора командного интерфейса, а метод среза открывается своим адресом",
+  "task": "Прочитать срез Interface по опубликованному адресу и открыть метод по исходному адресу.",
   "wire": [
     {
       "tool": "unica.view",
@@ -19,12 +19,8 @@
           "eq": "Public"
         },
         {
-          "pointer": "/data/items/0/addressable",
-          "eq": false
-        },
-        {
           "pointer": "/data/items/0/at",
-          "absent": true
+          "eq": "main:Catalog.Валюты.Module.Manager.Interface.Public"
         },
         {
           "pointer": "/data/items/0/methods/0",
@@ -42,6 +38,21 @@
       ],
       "status": "readable",
       "validators": []
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Валюты.Module.Manager.Interface.Public"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:Catalog.Валюты.Module.Manager.Method.ВалютаПоКоду"
+        }
+      ]
     },
     {
       "tool": "unica.view",

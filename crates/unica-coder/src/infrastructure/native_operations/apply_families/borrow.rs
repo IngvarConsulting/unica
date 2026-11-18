@@ -199,6 +199,27 @@ pub(super) fn plan(
     )
 }
 
+/// A borrow takes its parent from a configuration: the admission reads an
+/// extension too when an apply compares compatibility modes.
+fn require_configuration_parent(
+    admission: &ApplyAdmission,
+    parent: &QualifiedAddress,
+) -> Result<(), ApplyPlanError> {
+    let kind = admission
+        .read_dependency_sets()
+        .into_iter()
+        .find(|(name, _)| *name == parent.source_set())
+        .map(|(_, kind)| kind);
+    if kind.is_some_and(|kind| kind != SourceSetKind::Configuration) {
+        return Err(ApplyPlanError::new(
+            ApplyPlanErrorKind::BadValue,
+            "from must name an object of a configuration source set",
+        )
+        .at_path(parent.to_string()));
+    }
+    Ok(())
+}
+
 fn parent_form_name(parent: &QualifiedAddress) -> Option<&str> {
     parent
         .segments()
@@ -234,6 +255,7 @@ fn plan_object(
         .at_path(at.clone())
     })?;
     let relative = PathBuf::from(layout.directory).join(format!("{name}.xml"));
+    require_configuration_parent(admission, parent)?;
     let parent_owner =
         admission.read_apply_dependency(parent.source_set(), Path::new("Configuration.xml"))?;
     if !registered(&parent_owner, kind, name)? {
@@ -496,6 +518,7 @@ fn plan_form(
         ApplyPlanError::new(kind, error.to_string()).at_path(from.clone())
     };
 
+    require_configuration_parent(admission, parent)?;
     let parent_configuration =
         admission.read_apply_dependency(parent.source_set(), Path::new("Configuration.xml"))?;
     if !registered(&parent_configuration, kind, name)? {
@@ -645,15 +668,21 @@ fn plan_form(
             )?;
             let uuid =
                 identity.new_uuid("form", &from, crate::infrastructure::source_ids::fresh_uuid);
+            // The new files take the format of the extension set they join,
+            // not the parent's (INV.SOURCE.WRITABLE-PROFILE).
+            let set_format = binding
+                .source_profile()
+                .serialization_format()
+                .unwrap_or(parent_form.version.as_str())
+                .to_string();
             let mut content = b"\xef\xbb\xbf".to_vec();
             content.extend_from_slice(
-                unica_forms_designer::codec::borrowed_form_content_xml(&parent_form.version)
-                    .as_bytes(),
+                unica_forms_designer::codec::borrowed_form_content_xml(&set_format).as_bytes(),
             );
             for (relative, bytes) in [
                 (
                     &form_relative,
-                    borrowed_form::borrowed_form_descriptor(form, &uuid, &parent_form),
+                    borrowed_form::borrowed_form_descriptor(form, &uuid, &parent_form, &set_format),
                 ),
                 (&content_relative, content),
             ] {
@@ -1226,6 +1255,49 @@ mod tests {
             unica_workspace::test_support::file_identity_for_test(&descriptor).unwrap(),
             file_identity
         );
+    }
+
+    /// rule: INV.APP.APPLY-OPERATION-INDEX
+    #[test]
+    fn mixed_borrow_batch_refusal_names_the_original_operation() {
+        let fixture = Fixture::new();
+        let descriptor = fixture.dst.join("Configuration.xml");
+        let text = std::fs::read_to_string(&descriptor).unwrap();
+        std::fs::write(&descriptor, text.replace("</Name>", "</Name><Comment/>")).unwrap();
+        let overrides = Some(serde_json::json!(["DescriptionLength"]));
+        let preview = fixture.run(true, None, overrides.clone()).unwrap();
+        fixture.run(false, Some(preview.rev()), overrides).unwrap();
+        let before = std::fs::read(&descriptor).unwrap();
+        let borrowed = fixture.dst.join("Catalogs/Orders.xml");
+        let borrowed_before = std::fs::read(&borrowed).unwrap();
+        let input = serde_json::json!({
+            "at": "extension:Configuration",
+            "ops": [
+                {"op": "props.set", "args": {"values": {"Comment": "staged only"}}},
+                {"op": "object.borrow", "args": {"from": "main:Catalog.Orders"}},
+                {"op": "object.borrow", "args": {"from": "main:Catalog.Orders", "overrides": ["CodeLength"]}}
+            ],
+            "dryRun": true
+        });
+        let request =
+            ApplyRequest::parse(input.as_object().unwrap(), &["main", "extension"]).unwrap();
+        let admission = fixture
+            .actor
+            .admit_apply_with_dependencies(
+                &fixture.destination,
+                std::slice::from_ref(&fixture.parent),
+                None,
+                true,
+                ProviderDeadline::from_budget(Duration::from_secs(10)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let error = super::super::plan_hidden_v13_apply(&request, &fixture.destination, &admission)
+            .unwrap_err();
+        assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue, "{error}");
+        assert_eq!(error.path(), Some("ops[2].args"));
+        assert_eq!(std::fs::read(descriptor).unwrap(), before);
+        assert_eq!(std::fs::read(borrowed).unwrap(), borrowed_before);
     }
 
     #[test]

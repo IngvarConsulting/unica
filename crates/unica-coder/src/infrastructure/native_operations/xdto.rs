@@ -106,6 +106,7 @@ fn plan_unindexed_xdto_batch(
         &authority,
         &validation_ledger,
         indexed.iter(),
+        crate::infrastructure::family_codecs::SUPPORT_MARKER_READER,
     )?;
     let effects =
         unica_source_contract::proposal::reconcile_effects(staged.planned_changes(), provisional);
@@ -830,6 +831,7 @@ pub(crate) fn plan_xdto_batch_owned_for_test(
         authority,
         operations,
         validation_ledger,
+        crate::infrastructure::family_codecs::SUPPORT_MARKER_READER,
     )?;
     Ok((staged, effects))
 }
@@ -2829,6 +2831,47 @@ pub(crate) mod medium_tests {
         }
     }
 
+    /// The support rule of the package itself decides: rule 0 (not editable)
+    /// refuses the plan with the package named, rule 2 (editable) admits it.
+    /// The key is the uuid of the package descriptor.
+    #[test]
+    fn staged_xdto_follows_the_support_rule_of_its_package() {
+        for (name, rule, refused) in [
+            ("support-object-locked", 0, true),
+            ("support-object-editable", 2, false),
+        ] {
+            let fixture = staged_xdto_fixture(name, PACKAGE.as_bytes());
+            let marker = format!(
+                concat!(
+                    "\u{feff}{{6,0,1,dddddddd-dddd-dddd-dddd-dddddddddddd,0,",
+                    "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee,\"1.0\",\"Vendor\",",
+                    "\"VendorConf\",1,{rule},0,bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb,",
+                    "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb}}"
+                ),
+                rule = rule
+            );
+            fs::write(fixture.source.join("Ext/ParentConfigurations.bin"), marker).unwrap();
+            let admission = staged_xdto_admission(&fixture, None, true);
+            let planned = plan_admitted_xdto(
+                &admission,
+                &fixture.binding,
+                &[add_object("main:XDTOPackage.Sample", "Added")],
+            );
+            match planned {
+                Err(error) if refused => {
+                    assert_eq!(error.kind(), ApplyPlanErrorKind::InvalidState, "{name}");
+                    assert!(
+                        format!("{error:?}").contains("protected XDTO package"),
+                        "{name}: {error:?}"
+                    );
+                }
+                Ok(_) if !refused => {}
+                other => panic!("{name}: {:?}", other.map(|_| ())),
+            }
+            fixture.cleanup();
+        }
+    }
+
     /// rule: INV.SOURCE.XDTO-LOCAL-CHANGE
     #[test]
     pub(crate) fn staged_xdto_v12_parity_preserves_exact_bytes_errors_and_noop() {
@@ -3167,6 +3210,7 @@ pub(crate) mod medium_tests {
             &authority,
             &ledger,
             operations.iter(),
+            crate::infrastructure::family_codecs::SUPPORT_MARKER_READER,
         )
         .expect_err("a subsequent run must not adopt an introduced finding as its baseline");
         assert_eq!(error.kind(), ApplyPlanErrorKind::InvalidState);

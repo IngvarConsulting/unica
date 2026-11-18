@@ -114,18 +114,20 @@
         {
           "pointer": "/data/kind",
           "eq": "Method"
+        },
+        {
+          "pointer": "/data/branches",
+          "contains": {
+            "at": "main:Catalog.Items.Form.Generate.Module.Form.Method.ListПриПолученииДанныхНаСервере.Body",
+            "count": 4
+          }
         }
-      ],
-      "captures": {
-        "generatedDynamicBody": {
-          "pointer": "/data/branches/1/at"
-        }
-      }
+      ]
     },
     {
       "tool": "unica.view",
       "args": {
-        "at": "$capture.generatedDynamicBody"
+        "at": "main:Catalog.Items.Form.Generate.Module.Form.Method.ListПриПолученииДанныхНаСервере.Body"
       },
       "expect": [
         "ok"

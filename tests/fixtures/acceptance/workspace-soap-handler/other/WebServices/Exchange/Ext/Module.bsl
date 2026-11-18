@@ -1,0 +1,2 @@
+Procedure OtherOnly() Export
+EndProcedure

@@ -1,11 +1,7 @@
-//! Runner project projection, platform installation roots and the pinned
-//! full-dump flag.
+//! Platform installation roots and the pinned full-dump flag.
 
-use serde_yaml::{Mapping as YamlMapping, Value as YamlValue};
 use std::path::PathBuf;
-use unica_workspace::full_dump::{
-    current_host_platform, HostPlatform, RunnerProjectStore, SerializedDumpProjection,
-};
+use unica_workspace::host_platform::{current_host_platform, HostPlatform};
 
 /// The one enumeration of platform installation roots in the project — reused
 /// by `documentation_registry`'s installation resolver in
@@ -28,53 +24,3 @@ pub fn default_platform_roots() -> Vec<PathBuf> {
 /// The v8-runner flag that makes `dump` (`pull`) a full dump replacing the
 /// source tree; the pinned runner refuses the former `--mode full`.
 pub const FULL_DUMP_FLAG: &str = "--force";
-
-fn yaml_mapping(value: &YamlValue) -> Result<&YamlMapping, String> {
-    value
-        .as_mapping()
-        .ok_or_else(|| "expected a YAML mapping at the document root".to_string())
-}
-
-fn serialize_projection(
-    primary: YamlValue,
-    local: Option<YamlValue>,
-    canonical: bool,
-) -> Result<SerializedDumpProjection, String> {
-    if canonical {
-        yaml_mapping(&primary)?;
-        if let Some(local) = &local {
-            yaml_mapping(local)?;
-        }
-    }
-    let local = local
-        .as_ref()
-        .map(serde_yaml::to_string)
-        .transpose()
-        .map_err(|e| e.to_string())?
-        .map(String::into_bytes);
-    let primary = serde_yaml::to_string(&primary)
-        .map_err(|e| e.to_string())?
-        .into_bytes();
-    let guard = serde_yaml::to_string(&YamlValue::Null)
-        .map_err(|e| e.to_string())?
-        .into_bytes();
-    Ok(SerializedDumpProjection::from_serialized(
-        primary, local, guard,
-    ))
-}
-
-pub fn write_projection(
-    store: &mut RunnerProjectStore,
-    primary: &YamlValue,
-    local: Option<&YamlValue>,
-) -> Result<(), String> {
-    store.write_serialized_projection(&serialize_projection(
-        primary.clone(),
-        local.cloned(),
-        true,
-    )?)
-}
-
-#[cfg(test)]
-#[path = "../tests/platform/runner_project_store.rs"]
-mod runner_project_tests;

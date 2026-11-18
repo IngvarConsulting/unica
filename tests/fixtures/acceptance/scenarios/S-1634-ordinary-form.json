@@ -243,6 +243,20 @@
       },
       "expect": [
         "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Synonym",
+          "eq": "ru = 'Форма'; en = 'Editor''s form'"
+        },
+        {
+          "pointer": "/data/props/Explanation",
+          "eq": "ru = 'Описание формы'"
+        },
+        {
+          "pointer": "/data/props/ExtendedPresentation",
+          "absent": true
+        }
       ]
     },
     {

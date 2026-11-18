@@ -1,0 +1,57 @@
+{
+  "id": "S-2864-search-hit",
+  "issue": 2864,
+  "area": "Справка",
+  "task": "Найти метод в справке платформы и получить заголовок находки: вид статьи, владелец и одна строка описания вместо куска плоского текста страницы. У свойства вид свой, а ключа, которого источник не различает, в находке нет.",
+  "workspace": "tests/fixtures/acceptance/workspace-docs-article",
+  "wire": [
+    {
+      "tool": "unica.docs",
+      "args": {
+        "query": "скопировать таблицу образца",
+        "limit": 10
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/sections/0/hits/0/kind",
+          "eq": "method"
+        },
+        {
+          "pointer": "/data/sections/0/hits/0/owner",
+          "eq": "ТаблицаОбразца"
+        },
+        {
+          "pointer": "/data/sections/0/hits/0/snippet",
+          "eq": "Создаёт копию таблицы образца."
+        },
+        {
+          "pointer": "/data/sections/0/hits/0/documentId",
+          "eq": "platform-syntax-help:8.3.27.2074:syntax-context:objects/SampleTable/methods/Copy1.html"
+        }
+      ]
+    },
+    {
+      "tool": "unica.docs",
+      "args": {
+        "query": "колонки таблицы образца",
+        "limit": 10
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/sections/0/hits/0/kind",
+          "eq": "property"
+        },
+        {
+          "pointer": "/data/sections/0/hits/0/owner",
+          "eq": "ТаблицаОбразца"
+        }
+      ]
+    }
+  ]
+}

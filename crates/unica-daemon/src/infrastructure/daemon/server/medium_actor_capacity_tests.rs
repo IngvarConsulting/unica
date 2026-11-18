@@ -5,7 +5,7 @@ include!(concat!(
     "/medium_actor_capacity_tests_modules.rs"
 ));
 
-use super::super::runner_015::VERSION as RUNNER_VERSION;
+use super::super::runner::VERSION as RUNNER_VERSION;
 use super::*;
 use crate::infrastructure::analysis_composition::provider_host::ProviderHostKey;
 use unica_artifact_delivery::shared::{ArtifactReady, DeliveryFormIdentity, DeliveryWorkKey};
@@ -32,6 +32,10 @@ use unica_execution_contract::invocation::InvocationStatus;
 use unica_work_control::provider_deadline::ProviderDeadline;
 use unica_workspace::actor::{IndexWorkIdentity, WorkspaceSourceSetInput};
 use unica_workspace::test_support::retained_read_probe::{RetainedRead, RetainedReadProbe};
+
+mod apply_read_stability_tests {
+    include!("../apply_read_stability_tests.rs");
+}
 
 thread_local! {
     static LOGICAL_READ_NOW: RefCell<Option<Instant>> = const { RefCell::new(None) };
@@ -1736,7 +1740,7 @@ fn canonical_template_read_warns_while_writes_keep_the_exact_owner_profile() {
             };
             let arguments = serde_json::json!({
                 "at": format!("{at}.DataSet.НаборДанных1"),
-                "ops": [{"op": "field.add", "args": {"items": [{"dataPath": "Other", "title": "Other"}]}}]
+                "ops": [{"op": "field.add", "args": {"items": [{"dataPath": "Other", "title": "ru = 'Other'"}]}}]
             });
             let preview = call(ToolIdentity::Apply, arguments.clone());
             // External source sets have read/check support; the existing
@@ -9998,12 +10002,9 @@ fn non_apply_execution_rejects_prepared_apply_before_actor_publication() {
     assert_eq!(std::fs::read_to_string(descriptor).unwrap(), preimage);
 }
 
-/// The canonical removal reports its cache impact in the same result:
-/// preview and publication both carry the cache mode, the event and the
-/// invalidation lists, so no second call is needed to learn what moved.
-/// rule: INV.CACHE.REPORTED-EFFECTS
+/// rule: INV.APP.APPLY-CHANGE-RESULT
 #[test]
-fn canonical_object_remove_reports_typed_cache_impact_in_preview_and_publication() {
+fn canonical_object_remove_reports_changes_without_cache_telemetry() {
     let workspace = tempfile::tempdir().unwrap();
     let source = workspace.path().join("src");
     std::fs::create_dir_all(source.join("Documents")).unwrap();
@@ -10046,20 +10047,13 @@ fn canonical_object_remove_reports_typed_cache_impact_in_preview_and_publication
         assert!(result.ok, "object.remove failed: {result:?}");
         result
     };
-    let assert_cache_impact = |result: &DomainResult, mode: &str| {
+    let assert_changes = |result: &DomainResult, mode: &str| {
         let data = result.data.as_ref().unwrap();
         assert_eq!(data["mode"], mode);
         assert!(data["effects"].as_u64().unwrap() >= 1);
-        let cache = &data["cache"];
-        assert!(cache["mode"].is_string(), "{cache}");
-        assert!(cache["events"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|event| event == "MetadataChanged"));
-        assert!(!cache["invalidated"].as_array().unwrap().is_empty());
+        assert!(data.get("cache").is_none(), "{data}");
         assert!(result.changed.iter().any(|change| {
-            change.get("at").and_then(serde_json::Value::as_str) == Some("main:Document.Order")
+            change["at"] == "main:Document.Order" && change["event"] == "MetadataChanged"
         }));
     };
     let preview = call(None);
@@ -10067,14 +10061,17 @@ fn canonical_object_remove_reports_typed_cache_impact_in_preview_and_publication
         descriptor.is_file(),
         "preview must not remove the descriptor"
     );
-    assert_cache_impact(&preview, "preview");
-    let published = call(Some(
-        preview.data.as_ref().unwrap()["executionToken"]
-            .as_str()
-            .unwrap(),
-    ));
+    assert_changes(&preview, "preview");
+    let token = preview.data.as_ref().unwrap()["executionToken"]
+        .as_str()
+        .unwrap();
+    let published = call(Some(token));
     assert!(!descriptor.exists(), "publication removes the descriptor");
-    assert_cache_impact(&published, "published");
+    assert_changes(&published, "published");
+    let replayed = call(Some(token));
+    assert_changes(&replayed, "published");
+    assert_eq!(replayed.changed, published.changed);
+    assert_eq!(replayed.rev, published.rev);
 }
 
 #[derive(Clone, Copy)]
@@ -14395,9 +14392,10 @@ fn assert_development_cycle_admission(selected: &str) {
         }
         for dry_run in [false, true] {
             let mut arguments = serde_json::json!({"op":op,"args":args,"dryRun":dry_run});
-            if op == "push" && !dry_run {
-                // Исполняемый push с force:true допускается только после
-                // согласия человека: дверь подаёт аргументы выбранного варианта.
+            if matches!(op, "push" | "pull") && !dry_run {
+                // Исполняемые push и pull с force:true над набором вне git
+                // допускаются только после согласия человека: дверь подаёт
+                // аргументы выбранного варианта.
                 let unconfirmed = InvocationRequest::new(
                     ToolIdentity::Run,
                     arguments,
@@ -14407,11 +14405,11 @@ fn assert_development_cycle_admission(selected: &str) {
                 .unwrap();
                 let refused = match runtime.bind(unconfirmed) {
                     Err(V5CanonicalPrepareError::Rejected(result)) => result,
-                    Ok(_) => panic!("an unconfirmed push with force:true was admitted"),
-                    Err(other) => panic!("push: {other:?}"),
+                    Ok(_) => panic!("an unconfirmed {op} with force:true was admitted"),
+                    Err(other) => panic!("{op}: {other:?}"),
                 };
                 assert_eq!(refused.diagnostics[0]["code"], "cancelled");
-                let choice = refused.human_choice.expect("push asks the person");
+                let choice = refused.human_choice.expect("the call asks the person");
                 arguments = serde_json::Value::Object(choice.options[0].arguments.clone());
             }
             let request = InvocationRequest::new(

@@ -33,6 +33,7 @@ pub use platform::{current_target_id, TempFileSpill, VIEW_SNAPSHOT_MAX_RETAINED_
 pub use platform::{inject_unix_waitid_error_for_test, reap_runtime_authority_test_child};
 pub mod platform_xml_owner;
 // This foundational provider is consumed by the public migration in the next slice.
+pub mod debug_sources;
 #[allow(dead_code)]
 pub(crate) mod platform_xml_source_targets;
 pub mod plugin_runtime;

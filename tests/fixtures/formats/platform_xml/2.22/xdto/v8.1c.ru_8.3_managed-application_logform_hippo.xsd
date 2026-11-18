@@ -1,0 +1,1529 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:ns1="http://v8.1c.ru/8.1/data/core" xmlns:ns2="http://v8.1c.ru/8.1/data/ui" xmlns:ns3="http://v8.1c.ru/8.2/managed-application/logform" xmlns:ns4="http://v8.1c.ru/8.2/managed-application/logform/layouter" xmlns:ns5="http://v8.1c.ru/8.2/data/spreadsheet" xmlns:ns6="http://v8.1c.ru/8.1/data/enterprise" xmlns:tns="http://v8.1c.ru/8.3/managed-application/logform/hippo" xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="http://v8.1c.ru/8.3/managed-application/logform/hippo" attributeFormDefault="unqualified" elementFormDefault="qualified">
+	<xs:import namespace="http://v8.1c.ru/8.1/data/core"/>
+	<xs:import namespace="http://v8.1c.ru/8.1/data/ui"/>
+	<xs:import namespace="http://v8.1c.ru/8.2/managed-application/logform"/>
+	<xs:import namespace="http://v8.1c.ru/8.2/managed-application/logform/layouter"/>
+	<xs:import namespace="http://v8.1c.ru/8.2/data/spreadsheet"/>
+	<xs:import namespace="http://v8.1c.ru/8.1/data/enterprise"/>
+	<xs:simpleType name="CBLocation">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="InForm"/>
+			<xs:enumeration value="FormTop"/>
+			<xs:enumeration value="FormBottom"/>
+			<xs:enumeration value="LeftCaption"/>
+			<xs:enumeration value="RightCaption"/>
+			<xs:enumeration value="InGrid"/>
+			<xs:enumeration value="FormFloat"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ChoiceObjects">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Items"/>
+			<xs:enumeration value="Folders"/>
+			<xs:enumeration value="FoldersAndItems"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ControlCategory">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Main"/>
+			<xs:enumeration value="Title"/>
+			<xs:enumeration value="AlignedTitle"/>
+			<xs:enumeration value="ExtTooltip"/>
+			<xs:enumeration value="CloseBtnImage"/>
+			<xs:enumeration value="ShowData"/>
+			<xs:enumeration value="WidthDependedHeight"/>
+			<xs:enumeration value="ChangeHeightOnChangeData"/>
+			<xs:enumeration value="HorStretchPriority"/>
+			<xs:enumeration value="HorCompressPriority"/>
+			<xs:enumeration value="VerCompressPriority"/>
+			<xs:enumeration value="Spacing"/>
+			<xs:enumeration value="NoCalcHorContent"/>
+			<xs:enumeration value="NoCalcVerContent"/>
+			<xs:enumeration value="AlwaysVerticalAlign"/>
+			<xs:enumeration value="Align"/>
+			<xs:enumeration value="Primary"/>
+			<xs:enumeration value="AutoChangeVAlign"/>
+			<xs:enumeration value="AutoChangeRowsCount"/>
+			<xs:enumeration value="ContentStretchableMode"/>
+			<xs:enumeration value="ContentIndepended"/>
+			<xs:enumeration value="BehaviorIcon"/>
+			<xs:enumeration value="MasterColumn"/>
+			<xs:enumeration value="SlaveColumn"/>
+			<xs:enumeration value="HasSingleElement"/>
+			<xs:enumeration value="Layered"/>
+			<xs:enumeration value="LinkToAnchor"/>
+			<xs:enumeration value="FullScreen"/>
+			<xs:enumeration value="Anchor"/>
+			<xs:enumeration value="Sticky"/>
+			<xs:enumeration value="Splitter"/>
+			<xs:enumeration value="SlaveChangeVAlign"/>
+			<xs:enumeration value="NoHorStretchable"/>
+			<xs:enumeration value="NoVerStretchable"/>
+			<xs:enumeration value="SlaveVisibility"/>
+			<xs:enumeration value="AmpersandIsData"/>
+			<xs:enumeration value="PostGeneratorSizesInDLU"/>
+			<xs:enumeration value="MobileLeftCaption"/>
+			<xs:enumeration value="MobileRightCaption"/>
+			<xs:enumeration value="MobileAutoCloseButton"/>
+			<xs:enumeration value="MobileSpecialRightAlign"/>
+			<xs:enumeration value="MobileNoMobileTransformation"/>
+			<xs:enumeration value="MobileSeparatedColumn"/>
+			<xs:enumeration value="MobileSkippedColumns"/>
+			<xs:enumeration value="MobileTableGroupData"/>
+			<xs:enumeration value="ContainMobileSeparatedColumns"/>
+			<xs:enumeration value="MarkRequired"/>
+			<xs:enumeration value="CheckboxOrRadioButtonLabel"/>
+			<xs:enumeration value="SelectedItemsActionsPanelGroup"/>
+			<xs:enumeration value="SelectedItemsActionsPanelInGridGroup"/>
+			<xs:enumeration value="SelectedItemsActionsPanelInMoxelGroup"/>
+			<xs:enumeration value="SelectedItemsActionsPanelButton"/>
+			<xs:enumeration value="SelectedItemsActionsPanelLabelButton"/>
+			<xs:enumeration value="SelectedItemsActionsPanelCommandBar"/>
+			<xs:enumeration value="SelectedItemsActionsPanelInGridCommandBar"/>
+			<xs:enumeration value="SelectedItemsActionsPanelInMoxelCommandBar"/>
+			<xs:enumeration value="RowActionsPanelGroup"/>
+			<xs:enumeration value="RowActionsPanelCommandBar"/>
+			<xs:enumeration value="HierarchyPanelMenuGroup"/>
+			<xs:enumeration value="CollapsibleGroupTitle"/>
+			<xs:enumeration value="GroupTitle"/>
+			<xs:enumeration value="TopCommandBar"/>
+			<xs:enumeration value="SearchControl"/>
+			<xs:enumeration value="BottomCommandBar"/>
+			<xs:enumeration value="CreateButton"/>
+			<xs:enumeration value="FABCommandBar"/>
+			<xs:enumeration value="CollapsibleGroupCollapseButton"/>
+			<xs:enumeration value="EditInCommandBar"/>
+			<xs:enumeration value="CommandBarInGrid"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="GBBehavior">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Usual"/>
+			<xs:enumeration value="Collapsible"/>
+			<xs:enumeration value="PopUp"/>
+			<xs:enumeration value="Auto"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="HLEdge">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Left"/>
+			<xs:enumeration value="Top"/>
+			<xs:enumeration value="Right"/>
+			<xs:enumeration value="Bottom"/>
+			<xs:enumeration value="None"/>
+			<xs:enumeration value="Auto"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="HLMenuElementRepresentation">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Text"/>
+			<xs:enumeration value="Picture"/>
+			<xs:enumeration value="TextPicture"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="LogicGroupInternalRepresentation">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="None"/>
+			<xs:enumeration value="NoneBigTitle"/>
+			<xs:enumeration value="GroupBox"/>
+			<xs:enumeration value="Line"/>
+			<xs:enumeration value="Margin"/>
+			<xs:enumeration value="LeftLine"/>
+			<xs:enumeration value="MobileMargin"/>
+			<xs:enumeration value="MobileMarginLeftLine"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="LogicGroupRole">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="NoSpecialRole"/>
+			<xs:enumeration value="HyperlinkButtonGroupRole"/>
+			<xs:enumeration value="TableGroupRole"/>
+			<xs:enumeration value="MobileTitleAreaRole"/>
+			<xs:enumeration value="PageContentRole"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="SeparatePanelAppearance">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="None"/>
+			<xs:enumeration value="PopUp"/>
+			<xs:enumeration value="ExtTooltip"/>
+			<xs:enumeration value="SelectedItemsActionsPanel"/>
+			<xs:enumeration value="RowActionsPanel"/>
+			<xs:enumeration value="FABPanel"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="SeparatePanelRole">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="NoSpecialRole"/>
+			<xs:enumeration value="PageRole"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="SplitDirection">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Hor"/>
+			<xs:enumeration value="Ver"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="SplitMode">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Move"/>
+			<xs:enumeration value="Scale"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="SpreadSheetDocumentScrollBarUse">
+		<xs:union memberTypes="ns3:TableScrollBarUse xs:boolean"/>
+	</xs:simpleType>
+	<xs:complexType name="BackObject">
+		<xs:complexContent>
+			<xs:extension base="tns:Element">
+				<xs:sequence>
+					<xs:element name="e" type="tns:LayElement"/>
+					<xs:element name="fe" type="tns:LayFormElement"/>
+					<xs:element name="bkClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="io" type="tns:Strings" minOccurs="0"/>
+				</xs:sequence>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="Button">
+		<xs:complexContent>
+			<xs:extension base="tns:Element">
+				<xs:sequence>
+					<xs:element name="e" type="tns:LayElement" minOccurs="0"/>
+					<xs:element name="fe" type="tns:LayFormElement" minOccurs="0"/>
+					<xs:element name="tooltip" type="xs:string" minOccurs="0"/>
+					<xs:element name="shortCut" type="ns2:ShortCutType" minOccurs="0"/>
+					<xs:element name="pic" type="ns2:Picture" minOccurs="0"/>
+					<xs:element name="txtClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="bkClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="brdClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="fnt" type="ns2:Font" minOccurs="0"/>
+					<xs:element name="backPicture" type="ns2:Picture" minOccurs="0"/>
+					<xs:element name="pictTitle" type="xs:string" minOccurs="0"/>
+				</xs:sequence>
+				<xs:attribute name="defBtn" type="xs:boolean"/>
+				<xs:attribute name="multiLine" type="xs:boolean"/>
+				<xs:attribute name="minTitleRowsCount" type="xs:decimal"/>
+				<xs:attribute name="shape" type="ns3:ButtonShape"/>
+				<xs:attribute name="shapeRepres" type="ns3:ButtonShapeRepresentation"/>
+				<xs:attribute name="picLocation" type="ns3:FormButtonPictureLocation"/>
+				<xs:attribute name="textHAlign" type="ns3:ItemHorizontalAlignment"/>
+				<xs:attribute name="locationInCommandBar" type="ns3:ButtonLocationInCommandBar"/>
+				<xs:attribute name="showAsCard" type="xs:boolean"/>
+				<xs:attribute name="backPictureRepresentationEffect" type="ns3:PictureRepresentationEffect"/>
+				<xs:attribute name="cardPictureAndTitleAlign" type="ns3:CardPictureAndTitleAlignVariant"/>
+				<xs:attribute name="buttonImportance" type="ns3:ButtonImportance"/>
+				<xs:attribute name="pictureHeight" type="xs:decimal"/>
+				<xs:attribute name="representation" type="ns3:ButtonRepresentation"/>
+				<xs:attribute name="displayImportance" type="ns3:DisplayImportance"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="Calendar">
+		<xs:complexContent>
+			<xs:extension base="tns:Element">
+				<xs:sequence>
+					<xs:element name="e" type="tns:LayElement" minOccurs="0"/>
+					<xs:element name="fe" type="tns:LayFormElement" minOccurs="0"/>
+					<xs:element name="ewcm" type="tns:LayElementWCM" minOccurs="0"/>
+					<xs:element name="tooltip" type="xs:string" minOccurs="0"/>
+					<xs:element name="stcut" type="ns2:ShortCutType" minOccurs="0"/>
+					<xs:element name="brd" type="ns2:Border" minOccurs="0"/>
+					<xs:element name="brdClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="fnt" type="ns2:Font" minOccurs="0"/>
+				</xs:sequence>
+				<xs:attribute name="dateSel" type="ns4:FormDateSelectionMode"/>
+				<xs:attribute name="showCurDate" type="xs:boolean"/>
+				<xs:attribute name="navigation" type="xs:boolean"/>
+				<xs:attribute name="begPeriod" type="xs:dateTime"/>
+				<xs:attribute name="endPeriod" type="xs:dateTime"/>
+				<xs:attribute name="startDrag" type="xs:boolean"/>
+				<xs:attribute name="drag" type="xs:boolean"/>
+				<xs:attribute name="monthPanelVisible" type="xs:boolean"/>
+				<xs:attribute name="widthInMonths" type="xs:decimal"/>
+				<xs:attribute name="heightInMonths" type="xs:decimal"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="CategoryHolder">
+		<xs:sequence>
+			<xs:element name="item" type="tns:ControlCategory" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="Chart">
+		<xs:complexContent>
+			<xs:extension base="tns:Element">
+				<xs:sequence>
+					<xs:element name="e" type="tns:LayElement" minOccurs="0"/>
+					<xs:element name="fe" type="tns:LayFormElement" minOccurs="0"/>
+					<xs:element name="ewcm" type="tns:LayElementWCM" minOccurs="0"/>
+					<xs:element name="tooltip" type="xs:string" minOccurs="0"/>
+					<xs:element name="stcut" type="ns2:ShortCutType" minOccurs="0"/>
+				</xs:sequence>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="CheckBox">
+		<xs:complexContent>
+			<xs:extension base="tns:Element">
+				<xs:sequence>
+					<xs:element name="e" type="tns:LayElement" minOccurs="0"/>
+					<xs:element name="fe" type="tns:LayFormElement" minOccurs="0"/>
+					<xs:element name="ewcm" type="tns:LayElementWCM" minOccurs="0"/>
+					<xs:element name="tooltip" type="xs:string" minOccurs="0"/>
+					<xs:element name="brdClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="stcut" type="ns2:ShortCutType" minOccurs="0"/>
+				</xs:sequence>
+				<xs:attribute name="threeState" type="xs:boolean"/>
+				<xs:attribute name="vAlign" type="ns3:ItemVerticalAlignment"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="Command">
+		<xs:complexContent>
+			<xs:extension base="tns:Element">
+				<xs:sequence>
+					<xs:element name="e" type="tns:LayElement" minOccurs="0"/>
+					<xs:element name="tooltip" type="xs:string" minOccurs="0"/>
+					<xs:element name="shortCut" type="ns2:ShortCutType" minOccurs="0"/>
+					<xs:element name="pic" type="ns2:Picture" minOccurs="0"/>
+					<xs:element name="fnt" type="ns2:Font" minOccurs="0"/>
+					<xs:element name="txtClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="bkClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="brdClr" type="ns2:Color" minOccurs="0"/>
+				</xs:sequence>
+				<xs:attribute name="repres" type="tns:HLMenuElementRepresentation"/>
+				<xs:attribute name="defBtn" type="xs:boolean"/>
+				<xs:attribute name="important" type="xs:boolean"/>
+				<xs:attribute name="locationInCommandBar" type="ns3:ButtonLocationInCommandBar"/>
+				<xs:attribute name="commandUniqueness" type="xs:boolean"/>
+				<xs:attribute name="right" type="xs:boolean"/>
+				<xs:attribute name="subMenu" type="xs:boolean"/>
+				<xs:attribute name="sticky" type="xs:boolean"/>
+				<xs:attribute name="hyper" type="xs:boolean"/>
+				<xs:attribute name="shape" type="ns3:ButtonShape"/>
+				<xs:attribute name="shapeRepres" type="ns3:ButtonShapeRepresentation"/>
+				<xs:attribute name="picLocation" type="ns3:FormButtonPictureLocation"/>
+				<xs:attribute name="tableSearchHistoryCommand" type="xs:boolean"/>
+				<xs:attribute name="importance" type="ns3:ButtonImportance"/>
+				<xs:attribute name="extName" type="xs:string"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="CommandBar">
+		<xs:complexContent>
+			<xs:extension base="tns:Element">
+				<xs:sequence>
+					<xs:element name="e" type="tns:LayElement"/>
+					<xs:element name="fe" type="tns:LayFormElement"/>
+					<xs:element name="stcut" type="ns2:ShortCutType" minOccurs="0"/>
+					<xs:element name="fnt" type="ns2:Font" minOccurs="0"/>
+					<xs:element name="txtClr" type="ns2:Color" minOccurs="0"/>
+				</xs:sequence>
+				<xs:attribute name="source" type="xs:string"/>
+				<xs:attribute name="hAlign" type="ns4:ItemHorizontalAlignment"/>
+				<xs:attribute name="secCB" type="xs:boolean"/>
+				<xs:attribute name="loc" type="tns:CBLocation"/>
+				<xs:attribute name="commandPanelAppearanceMode" type="ns3:FormCommandBarAppearanceMode"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="ContextMenu">
+		<xs:complexContent>
+			<xs:extension base="tns:Element">
+				<xs:sequence>
+					<xs:element name="e" type="tns:LayElement" minOccurs="0"/>
+					<xs:element name="fe" type="tns:LayFormElement" minOccurs="0"/>
+				</xs:sequence>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="Delta">
+		<xs:sequence>
+			<xs:element name="item" type="tns:Item" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+		<xs:attribute name="full" type="xs:boolean"/>
+	</xs:complexType>
+	<xs:complexType name="Dendrogram">
+		<xs:complexContent>
+			<xs:extension base="tns:Element">
+				<xs:sequence>
+					<xs:element name="e" type="tns:LayElement" minOccurs="0"/>
+					<xs:element name="fe" type="tns:LayFormElement" minOccurs="0"/>
+					<xs:element name="ewcm" type="tns:LayElementWCM" minOccurs="0"/>
+					<xs:element name="tooltip" type="xs:string" minOccurs="0"/>
+					<xs:element name="stcut" type="ns2:ShortCutType" minOccurs="0"/>
+				</xs:sequence>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="Doubles">
+		<xs:sequence>
+			<xs:element name="item" type="xs:double" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="Element" abstract="true"/>
+	<xs:complexType name="Flowchart">
+		<xs:complexContent>
+			<xs:extension base="tns:Element">
+				<xs:sequence>
+					<xs:element name="e" type="tns:LayElement" minOccurs="0"/>
+					<xs:element name="fe" type="tns:LayFormElement" minOccurs="0"/>
+					<xs:element name="ewcm" type="tns:LayElementWCM" minOccurs="0"/>
+					<xs:element name="tooltip" type="xs:string" minOccurs="0"/>
+					<xs:element name="stcut" type="ns2:ShortCutType" minOccurs="0"/>
+					<xs:element name="brdClr" type="ns2:Color" minOccurs="0"/>
+				</xs:sequence>
+				<xs:attribute name="output" type="xs:boolean"/>
+				<xs:attribute name="edit" type="xs:boolean"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="Form">
+		<xs:complexContent>
+			<xs:extension base="tns:Element">
+				<xs:sequence>
+					<xs:element name="e" type="tns:LayElement" minOccurs="0"/>
+					<xs:element name="fg" type="tns:LayFormGroup" minOccurs="0"/>
+					<xs:element name="vg" type="tns:VirtualGrid" minOccurs="0"/>
+				</xs:sequence>
+				<xs:attribute name="width" type="xs:decimal"/>
+				<xs:attribute name="height" type="xs:decimal"/>
+				<xs:attribute name="resWidth" type="xs:decimal"/>
+				<xs:attribute name="resHeight" type="xs:decimal"/>
+				<xs:attribute name="enter" type="ns4:FormEnterKeyBehavior"/>
+				<xs:attribute name="verScroll" type="ns3:LogFormScrollMode"/>
+				<xs:attribute name="convRepr" type="ns3:LogFormShowConversations"/>
+				<xs:attribute name="childrenTitleLocation" type="ns3:ChildrenTitleLocation"/>
+				<xs:attribute name="scaleVariant" type="ns6:ClientApplicationFormScaleVariant"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="FormattedDoc">
+		<xs:complexContent>
+			<xs:extension base="tns:Element">
+				<xs:sequence>
+					<xs:element name="e" type="tns:LayElement" minOccurs="0"/>
+					<xs:element name="fe" type="tns:LayFormElement" minOccurs="0"/>
+					<xs:element name="ewcm" type="tns:LayElementWCM" minOccurs="0"/>
+					<xs:element name="tooltip" type="xs:string" minOccurs="0"/>
+					<xs:element name="stcut" type="ns2:ShortCutType" minOccurs="0"/>
+					<xs:element name="txtClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="bkClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="brdClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="fnt" type="ns2:Font" minOccurs="0"/>
+				</xs:sequence>
+				<xs:attribute name="output" type="xs:boolean"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="GanttChart">
+		<xs:complexContent>
+			<xs:extension base="tns:Element">
+				<xs:sequence>
+					<xs:element name="e" type="tns:LayElement" minOccurs="0"/>
+					<xs:element name="fe" type="tns:LayFormElement" minOccurs="0"/>
+					<xs:element name="ewcm" type="tns:LayElementWCM" minOccurs="0"/>
+					<xs:element name="tooltip" type="xs:string" minOccurs="0"/>
+					<xs:element name="stcut" type="ns2:ShortCutType" minOccurs="0"/>
+				</xs:sequence>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="GeographicalMap">
+		<xs:complexContent>
+			<xs:extension base="tns:Element">
+				<xs:sequence>
+					<xs:element name="e" type="tns:LayElement" minOccurs="0"/>
+					<xs:element name="fe" type="tns:LayFormElement" minOccurs="0"/>
+					<xs:element name="ewcm" type="tns:LayElementWCM" minOccurs="0"/>
+					<xs:element name="tooltip" type="xs:string" minOccurs="0"/>
+					<xs:element name="stcut" type="ns2:ShortCutType" minOccurs="0"/>
+					<xs:element name="brdClr" type="ns2:Color" minOccurs="0"/>
+				</xs:sequence>
+				<xs:attribute name="output" type="xs:boolean"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="GroupBox">
+		<xs:complexContent>
+			<xs:extension base="tns:Element">
+				<xs:sequence>
+					<xs:element name="e" type="tns:LayElement" minOccurs="0"/>
+					<xs:element name="fe" type="tns:LayFormElement" minOccurs="0"/>
+					<xs:element name="tooltip" type="xs:string" minOccurs="0"/>
+					<xs:element name="txtClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="bkClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="fnt" type="ns2:Font" minOccurs="0"/>
+				</xs:sequence>
+				<xs:attribute name="horLine" type="xs:boolean"/>
+				<xs:attribute name="format" type="xs:string"/>
+				<xs:attribute name="dataLink" type="xs:boolean"/>
+				<xs:attribute name="hyper" type="xs:boolean"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="HTML">
+		<xs:complexContent>
+			<xs:extension base="tns:Element">
+				<xs:sequence>
+					<xs:element name="e" type="tns:LayElement" minOccurs="0"/>
+					<xs:element name="fe" type="tns:LayFormElement" minOccurs="0"/>
+					<xs:element name="ewcm" type="tns:LayElementWCM" minOccurs="0"/>
+					<xs:element name="tooltip" type="xs:string" minOccurs="0"/>
+					<xs:element name="stcut" type="ns2:ShortCutType" minOccurs="0"/>
+					<xs:element name="brdClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="fnt" type="ns2:Font" minOccurs="0"/>
+					<xs:element name="brd" type="ns2:Border" minOccurs="0"/>
+				</xs:sequence>
+				<xs:attribute name="output" type="xs:boolean"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="HippoLayHierarchyPanel">
+		<xs:complexContent>
+			<xs:extension base="tns:Element">
+				<xs:sequence>
+					<xs:element name="e" type="tns:LayElement" minOccurs="0"/>
+					<xs:element name="fe" type="tns:LayFormElement" minOccurs="0"/>
+					<xs:element name="ewcm" type="tns:LayElementWCM" minOccurs="0"/>
+					<xs:element name="txtClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="bkClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="brdClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="fnt" type="ns2:Font" minOccurs="0"/>
+				</xs:sequence>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="HippoLayRowActionsPanel">
+		<xs:complexContent>
+			<xs:extension base="tns:Element">
+				<xs:sequence>
+					<xs:element name="e" type="tns:LayElement" minOccurs="0"/>
+					<xs:element name="fe" type="tns:LayFormElement" minOccurs="0"/>
+					<xs:element name="fg" type="tns:LayFormGroup" minOccurs="0"/>
+					<xs:element name="ewcm" type="tns:LayElementWCM" minOccurs="0"/>
+					<xs:element name="fnt" type="ns2:Font" minOccurs="0"/>
+				</xs:sequence>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="HippoLayVerticalScrollPanel">
+		<xs:complexContent>
+			<xs:extension base="tns:Element">
+				<xs:sequence>
+					<xs:element name="e" type="tns:LayElement" minOccurs="0"/>
+					<xs:element name="fe" type="tns:LayFormElement" minOccurs="0"/>
+					<xs:element name="ewcm" type="tns:LayElementWCM" minOccurs="0"/>
+					<xs:element name="txtClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="bkClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="brdClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="fnt" type="ns2:Font" minOccurs="0"/>
+				</xs:sequence>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="Image">
+		<xs:complexContent>
+			<xs:extension base="tns:Element">
+				<xs:sequence>
+					<xs:element name="e" type="tns:LayElement" minOccurs="0"/>
+					<xs:element name="fe" type="tns:LayFormElement" minOccurs="0"/>
+					<xs:element name="ewcm" type="tns:LayElementWCM" minOccurs="0"/>
+					<xs:element name="tooltip" type="xs:string" minOccurs="0"/>
+					<xs:element name="shortCut" type="ns2:ShortCutType" minOccurs="0"/>
+					<xs:element name="pic" type="ns2:Picture" minOccurs="0"/>
+					<xs:element name="hoverPic" type="ns2:Picture" minOccurs="0"/>
+					<xs:element name="pressPic" type="ns2:Picture" minOccurs="0"/>
+					<xs:element name="picVal" type="ns2:Picture" minOccurs="0"/>
+					<xs:element name="txtClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="txtClrH" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="txtClrP" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="brdClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="brd" type="ns2:Border" minOccurs="0"/>
+					<xs:element name="fnt" type="ns2:Font" minOccurs="0"/>
+					<xs:element name="extTooltip" type="xs:string" minOccurs="0"/>
+					<xs:element name="picTxt" type="xs:string" minOccurs="0"/>
+					<xs:element name="backgroundShowMode" type="ns3:PictureBackgroundShowMode" minOccurs="0"/>
+				</xs:sequence>
+				<xs:attribute name="hyper" type="xs:boolean"/>
+				<xs:attribute name="pictureSize" type="ns4:PictureSize"/>
+				<xs:attribute name="keepOriginalSize" type="xs:boolean"/>
+				<xs:attribute name="zoom" type="xs:boolean"/>
+				<xs:attribute name="imageScale" type="xs:decimal"/>
+				<xs:attribute name="startDrag" type="xs:boolean"/>
+				<xs:attribute name="drag" type="xs:boolean"/>
+				<xs:attribute name="fExtTooltip" type="xs:boolean"/>
+				<xs:attribute name="output" type="xs:boolean"/>
+				<xs:attribute name="fileDragMode" type="ns3:FileDragMode"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="Item">
+		<xs:sequence>
+			<xs:element name="parent" type="xs:string" nillable="true" minOccurs="0"/>
+			<xs:element name="elem" type="tns:Element" minOccurs="0"/>
+		</xs:sequence>
+		<xs:attribute name="name" type="xs:string" use="required"/>
+		<xs:attribute name="create" type="xs:boolean"/>
+		<xs:attribute name="remove" type="xs:boolean"/>
+		<xs:attribute name="index" type="xs:decimal"/>
+	</xs:complexType>
+	<xs:complexType name="Label">
+		<xs:complexContent>
+			<xs:extension base="tns:Element">
+				<xs:sequence>
+					<xs:element name="e" type="tns:LayElement" minOccurs="0"/>
+					<xs:element name="fe" type="tns:LayFormElement" minOccurs="0"/>
+					<xs:element name="ewcm" type="tns:LayElementWCM" minOccurs="0"/>
+					<xs:element name="tooltip" type="xs:string" minOccurs="0"/>
+					<xs:element name="shortCut" type="ns2:ShortCutType" minOccurs="0"/>
+					<xs:element name="txtClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="bkClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="brdClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="brd" type="ns2:Border" minOccurs="0"/>
+					<xs:element name="fnt" type="ns2:Font" minOccurs="0"/>
+				</xs:sequence>
+				<xs:attribute name="hAlign" type="ns3:ItemHorizontalAlignment"/>
+				<xs:attribute name="vAlign" type="ns3:ItemVerticalAlignment"/>
+				<xs:attribute name="hyper" type="xs:boolean"/>
+				<xs:attribute name="format" type="xs:string"/>
+				<xs:attribute name="markNegatives" type="xs:boolean"/>
+				<xs:attribute name="pwd" type="xs:boolean"/>
+				<xs:attribute name="formatted" type="xs:boolean"/>
+				<xs:attribute name="minTitleRowsCount" type="xs:decimal"/>
+				<xs:attribute name="useStdFontForWidthCalculate" type="xs:boolean"/>
+				<xs:attribute name="useStdFontForMaxWidthCalculate" type="xs:boolean"/>
+				<xs:attribute name="pseudoHyperlink" type="xs:boolean"/>
+				<xs:attribute name="output" type="xs:boolean"/>
+				<xs:attribute name="lcp" type="xs:decimal"/>
+				<xs:attribute name="tcp" type="xs:decimal"/>
+				<xs:attribute name="rcp" type="xs:decimal"/>
+				<xs:attribute name="bcp" type="xs:decimal"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="LayElement">
+		<xs:sequence>
+			<xs:element name="title" type="xs:string" minOccurs="0"/>
+			<xs:element name="cats" type="tns:CategoryHolder" minOccurs="0"/>
+		</xs:sequence>
+		<xs:attribute name="formItem" type="xs:string"/>
+		<xs:attribute name="visible" type="xs:boolean"/>
+		<xs:attribute name="groupVisible" type="xs:boolean"/>
+		<xs:attribute name="enabled" type="xs:boolean"/>
+		<xs:attribute name="groupEnabled" type="xs:boolean"/>
+		<xs:attribute name="readOnly" type="xs:boolean"/>
+		<xs:attribute name="groupReadOnly" type="xs:boolean"/>
+		<xs:attribute name="skip" type="xs:boolean"/>
+		<xs:attribute name="def" type="xs:boolean"/>
+		<xs:attribute name="pgc" type="xs:boolean"/>
+	</xs:complexType>
+	<xs:complexType name="LayElementWCM">
+		<xs:sequence>
+			<xs:element name="cm" type="xs:string" nillable="true" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="LayElementWSIAP">
+		<xs:sequence>
+			<xs:element name="name" type="xs:string" nillable="true" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="LayFormElement">
+		<xs:attribute name="width" type="xs:decimal"/>
+		<xs:attribute name="minWidth" type="xs:decimal"/>
+		<xs:attribute name="maxWidth" type="xs:decimal"/>
+		<xs:attribute name="height" type="xs:decimal"/>
+		<xs:attribute name="minHeight" type="xs:decimal"/>
+		<xs:attribute name="maxHeight" type="xs:decimal"/>
+		<xs:attribute name="stretch" type="ns4:StretchableMode"/>
+		<xs:attribute name="leftPadding" type="xs:decimal"/>
+		<xs:attribute name="topPadding" type="xs:decimal"/>
+		<xs:attribute name="rightPadding" type="xs:decimal"/>
+		<xs:attribute name="bottomPadding" type="xs:decimal"/>
+		<xs:attribute name="gridLeft" type="xs:decimal"/>
+		<xs:attribute name="gridTop" type="xs:decimal"/>
+		<xs:attribute name="gridWidth" type="xs:decimal"/>
+		<xs:attribute name="gridHeight" type="xs:decimal"/>
+		<xs:attribute name="gridHAlign" type="ns3:ItemHorizontalAlignment"/>
+		<xs:attribute name="gridVAlign" type="ns3:ItemVerticalAlignment"/>
+		<xs:attribute name="alignedAreaTopOffset" type="xs:decimal"/>
+		<xs:attribute name="anchorName" type="xs:string"/>
+		<xs:attribute name="layerNumber" type="xs:decimal"/>
+		<xs:attribute name="additionalAnchorName" type="xs:string"/>
+	</xs:complexType>
+	<xs:complexType name="LayFormElementExt">
+		<xs:attribute name="minWidthWithCompressPriority" type="xs:decimal"/>
+		<xs:attribute name="minWidthWithNormalPriority" type="xs:decimal"/>
+		<xs:attribute name="minWidthWithStretchPriority" type="xs:decimal"/>
+		<xs:attribute name="maxWidthWithStretchPriority" type="xs:decimal"/>
+		<xs:attribute name="maxWidthWithNormalPriority" type="xs:decimal"/>
+		<xs:attribute name="maxWidthWithCompressPriority" type="xs:decimal"/>
+		<xs:attribute name="narrowStandardWidth" type="xs:decimal"/>
+		<xs:attribute name="wideStandardWidth" type="xs:decimal"/>
+		<xs:attribute name="standardWidth" type="xs:decimal"/>
+		<xs:attribute name="minHeightWithCompressPriority" type="xs:decimal"/>
+		<xs:attribute name="minHeightWithNormalPriority" type="xs:decimal"/>
+		<xs:attribute name="minHeightWithStretchPriority" type="xs:decimal"/>
+		<xs:attribute name="maxHeightWithStretchPriority" type="xs:decimal"/>
+		<xs:attribute name="maxHeightWithNormalPriority" type="xs:decimal"/>
+		<xs:attribute name="maxHeightWithCompressPriority" type="xs:decimal"/>
+		<xs:attribute name="narrowStandardHeight" type="xs:decimal"/>
+		<xs:attribute name="wideStandardHeight" type="xs:decimal"/>
+		<xs:attribute name="standardHeight" type="xs:decimal"/>
+	</xs:complexType>
+	<xs:complexType name="LayFormGroup">
+		<xs:attribute name="grouping" type="ns3:FormChildrenGroup"/>
+		<xs:attribute name="horizontalSpacing" type="ns3:FormItemSpacing"/>
+		<xs:attribute name="verticalSpacing" type="ns3:FormItemSpacing"/>
+		<xs:attribute name="hAlign" type="ns3:ItemHorizontalAlignment"/>
+		<xs:attribute name="vAlign" type="ns3:ItemVerticalAlignment"/>
+		<xs:attribute name="align" type="ns3:FormChildrenAlign"/>
+	</xs:complexType>
+	<xs:complexType name="LogGroup">
+		<xs:complexContent>
+			<xs:extension base="tns:Element">
+				<xs:sequence>
+					<xs:element name="e" type="tns:LayElement"/>
+					<xs:element name="fe" type="tns:LayFormElement"/>
+					<xs:element name="fex" type="tns:LayFormElementExt"/>
+					<xs:element name="fg" type="tns:LayFormGroup"/>
+					<xs:element name="vg" type="tns:VirtualGrid"/>
+					<xs:element name="tooltip" type="xs:string" minOccurs="0"/>
+					<xs:element name="collapsedTitle" type="xs:string" minOccurs="0"/>
+					<xs:element name="txtClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="bkClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="hiddenStateTitleBkClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="fnt" type="ns2:Font" minOccurs="0"/>
+					<xs:element name="backPicture" type="ns2:Picture" minOccurs="0"/>
+				</xs:sequence>
+				<xs:attribute name="showTitle" type="xs:boolean"/>
+				<xs:attribute name="dataLength" type="xs:decimal"/>
+				<xs:attribute name="formatString" type="xs:string"/>
+				<xs:attribute name="repr" type="tns:LogicGroupInternalRepresentation"/>
+				<xs:attribute name="horStretch" type="ns4:BWDValue"/>
+				<xs:attribute name="verStretch" type="ns4:BWDValue"/>
+				<xs:attribute name="throughAlign" type="xs:boolean"/>
+				<xs:attribute name="role" type="tns:LogicGroupRole"/>
+				<xs:attribute name="behavior" type="tns:GBBehavior"/>
+				<xs:attribute name="behaviorIcon" type="xs:boolean"/>
+				<xs:attribute name="collapsibleLeftMargin" type="xs:boolean"/>
+				<xs:attribute name="united" type="xs:boolean"/>
+				<xs:attribute name="expandOnBackColor" type="xs:boolean"/>
+				<xs:attribute name="showAsCard" type="xs:boolean"/>
+				<xs:attribute name="hyperLink" type="xs:boolean"/>
+				<xs:attribute name="backPictureRepresentationEffect" type="ns3:PictureRepresentationEffect"/>
+				<xs:attribute name="cardRepresentationType" type="ns3:CardRepresentationType"/>
+				<xs:attribute name="scrollOnCompress" type="xs:boolean"/>
+				<xs:attribute name="childrenTitleLocation" type="ns3:ChildrenTitleLocation"/>
+				<xs:attribute name="collapsibleButtonInParentElement" type="xs:boolean"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="MenuSeparator">
+		<xs:complexContent>
+			<xs:extension base="tns:Element">
+				<xs:sequence>
+					<xs:element name="e" type="tns:LayElement" minOccurs="0"/>
+				</xs:sequence>
+				<xs:attribute name="auto" type="xs:boolean"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="MobileAndroidTopBookmarks">
+		<xs:complexContent>
+			<xs:extension base="tns:Element">
+				<xs:sequence>
+					<xs:element name="e" type="tns:LayElement" minOccurs="0"/>
+					<xs:element name="fe" type="tns:LayFormElement" minOccurs="0"/>
+					<xs:element name="ewcm" type="tns:LayElementWCM" minOccurs="0"/>
+					<xs:element name="txtClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="bkClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="brdClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="fnt" type="ns2:Font" minOccurs="0"/>
+					<xs:element name="titles" type="tns:Strings" minOccurs="0"/>
+				</xs:sequence>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="MobileBottomBookmarks">
+		<xs:complexContent>
+			<xs:extension base="tns:Element">
+				<xs:sequence>
+					<xs:element name="e" type="tns:LayElement" minOccurs="0"/>
+					<xs:element name="fe" type="tns:LayFormElement" minOccurs="0"/>
+					<xs:element name="ewcm" type="tns:LayElementWCM" minOccurs="0"/>
+					<xs:element name="txtClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="bkClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="brdClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="fnt" type="ns2:Font" minOccurs="0"/>
+					<xs:element name="titles" type="tns:Strings" minOccurs="0"/>
+					<xs:element name="pics" type="tns:Pictures" minOccurs="0"/>
+				</xs:sequence>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="MobileGroup">
+		<xs:complexContent>
+			<xs:extension base="tns:Element">
+				<xs:sequence>
+					<xs:element name="e" type="tns:LayElement" minOccurs="0"/>
+					<xs:element name="fe" type="tns:LayFormElement" minOccurs="0"/>
+					<xs:element name="fex" type="tns:LayFormElementExt"/>
+					<xs:element name="vg" type="tns:VirtualGrid"/>
+					<xs:element name="bkClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="lineClr" type="ns2:Color" minOccurs="0"/>
+				</xs:sequence>
+				<xs:attribute name="rounded" type="xs:boolean"/>
+				<xs:attribute name="roundRadius" type="xs:decimal"/>
+				<xs:attribute name="internalLineOffset" type="xs:decimal"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="MobileSwipeBookmarks">
+		<xs:complexContent>
+			<xs:extension base="tns:Element">
+				<xs:sequence>
+					<xs:element name="e" type="tns:LayElement" minOccurs="0"/>
+					<xs:element name="fe" type="tns:LayFormElement" minOccurs="0"/>
+					<xs:element name="ewcm" type="tns:LayElementWCM" minOccurs="0"/>
+					<xs:element name="txtClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="bkClr" type="ns2:Color" minOccurs="0"/>
+				</xs:sequence>
+				<xs:attribute name="bmc" type="xs:integer"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="Moxel">
+		<xs:complexContent>
+			<xs:extension base="tns:Element">
+				<xs:sequence>
+					<xs:element name="e" type="tns:LayElement" minOccurs="0"/>
+					<xs:element name="fe" type="tns:LayFormElement" minOccurs="0"/>
+					<xs:element name="ewcm" type="tns:LayElementWCM" minOccurs="0"/>
+					<xs:element name="ewsiap" type="tns:LayElementWSIAP" minOccurs="0"/>
+					<xs:element name="tooltip" type="xs:string" minOccurs="0"/>
+					<xs:element name="stcut" type="ns2:ShortCutType" minOccurs="0"/>
+					<xs:element name="brdClr" type="ns2:Color" minOccurs="0"/>
+				</xs:sequence>
+				<xs:attribute name="grid" type="xs:boolean"/>
+				<xs:attribute name="headers" type="xs:boolean"/>
+				<xs:attribute name="horScroll" type="tns:SpreadSheetDocumentScrollBarUse"/>
+				<xs:attribute name="verScroll" type="tns:SpreadSheetDocumentScrollBarUse"/>
+				<xs:attribute name="blackAndWhite" type="xs:boolean"/>
+				<xs:attribute name="protect" type="xs:boolean"/>
+				<xs:attribute name="selShow" type="ns4:SelectionShowMode"/>
+				<xs:attribute name="output" type="xs:boolean"/>
+				<xs:attribute name="edit" type="xs:boolean"/>
+				<xs:attribute name="showGroups" type="xs:boolean"/>
+				<xs:attribute name="startDrag" type="xs:boolean"/>
+				<xs:attribute name="drag" type="xs:boolean"/>
+				<xs:attribute name="viewScalingMode" type="ns4:ViewScalingMode"/>
+				<xs:attribute name="showCellNames" type="xs:boolean"/>
+				<xs:attribute name="showRowAndColumnNames" type="xs:boolean"/>
+				<xs:attribute name="pointerType" type="ns5:SpreadsheetDocumentPointerType"/>
+				<xs:attribute name="drawingSelectionMode" type="ns4:DrawingSelectionShowMode"/>
+				<xs:attribute name="cellActionsButtonShowMode" type="ns4:CellActionsButtonViewMode"/>
+				<xs:attribute name="moxelActionBarShowMode" type="ns4:SpreadsheetDocumentMultipleSelectionPanelViewMode"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="Navigator">
+		<xs:complexContent>
+			<xs:extension base="tns:Element">
+				<xs:sequence>
+					<xs:element name="e" type="tns:LayElement"/>
+				</xs:sequence>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="OfficeDocument">
+		<xs:complexContent>
+			<xs:extension base="tns:Element">
+				<xs:sequence>
+					<xs:element name="e" type="tns:LayElement" minOccurs="0"/>
+					<xs:element name="fe" type="tns:LayFormElement" minOccurs="0"/>
+					<xs:element name="ewcm" type="tns:LayElementWCM" minOccurs="0"/>
+					<xs:element name="tooltip" type="xs:string" minOccurs="0"/>
+					<xs:element name="stcut" type="ns2:ShortCutType" minOccurs="0"/>
+					<xs:element name="brdClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="fnt" type="ns2:Font" minOccurs="0"/>
+				</xs:sequence>
+				<xs:attribute name="output" type="xs:boolean"/>
+				<xs:attribute name="scale" type="xs:decimal"/>
+				<xs:attribute name="currentPageNumber" type="xs:decimal"/>
+				<xs:attribute name="orientation" type="xs:decimal"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="PDFDocument">
+		<xs:complexContent>
+			<xs:extension base="tns:Element">
+				<xs:sequence>
+					<xs:element name="e" type="tns:LayElement" minOccurs="0"/>
+					<xs:element name="fe" type="tns:LayFormElement" minOccurs="0"/>
+					<xs:element name="ewcm" type="tns:LayElementWCM" minOccurs="0"/>
+					<xs:element name="tooltip" type="xs:string" minOccurs="0"/>
+					<xs:element name="stcut" type="ns2:ShortCutType" minOccurs="0"/>
+					<xs:element name="brdClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="fnt" type="ns2:Font" minOccurs="0"/>
+				</xs:sequence>
+				<xs:attribute name="output" type="xs:boolean"/>
+				<xs:attribute name="scale" type="xs:decimal"/>
+				<xs:attribute name="currentPageNumber" type="xs:decimal"/>
+				<xs:attribute name="orientation" type="xs:decimal"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="Page">
+		<xs:complexContent>
+			<xs:extension base="tns:Element">
+				<xs:sequence>
+					<xs:element name="e" type="tns:LayElement"/>
+					<xs:element name="fe" type="tns:LayFormElement"/>
+					<xs:element name="fex" type="tns:LayFormElementExt"/>
+					<xs:element name="fg" type="tns:LayFormGroup"/>
+					<xs:element name="vg" type="tns:VirtualGrid"/>
+					<xs:element name="pic" type="ns2:Picture" minOccurs="0"/>
+					<xs:element name="stcut" type="ns2:ShortCutType" minOccurs="0"/>
+					<xs:element name="bkClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="ttlClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="ttlFnt" type="ns2:Font" minOccurs="0"/>
+				</xs:sequence>
+				<xs:attribute name="dataLen" type="xs:decimal"/>
+				<xs:attribute name="formatString" type="xs:string"/>
+				<xs:attribute name="scrollOnCompress" type="xs:boolean"/>
+				<xs:attribute name="showTitle" type="xs:boolean"/>
+				<xs:attribute name="childrenTitleLocation" type="ns3:ChildrenTitleLocation"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="Pages">
+		<xs:complexContent>
+			<xs:extension base="tns:Element">
+				<xs:sequence>
+					<xs:element name="e" type="tns:LayElement"/>
+					<xs:element name="fe" type="tns:LayFormElement"/>
+					<xs:element name="fex" type="tns:LayFormElementExt"/>
+					<xs:element name="stcut" type="ns2:ShortCutType" minOccurs="0"/>
+					<xs:element name="fnt" type="ns2:Font" minOccurs="0"/>
+					<xs:element name="addFnt" type="ns2:Font" minOccurs="0"/>
+					<xs:element name="tttClr" type="ns2:Color" minOccurs="0"/>
+				</xs:sequence>
+				<xs:attribute name="tabs" type="ns4:FormPanelTabsRepresentation"/>
+				<xs:attribute name="tabWidth" type="xs:decimal"/>
+				<xs:attribute name="horStretch" type="ns4:BWDValue"/>
+				<xs:attribute name="verStretch" type="ns4:BWDValue"/>
+				<xs:attribute name="autoHeightMode" type="xs:boolean"/>
+				<xs:attribute name="lcp" type="xs:decimal"/>
+				<xs:attribute name="tcp" type="xs:decimal"/>
+				<xs:attribute name="rcp" type="xs:decimal"/>
+				<xs:attribute name="bcp" type="xs:decimal"/>
+				<xs:attribute name="tmh" type="xs:decimal"/>
+				<xs:attribute name="lvl" type="xs:decimal"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="Panel">
+		<xs:complexContent>
+			<xs:extension base="tns:Element">
+				<xs:sequence>
+					<xs:element name="e" type="tns:LayElement"/>
+					<xs:element name="fe" type="tns:LayFormElement"/>
+					<xs:element name="fex" type="tns:LayFormElementExt"/>
+					<xs:element name="fg" type="tns:LayFormGroup"/>
+					<xs:element name="vg" type="tns:VirtualGrid"/>
+					<xs:element name="bkClr" type="ns2:Color" minOccurs="0"/>
+				</xs:sequence>
+				<xs:attribute name="resWidth" type="xs:decimal"/>
+				<xs:attribute name="resHeight" type="xs:decimal"/>
+				<xs:attribute name="verScroll" type="ns3:LogFormScrollMode"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="Period">
+		<xs:complexContent>
+			<xs:extension base="tns:Element">
+				<xs:sequence>
+					<xs:element name="e" type="tns:LayElement" minOccurs="0"/>
+					<xs:element name="fe" type="tns:LayFormElement" minOccurs="0"/>
+					<xs:element name="ewcm" type="tns:LayElementWCM" minOccurs="0"/>
+					<xs:element name="tooltip" type="xs:string" minOccurs="0"/>
+					<xs:element name="stcut" type="ns2:ShortCutType" minOccurs="0"/>
+					<xs:element name="brd" type="ns2:Border" minOccurs="0"/>
+					<xs:element name="brdClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="fnt" type="ns2:Font" minOccurs="0"/>
+				</xs:sequence>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="Pictures">
+		<xs:sequence>
+			<xs:element name="item" type="ns2:Picture" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="Planner">
+		<xs:complexContent>
+			<xs:extension base="tns:Element">
+				<xs:sequence>
+					<xs:element name="e" type="tns:LayElement" minOccurs="0"/>
+					<xs:element name="fe" type="tns:LayFormElement" minOccurs="0"/>
+					<xs:element name="ewcm" type="tns:LayElementWCM" minOccurs="0"/>
+					<xs:element name="tooltip" type="xs:string" minOccurs="0"/>
+					<xs:element name="stcut" type="ns2:ShortCutType" minOccurs="0"/>
+				</xs:sequence>
+				<xs:attribute name="startDrag" type="xs:boolean"/>
+				<xs:attribute name="drag" type="xs:boolean"/>
+				<xs:attribute name="timeScaleItemHyperlink" type="xs:boolean"/>
+				<xs:attribute name="dimensionItemHyperlink" type="xs:boolean"/>
+				<xs:attribute name="wrappedTimeScaleHeaderHyperlink" type="xs:boolean"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="ProgressBar">
+		<xs:complexContent>
+			<xs:extension base="tns:Element">
+				<xs:sequence>
+					<xs:element name="e" type="tns:LayElement" minOccurs="0"/>
+					<xs:element name="fe" type="tns:LayFormElement" minOccurs="0"/>
+					<xs:element name="ewcm" type="tns:LayElementWCM" minOccurs="0"/>
+					<xs:element name="tooltip" type="xs:string" minOccurs="0"/>
+					<xs:element name="brdClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="fnt" type="ns2:Font" minOccurs="0"/>
+				</xs:sequence>
+				<xs:attribute name="minValue" type="xs:decimal"/>
+				<xs:attribute name="maxValue" type="xs:decimal"/>
+				<xs:attribute name="orientation" type="ns4:FormElementOrientation"/>
+				<xs:attribute name="represent" type="ns4:FormProgressBarRepresentation"/>
+				<xs:attribute name="showPercent" type="xs:boolean"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="RadioButton">
+		<xs:complexContent>
+			<xs:extension base="tns:Element">
+				<xs:sequence>
+					<xs:element name="e" type="tns:LayElement" minOccurs="0"/>
+					<xs:element name="fe" type="tns:LayFormElement" minOccurs="0"/>
+					<xs:element name="ewcm" type="tns:LayElementWCM" minOccurs="0"/>
+					<xs:element name="tooltip" type="xs:string" minOccurs="0"/>
+					<xs:element name="stcut" type="ns2:ShortCutType" minOccurs="0"/>
+					<xs:element name="txtClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="fnt" type="ns2:Font" minOccurs="0"/>
+					<xs:element name="brdClr" type="ns2:Color" minOccurs="0"/>
+				</xs:sequence>
+				<xs:attribute name="vAlign" type="ns3:ItemVerticalAlignment"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="RadioGroup">
+		<xs:complexContent>
+			<xs:extension base="tns:Element">
+				<xs:sequence>
+					<xs:element name="e" type="tns:LayElement" minOccurs="0"/>
+					<xs:element name="fe" type="tns:LayFormElement" minOccurs="0"/>
+					<xs:element name="ewcm" type="tns:LayElementWCM" minOccurs="0"/>
+					<xs:element name="tooltip" type="xs:string" minOccurs="0"/>
+					<xs:element name="stcut" type="ns2:ShortCutType" minOccurs="0"/>
+					<xs:element name="txtClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="fnt" type="ns2:Font" minOccurs="0"/>
+					<xs:element name="brdClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="titles" type="tns:Strings" minOccurs="0"/>
+				</xs:sequence>
+				<xs:attribute name="orientation" type="ns4:FormElementOrientation"/>
+				<xs:attribute name="clmnsCnt" type="xs:decimal"/>
+				<xs:attribute name="elemTitleHeight" type="xs:decimal"/>
+				<xs:attribute name="vAlign" type="ns3:ItemVerticalAlignment"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="RichElement">
+		<xs:complexContent>
+			<xs:extension base="tns:Element">
+				<xs:sequence>
+					<xs:element name="e" type="tns:LayElement"/>
+					<xs:element name="fe" type="tns:LayFormElement"/>
+				</xs:sequence>
+				<xs:attribute name="titlePlcm" type="tns:HLEdge"/>
+				<xs:attribute name="extTooltipPlcm" type="tns:HLEdge"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="SeparatePanel">
+		<xs:complexContent>
+			<xs:extension base="tns:Element">
+				<xs:sequence>
+					<xs:element name="e" type="tns:LayElement" minOccurs="0"/>
+					<xs:element name="fe" type="tns:LayFormElement" minOccurs="0"/>
+					<xs:element name="fex" type="tns:LayFormElementExt" minOccurs="0"/>
+					<xs:element name="fg" type="tns:LayFormGroup" minOccurs="0"/>
+					<xs:element name="vg" type="tns:VirtualGrid" minOccurs="0"/>
+					<xs:element name="bkClr" type="ns2:Color" minOccurs="0"/>
+				</xs:sequence>
+				<xs:attribute name="resWidth" type="xs:decimal"/>
+				<xs:attribute name="resHeight" type="xs:decimal"/>
+				<xs:attribute name="verScroll" type="ns3:LogFormScrollMode"/>
+				<xs:attribute name="horStretch" type="ns4:BWDValue"/>
+				<xs:attribute name="verStretch" type="ns4:BWDValue"/>
+				<xs:attribute name="lcp" type="xs:decimal"/>
+				<xs:attribute name="tcp" type="xs:decimal"/>
+				<xs:attribute name="rcp" type="xs:decimal"/>
+				<xs:attribute name="bcp" type="xs:decimal"/>
+				<xs:attribute name="apr" type="tns:SeparatePanelAppearance"/>
+				<xs:attribute name="rl" type="tns:SeparatePanelRole"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="Splitter">
+		<xs:complexContent>
+			<xs:extension base="tns:Element">
+				<xs:sequence>
+					<xs:element name="e" type="tns:LayElement" minOccurs="0"/>
+					<xs:element name="fe" type="tns:LayFormElement" minOccurs="0"/>
+				</xs:sequence>
+				<xs:attribute name="dir" type="tns:SplitDirection"/>
+				<xs:attribute name="mode" type="tns:SplitMode"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="Strings">
+		<xs:sequence>
+			<xs:element name="item" type="xs:string" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="Submenu">
+		<xs:complexContent>
+			<xs:extension base="tns:Element">
+				<xs:sequence>
+					<xs:element name="e" type="tns:LayElement" minOccurs="0"/>
+					<xs:element name="fe" type="tns:LayFormElement" minOccurs="0"/>
+					<xs:element name="tooltip" type="xs:string" minOccurs="0"/>
+					<xs:element name="stcut" type="ns2:ShortCutType" minOccurs="0"/>
+					<xs:element name="pic" type="ns2:Picture" minOccurs="0"/>
+					<xs:element name="groupId" type="ns1:CompositeID"/>
+					<xs:element name="fnt" type="ns2:Font" minOccurs="0"/>
+					<xs:element name="txtClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="bkClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="brdClr" type="ns2:Color" minOccurs="0"/>
+				</xs:sequence>
+				<xs:attribute name="repres" type="tns:HLMenuElementRepresentation"/>
+				<xs:attribute name="shape" type="ns3:ButtonShape"/>
+				<xs:attribute name="shapeRepres" type="ns3:ButtonShapeRepresentation"/>
+				<xs:attribute name="sticky" type="xs:boolean"/>
+				<xs:attribute name="importance" type="ns3:ButtonImportance"/>
+				<xs:attribute name="right" type="xs:boolean"/>
+				<xs:attribute name="degeneratable" type="xs:boolean"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="Switcher">
+		<xs:complexContent>
+			<xs:extension base="tns:Element">
+				<xs:sequence>
+					<xs:element name="e" type="tns:LayElement" minOccurs="0"/>
+					<xs:element name="fe" type="tns:LayFormElement" minOccurs="0"/>
+					<xs:element name="ewcm" type="tns:LayElementWCM" minOccurs="0"/>
+				</xs:sequence>
+				<xs:attribute name="threeState" type="xs:boolean"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="Table">
+		<xs:complexContent>
+			<xs:extension base="tns:Element">
+				<xs:sequence>
+					<xs:element name="e" type="tns:LayElement" minOccurs="0"/>
+					<xs:element name="fe" type="tns:LayFormElement" minOccurs="0"/>
+					<xs:element name="ewcm" type="tns:LayElementWCM" minOccurs="0"/>
+					<xs:element name="ewsiap" type="tns:LayElementWSIAP" minOccurs="0"/>
+					<xs:element name="tooltip" type="xs:string" minOccurs="0"/>
+					<xs:element name="rowsPic" type="ns2:Picture" minOccurs="0"/>
+					<xs:element name="bkClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="txtClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="brdClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="fnt" type="ns2:Font" minOccurs="0"/>
+					<xs:element name="stcut" type="ns2:ShortCutType" minOccurs="0"/>
+				</xs:sequence>
+				<xs:attribute name="inplEdit" type="xs:boolean"/>
+				<xs:attribute name="changeRowSet" type="xs:boolean"/>
+				<xs:attribute name="changeRowOrder" type="xs:boolean"/>
+				<xs:attribute name="rowInput" type="ns3:TableRowInputMode"/>
+				<xs:attribute name="sel" type="ns3:TableSelectionMode"/>
+				<xs:attribute name="rowSel" type="ns3:TableRowSelectionMode"/>
+				<xs:attribute name="showHeader" type="xs:boolean"/>
+				<xs:attribute name="headerHeight" type="xs:decimal"/>
+				<xs:attribute name="showFooter" type="xs:boolean"/>
+				<xs:attribute name="footerHeight" type="xs:decimal"/>
+				<xs:attribute name="logicRowHeight" type="xs:decimal"/>
+				<xs:attribute name="realRowHeight" type="xs:decimal"/>
+				<xs:attribute name="minContentHeight" type="xs:decimal"/>
+				<xs:attribute name="maxContentHeight" type="xs:decimal"/>
+				<xs:attribute name="horScroll" type="ns3:TableScrollBarUse"/>
+				<xs:attribute name="verScroll" type="ns3:TableScrollBarUse"/>
+				<xs:attribute name="horLines" type="xs:boolean"/>
+				<xs:attribute name="verLines" type="xs:boolean"/>
+				<xs:attribute name="horLinesBWD" type="ns4:BWDValue"/>
+				<xs:attribute name="verLinesBWD" type="ns4:BWDValue"/>
+				<xs:attribute name="fixedLeft" type="xs:decimal"/>
+				<xs:attribute name="fixedRight" type="xs:decimal"/>
+				<xs:attribute name="altRowColor" type="xs:boolean"/>
+				<xs:attribute name="altRowColorBWD" type="ns4:BWDValue"/>
+				<xs:attribute name="autoInsert" type="xs:boolean"/>
+				<xs:attribute name="autoMarkNotcompleted" type="xs:boolean"/>
+				<xs:attribute name="markRequiredComplete" type="xs:boolean"/>
+				<xs:attribute name="autoInsertNotcompleted" type="xs:boolean"/>
+				<xs:attribute name="initListView" type="ns3:TableInitialListView"/>
+				<xs:attribute name="initTreeView" type="ns3:TableInitialTreeView"/>
+				<xs:attribute name="initRowActivation" type="ns3:TableInitialRowActivation"/>
+				<xs:attribute name="rowActionsShowType"/>
+				<xs:attribute name="output" type="xs:boolean"/>
+				<xs:attribute name="startDrag" type="xs:boolean"/>
+				<xs:attribute name="drag" type="xs:boolean"/>
+				<xs:attribute name="rowsCount" type="xs:decimal"/>
+				<xs:attribute name="filledRowsPictureProperty" type="xs:boolean"/>
+				<xs:attribute name="repres" type="ns3:TableRepresentation"/>
+				<xs:attribute name="lineEditForm" type="xs:string"/>
+				<xs:attribute name="currentRowUse" type="ns3:TableCurrentRowUse"/>
+				<xs:attribute name="behaviorOnHorizontalCompression" type="ns3:TableBehaviorOnHorizontalCompression"/>
+				<xs:attribute name="isPredefinedForGanttChartFlag" type="xs:boolean"/>
+				<xs:attribute name="hierarchyPanelName" type="xs:string"/>
+				<xs:attribute name="verticalScrollPanelName" type="xs:string"/>
+				<xs:attribute name="rowActionsPanelName" type="xs:string"/>
+				<xs:attribute name="choiceMode" type="xs:boolean"/>
+				<xs:attribute name="multipleChoice" type="xs:boolean"/>
+				<xs:attribute name="mobileDeviceTableType" type="ns3:FormTableType"/>
+				<xs:attribute name="autoMaxCardHeight" type="xs:boolean"/>
+				<xs:attribute name="maxCardHeight" type="xs:decimal"/>
+				<xs:attribute name="cardBehaviorOnVerticalCompression" type="ns3:CardBehaviorOnVerticalCompression"/>
+				<xs:attribute name="cellHyperlinksRepresentation" type="ns3:CellHyperlinksRepresentation"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="TableColumn">
+		<xs:complexContent>
+			<xs:extension base="tns:Element">
+				<xs:sequence>
+					<xs:element name="e" type="tns:LayElement" minOccurs="0"/>
+					<xs:element name="ewcm" type="tns:LayElementWCM" minOccurs="0"/>
+					<xs:element name="tooltip" type="xs:string" minOccurs="0"/>
+					<xs:element name="minValue" minOccurs="0"/>
+					<xs:element name="maxValue" minOccurs="0"/>
+					<xs:element name="choiceBtnPic" type="ns2:Picture" minOccurs="0"/>
+					<xs:element name="headerPic" type="ns2:Picture" minOccurs="0"/>
+					<xs:element name="footerPic" type="ns2:Picture" minOccurs="0"/>
+					<xs:element name="picVal" type="ns2:Picture" minOccurs="0"/>
+					<xs:element name="txtClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="bkClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="fnt" type="ns2:Font" minOccurs="0"/>
+					<xs:element name="hdrTxtClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="hdrBkClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="hdrFnt" type="ns2:Font" minOccurs="0"/>
+					<xs:element name="ftrTxtClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="ftrBkClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="ftrFnt" type="ns2:Font" minOccurs="0"/>
+					<xs:element name="stcut" type="ns2:ShortCutType" minOccurs="0"/>
+					<xs:element name="footerText" type="xs:string" minOccurs="0"/>
+					<xs:element name="invTitle" type="xs:string" minOccurs="0"/>
+					<xs:element name="pict" type="ns2:Picture" minOccurs="0"/>
+				</xs:sequence>
+				<xs:attribute name="mode" type="ns4:ColumnMode"/>
+				<xs:attribute name="leftIndent" type="xs:decimal"/>
+				<xs:attribute name="rightIndent" type="xs:decimal"/>
+				<xs:attribute name="showInHeader" type="xs:boolean"/>
+				<xs:attribute name="showInFooter" type="xs:boolean"/>
+				<xs:attribute name="columnHAlign" type="ns3:ItemHorizontalAlignment"/>
+				<xs:attribute name="headerHAlign" type="ns3:ItemHorizontalAlignment"/>
+				<xs:attribute name="footerHAlign" type="ns3:ItemHorizontalAlignment"/>
+				<xs:attribute name="editMode" type="ns4:TableFieldEditMode"/>
+				<xs:attribute name="autoCellHeight" type="xs:boolean"/>
+				<xs:attribute name="format" type="xs:string"/>
+				<xs:attribute name="inputFormat" type="xs:string"/>
+				<xs:attribute name="markNegatives" type="xs:boolean"/>
+				<xs:attribute name="wrap" type="xs:boolean"/>
+				<xs:attribute name="pwd" type="xs:boolean"/>
+				<xs:attribute name="extended" type="xs:boolean"/>
+				<xs:attribute name="textEdit" type="xs:boolean"/>
+				<xs:attribute name="multiLine" type="xs:boolean"/>
+				<xs:attribute name="choiceListBtn" type="xs:boolean"/>
+				<xs:attribute name="dropListBtn" type="xs:boolean"/>
+				<xs:attribute name="choiceBtn" type="xs:boolean"/>
+				<xs:attribute name="choiceBtnRepresentation" type="ns3:ChoiceButtonRepresentation"/>
+				<xs:attribute name="clearBtn" type="xs:boolean"/>
+				<xs:attribute name="spinBtn" type="xs:boolean"/>
+				<xs:attribute name="openBtn" type="xs:boolean"/>
+				<xs:attribute name="enableCreateButton" type="ns4:BWDValue"/>
+				<xs:attribute name="mask" type="xs:string"/>
+				<xs:attribute name="listChoiceMode" type="xs:boolean"/>
+				<xs:attribute name="choiceListHeight" type="xs:decimal"/>
+				<xs:attribute name="choiceListMinWidth" type="xs:decimal"/>
+				<xs:attribute name="autoChoice" type="xs:boolean"/>
+				<xs:attribute name="autoChoiceMode" type="ns3:IncompleteItemChoiceMode"/>
+				<xs:attribute name="autoMark" type="xs:boolean"/>
+				<xs:attribute name="quickChoice" type="ns4:BWDValue"/>
+				<xs:attribute name="finalQuickChoice" type="xs:boolean"/>
+				<xs:attribute name="inputByStringChoiceDataGetMode" type="ns3:ChoiceDataGetModeOnInputByString"/>
+				<xs:attribute name="finalInputByStringChoiceDataGetMode" type="xs:boolean"/>
+				<xs:attribute name="choiceForm" type="ns1:UUID"/>
+				<xs:attribute name="choice" type="tns:ChoiceObjects"/>
+				<xs:attribute name="hyper" type="xs:boolean"/>
+				<xs:attribute name="threeState" type="xs:boolean"/>
+				<xs:attribute name="searchOnInput" type="ns4:SearchOnInputForbiddenMode"/>
+				<xs:attribute name="inputHint" type="xs:string"/>
+				<xs:attribute name="dropListTooltip" type="xs:string"/>
+				<xs:attribute name="choiceButtonTitle" type="xs:string"/>
+				<xs:attribute name="timeChoiceMode" type="ns4:FormTimeChoiceMode"/>
+				<xs:attribute name="choiceHistory" type="ns4:BWDValue"/>
+				<xs:attribute name="stretch" type="ns4:StretchableMode"/>
+				<xs:attribute name="width" type="xs:decimal"/>
+				<xs:attribute name="useStdFontForWidthCalculate" type="xs:boolean"/>
+				<xs:attribute name="buttonsCount" type="xs:decimal"/>
+				<xs:attribute name="height" type="xs:decimal"/>
+				<xs:attribute name="fixedInTable" type="ns3:FormFixedInTable"/>
+				<xs:attribute name="displayImportance" type="ns3:DisplayImportance"/>
+				<xs:attribute name="cellMark" type="ns3:TableCellMarkType"/>
+				<xs:attribute name="checkBoxKind" type="ns3:TableColumnCheckBoxKind"/>
+				<xs:attribute name="multilineSelect" type="xs:boolean"/>
+				<xs:attribute name="main" type="xs:boolean"/>
+				<xs:attribute name="appearanceVariantInCard" type="ns3:AppearanceVariantInCard"/>
+				<xs:attribute name="showTitleInCard" type="ns4:BWDValue"/>
+				<xs:attribute name="widthInCard" type="ns3:WidthVariantInCard"/>
+				<xs:attribute name="showInCard" type="xs:boolean"/>
+				<xs:attribute name="fixInCard"/>
+				<xs:attribute name="defaultHeaderFooterWidth" type="xs:decimal"/>
+				<xs:attribute name="autoWidthInTable" type="ns3:AutoWidthInTable"/>
+				<xs:attribute name="cellHyperlinkRepresentation" type="ns3:CellHyperlinkRepresentation"/>
+				<xs:attribute name="cellHyperlinkDisplayVariant" type="ns3:CellHyperlinkDisplayVariant"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="TableColumnsGroup">
+		<xs:complexContent>
+			<xs:extension base="tns:Element">
+				<xs:sequence>
+					<xs:element name="e" type="tns:LayElement" minOccurs="0"/>
+					<xs:element name="tooltip" type="xs:string" minOccurs="0"/>
+					<xs:element name="headerPic" type="ns2:Picture" minOccurs="0"/>
+					<xs:element name="hdrTxtClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="hdrBkClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="hdrFnt" type="ns2:Font" minOccurs="0"/>
+				</xs:sequence>
+				<xs:attribute name="grouping" type="ns3:ColumnsGroup"/>
+				<xs:attribute name="showInHeader" type="xs:boolean"/>
+				<xs:attribute name="headerHAlign" type="ns3:ItemHorizontalAlignment"/>
+				<xs:attribute name="headerFormat" type="xs:string"/>
+				<xs:attribute name="fixedInTable" type="ns3:FormFixedInTable"/>
+				<xs:attribute name="showInCard" type="xs:boolean"/>
+				<xs:attribute name="fixInCard"/>
+				<xs:attribute name="showTitleInCard"/>
+				<xs:attribute name="autoWidthInTable" type="ns3:AutoWidthInTable"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="TextBox">
+		<xs:complexContent>
+			<xs:extension base="tns:Element">
+				<xs:sequence>
+					<xs:element name="e" type="tns:LayElement" minOccurs="0"/>
+					<xs:element name="fe" type="tns:LayFormElement" minOccurs="0"/>
+					<xs:element name="ewcm" type="tns:LayElementWCM" minOccurs="0"/>
+					<xs:element name="tooltip" type="xs:string" minOccurs="0"/>
+					<xs:element name="choiceBtnPic" type="ns2:Picture" minOccurs="0"/>
+					<xs:element name="minValue" minOccurs="0"/>
+					<xs:element name="maxValue" minOccurs="0"/>
+					<xs:element name="choiceForm" type="ns1:UUID" minOccurs="0"/>
+					<xs:element name="txtClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="bkClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="brdClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="fnt" type="ns2:Font" minOccurs="0"/>
+					<xs:element name="stcut" type="ns2:ShortCutType" minOccurs="0"/>
+					<xs:element name="multipleValuesFont" type="ns2:Font" minOccurs="0"/>
+					<xs:element name="pict" type="ns2:Picture" minOccurs="0"/>
+				</xs:sequence>
+				<xs:attribute name="hAlign" type="ns3:ItemHorizontalAlignment"/>
+				<xs:attribute name="wrap" type="xs:boolean"/>
+				<xs:attribute name="pwd" type="xs:boolean"/>
+				<xs:attribute name="extended" type="xs:boolean"/>
+				<xs:attribute name="markNegatives" type="xs:boolean"/>
+				<xs:attribute name="choiceListBtn" type="xs:boolean"/>
+				<xs:attribute name="dropListBtn" type="xs:boolean"/>
+				<xs:attribute name="choiceBtn" type="xs:boolean"/>
+				<xs:attribute name="choiceBtnRepresentation" type="ns3:ChoiceButtonRepresentation"/>
+				<xs:attribute name="clearBtn" type="xs:boolean"/>
+				<xs:attribute name="spinBtn" type="xs:boolean"/>
+				<xs:attribute name="openBtn" type="xs:boolean"/>
+				<xs:attribute name="createBtn" type="ns4:BWDValue"/>
+				<xs:attribute name="mask" type="xs:string"/>
+				<xs:attribute name="listChoiceMode" type="xs:boolean"/>
+				<xs:attribute name="choiceListHeight" type="xs:decimal"/>
+				<xs:attribute name="choiceListMinWidth" type="xs:decimal"/>
+				<xs:attribute name="autoChoice" type="xs:boolean"/>
+				<xs:attribute name="choiceMode" type="ns3:IncompleteItemChoiceMode"/>
+				<xs:attribute name="format" type="xs:string"/>
+				<xs:attribute name="autoMark" type="xs:boolean"/>
+				<xs:attribute name="quickChoice" type="ns4:BWDValue"/>
+				<xs:attribute name="finalQuickChoice" type="xs:boolean"/>
+				<xs:attribute name="inputByStringChoiceDataGetMode" type="ns3:ChoiceDataGetModeOnInputByString"/>
+				<xs:attribute name="finalInputByStringChoiceDataGetMode" type="xs:boolean"/>
+				<xs:attribute name="choice" type="ns4:ChoiceObjects"/>
+				<xs:attribute name="textEdit" type="xs:boolean"/>
+				<xs:attribute name="multiLine" type="xs:boolean"/>
+				<xs:attribute name="warningOnEditMode" type="xs:boolean"/>
+				<xs:attribute name="searchOnInput" type="ns4:SearchOnInputForbiddenMode"/>
+				<xs:attribute name="inputHint" type="xs:string"/>
+				<xs:attribute name="dropListTooltip" type="xs:string"/>
+				<xs:attribute name="choiceButtonTitle" type="xs:string"/>
+				<xs:attribute name="timeChoiceMode" type="ns4:FormTimeChoiceMode"/>
+				<xs:attribute name="enableCreateButton" type="ns4:BWDValue"/>
+				<xs:attribute name="choiceHistory" type="ns4:BWDValue"/>
+				<xs:attribute name="useStdFontForWidthCalculate" type="xs:boolean"/>
+				<xs:attribute name="useStdFontForMaxWidthCalculate" type="xs:boolean"/>
+				<xs:attribute name="buttonsCount" type="xs:decimal"/>
+				<xs:attribute name="mobileTextEdit" type="xs:boolean"/>
+				<xs:attribute name="multipleValuePictureSize" type="ns3:InputFieldMultipleValuePictureSize"/>
+				<xs:attribute name="markRequiredComplete" type="xs:boolean"/>
+				<xs:attribute name="additionalCommands" type="xs:boolean"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="TextDoc">
+		<xs:complexContent>
+			<xs:extension base="tns:Element">
+				<xs:sequence>
+					<xs:element name="e" type="tns:LayElement" minOccurs="0"/>
+					<xs:element name="fe" type="tns:LayFormElement" minOccurs="0"/>
+					<xs:element name="ewcm" type="tns:LayElementWCM" minOccurs="0"/>
+					<xs:element name="stcut" type="ns2:ShortCutType" minOccurs="0"/>
+					<xs:element name="txtClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="bkClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="brdClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="fnt" type="ns2:Font" minOccurs="0"/>
+				</xs:sequence>
+				<xs:attribute name="output" type="xs:boolean"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="TrackBar">
+		<xs:complexContent>
+			<xs:extension base="tns:Element">
+				<xs:sequence>
+					<xs:element name="e" type="tns:LayElement" minOccurs="0"/>
+					<xs:element name="fe" type="tns:LayFormElement" minOccurs="0"/>
+					<xs:element name="ewcm" type="tns:LayElementWCM" minOccurs="0"/>
+					<xs:element name="tooltip" type="xs:string" minOccurs="0"/>
+					<xs:element name="stcut" type="ns2:ShortCutType" minOccurs="0"/>
+					<xs:element name="brdClr" type="ns2:Color" minOccurs="0"/>
+				</xs:sequence>
+				<xs:attribute name="minValue" type="xs:decimal"/>
+				<xs:attribute name="maxValue" type="xs:decimal"/>
+				<xs:attribute name="step" type="xs:decimal"/>
+				<xs:attribute name="page" type="xs:decimal"/>
+				<xs:attribute name="markingStep" type="xs:decimal"/>
+				<xs:attribute name="orientation" type="ns4:FormElementOrientation"/>
+				<xs:attribute name="marking" type="ns4:FormTrackBarMarking"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="Tumbler">
+		<xs:complexContent>
+			<xs:extension base="tns:Element">
+				<xs:sequence>
+					<xs:element name="e" type="tns:LayElement" minOccurs="0"/>
+					<xs:element name="fe" type="tns:LayFormElement" minOccurs="0"/>
+					<xs:element name="ewcm" type="tns:LayElementWCM" minOccurs="0"/>
+					<xs:element name="tooltip" type="xs:string" minOccurs="0"/>
+					<xs:element name="stcut" type="ns2:ShortCutType" minOccurs="0"/>
+					<xs:element name="txtClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="bkClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="brdClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="fnt" type="ns2:Font" minOccurs="0"/>
+					<xs:element name="titles" type="tns:Strings" minOccurs="0"/>
+					<xs:element name="rwoc" type="tns:Doubles" minOccurs="0"/>
+					<xs:element name="items" type="tns:TumblerItems" minOccurs="0"/>
+				</xs:sequence>
+				<xs:attribute name="repres" type="ns3:TumblerRepresentation"/>
+				<xs:attribute name="horStretch" type="xs:boolean"/>
+				<xs:attribute name="clmnsCnt" type="xs:decimal"/>
+				<xs:attribute name="cbMode" type="xs:boolean"/>
+				<xs:attribute name="elemHeight" type="xs:decimal"/>
+				<xs:attribute name="elemTitleHeight" type="xs:decimal"/>
+				<xs:attribute name="elemWidth" type="xs:decimal"/>
+				<xs:attribute name="eqClmns" type="ns4:BWDValue"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="TumblerItem">
+		<xs:sequence>
+			<xs:element name="pic" type="ns2:Picture"/>
+		</xs:sequence>
+		<xs:attribute name="title" type="xs:string"/>
+	</xs:complexType>
+	<xs:complexType name="TumblerItems">
+		<xs:sequence>
+			<xs:element name="item" type="tns:TumblerItem" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="VGridItem">
+		<xs:sequence>
+			<xs:element name="cats" type="tns:CategoryHolder" minOccurs="0"/>
+		</xs:sequence>
+		<xs:attribute name="len" type="xs:decimal"/>
+		<xs:attribute name="minLengthWithCompressPriority" type="xs:decimal"/>
+		<xs:attribute name="minLengthWithNormalPriority" type="xs:decimal"/>
+		<xs:attribute name="minLengthWithStretchPriority" type="xs:decimal"/>
+		<xs:attribute name="maxLengthWithStretchPriority" type="xs:decimal"/>
+		<xs:attribute name="maxLengthWithNormalPriority" type="xs:decimal"/>
+		<xs:attribute name="maxLengthWithCompressPriority" type="xs:decimal"/>
+		<xs:attribute name="narrowStandardLength" type="xs:decimal"/>
+		<xs:attribute name="wideStandardLength" type="xs:decimal"/>
+		<xs:attribute name="standardLength" type="xs:decimal"/>
+		<xs:attribute name="slavePadding" type="xs:decimal"/>
+		<xs:attribute name="ad" type="xs:string"/>
+	</xs:complexType>
+	<xs:complexType name="ViewStatus">
+		<xs:complexContent>
+			<xs:extension base="tns:Element">
+				<xs:sequence>
+					<xs:element name="e" type="tns:LayElement" minOccurs="0"/>
+					<xs:element name="fe" type="tns:LayFormElement" minOccurs="0"/>
+					<xs:element name="ewcm" type="tns:LayElementWCM" minOccurs="0"/>
+					<xs:element name="tooltip" type="xs:string" minOccurs="0"/>
+					<xs:element name="txtClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="titleTxtClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="bkClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="btnBkClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="brdClr" type="ns2:Color" minOccurs="0"/>
+					<xs:element name="fnt" type="ns2:Font" minOccurs="0"/>
+					<xs:element name="titleFnt" type="ns2:Font" minOccurs="0"/>
+					<xs:element name="brd" type="ns2:Border" minOccurs="0"/>
+				</xs:sequence>
+				<xs:attribute name="hAlign" type="ns3:ItemHorizontalAlignment"/>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="VirtualGrid">
+		<xs:sequence>
+			<xs:element name="descr" type="tns:VirtualGridDescr"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="VirtualGridDescr">
+		<xs:sequence>
+			<xs:element name="column" type="tns:VGridItem" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="row" type="tns:VGridItem" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+		<xs:attribute name="childrenGridHAlign" type="ns3:ItemHorizontalAlignment"/>
+		<xs:attribute name="childrenGridVAlign" type="ns3:ItemVerticalAlignment"/>
+	</xs:complexType>
+	<xs:complexType name="VirtualGridElement">
+		<xs:complexContent>
+			<xs:extension base="tns:Element">
+				<xs:sequence>
+					<xs:element name="e" type="tns:LayElement"/>
+					<xs:element name="fe" type="tns:LayFormElement"/>
+					<xs:element name="fex" type="tns:LayFormElementExt"/>
+					<xs:element name="vg" type="tns:VirtualGrid"/>
+				</xs:sequence>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+</xs:schema>

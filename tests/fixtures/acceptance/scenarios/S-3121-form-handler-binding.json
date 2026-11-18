@@ -1,0 +1,377 @@
+{
+  "id": "S-3121-form-handler-binding",
+  "issue": 3121,
+  "area": "Формы",
+  "task": "Открыть обработчики и их декларативные привязки по адресам MCP, сохранив состояния события и изоляцию исходников.",
+  "workspace": "tests/fixtures/acceptance/workspace-form-handler-binding",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Команды.Form.ФормаСписка.Event.OnOpen"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/state",
+          "eq": "implemented"
+        },
+        {
+          "pointer": "/data/props/implementationAt",
+          "eq": "main:Catalog.Команды.Form.ФормаСписка.Module.Form.Method.SharedHandler"
+        }
+      ],
+      "captures": {
+        "implementation": {
+          "pointer": "/data/props/implementationAt"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.implementation"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Method"
+        },
+        {
+          "pointer": "/data/branches/1",
+          "eq": {
+            "at": "main:Catalog.Команды.Form.ФормаСписка.Module.Form.Method.SharedHandler.Binding",
+            "count": 2
+          }
+        },
+        {
+          "pointer": "/data/props/handles/0/at",
+          "eq": "main:Catalog.Команды.Form.ФормаСписка"
+        }
+      ],
+      "captures": {
+        "binding": {
+          "pointer": "/data/branches/1/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.binding"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Binding"
+        },
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "at": "main:Catalog.Команды.Form.ФормаСписка.Event.OnOpen",
+              "kind": "Event",
+              "title": "OnOpen",
+              "state": "implemented"
+            },
+            {
+              "at": "main:Catalog.Команды.Form.ФормаСписка.Item.Goods.Item.Quantity.Event.OnChange",
+              "kind": "Event",
+              "title": "OnChange",
+              "state": "implemented"
+            }
+          ]
+        }
+      ],
+      "captures": {
+        "formEvent": {
+          "pointer": "/data/items/0/at"
+        },
+        "columnEvent": {
+          "pointer": "/data/items/1/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.formEvent"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:Catalog.Команды.Form.ФормаСписка.Event.OnOpen"
+        },
+        {
+          "pointer": "/data/props/state",
+          "eq": "implemented"
+        },
+        {
+          "pointer": "/data/props/implementationAt",
+          "eq": "main:Catalog.Команды.Form.ФормаСписка.Module.Form.Method.SharedHandler"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.columnEvent"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:Catalog.Команды.Form.ФормаСписка.Item.Goods.Item.Quantity.Event.OnChange"
+        },
+        {
+          "pointer": "/data/props/state",
+          "eq": "implemented"
+        },
+        {
+          "pointer": "/data/props/implementationAt",
+          "eq": "main:Catalog.Команды.Form.ФормаСписка.Module.Form.Method.SharedHandler"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Команды.Form.ФормаСписка.Module.Form.Method.RunCommand.Binding"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "at": "main:Catalog.Команды.Form.ФормаСписка.Command.Refresh.Event.Execute",
+              "kind": "Event",
+              "title": "Execute",
+              "state": "implemented"
+            }
+          ]
+        }
+      ],
+      "captures": {
+        "commandEvent": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.commandEvent"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:Catalog.Команды.Form.ФормаСписка.Command.Refresh.Event.Execute"
+        },
+        {
+          "pointer": "/data/props/state",
+          "eq": "implemented"
+        },
+        {
+          "pointer": "/data/props/implementationAt",
+          "eq": "main:Catalog.Команды.Form.ФормаСписка.Module.Form.Method.RunCommand"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Команды.Form.ФормаСписка.Event.OnClose"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:Catalog.Команды.Form.ФормаСписка.Event.OnClose"
+        },
+        {
+          "pointer": "/data/props/state",
+          "eq": "missing"
+        },
+        {
+          "pointer": "/data/props/implementationAt",
+          "eq": null
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Команды.Form.ФормаСписка.Module.Form.Method.InvalidHandler.Binding"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "at": "main:Catalog.Команды.Form.ФормаСписка.Item.WrongContext.Event.OnChange",
+              "kind": "Event",
+              "title": "OnChange",
+              "state": "invalid"
+            }
+          ]
+        }
+      ],
+      "captures": {
+        "invalidEvent": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.invalidEvent"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:Catalog.Команды.Form.ФормаСписка.Item.WrongContext.Event.OnChange"
+        },
+        {
+          "pointer": "/data/props/state",
+          "eq": "invalid"
+        },
+        {
+          "pointer": "/data/props/implementationAt",
+          "eq": "main:Catalog.Команды.Form.ФормаСписка.Module.Form.Method.InvalidHandler"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "ext:Catalog.Команды.Form.ФормаСписка.Module.Form.Method.SharedHandler.Binding"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "at": "ext:Catalog.Команды.Form.ФормаСписка.Event.OnOpen",
+              "kind": "Event",
+              "title": "OnOpen",
+              "state": "implemented"
+            }
+          ]
+        }
+      ],
+      "captures": {
+        "extensionEvent": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.extensionEvent"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "ext:Catalog.Команды.Form.ФормаСписка.Event.OnOpen"
+        },
+        {
+          "pointer": "/data/props/state",
+          "eq": "implemented"
+        },
+        {
+          "pointer": "/data/props/implementationAt",
+          "eq": "ext:Catalog.Команды.Form.ФормаСписка.Module.Form.Method.SharedHandler"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Команды.Form.Item.Module.Form.Method.SharedHandler.Binding"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Binding"
+        },
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "at": "main:Catalog.Команды.Form.Item.Item.Event.Event.OnChange",
+              "kind": "Event",
+              "title": "OnChange",
+              "state": "implemented"
+            }
+          ]
+        }
+      ],
+      "captures": {
+        "siblingEvent": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.siblingEvent"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:Catalog.Команды.Form.Item.Item.Event.Event.OnChange"
+        },
+        {
+          "pointer": "/data/props/state",
+          "eq": "implemented"
+        },
+        {
+          "pointer": "/data/props/implementationAt",
+          "eq": "main:Catalog.Команды.Form.Item.Module.Form.Method.SharedHandler"
+        }
+      ]
+    }
+  ]
+}

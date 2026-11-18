@@ -67,7 +67,6 @@ use {
 
 use crate::domain::call_graph_identity::{CallGraphIdentity, CallGraphIdentityError};
 use crate::infrastructure::capacity_observation::CapacityObserver;
-use crate::infrastructure::native_operations::apply_families::plan_hidden_v13_apply;
 use crate::infrastructure::v13_find::{
     FindBuildError, LayoutFindSource, WorkspaceFindDirectoryBuilder,
 };
@@ -215,7 +214,11 @@ impl CanonicalInvocationService for CanonicalV13ReadService {
                 | ToolIdentity::Search
                 | ToolIdentity::Check
                 | ToolIdentity::Diff
-        ) {
+        ) && !(invocation.tool() == ToolIdentity::View
+            && result.ok
+            && result.source_text.is_some()
+            && result.data.as_ref().and_then(|data| data["kind"].as_str()) == Some("Body"))
+        {
             result.rev = None;
         }
         Ok(result)
@@ -1002,11 +1005,8 @@ fn owning_metadata_address(address: &QualifiedAddress) -> String {
     owner
 }
 
-/// Every family section of plan details that an apply answer may carry.
-const PLAN_DETAIL_KEYS: &[unica_source_contract::proposal::PlanDetailKey] = &[
-    unica_xdto::results::XDTO_OBJECTS,
-    unica_metadata::EXCHANGE_CONTENT,
-];
+// Every family section of plan details that an apply answer may carry.
+use crate::infrastructure::native_operations::apply_families::PLAN_DETAIL_KEYS;
 
 /// Fields the apply answer writes itself; a family section cannot take them.
 const APPLY_DATA_FIELDS: &[&str] = &[
@@ -1192,6 +1192,7 @@ pub(super) fn apply_plan_error_result(error: &ApplyPlanError) -> DomainResult {
     let at = error.path().map(str::to_string);
     let code = match error.kind() {
         ApplyPlanErrorKind::BadValue => RefusalCode::BadValue,
+        ApplyPlanErrorKind::Conflict => RefusalCode::Conflict,
         ApplyPlanErrorKind::NotFound => RefusalCode::NotFound,
         ApplyPlanErrorKind::ProviderUnavailable => RefusalCode::ProviderUnavailable,
         ApplyPlanErrorKind::InvalidState => RefusalCode::InvalidState,

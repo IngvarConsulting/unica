@@ -3,7 +3,7 @@
   "issue": 1981,
   "area": "Свойства конфигурации",
   "workspace": "tests/fixtures/acceptance/workspace-borrowed",
-  "task": "Поменять версию, поставщика, синоним и режим совместимости корня конфигурации и описание корня расширения через props.set: Can корня называет свой профиль и значения перечислений, план не пишет файлов, публикация меняет Configuration.xml своего набора, не трогает соседний и читается обратно. Значение вне перечисления, имя корня и свойство конфигурации на корне расширения отклоняются до записи.",
+  "task": "Поменять версию, поставщика, синоним и режим совместимости корня конфигурации и описание корня расширения через props.set: Can корня называет свой профиль и значения перечислений, план не пишет файлов, публикация меняет Configuration.xml своего набора, не трогает соседний и читается обратно. Значение вне перечисления и запись имени или режима запуска корня расширения отклоняются до записи.",
   "wire": [
     {
       "tool": "unica.view",
@@ -41,8 +41,8 @@
           "absent": true
         },
         {
-          "pointer": "/data/props/contract/argsSchema/properties/values/properties/Name",
-          "absent": true
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/Name/type",
+          "eq": "string"
         }
       ]
     },
@@ -70,6 +70,10 @@
         {
           "pointer": "/data/props/contract/argsSchema/properties/values/properties/DefaultRunMode",
           "absent": true
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/Name",
+          "absent": true
         }
       ]
     },
@@ -84,7 +88,7 @@
               "values": {
                 "version": "1.0.0.2",
                 "Vendor": "ООО Пример",
-                "Synonym": "Учёт",
+                "Synonym": "ru = 'Учёт'",
                 "CompatibilityMode": "Version8_3_27"
               }
             }
@@ -182,7 +186,7 @@
         },
         {
           "pointer": "/data/props/synonym",
-          "eq": "Учёт"
+          "eq": "ru = 'Учёт'"
         },
         {
           "pointer": "/data/props/properties/compatibilityMode",
@@ -245,7 +249,7 @@
     {
       "tool": "unica.apply",
       "args": {
-        "at": "main:Configuration",
+        "at": "ext:Configuration",
         "ops": [
           {
             "op": "props.set",
@@ -273,9 +277,9 @@
       ],
       "fileAssertions": [
         {
-          "path": "src/cf/Configuration.xml",
+          "path": "src/ext/Configuration.xml",
           "kind": "sha256",
-          "eq": "$capture.cfAfter"
+          "eq": "$capture.ext"
         }
       ]
     },

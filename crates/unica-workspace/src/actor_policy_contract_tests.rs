@@ -4634,7 +4634,7 @@ pub fn saved_apply_plans_do_not_retain_per_change_descriptors(
 ) {
     let _policy_scope = policies_scope(policies);
 
-    use crate::platform::testing::open_handle_count_for_test;
+    use crate::platform::testing::open_handles_under_for_test;
 
     const PLAN_COUNT: usize = 8;
     const CHANGES_PER_PLAN: usize = 16;
@@ -4659,7 +4659,9 @@ pub fn saved_apply_plans_do_not_retain_per_change_descriptors(
     )
     .unwrap();
     let binding = fixture.actor.bind_provider_root("main", source).unwrap();
-    let before = open_handle_count_for_test().unwrap();
+    // Only descriptors on this fixture are counted: tests running alongside
+    // hold theirs elsewhere and do not enter the cost of a plan.
+    let before = open_handles_under_for_test(&fixture.root).unwrap();
 
     let mut tokens = Vec::new();
     let mut after_one_change_plan = before;
@@ -4706,11 +4708,11 @@ pub fn saved_apply_plans_do_not_retain_per_change_descriptors(
                 .unwrap(),
         );
         if plan == 0 {
-            after_one_change_plan = open_handle_count_for_test().unwrap();
+            after_one_change_plan = open_handles_under_for_test(&fixture.root).unwrap();
         }
     }
 
-    let after = open_handle_count_for_test().unwrap();
+    let after = open_handles_under_for_test(&fixture.root).unwrap();
     let fixed_plan_cost = after_one_change_plan.saturating_sub(before);
     let many_change_plan_cost = after.saturating_sub(after_one_change_plan);
     assert!(

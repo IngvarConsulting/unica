@@ -2,6 +2,10 @@ use std::env;
 use std::path::{Path, PathBuf};
 
 pub fn find_plugin_root(cwd: &Path) -> Option<PathBuf> {
+    #[cfg(any(test, feature = "test-support"))]
+    if let Some(root) = PLUGIN_ROOT_FOR_TEST.with(|slot| slot.borrow().clone()) {
+        return Some(root);
+    }
     if let Ok(root) = env::var("UNICA_PLUGIN_ROOT") {
         let root = PathBuf::from(root);
         if is_plugin_runtime_root(&root) {
@@ -11,6 +15,35 @@ pub fn find_plugin_root(cwd: &Path) -> Option<PathBuf> {
 
     let current_exe = env::current_exe().ok();
     find_plugin_root_with_exe(cwd, current_exe.as_deref())
+}
+
+#[cfg(any(test, feature = "test-support"))]
+thread_local! {
+    static PLUGIN_ROOT_FOR_TEST: std::cell::RefCell<Option<PathBuf>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Runs `work` with `root` as the plugin root this thread finds. A test that
+/// needs the real plugin takes it from the source checkout this way: beside
+/// an executable built outside the repository there is none, and a
+/// process-wide `UNICA_PLUGIN_ROOT` would reach the tests that use a fake root.
+#[cfg(any(test, feature = "test-support"))]
+pub fn with_plugin_root_for_test<T>(root: &Path, work: impl FnOnce() -> T) -> T {
+    struct Restore(Option<PathBuf>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            PLUGIN_ROOT_FOR_TEST.with(|slot| *slot.borrow_mut() = self.0.take());
+        }
+    }
+    let _restore =
+        Restore(PLUGIN_ROOT_FOR_TEST.with(|slot| slot.replace(Some(root.to_path_buf()))));
+    work()
+}
+
+/// The plugin of the source checkout these crates are built from.
+#[cfg(any(test, feature = "test-support"))]
+pub fn source_checkout_plugin_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugins/unica")
 }
 
 fn find_plugin_root_with_exe(cwd: &Path, current_exe: Option<&Path>) -> Option<PathBuf> {

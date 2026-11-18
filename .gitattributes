@@ -1,9 +1,10 @@
 *.sh text eol=lf
 *.rs text eol=lf
 
-# The hashed catalog must not inherit
-# Git-for-Windows CRLF conversion from the runner's global configuration.
-crates/unica-metadata/src/platform-event-catalog-8.3.27.2074.json text eol=lf
+# The hashed catalogs must not inherit Git-for-Windows CRLF conversion from
+# the runner's global configuration. Шаблон, а не перечисление: каталог новой
+# линии закрепляется появлением файла, а не правкой этой строки.
+crates/unica-metadata/src/platform-event-catalog-*.json text eol=lf
 
 # BSP parity fixtures preserve harvested bytes, including BOM and CRLF.
 tests/fixtures/unica_mcp_script_parity/bsp/** -text -whitespace
@@ -49,16 +50,13 @@ tests/fixtures/formats/platform_xml/2.20/incomplete_borrowed/** -text whitespace
 # Borrowing evidence is 8.3.27 export bytes; tests compare BOM and CRLF.
 tests/fixtures/formats/platform_xml/2.20/cfe_borrow/*.xml -text whitespace=cr-at-eol
 tests/fixtures/formats/platform_xml/2.20/cfe_borrow/*.bsl -text whitespace=cr-at-eol
+tests/fixtures/formats/platform_xml/2.20/cfe_borrow_kinds/** -text whitespace=cr-at-eol
 
 # Spreadsheet edit fixtures are 8.3.27 exports; BOM and CRLF are asserted.
 tests/fixtures/acceptance/workspace-mxl/src/cf/Reports/F06Report/Templates/PlatformExport/** -text -whitespace
 
 # Keep the native-validated whole-template-removal fixture bytes on every host.
 tests/fixtures/acceptance/workspace-whole-template-removal/** -text -whitespace
-
-# Vendored archive and delivered license hashes describe the original bytes.
-/vendor/ureq/** -text
-/plugins/unica/third-party/licenses/ureq/** -text
 
 # Raw template XML exports and the complete native Report seed retain their bytes.
 /tests/fixtures/formats/platform_xml/2.20/template-new-xml/*.xml -text whitespace=cr-at-eol
@@ -102,3 +100,6 @@ crates/unica-coder/tests/fixtures/meta-add-sources/** -text -whitespace
 /tests/fixtures/formats/platform_xml/2.19/** -text whitespace=cr-at-eol
 /tests/fixtures/formats/platform_xml/2.21/** -text whitespace=cr-at-eol
 /tests/fixtures/formats/platform_xml/2.22/** -text whitespace=cr-at-eol
+# The platform XDTO export (scripts/dev/export-platform-xdto.py): bytes as the
+# platform wrote them, so the passport hash holds on every checkout.
+/tests/fixtures/formats/platform_xml/2.20/xdto/** -text whitespace=cr-at-eol

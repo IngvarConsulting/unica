@@ -53,7 +53,6 @@ def use_declarations(root: Path) -> None:
     declarations = crate_declarations.read(root)
     FAMILIES = FAMILY_FLOOR | (_declared("family", declarations) & SEMANTIC_DEPENDENCIES.keys())
     PORT_CALLERS = COORDINATOR_FLOOR | _declared("coordinator", declarations)
-CODEC_DEPENDENCIES = {"xdto": frozenset({"metadata-designer"})}
 # Families whose codec sits behind the family port (#1826). Product composition
 # selects the implementation in one module; everyone else calls the trait.
 PORTED_FAMILIES = frozenset({"dcs"})
@@ -160,7 +159,6 @@ def edge_errors(owner: str, dependency: str, kind: str) -> list[str]:
     if name.endswith("-designer") and name != "source-designer" and dependency.startswith("unica-"):
         family = name.removesuffix("-designer")
         allowed = ABSTRACTIONS | frozenset({"source-designer", "operations", "bsl-parser", family, "metadata"})
-        allowed |= CODEC_DEPENDENCIES.get(family, frozenset())
         if target not in allowed:
             reasons.append("a representation codec consumes neutral ports and its own family")
     if name == "execution" and dependency.startswith("unica-"):

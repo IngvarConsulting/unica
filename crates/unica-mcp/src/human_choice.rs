@@ -17,9 +17,7 @@ use rmcp::model::{
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use std::time::Duration;
-use unica_execution_contract::invocation::{
-    without_confirmation, HumanChoice, HumanChoiceOption, HUMAN_CONFIRMATION_KEY,
-};
+use unica_execution_contract::invocation::{without_confirmation, HumanChoice, HumanChoiceOption};
 
 /// Key of the question in `inputRequests` and `inputResponses`.
 pub(crate) const CHOICE_INPUT_KEY: &str = "unica.choice";
@@ -129,7 +127,12 @@ pub(crate) fn question_meta(choice: &HumanChoice) -> Value {
 pub(crate) fn question_text(choice: &HumanChoice) -> String {
     let mut text = choice.question.clone();
     text.push('\n');
-    for option in &choice.options {
+    // An answer that loses nothing has no line.
+    for option in choice
+        .options
+        .iter()
+        .filter(|option| !option.description.is_empty())
+    {
         text.push_str(&format!("\n{}: {}.", option.title, option.description));
     }
     if let Some(description) = &choice.cancel_description {
@@ -155,6 +158,43 @@ pub(crate) fn input_required(choice: &HumanChoice) -> InputRequiredResult {
     InputRequiredResult::new(Some(requests), Some(choice_state(choice)))
 }
 
+/// The `input_required` Task asking the question: the Task keeps its identity
+/// and times, and its one input request is the question's form.
+pub(crate) fn task_asking(
+    detailed: rmcp::model::DetailedTask,
+    choice: &HumanChoice,
+) -> rmcp::model::DetailedTask {
+    let requests = input_required(choice)
+        .input_requests
+        .expect("the question has its form");
+    rmcp::model::DetailedTask::new(
+        detailed.task,
+        rmcp::model::TaskPayload::InputRequired {
+            input_requests: requests,
+        },
+    )
+}
+
+/// The completed Task whose result is what the person's answer ran.
+pub(crate) fn task_completed(
+    detailed: rmcp::model::DetailedTask,
+    result: &CallToolResult,
+) -> Result<rmcp::model::DetailedTask, crate::task_projection::TaskProjectionError> {
+    let result = serde_json::to_value(result)
+        .ok()
+        .and_then(|value| value.as_object().cloned())
+        .ok_or(crate::task_projection::TaskProjectionError::Serialization)?;
+    Ok(rmcp::model::DetailedTask::new(
+        detailed.task,
+        rmcp::model::TaskPayload::Completed { result },
+    ))
+}
+
+/// The answer a `tasks/update` carries for the question of a Task.
+pub(crate) fn task_answer(responses: &InputResponses) -> Option<ElicitResult> {
+    Some(answer_of(responses.get(CHOICE_INPUT_KEY)?.clone()))
+}
+
 /// Digest of the question and its calls. It is not trusted: it only says
 /// which question the echoed answer belongs to.
 pub(crate) fn choice_state(choice: &HumanChoice) -> String {
@@ -164,22 +204,151 @@ pub(crate) fn choice_state(choice: &HumanChoice) -> String {
     format!("unica-choice-1:{hex}")
 }
 
-/// The answer to an `input_required` question carried by a retry, if it
-/// answers this question.
+/// Questions one call asks at most: an answer that runs into a new question
+/// about the same call asks it too, up to this many in all; past it the call
+/// keeps its refusal (INV.MCP.HUMAN-CHOICE).
+// resource-limit: max-questions-per-call
+// class: step
+// unit: count
+// scope: request
+// value: 3
+// resource: Вопросов человеку в ходе одного вызова tools/call.
+// status: unproven
+// origin: #2843
+// problem: Ответ, который снова и снова упирается в новый вопрос, не должен держать человека в бесконечной цепочке.
+// on-reach: Вызов получает прежний отказ последнего вопроса; ничего не исполняется.
+pub(crate) const MAX_QUESTIONS_PER_CALL: usize = 3;
+
+const CHAIN_STATE_PREFIX: &str = "unica-choice-chain-1:";
+
+/// The answers a protocol `2026-07-28` retry carries for the questions it
+/// was asked before the current one, and the state of the current question.
+/// Each answer applies only while its question comes back the same.
+#[derive(Default)]
+pub(crate) struct RetriedChain {
+    answered: Vec<(String, Value)>,
+    current: Option<String>,
+}
+
+impl RetriedChain {
+    pub(crate) fn parse(state: Option<&str>) -> Self {
+        let Some(state) = state else {
+            return Self::default();
+        };
+        let Some(chain) = state.strip_prefix(CHAIN_STATE_PREFIX) else {
+            return Self {
+                answered: Vec::new(),
+                current: Some(state.to_string()),
+            };
+        };
+        let parsed: Option<Value> = serde_json::from_str(chain).ok();
+        let answered = parsed
+            .as_ref()
+            .and_then(|chain| chain.get("answered")?.as_array().cloned())
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|entry| {
+                Some((
+                    entry.get("state")?.as_str()?.to_string(),
+                    entry.get("answer")?.clone(),
+                ))
+            })
+            .collect();
+        let current = parsed
+            .as_ref()
+            .and_then(|chain| chain.get("state")?.as_str().map(str::to_string));
+        Self { answered, current }
+    }
+
+    /// The answer to the `index`-th question of the call, `choice`, if the
+    /// retry carries one for this very question.
+    pub(crate) fn answer(
+        &self,
+        index: usize,
+        choice: &HumanChoice,
+        responses: Option<&InputResponses>,
+    ) -> Option<ElicitResult> {
+        let state = choice_state(choice);
+        if let Some((answered_state, answer)) = self.answered.get(index) {
+            return (*answered_state == state).then(|| answer_of(answer.clone()));
+        }
+        if index != self.answered.len() || self.current.as_deref() != Some(state.as_str()) {
+            return None;
+        }
+        Some(answer_of(responses?.get(CHOICE_INPUT_KEY)?.clone()))
+    }
+}
+
+/// A malformed answer is no answer from the person: it cancels.
+fn answer_of(response: Value) -> ElicitResult {
+    serde_json::from_value(response)
+        .unwrap_or_else(|_| ElicitResult::new(ElicitationAction::Cancel))
+}
+
+/// The answer a client that cannot ask stands for: the first option of a
+/// confirmation, as if the person had chosen it.
+pub(crate) fn unasked_confirmation(choice: &HumanChoice) -> ElicitResult {
+    ElicitResult::new(ElicitationAction::Accept)
+        .with_content(json!({CHOICE_FIELD: choice.options[0].id}))
+}
+
+/// The response names the answers given before the last question first, in
+/// the order they were asked.
+pub(crate) fn name_earlier_choices(
+    mut result: CallToolResult,
+    earlier: &[(&HumanChoice, &HumanChoiceOption)],
+) -> CallToolResult {
+    if earlier.is_empty() {
+        return result;
+    }
+    let text = earlier
+        .iter()
+        .map(|(choice, option)| {
+            if choice.proceeds_unasked {
+                format!("Confirmed by the person: {}.", option.title)
+            } else {
+                format!(
+                    "Chosen by the person instead of the refusal: {}.",
+                    option.title
+                )
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    result.content.insert(0, ContentBlock::text(text));
+    result
+}
+
+/// The `input_required` result asking `choice` after the questions the call
+/// was already answered: its `requestState` carries those answers, so the
+/// retry repeats the call and every answer applies again in turn.
+pub(crate) fn input_required_after(
+    choice: &HumanChoice,
+    answered: &[(&HumanChoice, &ElicitResult)],
+) -> InputRequiredResult {
+    let mut result = input_required(choice);
+    if !answered.is_empty() {
+        let chain = json!({
+            "answered": answered
+                .iter()
+                .map(|(question, answer)| json!({"state": choice_state(question), "answer": answer}))
+                .collect::<Vec<_>>(),
+            "state": choice_state(choice),
+        });
+        result.request_state = Some(format!("{CHAIN_STATE_PREFIX}{chain}"));
+    }
+    result
+}
+
+/// The answer to the first `input_required` question carried by a retry, if
+/// it answers this question.
+#[cfg(test)]
 pub(crate) fn retried_answer(
     choice: &HumanChoice,
     responses: Option<&InputResponses>,
     state: Option<&str>,
 ) -> Option<ElicitResult> {
-    if state != Some(choice_state(choice).as_str()) {
-        return None;
-    }
-    let response = responses?.get(CHOICE_INPUT_KEY)?;
-    // A malformed answer is no answer from the person: it cancels.
-    Some(
-        serde_json::from_value(response.clone())
-            .unwrap_or_else(|_| ElicitResult::new(ElicitationAction::Cancel)),
-    )
+    RetriedChain::parse(state).answer(0, choice, responses)
 }
 
 /// The option the person chose, or `None` for every other outcome: cancel,
@@ -208,9 +377,13 @@ pub(crate) fn calls(option: &HumanChoiceOption) -> Vec<(&str, &Map<String, Value
         .collect()
 }
 
-/// Whether a call names the confirmation only the door may set.
-pub(crate) fn carries_confirmation(arguments: Option<&Map<String, Value>>) -> bool {
-    arguments.is_some_and(|arguments| arguments.contains_key(HUMAN_CONFIRMATION_KEY))
+/// The argument only the door may set from a person's answer — the
+/// confirmation or the re-export before an edit — that a call names.
+pub(crate) fn carried_answer_key(arguments: Option<&Map<String, Value>>) -> Option<&'static str> {
+    let arguments = arguments?;
+    unica_execution_contract::invocation::HUMAN_ANSWER_KEYS
+        .into_iter()
+        .find(|key| arguments.contains_key(*key))
 }
 
 /// How one call of a chosen answer ended.

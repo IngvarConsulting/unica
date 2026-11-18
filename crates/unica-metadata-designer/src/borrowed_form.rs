@@ -113,15 +113,22 @@ pub fn extension_form(bytes: &[u8], name: &str) -> Result<ExtensionForm, BorrowF
 }
 
 /// Descriptor of the borrowed form exactly as 8.3.27 exports it: BOM, CRLF,
-/// `PropertyState Form/Extended` and the mandatory `FormType`.
-pub fn borrowed_form_descriptor(name: &str, uuid: &str, parent: &ParentForm) -> Vec<u8> {
+/// `PropertyState Form/Extended` and the mandatory `FormType`, in the format
+/// of the extension set it joins (INV.SOURCE.WRITABLE-PROFILE), which may
+/// differ from the parent form's.
+pub fn borrowed_form_descriptor(
+    name: &str,
+    uuid: &str,
+    parent: &ParentForm,
+    set_format: &str,
+) -> Vec<u8> {
     let escape = unica_xml_format::text::escape_xml;
     let text = [
         "\u{feff}<?xml version=\"1.0\" encoding=\"UTF-8\"?>".to_string(),
         format!(
             "<MetaDataObject {} version=\"{}\">",
-            unica_source_designer::layout::full_md_namespace_declarations(),
-            escape(&parent.version)
+            unica_source_designer::layout::full_md_namespace_declarations(set_format),
+            escape(set_format)
         ),
         format!("\t<Form uuid=\"{}\">", escape(uuid)),
         "\t\t<InternalInfo>".to_string(),
@@ -138,11 +145,20 @@ pub fn borrowed_form_descriptor(name: &str, uuid: &str, parent: &ParentForm) -> 
             "\t\t\t<ExtendedConfigurationObject>{}</ExtendedConfigurationObject>",
             escape(&parent.uuid)
         ),
+    ]
+    .into_iter()
+    .chain(
+        crate::dialect::adopted_properties(set_format, crate::dialect::AdoptedNode::Form)
+            .iter()
+            .map(|property| format!("\t\t\t{property}")),
+    )
+    .chain([
         "\t\t\t<FormType>Managed</FormType>".to_string(),
         "\t\t</Properties>".to_string(),
         "\t</Form>".to_string(),
         "</MetaDataObject>".to_string(),
-    ]
+    ])
+    .collect::<Vec<_>>()
     .join("\r\n");
     text.into_bytes()
 }

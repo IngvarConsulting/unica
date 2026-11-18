@@ -79,7 +79,7 @@
       "assertions": [
         {
           "pointer": "/data/props/synonym",
-          "eq": "Long"
+          "eq": "ru = 'Long'"
         }
       ]
     },

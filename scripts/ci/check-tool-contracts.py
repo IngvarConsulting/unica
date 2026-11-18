@@ -121,15 +121,17 @@ def validate_v8_runner_failed_partial_receipt(
         value: object,
         expected_keys: set[str],
         label: str,
+        optional_keys: frozenset[str] = frozenset(),
     ) -> dict[str, object] | None:
         if not isinstance(value, dict):
             errors.append(f"{label} must be an object")
             return None
         actual_keys = set(value)
-        if actual_keys != expected_keys:
+        if not expected_keys <= actual_keys <= expected_keys | optional_keys:
             errors.append(
-                f"{label} is not a closed object: expected {sorted(expected_keys)}, "
-                f"got {sorted(actual_keys)}"
+                f"{label} is not a closed object: expected {sorted(expected_keys)}"
+                + (f" and optional {sorted(optional_keys)}" if optional_keys else "")
+                + f", got {sorted(actual_keys)}"
             )
             return None
         return value
@@ -150,10 +152,14 @@ def validate_v8_runner_failed_partial_receipt(
     # `provider_dispatched`. Квитанция с `platform_failure` — след вызванного
     # провайдера, поэтому здесь признак обязан быть `true`: `false` означал бы,
     # что раннер отказал до платформы, а ошибку подписал платформенной.
+    # Ключи сверены со схемой `docs/schemas/command-data/push.schema.json`
+    # раннера 0.17 (push-data v6): `detection` и `sessions` необязательны,
+    # `provider` схема тоже не требует, но квитанция `platform_failure` его несёт.
     data = closed_mapping(
         root["data"],
         {"ok", "provider_dispatched", "provider", "steps", "duration_ms"},
         "build data",
+        frozenset({"detection", "sessions"}),
     )
     # С 0.12 отказ может назвать шаг выхода `next`; его форма — дело раннера, а
     # квитанция частичной загрузки читается по коду, роду и сообщению.
@@ -386,7 +392,7 @@ fn main() {
             "push",
         ]
         # Runner 0.14 refuses a push into an infobase it has no memory of
-        # (`no_memory`); the baseline load is the explicit overwrite.
+        # (`untracked_base`); the baseline load is the explicit overwrite.
         initial = subprocess.run(
             [*command, "--force"],
             cwd=root,
@@ -716,17 +722,22 @@ def validate_v8_runner_external_build_calls(
     calls: list[str],
     configuration_root: Path,
     work_path: Path,
+    cached: bool = False,
 ) -> list[str]:
-    """Сверить шаги платформы, которыми раннер 0.14 собрал внешнюю обработку.
+    """Сверить шаги платформы, которыми раннер собрал внешнюю обработку.
 
-    Сборка идёт во временной базе: создание базы, загрузка основной конфигурации
+    Сборка идёт в базе раннера: создание базы, загрузка основной конфигурации
     проекта без `-Extension`, затем загрузка и обратная выгрузка обработки.
-    Временная база после прогона убрана.
+    С 0.17 база сборки — кэш раннера под workPath: она остаётся после прогона,
+    и повторная сборка при неизменной конфигурации (`cached`) только загружает
+    и выгружает обработку.
     """
 
     errors: list[str] = []
     steps = [call.split("\t", 1)[0] for call in calls]
-    expected_steps = ["create", "load-config", "load-external", "dump-external"]
+    expected_steps = ["load-external", "dump-external"]
+    if not cached:
+        expected_steps = ["create", "load-config", *expected_steps]
     if steps != expected_steps:
         errors.append(
             f"platform steps must be {expected_steps}, got {steps}"
@@ -751,26 +762,23 @@ def validate_v8_runner_external_build_calls(
                 )
         if extension != "extension=false":
             errors.append("configuration load must not pass -Extension")
-    # Корень временных баз остаётся после прогона: его отсутствие значит, что база
-    # создавалась не под workPath, и проверка остатка прошла бы вхолостую.
-    try:
-        roots = [
-            root
-            for root in work_path.rglob("throwaway-infobases")
-            if root.is_dir()
-        ]
-        retained = sorted(
-            str(base.relative_to(work_path))
-            for root in roots
-            for base in root.iterdir()
-        )
-    except OSError as error:
-        errors.append(f"throwaway infobase root could not be inspected: {error}")
-    else:
-        if not roots:
-            errors.append(f"throwaway infobase root was not found under {work_path}")
-        if retained:
-            errors.append(f"throwaway infobase was retained: {retained}")
+    for call in calls:
+        if not call.startswith("create"):
+            continue
+        fields = call.split("\t")
+        if len(fields) != 2 or not fields[1]:
+            errors.append(f"infobase creation call is malformed: {call!r}")
+            continue
+        try:
+            database = Path(fields[1]).resolve()
+            inside = database.is_relative_to(work_path.resolve())
+        except OSError as error:
+            errors.append(f"build infobase path could not be resolved: {error}")
+            continue
+        if not inside:
+            errors.append(
+                f"build infobase must be created under workPath {work_path}, got {fields[1]}"
+            )
     return errors
 
 
@@ -1037,7 +1045,20 @@ fn main() -> Result<(), Box<dyn Error>> {
     for (index, argument) in arguments.iter().enumerate() {
         let argument = argument.to_string_lossy();
         let step = if argument.eq_ignore_ascii_case("CREATEINFOBASE") {
-            Some("create".to_owned())
+            // С раннера 0.17 `make` проверяет, что файл базы появился.
+            let connection = arguments[index + 1].to_string_lossy();
+            let database = connection
+                .split(';')
+                .find_map(|part| {
+                    let (key, value) = part.split_once('=')?;
+                    key.trim()
+                        .eq_ignore_ascii_case("File")
+                        .then(|| value.trim().trim_matches(['"', '\u{27}']).to_owned())
+                })
+                .ok_or("CREATEINFOBASE without File=")?;
+            fs::create_dir_all(&database)?;
+            fs::write(std::path::Path::new(&database).join("1Cv8.1CD"), b"issue-3082-infobase")?;
+            Some(format!("create\t{database}"))
         } else if argument.eq_ignore_ascii_case("/LoadConfigFromFiles") {
             let source = arguments[index + 1].to_string_lossy();
             let extension = arguments
@@ -1133,7 +1154,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             "Deploy",
         ]
 
-        def run_make() -> tuple[object | None, list[str]]:
+        def run_make(cached: bool) -> tuple[object | None, list[str]]:
             try:
                 platform_marker.unlink(missing_ok=True)
                 call_log.unlink(missing_ok=True)
@@ -1182,6 +1203,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 calls,
                 configuration_root,
                 work_path,
+                cached,
             )
             if call_errors:
                 return None, [f"{label}: {error}" for error in call_errors]
@@ -1190,7 +1212,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             except json.JSONDecodeError as error:
                 return None, [f"{label}: runner returned invalid JSON: {error}"]
 
-        first_envelope, first_errors = run_make()
+        first_envelope, first_errors = run_make(cached=False)
         if first_errors:
             return first_errors
         first_result_errors = validate_v8_runner_windows_external_publication_result(
@@ -1209,7 +1231,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         except OSError as error:
             return [f"{label}: failed to prepare replacement target: {error}"]
 
-        second_envelope, second_errors = run_make()
+        second_envelope, second_errors = run_make(cached=True)
         if second_errors:
             return second_errors
         result_errors = validate_v8_runner_windows_external_publication_result(

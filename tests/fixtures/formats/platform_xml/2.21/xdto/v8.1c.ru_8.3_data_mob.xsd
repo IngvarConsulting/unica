@@ -1,0 +1,256 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:ns1="http://v8.1c.ru/8.1/data/core" xmlns:ns2="http://v8.1c.ru/8.1/data/ui" xmlns:tns="http://v8.1c.ru/8.3/data/mob" xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="http://v8.1c.ru/8.3/data/mob" attributeFormDefault="unqualified" elementFormDefault="qualified">
+	<xs:import namespace="http://v8.1c.ru/8.1/data/core"/>
+	<xs:import namespace="http://v8.1c.ru/8.1/data/ui"/>
+	<xs:simpleType name="CalendarEventRecurrence">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="OneTime"/>
+			<xs:enumeration value="EveryDay"/>
+			<xs:enumeration value="EveryWeek"/>
+			<xs:enumeration value="EveryMonth"/>
+			<xs:enumeration value="EveryYear"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="CallLogCallType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Outgoing"/>
+			<xs:enumeration value="Incoming"/>
+			<xs:enumeration value="Missed"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ContactDataAddressType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Work"/>
+			<xs:enumeration value="Home"/>
+			<xs:enumeration value="Other"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ContactDataEmailAddressType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Work"/>
+			<xs:enumeration value="Home"/>
+			<xs:enumeration value="Mobile"/>
+			<xs:enumeration value="Other"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ContactDataIMAddressType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Work"/>
+			<xs:enumeration value="Home"/>
+			<xs:enumeration value="Other"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ContactDataPhoneNumberType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Work"/>
+			<xs:enumeration value="Home"/>
+			<xs:enumeration value="Other"/>
+			<xs:enumeration value="Mobile"/>
+			<xs:enumeration value="iPhone"/>
+			<xs:enumeration value="Main"/>
+			<xs:enumeration value="HomeFax"/>
+			<xs:enumeration value="WorkFax"/>
+			<xs:enumeration value="OtherFax"/>
+			<xs:enumeration value="WorkMobile"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ContactDataRelationType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Mother"/>
+			<xs:enumeration value="Father"/>
+			<xs:enumeration value="Parent"/>
+			<xs:enumeration value="Sister"/>
+			<xs:enumeration value="Brother"/>
+			<xs:enumeration value="Child"/>
+			<xs:enumeration value="Friend"/>
+			<xs:enumeration value="Spouse"/>
+			<xs:enumeration value="Partner"/>
+			<xs:enumeration value="Manager"/>
+			<xs:enumeration value="Assistant"/>
+			<xs:enumeration value="DomesticPartner"/>
+			<xs:enumeration value="Relative"/>
+			<xs:enumeration value="Other"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="ContactDataURLType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Work"/>
+			<xs:enumeration value="Home"/>
+			<xs:enumeration value="HomePage"/>
+			<xs:enumeration value="Other"/>
+			<xs:enumeration value="Blog"/>
+			<xs:enumeration value="Profile"/>
+			<xs:enumeration value="FTP"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:complexType name="AccountCalendarData">
+		<xs:sequence>
+			<xs:element name="calendarData" type="tns:CalendarData"/>
+			<xs:element name="account" type="tns:CalendarAccount"/>
+			<xs:element name="globalCalendarKey" type="xs:string"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="AccountCalendarEventData">
+		<xs:sequence>
+			<xs:element name="calendarEventData" type="tns:CalendarEventData"/>
+			<xs:element name="account" type="tns:CalendarAccount"/>
+			<xs:element name="globalCalendarKey" type="xs:string"/>
+			<xs:element name="globalCalendarEventKey" type="xs:string"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="AccountContactData">
+		<xs:sequence>
+			<xs:element name="contactData" type="tns:ContactData"/>
+			<xs:element name="account" type="tns:ContactAccount"/>
+			<xs:element name="globalContactKey" type="xs:string"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="AddressData">
+		<xs:sequence>
+			<xs:element name="rowData" type="ns1:Map" minOccurs="0"/>
+			<xs:element name="presentation" type="xs:string" minOccurs="0"/>
+			<xs:element name="street" type="xs:string" minOccurs="0"/>
+			<xs:element name="house" type="xs:string" minOccurs="0"/>
+			<xs:element name="city" type="xs:string" minOccurs="0"/>
+			<xs:element name="country" type="xs:string" minOccurs="0"/>
+			<xs:element name="zipCode" type="xs:string" minOccurs="0"/>
+			<xs:element name="state" type="xs:string" minOccurs="0"/>
+			<xs:element name="primaryAddress" type="xs:string" minOccurs="0"/>
+			<xs:element name="additionalAddress" type="xs:string" minOccurs="0"/>
+			<xs:element name="addressString" type="xs:string" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="CalendarAccount">
+		<xs:sequence>
+			<xs:element name="accountSource" type="xs:string"/>
+			<xs:element name="id" type="xs:string"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="CalendarData">
+		<xs:sequence>
+			<xs:element name="name" type="xs:string"/>
+			<xs:element name="color" type="ns2:Color"/>
+			<xs:element name="rawData" type="ns1:Map"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="CalendarEventData">
+		<xs:sequence>
+			<xs:element name="subject" type="xs:string"/>
+			<xs:element name="start" type="xs:date"/>
+			<xs:element name="end" type="xs:date"/>
+			<xs:element name="location" type="xs:string"/>
+			<xs:element name="description" type="xs:string"/>
+			<xs:element name="allDay" type="xs:boolean"/>
+			<xs:element name="reminders" type="ns1:Array"/>
+			<xs:element name="recurrence" type="xs:anyURI"/>
+			<xs:element name="organizer" type="xs:string"/>
+			<xs:element name="timeZone" type="xs:string"/>
+			<xs:element name="attendees" type="ns1:Array"/>
+			<xs:element name="rawData" type="ns1:Map"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="CallLogRecord">
+		<xs:sequence>
+			<xs:element name="phoneNumber" type="xs:string"/>
+			<xs:element name="date" type="xs:date"/>
+			<xs:element name="callType" type="xs:anyURI"/>
+			<xs:element name="duration" type="xs:integer"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="ContactAccount">
+		<xs:sequence>
+			<xs:element name="accountSource" type="xs:string"/>
+			<xs:element name="id" type="xs:string"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="ContactData">
+		<xs:sequence>
+			<xs:element name="firstName" type="xs:string"/>
+			<xs:element name="middleName" type="xs:string"/>
+			<xs:element name="lastName" type="xs:string"/>
+			<xs:element name="phoneticFirstName" type="xs:string"/>
+			<xs:element name="phoneticMiddleName" type="xs:string"/>
+			<xs:element name="phoneticLastName" type="xs:string"/>
+			<xs:element name="nickName" type="xs:string"/>
+			<xs:element name="prefix" type="xs:string"/>
+			<xs:element name="suffix" type="xs:string"/>
+			<xs:element name="organization" type="xs:string"/>
+			<xs:element name="department" type="xs:string"/>
+			<xs:element name="jobTitle" type="xs:string"/>
+			<xs:element name="note" type="xs:string"/>
+			<xs:element name="birthday" type="xs:dateTime"/>
+			<xs:element name="photo" type="xs:base64Binary"/>
+			<xs:element name="phoneNumbers" type="ns1:Array"/>
+			<xs:element name="emails" type="ns1:Array"/>
+			<xs:element name="addresses" type="ns1:Array"/>
+			<xs:element name="IMs" type="ns1:Array"/>
+			<xs:element name="urls" type="ns1:Array"/>
+			<xs:element name="events" type="ns1:Array"/>
+			<xs:element name="relations" type="ns1:Array"/>
+			<xs:element name="rawData" type="ns1:Map"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="ContactDataElement">
+		<xs:sequence>
+			<xs:element name="dataType" type="xs:anyURI"/>
+			<xs:element name="value" type="xs:anyURI"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="ContactDataElementInstantMessaging">
+		<xs:sequence>
+			<xs:element name="dataType" type="xs:anyURI"/>
+			<xs:element name="imType" type="xs:string"/>
+			<xs:element name="id" type="xs:string"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="InAppPurchaseReceiptData">
+		<xs:sequence>
+			<xs:element name="purchaseID" type="xs:string"/>
+			<xs:element name="appID" type="xs:string"/>
+			<xs:element name="activeSubscription" type="xs:boolean"/>
+			<xs:element name="purchaseDate" type="xs:date"/>
+			<xs:element name="rawData" type="ns1:Map"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="LocalCalendarEventKey">
+		<xs:sequence>
+			<xs:element name="id" type="xs:string"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="LocalCalendarKey">
+		<xs:sequence>
+			<xs:element name="id" type="xs:string"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="LocalContactKey">
+		<xs:sequence>
+			<xs:element name="id" type="xs:string"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="MMSAttachment">
+		<xs:sequence>
+			<xs:element name="data" type="xs:base64Binary"/>
+			<xs:element name="mimeType" type="xs:string"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="SMSLogRecord">
+		<xs:sequence>
+			<xs:element name="phoneNumbers" type="ns1:Array"/>
+			<xs:element name="dateReceived" type="xs:date"/>
+			<xs:element name="dateSent" type="xs:date"/>
+			<xs:element name="text" type="xs:string"/>
+			<xs:element name="attachments" type="ns1:Array"/>
+			<xs:element name="messageType" type="xs:anyURI"/>
+			<xs:element name="read" type="xs:boolean"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="SMSMessage">
+		<xs:sequence>
+			<xs:element name="from" type="xs:string"/>
+			<xs:element name="to" type="ns1:Array"/>
+			<xs:element name="dateRecieved" type="xs:date"/>
+			<xs:element name="text" type="xs:string"/>
+			<xs:element name="attachments" type="ns1:Array"/>
+		</xs:sequence>
+	</xs:complexType>
+</xs:schema>

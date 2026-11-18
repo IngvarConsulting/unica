@@ -301,6 +301,10 @@ pub fn plan_borrow_enum_value(
         .trim_start_matches('\u{feff}');
     let parent_doc = Document::parse(parent_text).map_err(|e| e.to_string())?;
     let existing_doc = Document::parse(existing_text).map_err(|e| e.to_string())?;
+    let existing_doc_version = existing_doc
+        .root_element()
+        .attribute("version")
+        .unwrap_or_default();
     let parent_owner = owner(&parent_doc)?;
     let destination_owner = owner(&existing_doc)?;
     let source = selected(parent_owner, name)?;
@@ -406,9 +410,21 @@ pub fn plan_borrow_enum_value(
             "\t\t\t\t\t<ExtendedConfigurationObject>{}</ExtendedConfigurationObject>",
             unica_xml_format::text::escape_xml(source_uuid)
         ),
+    ]
+    .into_iter()
+    .chain(
+        crate::dialect::adopted_properties(
+            existing_doc_version,
+            crate::dialect::AdoptedNode::Object,
+        )
+        .iter()
+        .map(|property| format!("\t\t\t\t\t{property}")),
+    )
+    .chain([
         "\t\t\t\t</Properties>".to_string(),
         "\t\t\t</EnumValue>".to_string(),
-    ]
+    ])
+    .collect::<Vec<_>>()
     .join(newline);
     if let Some(offset) =
         unica_source_designer::registration::platform_child_object_insertion_offset(

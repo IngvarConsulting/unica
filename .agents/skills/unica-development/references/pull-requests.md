@@ -65,9 +65,11 @@
 - `main` вливается в ветку PR только при конфликте, слиянием, никогда
   перебазированием: итоговое дерево проверит очередь. После слияния прогоните
   затронутые проверки локально.
-- Перед push правок Rust: `cargo fmt --all -- --check`,
-  `python scripts/ci/check-discovered-modules-format.py` (модули, которые объявляет
-  `build.rs`; формат правит `rustfmt --edition 2021 <файл>`) и
+- Перед push правок Rust проверьте формат одной командой
+  `python scripts/ci/check-discovered-modules-format.py`. Она проверяет все
+  отслеживаемые Rust-файлы в `crates/`, включая модули с `#[path]` и модули,
+  которые объявляет `build.rs`. Для исправления формата используйте
+  `rustfmt --edition 2021 <файл>`. Запустите также
   `cargo clippy --workspace --all-targets --all-features -- -D warnings`.
   Если изменение снимает или переименовывает `#[test]` или тест Python
   (`tests/**/test_*.py`: `Removes-test: tests.ci.test_x.Класс.тест` или префикс

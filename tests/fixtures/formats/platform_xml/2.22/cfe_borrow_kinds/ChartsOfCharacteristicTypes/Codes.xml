@@ -1,0 +1,39 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:app="http://v8.1c.ru/8.2/managed-application/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:cmi="http://v8.1c.ru/8.2/managed-application/cmi" xmlns:ent="http://v8.1c.ru/8.1/data/enterprise" xmlns:lf="http://v8.1c.ru/8.2/managed-application/logform" xmlns:pal="http://v8.1c.ru/8.1/data/ui/colors/palette" xmlns:style="http://v8.1c.ru/8.1/data/ui/style" xmlns:sys="http://v8.1c.ru/8.1/data/ui/fonts/system" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:v8ui="http://v8.1c.ru/8.1/data/ui" xmlns:web="http://v8.1c.ru/8.1/data/ui/colors/web" xmlns:win="http://v8.1c.ru/8.1/data/ui/colors/windows" xmlns:xen="http://v8.1c.ru/8.3/xcf/enums" xmlns:xpr="http://v8.1c.ru/8.3/xcf/predef" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.22">
+	<ChartOfCharacteristicTypes uuid="38e4faf2-b8f0-8070-ac8f-4202c9e764b8">
+		<InternalInfo>
+			<xr:GeneratedType name="ChartOfCharacteristicTypesObject.Codes" category="Object">
+				<xr:TypeId>88ba151c-f940-8b3f-802f-e820b460eee9</xr:TypeId>
+				<xr:ValueId>d7e42d4d-533d-8ee7-b40c-0dc0e84f67ca</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="ChartOfCharacteristicTypesRef.Codes" category="Ref">
+				<xr:TypeId>17917797-8a84-8c18-85c5-223844375333</xr:TypeId>
+				<xr:ValueId>80f7386f-09f7-8e2c-875b-a0e8b671aa33</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="ChartOfCharacteristicTypesSelection.Codes" category="Selection">
+				<xr:TypeId>ebadd985-7248-8523-96a3-130d9f0857ab</xr:TypeId>
+				<xr:ValueId>933dfacf-215c-8315-9d4d-820bc4a4fe4d</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="ChartOfCharacteristicTypesList.Codes" category="List">
+				<xr:TypeId>c0a0b6e7-3e64-8fe0-903e-7299bb91aff4</xr:TypeId>
+				<xr:ValueId>8b765142-e47c-836d-b3fc-1f40d7f85680</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="Characteristic.Codes" category="Characteristic">
+				<xr:TypeId>8817220d-5c80-8922-8c1e-409e1ca889d1</xr:TypeId>
+				<xr:ValueId>8d215373-e890-8afe-b734-64776f7261d3</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="ChartOfCharacteristicTypesManager.Codes" category="Manager">
+				<xr:TypeId>843542d2-e76d-8f41-946c-82df9398c600</xr:TypeId>
+				<xr:ValueId>2cbbd488-714d-8991-9f83-4e2863899eb5</xr:ValueId>
+			</xr:GeneratedType>
+		</InternalInfo>
+		<Properties>
+			<ObjectBelonging>Adopted</ObjectBelonging>
+			<Name>Codes</Name>
+			<Comment/>
+			<ExtendedConfigurationObject>ad61eec4-6a4e-5c38-b58c-f9b92037d1cd</ExtendedConfigurationObject>
+			<ActionOnConfigurationObjectMissing>Auto</ActionOnConfigurationObjectMissing>
+		</Properties>
+		<ChildObjects/>
+	</ChartOfCharacteristicTypes>
+</MetaDataObject>

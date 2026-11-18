@@ -2472,7 +2472,7 @@ fn main() {
     let digest = format!("{:x}", Sha256::digest(&bytes));
     let mut core_targets = serde_json::Map::new();
     let mut runner_targets = serde_json::Map::new();
-    let runner_version = "0.15.3"; // Fixture pin must match the production runner contract.
+    let runner_version = "0.17.4"; // Fixture pin must match the production runner contract.
     for host in HostTarget::ALL {
         let target = host.as_str();
         let suffix = if target == "win-x64" { ".exe" } else { "" };
@@ -2881,4 +2881,1065 @@ async fn a_model_cannot_confirm_a_destructive_call_and_the_doors_confirmation_re
         "the confirmed push is admitted and runs as a task: {admitted}"
     );
     client.shutdown().await;
+}
+
+/// The pinned runner of a workspace whose infobase this copy does not
+/// remember: a plain `push` is refused `untracked_base`, `push --force`
+/// loads the set. Each call is logged in the workspace.
+const DIVERGED_BASE_RUNNER: &str = r##"
+use std::{env, fs, io::Write};
+fn main() {
+    let args: Vec<String> = env::args().collect();
+    let cwd = env::current_dir().unwrap();
+    let mut log = fs::OpenOptions::new().create(true).append(true).open(cwd.join("probe-calls.log")).unwrap();
+    writeln!(log, "{}", args[1..].join(" ")).unwrap();
+    if !args.iter().any(|arg| arg == "push") {
+        std::process::exit(9);
+    }
+    if args.iter().any(|arg| arg == "--force") {
+        print!("{}", fs::read_to_string(cwd.join("probe-force.json")).unwrap());
+        return;
+    }
+    print!("{}", fs::read_to_string(cwd.join("probe-untracked.json")).unwrap());
+    std::process::exit(3);
+}
+"##;
+
+/// A `push` is a Task: its refusal "the infobase and the sources diverged"
+/// reaches the client in the Task's result. The client reads it with
+/// `unica.task.result` and is asked there; the chosen answer runs as a new
+/// call. The stored result stays the refusal: `unica.task.get` shows the
+/// Task without the question, and reading the result again asks again.
+/// rule: INV.MCP.HUMAN-CHOICE
+/// rule: INV.RUNTIME.RUNNER-BASE-REFUSALS
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_push_task_asks_about_the_diverged_base_when_its_result_is_read() {
+    use crate::infrastructure::daemon::server::actor_capacity_tests::canonical_v13_service;
+
+    let root = tempfile::tempdir().unwrap();
+    let workspace = diverged_base_workspace(root.path());
+    let calls = || runner_writes(&workspace);
+
+    let daemon = LiveDaemon::start(canonical_v13_service());
+    let (mut client, _) = spawn_unica_server(UnicaServer::with_canonical_daemon(
+        daemon.owner(),
+        workspace.to_string_lossy().into_owned(),
+    ));
+    client
+        .send(json!({
+            "jsonrpc": "2.0", "id": 0, "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-11-25",
+                "capabilities": {"elicitation": {"form": {}}},
+                "clientInfo": {"name": "unica-tests", "version": "1"}
+            }
+        }))
+        .await;
+    assert_eq!(client.receive().await["id"], 0);
+    client
+        .send(json!({"jsonrpc": "2.0", "method": "notifications/initialized"}))
+        .await;
+
+    client
+        .send(json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "unica.run", "arguments": {
+                "op": "push", "args": {"sourceSet": "main"}, "dryRun": false
+            }}
+        }))
+        .await;
+    let submitted = client.receive().await;
+    let task_id = submitted["result"]["structuredContent"]["data"]["task"]["taskId"]
+        .as_str()
+        .unwrap_or_else(|| panic!("a push continues as a Task: {submitted}"))
+        .to_owned();
+
+    // Reading the result asks the question the refusal carries.
+    let read_result = |id: u64| {
+        json!({
+            "jsonrpc": "2.0", "id": id, "method": "tools/call",
+            "params": {"name": "unica.task.result", "arguments": {"taskId": task_id, "waitMs": 7000}}
+        })
+    };
+    let mut asked = Value::Null;
+    for attempt in 0..10 {
+        client.send(read_result(10 + attempt)).await;
+        let message = client.receive().await;
+        if message["method"] == "elicitation/create" {
+            asked = message;
+            break;
+        }
+        assert_eq!(
+            message["result"]["structuredContent"]["data"]["task"]["status"], "working",
+            "{message}"
+        );
+    }
+    assert_eq!(
+        asked["method"], "elicitation/create",
+        "the result read asks"
+    );
+    assert_eq!(
+        asked["params"]["_meta"]["unica/question"]["code"], "source.base_divergence",
+        "{asked}"
+    );
+    assert!(
+        asked["params"]["message"]
+            .as_str()
+            .is_some_and(|text| text.contains("разошлись")),
+        "{asked}"
+    );
+    assert_eq!(calls().len(), 1, "only the refused push ran so far");
+    client
+        .send(json!({
+            "jsonrpc": "2.0", "id": asked["id"],
+            "result": {"action": "accept", "content": {"choice": "overwrite"}}
+        }))
+        .await;
+    let answered = client.receive().await;
+    assert_ne!(answered["result"]["isError"], true, "{answered}");
+    // The chosen push is long too: it continues as a new Task.
+    let forced_task = answered["result"]["structuredContent"]["data"]["task"]["taskId"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the chosen push is a new Task: {answered}"))
+        .to_owned();
+    assert_ne!(forced_task, task_id);
+    let mut forced = Value::Null;
+    for attempt in 0..10 {
+        client
+            .send(json!({
+                "jsonrpc": "2.0", "id": 20 + attempt, "method": "tools/call",
+                "params": {"name": "unica.task.result", "arguments": {"taskId": forced_task, "waitMs": 7000}}
+            }))
+            .await;
+        forced = client.receive().await;
+        if forced["result"]["structuredContent"]["data"]["task"]["status"] != "working" {
+            break;
+        }
+    }
+    assert_eq!(
+        forced["result"]["structuredContent"]["ok"], true,
+        "{forced}"
+    );
+    let calls_after = calls();
+    assert_eq!(calls_after.len(), 2, "{calls_after:?}");
+    assert!(
+        calls_after[1].ends_with("push main --force"),
+        "the chosen answer runs as a new call: {calls_after:?}"
+    );
+
+    // The stored result stays the refusal: get shows the Task as it is.
+    client
+        .send(json!({
+            "jsonrpc": "2.0", "id": 30, "method": "tools/call",
+            "params": {"name": "unica.task.get", "arguments": {"taskId": task_id}}
+        }))
+        .await;
+    let got = client.receive().await;
+    assert_eq!(
+        got["result"]["structuredContent"]["data"]["task"]["status"], "completed",
+        "{got}"
+    );
+
+    // Reading the result again asks again; declining gives the refusal.
+    client.send(read_result(31)).await;
+    let again = client.receive().await;
+    assert_eq!(again["method"], "elicitation/create", "{again}");
+    client
+        .send(json!({"jsonrpc": "2.0", "id": again["id"], "result": {"action": "decline"}}))
+        .await;
+    let declined = client.receive().await;
+    assert_eq!(declined["id"], 31, "{declined}");
+    assert_eq!(declined["result"]["isError"], true, "{declined}");
+    assert_eq!(
+        declined["result"]["structuredContent"]["diagnostics"][0]["code"], "invalid_state",
+        "{declined}"
+    );
+    assert_eq!(calls().len(), 2, "declining runs nothing");
+
+    // A restarted door asks again: the Task keeps its question.
+    client.shutdown().await;
+    let (mut restarted, _) = spawn_unica_server(UnicaServer::with_canonical_daemon(
+        daemon.owner(),
+        workspace.to_string_lossy().into_owned(),
+    ));
+    restarted
+        .send(json!({
+            "jsonrpc": "2.0", "id": 0, "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-11-25",
+                "capabilities": {"elicitation": {"form": {}}},
+                "clientInfo": {"name": "unica-tests", "version": "1"}
+            }
+        }))
+        .await;
+    assert_eq!(restarted.receive().await["id"], 0);
+    restarted
+        .send(json!({"jsonrpc": "2.0", "method": "notifications/initialized"}))
+        .await;
+    restarted.send(read_result(40)).await;
+    let after_restart = restarted.receive().await;
+    assert_eq!(
+        after_restart["method"], "elicitation/create",
+        "{after_restart}"
+    );
+    restarted
+        .send(json!({"jsonrpc": "2.0", "id": after_restart["id"], "result": {"action": "cancel"}}))
+        .await;
+    assert_eq!(restarted.receive().await["id"], 40);
+    assert_eq!(calls().len(), 2);
+
+    restarted.shutdown().await;
+    daemon.finish();
+}
+
+/// The workspace of a diverged base: its runner refuses a plain `push` with
+/// `untracked_base` and loads the set on `push --force`.
+fn diverged_base_workspace(root: &std::path::Path) -> std::path::PathBuf {
+    let workspace = diverged_base_of_another_copy(root);
+    // Without the runner's warning: the infobase is this copy's own.
+    let force = workspace.join("probe-force.json");
+    let mut envelope: Value = serde_json::from_slice(&std::fs::read(&force).unwrap()).unwrap();
+    envelope["warnings"] = json!([]);
+    std::fs::write(&force, envelope.to_string()).unwrap();
+    workspace
+}
+
+/// [`diverged_base_workspace`] whose file infobase another working copy
+/// holds: the forced push is warned about it, as the captured envelope is.
+fn diverged_base_of_another_copy(root: &std::path::Path) -> std::path::PathBuf {
+    crate::infrastructure::daemon::server::actor_capacity_tests::install_runner_probe(
+        root,
+        DIVERGED_BASE_RUNNER,
+    );
+    let workspace = root.join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    std::fs::write(
+        workspace.join("v8project.yaml"),
+        "format: DESIGNER\ninfobase:\n  connection: 'File=build/ib'\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: main\n",
+    )
+    .unwrap();
+    let fixtures = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    std::fs::copy(
+        fixtures.join("v8_runner_017/push-untracked-base-preview.json"),
+        workspace.join("probe-untracked.json"),
+    )
+    .unwrap();
+    std::fs::copy(
+        fixtures.join("v8_runner_015/push-other-copy-force-apply.json"),
+        workspace.join("probe-force.json"),
+    )
+    .unwrap();
+    std::fs::canonicalize(workspace).unwrap()
+}
+
+fn runner_calls(workspace: &std::path::Path) -> Vec<String> {
+    std::fs::read_to_string(workspace.join("probe-calls.log"))
+        .unwrap_or_default()
+        .lines()
+        .map(str::to_owned)
+        .collect()
+}
+
+/// The writing calls of the probe runner: an executed write over a file
+/// infobase first checks the runner's preview for the infobase of another
+/// copy, and these previews are left out.
+fn runner_writes(workspace: &std::path::Path) -> Vec<String> {
+    runner_calls(workspace)
+        .into_iter()
+        .filter(|call| !call.ends_with("--dry-run"))
+        .collect()
+}
+
+/// Polls `tasks/get` of `task_id` until the Task is no longer working.
+async fn settled_task(client: &mut McpClient, task_id: &str, from: u64) -> Value {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut id = from;
+    loop {
+        client
+            .send(json!({
+                "jsonrpc": "2.0", "id": id, "method": "tasks/get",
+                "params": {"taskId": task_id, "_meta": modern_tasks_meta()}
+            }))
+            .await;
+        let task = client.receive().await;
+        if task["result"]["status"] != "working" {
+            return task;
+        }
+        assert!(Instant::now() < deadline, "the Task never settled: {task}");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        id += 1;
+    }
+}
+
+/// A client with Tasks reads the `push` Task with `tasks/get`: the refused
+/// Task shows its question as `input_required`, and the answer comes with
+/// `tasks/update`. The chosen call runs as a new Task, which the same Task
+/// shows after. A restarted door asks again; input to a Task that asks
+/// nothing is not accepted.
+/// rule: INV.MCP.HUMAN-CHOICE
+/// rule: CTR.WIRE.NATIVE-TASK-PROJECTION
+/// rule: INV.RUNTIME.RUNNER-BASE-REFUSALS
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_native_push_task_asks_about_the_diverged_base_as_input_required() {
+    use crate::infrastructure::daemon::server::actor_capacity_tests::canonical_v13_service;
+
+    let root = tempfile::tempdir().unwrap();
+    let workspace = diverged_base_workspace(root.path());
+    let daemon = LiveDaemon::start(canonical_v13_service());
+    let server = || {
+        spawn_unica_server(UnicaServer::with_canonical_daemon(
+            daemon.owner(),
+            workspace.to_string_lossy().into_owned(),
+        ))
+        .0
+    };
+    let mut client = server();
+    client
+        .send(json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {
+                "name": "unica.run",
+                "arguments": {"op": "push", "args": {"sourceSet": "main"}, "dryRun": false},
+                "_meta": modern_tasks_meta()
+            }
+        }))
+        .await;
+    let created = client.receive().await;
+    assert_eq!(created["result"]["resultType"], "task", "{created}");
+    let task_id = created["result"]["taskId"].as_str().unwrap().to_owned();
+
+    let asking = settled_task(&mut client, &task_id, 10).await;
+    assert_eq!(asking["result"]["status"], "input_required", "{asking}");
+    assert_eq!(asking["result"]["taskId"], task_id.as_str());
+    let question = &asking["result"]["inputRequests"]["unica.choice"];
+    assert_eq!(question["method"], "elicitation/create", "{asking}");
+    assert_eq!(
+        question["params"]["_meta"]["unica/question"]["code"], "source.base_divergence",
+        "{asking}"
+    );
+    assert_eq!(runner_writes(&workspace).len(), 1);
+
+    // A restarted door asks the same question again.
+    client.shutdown().await;
+    let mut client = server();
+    let again = settled_task(&mut client, &task_id, 100).await;
+    assert_eq!(again["result"]["status"], "input_required", "{again}");
+
+    let answer = json!({
+        "jsonrpc": "2.0", "id": 200, "method": "tasks/update",
+        "params": {
+            "taskId": task_id,
+            "inputResponses": {"unica.choice": {"action": "accept", "content": {"choice": "overwrite"}}},
+            "_meta": modern_tasks_meta()
+        }
+    });
+    client.send(answer.clone()).await;
+    let updated = client.receive().await;
+    assert!(updated.get("error").is_none(), "{updated}");
+
+    let done = settled_task(&mut client, &task_id, 300).await;
+    assert_eq!(done["result"]["status"], "completed", "{done}");
+    assert_eq!(done["result"]["taskId"], task_id.as_str(), "{done}");
+    assert_eq!(
+        done["result"]["result"]["structuredContent"]["ok"], true,
+        "{done}"
+    );
+    let calls = runner_writes(&workspace);
+    assert_eq!(calls.len(), 2, "{calls:?}");
+    assert!(calls[1].ends_with("push main --force"), "{calls:?}");
+
+    // The Task asks nothing now: other input is refused.
+    let mut again = answer;
+    again["id"] = json!(400);
+    client.send(again).await;
+    let refused = client.receive().await;
+    assert_eq!(
+        refused["error"]["data"]["code"], "task_input_not_supported",
+        "{refused}"
+    );
+    assert_eq!(runner_writes(&workspace).len(), 2);
+
+    client.shutdown().await;
+    daemon.finish();
+}
+
+/// The pinned runner of a workspace whose infobase is held by sessions. The
+/// mode file says how: `cluster` — sessions the runner can end, `file` —
+/// sessions of a file infobase, `restart` — ending them does not help until
+/// the own standalone server restarts, `free` — nothing holds the base.
+/// Every call is logged.
+const BUSY_BASE_RUNNER: &str = r##"
+use std::{env, fs, io::Write};
+fn main() {
+    let args: Vec<String> = env::args().collect();
+    let cwd = env::current_dir().unwrap();
+    let mut log = fs::OpenOptions::new().create(true).append(true).open(cwd.join("probe-calls.log")).unwrap();
+    writeln!(log, "{}", args[1..].join(" ")).unwrap();
+    let mode = fs::read_to_string(cwd.join("probe-mode")).unwrap_or_default();
+    let mode = mode.trim();
+    if args.iter().any(|arg| arg == "standalone") {
+        fs::write(cwd.join("restarted.marker"), "").unwrap();
+        print!(r#"{{"ok":true,"command":"standalone restart","duration_ms":0,"data":{{}},"warnings":[],"steps":[]}}"#);
+        return;
+    }
+    let forced = args.windows(2).any(|pair| pair[0] == "--sessions" && pair[1] == "force");
+    let answer = match mode {
+        "free" => "probe-loaded.json",
+        "cluster" if forced => "probe-loaded-forced.json",
+        "restart" if forced && cwd.join("restarted.marker").exists() => "probe-loaded.json",
+        "restart" if forced => "probe-restart.json",
+        "file" => "probe-file-sessions.json",
+        _ => "probe-sessions.json",
+    };
+    print!("{}", fs::read_to_string(cwd.join(answer)).unwrap());
+    if !answer.starts_with("probe-loaded") {
+        std::process::exit(3);
+    }
+}
+"##;
+
+/// A workspace whose base is busy: the runner of [`BUSY_BASE_RUNNER`] and its
+/// answers, built on the captured refusal of a `push`.
+fn busy_base_workspace(root: &std::path::Path, mode: &str) -> std::path::PathBuf {
+    crate::infrastructure::daemon::server::actor_capacity_tests::install_runner_probe(
+        root,
+        BUSY_BASE_RUNNER,
+    );
+    let workspace = root.join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    std::fs::write(
+        workspace.join("v8project.yaml"),
+        "format: DESIGNER\ninfobase:\n  connection: 'File=build/ib'\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: main\n",
+    )
+    .unwrap();
+    std::fs::write(workspace.join("probe-mode"), mode).unwrap();
+    let fixtures = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    let refused: Value = serde_json::from_slice(
+        &std::fs::read(fixtures.join("v8_runner_017/push-untracked-base-preview.json")).unwrap(),
+    )
+    .unwrap();
+    let session = |computer: &str| {
+        json!({"computer": computer, "application": "1CV8C", "application_title": "Тонкий клиент",
+               "started": "2026-11-12T09:05:41", "user": null, "id": "1"})
+    };
+    let with_error = |error: Value| {
+        let mut envelope = refused.clone();
+        envelope["error"] = error;
+        envelope.to_string()
+    };
+    let sessions = |terminable: bool| {
+        json!({
+            "code": "infobase_sessions", "kind": "infobase_sessions",
+            "message": "the database configuration was not updated: other sessions hold the infobase",
+            "sessions": {
+                "base": "Srvr=srv;Ref=dev", "list": [session("PC1"), session("PC2")],
+                "from_this_machine": false, "terminable": terminable,
+                "lock": {"denied": false}, "evidence": "executor", "executor_error": null
+            },
+            "next": {"command": "push", "keys": {"--sessions": "force"}}
+        })
+    };
+    std::fs::write(
+        workspace.join("probe-sessions.json"),
+        with_error(sessions(true)),
+    )
+    .unwrap();
+    std::fs::write(
+        workspace.join("probe-file-sessions.json"),
+        with_error(sessions(false)),
+    )
+    .unwrap();
+    std::fs::write(
+        workspace.join("probe-restart.json"),
+        with_error(json!({
+            "code": "platform_failure", "kind": "platform_failure",
+            "message": "the sessions were ended, but the update failed again",
+            "next": {"command": "standalone restart"}
+        })),
+    )
+    .unwrap();
+    std::fs::copy(
+        fixtures.join("v8_runner_015/push-after-edit-apply.json"),
+        workspace.join("probe-loaded.json"),
+    )
+    .unwrap();
+    let mut forced: Value = serde_json::from_slice(
+        &std::fs::read(fixtures.join("v8_runner_015/push-after-edit-apply.json")).unwrap(),
+    )
+    .unwrap();
+    forced["data"]["sessions"] = json!({
+        "terminated": [session("PC1"), session("PC2")],
+        "lock": {"denied": false}, "message_delivered": false
+    });
+    std::fs::write(
+        workspace.join("probe-loaded-forced.json"),
+        forced.to_string(),
+    )
+    .unwrap();
+    std::fs::canonicalize(workspace).unwrap()
+}
+
+/// Reads the result of `task_id` until it is no longer working; a question
+/// comes as an `elicitation/create` request.
+async fn read_task_result(client: &mut McpClient, task_id: &str, from: u64) -> Value {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut id = from;
+    loop {
+        client
+            .send(json!({
+                "jsonrpc": "2.0", "id": id, "method": "tools/call",
+                "params": {"name": "unica.task.result", "arguments": {"taskId": task_id, "waitMs": 7000}}
+            }))
+            .await;
+        let message = client.receive().await;
+        if message["method"] == "elicitation/create"
+            || message["result"]["structuredContent"]["data"]["task"]["status"] != "working"
+        {
+            return message;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the Task never settled: {message}"
+        );
+        id += 1;
+    }
+}
+
+async fn forms_client(daemon: &LiveDaemon, workspace: &std::path::Path) -> McpClient {
+    let (mut client, _) = spawn_unica_server(UnicaServer::with_canonical_daemon(
+        daemon.owner(),
+        workspace.to_string_lossy().into_owned(),
+    ));
+    client
+        .send(json!({
+            "jsonrpc": "2.0", "id": 0, "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-11-25",
+                "capabilities": {"elicitation": {"form": {}}},
+                "clientInfo": {"name": "unica-tests", "version": "1"}
+            }
+        }))
+        .await;
+    assert_eq!(client.receive().await["id"], 0);
+    client
+        .send(json!({"jsonrpc": "2.0", "method": "notifications/initialized"}))
+        .await;
+    client
+}
+
+/// Pushes `main` and answers the first question its Task asks with `choice`.
+/// Returns the question and the final result of the chosen call.
+async fn push_and_answer(client: &mut McpClient, choice: &str) -> (Value, Value) {
+    client
+        .send(json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "unica.run", "arguments": {
+                "op": "push", "args": {"sourceSet": "main"}, "dryRun": false
+            }}
+        }))
+        .await;
+    let submitted = client.receive().await;
+    let task_id = submitted["result"]["structuredContent"]["data"]["task"]["taskId"]
+        .as_str()
+        .unwrap_or_else(|| panic!("a push continues as a Task: {submitted}"))
+        .to_owned();
+    let asked = read_task_result(client, &task_id, 10).await;
+    assert_eq!(asked["method"], "elicitation/create", "{asked}");
+    client
+        .send(json!({
+            "jsonrpc": "2.0", "id": asked["id"],
+            "result": {"action": "accept", "content": {"choice": choice}}
+        }))
+        .await;
+    let answered = client.receive().await;
+    let follower = answered["result"]["structuredContent"]["data"]["task"]["taskId"]
+        .as_str()
+        .map(str::to_owned);
+    let done = match follower {
+        Some(follower) => read_task_result(client, &follower, 100).await,
+        None => answered,
+    };
+    (asked, done)
+}
+
+/// A `push` the runner refuses because sessions hold the infobase asks the
+/// person when its Task's result is read. «End the sessions and continue»
+/// repeats the same call with the sessions ended by the runner.
+/// rule: INV.RUNTIME.INFOBASE-SESSIONS-QUESTION
+/// rule: INV.MCP.HUMAN-CHOICE
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_push_held_by_sessions_ends_them_by_the_persons_choice() {
+    use crate::infrastructure::daemon::server::actor_capacity_tests::canonical_v13_service;
+
+    let root = tempfile::tempdir().unwrap();
+    let workspace = busy_base_workspace(root.path(), "cluster");
+    let daemon = LiveDaemon::start(canonical_v13_service());
+    let mut client = forms_client(&daemon, &workspace).await;
+
+    let (asked, done) = push_and_answer(&mut client, "terminate").await;
+    let question = &asked["params"]["_meta"]["unica/question"];
+    assert_eq!(question["code"], "infobase.sessions_active", "{asked}");
+    let message = asked["params"]["message"].as_str().unwrap();
+    assert!(
+        message.starts_with(
+            "Базу «origin» держат открытые сеансы: 2.\nPC1 — Тонкий клиент, с 2026-11-12 09:05"
+        ),
+        "{message}"
+    );
+    assert!(
+        message.contains(
+            "Завершить сеансы и продолжить: несохранённые данные в этих сеансах пропадут."
+        ),
+        "{message}"
+    );
+    assert!(!message.contains("повторить:"), "{message}");
+    assert_eq!(done["result"]["structuredContent"]["ok"], true, "{done}");
+    // The answer names the sessions the runner ended.
+    let terminated = &done["result"]["structuredContent"]["data"]["sessionsTerminated"];
+    assert_eq!(terminated[0]["computer"], "PC1", "{done}");
+    assert_eq!(terminated.as_array().map(Vec::len), Some(2), "{done}");
+    let calls = runner_writes(&workspace);
+    assert_eq!(calls.len(), 2, "{calls:?}");
+    assert!(!calls[0].contains("--sessions"), "{calls:?}");
+    assert!(
+        calls[1].ends_with("push main --sessions force"),
+        "{calls:?}"
+    );
+
+    client.shutdown().await;
+    daemon.finish();
+}
+
+/// Sessions of a file infobase cannot be ended from here: the person closes
+/// them, and the answer repeats the call as it was.
+/// rule: INV.RUNTIME.INFOBASE-SESSIONS-QUESTION
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_push_held_by_file_sessions_is_repeated_after_the_person_closed_them() {
+    use crate::infrastructure::daemon::server::actor_capacity_tests::canonical_v13_service;
+
+    let root = tempfile::tempdir().unwrap();
+    let workspace = busy_base_workspace(root.path(), "file");
+    let daemon = LiveDaemon::start(canonical_v13_service());
+    let mut client = forms_client(&daemon, &workspace).await;
+
+    client
+        .send(json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "unica.run", "arguments": {
+                "op": "push", "args": {"sourceSet": "main"}, "dryRun": false
+            }}
+        }))
+        .await;
+    let submitted = client.receive().await;
+    let task_id = submitted["result"]["structuredContent"]["data"]["task"]["taskId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let asked = read_task_result(&mut client, &task_id, 10).await;
+    assert_eq!(
+        asked["params"]["_meta"]["unica/question"]["code"], "infobase.sessions_active",
+        "{asked}"
+    );
+    let message = asked["params"]["message"].as_str().unwrap();
+    assert!(
+        message.starts_with("Базу «origin» держат открытые сеансы: 2. Завершить их отсюда нельзя."),
+        "{message}"
+    );
+    let offered: Vec<_> = asked["params"]["_meta"]["unica/question"]["options"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|option| option["value"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(offered, ["retry", "cancel"], "{asked}");
+
+    // The person closed the sessions.
+    std::fs::write(workspace.join("probe-mode"), "free").unwrap();
+    client
+        .send(json!({
+            "jsonrpc": "2.0", "id": asked["id"],
+            "result": {"action": "accept", "content": {"choice": "retry"}}
+        }))
+        .await;
+    let answered = client.receive().await;
+    let follower = answered["result"]["structuredContent"]["data"]["task"]["taskId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let done = read_task_result(&mut client, &follower, 100).await;
+    assert_eq!(done["result"]["structuredContent"]["ok"], true, "{done}");
+    let calls = runner_writes(&workspace);
+    assert_eq!(calls.len(), 2, "{calls:?}");
+    assert!(
+        calls.iter().all(|call| !call.contains("--sessions")),
+        "{calls:?}"
+    );
+
+    client.shutdown().await;
+    daemon.finish();
+}
+
+/// Ending the sessions does not help while the own standalone server is not
+/// restarted: the refusal asks to restart it, and the answer restarts the
+/// server and repeats the same call with the sessions ended.
+/// rule: INV.RUNTIME.INFOBASE-SESSIONS-QUESTION
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failed_retry_after_ending_sessions_restarts_the_server_by_the_persons_choice() {
+    use crate::infrastructure::daemon::server::actor_capacity_tests::canonical_v13_service;
+
+    let root = tempfile::tempdir().unwrap();
+    let workspace = busy_base_workspace(root.path(), "restart");
+    let daemon = LiveDaemon::start(canonical_v13_service());
+    let mut client = forms_client(&daemon, &workspace).await;
+
+    let (_, after_terminate) = push_and_answer(&mut client, "terminate").await;
+    // The forced push fails again: its Task asks to restart the server.
+    assert_eq!(
+        after_terminate["method"], "elicitation/create",
+        "{after_terminate}"
+    );
+    assert_eq!(
+        after_terminate["params"]["_meta"]["unica/question"]["code"], "infobase.server_restart",
+        "{after_terminate}"
+    );
+    assert!(after_terminate["params"]["message"]
+        .as_str()
+        .unwrap()
+        .starts_with("Обновление базы «origin» не прошло после завершения сеансов. Обычно помогает перезапуск сервера."));
+    client
+        .send(json!({
+            "jsonrpc": "2.0", "id": after_terminate["id"],
+            "result": {"action": "accept", "content": {"choice": "restart"}}
+        }))
+        .await;
+    let answered = client.receive().await;
+    let follower = answered["result"]["structuredContent"]["data"]["task"]["taskId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let done = read_task_result(&mut client, &follower, 200).await;
+    assert_eq!(done["result"]["structuredContent"]["ok"], true, "{done}");
+    let calls = runner_writes(&workspace);
+    assert_eq!(calls.len(), 4, "{calls:?}");
+    assert!(calls[2].ends_with("standalone restart"), "{calls:?}");
+    assert!(
+        calls[3].ends_with("push main --sessions force"),
+        "{calls:?}"
+    );
+
+    client.shutdown().await;
+    daemon.finish();
+}
+
+/// The pinned runner of a workspace whose file infobase already exists:
+/// `infobase create` refuses it, `--recreate` plans and recreates it. Every
+/// call is logged.
+const EXISTING_BASE_RUNNER: &str = r##"
+use std::{env, fs, io::Write};
+fn main() {
+    let args: Vec<String> = env::args().collect();
+    let cwd = env::current_dir().unwrap();
+    let mut log = fs::OpenOptions::new().create(true).append(true).open(cwd.join("probe-calls.log")).unwrap();
+    writeln!(log, "{}", args[1..].join(" ")).unwrap();
+    let recreate = args.iter().any(|arg| arg == "--recreate");
+    let preview = args.iter().any(|arg| arg == "--dry-run");
+    let answer = match (recreate, preview) {
+        (true, true) => "probe-recreate-preview.json",
+        (true, false) => "probe-recreate-apply.json",
+        _ => "probe-exists.json",
+    };
+    print!("{}", fs::read_to_string(cwd.join(answer)).unwrap());
+    if answer == "probe-exists.json" {
+        std::process::exit(2);
+    }
+}
+"##;
+
+/// A workspace whose file infobase exists: the runner of
+/// [`EXISTING_BASE_RUNNER`] and its answers, built on the captured envelopes of
+/// runner 0.15.
+fn existing_base_workspace(root: &std::path::Path) -> std::path::PathBuf {
+    crate::infrastructure::daemon::server::actor_capacity_tests::install_runner_probe(
+        root,
+        EXISTING_BASE_RUNNER,
+    );
+    let workspace = root.join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    std::fs::write(
+        workspace.join("v8project.yaml"),
+        "format: DESIGNER\ninfobase:\n  connection: 'File=build/ib'\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: main\n",
+    )
+    .unwrap();
+    let fixtures =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/v8_runner_015");
+    let captured = |name: &str| -> Value {
+        serde_json::from_slice(&std::fs::read(fixtures.join(name)).unwrap()).unwrap()
+    };
+    let recreating = |name: &str, status: &str| {
+        let mut envelope = captured(name);
+        envelope["data"]["steps"].as_array_mut().unwrap().insert(
+            0,
+            json!({"target": "infobase", "action": "recreate", "status": status,
+                   "message": "the base is this working copy's own", "duration_ms": 0}),
+        );
+        envelope.to_string()
+    };
+    std::fs::write(
+        workspace.join("probe-exists.json"),
+        captured("infobase-create-receipt-preview.json").to_string(),
+    )
+    .unwrap();
+    std::fs::write(
+        workspace.join("probe-recreate-preview.json"),
+        recreating("infobase-create-preview.json", "planned"),
+    )
+    .unwrap();
+    std::fs::write(
+        workspace.join("probe-recreate-apply.json"),
+        recreating("infobase-create-apply.json", "ok"),
+    )
+    .unwrap();
+    std::fs::canonicalize(workspace).unwrap()
+}
+
+/// `infobase.create` over an existing file infobase asks the person when its
+/// Task's result is read; «Пересоздать базу» repeats the same call, and the
+/// runner recreates the base.
+/// rule: INV.WIRE.INFOBASE-CREATE-RECREATES-BY-CHOICE
+/// rule: INV.MCP.HUMAN-CHOICE
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_existing_infobase_is_recreated_by_the_persons_choice() {
+    use crate::infrastructure::daemon::server::actor_capacity_tests::canonical_v13_service;
+
+    let root = tempfile::tempdir().unwrap();
+    let workspace = existing_base_workspace(root.path());
+    let daemon = LiveDaemon::start(canonical_v13_service());
+    let mut client = forms_client(&daemon, &workspace).await;
+
+    client
+        .send(json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "unica.run", "arguments": {
+                "op": "infobase.create", "args": {}, "dryRun": false
+            }}
+        }))
+        .await;
+    let submitted = client.receive().await;
+    let task_id = submitted["result"]["structuredContent"]["data"]["task"]["taskId"]
+        .as_str()
+        .unwrap_or_else(|| panic!("infobase.create continues as a Task: {submitted}"))
+        .to_owned();
+    let asked = read_task_result(&mut client, &task_id, 10).await;
+    assert_eq!(asked["method"], "elicitation/create", "{asked}");
+    let question = &asked["params"]["_meta"]["unica/question"];
+    assert_eq!(question["code"], "infobase.exists", "{asked}");
+    let message = asked["params"]["message"].as_str().unwrap();
+    assert!(
+        message.starts_with("База «origin» уже существует."),
+        "{message}"
+    );
+    assert!(
+        message.contains("Пересоздать базу: данные и конфигурация базы пропадут"),
+        "{message}"
+    );
+    client
+        .send(json!({
+            "jsonrpc": "2.0", "id": asked["id"],
+            "result": {"action": "accept", "content": {"choice": "recreate"}}
+        }))
+        .await;
+    let answered = client.receive().await;
+    let done = match answered["result"]["structuredContent"]["data"]["task"]["taskId"].as_str() {
+        Some(follower) => read_task_result(&mut client, follower, 100).await,
+        None => answered,
+    };
+    assert_eq!(done["result"]["structuredContent"]["ok"], true, "{done}");
+    assert_eq!(
+        done["result"]["structuredContent"]["data"]["state"], "recreated",
+        "{done}"
+    );
+    let calls = runner_calls(&workspace);
+    assert_eq!(calls.len(), 4, "{calls:?}");
+    assert!(calls[0].ends_with("infobase create --dry-run"), "{calls:?}");
+    assert!(
+        calls[1].ends_with("infobase create --recreate --dry-run"),
+        "{calls:?}"
+    );
+    assert!(
+        calls[2].ends_with("infobase create --recreate"),
+        "{calls:?}"
+    );
+    assert!(calls[3].ends_with("infobase create --dry-run"), "{calls:?}");
+
+    client.shutdown().await;
+    daemon.finish();
+}
+
+/// A write into the file infobase of another working copy runs only by the
+/// person's choice: the runner's preview warns about that infobase, and the
+/// Task asks when its result is read. Answers add up: after «Перезаписать
+/// базу» the same push asks about the other copy, and «Продолжить с этой
+/// базой» runs it.
+/// rule: INV.RUNTIME.RUNNER-BASE-REFUSALS
+/// rule: INV.MCP.HUMAN-CHOICE
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_push_into_another_copys_base_runs_by_the_persons_choice() {
+    use crate::infrastructure::daemon::server::actor_capacity_tests::canonical_v13_service;
+
+    let root = tempfile::tempdir().unwrap();
+    let workspace = diverged_base_of_another_copy(root.path());
+    let daemon = LiveDaemon::start(canonical_v13_service());
+    let mut client = forms_client(&daemon, &workspace).await;
+
+    let (diverged, asked) = push_and_answer(&mut client, "overwrite").await;
+    assert_eq!(
+        diverged["params"]["_meta"]["unica/question"]["code"], "source.base_divergence",
+        "{diverged}"
+    );
+    assert_eq!(asked["method"], "elicitation/create", "{asked}");
+    assert_eq!(
+        asked["params"]["_meta"]["unica/question"]["code"], "infobase.another_copy",
+        "{asked}"
+    );
+    assert_eq!(
+        asked["params"]["message"],
+        "Базу «origin» изменяла другая рабочая копия проекта.\n\nПродолжить с этой базой: правки другой копии могут быть перезаписаны.
+Создать свою базу: эта копия получит новую базу из своих исходников; база другой копии не изменится."
+    );
+    assert_eq!(runner_writes(&workspace).len(), 1, "nothing written yet");
+
+    client
+        .send(json!({
+            "jsonrpc": "2.0", "id": asked["id"],
+            "result": {"action": "accept", "content": {"choice": "continue"}}
+        }))
+        .await;
+    let answered = client.receive().await;
+    let done = match answered["result"]["structuredContent"]["data"]["task"]["taskId"].as_str() {
+        Some(follower) => read_task_result(&mut client, follower, 300).await,
+        None => answered,
+    };
+    assert_eq!(done["result"]["structuredContent"]["ok"], true, "{done}");
+    let writes = runner_writes(&workspace);
+    assert_eq!(writes.len(), 2, "{writes:?}");
+    assert!(writes[1].ends_with("push main --force"), "{writes:?}");
+
+    client.shutdown().await;
+    daemon.finish();
+}
+
+/// The pinned runner of a workspace whose file infobase another working copy
+/// holds, and which declares and creates an infobase of its own. Every call is
+/// logged.
+const ANOTHER_COPY_RUNNER: &str = r##"
+use std::{env, fs, io::Write};
+fn main() {
+    let args: Vec<String> = env::args().collect();
+    let cwd = env::current_dir().unwrap();
+    let mut log = fs::OpenOptions::new().create(true).append(true).open(cwd.join("probe-calls.log")).unwrap();
+    writeln!(log, "{}", args[1..].join(" ")).unwrap();
+    let has = |key: &str| args.iter().any(|arg| arg == key);
+    let answer = if has("init") {
+        "probe-init.json"
+    } else if has("create") && has("--dry-run") && cwd.join("created.marker").exists() {
+        print!("{}", fs::read_to_string(cwd.join("probe-create-receipt.json")).unwrap());
+        std::process::exit(2);
+    } else if has("create") && has("--dry-run") {
+        "probe-create-preview.json"
+    } else if has("create") {
+        fs::write(cwd.join("created.marker"), "").unwrap();
+        "probe-create-apply.json"
+    } else if has("push") && has("--dry-run") {
+        "probe-push-preview.json"
+    } else {
+        std::process::exit(9);
+    };
+    print!("{}", fs::read_to_string(cwd.join(answer)).unwrap());
+}
+"##;
+
+fn another_copy_workspace(root: &std::path::Path) -> std::path::PathBuf {
+    crate::infrastructure::daemon::server::actor_capacity_tests::install_runner_probe(
+        root,
+        ANOTHER_COPY_RUNNER,
+    );
+    let workspace = root.join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    std::fs::write(
+        workspace.join("v8project.yaml"),
+        "format: DESIGNER\ninfobase:\n  connection: 'File=../other/ib'\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: main\n",
+    )
+    .unwrap();
+    let fixtures =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/v8_runner_015");
+    for (from, to) in [
+        (
+            "push-other-copy-force-preview.json",
+            "probe-push-preview.json",
+        ),
+        ("infobase-create-preview.json", "probe-create-preview.json"),
+        ("infobase-create-apply.json", "probe-create-apply.json"),
+        (
+            "infobase-create-receipt-preview.json",
+            "probe-create-receipt.json",
+        ),
+    ] {
+        std::fs::copy(fixtures.join(from), workspace.join(to)).unwrap();
+    }
+    std::fs::write(
+        workspace.join("probe-init.json"),
+        json!({"ok": true, "command": "init", "data": {"kind": "local",
+            "origin": {"change": "redirected", "connection": "File=.local/db"}}})
+        .to_string(),
+    )
+    .unwrap();
+    std::fs::canonicalize(workspace).unwrap()
+}
+
+/// «Создать свою базу» answers the question about the infobase of another
+/// copy: the runner declares this copy's own infobase and it is created; the
+/// push itself is not repeated, and the infobase of the other copy is not
+/// written.
+/// rule: INV.RUNTIME.RUNNER-BASE-REFUSALS
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_person_gives_this_copy_an_infobase_of_its_own() {
+    use crate::infrastructure::daemon::server::actor_capacity_tests::canonical_v13_service;
+
+    let root = tempfile::tempdir().unwrap();
+    let workspace = another_copy_workspace(root.path());
+    let daemon = LiveDaemon::start(canonical_v13_service());
+    let mut client = forms_client(&daemon, &workspace).await;
+
+    let (asked, done) = push_and_answer(&mut client, "own_base").await;
+    assert_eq!(
+        asked["params"]["_meta"]["unica/question"]["code"], "infobase.another_copy",
+        "{asked}"
+    );
+    let message = asked["params"]["message"].as_str().unwrap();
+    assert!(
+        message.contains("Создать свою базу: эта копия получит новую базу из своих исходников; база другой копии не изменится"),
+        "{message}"
+    );
+    let structured = &done["result"]["structuredContent"];
+    assert_eq!(structured["ok"], true, "{done}");
+    assert_eq!(structured["data"]["ownInfobaseDeclared"], true, "{done}");
+    let calls = runner_calls(&workspace);
+    assert!(calls[0].ends_with("push main --dry-run"), "{calls:?}");
+    assert!(
+        calls[1].ends_with("--infobase File=.local/db") && calls[1].contains("init --output"),
+        "{calls:?}"
+    );
+    assert!(
+        calls[2..]
+            .iter()
+            .all(|call| call.contains("infobase create")),
+        "{calls:?}"
+    );
+    assert!(
+        !calls.iter().any(|call| call.ends_with("push main")),
+        "{calls:?}"
+    );
+
+    client.shutdown().await;
+    daemon.finish();
 }

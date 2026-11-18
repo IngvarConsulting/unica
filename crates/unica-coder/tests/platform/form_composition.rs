@@ -479,47 +479,85 @@ fn create_external_owner(
     root_type: &str,
     object_name: &str,
 ) -> PathBuf {
-    // Корень внешнего объекта пишет тот же эмиттер дескриптора, которым
-    // пользовался снятый `epf.init`/`erf.init`: тестам нужен владелец формы.
-    let kind = match root_type {
-        "ExternalDataProcessor" => {
-            unica_metadata_designer::external::ExternalArtifactKind::from_operation("epf-init")
-        }
-        "ExternalReport" => {
-            unica_metadata_designer::external::ExternalArtifactKind::from_operation("erf-init")
-        }
-        other => panic!("unsupported external fixture root: {other}"),
-    }
-    .expect("external artifact kind");
-    let args = Map::from_iter([
-        ("Name".to_string(), json!(object_name)),
-        ("OutputDir".to_string(), json!("external")),
-    ]);
-    let plan = unica_metadata_designer::external::plan_scaffold(
-        kind,
-        &args,
-        &context.cwd,
-        &unica_workspace::discovery::ProjectDiscoveryReader::new(&context.workspace_root),
-    )
-    .expect("external scaffold plan");
-    let descriptor = unica_metadata_designer::external::descriptor_xml(
-        &plan,
-        crate::infrastructure::source_ids::fresh_uuid,
-    );
-    std::fs::create_dir_all(plan.object_dir.join("Ext")).unwrap();
+    let output_dir = context.cwd.join("external");
+    let object_dir = output_dir.join(object_name);
+    let descriptor_path = output_dir.join(format!("{object_name}.xml"));
+    let descriptor = external_owner_descriptor_xml(root_type, object_name);
+    std::fs::create_dir_all(object_dir.join("Ext")).unwrap();
     std::fs::write(
-        &plan.descriptor,
+        &descriptor_path,
         unica_xml_format::text::utf8_bom_bytes(&descriptor),
     )
     .unwrap();
     std::fs::write(
-        plan.object_dir.join("Ext/ObjectModule.bsl"),
+        object_dir.join("Ext/ObjectModule.bsl"),
         unica_xml_format::text::utf8_bom_bytes(
             "#Область ПрограммныйИнтерфейс\r\n\r\n#КонецОбласти\r\n",
         ),
     )
     .unwrap();
-    plan.descriptor
+    descriptor_path
+}
+
+fn external_owner_descriptor_xml(root_tag: &str, object_name: &str) -> String {
+    let (class_id, object_type, report_properties) = match root_tag {
+        "ExternalDataProcessor" => (
+            "c3831ec8-d8d5-4f93-8a22-f9bfae07327f",
+            "ExternalDataProcessorObject",
+            "",
+        ),
+        "ExternalReport" => (
+            "e41aff26-25cf-4bb6-b6c1-3f478a75f374",
+            "ExternalReportObject",
+            concat!(
+                "\n\t\t\t<MainDataCompositionSchema/>",
+                "\n\t\t\t<DefaultSettingsForm/>",
+                "\n\t\t\t<AuxiliarySettingsForm/>",
+                "\n\t\t\t<DefaultVariantForm/>",
+                "\n\t\t\t<VariantsStorage/>",
+                "\n\t\t\t<SettingsStorage/>"
+            ),
+        ),
+        other => panic!("unsupported external fixture root: {other}"),
+    };
+    let fresh_uuid = crate::infrastructure::source_ids::fresh_uuid;
+    let root_uuid = fresh_uuid();
+    let object_id = fresh_uuid();
+    let type_id = fresh_uuid();
+    let value_id = fresh_uuid();
+    let format_version = unica_source_designer::format_profile::ACTIVE_FORMAT_PROFILE.export_format;
+
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:app="http://v8.1c.ru/8.2/managed-application/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:cmi="http://v8.1c.ru/8.2/managed-application/cmi" xmlns:ent="http://v8.1c.ru/8.1/data/enterprise" xmlns:lf="http://v8.1c.ru/8.2/managed-application/logform" xmlns:style="http://v8.1c.ru/8.1/data/ui/style" xmlns:sys="http://v8.1c.ru/8.1/data/ui/fonts/system" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:v8ui="http://v8.1c.ru/8.1/data/ui" xmlns:web="http://v8.1c.ru/8.1/data/ui/colors/web" xmlns:win="http://v8.1c.ru/8.1/data/ui/colors/windows" xmlns:xen="http://v8.1c.ru/8.3/xcf/enums" xmlns:xpr="http://v8.1c.ru/8.3/xcf/predef" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="{format_version}">
+	<{root_tag} uuid="{root_uuid}">
+		<InternalInfo>
+			<xr:ContainedObject>
+				<xr:ClassId>{class_id}</xr:ClassId>
+				<xr:ObjectId>{object_id}</xr:ObjectId>
+			</xr:ContainedObject>
+			<xr:GeneratedType name="{object_type}.{name}" category="Object">
+				<xr:TypeId>{type_id}</xr:TypeId>
+				<xr:ValueId>{value_id}</xr:ValueId>
+			</xr:GeneratedType>
+		</InternalInfo>
+		<Properties>
+			<Name>{name}</Name>
+			<Synonym>
+				<v8:item>
+					<v8:lang>ru</v8:lang>
+					<v8:content>{name}</v8:content>
+				</v8:item>
+			</Synonym>
+			<Comment/>
+			<DefaultForm/>
+			<AuxiliaryForm/>{report_properties}
+		</Properties>
+		<ChildObjects/>
+	</{root_tag}>
+</MetaDataObject>"#,
+        name = unica_xml_format::text::escape_xml(object_name),
+    )
 }
 
 fn external_attribute_xml(password_mode: &str, indexing: &str) -> String {
@@ -2775,6 +2813,7 @@ fn edit_form_refuses_exhausted_ui_ids_without_writing() {
             &form_path,
             root_start,
             Some("ru"),
+            None,
         )
         .unwrap();
         assert_eq!(unchanged, original, "a no-op does not allocate an ID");
@@ -5503,7 +5542,6 @@ fn edit_form_emits_and_validates_new_table_and_column_events() {
                 "elements": [{
                     "table": "Rows",
                     "path": "Rows",
-                    "commandBar": {"autofill": false},
                     "on": [{"event": "Selection", "handler": "RowsSelection"}],
                     "columns": [{
                         "labelField": "Description",

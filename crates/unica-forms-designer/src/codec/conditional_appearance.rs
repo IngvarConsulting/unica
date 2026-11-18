@@ -97,11 +97,24 @@ fn typed_value(node: Node<'_, '_>) -> Read<Value> {
     let (namespace, kind) = type_name(node)?;
     if namespace == V8 && kind == "LocalStringType" {
         only(node, V8, &["item"], true)?;
-        let values = children(node).map(|item| {
-            only(item, V8, &["lang", "content"], false)?;
-            Ok(json!({"language": text(required(item, V8, "lang")?)?, "content": text(required(item, V8, "content")?)?}))
-        }).collect::<Read<Vec<_>>>()?;
-        return Ok(json!({"kind":"localizedString","values":values}));
+        let values = children(node)
+            .map(|item| {
+                only(item, V8, &["lang", "content"], false)?;
+                Ok(unica_metadata::LocalizedItem::new(
+                    text(required(item, V8, "lang")?)?,
+                    text(required(item, V8, "content")?)?,
+                ))
+            })
+            .collect::<Read<Vec<_>>>()?;
+        return unica_metadata::format_nstr(&values)
+            .map(|text| {
+                if text.is_empty() {
+                    Value::Null
+                } else {
+                    Value::String(text)
+                }
+            })
+            .ok_or_else(|| "translations cannot be represented as NStr".into());
     }
     if namespace == UI && kind == "Font" {
         return Ok(json!({"type":kind,"value":font(node)?}));
@@ -276,10 +289,10 @@ fn filter_item(node: Node<'_, '_>) -> Read<Value> {
                 &["left", "right", "comparisonType", "use"],
                 true,
             )?;
-            value.insert(
-                "left".into(),
-                typed_value(required(node, SETTINGS, "left")?)?,
-            );
+            let left = typed_value(required(node, SETTINGS, "left")?)?;
+            if !left.is_null() {
+                value.insert("left".into(), left);
+            }
             let comparison = text(required(node, SETTINGS, "comparisonType")?)?;
             if ![
                 "Equal",
@@ -314,6 +327,7 @@ fn filter_item(node: Node<'_, '_>) -> Read<Value> {
                 .filter(|n| n.has_tag_name((SETTINGS, "right")))
                 .map(typed_value)
                 .collect::<Read<Vec<_>>>()?;
+            right.retain(|value| !value.is_null());
             match right.len() {
                 0 => {}
                 1 => {
@@ -365,7 +379,10 @@ fn appearance(node: Node<'_, '_>) -> Read<Value> {
                 "parameter".into(),
                 json!(text(required(item, CORE, "parameter")?)?),
             );
-            value.insert("value".into(), typed_value(required(item, CORE, "value")?)?);
+            let parameter = typed_value(required(item, CORE, "value")?)?;
+            if !parameter.is_null() {
+                value.insert("value".into(), parameter);
+            }
             optional_use(item, CORE, &mut value)?;
             Ok(Value::Object(value))
         })
@@ -409,7 +426,7 @@ fn fact(
     limits: &mut Vec<String>,
 ) -> Option<Value> {
     match one(node, SETTINGS, name).and_then(|n| n.map(|n| bounded(n, parse)).transpose()) {
-        Ok(value) => value,
+        Ok(value) => value.filter(|value| !value.is_null()),
         Err(error) => {
             limits.push(format!("{name}: {error}"));
             None

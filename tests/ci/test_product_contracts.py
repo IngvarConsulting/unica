@@ -1132,6 +1132,15 @@ class ProductContractTests(unittest.TestCase):
         self.assertTrue(
             any("closed" in error for error in validator(unknown_field, 4, "main"))
         )
+        # Раннер 0.17 (push-data v6) может добавить к данным `detection`.
+        with_detection = copy.deepcopy(envelope)
+        with_detection["data"]["detection"] = {"main": {"method": "scan"}}
+        self.assertEqual(validator(with_detection, 4, "main"), [])
+        unknown_data_field = copy.deepcopy(envelope)
+        unknown_data_field["data"]["unknown"] = True
+        self.assertTrue(
+            any("closed" in error for error in validator(unknown_data_field, 4, "main"))
+        )
         undispatched = copy.deepcopy(envelope)
         undispatched["data"]["provider_dispatched"] = False
         self.assertTrue(
@@ -1537,7 +1546,7 @@ class ProductContractTests(unittest.TestCase):
     def test_v8_runner_external_build_calls_accept_a_build_over_the_configuration(
         self,
     ) -> None:
-        """Раннер 0.14 собирает обработку во временной базе поверх конфигурации."""
+        """Раннер собирает обработку в своей базе под workPath поверх конфигурации."""
         module = load_contract_module()
         validator = module.validate_v8_runner_external_build_calls
 
@@ -1545,15 +1554,24 @@ class ProductContractTests(unittest.TestCase):
             root = Path(tmp)
             configuration = root / "src" / "main"
             work = root / "work"
-            (work / "temp" / "throwaway-infobases").mkdir(parents=True)
             calls = [
-                "create",
+                f"create\t{work / 'temp' / 'build-infobase' / 'ib'}",
                 f"load-config\t{configuration}\textension=false",
                 "load-external",
                 "dump-external",
             ]
 
             self.assertEqual(validator(calls, configuration, work), [])
+            # Повторная сборка берёт базу из кэша раннера (0.17).
+            self.assertEqual(
+                validator(calls[2:], configuration, work, cached=True), []
+            )
+            self.assertTrue(
+                any(
+                    "platform steps" in error
+                    for error in validator(calls, configuration, work, cached=True)
+                )
+            )
 
     def test_v8_runner_external_build_calls_reject_a_wrong_or_leaky_build(
         self,
@@ -1565,17 +1583,16 @@ class ProductContractTests(unittest.TestCase):
             root = Path(tmp)
             configuration = root / "src" / "main"
             work = root / "work"
-            retained = work / "temp" / "throwaway-infobases" / "base-1"
-            retained.mkdir(parents=True)
+            leaky = f"create\t{root / 'src' / 'main' / 'ib'}"
 
             cases = {
                 "no configuration load": (
-                    ["create", "load-external", "dump-external"],
+                    [leaky, "load-external", "dump-external"],
                     "platform steps",
                 ),
                 "load after the external package": (
                     [
-                        "create",
+                        leaky,
                         "load-external",
                         f"load-config\t{configuration}\textension=false",
                         "dump-external",
@@ -1584,7 +1601,7 @@ class ProductContractTests(unittest.TestCase):
                 ),
                 "another source-set": (
                     [
-                        "create",
+                        leaky,
                         f"load-config\t{root / 'src' / 'other'}\textension=false",
                         "load-external",
                         "dump-external",
@@ -1593,7 +1610,7 @@ class ProductContractTests(unittest.TestCase):
                 ),
                 "loaded as an extension": (
                     [
-                        "create",
+                        leaky,
                         f"load-config\t{configuration}\textension=true",
                         "load-external",
                         "dump-external",
@@ -1608,7 +1625,7 @@ class ProductContractTests(unittest.TestCase):
                         any(expected in error for error in errors), errors
                     )
                     self.assertTrue(
-                        any("throwaway infobase was retained" in error for error in errors),
+                        any("under workPath" in error for error in errors),
                         errors,
                     )
 
@@ -1620,25 +1637,25 @@ class ProductContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             configuration = root / "src" / "main"
-            good = [
-                "create",
+            work_path = root / "work"
+            create = f"create\t{work_path / 'temp' / 'build-infobase' / 'ib'}"
+            tail = [
                 f"load-config\t{configuration}\textension=false",
                 "load-external",
                 "dump-external",
             ]
-            clean = root / "clean"
-            (clean / "temp" / "throwaway-infobases").mkdir(parents=True)
-            leaky = root / "leaky"
-            (leaky / "temp" / "throwaway-infobases" / "base-1").mkdir(parents=True)
-            rootless = root / "rootless"
-            rootless.mkdir()
 
             cases = {
-                "retained base": (good, leaky, "throwaway infobase was retained"),
-                "no throwaway root": (good, rootless, "root was not found"),
+                "base outside workPath": (
+                    [f"create\t{root / 'ib'}", *tail],
+                    work_path,
+                    "under workPath",
+                ),
+                "creation without a path": (["create", *tail], work_path, "malformed"),
+                "cold build without creation": (tail[1:], work_path, "platform steps"),
                 "malformed load": (
-                    ["create", f"load-config\t{configuration}", "load-external", "dump-external"],
-                    clean,
+                    [create, f"load-config\t{configuration}", "load-external", "dump-external"],
+                    work_path,
                     "malformed",
                 ),
             }

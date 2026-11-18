@@ -7,6 +7,45 @@
 
 use std::path::{Path, PathBuf};
 
+/// Создание ссылки отказало только потому, что у хоста нет привилегии ссылок
+/// (на Windows — `ERROR_PRIVILEGE_NOT_HELD`, 1314; такого кода errno нет).
+pub(crate) fn link_privilege_missing(error: &std::io::Error) -> bool {
+    error.raw_os_error() == Some(1314)
+        || matches!(
+            error.kind(),
+            std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::Unsupported
+        )
+}
+
+fn link_or_skip(created: Option<std::io::Result<()>>) -> bool {
+    match created.expect("symlink fixtures exist on Unix and Windows") {
+        Ok(()) => true,
+        Err(error) if link_privilege_missing(&error) => {
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::Symlink,
+                &format!("creating a link fixture needs the symlink privilege: {error}"),
+            );
+            false
+        }
+        Err(error) => panic!("link fixture failed: {error}"),
+    }
+}
+
+/// Создаёт ссылку-каталог для теста. Если у хоста нет привилегии ссылок,
+/// объявляет пропуск по возможности и возвращает `false`: тест сразу выходит.
+pub(crate) fn dir_link_or_skip(target: impl AsRef<Path>, link: impl AsRef<Path>) -> bool {
+    link_or_skip(unica_workspace::test_support::create_dir_symlink_for_test(
+        target, link,
+    ))
+}
+
+/// То же для ссылки на файл.
+pub(crate) fn file_link_or_skip(target: impl AsRef<Path>, link: impl AsRef<Path>) -> bool {
+    link_or_skip(unica_workspace::test_support::create_file_symlink_for_test(
+        target, link,
+    ))
+}
+
 /// Каталог фикстуры: `v8project.yaml` и набор `src/`.
 pub(crate) fn empty_configuration_fixture() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))

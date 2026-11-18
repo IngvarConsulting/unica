@@ -1,0 +1,30 @@
+{
+  "format": "2.22",
+  "build": "8.5.4.2028",
+  "designerBinarySha256": "61d856ae57a4e4bf0b3f49d67b0a16443dacd8151a6964c7c580b5f46f43f6b5",
+  "seed": "2.20/external_artifacts/erf: root, InternalInfo and empty Properties of the synthetic object, renamed EmptyReport, without child objects",
+  "steps": [
+    {
+      "step": "create",
+      "tool": "1cv8 CREATEINFOBASE",
+      "build": "8.5.4.2028"
+    },
+    {
+      "step": "load",
+      "tool": "designer /LoadExternalDataProcessorOrReportFromFiles",
+      "build": "8.5.4.2028"
+    },
+    {
+      "step": "export",
+      "tool": "designer /DumpExternalDataProcessorOrReportToFiles -Format Hierarchical",
+      "build": "8.5.4.2028"
+    }
+  ],
+  "rounds": "Round 2 loads the round-1 export into a second new file infobase and exports it again; the files are byte-identical.",
+  "files": {
+    "erf/EmptyReport.xml": {
+      "sha256": "9ec96697624ac9c251cba0766f1c2af0e5e8144122c545dab7998182842c7374",
+      "size": 1869
+    }
+  }
+}

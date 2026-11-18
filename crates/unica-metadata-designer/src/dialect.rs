@@ -21,6 +21,29 @@ pub(crate) struct MetadataDialect {
     /// Compatibility modes the platform line adds to the 8.3 modes every
     /// line knows: the line writes its own mode into the configuration.
     pub(crate) line_compatibility_modes: &'static [&'static str],
+    /// The properties, with their default values, the format writes last in
+    /// the `Properties` of a new child of an object type, after those of 2.20.
+    pub(crate) added_child_properties: fn(&str) -> &'static [&'static str],
+    /// The properties, with their default values, the format writes in the
+    /// `Properties` of a new object of a kind, each right after the named
+    /// property of 2.20.
+    pub(crate) added_object_properties: fn(&str) -> &'static [(&'static str, &'static str)],
+    /// The properties, with the values the platform writes, that follow
+    /// `ExtendedConfigurationObject` of a borrowed object or member; a
+    /// borrowed form has more of them.
+    pub(crate) adopted_properties: fn(AdoptedNode) -> &'static [&'static str],
+}
+
+/// What a borrowed descriptor belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AdoptedNode {
+    /// A borrowed object or a borrowed member of one.
+    Object,
+    /// The descriptor of a borrowed form.
+    Form,
+    /// What a borrowed common form or common template, whose content the
+    /// extension may change, writes after its own properties.
+    Content,
 }
 
 impl MetadataDialect {
@@ -37,6 +60,9 @@ static V2_20: MetadataDialect = MetadataDialect {
     kind_declares_child_objects: v2_20::kind_declares_child_objects,
     boolean_properties: v2_20::boolean_properties,
     line_compatibility_modes: &[],
+    added_child_properties: v2_20::added_child_properties,
+    added_object_properties: v2_20::added_object_properties,
+    adopted_properties: v2_20::adopted_properties,
 };
 
 /// The dialects the codec has, one per export format version.
@@ -62,6 +88,12 @@ pub(crate) fn for_version(version: Option<&str>) -> &'static MetadataDialect {
         .find(|dialect| matches!(key.parts(), [version] if version == dialect.version))
         .copied()
         .unwrap_or_else(writable)
+}
+
+/// What a borrowed descriptor of export `format` writes after its
+/// `ExtendedConfigurationObject`, each line an element with its value.
+pub(crate) fn adopted_properties(format: &str, node: AdoptedNode) -> &'static [&'static str] {
+    (for_version(Some(format)).adopted_properties)(node)
 }
 
 #[cfg(test)]

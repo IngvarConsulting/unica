@@ -995,8 +995,9 @@ impl WorkspaceFindDirectoryBuilder {
         };
         let at = format!("{form_address}{address_suffix}");
         let address = QualifiedAddress::parse(&at).map_err(|_| unsafe_layout_entry())?;
+        // Вопрос к маршрутам модулей, а не к событиям: от линии не зависит.
         if is_module
-            && unica_bsl::profile::PlatformProfile::v8_3_27()
+            && unica_bsl::profile::PlatformProfile::for_line_or_base(None)
                 .module_capability(&address)
                 .is_none()
         {
@@ -1101,7 +1102,8 @@ impl WorkspaceFindDirectoryBuilder {
             format!("{owner_address}.Module")
         };
         let branch = QualifiedAddress::parse(&branch).map_err(|_| unsafe_layout_entry())?;
-        let profile = PlatformProfile::v8_3_27();
+        // Состав модулей ветки — маршруты модулей, от линии не зависят.
+        let profile = PlatformProfile::for_line_or_base(None);
         let requested = tail.join("/");
         let Some((expected, relative)) = profile
             .module_children(&branch)

@@ -1,0 +1,160 @@
+{
+  "id": "S-3119-canonical-handler",
+  "issue": 3119,
+  "area": "Метаданные",
+  "task": "Подписка возвращает адрес обработчика Unica; тот же формат можно передать в props.set, а дескриптор сохраняет формат платформы.",
+  "workspace": "tests/fixtures/acceptance/workspace-event-defined-type",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:EventSubscription.CorpusEventSubscription"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Handler",
+          "eq": "main:CommonModule.EventHandlers.Method.OnBeforeWrite"
+        }
+      ],
+      "captures": {
+        "before": {
+          "file": "src/EventSubscriptions/CorpusEventSubscription.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:EventSubscription.CorpusEventSubscription.Relation"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "contains": {
+            "relation": "handler",
+            "title": "Handler",
+            "at": "main:CommonModule.EventHandlers.Method.OnBeforeWrite",
+            "kind": "Method"
+          }
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule.EventHandlers.Method.OnBeforeWrite"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:CommonModule.EventHandlers.Method.OnBeforeWrite"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "Method"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:EventSubscription.CorpusEventSubscription",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Handler": "main:CommonModule.EventHandlers.Method.OnBeforeWriteAlternate"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/EventSubscriptions/CorpusEventSubscription.xml",
+          "kind": "sha256",
+          "eq": "$capture.before"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/EventSubscriptions/CorpusEventSubscription.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}EventSubscription/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Handler",
+          "eq": [
+            "CommonModule.EventHandlers.OnBeforeWriteAlternate"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:EventSubscription.CorpusEventSubscription"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Handler",
+          "eq": "main:CommonModule.EventHandlers.Method.OnBeforeWriteAlternate"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule.EventHandlers.Method.OnBeforeWriteAlternate"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:CommonModule.EventHandlers.Method.OnBeforeWriteAlternate"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "Method"
+        }
+      ]
+    }
+  ]
+}

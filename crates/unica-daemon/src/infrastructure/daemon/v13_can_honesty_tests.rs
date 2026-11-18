@@ -1808,9 +1808,7 @@ fn header_and_catalog_attributes_still_add_at_the_owner() {
     }
 }
 
-/// Срезы `Interface` модуля — элементы без адреса: `…Interface.Public`
-/// грамматика отвергает, и `view` его больше не выдаёт. Каждый `at` ответа
-/// открывается, а методы среза — адреса, которые `view` читает.
+/// Срезы `Interface` модуля и ссылки на их методы читаются через `view`.
 /// rule: CTR.SOURCE.QUALIFIED-LOGICAL-ADDRESS
 #[test]
 fn interface_slices_publish_only_addresses_view_opens() {
@@ -1827,13 +1825,26 @@ fn interface_slices_publish_only_addresses_view_opens() {
     assert_eq!(names, ["Public", "Library", "Override"]);
     let mut opened = Vec::new();
     for item in items {
-        assert_eq!(item["addressable"], json!(false), "{item}");
-        if let Some(at) = item.get("at").and_then(Value::as_str) {
-            opened.push(at.to_string());
-        }
-        for method in item["methods"].as_array().into_iter().flatten() {
-            opened.push(method.as_str().expect("method address").to_string());
-        }
+        let slice_at = item["at"].as_str().expect("addressable interface slice");
+        assert_eq!(
+            slice_at,
+            format!("{at}.{}", item["interface"].as_str().unwrap())
+        );
+        let slice = invoke(
+            &fixture.workspace,
+            ToolIdentity::View,
+            json!({"at": slice_at}),
+        );
+        assert!(slice.ok, "{slice_at}: {}", slice.summary);
+        let slice = slice.data.unwrap();
+        let methods = slice["items"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|method| method["at"].as_str().expect("method address").to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(json!(methods), item["methods"], "{slice_at}");
+        opened.extend(methods);
     }
     assert!(
         opened.contains(&"main:Catalog.Валюты.Module.Manager.Method.ВалютаПоКоду".to_string()),
@@ -1850,6 +1861,23 @@ fn interface_slices_publish_only_addresses_view_opens() {
     let data = checked.data.expect("check verdict");
     assert_eq!(data["status"], "readable", "{data}");
     assert_eq!(data["validators"], json!([]), "{data}");
+    let public_at = format!("{at}.Public");
+    let checked = invoke(
+        &fixture.workspace,
+        ToolIdentity::Check,
+        json!({"at": public_at}),
+    );
+    assert!(checked.ok, "{}", checked.summary);
+    let data = checked.data.expect("slice check verdict");
+    assert_eq!(data["status"], "readable", "{data}");
+    assert_eq!(data["validators"], json!([]), "{data}");
+    let unknown_at = format!("{at}.Unknown");
+    let unknown = invoke(
+        &fixture.workspace,
+        ToolIdentity::View,
+        json!({"at": unknown_at}),
+    );
+    assert!(!unknown.ok);
     assert_eq!(
         walk(&fixture.workspace, at).unroutable,
         Vec::<String>::new()

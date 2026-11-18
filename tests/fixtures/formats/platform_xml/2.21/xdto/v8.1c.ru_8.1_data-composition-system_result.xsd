@@ -1,0 +1,28 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:ns1="http://v8.1c.ru/8.1/data-composition-system/composition-template" xmlns:tns="http://v8.1c.ru/8.1/data-composition-system/result" xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="http://v8.1c.ru/8.1/data-composition-system/result" attributeFormDefault="unqualified" elementFormDefault="qualified">
+	<xs:import namespace="http://v8.1c.ru/8.1/data-composition-system/composition-template"/>
+	<xs:element name="dataCompositionResultItem"/>
+	<xs:simpleType name="DataCompositionResultItemType">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Begin"/>
+			<xs:enumeration value="End"/>
+			<xs:enumeration value="BeginAndEnd"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="DataCompositionResultNestedItemsLayout">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="Vertically"/>
+			<xs:enumeration value="Horizontally"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:complexType name="DataCompositionResultItem">
+		<xs:sequence>
+			<xs:element name="itemType" type="tns:DataCompositionResultItemType"/>
+			<xs:element name="templateName" type="xs:string" minOccurs="0"/>
+			<xs:element name="template" type="ns1:TemplateDefinition" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="parameterValue" type="ns1:ParameterValue" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="nestedItemLayout" type="tns:DataCompositionResultNestedItemsLayout" minOccurs="0"/>
+			<xs:element name="outputPercent" type="xs:decimal" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+</xs:schema>
