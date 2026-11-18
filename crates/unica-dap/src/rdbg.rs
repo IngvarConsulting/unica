@@ -107,14 +107,32 @@ impl Rdbg {
         Ok(())
     }
 
-    pub fn locals(
+    pub fn variables(
         &self,
         target: uuid::Uuid,
         level: usize,
         evaluation: uuid::Uuid,
+        path: &[String],
     ) -> Result<String> {
-        self.call("evalLocalVariables", &format!(
-            "<calcWaitingTime>100</calcWaitingTime><targetID><id xmlns=\"{BASE}\">{target}</id></targetID><expr><stackLevel xmlns=\"{CALCULATIONS}\">{level}</stackLevel><srcCalcInfo xmlns=\"{CALCULATIONS}\"><expressionResultID>{evaluation}</expressionResultID><interfaces>context</interfaces></srcCalcInfo><presOptions xmlns=\"{CALCULATIONS}\"><maxTextSize>307200</maxTextSize><stopOnFirstEOL>false</stopOnFirstEOL></presOptions></expr>"
+        let mut items = String::new();
+        for (index, name) in path.iter().enumerate() {
+            let name = escape(name);
+            let (kind, expression, property) = if index == 0 {
+                ("expression", name.as_str(), "")
+            } else {
+                ("property", "", name.as_str())
+            };
+            items.push_str(&format!(
+                "<calcItem><itemType>{kind}</itemType><expression>{expression}</expression><property>{property}</property></calcItem>"
+            ));
+        }
+        let command = if path.is_empty() {
+            "evalLocalVariables"
+        } else {
+            "evalExpr"
+        };
+        self.call(command, &format!(
+            "<calcWaitingTime>100</calcWaitingTime><targetID><id xmlns=\"{BASE}\">{target}</id></targetID><expr><stackLevel xmlns=\"{CALCULATIONS}\">{level}</stackLevel><srcCalcInfo xmlns=\"{CALCULATIONS}\"><expressionResultID>{evaluation}</expressionResultID>{items}<interfaces>context</interfaces></srcCalcInfo><presOptions xmlns=\"{CALCULATIONS}\"><maxTextSize>307200</maxTextSize><stopOnFirstEOL>false</stopOnFirstEOL></presOptions></expr>"
         ))
     }
 
