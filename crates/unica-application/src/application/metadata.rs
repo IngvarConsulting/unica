@@ -4,7 +4,7 @@ use super::AdapterOutcome;
 use serde_json::json;
 use serde_json::{Map, Value};
 #[cfg(test)]
-use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+use unica_address::source_target::MetadataAddress;
 use unica_metadata::MetaValidationStatus;
 #[cfg(test)]
 use unica_metadata::*;
@@ -555,8 +555,7 @@ mod medium_tests {
 
     fn validation_subject() -> unica_metadata::validation_subject::MetadataValidationSubject {
         unica_metadata::validation_subject::MetadataValidationSubject {
-            target: MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Document.Order")
-                .unwrap(),
+            target: MetadataAddress::parse_logical("Document.Order").unwrap(),
             resources: vec![unica_metadata::validation_subject::MetadataResourceImage {
                 role: unica_metadata::validation_subject::MetadataResourceRole::Descriptor,
                 bytes: b"<MetaDataObject/>".to_vec(),
@@ -569,11 +568,7 @@ mod medium_tests {
 
     fn mutation_data(changed: bool) -> MetaMutationData {
         MetaMutationData {
-            metadata_path: MetadataAddress::parse(
-                PLATFORM_XML_8_3_27_FORMAT_2_20,
-                "Document.Order",
-            )
-            .unwrap(),
+            metadata_path: MetadataAddress::parse_logical("Document.Order").unwrap(),
             changed,
             publication_plan: Vec::new(),
             changed_paths: Vec::new(),

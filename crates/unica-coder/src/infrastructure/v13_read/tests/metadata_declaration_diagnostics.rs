@@ -235,9 +235,7 @@ fn nested_standard_attributes_keep_their_standard_tabular_section_context() {
         },
     );
     let reader = fixture.read_authority();
-    let target =
-        MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "ChartOfAccounts.Accounts")
-            .unwrap();
+    let target = MetadataAddress::parse_logical("ChartOfAccounts.Accounts").unwrap();
     let local = reader.read.metadata_local(&target, &mut || Ok(())).unwrap();
     let diagnostic = local
         .info
@@ -561,8 +559,7 @@ fn assert_web_service_declaration_stays_inapplicable(
     let fixture = RealReaderFixture::new();
     let owner_at = "main:WebService.Exchange";
     let branch_at = format!("{owner_at}.{branch_kind}");
-    let target =
-        MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "WebService.Exchange").unwrap();
+    let target = MetadataAddress::parse_logical("WebService.Exchange").unwrap();
     let original = unica_workspace::test_support::tree_snapshot(&fixture.source);
     {
         let service = fixture.view_service();

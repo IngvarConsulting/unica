@@ -293,8 +293,7 @@ fn real_typed_readers_cover_every_task14_profile_without_skipping() {
     let cancellation = CancellationToken::new();
     let source_root =
         Arc::new(unica_workspace::read::open_source_directory(&fixture.source).unwrap());
-    let metadata_target =
-        MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Catalog.Items").unwrap();
+    let metadata_target = MetadataAddress::parse_logical("Catalog.Items").unwrap();
     let metadata_resolution = resolve_platform_xml_target(
         &fixture.context,
         &SourceTarget {

@@ -1,7 +1,7 @@
 use super::{ProviderReadAuthority, TemplateValidationInput, ViewError};
 use serde_json::Value;
 use std::path::PathBuf;
-use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+use unica_address::source_target::MetadataAddress;
 use unica_refusal::{RefusalCode, RefusalDetail};
 use unica_templates_designer::mxl_codec::parse_mxl_info_xml;
 
@@ -60,9 +60,9 @@ impl ProviderReadAuthority {
                 .take(2)
                 .collect::<Vec<_>>()
                 .join(".");
-            let owner = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &owner).map_err(
-                |error| ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string()),
-            )?;
+            let owner = MetadataAddress::parse_logical(&owner).map_err(|error| {
+                ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+            })?;
             self.metadata_descriptor_relative(&owner)?
         } else {
             PathBuf::from("Configuration.xml")
@@ -108,9 +108,9 @@ impl ProviderReadAuthority {
                 .take(2)
                 .collect::<Vec<_>>()
                 .join(".");
-            let owner = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &owner).map_err(
-                |error| ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string()),
-            )?;
+            let owner = MetadataAddress::parse_logical(&owner).map_err(|error| {
+                ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+            })?;
             self.metadata_descriptor_relative(&owner)?
         } else {
             PathBuf::from("Configuration.xml")

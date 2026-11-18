@@ -704,8 +704,7 @@ mod tests {
         let update = |owner| {
             crate::validate_metadata_operation_capabilities(
                 owner,
-                &unica_address::source_target::MetadataAddress::parse(
-                    unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+                &unica_address::source_target::MetadataAddress::parse_logical(
                     "InformationRegister.Prices",
                 )
                 .unwrap(),

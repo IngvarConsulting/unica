@@ -295,7 +295,14 @@ class PackageUnicaPluginTests(unittest.TestCase):
         repo_root = Path(__file__).resolve().parents[2]
         rust_sources = sorted(
             path
-            for package in ("unica-coder", "unica-daemon", "unica-application", "unica-domain")
+            for package in (
+                "unica-coder",
+                "unica-daemon",
+                "unica-mcp",
+                "unica-product",
+                "unica-application",
+                "unica-domain",
+            )
             for path in (repo_root / "crates" / package / "src").rglob("*.rs")
         )
         matches = [

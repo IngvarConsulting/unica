@@ -113,13 +113,12 @@ pub fn observe_form_property(property: roxmltree::Node<'_, '_>) -> Result<Option
 mod tests {
     use super::parse_form_metadata_properties;
     use serde_json::json;
-    use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+    use unica_address::source_target::MetadataAddress;
 
     /// rule: INV.SOURCE.INCOMPLETE-METADATA-READ
     #[test]
     fn form_use_purposes_preserves_absence_empty_and_malformed_observations() {
-        let target =
-            MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "CommonForm.Main").unwrap();
+        let target = MetadataAddress::parse_logical("CommonForm.Main").unwrap();
         let parse = |property: &str| {
             let descriptor = format!(
                 r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" version="2.20"><CommonForm uuid="e9455333-3333-4333-8333-333333333333"><Properties><Name>Main</Name>{property}</Properties></CommonForm></MetaDataObject>"#

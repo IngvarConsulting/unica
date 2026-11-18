@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import sys
 import tempfile
@@ -137,14 +138,79 @@ class PublishTests(unittest.TestCase):
         self.assertFalse(any(command[:2] == ["git", "push"] for command, _ in fakes.commands))
 
 
+class AdmitTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.module = load()
+
+    def permission(self, answer):
+        calls = []
+
+        def gh(path, **_):
+            calls.append(path)
+            if isinstance(answer, Exception):
+                raise answer
+            return answer
+
+        return gh, calls
+
+    def test_an_administrator_is_admitted_by_role_not_by_name(self) -> None:
+        gh, calls = self.permission({"permission": "admin", "role_name": "admin"})
+        self.module.admit("o/r", "someone", "refs/heads/main", gh=gh)
+        self.assertEqual(calls, ["repos/o/r/collaborators/someone/permission"])
+
+    def test_every_other_role_is_refused_with_a_readable_reason(self) -> None:
+        for permission in ("write", "read", "none", None):
+            with self.subTest(permission=permission):
+                gh, _ = self.permission({"permission": permission})
+                with self.assertRaisesRegex(self.module.RcError, "только администратор"):
+                    self.module.admit("o/r", "writer", "refs/heads/main", gh=gh)
+
+    def test_a_run_not_from_main_is_refused_before_the_role_is_read(self) -> None:
+        for ref in ("refs/tags/v0.15.0-alpha.4", "refs/heads/feature", ""):
+            with self.subTest(ref=ref):
+                gh, calls = self.permission({"permission": "admin"})
+                with self.assertRaisesRegex(self.module.RcError, "с main"):
+                    self.module.admit("o/r", "someone", ref, gh=gh)
+                self.assertEqual(calls, [])
+
+    def test_an_unknown_actor_or_an_unread_role_is_refused(self) -> None:
+        gh, calls = self.permission({"permission": "admin"})
+        with self.assertRaisesRegex(self.module.RcError, "только администратор"):
+            self.module.admit("o/r", "", "refs/heads/main", gh=gh)
+        self.assertEqual(calls, [])
+        gh, _ = self.permission(self.module.alpha.AlphaError("gh api GET ...: 404 Not Found"))
+        with self.assertRaisesRegex(self.module.RcError, "не прочитана"):
+            self.module.admit("o/r", "stranger", "refs/heads/main", gh=gh)
+
+
 class WorkflowTests(unittest.TestCase):
-    def test_a_button_on_main_in_the_marketplace_environment_with_the_tag_key(self) -> None:
+    def test_only_an_administrator_reaches_the_job_with_the_tag_key(self) -> None:
+        workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+        jobs = workflow["jobs"]
+        admit = jobs["admit"]
+        self.assertNotIn("environment", admit)
+        step = admit["steps"][-1]
+        self.assertEqual(step["env"]["ACTOR"], "${{ github.triggering_actor }}")
+        self.assertNotIn("secrets.", json.dumps(admit))
+        self.assertEqual(jobs["rc"]["needs"], "admit")
+        command = 'release-rc.py admit --actor "$ACTOR" --ref "$GITHUB_REF"'
+        self.assertIn(command, step["run"])
+        # Перезапуск упавшего `rc` не повторяет `admit`: роль сверяется и в нём, до ключа.
+        rc_steps = jobs["rc"]["steps"]
+        recheck = next(index for index, item in enumerate(rc_steps) if item.get("id") == "admit")
+        publish = next(index for index, item in enumerate(rc_steps) if item.get("id") == "publish")
+        self.assertLess(recheck, publish)
+        self.assertIn(command, rc_steps[recheck]["run"])
+        self.assertEqual(rc_steps[recheck]["env"]["ACTOR"], "${{ github.triggering_actor }}")
+        self.assertNotIn("RELEASE_TAG_KEY", json.dumps(rc_steps[:publish]))
+
+    def test_a_button_on_main_in_the_alpha_environment_with_the_tag_key(self) -> None:
         workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
         self.assertEqual(set(workflow[True]), {"workflow_dispatch"})
         self.assertTrue(workflow[True]["workflow_dispatch"]["inputs"]["alpha"]["required"])
         self.assertEqual(workflow["permissions"], {"contents": "read", "actions": "read"})
         job = workflow["jobs"]["rc"]
-        self.assertEqual(job["environment"], "marketplace")
+        self.assertEqual(job["environment"], "alpha")
         checkout = job["steps"][0]
         self.assertEqual((checkout["with"]["ref"], checkout["with"]["fetch-depth"]), ("main", 0))
         publish = next(step for step in job["steps"] if step.get("id") == "publish")

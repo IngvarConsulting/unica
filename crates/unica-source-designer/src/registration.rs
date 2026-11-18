@@ -504,12 +504,22 @@ pub fn preserve_descriptor_image(preimage: &[u8], source: &str, updated: &str) -
 /// them. A batch that edited files first must run the removal in its own
 /// apply call; refusing here keeps a stale scan from committing dangling
 /// references or leaving staged payload behind.
+///
+/// The vendor-support marker is the one exception: it is neither payload of
+/// a metadata object nor a carrier of references, and a removal never reads
+/// or changes it. A support change a person chose before the removal stages
+/// only that marker (INV.SOURCE.SUPPORT-SEPARATE-APPLY).
 pub fn require_untouched_staged_state(
     staged: &ApplyProposal<'_>,
     operation: &str,
     at_path: &str,
 ) -> Result<(), ApplyPlanError> {
-    if staged.planned_changes().is_empty() {
+    let support_marker = std::path::Path::new("Ext/ParentConfigurations.bin");
+    if staged
+        .planned_changes()
+        .iter()
+        .all(|change| change.relative_path == support_marker)
+    {
         return Ok(());
     }
     Err(ApplyPlanError::new(

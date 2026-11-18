@@ -254,13 +254,7 @@ mod tests {
     use super::*;
 
     fn readonly_members() -> Vec<ObservedMetadataTypeVariant> {
-        let path = |name| {
-            MetadataAddress::parse(
-                unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
-                name,
-            )
-            .unwrap()
-        };
+        let path = |name| MetadataAddress::parse_logical(name).unwrap();
         vec![
             ObservedMetadataTypeVariant::TypeId {
                 type_id: "cc442f88-d708-4a83-af58-60c85a5d28a8".into(),
@@ -396,11 +390,8 @@ mod tests {
     #[test]
     fn read_only_members_do_not_bypass_primitive_and_composition_validation() {
         let characteristic = ObservedMetadataTypeVariant::CharacteristicTypes {
-            metadata_path: MetadataAddress::parse(
-                unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
-                "ChartOfCharacteristicTypes.Features",
-            )
-            .unwrap(),
+            metadata_path: MetadataAddress::parse_logical("ChartOfCharacteristicTypes.Features")
+                .unwrap(),
         };
         let type_id = ObservedMetadataTypeVariant::TypeId {
             type_id: "41dbb66b-ff77-4b8f-aaf8-0ca2012d3a6f".into(),

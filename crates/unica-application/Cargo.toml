@@ -32,7 +32,6 @@ unica-operation-contract = { path = "../unica-operation-contract" }
 unica-operations = { path = "../unica-operations" }
 unica-refusal = { path = "../unica-refusal" }
 unica-roles = { path = "../unica-roles" }
-unica-runner = { path = "../unica-runner" }
 unica-source-contract = { path = "../unica-source-contract" }
 unica-templates = { path = "../unica-templates" }
 unica-work-control = { path = "../unica-work-control" }
@@ -61,6 +60,7 @@ unica-xdto = { path = "../unica-xdto", features = ["test-support"] }
 jsonschema.workspace = true
 
 [package.metadata.unica]
+version-literal-baseline = 3
 component = "coordinator"
 file-io = "owned"
 inputs = ["tests/fixtures/v013"]

@@ -231,7 +231,7 @@ fn typed_contextual_registrations_compile_and_migrated_raw_tuples_are_rejected()
             (MetadataOperation::CommandSet), (MetadataOperation::CommandRemove),
             (FormOperation::Add), (FormOperation::Set), (FormOperation::Remove),
             (FormOperation::ItemAdd), (FormOperation::ItemRemove), (FormOperation::ItemMove),
-            (FormOperation::AttributeAdd), (FormOperation::ColumnAdd), (FormOperation::CommandAdd),
+            (FormOperation::AttributeAdd), (FormOperation::AttributeRemove), (FormOperation::ColumnAdd), (FormOperation::CommandAdd),
             (FormOperation::EventBind),
             (MetadataOperation::ObjectCreate)"#,
     );

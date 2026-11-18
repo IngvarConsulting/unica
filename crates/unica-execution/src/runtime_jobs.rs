@@ -1,4 +1,8 @@
 //! Durable runtime state, exact resource leases and retained child supervision.
+use crate::runner::{
+    attempt::{CompletedAttempt, RuntimeAttempt, RuntimeAttemptScope, RuntimeJobRunner},
+    operation::{CancelPolicy, RuntimeJobOperation},
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 #[cfg(any(test, feature = "test-support"))]
@@ -18,10 +22,6 @@ use unica_process::runtime_job::{
     RuntimeJobSpawnFailure,
 };
 use unica_redaction::{self as redaction, bounded_char_tail, bounded_redacted_tail};
-use unica_runner::{
-    attempt::{CompletedAttempt, RuntimeAttempt, RuntimeAttemptScope, RuntimeJobRunner},
-    operation::{CancelPolicy, RuntimeJobOperation},
-};
 use unica_work_control::{
     cancellation::{cancelled_error, CancellationToken},
     shared_work::{SharedWork, SharedWorkLease, SharedWorkLifetime, SharedWorkProducer},
@@ -1503,7 +1503,7 @@ impl<R: RuntimeAttempt> RuntimeJobService<R> {
                 record
                     .warnings
                     .push(redact_text(&fallback.retry_start_warning(
-                        unica_runner::attempt::RetryStartFailure::Authorization,
+                        crate::runner::attempt::RetryStartFailure::Authorization,
                         &error,
                     )));
                 return self
@@ -1525,7 +1525,7 @@ impl<R: RuntimeAttempt> RuntimeJobService<R> {
                 record
                     .warnings
                     .push(redacted_error(&fallback.retry_start_warning(
-                        unica_runner::attempt::RetryStartFailure::Spawn,
+                        crate::runner::attempt::RetryStartFailure::Spawn,
                         &error,
                     )));
                 return self
