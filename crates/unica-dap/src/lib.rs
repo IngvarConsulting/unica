@@ -13,7 +13,7 @@ use std::{
 
 use base64::{engine::general_purpose::STANDARD, Engine};
 use modules::Modules;
-use rdbg::{child, field, Rdbg, ATTACH_TARGET_TYPES};
+use rdbg::{child, field, Rdbg, TargetAttachment};
 use roxmltree::{Document, Node};
 use serde_json::{json, Value};
 use unica_source_contract::debug_source::{DebugModuleId, DebugModuleSource};
@@ -22,6 +22,26 @@ use uuid::Uuid;
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
 type ResolveModules = fn(&Path) -> Result<Vec<DebugModuleSource>>;
+
+const DEFAULT_AUTO_ATTACH_TYPES: [&str; 3] = ["Client", "ManagedClient", "ServerEmulation"];
+const DEBUG_TARGET_TYPES: &[&str] = &[
+    "Client",
+    "ManagedClient",
+    "WEBClient",
+    "COMConnector",
+    "Server",
+    "ServerEmulation",
+    "WEBService",
+    "HTTPService",
+    "OData",
+    "JOB",
+    "JobFileMode",
+    "MobileClient",
+    "MobileServer",
+    "MobileJobFileMode",
+    "MobileManagedClient",
+    "MobileManagedServer",
+];
 
 pub fn run_stdio(resolve_modules: ResolveModules) -> i32 {
     let (tx, rx) = mpsc::sync_channel(8);
@@ -199,6 +219,13 @@ struct Target {
     stepping: bool,
 }
 
+struct AvailableTarget {
+    id: Uuid,
+    kind: String,
+    name: Option<String>,
+    session_number: Option<u64>,
+}
+
 struct Frame {
     id: u64,
     level: usize,
@@ -213,6 +240,7 @@ struct Session {
     targets: HashMap<u64, Target>,
     next_id: u64,
     configured: bool,
+    auto_attach_types: Vec<&'static str>,
 }
 
 impl Session {
@@ -239,30 +267,54 @@ impl Session {
                 .into());
             }
         }
+        let modules = Modules::new(sources)?;
+        let rdbg = Rdbg::attach(port.try_into()?, alias)?;
+        rdbg.set_auto_attach_types(&DEFAULT_AUTO_ATTACH_TYPES)?;
         Ok(Self {
-            modules: Modules::new(sources)?,
-            rdbg: Rdbg::attach(port.try_into()?, alias)?,
+            modules,
+            rdbg,
             breakpoints: HashMap::new(),
             targets: HashMap::new(),
             next_id: 0,
             configured: false,
+            auto_attach_types: DEFAULT_AUTO_ATTACH_TYPES.to_vec(),
         })
     }
 
     fn request(&mut self, name: &str, args: &Value, events: &mut Vec<Value>) -> Result<Value> {
         let body = match name {
             "configurationDone" => {
-                let xml = self.rdbg.targets()?;
-                if !xml.trim().is_empty() {
-                    let doc = Document::parse(&xml)?;
-                    for node in doc.descendants().filter(|node| is_attach_target(*node)) {
-                        if let Some(id) = field(node, "id") {
-                            self.add_target(id.parse()?, events)?;
-                        }
+                for target in available_targets(&self.rdbg.targets()?)? {
+                    if self.auto_attach_types.contains(&target.kind.as_str()) {
+                        self.add_target(target.id, events)?;
                     }
                 }
                 self.configured = true;
                 json!({})
+            }
+            "unica/debugTargets" => self.debug_targets()?,
+            "unica/attachDebugTarget" => {
+                let id = string(args, "id")?.parse()?;
+                self.require_available_target(id)?;
+                let thread = if let Some(thread) = self.thread_of(id) {
+                    thread
+                } else {
+                    match self.rdbg.attach_target(id)? {
+                        TargetAttachment::Confirmed => {}
+                        TargetAttachment::NoResult => self.require_available_target(id)?,
+                        TargetAttachment::Refused => {
+                            return Err("dbgs refused to attach the debug target".into());
+                        }
+                    }
+                    self.register_target(id, events)
+                };
+                json!({"threadId":thread})
+            }
+            "unica/setAutoAttachTypes" => {
+                let types = parse_auto_attach_types(&args["types"])?;
+                self.rdbg.set_auto_attach_types(&types)?;
+                self.auto_attach_types = types;
+                json!({"autoAttachTypes":self.auto_attach_types})
             }
             "setBreakpoints" => self.set_breakpoints(args)?,
             "threads" => json!({"threads": self.targets.keys().map(|id| {
@@ -443,11 +495,57 @@ impl Session {
         Ok(events)
     }
 
-    fn add_target(&mut self, id: Uuid, events: &mut Vec<Value>) -> Result<()> {
-        if self.targets.values().any(|target| target.id == id) {
+    fn debug_targets(&self) -> Result<Value> {
+        let targets: Vec<_> = available_targets(&self.rdbg.targets()?)?
+            .into_iter()
+            .map(|target| {
+                let thread = self.thread_of(target.id);
+                let mut item = json!({"id":target.id.to_string(),"type":target.kind,"connected":thread.is_some()});
+                if let Some(thread) = thread {
+                    item["threadId"] = json!(thread);
+                }
+                if let Some(name) = target.name {
+                    item["name"] = json!(name);
+                }
+                if let Some(number) = target.session_number {
+                    item["sessionNumber"] = json!(number);
+                }
+                item
+            })
+            .collect();
+        Ok(
+            json!({"targets":targets,"types":DEBUG_TARGET_TYPES,"autoAttachTypes":self.auto_attach_types}),
+        )
+    }
+
+    fn require_available_target(&self, id: Uuid) -> Result<()> {
+        if available_targets(&self.rdbg.targets()?)?
+            .iter()
+            .any(|target| target.id == id)
+        {
             return Ok(());
         }
-        self.rdbg.attach_target(id)?;
+        Err("debug target is no longer available".into())
+    }
+
+    fn thread_of(&self, id: Uuid) -> Option<u64> {
+        self.targets
+            .iter()
+            .find_map(|(key, target)| (target.id == id).then_some(*key))
+    }
+
+    fn add_target(&mut self, id: Uuid, events: &mut Vec<Value>) -> Result<()> {
+        if self.thread_of(id).is_some() {
+            return Ok(());
+        }
+        if matches!(self.rdbg.attach_target(id)?, TargetAttachment::Refused) {
+            return Ok(());
+        }
+        self.register_target(id, events);
+        Ok(())
+    }
+
+    fn register_target(&mut self, id: Uuid, events: &mut Vec<Value>) -> u64 {
         self.next_id += 1;
         let thread = self.next_id;
         self.targets.insert(
@@ -462,7 +560,7 @@ impl Session {
             "thread",
             json!({"reason":"started","threadId":thread}),
         ));
-        Ok(())
+        thread
     }
 
     fn consume(&mut self, xml: &str, events: &mut Vec<Value>) -> Result<()> {
@@ -482,19 +580,20 @@ impl Session {
                 .ok_or("missing rdbg target ID")?
                 .parse()?;
             let command = field(result, "cmdID");
-            if command == Some("targetStarted") && is_attach_target(target) {
-                self.add_target(id, events)?;
+            let auto_attach = field(target, "targetType")
+                .is_some_and(|kind| self.auto_attach_types.contains(&kind));
+            if command == Some("targetStarted") {
+                if auto_attach {
+                    self.add_target(id, events)?;
+                }
                 continue;
             }
             // An auto-attached server emulation can report its first stop
             // without a separate targetStarted notification.
-            if command == Some("callStackFormed") && is_attach_target(target) {
+            if command == Some("callStackFormed") && auto_attach {
                 self.add_target(id, events)?;
             }
-            let thread = self
-                .targets
-                .iter()
-                .find_map(|(key, target)| (target.id == id).then_some(*key));
+            let thread = self.thread_of(id);
             match (command, thread) {
                 (Some("targetQuit"), Some(thread)) => {
                     self.targets.remove(&thread);
@@ -633,8 +732,44 @@ fn decode(text: Option<&str>) -> Result<String> {
     Ok(String::from_utf8(STANDARD.decode(compact)?)?)
 }
 
-fn is_attach_target(node: Node<'_, '_>) -> bool {
-    field(node, "targetType").is_some_and(|kind| ATTACH_TARGET_TYPES.contains(&kind))
+fn available_targets(xml: &str) -> Result<Vec<AvailableTarget>> {
+    if xml.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    let doc = Document::parse(xml)?;
+    doc.root_element()
+        .children()
+        .filter(|node| node.has_tag_name("id"))
+        .map(|node| {
+            Ok(AvailableTarget {
+                id: field(node, "id").ok_or("missing rdbg target ID")?.parse()?,
+                kind: field(node, "targetType")
+                    .ok_or("missing rdbg target type")?
+                    .to_owned(),
+                name: field(node, "userName")
+                    .filter(|name| !name.is_empty())
+                    .map(str::to_owned),
+                session_number: field(node, "seanceNo").and_then(|number| number.parse().ok()),
+            })
+        })
+        .collect()
+}
+
+fn parse_auto_attach_types(value: &Value) -> Result<Vec<&'static str>> {
+    let requested = value.as_array().ok_or("expected types array")?;
+    let mut types = Vec::new();
+    for kind in requested {
+        let kind = kind.as_str().ok_or("expected debug target type string")?;
+        let kind = DEBUG_TARGET_TYPES
+            .iter()
+            .copied()
+            .find(|known| *known == kind)
+            .ok_or_else(|| format!("unsupported debug target type {kind}"))?;
+        if !types.contains(&kind) {
+            types.push(kind);
+        }
+    }
+    Ok(types)
 }
 
 fn string<'a>(value: &'a Value, key: &str) -> Result<&'a str> {
@@ -656,6 +791,32 @@ fn event(name: &str, body: Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn debug_target_snapshot_preserves_platform_identity() {
+        let id = Uuid::new_v4();
+        let xml = format!(
+            "<response><id><id>{id}</id><targetType>HTTPService</targetType>\
+             <userName>Тест</userName><seanceNo>42</seanceNo></id></response>"
+        );
+        let targets = available_targets(&xml).unwrap();
+        assert_eq!(targets.len(), 1);
+        let target = &targets[0];
+        assert_eq!(target.id, id);
+        assert_eq!(target.kind, "HTTPService");
+        assert_eq!(target.name.as_deref(), Some("Тест"));
+        assert_eq!(target.session_number, Some(42));
+    }
+
+    #[test]
+    fn auto_attach_accepts_empty_and_rejects_unknown_types() {
+        assert!(parse_auto_attach_types(&json!([])).unwrap().is_empty());
+        assert_eq!(
+            parse_auto_attach_types(&json!(["HTTPService", "HTTPService", "JOB"])).unwrap(),
+            ["HTTPService", "JOB"]
+        );
+        assert!(parse_auto_attach_types(&json!(["unsupported"])).is_err());
+    }
 
     #[test]
     fn context_read_keeps_expandable_and_unreadable_properties_distinct() {

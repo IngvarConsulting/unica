@@ -11,13 +11,18 @@ const BASE: &str = "http://v8.1c.ru/8.3/debugger/debugBaseData";
 const BREAKPOINTS: &str = "http://v8.1c.ru/8.3/debugger/debugBreakpoints";
 const CALCULATIONS: &str = "http://v8.1c.ru/8.3/debugger/debugCalculations";
 const AUTO_ATTACH: &str = "http://v8.1c.ru/8.3/debugger/debugAutoAttach";
-pub(crate) const ATTACH_TARGET_TYPES: [&str; 3] = ["Client", "ManagedClient", "ServerEmulation"];
 
 pub(crate) struct Rdbg {
     http: reqwest::blocking::Client,
     url: String,
     alias: String,
     id: uuid::Uuid,
+}
+
+pub(crate) enum TargetAttachment {
+    Confirmed,
+    Refused,
+    NoResult,
 }
 
 impl Rdbg {
@@ -49,27 +54,38 @@ impl Rdbg {
         if status != "registered" {
             return Err(format!("rdbg attach rejected: {status}").into());
         }
-        let target_types = ATTACH_TARGET_TYPES
+        Ok(client)
+    }
+
+    pub fn set_auto_attach_types(&self, types: &[&str]) -> Result<()> {
+        let target_types = types
             .iter()
             .map(|kind| format!("<targetType xmlns=\"{AUTO_ATTACH}\">{kind}</targetType>"))
             .collect::<String>();
-        client.call(
+        self.call(
             "setAutoAttachSettings",
             &format!("<autoAttachSettings>{target_types}</autoAttachSettings>"),
         )?;
-        Ok(client)
+        Ok(())
     }
 
     pub fn targets(&self) -> Result<String> {
         self.call("getDbgTargets", "")
     }
 
-    pub fn attach_target(&self, target: uuid::Uuid) -> Result<()> {
-        self.call(
+    pub fn attach_target(&self, target: uuid::Uuid) -> Result<TargetAttachment> {
+        let xml = self.call(
             "attachDetachDbgTargets",
             &format!("<attach>true</attach><id><id xmlns=\"{BASE}\">{target}</id></id>"),
         )?;
-        Ok(())
+        if xml.trim().is_empty() {
+            return Ok(TargetAttachment::NoResult);
+        }
+        match field(Document::parse(&xml)?.root_element(), "result") {
+            Some("true" | "1") => Ok(TargetAttachment::Confirmed),
+            Some("false" | "0") => Ok(TargetAttachment::Refused),
+            _ => Err("invalid rdbg target attachment response".into()),
+        }
     }
 
     pub fn poll(&self) -> Result<String> {
