@@ -248,6 +248,17 @@ fn descriptor_path(metadata: &str) -> Result<std::path::PathBuf> {
 }
 
 fn descriptor(root: &SourceDirectory, path: &Path) -> Result<String> {
+    // resource-limit: dap.saved-descriptor-bytes
+    // class: step
+    // unit: bytes
+    // scope: file
+    // value: 16777216
+    // resource: Размер одного XML-дескриптора, читаемого целиком для привязки модуля DAP.
+    // status: unproven
+    // origin: 8e72f5805
+    // problem: неизвестно
+    // on-reach: Workspace отказывает в чтении дескриптора, attach возвращает ошибку.
+    // issue: #1119
     const MAX_DESCRIPTOR_BYTES: usize = 16 * 1024 * 1024;
     Ok(String::from_utf8(root.read_relative_regular_bounded(
         path,
