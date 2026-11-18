@@ -11,6 +11,7 @@ const BASE: &str = "http://v8.1c.ru/8.3/debugger/debugBaseData";
 const BREAKPOINTS: &str = "http://v8.1c.ru/8.3/debugger/debugBreakpoints";
 const CALCULATIONS: &str = "http://v8.1c.ru/8.3/debugger/debugCalculations";
 const AUTO_ATTACH: &str = "http://v8.1c.ru/8.3/debugger/debugAutoAttach";
+pub(crate) const ATTACH_TARGET_TYPES: [&str; 3] = ["Client", "ManagedClient", "ServerEmulation"];
 
 pub(crate) struct Rdbg {
     http: reqwest::blocking::Client,
@@ -48,9 +49,14 @@ impl Rdbg {
         if status != "registered" {
             return Err(format!("rdbg attach rejected: {status}").into());
         }
-        client.call("setAutoAttachSettings", &format!(
-            "<autoAttachSettings><targetType xmlns=\"{AUTO_ATTACH}\">Client</targetType></autoAttachSettings>"
-        ))?;
+        let target_types = ATTACH_TARGET_TYPES
+            .iter()
+            .map(|kind| format!("<targetType xmlns=\"{AUTO_ATTACH}\">{kind}</targetType>"))
+            .collect::<String>();
+        client.call(
+            "setAutoAttachSettings",
+            &format!("<autoAttachSettings>{target_types}</autoAttachSettings>"),
+        )?;
         Ok(client)
     }
 

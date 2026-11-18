@@ -13,7 +13,7 @@ use std::{
 
 use base64::{engine::general_purpose::STANDARD, Engine};
 use modules::Modules;
-use rdbg::{child, field, Rdbg};
+use rdbg::{child, field, Rdbg, ATTACH_TARGET_TYPES};
 use roxmltree::{Document, Node};
 use serde_json::{json, Value};
 use unica_source_contract::debug_source::{DebugModuleId, DebugModuleSource};
@@ -255,10 +255,7 @@ impl Session {
                 let xml = self.rdbg.targets()?;
                 if !xml.trim().is_empty() {
                     let doc = Document::parse(&xml)?;
-                    for node in doc
-                        .descendants()
-                        .filter(|node| field(*node, "targetType") == Some("Client"))
-                    {
+                    for node in doc.descendants().filter(|node| is_attach_target(*node)) {
                         if let Some(id) = field(node, "id") {
                             self.add_target(id.parse()?, events)?;
                         }
@@ -269,7 +266,7 @@ impl Session {
             }
             "setBreakpoints" => self.set_breakpoints(args)?,
             "threads" => json!({"threads": self.targets.keys().map(|id| {
-                json!({"id":id,"name":format!("1C client {id}")})
+                json!({"id":id,"name":format!("1C target {id}")})
             }).collect::<Vec<_>>()}),
             "stackTrace" => {
                 let target = self
@@ -479,14 +476,21 @@ impl Session {
             let id: Uuid = field(target, "id")
                 .ok_or("missing rdbg target ID")?
                 .parse()?;
+            let command = field(result, "cmdID");
+            if command == Some("targetStarted") && is_attach_target(target) {
+                self.add_target(id, events)?;
+                continue;
+            }
+            // An auto-attached server emulation can report its first stop
+            // without a separate targetStarted notification.
+            if command == Some("callStackFormed") && is_attach_target(target) {
+                self.add_target(id, events)?;
+            }
             let thread = self
                 .targets
                 .iter()
                 .find_map(|(key, target)| (target.id == id).then_some(*key));
-            match (field(result, "cmdID"), thread) {
-                (Some("targetStarted"), _) if field(target, "targetType") == Some("Client") => {
-                    self.add_target(id, events)?;
-                }
+            match (command, thread) {
                 (Some("targetQuit"), Some(thread)) => {
                     self.targets.remove(&thread);
                     events.push(event(
@@ -622,6 +626,10 @@ fn decode(text: Option<&str>) -> Result<String> {
         .filter(|ch| !ch.is_ascii_whitespace())
         .collect();
     Ok(String::from_utf8(STANDARD.decode(compact)?)?)
+}
+
+fn is_attach_target(node: Node<'_, '_>) -> bool {
+    field(node, "targetType").is_some_and(|kind| ATTACH_TARGET_TYPES.contains(&kind))
 }
 
 fn string<'a>(value: &'a Value, key: &str) -> Result<&'a str> {
