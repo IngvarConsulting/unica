@@ -5,7 +5,7 @@ use crate::layout::{
 use std::path::{Component, Path, PathBuf};
 use unica_address::address::{AddressSegment, NodeKind, QualifiedAddress};
 use unica_address::module_routes::{
-    has_direct_module_route, has_nested_module_route, ModuleRole, ModuleRouteKind,
+    has_direct_module_route, has_nested_module_role, ModuleRole, ModuleRouteKind,
 };
 use unica_address::source_target::MetadataAddress;
 use unica_source_contract::SourceSetKind;
@@ -325,11 +325,17 @@ impl PlatformXmlModuleLayoutDescriptor {
                             .is_some_and(|(owner, role)| has_direct_module_route(owner, role))
                     })
             }
-            ModuleLayoutCapability::NestedFormOrCommand => captures.kind.is_some_and(|kind| {
-                NodeKind::parse(kind.tag)
-                    .ok()
-                    .is_some_and(has_nested_module_route)
-            }),
+            ModuleLayoutCapability::NestedFormOrCommand => {
+                let role = match self.fixed_role {
+                    Some(PlatformXmlModuleRole::FormModule) => ModuleRole::Form,
+                    Some(PlatformXmlModuleRole::CommandModule) => ModuleRole::Command,
+                    _ => return false,
+                };
+                captures
+                    .kind
+                    .and_then(|kind| NodeKind::parse(kind.tag).ok())
+                    .is_some_and(|owner| has_nested_module_role(owner, role))
+            }
         }
     }
 
@@ -1005,6 +1011,22 @@ mod code_layout_tests {
             );
         }
     }
+    #[test]
+    fn settings_storage_form_module_maps_in_both_directions() {
+        let relative = Path::new("SettingsStorages/User/Forms/Save/Ext/Form/Module.bsl");
+        let identity = module_identity(relative).unwrap();
+        assert_eq!(identity.owner, "SettingsStorage.User");
+        assert_eq!(identity.role.as_str(), "FormModule");
+        assert_eq!(
+            super::platform_xml_module_relative(&identity.address).unwrap(),
+            relative,
+        );
+        assert!(module_identity(Path::new(
+            "SettingsStorages/User/Commands/Open/Ext/CommandModule.bsl"
+        ))
+        .is_err());
+    }
+
     #[test]
     fn noncanonical_or_unsupported_module_layouts_are_rejected() {
         for path in [
