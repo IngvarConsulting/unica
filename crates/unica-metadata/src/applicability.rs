@@ -94,7 +94,7 @@ impl OperationApplicability {
                 "`Configuration` of a configuration, `Kind.Name` or its node with an own support record: `.Form.F`, `.Template.T`, `.Command.C`, `.Attribute.A`, `.TabularSection.T[.Attribute.A]`, `.Dimension.D`, `.Resource.R`; `Subsystem.A[.Subsystem.B…]`"
             }
             Self::MetadataOrRoleOrSubsystem => {
-                "`Configuration`, `Kind.Name`, `CommonForm.Name.Metadata`, `Kind.Name.Form.Name.Metadata`, `Role.Name` or `Subsystem.Name[.Subsystem.Child]`"
+                "`Configuration`, `Kind.Name`, `CommonForm.Name.Metadata`, `Kind.Name.Form.Name.Metadata`, `Role.Name`, `Subsystem.Name[.Subsystem.Child]` or `Catalog.Name.StandardAttribute.Owner`"
             }
             Self::MetadataAttributeContainer => {
                 "`Kind.Name` of a kind with attributes or `Kind.Name.TabularSection.T`"
