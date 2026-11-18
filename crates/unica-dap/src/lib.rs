@@ -4,7 +4,7 @@ mod modules;
 mod rdbg;
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     io::{self, BufRead, Read, Write},
     path::Path,
     sync::{
@@ -268,6 +268,7 @@ struct Frame {
     body: Value,
     variable_paths: HashMap<u64, Vec<String>>,
     evaluated_children: HashMap<u64, Vec<ContextVariable>>,
+    collection_paths: HashSet<u64>,
 }
 
 struct Session {
@@ -487,7 +488,7 @@ impl Session {
     }
 
     fn variables(&mut self, reference: u64, events: &mut Vec<Value>) -> Result<Vec<Value>> {
-        let (target, frame, level, path, evaluated_children) = self
+        let (target, frame, level, path, evaluated_children, collection) = self
             .targets
             .values()
             .find_map(|target| {
@@ -503,17 +504,61 @@ impl Session {
                         frame.level,
                         path,
                         frame.evaluated_children.get(&reference).cloned(),
+                        frame.collection_paths.contains(&reference),
                     ))
                 })
             })
             .ok_or("unknown or expired variable reference")?;
-        let values = if let Some(children) = evaluated_children {
+        let mut values = if let Some(children) = evaluated_children {
             children
+        } else if collection {
+            let evaluation = Uuid::new_v4();
+            let reply = self.rdbg.collection(target, level, evaluation, &path)?;
+            self.wait_for_calculation(reply, evaluation, events, read_collection)?
         } else {
             let evaluation = Uuid::new_v4();
             let reply = self.rdbg.variables(target, level, evaluation, &path)?;
             self.wait_for_calculation(reply, evaluation, events, read_context)?
         };
+        if path.is_empty() {
+            let pending: Vec<_> = values
+                .iter()
+                .enumerate()
+                .filter(|(_, value)| {
+                    value.indexed && value.indexed_count.is_none() && is_identifier(&value.name)
+                })
+                .map(|(index, value)| (index, value.name.clone(), Uuid::new_v4()))
+                .collect();
+            if let Some(reply) = (!pending.is_empty())
+                .then(|| self.rdbg.collection_sizes(target, level, &pending).ok())
+                .flatten()
+            {
+                let mut awaiting: HashMap<_, _> = pending
+                    .into_iter()
+                    .map(|(index, _, evaluation)| (evaluation, index))
+                    .collect();
+                // Count metadata is optional; keep locals and any sizes received if this wait fails.
+                let _ = self.wait_for_reply(reply, events, |xml| {
+                    if xml.trim().is_empty() {
+                        return Ok(None);
+                    }
+                    let doc = Document::parse(xml)?;
+                    for node in doc.descendants() {
+                        let Some(evaluation) = field(node, "expressionResultID")
+                            .and_then(|id| id.parse::<Uuid>().ok())
+                        else {
+                            continue;
+                        };
+                        if let Some(index) = awaiting.remove(&evaluation) {
+                            values[index].indexed_count = child(node, "resultValueInfo")
+                                .and_then(|value| field(value, "collectionSize"))
+                                .and_then(|count| count.parse().ok());
+                        }
+                    }
+                    Ok(awaiting.is_empty().then_some(()))
+                });
+            }
+        }
         let frame = self
             .targets
             .values_mut()
@@ -523,7 +568,8 @@ impl Session {
         let mut result = Vec::with_capacity(values.len());
         for value in values {
             let mut reference = 0;
-            if value.expandable
+            if !collection
+                && (value.expandable || value.indexed)
                 && path.first().map_or_else(
                     || is_identifier(&value.name),
                     |root| root.split('.').all(is_identifier),
@@ -532,9 +578,21 @@ impl Session {
                 let mut child_path = path.clone();
                 child_path.push(value.name.clone());
                 reference = frame.reference_for(child_path, &mut self.next_id);
+                if value.indexed {
+                    frame.collection_paths.insert(reference);
+                } else {
+                    frame.collection_paths.remove(&reference);
+                }
             }
-            result.push(json!({"name":value.name,"value":value.summary,
-                "type":value.type_name,"variablesReference":reference}));
+            let mut variable = json!({"name":value.name,"value":value.summary,
+                "type":value.type_name,"variablesReference":reference});
+            if let Some(count) = value
+                .indexed_count
+                .filter(|_| reference != 0 && value.indexed)
+            {
+                variable["indexedVariables"] = json!(count);
+            }
+            result.push(variable);
         }
         Ok(result)
     }
@@ -650,7 +708,18 @@ impl Session {
         events: &mut Vec<Value>,
         parse: fn(Node<'_, '_>) -> Result<T>,
     ) -> Result<T> {
-        if let Some(value) = read_calculation(&initial, evaluation, parse)? {
+        self.wait_for_reply(initial, events, |xml| {
+            read_calculation(xml, evaluation, parse)
+        })
+    }
+
+    fn wait_for_reply<T>(
+        &mut self,
+        initial: String,
+        events: &mut Vec<Value>,
+        mut parse: impl FnMut(&str) -> Result<Option<T>>,
+    ) -> Result<T> {
+        if let Some(value) = parse(&initial)? {
             return Ok(value);
         }
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -670,7 +739,7 @@ impl Session {
                 }
             };
             self.consume(&reply, events)?;
-            if let Some(value) = read_calculation(&reply, evaluation, parse)? {
+            if let Some(value) = parse(&reply)? {
                 return Ok(value);
             }
         }
@@ -941,7 +1010,7 @@ impl Session {
                     body["source"] = json!({"name":address,"path":address});
                 }
             }
-            Ok(Frame { id, level, body, variable_paths: HashMap::new(), evaluated_children: HashMap::new() })
+            Ok(Frame { id, level, body, variable_paths: HashMap::new(), evaluated_children: HashMap::new(), collection_paths: HashSet::new() })
         }).collect()
     }
 }
@@ -967,6 +1036,8 @@ struct ContextVariable {
     summary: String,
     type_name: String,
     expandable: bool,
+    indexed: bool,
+    indexed_count: Option<u64>,
 }
 
 fn is_identifier(name: &str) -> bool {
@@ -1031,7 +1102,32 @@ fn read_value(name: String, value: Node<'_, '_>) -> Result<ContextVariable> {
         summary: decode(field(value, "pres"))?,
         type_name: field(value, "typeName").unwrap_or_default().to_owned(),
         expandable: field(value, "isExpandable") == Some("true"),
+        indexed: field(value, "isIIndexedCollectionRO") == Some("true"),
+        indexed_count: field(value, "collectionSize").and_then(|size| size.parse().ok()),
     })
+}
+
+fn read_collection(result: Node<'_, '_>) -> Result<Vec<ContextVariable>> {
+    if field(result, "evalResultState") != Some("correctly") {
+        return Err("rdbg could not read collection elements".into());
+    }
+    if child(result, "resultValueInfo").and_then(|value| field(value, "collectionSize"))
+        == Some("0")
+    {
+        return Ok(Vec::new());
+    }
+    let collection = child(result, "calculationResult")
+        .filter(|value| field(*value, "viewInterface") == Some("collection"))
+        .ok_or("rdbg did not return collection elements")?;
+    collection
+        .children()
+        .filter(|item| item.has_tag_name("valueOfCollectionInfo"))
+        .enumerate()
+        .map(|(index, item)| {
+            let value = child(item, "valueInfo").ok_or("missing collection element")?;
+            read_value(format!("[{index}]"), value)
+        })
+        .collect()
 }
 
 fn read_context(result: Node<'_, '_>) -> Result<Vec<ContextVariable>> {
@@ -1058,6 +1154,8 @@ fn read_context_children(context: Node<'_, '_>) -> Result<Vec<ContextVariable>> 
                     summary: decode(field(property, "errorStr"))?,
                     type_name: String::new(),
                     expandable: false,
+                    indexed: false,
+                    indexed_count: None,
                 });
             }
             let value = child(item, "valueInfo").ok_or("missing variable value")?;
@@ -1182,6 +1280,32 @@ fn event(name: &str, body: Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn indexed_values_keep_platform_count_and_order() {
+        let evaluation = Uuid::new_v4();
+        let xml = format!(
+            "<result><expressionResultID>{evaluation}</expressionResultID>\
+             <evalResultState>correctly</evalResultState><calculationResult><viewInterface>collection</viewInterface>\
+             <valueOfCollectionInfo><valueInfo><pres>MQ==</pres></valueInfo></valueOfCollectionInfo>\
+             <valueOfCollectionInfo><valueInfo><pres>Mg==</pres></valueInfo></valueOfCollectionInfo>\
+             </calculationResult></result>"
+        );
+        let items = read_calculation(&xml, evaluation, read_collection)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            items
+                .iter()
+                .map(|item| (item.name.as_str(), item.summary.as_str()))
+                .collect::<Vec<_>>(),
+            [("[0]", "1"), ("[1]", "2")]
+        );
+        let xml = Document::parse("<value><isIIndexedCollectionRO>true</isIIndexedCollectionRO><collectionSize>2</collectionSize></value>").unwrap();
+        let value = read_value("Массив".into(), xml.root_element()).unwrap();
+        assert!(value.indexed);
+        assert_eq!(value.indexed_count, Some(2));
+    }
 
     #[test]
     fn exception_filter_options_distinguish_off_all_and_text() {

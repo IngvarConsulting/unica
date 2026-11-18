@@ -199,8 +199,38 @@ impl Rdbg {
         } else {
             "evalExpr"
         };
-        let source = calculation_source(level, evaluation, path);
+        let source = calculation_source(level, evaluation, path, "context");
         self.call(command, &format!(
+            "<calcWaitingTime>100</calcWaitingTime><targetID><id xmlns=\"{BASE}\">{target}</id></targetID><expr>{source}</expr>"
+        ))
+    }
+
+    pub fn collection_sizes(
+        &self,
+        target: uuid::Uuid,
+        level: usize,
+        names: &[(usize, String, uuid::Uuid)],
+    ) -> Result<String> {
+        let mut body = format!(
+            "<calcWaitingTime>100</calcWaitingTime><targetID><id xmlns=\"{BASE}\">{target}</id></targetID>"
+        );
+        for (_, name, evaluation) in names {
+            let source =
+                calculation_source(level, *evaluation, std::slice::from_ref(name), "context");
+            body.push_str(&format!("<expr>{source}</expr>"));
+        }
+        self.call("evalExpr", &body)
+    }
+
+    pub fn collection(
+        &self,
+        target: uuid::Uuid,
+        level: usize,
+        evaluation: uuid::Uuid,
+        path: &[String],
+    ) -> Result<String> {
+        let source = calculation_source(level, evaluation, path, "collection");
+        self.call("evalExpr", &format!(
             "<calcWaitingTime>100</calcWaitingTime><targetID><id xmlns=\"{BASE}\">{target}</id></targetID><expr>{source}</expr>"
         ))
     }
@@ -213,7 +243,7 @@ impl Rdbg {
         path: &[String],
         value: &str,
     ) -> Result<String> {
-        let source = calculation_source(level, evaluation, path);
+        let source = calculation_source(level, evaluation, path, "context");
         let value = escape(value);
         self.call("modifyValue", &format!(
             "<targetID><id xmlns=\"{BASE}\">{target}</id></targetID><modifyDataPath>{source}</modifyDataPath><newValueInfo><variant xmlns=\"{CALCULATIONS}\">expr</variant><valueExpression xmlns=\"{CALCULATIONS}\">{value}</valueExpression></newValueInfo><timeout>3000</timeout>"
@@ -293,7 +323,12 @@ fn namespace_request_children(body: &str) -> Result<String> {
     Ok(result)
 }
 
-fn calculation_source(level: usize, evaluation: uuid::Uuid, path: &[String]) -> String {
+fn calculation_source(
+    level: usize,
+    evaluation: uuid::Uuid,
+    path: &[String],
+    interface: &str,
+) -> String {
     let mut items = String::new();
     for (index, name) in path.iter().enumerate() {
         let name = escape(name);
@@ -307,7 +342,7 @@ fn calculation_source(level: usize, evaluation: uuid::Uuid, path: &[String]) -> 
             ));
     }
     format!(
-        "<stackLevel xmlns=\"{CALCULATIONS}\">{level}</stackLevel><srcCalcInfo xmlns=\"{CALCULATIONS}\"><expressionResultID>{evaluation}</expressionResultID>{items}<interfaces>context</interfaces></srcCalcInfo><presOptions xmlns=\"{CALCULATIONS}\"><maxTextSize>307200</maxTextSize><stopOnFirstEOL>false</stopOnFirstEOL></presOptions>"
+        "<stackLevel xmlns=\"{CALCULATIONS}\">{level}</stackLevel><srcCalcInfo xmlns=\"{CALCULATIONS}\"><expressionResultID>{evaluation}</expressionResultID>{items}<interfaces>{interface}</interfaces></srcCalcInfo><presOptions xmlns=\"{CALCULATIONS}\"><maxTextSize>307200</maxTextSize><stopOnFirstEOL>false</stopOnFirstEOL></presOptions>"
     )
 }
 
