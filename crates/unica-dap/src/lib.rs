@@ -194,7 +194,17 @@ impl<W: Write> Adapter<W> {
                     return Err("unica dap expects logical addresses in Source.path".into());
                 }
                 self.initialized = true;
-                Ok(json!({"supportsConfigurationDoneRequest":true}))
+                Ok(json!({
+                    "supportsConfigurationDoneRequest": true,
+                    "supportsConditionalBreakpoints": true,
+                    "supportsExceptionFilterOptions": true,
+                    "supportsExceptionInfoRequest": true,
+                    "exceptionBreakpointFilters": [
+                        {"filter":"all","label":"Все ошибки 1С","default":false},
+                        {"filter":"text","label":"Ошибка 1С по тексту","default":false,
+                         "supportsCondition":true,"conditionDescription":"Подстрока в описании ошибки"}
+                    ]
+                }))
             }
             "attach" if self.initialized && self.session.is_none() => {
                 self.session = Some(Session::attach(args, self.resolve_modules)?);
@@ -231,10 +241,17 @@ impl<W: Write> Adapter<W> {
     }
 }
 
+#[derive(Clone)]
+struct Breakpoint {
+    line: u32,
+    condition: Option<String>,
+}
+
 struct Target {
     id: Uuid,
     frames: Vec<Frame>,
     stepping: bool,
+    exception: Option<String>,
 }
 
 struct AvailableTarget {
@@ -255,7 +272,7 @@ struct Frame {
 struct Session {
     rdbg: Arc<Rdbg>,
     modules: Modules,
-    breakpoints: HashMap<DebugModuleId, Vec<u32>>,
+    breakpoints: HashMap<DebugModuleId, Vec<Breakpoint>>,
     targets: HashMap<u64, Target>,
     next_id: u64,
     event_reader: Option<Receiver<Result<String>>>,
@@ -343,6 +360,23 @@ impl Session {
                 json!({"autoAttachTypes":self.auto_attach_types})
             }
             "setBreakpoints" => self.set_breakpoints(args)?,
+            "setExceptionBreakpoints" => {
+                let (all, text) = exception_filters(args)?;
+                self.rdbg.set_exception_filters(all, &text)?;
+                json!({})
+            }
+            "exceptionInfo" => {
+                let target = self
+                    .targets
+                    .get(&number(args, "threadId")?)
+                    .ok_or("unknown thread")?;
+                let description = target
+                    .exception
+                    .as_deref()
+                    .ok_or("thread is not stopped on an exception")?;
+                json!({"exceptionId":"1C runtime error","description":description,"breakMode":"always",
+                       "details":{"message":description}})
+            }
             "threads" => json!({"threads": self.targets.keys().map(|id| {
                 json!({"id":id,"name":format!("1C target {id}")})
             }).collect::<Vec<_>>()}),
@@ -351,7 +385,7 @@ impl Session {
                     .targets
                     .get(&number(args, "threadId")?)
                     .ok_or("unknown thread")?;
-                if target.frames.is_empty() {
+                if target.frames.is_empty() && target.exception.is_none() {
                     return Err("thread is running".into());
                 }
                 json!({"stackFrames":target.frames.iter().map(|frame| &frame.body).collect::<Vec<_>>(),
@@ -370,7 +404,7 @@ impl Session {
             "next" | "stepIn" | "stepOut" | "continue" => {
                 let id = number(args, "threadId")?;
                 let target = self.targets.get_mut(&id).ok_or("unknown thread")?;
-                if target.frames.is_empty() {
+                if target.frames.is_empty() && target.exception.is_none() {
                     return Err("thread is running".into());
                 }
                 let action = match name {
@@ -382,6 +416,7 @@ impl Session {
                 let stepping = action != "Continue";
                 self.rdbg.step(target.id, action)?;
                 target.frames.clear();
+                target.exception = None;
                 target.stepping = stepping;
                 events.push(event(
                     "continued",
@@ -405,28 +440,34 @@ impl Session {
         let requested = args["breakpoints"]
             .as_array()
             .ok_or("expected breakpoints array")?;
-        let lines = requested
+        let breakpoints = requested
             .iter()
             .map(|bp| {
-                if ["condition", "hitCondition", "logMessage"]
+                if ["hitCondition", "logMessage"]
                     .iter()
                     .any(|key| !bp[*key].is_null())
                 {
-                    return Err("only unconditional breakpoints are supported".into());
+                    return Err("hit counts and logpoints are not supported".into());
                 }
                 let line: u32 = number(bp, "line")?.try_into()?;
                 if line == 0 {
                     return Err("line numbers start at one".into());
                 }
-                Ok(line)
+                let condition = if bp["condition"].is_null() {
+                    None
+                } else {
+                    let text = string(bp, "condition")?;
+                    (!text.trim().is_empty()).then(|| text.to_owned())
+                };
+                Ok(Breakpoint { line, condition })
             })
             .collect::<Result<Vec<_>>>()?;
         let mut updated = self.breakpoints.clone();
-        updated.insert(module, lines.clone());
+        updated.insert(module, breakpoints.clone());
         self.rdbg.breakpoints(updated.iter())?;
         self.breakpoints = updated;
-        Ok(json!({"breakpoints":lines.iter().map(|line| {
-            json!({"verified":true,"line":line,"source":source})
+        Ok(json!({"breakpoints":breakpoints.iter().map(|bp| {
+            json!({"verified":true,"line":bp.line,"source":source})
         }).collect::<Vec<_>>()}))
     }
 
@@ -666,6 +707,7 @@ impl Session {
                 id,
                 frames: Vec::new(),
                 stepping: false,
+                exception: None,
             },
         );
         events.push(event(
@@ -680,17 +722,32 @@ impl Session {
             return Ok(());
         }
         let doc = Document::parse(xml)?;
-        for result in doc
-            .root_element()
-            .children()
-            .filter(|node| node.has_tag_name("result"))
-        {
+        let results = || {
+            doc.root_element()
+                .children()
+                .filter(|node| node.has_tag_name("result"))
+        };
+        // dbgs reports the stack and its diagnostic as separate results in the
+        // same poll. Prefer the exception result, which also includes its stack.
+        let stops: HashMap<_, _> = results()
+            .filter_map(|result| {
+                let command = field(result, "cmdID")?;
+                if !matches!(
+                    command,
+                    "callStackFormed" | "rteProcessing" | "rteOnBPConditionProcessing"
+                ) {
+                    return None;
+                }
+                let target = field(child(result, "targetID")?, "id")?;
+                Some(((target, command), result))
+            })
+            .collect();
+        for result in results() {
             let Some(target) = child(result, "targetID") else {
                 continue;
             };
-            let id: Uuid = field(target, "id")
-                .ok_or("missing rdbg target ID")?
-                .parse()?;
+            let target_id = field(target, "id").ok_or("missing rdbg target ID")?;
+            let id: Uuid = target_id.parse()?;
             let command = field(result, "cmdID");
             let auto_attach = field(target, "targetType")
                 .is_some_and(|kind| self.auto_attach_types.contains(&kind));
@@ -702,7 +759,7 @@ impl Session {
             }
             // An auto-attached server emulation can report its first stop
             // without a separate targetStarted notification.
-            if command == Some("callStackFormed") && auto_attach {
+            if matches!(command, Some("callStackFormed" | "rteProcessing")) && auto_attach {
                 self.add_target(id, events)?;
             }
             let thread = self.thread_of(id);
@@ -714,9 +771,17 @@ impl Session {
                         json!({"reason":"exited","threadId":thread}),
                     ));
                 }
-                (Some("callStackFormed"), Some(thread)) => {
+                (Some("callStackFormed"), Some(thread))
+                    if !stops.contains_key(&(target_id, "rteProcessing")) =>
+                {
                     let frames = self.read_frames(result)?;
                     let target = self.targets.get_mut(&thread).expect("thread was found");
+                    if target.exception.is_some() {
+                        if target.frames.is_empty() {
+                            target.frames = frames;
+                        }
+                        continue;
+                    }
                     // 1C also marks a normal step as stopByBP. Prefer a step
                     // reason unless the new location has a user breakpoint.
                     let user_breakpoint = frames.first().is_some_and(|frame| {
@@ -726,7 +791,9 @@ impl Session {
                             .ok()
                             .and_then(|module| self.breakpoints.get(&module))
                             .is_some_and(|lines| {
-                                lines.iter().any(|line| frame.body["line"] == *line)
+                                lines.iter().any(|bp| {
+                                    bp.condition.is_none() && frame.body["line"] == bp.line
+                                })
                             })
                     });
                     let reason = if target.stepping && !user_breakpoint {
@@ -738,9 +805,45 @@ impl Session {
                     };
                     target.stepping = false;
                     target.frames = frames;
+                    target.exception = None;
+                    let mut body =
+                        json!({"reason":reason,"threadId":thread,"allThreadsStopped":false});
+                    if let Some(condition) = stops.get(&(target_id, "rteOnBPConditionProcessing")) {
+                        body["reason"] = json!("breakpoint");
+                        body["text"] = json!(condition_message(*condition));
+                    }
+                    events.push(event("stopped", body));
+                }
+                (Some("rteProcessing"), Some(thread)) => {
+                    let message = child(result, "exception")
+                        .and_then(|error| field(error, "descr"))
+                        .unwrap_or("Ошибка выполнения 1С")
+                        .to_owned();
+                    let stack = if child(result, "callStack").is_some() {
+                        result
+                    } else {
+                        stops
+                            .get(&(target_id, "callStackFormed"))
+                            .copied()
+                            .unwrap_or(result)
+                    };
+                    let frames = self.read_frames(stack)?;
+                    let target = self.targets.get_mut(&thread).expect("thread was found");
+                    target.frames = frames;
+                    target.stepping = false;
+                    target.exception = Some(message.clone());
+                    events.push(event("stopped", json!({
+                        "reason":"exception","threadId":thread,"allThreadsStopped":false,"text":message
+                    })));
+                }
+                (Some("rteOnBPConditionProcessing"), Some(_))
+                    if !stops.contains_key(&(target_id, "callStackFormed")) =>
+                {
                     events.push(event(
-                        "stopped",
-                        json!({"reason":reason,"threadId":thread,"allThreadsStopped":false}),
+                        "output",
+                        json!({
+                            "category":"stderr","output":format!("{}\n", condition_message(result))
+                        }),
                     ));
                 }
                 _ => {}
@@ -918,6 +1021,54 @@ fn available_targets(xml: &str) -> Result<Vec<AvailableTarget>> {
         .collect()
 }
 
+fn condition_message(result: Node<'_, '_>) -> String {
+    let error = child(result, "errorInfo").and_then(|info| child(info, "exception"));
+    let detail = error
+        .and_then(|error| field(error, "descr"))
+        .unwrap_or("1С не вернула описание");
+    format!("Ошибка в условии точки останова: {detail}")
+}
+
+fn exception_filters(args: &Value) -> Result<(bool, Vec<&str>)> {
+    let mut all = false;
+    let mut wants_text = false;
+    let mut text = Vec::new();
+    if let Some(filters) = args.get("filters") {
+        for filter in filters
+            .as_array()
+            .ok_or("expected exception filters array")?
+        {
+            match filter.as_str() {
+                Some("all") => all = true,
+                Some("text") => wants_text = true,
+                _ => return Err("unknown exception filter".into()),
+            }
+        }
+    }
+    if let Some(options) = args.get("filterOptions") {
+        for option in options
+            .as_array()
+            .ok_or("expected exception filter options array")?
+        {
+            match string(option, "filterId")? {
+                "all" => all = true,
+                "text" => {
+                    let condition = string(option, "condition")?;
+                    if condition.trim().is_empty() {
+                        return Err("Введите текст для фильтра ошибок".into());
+                    }
+                    text.push(condition);
+                }
+                _ => return Err("unknown exception filter".into()),
+            }
+        }
+    }
+    if wants_text && text.is_empty() {
+        return Err("Введите текст для фильтра ошибок".into());
+    }
+    Ok((all, text))
+}
+
 fn parse_auto_attach_types(value: &Value) -> Result<Vec<&'static str>> {
     let requested = value.as_array().ok_or("expected types array")?;
     let mut types = Vec::new();
@@ -954,6 +1105,28 @@ fn event(name: &str, body: Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn exception_filter_options_distinguish_off_all_and_text() {
+        assert_eq!(
+            exception_filters(&json!({"filters":[]})).unwrap(),
+            (false, vec![])
+        );
+        assert_eq!(
+            exception_filters(&json!({"filters":["all"]})).unwrap(),
+            (true, vec![])
+        );
+        assert_eq!(
+            exception_filters(&json!({
+                "filters":[],
+                "filterOptions":[{"filterId":"text","condition":"Деление на ноль"}]
+            }))
+            .unwrap(),
+            (false, vec!["Деление на ноль"])
+        );
+        assert!(exception_filters(&json!({"filters":["text"]})).is_err());
+        assert!(exception_filters(&json!({"filters":["unknown"]})).is_err());
+    }
 
     #[test]
     fn debug_target_snapshot_preserves_platform_identity() {

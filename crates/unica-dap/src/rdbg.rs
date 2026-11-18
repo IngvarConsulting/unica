@@ -4,7 +4,7 @@ use roxmltree::{Document, Node};
 
 use unica_source_contract::debug_source::DebugModuleId;
 
-use crate::Result;
+use crate::{Breakpoint, Result};
 
 const REQUEST: &str = "http://v8.1c.ru/8.3/debugger/debugRDBGRequestResponse";
 const BASE: &str = "http://v8.1c.ru/8.3/debugger/debugBaseData";
@@ -130,7 +130,7 @@ impl Rdbg {
 
     pub fn breakpoints<'a>(
         &self,
-        modules: impl Iterator<Item = (&'a DebugModuleId, &'a Vec<u32>)>,
+        modules: impl Iterator<Item = (&'a DebugModuleId, &'a Vec<Breakpoint>)>,
     ) -> Result<()> {
         let mut workspace = String::from("<bpWorkspace>");
         for (id, lines) in modules {
@@ -142,15 +142,41 @@ impl Rdbg {
                 "<moduleBPInfo xmlns=\"{BREAKPOINTS}\"><id><type xmlns=\"{BASE}\">{module_type}</type><URL xmlns=\"{BASE}\"/><extensionName xmlns=\"{BASE}\">{extension}</extensionName><objectID xmlns=\"{BASE}\">{}</objectID><propertyID xmlns=\"{BASE}\">{}</propertyID><extId xmlns=\"{BASE}\">0</extId></id>",
                 id.object, id.property
             ));
-            for line in lines {
+            for breakpoint in lines {
+                let condition = breakpoint.condition.as_deref().map(escape);
+                let conditional = condition.is_some();
+                let condition = condition.map_or_else(String::new, |value| {
+                    format!("<condition>{value}</condition>")
+                });
+                let line = breakpoint.line;
                 workspace.push_str(&format!(
-                    "<bpInfo><line>{line}</line><isActive>true</isActive><breakOnCondition>false</breakOnCondition><breakOnParentMethod>false</breakOnParentMethod><breakOnHitCount>false</breakOnHitCount><hitCountVariant>0</hitCountVariant><hitCount>1</hitCount><showOutputMessage>false</showOutputMessage><putStackTrace>false</putStackTrace><putHitCount>false</putHitCount><continueExecution>false</continueExecution><temp>false</temp><user>true</user></bpInfo>"
+                    "<bpInfo><line>{line}</line><isActive>true</isActive><breakOnCondition>{conditional}</breakOnCondition>{condition}<breakOnParentMethod>false</breakOnParentMethod><breakOnHitCount>false</breakOnHitCount><hitCountVariant>0</hitCountVariant><hitCount>1</hitCount><showOutputMessage>false</showOutputMessage><putStackTrace>false</putStackTrace><putHitCount>false</putHitCount><continueExecution>false</continueExecution><temp>false</temp><user>true</user></bpInfo>"
                 ));
             }
             workspace.push_str("</moduleBPInfo>");
         }
         workspace.push_str("</bpWorkspace>");
         self.call("setBreakpoints", &workspace)?;
+        Ok(())
+    }
+
+    pub fn set_exception_filters(&self, all: bool, text: &[&str]) -> Result<()> {
+        const FILTER: &str = "http://v8.1c.ru/8.3/debugger/debugRTEFilter";
+        let enabled = all || !text.is_empty();
+        let analyze = !all && !text.is_empty();
+        let mut state = format!(
+            "<state><stopOnErrors xmlns=\"{FILTER}\">{enabled}</stopOnErrors><analyzeErrorStr xmlns=\"{FILTER}\">{analyze}</analyzeErrorStr>"
+        );
+        if analyze {
+            for condition in text {
+                state.push_str(&format!(
+                    "<strTemplate xmlns=\"{FILTER}\"><include>true</include><str>{}</str></strTemplate>",
+                    escape(condition)
+                ));
+            }
+        }
+        state.push_str("</state>");
+        self.call("setBreakOnRTE", &state)?;
         Ok(())
     }
 
@@ -193,7 +219,7 @@ impl Rdbg {
     fn call(&self, command: &str, body: &str) -> Result<String> {
         let request = format!(
             "<request><infoBaseAlias xmlns=\"{REQUEST}\">{}</infoBaseAlias><idOfDebuggerUI xmlns=\"{REQUEST}\">{}</idOfDebuggerUI>{}</request>",
-            self.alias, self.id, namespace_request_children(body)
+            self.alias, self.id, namespace_request_children(body)?
         );
         self.send(command, &[], Some(request), REQUEST_TIMEOUT)
     }
@@ -249,9 +275,9 @@ impl Rdbg {
 
 // The request wrapper has no namespace. Each top-level argument is in the
 // request namespace, with nested protocol types declaring their own namespace.
-fn namespace_request_children(body: &str) -> String {
+fn namespace_request_children(body: &str) -> Result<String> {
     let wrapped = format!("<args>{body}</args>");
-    let parsed = Document::parse(&wrapped).expect("internally generated rdbg arguments");
+    let parsed = Document::parse(&wrapped).map_err(|_| "invalid text in RDBG request")?;
     let mut result = String::new();
     for child in parsed.root_element().children().filter(Node::is_element) {
         let text = &wrapped[child.range()];
@@ -260,7 +286,7 @@ fn namespace_request_children(body: &str) -> String {
         result.push_str(&format!(" xmlns=\"{REQUEST}\""));
         result.push_str(&text[split..]);
     }
-    result
+    Ok(result)
 }
 
 fn escape(text: &str) -> String {
