@@ -7,7 +7,7 @@ use unica_address::address::{AddressSegment, NodeKind, QualifiedAddress};
 use unica_address::module_routes::{
     has_direct_module_route, has_nested_module_route, ModuleRole, ModuleRouteKind,
 };
-use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+use unica_address::source_target::MetadataAddress;
 use unica_source_contract::SourceSetKind;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -536,11 +536,7 @@ fn module_identity(
     role: PlatformXmlModuleRole,
     descriptors: Vec<PathBuf>,
 ) -> Result<PlatformXmlModuleIdentity, String> {
-    let address = MetadataAddress::parse(
-        unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
-        &address,
-    )
-    .map_err(|error| error.to_string())?;
+    let address = MetadataAddress::parse_logical(&address).map_err(|error| error.to_string())?;
     Ok(PlatformXmlModuleIdentity {
         owner,
         address,
@@ -616,7 +612,7 @@ mod tests {
         assert_eq!(descriptors.len(), cases.len());
         for ((expected_family, address, relative), descriptor) in cases.into_iter().zip(descriptors)
         {
-            let address = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, address).unwrap();
+            let address = MetadataAddress::parse_logical(address).unwrap();
 
             assert_eq!(descriptor.family(), expected_family);
             assert_eq!(
@@ -632,11 +628,8 @@ mod tests {
 }
 
 pub fn form_module_target(form: &MetadataAddress) -> Result<MetadataAddress, String> {
-    MetadataAddress::parse(
-        PLATFORM_XML_8_3_27_FORMAT_2_20,
-        &format!("{}.FormModule", form.as_str()),
-    )
-    .map_err(|error| error.to_string())
+    MetadataAddress::parse_logical(&format!("{}.FormModule", form.as_str()))
+        .map_err(|error| error.to_string())
 }
 pub fn form_descriptor_requirements(
     form: &MetadataAddress,
@@ -651,16 +644,11 @@ pub fn form_descriptor_requirements(
             "form target does not retain a typed metadata owner chain",
         ));
     };
-    let owner = MetadataAddress::parse(
-        PLATFORM_XML_8_3_27_FORMAT_2_20,
-        &format!("{owner_kind}.{owner_name}"),
-    )
-    .map_err(|error| error.to_string())?;
-    let nested = MetadataAddress::parse(
-        PLATFORM_XML_8_3_27_FORMAT_2_20,
-        &format!("{owner_kind}.{owner_name}.Form.{form_name}"),
-    )
-    .map_err(|error| error.to_string())?;
+    let owner = MetadataAddress::parse_logical(&format!("{owner_kind}.{owner_name}"))
+        .map_err(|error| error.to_string())?;
+    let nested =
+        MetadataAddress::parse_logical(&format!("{owner_kind}.{owner_name}.Form.{form_name}"))
+            .map_err(|error| error.to_string())?;
     Ok(vec![
         metadata_descriptor_relative(&owner, source_set_kind)?,
         metadata_descriptor_relative(&nested, source_set_kind)?,
@@ -689,8 +677,8 @@ pub fn module_descriptor_requirements(
             ))
         }
     };
-    let descriptor = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &descriptor_raw)
-        .map_err(|error| error.to_string())?;
+    let descriptor =
+        MetadataAddress::parse_logical(&descriptor_raw).map_err(|error| error.to_string())?;
     let nested = metadata_descriptor_relative(&descriptor, source_set_kind)?;
     if matches!(
         route_kind,
@@ -699,7 +687,7 @@ pub fn module_descriptor_requirements(
         source_set_kind,
         SourceSetKind::ExternalProcessor | SourceSetKind::ExternalReport
     ) {
-        let owner = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &parts[..2].join("."))
+        let owner = MetadataAddress::parse_logical(&parts[..2].join("."))
             .map_err(|error| error.to_string())?;
         return Ok(vec![
             metadata_descriptor_relative(&owner, source_set_kind)?,
@@ -789,8 +777,7 @@ pub fn module_source_address(
             )
         }
     };
-    MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &logical)
-        .map_err(|error| error.to_string())
+    MetadataAddress::parse_logical(&logical).map_err(|error| error.to_string())
 }
 fn required_segment_name(
     segment: Option<&AddressSegment>,

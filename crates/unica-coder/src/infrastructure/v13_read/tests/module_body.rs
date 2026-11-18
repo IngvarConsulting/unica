@@ -190,12 +190,8 @@ fn an_open_buffer_is_read_in_place_of_its_module_file_and_the_file_is_untouched(
     let module = Path::new("CommonModules/Общий/Ext/Module.bsl");
     fs::create_dir_all(workspace.as_path().join(module).parent().unwrap()).unwrap();
     fs::write(workspace.as_path().join(module), "\u{feff}// диск\n").unwrap();
-    let target =
-        MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "CommonModule.Общий.Module")
-            .unwrap();
-    let absent =
-        MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "CommonModule.Новый.Module")
-            .unwrap();
+    let target = MetadataAddress::parse_logical("CommonModule.Общий.Module").unwrap();
+    let absent = MetadataAddress::parse_logical("CommonModule.Новый.Module").unwrap();
     let overlay = DocumentOverlay::default();
     for relative in [module, Path::new("CommonModules/Новый/Ext/Module.bsl")] {
         overlay

@@ -1,7 +1,7 @@
 //! Existing registered subsystem topology facts and role/membership semantics.
 use crate::subsystem::{EffectiveSubsystemRole, SubsystemAddress};
 use std::path::PathBuf;
-use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+use unica_address::source_target::MetadataAddress;
 use uuid::Uuid;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SubsystemTopology {
@@ -102,8 +102,7 @@ impl SubsystemTopology {
         object_ref: &str,
         role: EffectiveSubsystemRole,
     ) -> Vec<SubsystemAddress> {
-        let Ok(address) = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, object_ref)
-        else {
+        let Ok(address) = MetadataAddress::parse_logical(object_ref) else {
             return Vec::new();
         };
         collect_addresses(

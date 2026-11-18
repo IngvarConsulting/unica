@@ -4,6 +4,8 @@ pub mod installation;
 pub mod provider;
 
 #[cfg(test)]
+mod platform_types;
+#[cfg(test)]
 mod real_installation;
 #[cfg(test)]
 mod retrieval_gate;

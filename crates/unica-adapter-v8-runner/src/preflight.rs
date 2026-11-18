@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
-use unica_runner::attempt::RuntimeWorkspaceObservation;
+use unica_execution::runner::attempt::RuntimeWorkspaceObservation;
 use unica_source_contract::workspace::WorkspaceContext;
 use unica_workspace::paths::normalize_path_identity;
 use unica_workspace::paths::path_lock_identity;

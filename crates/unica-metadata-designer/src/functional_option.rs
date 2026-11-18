@@ -141,11 +141,9 @@ pub fn validate_location(
     // The address parser also rejects separators and traversal in identifiers.
     unica_address::address::QualifiedAddress::parse(&format!("storage:{location}"))
         .map_err(|error| error.to_string())?;
-    let address = unica_address::source_target::MetadataAddress::parse(
-        unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
-        &format!("{kind}.{name}"),
-    )
-    .map_err(|error| error.to_string())?;
+    let address =
+        unica_address::source_target::MetadataAddress::parse_logical(&format!("{kind}.{name}"))
+            .map_err(|error| error.to_string())?;
     let relative =
         unica_source_designer::layout::metadata_descriptor_relative(&address, source_kind)?;
     let bytes = staged

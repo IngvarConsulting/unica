@@ -194,6 +194,20 @@ pub fn read_markup_pages(bytes: &[u8], prefix: &str) -> Result<Vec<(String, Stri
     Ok(pages)
 }
 
+/// The help pages of a platform container for the BSL type catalog.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PlatformHelpPages;
+
+impl unica_bsl_types::HelpPages for PlatformHelpPages {
+    fn markup_pages(
+        &self,
+        container: &[u8],
+        prefix: &str,
+    ) -> Result<Vec<(String, String)>, String> {
+        read_markup_pages(container, prefix).map_err(|error| format!("{error:?}"))
+    }
+}
+
 pub fn read_corpus(bytes: &[u8]) -> Result<Vec<CorpusPage>, CorpusError> {
     let container = V8Container::parse(bytes).map_err(CorpusError::Container)?;
     let storage = container

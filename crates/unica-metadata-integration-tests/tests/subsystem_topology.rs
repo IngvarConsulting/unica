@@ -13,7 +13,7 @@ mod tests {
     use std::io;
     use std::path::Path;
     use std::rc::Rc;
-    use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+    use unica_address::source_target::MetadataAddress;
     use unica_workspace::read::{with_secure_tree_test_hook, SecureTreePhase};
     use unica_workspace::test_support::{
         create_directory_link_fixture_for_test, create_file_link_fixture_for_test,
@@ -182,11 +182,8 @@ mod tests {
         let source_root = root.path().canonicalize().unwrap();
 
         let topology = capture_registered_subsystem_topology(&source_root, checkpoint).unwrap();
-        let metadata_address = MetadataAddress::parse(
-            PLATFORM_XML_8_3_27_FORMAT_2_20,
-            "InformationRegister.Ledger",
-        )
-        .unwrap();
+        let metadata_address =
+            MetadataAddress::parse_logical("InformationRegister.Ledger").unwrap();
         assert_eq!(
             topology.roots[0].content,
             vec![
@@ -209,11 +206,7 @@ mod tests {
         );
 
         let different_target = MetadataObjectIdentity {
-            address: MetadataAddress::parse(
-                PLATFORM_XML_8_3_27_FORMAT_2_20,
-                "InformationRegister.Other",
-            )
-            .unwrap(),
+            address: MetadataAddress::parse_logical("InformationRegister.Other").unwrap(),
             uuid: Uuid::parse_str("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee").unwrap(),
         };
         assert!(topology
@@ -301,8 +294,7 @@ mod tests {
         );
         let source_root = root.path().canonicalize().unwrap();
         let topology = capture_registered_subsystem_topology(&source_root, checkpoint).unwrap();
-        let common =
-            MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "CommonModule.Common").unwrap();
+        let common = MetadataAddress::parse_logical("CommonModule.Common").unwrap();
 
         let memberships = topology
             .memberships_of(&common, None)

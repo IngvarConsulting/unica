@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
-use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+use unica_address::source_target::MetadataAddress;
 use unica_metadata::MetadataKind;
 use unica_metadata_designer::usage_scan::{
     scan_local_enrichment as scan_local_enrichment_by_address, LocalEnrichment, LocalSection,
@@ -37,11 +37,8 @@ fn scan_local_enrichment(
     limit: usize,
     cancellation: &CancellationToken,
 ) -> LocalEnrichment {
-    let metadata_path = MetadataAddress::parse(
-        PLATFORM_XML_8_3_27_FORMAT_2_20,
-        &format!("{}.{name}", kind.as_str()),
-    )
-    .unwrap();
+    let metadata_path =
+        MetadataAddress::parse_logical(&format!("{}.{name}", kind.as_str())).unwrap();
     scan_local_enrichment_by_address(
         &unica_workspace::discovery::ProjectDiscoveryReader::new(source_root),
         &super::predefined::PredefinedResourceReadBinding,
@@ -348,8 +345,7 @@ fn predefined_items_are_validated_against_the_owner_code_type() {
         "Catalogs/Goods/Ext/Predefined.xml",
         r#"<PredefinedData xmlns="http://v8.1c.ru/8.3/xcf/predef" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="CatalogPredefinedItems" version="2.20"><Item id="a7d2e6fc-3824-4b56-b4be-ae6be4944c0e"><Name>Main</Name><Code>ABC</Code></Item></PredefinedData>"#,
     );
-    let metadata_path =
-        MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Catalog.Goods").unwrap();
+    let metadata_path = MetadataAddress::parse_logical("Catalog.Goods").unwrap();
     let found = scan_local_enrichment_by_address(
         &unica_workspace::discovery::ProjectDiscoveryReader::new(&root),
         &super::predefined::PredefinedResourceReadBinding,

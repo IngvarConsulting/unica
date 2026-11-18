@@ -42,59 +42,49 @@
         },
         "keepPlanIdentity": {
           "pointer": "/rev"
+        },
+        "unchanged1": {
+          "file": "src/Configuration.xml",
+          "kind": "sha256"
+        },
+        "unchanged2": {
+          "file": "src/Languages/English.xml",
+          "kind": "sha256"
+        },
+        "unchanged3": {
+          "file": "src/Reports/OwnRemovalReport.xml",
+          "kind": "sha256"
+        },
+        "unchanged4": {
+          "file": "src/Reports/OwnRemovalReport/Templates/KeepDiagram.xml",
+          "kind": "sha256"
+        },
+        "unchanged5": {
+          "file": "src/Reports/OwnRemovalReport/Templates/KeepDiagram/Ext/Template.xml",
+          "kind": "sha256"
+        },
+        "unchanged6": {
+          "file": "src/Reports/OwnRemovalReport/Templates/OwnDiagram.xml",
+          "kind": "sha256"
+        },
+        "unchanged7": {
+          "file": "src/Reports/OwnRemovalReport/Templates/OwnDiagram/Ext/Template.xml",
+          "kind": "sha256"
+        },
+        "unchanged8": {
+          "file": "src/Reports/OwnRemovalReport/Templates/OwnDiagram/Ext/Template/Items/BlueSquare/Picture.png",
+          "kind": "sha256"
+        },
+        "unchanged9": {
+          "file": "src/Reports/OwnRemovalReport/Templates/OwnDiagram/Ext/Template/Items/RedSquare/Picture.png",
+          "kind": "sha256"
+        },
+        "unchanged10": {
+          "file": "v8project.yaml",
+          "kind": "sha256"
         }
       },
       "fileAssertions": [
-        {
-          "path": "src/Configuration.xml",
-          "kind": "sha256",
-          "eq": "144eb3dd22581e3e23deb8d18982b735ee2c917335221d43abb5f7be93144ac6"
-        },
-        {
-          "path": "src/Languages/English.xml",
-          "kind": "sha256",
-          "eq": "8810207db9d27bc5b541bce3b0f3653ecdf5faa7b23fa455d464fd20ff7877b7"
-        },
-        {
-          "path": "src/Reports/OwnRemovalReport.xml",
-          "kind": "sha256",
-          "eq": "74afb1bbe9b96c4e6be883642249f1230cd195143c7aa3c6ed91fd3386f7352e"
-        },
-        {
-          "path": "src/Reports/OwnRemovalReport/Templates/KeepDiagram.xml",
-          "kind": "sha256",
-          "eq": "4523b92edd69b4be0f4ce137551f75c0da9a942dfc65df1cd6f75220e2afd039"
-        },
-        {
-          "path": "src/Reports/OwnRemovalReport/Templates/KeepDiagram/Ext/Template.xml",
-          "kind": "sha256",
-          "eq": "53fefa0c8281e70179dce63a78242debc34b8c6a178a95e95d9d16b08c045ecc"
-        },
-        {
-          "path": "src/Reports/OwnRemovalReport/Templates/OwnDiagram.xml",
-          "kind": "sha256",
-          "eq": "c6652b9a7e3092df8cad9e6a64cbd4fc233c7444a6c902a45d7d28082e209a0a"
-        },
-        {
-          "path": "src/Reports/OwnRemovalReport/Templates/OwnDiagram/Ext/Template.xml",
-          "kind": "sha256",
-          "eq": "aabf2591e79c06e2a54acc839d7c636da3d232bb647cad3a15d3265583976b66"
-        },
-        {
-          "path": "src/Reports/OwnRemovalReport/Templates/OwnDiagram/Ext/Template/Items/BlueSquare/Picture.png",
-          "kind": "sha256",
-          "eq": "01aa5961b04e2388b99311a25f4d6cdf5a4048c454536d6a3e92ef73b4ea0c84"
-        },
-        {
-          "path": "src/Reports/OwnRemovalReport/Templates/OwnDiagram/Ext/Template/Items/RedSquare/Picture.png",
-          "kind": "sha256",
-          "eq": "d237a2843d19c06a4091bcc816f29ad41091d313be42c0c7a762c6e446ecd8d7"
-        },
-        {
-          "path": "v8project.yaml",
-          "kind": "sha256",
-          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
-        },
         {
           "path": ".build",
           "kind": "exists",
@@ -228,52 +218,52 @@
         {
           "path": "src/Configuration.xml",
           "kind": "sha256",
-          "eq": "144eb3dd22581e3e23deb8d18982b735ee2c917335221d43abb5f7be93144ac6"
+          "eq": "$capture.unchanged1"
         },
         {
           "path": "src/Languages/English.xml",
           "kind": "sha256",
-          "eq": "8810207db9d27bc5b541bce3b0f3653ecdf5faa7b23fa455d464fd20ff7877b7"
+          "eq": "$capture.unchanged2"
         },
         {
           "path": "src/Reports/OwnRemovalReport.xml",
           "kind": "sha256",
-          "eq": "74afb1bbe9b96c4e6be883642249f1230cd195143c7aa3c6ed91fd3386f7352e"
+          "eq": "$capture.unchanged3"
         },
         {
           "path": "src/Reports/OwnRemovalReport/Templates/KeepDiagram.xml",
           "kind": "sha256",
-          "eq": "4523b92edd69b4be0f4ce137551f75c0da9a942dfc65df1cd6f75220e2afd039"
+          "eq": "$capture.unchanged4"
         },
         {
           "path": "src/Reports/OwnRemovalReport/Templates/KeepDiagram/Ext/Template.xml",
           "kind": "sha256",
-          "eq": "53fefa0c8281e70179dce63a78242debc34b8c6a178a95e95d9d16b08c045ecc"
+          "eq": "$capture.unchanged5"
         },
         {
           "path": "src/Reports/OwnRemovalReport/Templates/OwnDiagram.xml",
           "kind": "sha256",
-          "eq": "c6652b9a7e3092df8cad9e6a64cbd4fc233c7444a6c902a45d7d28082e209a0a"
+          "eq": "$capture.unchanged6"
         },
         {
           "path": "src/Reports/OwnRemovalReport/Templates/OwnDiagram/Ext/Template.xml",
           "kind": "sha256",
-          "eq": "aabf2591e79c06e2a54acc839d7c636da3d232bb647cad3a15d3265583976b66"
+          "eq": "$capture.unchanged7"
         },
         {
           "path": "src/Reports/OwnRemovalReport/Templates/OwnDiagram/Ext/Template/Items/BlueSquare/Picture.png",
           "kind": "sha256",
-          "eq": "01aa5961b04e2388b99311a25f4d6cdf5a4048c454536d6a3e92ef73b4ea0c84"
+          "eq": "$capture.unchanged8"
         },
         {
           "path": "src/Reports/OwnRemovalReport/Templates/OwnDiagram/Ext/Template/Items/RedSquare/Picture.png",
           "kind": "sha256",
-          "eq": "d237a2843d19c06a4091bcc816f29ad41091d313be42c0c7a762c6e446ecd8d7"
+          "eq": "$capture.unchanged9"
         },
         {
           "path": "v8project.yaml",
           "kind": "sha256",
-          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+          "eq": "$capture.unchanged10"
         },
         {
           "path": ".build",
@@ -300,12 +290,12 @@
         {
           "path": "src/Configuration.xml",
           "kind": "sha256",
-          "eq": "144eb3dd22581e3e23deb8d18982b735ee2c917335221d43abb5f7be93144ac6"
+          "eq": "$capture.unchanged1"
         },
         {
           "path": "src/Languages/English.xml",
           "kind": "sha256",
-          "eq": "8810207db9d27bc5b541bce3b0f3653ecdf5faa7b23fa455d464fd20ff7877b7"
+          "eq": "$capture.unchanged2"
         },
         {
           "path": "src/Reports/OwnRemovalReport.xml",
@@ -315,27 +305,27 @@
         {
           "path": "src/Reports/OwnRemovalReport/Templates/OwnDiagram.xml",
           "kind": "sha256",
-          "eq": "c6652b9a7e3092df8cad9e6a64cbd4fc233c7444a6c902a45d7d28082e209a0a"
+          "eq": "$capture.unchanged6"
         },
         {
           "path": "src/Reports/OwnRemovalReport/Templates/OwnDiagram/Ext/Template.xml",
           "kind": "sha256",
-          "eq": "aabf2591e79c06e2a54acc839d7c636da3d232bb647cad3a15d3265583976b66"
+          "eq": "$capture.unchanged7"
         },
         {
           "path": "src/Reports/OwnRemovalReport/Templates/OwnDiagram/Ext/Template/Items/BlueSquare/Picture.png",
           "kind": "sha256",
-          "eq": "01aa5961b04e2388b99311a25f4d6cdf5a4048c454536d6a3e92ef73b4ea0c84"
+          "eq": "$capture.unchanged8"
         },
         {
           "path": "src/Reports/OwnRemovalReport/Templates/OwnDiagram/Ext/Template/Items/RedSquare/Picture.png",
           "kind": "sha256",
-          "eq": "d237a2843d19c06a4091bcc816f29ad41091d313be42c0c7a762c6e446ecd8d7"
+          "eq": "$capture.unchanged9"
         },
         {
           "path": "v8project.yaml",
           "kind": "sha256",
-          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+          "eq": "$capture.unchanged10"
         },
         {
           "path": "src/Reports/OwnRemovalReport/Templates/KeepDiagram.xml",
@@ -363,7 +353,13 @@
             ""
           ]
         }
-      ]
+      ],
+      "captures": {
+        "unchanged11": {
+          "file": "src/Reports/OwnRemovalReport.xml",
+          "kind": "sha256"
+        }
+      }
     },
     {
       "tool": "unica.apply",
@@ -407,42 +403,42 @@
         {
           "path": "src/Configuration.xml",
           "kind": "sha256",
-          "eq": "144eb3dd22581e3e23deb8d18982b735ee2c917335221d43abb5f7be93144ac6"
+          "eq": "$capture.unchanged1"
         },
         {
           "path": "src/Languages/English.xml",
           "kind": "sha256",
-          "eq": "8810207db9d27bc5b541bce3b0f3653ecdf5faa7b23fa455d464fd20ff7877b7"
+          "eq": "$capture.unchanged2"
         },
         {
           "path": "src/Reports/OwnRemovalReport.xml",
           "kind": "sha256",
-          "eq": "90369e93f7c2e07c4a2c722de1e72ff04e62e02b986689ac27df0353ac409d07"
+          "eq": "$capture.unchanged11"
         },
         {
           "path": "src/Reports/OwnRemovalReport/Templates/OwnDiagram.xml",
           "kind": "sha256",
-          "eq": "c6652b9a7e3092df8cad9e6a64cbd4fc233c7444a6c902a45d7d28082e209a0a"
+          "eq": "$capture.unchanged6"
         },
         {
           "path": "src/Reports/OwnRemovalReport/Templates/OwnDiagram/Ext/Template.xml",
           "kind": "sha256",
-          "eq": "aabf2591e79c06e2a54acc839d7c636da3d232bb647cad3a15d3265583976b66"
+          "eq": "$capture.unchanged7"
         },
         {
           "path": "src/Reports/OwnRemovalReport/Templates/OwnDiagram/Ext/Template/Items/BlueSquare/Picture.png",
           "kind": "sha256",
-          "eq": "01aa5961b04e2388b99311a25f4d6cdf5a4048c454536d6a3e92ef73b4ea0c84"
+          "eq": "$capture.unchanged8"
         },
         {
           "path": "src/Reports/OwnRemovalReport/Templates/OwnDiagram/Ext/Template/Items/RedSquare/Picture.png",
           "kind": "sha256",
-          "eq": "d237a2843d19c06a4091bcc816f29ad41091d313be42c0c7a762c6e446ecd8d7"
+          "eq": "$capture.unchanged9"
         },
         {
           "path": "v8project.yaml",
           "kind": "sha256",
-          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+          "eq": "$capture.unchanged10"
         },
         {
           "path": "src/Reports/OwnRemovalReport/Templates/KeepDiagram.xml",
@@ -647,42 +643,42 @@
         {
           "path": "src/Configuration.xml",
           "kind": "sha256",
-          "eq": "144eb3dd22581e3e23deb8d18982b735ee2c917335221d43abb5f7be93144ac6"
+          "eq": "$capture.unchanged1"
         },
         {
           "path": "src/Languages/English.xml",
           "kind": "sha256",
-          "eq": "8810207db9d27bc5b541bce3b0f3653ecdf5faa7b23fa455d464fd20ff7877b7"
+          "eq": "$capture.unchanged2"
         },
         {
           "path": "src/Reports/OwnRemovalReport.xml",
           "kind": "sha256",
-          "eq": "90369e93f7c2e07c4a2c722de1e72ff04e62e02b986689ac27df0353ac409d07"
+          "eq": "$capture.unchanged11"
         },
         {
           "path": "src/Reports/OwnRemovalReport/Templates/OwnDiagram.xml",
           "kind": "sha256",
-          "eq": "c6652b9a7e3092df8cad9e6a64cbd4fc233c7444a6c902a45d7d28082e209a0a"
+          "eq": "$capture.unchanged6"
         },
         {
           "path": "src/Reports/OwnRemovalReport/Templates/OwnDiagram/Ext/Template.xml",
           "kind": "sha256",
-          "eq": "aabf2591e79c06e2a54acc839d7c636da3d232bb647cad3a15d3265583976b66"
+          "eq": "$capture.unchanged7"
         },
         {
           "path": "src/Reports/OwnRemovalReport/Templates/OwnDiagram/Ext/Template/Items/BlueSquare/Picture.png",
           "kind": "sha256",
-          "eq": "01aa5961b04e2388b99311a25f4d6cdf5a4048c454536d6a3e92ef73b4ea0c84"
+          "eq": "$capture.unchanged8"
         },
         {
           "path": "src/Reports/OwnRemovalReport/Templates/OwnDiagram/Ext/Template/Items/RedSquare/Picture.png",
           "kind": "sha256",
-          "eq": "d237a2843d19c06a4091bcc816f29ad41091d313be42c0c7a762c6e446ecd8d7"
+          "eq": "$capture.unchanged9"
         },
         {
           "path": "v8project.yaml",
           "kind": "sha256",
-          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+          "eq": "$capture.unchanged10"
         },
         {
           "path": "src/Reports/OwnRemovalReport/Templates/KeepDiagram.xml",
@@ -714,12 +710,12 @@
         {
           "path": "src/Configuration.xml",
           "kind": "sha256",
-          "eq": "144eb3dd22581e3e23deb8d18982b735ee2c917335221d43abb5f7be93144ac6"
+          "eq": "$capture.unchanged1"
         },
         {
           "path": "src/Languages/English.xml",
           "kind": "sha256",
-          "eq": "8810207db9d27bc5b541bce3b0f3653ecdf5faa7b23fa455d464fd20ff7877b7"
+          "eq": "$capture.unchanged2"
         },
         {
           "path": "src/Reports/OwnRemovalReport.xml",
@@ -729,7 +725,7 @@
         {
           "path": "v8project.yaml",
           "kind": "sha256",
-          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+          "eq": "$capture.unchanged10"
         },
         {
           "path": "src/Reports/OwnRemovalReport/Templates/KeepDiagram.xml",
@@ -779,6 +775,10 @@
       "captures": {
         "publishedOwn": {
           "pointer": ""
+        },
+        "unchanged12": {
+          "file": "src/Reports/OwnRemovalReport.xml",
+          "kind": "sha256"
         }
       }
     },
@@ -800,22 +800,22 @@
         {
           "path": "src/Configuration.xml",
           "kind": "sha256",
-          "eq": "144eb3dd22581e3e23deb8d18982b735ee2c917335221d43abb5f7be93144ac6"
+          "eq": "$capture.unchanged1"
         },
         {
           "path": "src/Languages/English.xml",
           "kind": "sha256",
-          "eq": "8810207db9d27bc5b541bce3b0f3653ecdf5faa7b23fa455d464fd20ff7877b7"
+          "eq": "$capture.unchanged2"
         },
         {
           "path": "src/Reports/OwnRemovalReport.xml",
           "kind": "sha256",
-          "eq": "808fcd6e84cbbd688f5119190597ae4faa88ad5807f45e5bc774d3496aedd855"
+          "eq": "$capture.unchanged12"
         },
         {
           "path": "v8project.yaml",
           "kind": "sha256",
-          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+          "eq": "$capture.unchanged10"
         },
         {
           "path": "src/Reports/OwnRemovalReport/Templates/KeepDiagram.xml",

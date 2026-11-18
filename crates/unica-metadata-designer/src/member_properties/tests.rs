@@ -1,7 +1,7 @@
 use super::super::info::{parse_typed_meta_local_info, parse_typed_meta_local_info_for_source};
 
 use serde_json::json;
-use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+use unica_address::source_target::MetadataAddress;
 use unica_metadata::{MetaElementData, MetaSupportStatus};
 use unica_source_contract::SourceSetKind;
 
@@ -22,7 +22,7 @@ fn read(
     owner: &str,
     source_kind: Option<SourceSetKind>,
 ) -> unica_metadata::validation_subject::MetaLocalInfo {
-    let address = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, owner).unwrap();
+    let address = MetadataAddress::parse_logical(owner).unwrap();
     match source_kind {
         Some(kind) => parse_typed_meta_local_info_for_source(
             xml.as_bytes(),
@@ -129,7 +129,7 @@ fn catalog_tabular_native_context_requires_proved_configuration_source_kind() {
 
 #[test]
 fn catalog_tabular_native_context_requires_exact_literal_export_version() {
-    for version in ["2.19", "2.21", "02.20", "2&#x2e;20", ""] {
+    for version in ["2.19", "2.23", "02.20", "2&#x2e;20", ""] {
         let xml = CATALOG.replacen("version=\"2.20\"", &format!("version=\"{version}\""), 1);
         assert_ne!(xml, CATALOG, "the native export version must be replaced");
         let info = read(&xml, "Catalog.Валюты", Some(SourceSetKind::Configuration));

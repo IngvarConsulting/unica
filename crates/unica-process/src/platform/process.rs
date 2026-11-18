@@ -6696,7 +6696,6 @@ mod medium_tests {
         }
     }
 
-    /// rule: INV.RUNTIME.FULL-EXPORT-RETAINED-IDENTITY
     #[test]
     fn controlled_stream_held_stderr_keeps_timeout_after_leader_exit() {
         let (mut managed, mut fixture) = ControlledStderrFixture::spawn();
@@ -6731,7 +6730,6 @@ mod medium_tests {
         assert_eq!(managed.state, ChildState::Reaped);
     }
 
-    /// rule: INV.RUNTIME.FULL-EXPORT-RETAINED-IDENTITY
     #[test]
     fn controlled_stream_late_stderr_eof_preserves_tail_after_leader_exit() {
         let (mut managed, mut fixture) = ControlledStderrFixture::spawn();
@@ -6796,7 +6794,6 @@ mod medium_tests {
         )
     }
 
-    /// rule: INV.RUNTIME.FULL-EXPORT-RETAINED-IDENTITY
     #[test]
     fn controlled_stdout_read_error_stays_an_error_after_disconnect() {
         let (reader, finished) = controlled_faulting_read(ControlledReaderFault::Error);
@@ -6853,7 +6850,6 @@ mod medium_tests {
         assert_eq!(lines, 1);
     }
 
-    /// rule: INV.RUNTIME.FULL-EXPORT-RETAINED-IDENTITY
     #[test]
     fn controlled_stdout_reader_panic_is_not_eof() {
         let (reader, finished) = controlled_faulting_read(ControlledReaderFault::Panic);
@@ -6897,7 +6893,6 @@ mod medium_tests {
         assert_eq!(lines, 1);
     }
 
-    /// rule: INV.RUNTIME.FULL-EXPORT-RETAINED-IDENTITY
     #[test]
     fn controlled_stderr_reader_faults_do_not_satisfy_eof() {
         for fault in [ControlledReaderFault::Error, ControlledReaderFault::Panic] {

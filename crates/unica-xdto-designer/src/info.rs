@@ -407,11 +407,10 @@ mod tests {
     use crate::encode_like;
     use crate::test_support::{args, PACKAGE};
     use serde_json::json;
-    use unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20;
+
     #[test]
     fn xdto_info_shared_core_uses_exact_descriptor_identity_and_admitted_bytes() {
-        let address =
-            MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "XDTOPackage.Sample").unwrap();
+        let address = MetadataAddress::parse_logical("XDTOPackage.Sample").unwrap();
         let descriptor = br#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><XDTOPackage><Properties><Name>Sample</Name><Namespace>urn:test</Namespace></Properties></XDTOPackage></MetaDataObject>"#;
 
         let data = parse_xdto_info_bytes(

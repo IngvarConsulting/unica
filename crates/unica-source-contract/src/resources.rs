@@ -293,11 +293,7 @@ mod tests {
             target: ResolvedTarget {
                 source_set: "main".to_string(),
                 metadata_path: Some(
-                    MetadataAddress::parse(
-                        unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
-                        "CommonModule.Shared.Module",
-                    )
-                    .unwrap(),
+                    MetadataAddress::parse_logical("CommonModule.Shared.Module").unwrap(),
                 ),
                 target_kind: TargetKind::Module,
             },

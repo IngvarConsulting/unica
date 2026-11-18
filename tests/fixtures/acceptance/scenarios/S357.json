@@ -33,14 +33,13 @@
           "eq": "main:CommonModule.GoogleПереводчик.Can.code.replace"
         }
       ],
-      "fileAssertions": [
-        {
-          "kind": "sha256",
-          "path": "src/CommonModules/GoogleПереводчик/Ext/Module.bsl",
-          "eq": "9242a8a0392611dcdf09cbd630fed8b6565a4940cdc3d69bc7b53db177d3f376"
+      "refusal": "bad_value: unknown argument; selector accepts only anchor",
+      "captures": {
+        "unchanged1": {
+          "file": "src/CommonModules/GoogleПереводчик/Ext/Module.bsl",
+          "kind": "sha256"
         }
-      ],
-      "refusal": "bad_value: unknown argument; selector accepts only anchor"
+      }
     },
     {
       "tool": "unica.apply",
@@ -73,7 +72,7 @@
         {
           "kind": "sha256",
           "path": "src/CommonModules/GoogleПереводчик/Ext/Module.bsl",
-          "eq": "9242a8a0392611dcdf09cbd630fed8b6565a4940cdc3d69bc7b53db177d3f376"
+          "eq": "$capture.unchanged1"
         }
       ],
       "captures": {
@@ -106,7 +105,13 @@
           "path": "src/CommonModules/GoogleПереводчик/Ext/Module.bsl",
           "eq": "5fa4abf059a9bd998e6a362090a135e27290e0aaa4ec5861dbcdc9f1ff9aade9"
         }
-      ]
+      ],
+      "captures": {
+        "unchanged2": {
+          "file": "src/CommonModules/GoogleПереводчик/Ext/Module.bsl",
+          "kind": "sha256"
+        }
+      }
     },
     {
       "tool": "unica.apply",
@@ -139,7 +144,7 @@
         {
           "kind": "sha256",
           "path": "src/CommonModules/GoogleПереводчик/Ext/Module.bsl",
-          "eq": "5fa4abf059a9bd998e6a362090a135e27290e0aaa4ec5861dbcdc9f1ff9aade9"
+          "eq": "$capture.unchanged2"
         }
       ],
       "captures": {
@@ -170,7 +175,7 @@
         {
           "kind": "sha256",
           "path": "src/CommonModules/GoogleПереводчик/Ext/Module.bsl",
-          "eq": "5fa4abf059a9bd998e6a362090a135e27290e0aaa4ec5861dbcdc9f1ff9aade9"
+          "eq": "$capture.unchanged2"
         }
       ]
     },
@@ -202,7 +207,7 @@
         {
           "kind": "sha256",
           "path": "src/CommonModules/GoogleПереводчик/Ext/Module.bsl",
-          "eq": "5fa4abf059a9bd998e6a362090a135e27290e0aaa4ec5861dbcdc9f1ff9aade9"
+          "eq": "$capture.unchanged2"
         }
       ]
     }
