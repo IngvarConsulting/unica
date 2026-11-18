@@ -2,7 +2,9 @@ use std::time::Duration;
 
 use roxmltree::{Document, Node};
 
-use crate::{modules::ModuleId, Result};
+use unica_source_contract::debug_source::DebugModuleId;
+
+use crate::Result;
 
 const REQUEST: &str = "http://v8.1c.ru/8.3/debugger/debugRDBGRequestResponse";
 const BASE: &str = "http://v8.1c.ru/8.3/debugger/debugBaseData";
@@ -74,12 +76,16 @@ impl Rdbg {
 
     pub fn breakpoints<'a>(
         &self,
-        modules: impl Iterator<Item = (&'a ModuleId, &'a Vec<u32>)>,
+        modules: impl Iterator<Item = (&'a DebugModuleId, &'a Vec<u32>)>,
     ) -> Result<()> {
         let mut workspace = String::from("<bpWorkspace>");
         for (id, lines) in modules {
+            let (module_type, extension) = match &id.extension {
+                Some(name) => ("ExtensionModule", escape(name)),
+                None => ("ConfigModule", String::new()),
+            };
             workspace.push_str(&format!(
-                "<moduleBPInfo xmlns=\"{BREAKPOINTS}\"><id><type xmlns=\"{BASE}\">ConfigModule</type><URL xmlns=\"{BASE}\"/><extensionName xmlns=\"{BASE}\"/><objectID xmlns=\"{BASE}\">{}</objectID><propertyID xmlns=\"{BASE}\">{}</propertyID><extId xmlns=\"{BASE}\">0</extId></id>",
+                "<moduleBPInfo xmlns=\"{BREAKPOINTS}\"><id><type xmlns=\"{BASE}\">{module_type}</type><URL xmlns=\"{BASE}\"/><extensionName xmlns=\"{BASE}\">{extension}</extensionName><objectID xmlns=\"{BASE}\">{}</objectID><propertyID xmlns=\"{BASE}\">{}</propertyID><extId xmlns=\"{BASE}\">0</extId></id>",
                 id.object, id.property
             ));
             for line in lines {

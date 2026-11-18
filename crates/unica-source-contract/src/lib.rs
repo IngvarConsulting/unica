@@ -2,6 +2,7 @@
 //! Format probing, storage layout and semantic capability admission live elsewhere.
 
 pub mod context;
+pub mod debug_source;
 pub mod route;
 
 use serde::Serialize;

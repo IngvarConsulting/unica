@@ -12,15 +12,18 @@ use std::{
 };
 
 use base64::{engine::general_purpose::STANDARD, Engine};
-use modules::{ModuleId, Modules};
+use modules::Modules;
 use rdbg::{child, field, Rdbg};
 use roxmltree::{Document, Node};
 use serde_json::{json, Value};
+use unica_source_contract::debug_source::{DebugModuleId, DebugModuleSource};
 use uuid::Uuid;
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
-pub fn run_stdio() -> i32 {
+type ResolveModules = fn(&Path) -> Result<Vec<DebugModuleSource>>;
+
+pub fn run_stdio(resolve_modules: ResolveModules) -> i32 {
     let (tx, rx) = mpsc::sync_channel(8);
     std::thread::spawn(move || {
         let mut input = io::stdin().lock();
@@ -42,6 +45,7 @@ pub fn run_stdio() -> i32 {
 
     let mut adapter = Adapter {
         output: io::stdout().lock(),
+        resolve_modules,
         seq: 0,
         initialized: false,
         session: None,
@@ -87,6 +91,7 @@ fn read_frame(input: &mut impl BufRead) -> Result<Option<Value>> {
 
 struct Adapter<W> {
     output: W,
+    resolve_modules: ResolveModules,
     seq: u64,
     initialized: bool,
     session: Option<Session>,
@@ -154,7 +159,7 @@ impl<W: Write> Adapter<W> {
                 Ok(json!({"supportsConfigurationDoneRequest":true}))
             }
             "attach" if self.initialized && self.session.is_none() => {
-                self.session = Some(Session::attach(args)?);
+                self.session = Some(Session::attach(args, self.resolve_modules)?);
                 events.push(event("initialized", json!({})));
                 Ok(json!({}))
             }
@@ -203,18 +208,15 @@ struct Frame {
 struct Session {
     rdbg: Rdbg,
     modules: Modules,
-    breakpoints: HashMap<ModuleId, Vec<u32>>,
+    breakpoints: HashMap<DebugModuleId, Vec<u32>>,
     targets: HashMap<u64, Target>,
     next_id: u64,
     configured: bool,
 }
 
 impl Session {
-    fn attach(args: &Value) -> Result<Self> {
+    fn attach(args: &Value, resolve_modules: ResolveModules) -> Result<Self> {
         let root = Path::new(string(args, "rootProject")?);
-        if !root.is_absolute() || !root.join("Configuration.xml").is_file() {
-            return Err("rootProject must be an absolute Designer XML configuration root".into());
-        }
         if args["debugServerHost"]
             .as_str()
             .is_some_and(|host| host != "127.0.0.1" && host != "localhost")
@@ -223,8 +225,21 @@ impl Session {
         }
         let port = args["debugServerPort"].as_u64().unwrap_or(1550);
         let alias = args["infoBaseAlias"].as_str().unwrap_or("DefAlias");
+        let sources = resolve_modules(root)?;
+        if !args["sourceSet"].is_null() {
+            let set = string(args, "sourceSet")?;
+            if !sources
+                .iter()
+                .any(|source| source.address.source_set() == set)
+            {
+                return Err(format!(
+                    "debug source set {set} is not available; use the names resolved by workspace"
+                )
+                .into());
+            }
+        }
         Ok(Self {
-            modules: Modules::read(root, args["sourceSet"].as_str().unwrap_or("main"))?,
+            modules: Modules::new(sources)?,
             rdbg: Rdbg::attach(port.try_into()?, alias)?,
             breakpoints: HashMap::new(),
             targets: HashMap::new(),
@@ -475,14 +490,13 @@ impl Session {
                 "line":field(entry,"lineNo").ok_or("missing rdbg stack line")?.parse::<u32>()?,"column":1
             });
             if let Some(module) = child(entry, "moduleID") {
-                if field(module, "extensionName").unwrap_or_default().is_empty() {
-                    let module = ModuleId {
-                        object: field(module, "objectID").ok_or("missing rdbg object ID")?.parse()?,
-                        property: field(module, "propertyID").ok_or("missing rdbg property ID")?.parse()?,
-                    };
-                    if let Some(address) = self.modules.address(&module) {
-                        body["source"] = json!({"name":address,"path":address});
-                    }
+                let runtime_id = DebugModuleId {
+                    extension: field(module, "extensionName").filter(|name| !name.is_empty()).map(str::to_owned),
+                    object: field(module, "objectID").ok_or("missing rdbg object ID")?.parse()?,
+                    property: field(module, "propertyID").ok_or("missing rdbg property ID")?.parse()?,
+                };
+                if let Some(address) = self.modules.address(&runtime_id) {
+                    body["source"] = json!({"name":address,"path":address});
                 }
             }
             Ok(Frame { id, level, body })
