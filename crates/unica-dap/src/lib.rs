@@ -288,15 +288,20 @@ impl Session {
                 let variables = self.variables(number(args, "variablesReference")?, events)?;
                 json!({"variables":variables})
             }
-            "next" | "continue" => {
+            "next" | "stepIn" | "stepOut" | "continue" => {
                 let id = number(args, "threadId")?;
                 let target = self.targets.get_mut(&id).ok_or("unknown thread")?;
                 if target.frames.is_empty() {
                     return Err("thread is running".into());
                 }
-                let stepping = name == "next";
-                self.rdbg
-                    .step(target.id, if stepping { "Step" } else { "Continue" })?;
+                let action = match name {
+                    "next" => "Step",
+                    "stepIn" => "StepIn",
+                    "stepOut" => "StepOut",
+                    _ => "Continue",
+                };
+                let stepping = action != "Continue";
+                self.rdbg.step(target.id, action)?;
                 target.frames.clear();
                 target.stepping = stepping;
                 events.push(event(
