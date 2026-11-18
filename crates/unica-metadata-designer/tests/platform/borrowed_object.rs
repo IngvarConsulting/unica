@@ -194,10 +194,12 @@ fn refresh_updates_transferred_properties_preserving_local_xml_and_noop_bytes() 
 
 #[test]
 fn catalog_refresh_keeps_platform_identity_children_and_overridden_property_state() {
-    let parent =
-        include_str!("../../../../tests/fixtures/platform_8_3_27/cfe_borrow/parent-catalog.xml");
-    let old =
-        include_str!("../../../../tests/fixtures/platform_8_3_27/cfe_borrow/extension-catalog.xml");
+    let parent = include_str!(
+        "../../../../tests/fixtures/formats/platform_xml/2.20/cfe_borrow/parent-catalog.xml"
+    );
+    let old = include_str!(
+        "../../../../tests/fixtures/formats/platform_xml/2.20/cfe_borrow/extension-catalog.xml"
+    );
     let changed = parent.replace(
         "<DescriptionLength>10</DescriptionLength>",
         "<DescriptionLength>20</DescriptionLength>",
@@ -242,10 +244,12 @@ fn catalog_refresh_keeps_platform_identity_children_and_overridden_property_stat
 /// rule: INV.SOURCE.BORROWED-OBJECT-REFRESH
 #[test]
 fn catalog_refresh_updates_platform_control_properties_and_keeps_override() {
-    let parent =
-        include_str!("../../../../tests/fixtures/platform_8_3_27/cfe_borrow/parent-catalog.xml");
-    let old =
-        include_str!("../../../../tests/fixtures/platform_8_3_27/cfe_borrow/extension-catalog.xml");
+    let parent = include_str!(
+        "../../../../tests/fixtures/formats/platform_xml/2.20/cfe_borrow/parent-catalog.xml"
+    );
+    let old = include_str!(
+        "../../../../tests/fixtures/formats/platform_xml/2.20/cfe_borrow/extension-catalog.xml"
+    );
     let changed = parent
         .replace("<CodeLength>3</CodeLength>", "<CodeLength>5</CodeLength>")
         .replace(
@@ -469,10 +473,12 @@ fn extension_identity_damage_is_refused_instead_of_repaired() {
 
 #[test]
 fn known_state_variants_and_module_states_do_not_erase_local_overrides() {
-    let parent =
-        include_str!("../../../../tests/fixtures/platform_8_3_27/cfe_borrow/parent-catalog.xml");
-    let original =
-        include_str!("../../../../tests/fixtures/platform_8_3_27/cfe_borrow/extension-catalog.xml");
+    let parent = include_str!(
+        "../../../../tests/fixtures/formats/platform_xml/2.20/cfe_borrow/parent-catalog.xml"
+    );
+    let original = include_str!(
+        "../../../../tests/fixtures/formats/platform_xml/2.20/cfe_borrow/extension-catalog.xml"
+    );
     for state in ["Extended", "Notify", "MultiState"] {
         let existing = original.replace("<xr:State>Extended</xr:State>", &format!("<xr:State>{state}</xr:State>")).replace("</InternalInfo>", "<xr:PropertyState><xr:Property>ObjectModule</xr:Property><xr:State>Extended</xr:State></xr:PropertyState></InternalInfo>");
         let next = plan_borrow_object(
@@ -500,11 +506,11 @@ fn known_state_variants_and_module_states_do_not_erase_local_overrides() {
 #[test]
 fn common_module_server_override_uses_platform_notify_and_survives_refresh() {
     let parent = include_str!(
-        "../../../../tests/fixtures/platform_8_3_27/cfe_borrow/parent-common-module.xml"
+        "../../../../tests/fixtures/formats/platform_xml/2.20/cfe_borrow/parent-common-module.xml"
     )
     .replace("<Global>false</Global>", "<Global>true</Global>");
     let existing = include_str!(
-        "../../../../tests/fixtures/platform_8_3_27/cfe_borrow/extension-common-module.xml"
+        "../../../../tests/fixtures/formats/platform_xml/2.20/cfe_borrow/extension-common-module.xml"
     );
     let next = plan_borrow_object(
         parent.as_bytes(),

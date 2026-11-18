@@ -71,7 +71,8 @@ class ResidentSession:
         self.records = []
         self.cache = cache
         self.next_id = 0
-        self.stderr_file = open(cache.with_suffix(".stderr.log"), "wb")
+        self.stderr_path = cache.with_suffix(".stderr.log")
+        self.stderr_file = open(self.stderr_path, "wb")
         try:
             environment = dict(os.environ)
             environment["BSL_MCP_IDLE_TTL_SECS"]="1"
@@ -92,9 +93,26 @@ class ResidentSession:
             self.lines.put(line)
         self.lines.put(None)
 
+    def stderr_tail(self, limit=4000):
+        """The end of the analyzer's own stderr, for a failure that names its cause."""
+        self.stderr_file.flush()
+        text = self.stderr_path.read_bytes()[-limit:].decode("utf-8", "replace")
+        return text or "<empty stderr>"
+
+    def exited(self, before):
+        try:
+            self.process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+        return RuntimeError(f"analyzer exited with {self.process.returncode} before {before}; "
+                            f"stderr:\n{self.stderr_tail()}")
+
     def send(self, payload):
-        self.process.stdin.write((json.dumps(payload) + "\n").encode())
-        self.process.stdin.flush()
+        try:
+            self.process.stdin.write((json.dumps(payload) + "\n").encode())
+            self.process.stdin.flush()
+        except BrokenPipeError as error:
+            raise self.exited(payload.get("method")) from error
 
     def request(self, method, params):
         self.next_id += 1
@@ -109,7 +127,7 @@ class ResidentSession:
             except queue.Empty as error:
                 raise TimeoutError("resident analyzer did not answer") from error
             if line is None:
-                raise RuntimeError("resident analyzer exited before its answer")
+                raise self.exited(f"its answer to {method}")
             response = json.loads(line)
             if response.get("id") == self.next_id:
                 self.records.append({"method": method, "params": params, "response": response})
@@ -144,7 +162,10 @@ class ResidentSession:
 
     def close(self):
         try:
-            self.process.stdin.close()
+            try:
+                self.process.stdin.close()
+            except OSError:
+                pass  # An analyzer that already exited must not hide why it did.
             try:
                 self.process.wait(timeout=5)
             except subprocess.TimeoutExpired:
@@ -161,8 +182,8 @@ class ResidentSession:
             # The distributed analyzer launches a warm background daemon even
             # for this stdio connection. Observe its own lease PID; a finished
             # stdio client alone does not release the cache directory.
-            lease=self.cache / "writer.lease"
-            if lease.exists():
+            lease=analyzer_lease(self.cache)
+            if lease is not None:
                 pid=json.loads(lease.read_text(encoding="utf-8"))["pid"]
                 deadline=time.monotonic()+15
                 while True:
@@ -181,6 +202,22 @@ class ResidentSession:
                     time.sleep(.1)
         finally:
             self.stderr_file.close()
+
+
+def analyzer_lease(cache: Path) -> Path | None:
+    """The writer lease inside an analyzer cache base.
+
+    The analyzer keeps each workspace under `<base>/workspaces/v1/<scope digest>`,
+    so the lease is one level below the scope directory, not in the base itself.
+    """
+    scopes = cache / "workspaces" / "v1"
+    if not scopes.is_dir():
+        return None
+    leases = sorted(scope / "writer.lease" for scope in scopes.iterdir()
+                    if (scope / "writer.lease").is_file())
+    if len(leases) > 1:
+        raise AssertionError(f"the analyzer cache {cache} holds more than one workspace lease")
+    return leases[0] if leases else None
 
 
 def legacy_analyzer_cache_key(workspace: str, source: str) -> str:
@@ -251,10 +288,30 @@ class LegacyBrokerProxy(ResidentSession):
             self._closed = True
 
 
+def assert_owned_legacy_endpoint(backend, runtime: Path):
+    """The daemon is alive and serves exactly one endpoint.
+
+    The analyzer binds its endpoint at start but builds its state, and takes the
+    writer lease, only for the first attached session: before a client the lease
+    does not exist yet.
+    """
+    if backend.poll() is not None:
+        raise AssertionError("owned legacy backend exited during the upgrade scenario")
+    if os.name != "nt":
+        sockets = [path for path in (runtime / "bsl-mcp").glob("*.sock") if path.is_socket()]
+        if not sockets:
+            raise FileNotFoundError("the owned legacy endpoint is not ready")
+        if len(sockets) != 1:
+            raise AssertionError("the owned legacy endpoint is ambiguous")
+
+
 def assert_owned_legacy_broker(backend, cache: Path, runtime: Path):
     if backend.poll() is not None:
         raise AssertionError("owned legacy backend exited during the upgrade scenario")
-    record = json.loads((cache / "writer.lease").read_text(encoding="utf-8"))
+    lease = analyzer_lease(cache)
+    if lease is None:
+        raise FileNotFoundError("the owned legacy lease is not published yet")
+    record = json.loads(lease.read_text(encoding="utf-8"))
     if record.get("pid") != backend.pid:
         raise AssertionError("the legacy lease belongs to another process")
     if os.name != "nt":
@@ -297,18 +354,22 @@ def legacy_broker_for_invalidation(plugin: Path, workspace: Path):
         deadline = time.monotonic() + 30
         while True:
             try:
-                assert_owned_legacy_broker(backend, cache, runtime)
+                assert_owned_legacy_endpoint(backend, runtime)
                 break
-            except (FileNotFoundError, json.JSONDecodeError):
+            except FileNotFoundError:
                 pass
             if time.monotonic() >= deadline:
-                raise TimeoutError("owned legacy backend did not publish its endpoint and lease")
+                stderr.flush()
+                tail = (runtime / "legacy-backend.stderr.log").read_bytes()[-4000:].decode("utf-8", "replace")
+                raise TimeoutError(f"owned legacy backend did not publish its endpoint; stderr:\n{tail}")
             time.sleep(.01)
         proxy = LegacyBrokerProxy(binary, source, cache, runtime, environment)
         resources.callback(proxy.close)
         proxy.request("initialize", {"protocolVersion": "2025-03-26", "capabilities": {},
                                     "clientInfo": {"name": "unica-upgrade-acceptance", "version": "0"}})
         proxy.send({"jsonrpc": "2.0", "method": "notifications/initialized"})
+        # The first attached session made the daemon take the lease.
+        assert_owned_legacy_broker(backend, cache, runtime)
         deadline = time.monotonic() + 30
         while True:
             result = proxy.request("tools/call", {"name": "search", "arguments": {

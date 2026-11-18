@@ -743,12 +743,12 @@ fn canonical_code_insert_inside_older_source_set_is_refused_without_writes() {
                             "{case}: {error}"
                         );
                         // The refusal names the owner file, the version it
-                        // records, the writable profile and the remedy.
+                        // records, the writable formats and the remedy.
                         let message = error.to_string();
                         for part in [
                             relative,
                             version,
-                            "2.20 for 1C 8.3.27",
+                            "2.20",
                             "re-export the sources with the platform",
                         ] {
                             assert!(message.contains(part), "{case}: {part}: {message}");
@@ -1399,7 +1399,7 @@ fn code_patch_rolls_back_if_v8project_changes_the_owner_source_set_before_commit
     fs::write(&module, before).unwrap();
     fs::write(
             context.workspace_root.join("src/CommonModules.xml"),
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.21"><ExternalDataProcessor/></MetaDataObject>"#,
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.23"><ExternalDataProcessor/></MetaDataObject>"#,
         )
         .unwrap();
     let args = patch_args(
@@ -3890,7 +3890,7 @@ fn staged_code_v12_parity_rejects_malformed_postimage_and_owner_evidence() {
                 "malformed" => fs::write(descriptor, b"<not-xml").unwrap(),
                 "wrong-format" => {
                     let before = fs::read_to_string(&descriptor).unwrap();
-                    fs::write(descriptor, before.replace("2.20", "2.21")).unwrap();
+                    fs::write(descriptor, before.replace("2.20", "2.23")).unwrap();
                 }
                 _ => unreachable!(),
             }

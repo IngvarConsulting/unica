@@ -9,6 +9,7 @@ use super::v13_infobase_exports::{
     resolve_bundled_runner, runner_rejection, runner_start_rejection, valid_1c_identifier,
     validate_provider_receipt, CONFIG_NAME, LOCAL_CONFIG_NAME, RUNNER_OUTPUT_LIMIT,
 };
+use super::v13_source_import::INFOBASE_NAME;
 use crate::infrastructure::workspace::discover_workspace;
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
@@ -16,7 +17,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use unica_artifact_delivery::engine::BundledTool;
 use unica_execution::invocation_store::ToolIdentity;
-use unica_execution_contract::invocation::{DomainResult, SafeIdentityHash};
+use unica_execution_contract::invocation::{DomainResult, HumanChoice, SafeIdentityHash};
 use unica_process::runner::{ProcessCommand, ProcessRunner};
 use unica_redaction::redactor;
 use unica_refusal::RefusalCode;
@@ -133,6 +134,19 @@ impl PreparedExtensions {
                     format!("workspace discovery failed: {error}"),
                 )
             })?;
+        // Удаление расширения стирает его данные в базе и исполняется только с
+        // согласия человека. Вопрос задаётся до допуска: вызов, ушедший в
+        // фоновую задачу, спросить уже не может. Превью не спрашивает.
+        if operation == Operation::Delete && !dry_run {
+            let extension = args["delete"].as_str().unwrap_or_default();
+            if !HumanChoice::is_confirmed(
+                &extension_delete_question(extension),
+                "unica.run",
+                request.arguments(),
+            ) {
+                return Err(extension_delete_unconfirmed(extension, request.arguments()));
+            }
+        }
         Ok(Self {
             operation,
             args: args.clone(),
@@ -568,6 +582,40 @@ fn public_record(item: &Value) -> Value {
 }
 fn rejection(operation: Operation, code: RefusalCode, message: impl Into<String>) -> DomainResult {
     DomainResult::canonical_rejection(Some(operation.name().into()), code, message)
+}
+
+/// Код вопроса об удалении расширения: по нему клиент рисует свой экран.
+const EXTENSION_DELETE_CODE: &str = "extension.delete";
+
+/// Согласованный текст вопроса об удалении расширения.
+fn extension_delete_question(extension: &str) -> String {
+    format!("Удалить расширение «{extension}» из базы «{INFOBASE_NAME}»?")
+}
+
+/// Подтверждение удаления расширения этим же вызовом: надпись варианта и то,
+/// что пропадёт, согласованы и закреплены тестом.
+fn extension_delete_confirmation(extension: &str, call: &Map<String, Value>) -> HumanChoice {
+    HumanChoice::confirmation(
+        EXTENSION_DELETE_CODE,
+        extension_delete_question(extension),
+        "Удалить расширение",
+        "данные расширения в базе пропадут",
+        "unica.run",
+        call,
+    )
+    .with_data(json!({"infobase": INFOBASE_NAME, "extension": extension}))
+}
+
+/// Отказ `cancelled` без согласия человека: база не тронута. Клиенту, который
+/// умеет спрашивать, дверь задаёт вопрос; остальным исполняет вызов как прежде.
+fn extension_delete_unconfirmed(extension: &str, call: &Map<String, Value>) -> DomainResult {
+    let mut result = rejection(
+        Operation::Delete,
+        RefusalCode::Cancelled,
+        "deleting an installed extension erases its data in the infobase and runs only with the person's confirmation; it was not given, and the infobase is unchanged",
+    );
+    result.human_choice = Some(Box::new(extension_delete_confirmation(extension, call)));
+    result
 }
 
 #[cfg(test)]
@@ -1163,5 +1211,86 @@ mod tests {
             assert_eq!(child.is_cancelled(), operation.reads());
             assert_eq!(cancellation.protected_process_started(), !operation.reads());
         }
+    }
+
+    /// Исполняемое удаление расширения идёт только с согласия человека. Без
+    /// него — отказ `cancelled` с вопросом-подтверждением по согласованному
+    /// тексту. Подтверждение годится только для того же расширения. Превью не
+    /// спрашивает.
+    /// rule: INV.RUNTIME.DESTRUCTIVE-CONFIRMATION
+    /// rule: INV.RUNTIME.EXTENSION-OPERATIONS
+    /// rule: INV.MCP.HUMAN-CHOICE
+    #[test]
+    fn an_executing_extension_delete_runs_only_with_the_persons_confirmation() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(
+            root.path().join(CONFIG_NAME),
+            "format: DESIGNER\ninfobase:\n  connection: 'File=base'\n",
+        )
+        .unwrap();
+        let request = |arguments: Value| {
+            InvocationRequest::new(
+                ToolIdentity::Run,
+                arguments,
+                root.path().display().to_string(),
+                7_000,
+            )
+            .unwrap()
+        };
+        let call = json!({"op": "push", "args": {"delete": "Тест"}, "dryRun": false});
+
+        let Err(refused) = PreparedExtensions::parse(&request(call.clone()), Operation::Delete)
+        else {
+            panic!("a delete without a confirmation is not executed");
+        };
+        assert_eq!(refused.diagnostics[0]["code"], "cancelled");
+        let choice = refused.human_choice.as_deref().expect("a confirmation");
+        // Надписи согласованы: менять их — только вместе с этим тестом.
+        assert_eq!(choice.code, "extension.delete");
+        assert_eq!(
+            choice.question,
+            "Удалить расширение «Тест» из базы «origin»?"
+        );
+        assert!(choice.proceeds_unasked);
+        assert_eq!(choice.options.len(), 1);
+        assert_eq!(choice.options[0].title, "Удалить расширение");
+        assert_eq!(
+            choice.options[0].description,
+            "данные расширения в базе пропадут"
+        );
+        assert_eq!(
+            choice.data,
+            Some(json!({"infobase": "origin", "extension": "Тест"}))
+        );
+        assert_eq!(
+            Value::Object(unica_execution_contract::invocation::without_confirmation(
+                &choice.options[0].arguments
+            )),
+            call
+        );
+
+        let confirmed = choice.options[0].arguments.clone();
+        let Ok(executed) = PreparedExtensions::parse(
+            &request(Value::Object(confirmed.clone())),
+            Operation::Delete,
+        ) else {
+            panic!("a confirmed delete is executed");
+        };
+        assert!(!executed.dry_run);
+
+        // Согласие на одно расширение не удаляет другое.
+        let mut other = confirmed;
+        other["args"]["delete"] = json!("Другое");
+        assert!(
+            PreparedExtensions::parse(&request(Value::Object(other)), Operation::Delete).is_err()
+        );
+
+        let Ok(preview) = PreparedExtensions::parse(
+            &request(json!({"op": "push", "args": {"delete": "Тест"}, "dryRun": true})),
+            Operation::Delete,
+        ) else {
+            panic!("a preview is not asked");
+        };
+        assert!(preview.dry_run);
     }
 }

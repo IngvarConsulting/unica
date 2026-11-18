@@ -1158,7 +1158,7 @@ mod tests {
         fs::write(
             context.workspace_root.join("extension/Configuration.xml"),
             include_bytes!(
-                "../../../../tests/fixtures/platform_8_3_27/support-edit-bin-only/src/Configuration.xml"
+                "../../../../tests/fixtures/formats/platform_xml/2.20/support-edit-bin-only/src/Configuration.xml"
             ),
         )
         .unwrap();
@@ -2217,6 +2217,10 @@ mod tests {
     fn runtime_adapter_maps_each_runtime_operation_to_expected_argv() {
         let cases = vec![
             (json!({"operation": "init"}), vec!["init"]),
+            (
+                json!({"operation": "dump", "mode": "full", "sourceSet": "main"}),
+                vec!["dump", "--force", "--source-set", "main"],
+            ),
             (
                 json!({
                     "operation": "dump",
@@ -4578,7 +4582,7 @@ analyze_timeout_seconds = 900
         fs::write(
             source_root.join("Configuration.xml"),
             include_bytes!(
-                "../../../../tests/fixtures/platform_8_3_27/support-edit-bin-only/src/Configuration.xml"
+                "../../../../tests/fixtures/formats/platform_xml/2.20/support-edit-bin-only/src/Configuration.xml"
             ),
         )
         .unwrap();
@@ -4594,7 +4598,7 @@ analyze_timeout_seconds = 900
         fs::write(
             marker,
             include_bytes!(
-                "../../../../tests/fixtures/platform_8_3_27/support-edit-bin-only/src/Ext/ParentConfigurations.bin"
+                "../../../../tests/fixtures/formats/platform_xml/2.20/support-edit-bin-only/src/Ext/ParentConfigurations.bin"
             ),
         )
         .unwrap();

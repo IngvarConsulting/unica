@@ -711,7 +711,7 @@ fn encode_export_path_components<'a>(
 }
 
 /// Read access of the LSP host to one admitted source set.
-impl unica_lsp::ModuleSourceRead for ProviderReadAuthority {
+impl unica_editor_analysis::ModuleSourceRead for ProviderReadAuthority {
     fn source_set(&self) -> &str {
         ProviderReadAuthority::source_set(self)
     }

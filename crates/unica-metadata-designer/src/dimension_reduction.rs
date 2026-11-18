@@ -1,5 +1,6 @@
 // module: private
 //! Strict existing TypeReductionMode mutation and its semantic evidence.
+use crate::dialect::root_version;
 use roxmltree::{Document, Node};
 use unica_metadata::{MetaDiagnostic, MetaDiagnosticCode};
 const MD: &str = "http://v8.1c.ru/8.3/MDClasses";
@@ -64,8 +65,13 @@ pub(crate) fn edit(
     if !root.has_tag_name((MD, "MetaDataObject")) {
         return Err(bad("expected metadata descriptor"));
     }
-    if unica_source_designer::roots::root_version_literal(xml, root).as_deref() != Some("2.20") {
-        return Err(bad("typeReductionMode requires metadata XML format 2.20"));
+    if !root_version::is_writable(
+        unica_source_designer::roots::root_version_literal(xml, root).as_deref(),
+    ) {
+        return Err(bad(&format!(
+            "typeReductionMode requires metadata XML format {}",
+            root_version::writable_formats()
+        )));
     }
     let owners: Vec<_> = root.children().filter(Node::is_element).collect();
     let [owner] = owners.as_slice() else {

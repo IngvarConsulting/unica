@@ -11,10 +11,14 @@ pub fn validate_role_edit_descriptor(raw: &[u8], role_name: &str) -> Result<(), 
     let root = document.root_element();
     if root.tag_name().name() != "MetaDataObject"
         || root.tag_name().namespace() != Some(ROLE_METADATA_NAMESPACE)
-        || unica_source_designer::roots::root_version_literal(&text, root).as_deref()
-            != Some("2.20")
+        || !crate::dialect::root_version::is_writable(
+            unica_source_designer::roots::root_version_literal(&text, root).as_deref(),
+        )
     {
-        return Err("role descriptor must use exact MDClasses format 2.20".to_string());
+        return Err(format!(
+            "role descriptor must use exact MDClasses format {}",
+            crate::dialect::root_version::writable_formats()
+        ));
     }
     let roles = direct_role_children(root, "Role", ROLE_METADATA_NAMESPACE);
     if roles.len() != 1 {
