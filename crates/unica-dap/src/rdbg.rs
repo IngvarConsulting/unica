@@ -11,9 +11,29 @@ const BASE: &str = "http://v8.1c.ru/8.3/debugger/debugBaseData";
 const BREAKPOINTS: &str = "http://v8.1c.ru/8.3/debugger/debugBreakpoints";
 const CALCULATIONS: &str = "http://v8.1c.ru/8.3/debugger/debugCalculations";
 const AUTO_ATTACH: &str = "http://v8.1c.ru/8.3/debugger/debugAutoAttach";
+// resource-limit: dap.rdbg-request-timeout
+// class: deadline
+// unit: ms
+// scope: request
+// value: 3000
+// resource: Срок HTTP-запроса к dbgs вне опроса событий.
+// status: unproven
+// origin: #3194
+// problem: неизвестно
+// on-reach: запрос DAP завершается ошибкой транспорта
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
 // dbgs holds an idle event poll for about five seconds. Allow extra time
 // under load so that we do not abandon the response carrying a stop.
+// resource-limit: dap.rdbg-event-poll-timeout
+// class: deadline
+// unit: ms
+// scope: request
+// value: 30000
+// resource: Срок одного фонового опроса событий dbgs.
+// status: unproven
+// origin: #3203
+// problem: штатный пустой ответ dbgs приходит примерно через 5 секунд, а прежний срок 3 секунды мог прервать получение остановки
+// on-reach: опрос возвращает пустой результат и повторяется на следующем проходе
 const EVENT_POLL_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub(crate) struct Rdbg {
